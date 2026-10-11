@@ -245,6 +245,44 @@ POST /api/me/tokens/<uuid>/revoke
 PUT  /api/me/tokens/<uuid>/role
 ```
 
+`GET /api/me/profile` also reports the audiences the credential holds:
+`read_audiences` (whose session transcripts it may read), `open_audiences` (what
+it may open a session into) and `pinned_audience` (the one a key is pinned to, or
+null). They are `open` for everyone; `staff` is added for a person the server
+names as staff. The server's `--staff PATTERNS` (or `$TRACKINIZER_STAFF`) is a
+comma-separated list of `user@host` and `*@domain` patterns. A literal address
+matches the verified email alone. A domain pattern also needs the person's Google
+Workspace domain (Google's `hd` claim at their last login) to be that domain, so a
+consumer account with an address on the domain is not staff. Empty, the default,
+means nobody is staff. It is not stored per user and no route sets it.
+
+A domain pattern takes effect at each person's next browser login: the claim is
+stored only by the Google callback, so until then a person's `users` row has no
+Workspace domain and neither they nor their keys are staff (fail closed). Before
+setting a `*@domain` pattern on a deployment, sign in once with a Workspace account
+and once with a consumer account on the same domain, and check that only the first
+gets `staff` in `GET /api/me/profile`.
+
+The callback also binds the `users` row to the Google account (`sub`) that first
+signed in as that email. A login with another `sub` on the same address gets 403
+and changes nothing, so a second Google account holding the address cannot take over
+the row's sessions and keys or rewrite its Workspace domain. A row from before the
+binding takes the next login's `sub`. To rebind an address to a different Google
+account, an administrator deletes the user (`DELETE /api/admin/users/<uuid>`); the
+next login creates the row again.
+
+`POST /api/me/tokens` takes an optional `open_into` beside `name` and `role`: it pins
+the one audience the key opens sessions into. It is at most what the caller opens
+into (403 otherwise), a name that is no audience is 422, and a key minting a key hands
+its own pin on when the request names none; an unpinned key mints an unpinned key. The
+pin is recomputed against the owner at every request, so a key never holds more than
+its owner does. A key reads what its owner reads. The response and
+`GET /api/me/tokens` carry `open_into`, null for no pin.
+
+A pinned key can revoke (`POST .../revoke`) or re-tier (`PUT .../role`) only its own
+key and keys pinned to an audience it opens into. Any other key answers 404, as an
+absent one does. A browser session or an unpinned key manages every key of its owner.
+
 ### 1.18 Admin users
 
 ```
@@ -255,6 +293,9 @@ POST   /api/admin/users/<uuid>/disable
 POST   /api/admin/users/<uuid>/enable
 DELETE /api/admin/users/<uuid>
 ```
+
+`GET /api/admin/users` marks each user with `staff`, true when the server's staff
+setting makes them staff. It is derived and read-only.
 
 ### 1.19 Admin allowlist
 
@@ -461,6 +502,46 @@ push envelopes -- JSON metadata for a committed change, generated
 server-side (no HTTP surface produces them). Shape and client-side
 handling: `design_subscriber.md`.
 
+An AgentSession carries an `audience` (`open` or `staff`) saying who may read its
+transcript. A session opens into the audience its key is pinned to (`open_into`, see
+section 1.17), else `open`. Only the transcript is gated: the session's title, actor,
+rooms, times, cost, edges and `audience`, and every row it files, stay readable by
+anyone who can read the graph. A caller reads a session when its `read_audiences` (see
+`GET /api/me/profile`) hold the session's audience, and the key that opened a
+session always does, so a key whose owner no longer holds `staff` can still run the
+`staff` session it opened. Otherwise the session answers 403 with
+`{"detail": {"code": "session_audience", "audience": "<value>"}}` on
+`GET .../records`, `.../parts`, `.../turns`, `POST .../records`, `POST .../end`,
+`GET .../inbound` (a drain), `DELETE /api/inquiries/<uuid>` and every field edit of
+the row. Sending input (`POST .../inbound`, `POST /api/messages`) needs the audience
+too. The configured assistant (`--assistant`) relays a user's line to a session it
+cannot read only for an `asker`, an optional field of both bodies naming the user's
+account email. It passes on that user's rights, not its own, and the server reads them
+from its own tables: the asker must be an active user and a writer or admin, and be the
+session's account or hold its audience as a person, whatever key they use. A send that
+names no asker, or one who does not qualify, is 403 `session_audience`. A session the
+assistant reads itself needs no asker, and another sender's `asker` is ignored.
+`POST /api/messages` is refused whole when any session its actor names is hidden from
+the sender: nothing is queued to the others. No field route sets `audience`.
+
+The feed, its facets and histogram, session search, record filters on
+`GET /api/inquiries`, and the export leave out a session the caller does not read,
+and the export's header names the audiences it was read for (section 3.24). A
+record written to a session pings the live streams
+(`GET /api/change_log/stream`, `GET /api/web/subscribe`, the `changed` frames of
+`GET /api/workspaces/<uuid>/events`) with the session's id, and a stream relays
+that ping only to a caller whose `read_audiences` hold the session's audience.
+Every other change reaches every viewer.
+
+A subscriber push into a session that is not `open` carries no `actor` and no
+`reason`, and its `agent_message` omits "(by ...)": those are free text a writer sets,
+and an inbound line becomes the session's next user turn. The row is still named by
+`subject_ref` and `row`, so the session reads the change from the graph.
+
+Existing sessions migrate to `open`; the migration cannot tell a campaign lead or other
+staff session a running deployment already captured from any other. The audience is
+written once, when the session opens, and no route or key changes it afterwards.
+
 A session whose run dies without calling `end` (killed, host crashed) is
 closed by the server: once a session that polls its inbound queue has gone
 15 minutes without a poll or a records upload, it is ended at the time it
@@ -497,7 +578,10 @@ GET /api/export
 The whole graph as JSON lines (`application/x-ndjson`), for backup or a
 public mirror: every inquiry, edge, and change-log row, plus experiment
 metrics and agent-session records, read in one snapshot. Viewer role, like
-any read. Read-only; nothing imports it yet. Line shape: section 3.24.
+any read. A session's records are exported only to a caller that reads its
+audience (section 1.21), so a backup that must hold every transcript runs as a
+caller that reads every audience. Read-only; nothing imports it yet. Line shape:
+section 3.24.
 
 ### 1.24 Visual catalog and workspace
 
@@ -737,8 +821,8 @@ instance an agent's `show` brought up and null for any other change;
 `{type: "navigate", route}`; `{type: "highlight", ids}`; and
 `{type: "changed", id}` for each inquiry
 id `/api/web/subscribe` relays. A record appended to a science chat's session
-changes that session, so every viewer of it gets a `changed` frame and reads
-what the session gained. A comment goes out on open and after 25 s without a
+changes that session, so every viewer who reads its audience gets a `changed`
+frame and reads what the session gained. A comment goes out on open and after 25 s without a
 frame, and on each the server checks the user is still active and ends
 the stream if not. A subscriber more than 256 frames behind is dropped and
 reconnects from the `workspace` frame.
@@ -1349,14 +1433,18 @@ data: {"id": "<change_uuid>"}
 ### 3.24 Export lines
 
 ```
-{"format": "trackinizer-export", "version": 1, "migrations": ["schema.sql", ...]}
+{"format": "trackinizer-export", "version": 1, "migrations": ["schema.sql", ...], "audiences": ["open", "staff"]}
 {"table": "inquiries", "row": {"id": "<uuid>", "kind": "Issue", ...}}
 {"table": "edges", "row": {"from_id": "<uuid>", "edge_kind": "narrows", ...}}
 ...
 ```
 
 The first line is the header: `migrations` names the applied schema files,
-so a reader knows which columns the rows carry. Every later line is one row
+so a reader knows which columns the rows carry, and `audiences` names, sorted,
+the audiences the caller reads. A session outside them has no row in
+`session_manifests`, `session_records` or `session_slash_commands`, though its
+`inquiries` row is there, so a file whose `audiences` lacks one the deployment
+holds is not a whole backup. Every later line is one row
 of one table, keyed by column name. Tables come in the order `inquiries`,
 `edges`, `change_log`, `experiment_metrics`, `session_manifests`,
 `session_records`, `session_slash_commands`, and rows in a fixed order within

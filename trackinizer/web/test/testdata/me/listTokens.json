@@ -11,6 +11,7 @@
           "id": "00000000-0000-4000-9000-000000000001",
           "last_used_at": null,
           "name": "fixtures",
+          "open_into": null,
           "prefix": "<prefix>",
           "revoked_at": null,
           "role": "viewer"

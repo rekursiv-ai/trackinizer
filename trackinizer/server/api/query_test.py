@@ -7,6 +7,7 @@ Houses inquiry delete too: ``DELETE /api/inquiries/{id}`` is defined in
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
@@ -222,6 +223,24 @@ class TestRoutes:
             ("owner", "nre", "Dan"),
             ("issue_priority", "gt", "5"),
         ]
+
+    def test_list_kind_route_lists_for_the_audiences_of_its_caller(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, store, _engine = route_client
+        asked: list[object] = []
+        with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
+            mock.return_value = []
+            for audiences in (frozenset({"open"}), frozenset({"open", "staff"})):
+                install_identity(
+                    replace(make_test_identity(), read_audiences=audiences),
+                )
+                assert client.get("/api/inquiries", params={"kind": "Issue"}).is_success
+                assert mock.await_args is not None
+                asked.append(mock.await_args.kwargs.get("audiences"))
+
+        assert asked == [frozenset({"open"}), frozenset({"open", "staff"})]
 
     def test_list_kind_route_logs_correlated_query_stage(
         self,
@@ -676,9 +695,8 @@ class TestRoutes:
     ) -> None:
         """SSE relays every NOTIFY payload as ``{"id": "<uuid>"}``.
 
-        Matches the Auth section of ``docs/design.md``: viewer-gated reads, no
-        per-subscriber filter; localhost-only deployment is the
-        access boundary.
+        Viewer-gated reads, and every change reaches every viewer; the one
+        exception, a ping about a session's transcript, is the next test's.
         """
         client, _store, engine = route_client
         first = new_uuid()
@@ -691,6 +709,32 @@ class TestRoutes:
             body = b"".join(r.iter_bytes())
         assert f'data: {{"id": "{first}"}}'.encode() in body
         assert f'data: {{"id": "{second}"}}'.encode() in body
+
+    def test_subscribe_holds_back_a_hidden_transcripts_ping_from_a_viewer(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        hidden = new_uuid()
+        shown = new_uuid()
+        engine.listen_messages = [
+            json.dumps({"id": str(hidden), "audience": "staff"}),
+            json.dumps({"id": str(shown), "audience": "open"}),
+        ]
+
+        def streamed() -> str:
+            with client.stream("GET", "/api/change_log/stream") as r:
+                return b"".join(r.iter_bytes()).decode()
+
+        install_identity(make_test_identity())
+        opened = streamed()
+        install_identity(
+            replace(make_test_identity(), read_audiences=frozenset({"open", "staff"})),
+        )
+        staffed = streamed()
+
+        assert (str(hidden) in opened, str(shown) in opened) == (False, True)
+        assert (str(hidden) in staffed, str(shown) in staffed) == (True, True)
 
     def test_subscribe_routes_share_wire_shape(self) -> None:
         """``/api/change_log/stream`` and ``/api/web/subscribe`` emit identical bytes.
@@ -1072,6 +1116,7 @@ async def test_fields_keep_the_named_values_on_a_real_engine(
             SubmitWebSearch(account=account, title="query"),
             SubmitAgentSession(account=account, title="session"),
         ],
+        session_audience="open",
     )
     edges: tuple[tuple[uuid.UUID, Edge.Kind, uuid.UUID], ...] = (
         (child, "narrows", parent),

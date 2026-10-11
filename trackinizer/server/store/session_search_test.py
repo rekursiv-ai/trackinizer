@@ -9,12 +9,13 @@ matching, and the fused rank, none observable without the live index.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final, Literal, cast
 from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
 
+from trackinizer.conftest import FakeEngine, executed_sql, make_conn
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.core import Store
@@ -24,14 +25,17 @@ from trackinizer.server.store.session_search import (
     SessionSearchHit,
     _ArmHit,
     _merge,
+    _scan_for,
+    _semantic_arm,
     search_session_records,
 )
 
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from unittest.mock import AsyncMock
 
-    from trackinizer.lib.postgres import PostgresEngine
+    from trackinizer.lib.postgres import Conn, DatabaseEngine, PostgresEngine
 
 
 _MAPPER = FootprintMapper().name
@@ -56,9 +60,10 @@ async def _session(store: Store) -> UUID:
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'search test')",
+            "'tester@example.com', 'search test', 'open')",
             session_id,
         )
     return session_id
@@ -324,6 +329,44 @@ def test_merge_returns_session_search_hits() -> None:
     assert all(isinstance(h, SessionSearchHit) for h in merged)
 
 
+def test_merge_hands_on_every_field_of_the_unit_it_keeps() -> None:
+    """The console opens a session at ``(session_id, part, idx)`` and labels the hit."""
+    unit = _ArmHit(
+        session_id=UUID(int=7),
+        part=3,
+        idx=5,
+        field="head",
+        chunk=2,
+        snippet="the head of it",
+        title="a session",
+    )
+
+    [hit] = _merge([unit], [], limit=10)
+
+    assert (hit.session_id, hit.part, hit.idx) == (UUID(int=7), 3, 5)
+    assert (hit.field, hit.chunk) == ("head", 2)
+    assert (hit.snippet, hit.title) == ("the head of it", "a session")
+
+
+def test_merge_names_the_arm_each_hit_came_from() -> None:
+    semantic, full_text = _hit(1), _hit(2)
+
+    by_idx = {h.idx: h for h in _merge([semantic], [full_text], limit=10)}
+
+    assert by_idx[1].source == "semantic"
+    assert by_idx[2].source == "fts"
+
+
+def test_merge_counts_a_repeated_position_once_and_reads_on_past_it() -> None:
+    """A later record of the same arm still ranks, one place lower for the repeat."""
+    first, repeat, later = _hit(1, chunk=0), _hit(1, chunk=1), _hit(2)
+
+    merged = _merge([first, repeat, later], [], limit=10)
+
+    assert [h.idx for h in merged] == [1, 2]
+    assert merged[1].score == pytest.approx(1.0 / (RRF_K + 3))
+
+
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_search_excludes_the_stale_tail_after_a_compaction(
@@ -364,6 +407,251 @@ async def test_search_excludes_the_stale_tail_after_a_compaction(
     assert {(h.session_id, h.idx) for h in semantic} <= live
     # The fts term appears ONLY in the stale idx-2 row -> excluded entirely.
     assert all((h.session_id, h.idx) != (session_id, 2) for h in fts)
+
+
+# The semantic arm's one statement for ``dim=2`` and ``audiences`` as ``$6``, as it ran
+# before a reader that lacks an audience got a scan of its own.
+_PLAIN_SQL: Final = (
+    "SELECT e.session_id, e.part, e.idx, e.field, e.chunk, "
+    "left(r.text, $5) AS snippet, i.title AS title "
+    "FROM session_embeddings e "
+    "JOIN session_records r "
+    "  ON r.session_id = e.session_id AND r.part = e.part AND r.idx = e.idx "
+    "JOIN inquiries i ON i.id = e.session_id "
+    "JOIN session_manifests m ON m.session_id = r.session_id AND m.part = r.part "
+    "WHERE e.mapper = $2 AND e.model = $3 AND r.idx < m.records "
+    "AND i.agentsession_audience = ANY($6::text[]) "
+    "ORDER BY (e.embedding::halfvec(2)) <=> $1::halfvec(2) "
+    "LIMIT $4"
+)
+_BOTH: Final = frozenset({"open", "staff"})
+_OPEN: Final = frozenset({"open"})
+_SET_WIDTH: Final = "SELECT set_config('hnsw.ef_search', $1, true)"
+_ITERATE: Final = "SET LOCAL hnsw.iterative_scan = strict_order"
+_VERSION: Final = "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+
+
+def _engine(conn: AsyncMock) -> DatabaseEngine:
+    """Return an engine over ``conn``, which the scan choice tells apart by identity."""
+    return cast("DatabaseEngine", FakeEngine(conn))
+
+
+def _unit_rows(count: int) -> list[dict[str, object]]:
+    """Return ``count`` rows shaped as the semantic query answers."""
+    return [
+        {
+            "session_id": UUID(int=1),
+            "part": 0,
+            "idx": idx,
+            "field": "content",
+            "chunk": 0,
+            "snippet": "s",
+            "title": "t",
+        }
+        for idx in range(count)
+    ]
+
+
+async def _arm(
+    conn: AsyncMock,
+    *,
+    scan: Literal["plain", "iterative", "widening"],
+    audiences: frozenset[str] = _OPEN,
+    limit: int = 3,
+) -> list[_ArmHit]:
+    """Run the semantic arm on a scripted connection, scanned as ``scan`` says."""
+    return await _semantic_arm(
+        cast("Conn", conn),
+        [0.5, 0.25],
+        mapper="mapper-x",
+        model="model-y",
+        dim=2,
+        limit=limit,
+        audiences=audiences,
+        scan=scan,
+    )
+
+
+@pytest.mark.asyncio
+async def test_every_audience_reader_runs_the_one_statement_it_always_did() -> None:
+    conn = make_conn()
+    conn.fetch.return_value = _unit_rows(2)
+
+    hits = await _arm(conn, scan="plain", audiences=_BOTH, limit=7)
+
+    assert executed_sql(conn) == [_PLAIN_SQL]
+    assert conn.fetch.await_args is not None
+    assert conn.fetch.await_args.args[1:] == (
+        "[0.5,0.25]",
+        "mapper-x",
+        "model-y",
+        7,
+        200,
+        ["open", "staff"],
+    )
+    assert [hit.idx for hit in hits] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_the_iterative_scan_is_set_for_one_transaction() -> None:
+    """The statement is the plain one; only the transaction around it differs."""
+    conn = make_conn()
+    conn.fetch.return_value = _unit_rows(3)
+
+    hits = await _arm(conn, scan="iterative")
+
+    assert executed_sql(conn) == ["BEGIN", _ITERATE, _PLAIN_SQL, "COMMIT"]
+    assert conn.fetch.await_args is not None
+    assert conn.fetch.await_args.args[1:] == (
+        "[0.5,0.25]",
+        "mapper-x",
+        "model-y",
+        3,
+        200,
+        ["open"],
+    )
+    assert [hit.idx for hit in hits] == [0, 1, 2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("offered", "counts", "widths"),
+    [
+        pytest.param("40", [3], [], id="the first query fills the limit"),
+        pytest.param("40", [5], [], id="the first query passes the limit"),
+        pytest.param("40", [0, 3], ["160"], id="one step fills it"),
+        pytest.param("40", [0, 1, 3], ["160", "640"], id="two steps fill it"),
+        pytest.param("40", [0, 1, 2, 3], ["160", "640", "1000"], id="the cap fills it"),
+        pytest.param("40", [0, 1, 2, 2], ["160", "640", "1000"], id="the cap ends it"),
+        pytest.param("300", [1, 2], ["1000"], id="a step stops at the cap"),
+        pytest.param("1000", [1], [], id="the index already offers the cap"),
+    ],
+)
+async def test_widening_asks_for_more_candidates_until_the_limit_is_filled_or_the_cap(
+    offered: str,
+    counts: list[int],
+    widths: list[str],
+) -> None:
+    conn = make_conn()
+    conn.fetch.side_effect = [_unit_rows(count) for count in counts]
+    conn.fetchval.return_value = offered
+
+    hits = await _arm(conn, scan="widening")
+
+    assert executed_sql(conn) == [
+        "BEGIN",
+        _PLAIN_SQL,
+        *[statement for _ in widths for statement in (_SET_WIDTH, _PLAIN_SQL)],
+        "COMMIT",
+    ]
+    assert [
+        call.args[1]
+        for call in conn.execute.await_args_list
+        if call.args[0] == _SET_WIDTH
+    ] == widths
+    # Every asking is the same query with the same values.
+    assert [call.args for call in conn.fetch.await_args_list] == [
+        (_PLAIN_SQL, "[0.5,0.25]", "mapper-x", "model-y", 3, 200, ["open"]),
+    ] * len(counts)
+    # The offered width is read only once the first query has fallen short.
+    if counts[0] < 3:
+        conn.fetchval.assert_awaited_once_with("SHOW hnsw.ef_search")
+    else:
+        conn.fetchval.assert_not_awaited()
+    assert len(hits) == counts[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("audiences", [_BOTH, frozenset({"open", "staff", "private"})])
+async def test_a_reader_of_every_audience_is_scanned_plain_without_asking_the_database(
+    audiences: frozenset[str],
+) -> None:
+    conn = make_conn()
+
+    scan = await _scan_for(_engine(conn), cast("Conn", conn), audiences)
+
+    assert scan == "plain"
+    conn.fetchval.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("audiences", [_OPEN, frozenset({"staff"}), frozenset[str]()])
+@pytest.mark.parametrize(
+    ("version", "scan"),
+    [
+        ("0.8.0", "iterative"),
+        ("0.8.1", "iterative"),
+        ("0.10.2", "iterative"),
+        ("1.0.0", "iterative"),
+        ("0.7.4", "widening"),
+        ("0.5.1", "widening"),
+        (None, "widening"),
+        ("unreleased", "widening"),
+    ],
+)
+async def test_a_reader_lacking_an_audience_is_scanned_as_the_installed_pgvector_allows(
+    audiences: frozenset[str],
+    version: str | None,
+    scan: str,
+) -> None:
+    conn = make_conn()
+    conn.fetchval.return_value = version
+
+    chosen = await _scan_for(_engine(conn), cast("Conn", conn), audiences)
+
+    assert chosen == scan
+    conn.fetchval.assert_awaited_once_with(_VERSION)
+
+
+@pytest.mark.asyncio
+async def test_the_installed_version_is_read_once_for_each_engine() -> None:
+    current, older = make_conn(), make_conn()
+    current.fetchval.return_value = "0.8.1"
+    older.fetchval.return_value = "0.7.4"
+    asked = [(_engine(current), current), (_engine(older), older)]
+
+    scans = [
+        await _scan_for(engine, cast("Conn", conn), _OPEN)
+        for engine, conn in (*asked, *asked)
+    ]
+
+    assert scans == ["iterative", "widening", "iterative", "widening"]
+    assert (current.fetchval.await_count, older.fetchval.await_count) == (1, 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("audiences", "statements"),
+    [
+        pytest.param(_BOTH, [_PLAIN_SQL], id="every audience"),
+        pytest.param(
+            _OPEN,
+            ["BEGIN", _ITERATE, _PLAIN_SQL, "COMMIT"],
+            id="lacking staff",
+        ),
+    ],
+)
+async def test_the_search_scans_each_reader_as_its_audiences_call_for(
+    audiences: frozenset[str],
+    statements: list[str],
+) -> None:
+    conn = make_conn()
+    conn.fetchval.return_value = "0.8.1"
+    conn.fetch.return_value = _unit_rows(3)
+
+    hits = await search_session_records(
+        _engine(conn),
+        query_vector=[0.5, 0.25],
+        query_text="",
+        mapper="mapper-x",
+        model="model-y",
+        dim=2,
+        limit=3,
+        audiences=audiences,
+    )
+
+    assert executed_sql(conn) == statements
+    assert len(hits) == 3
 
 
 if __name__ == "__main__":

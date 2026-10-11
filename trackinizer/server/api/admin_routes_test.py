@@ -22,7 +22,8 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
-from trackinizer.server.auth import Role, current_user
+from trackinizer.server.auth import AuthIdentity, Role, current_user
+from trackinizer.server.config import Config
 
 
 if TYPE_CHECKING:
@@ -41,6 +42,7 @@ def _user_row(
     role: str = "viewer",
     status: str = "active",
     email: str = "alice@example.com",
+    hosted_domain: str | None = None,
 ) -> dict[str, object]:
     """One ``users``-row shape for ``fetch`` / ``fetchrow`` mocks."""
     return {
@@ -51,6 +53,7 @@ def _user_row(
         "status": status,
         "created_at": datetime(2026, 1, 1, tzinfo=UTC),
         "last_login": None,
+        "hosted_domain": hosted_domain,
     }
 
 
@@ -250,6 +253,69 @@ class TestAdminUsers:
         # ``id`` and ``created_at`` are serialized for the table view.
         assert user["id"] == str(row["id"])
         assert "created_at" in user
+
+    def test_list_derives_a_staff_flag_from_the_deployment_setting(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        monkeypatch.setattr(
+            app.state,
+            "config",
+            Config(staff=("*@example.com", "ada@other.org")),
+            raising=False,
+        )
+        engine.conn.fetch = AsyncMock(
+            return_value=[
+                _user_row(email="member@example.com", hosted_domain="example.com"),
+                _user_row(email="consumer@example.com"),
+                _user_row(email="ada@other.org"),
+                _user_row(email="bob@other.org", hosted_domain="other.org"),
+            ],
+        )
+        body = from_plain(client.get("/api/admin/users").json(), dict[str, object])
+        users = from_plain(body["users"], list[dict[str, object]])
+        assert {u["email"]: u["staff"] for u in users} == {
+            "member@example.com": True,
+            "consumer@example.com": False,
+            "ada@other.org": True,
+            "bob@other.org": False,
+        }
+
+    def test_list_marks_nobody_staff_when_the_setting_is_unset(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        monkeypatch.setattr(app.state, "config", Config(), raising=False)
+        engine.conn.fetch = AsyncMock(
+            return_value=[_user_row(email="member@example.com", hosted_domain="x.y")],
+        )
+        body = from_plain(client.get("/api/admin/users").json(), dict[str, object])
+        (user,) = from_plain(body["users"], list[dict[str, object]])
+        assert user["staff"] is False
+
+    def test_no_admin_route_can_make_a_user_staff(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        """Staff is a deploy-time setting: a request cannot write it, whatever it says."""
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        r = client.put(
+            f"/api/admin/users/{uuid.uuid4()}/role",
+            json={"role": "writer", "staff": True},
+        )
+        assert r.status_code == 200, r.text
+        assert not any("staff" in sql for sql in _executed_sql(engine))
+        assert not [
+            route for route in app.routes if "staff" in getattr(route, "path", "")
+        ]
 
     def test_role_change_happy_path(
         self,
@@ -1035,6 +1101,51 @@ class TestProfileRoute:
         )
         body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
         assert body["api_key_id"] == (None if key is None else str(key))
+
+    @pytest.mark.parametrize(
+        ("read", "opening", "pinned"),
+        [
+            ({"open"}, {"open"}, None),
+            ({"staff", "open"}, {"open", "staff"}, None),
+            ({"open"}, {"staff"}, "staff"),
+        ],
+    )
+    def test_lists_what_the_credential_reads_and_opens(
+        self,
+        read: set[str],
+        opening: set[str],
+        pinned: str | None,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        base = make_test_identity()
+        install_identity(
+            AuthIdentity(
+                user_id=base.user_id,
+                api_key_id=base.api_key_id,
+                email=base.email,
+                role=base.role,
+                read_audiences=frozenset(read),
+                open_audiences=frozenset(opening),
+                pinned_audience=pinned,
+            ),
+        )
+        engine.conn.fetchrow = AsyncMock(
+            side_effect=[
+                {
+                    "name": "Alice",
+                    "last_login": None,
+                    "visual_workspace_enabled": False,
+                    "acknowledged_at": None,
+                    "acknowledged_rules_version": None,
+                },
+                None,
+            ],
+        )
+        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+        assert body["read_audiences"] == sorted(read)
+        assert body["open_audiences"] == sorted(opening)
+        assert body["pinned_audience"] == pinned
 
     def test_401_without_auth(
         self,

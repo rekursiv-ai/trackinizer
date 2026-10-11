@@ -14,6 +14,7 @@ from uuid import UUID
 
 from treekle import from_plain
 
+from trackinizer.server.audience import OPEN_ONLY, hidden_exists_sql, visible_sql
 from trackinizer.server.notify import tx
 from trackinizer.server.projection import (
     fetch_edges,
@@ -156,6 +157,7 @@ class _ReadMixin(_StoreShared):
         filters: Sequence[RowFilter] = (),
         lowering: bool = True,
         edges: bool = True,
+        audiences: frozenset[str] = OPEN_ONLY,
     ) -> list[Inquiry]:
         """Paginated list of one kind, optionally filtered.
 
@@ -181,6 +183,11 @@ class _ReadMixin(_StoreShared):
         Only the equivalence tests pass it, to compare the two evaluators'
         rows; a caller has no reason to ask for the slower path.
 
+        A session's row is open, so a list shows every session. A filter on one of its
+        records is answered from its transcript, so it is asked only of the sessions
+        whose audience is in ``audiences``: the others are not in the rows it is
+        applied to, and an ``isnull`` cannot tell a caller what a hidden session holds.
+
         Args:
           kind: Inquiry.InquiryKind enum value (Issue, Belief, etc.).
           status: Optional Inquiry.Status to filter on, or None for all.
@@ -193,6 +200,8 @@ class _ReadMixin(_StoreShared):
             (for testing equivalence).
           edges: Fill the relation fields. False leaves them empty and skips
             the two edge reads, for a caller that sends none of them.
+          audiences: What the caller reads. Only a filter on a record of an
+            ``AgentSession`` consults it.
 
         Returns:
           rows: Materialized Inquiry rows in created-desc order (newest first),
@@ -206,6 +215,17 @@ class _ReadMixin(_StoreShared):
             clauses.append(f"status = ${len(params)}")
         if (seq_clause := seq_range_clause(params, seq_ranges)) is not None:
             clauses.append(seq_clause)
+        if kind == "AgentSession" and _record_kinds(filters):
+            # A record filter is answered from the transcript, so it only meets the
+            # sessions the caller reads. That gates the SQL a record clause lowers to
+            # (``column_shapes._RECORDS_WHERE``), which names no audience.
+            clauses.append(
+                visible_sql(
+                    "agentsession_audience",
+                    params=params,
+                    audiences=audiences,
+                ),
+            )
         # Every filter whose SQL form provably selects the same rows as the
         # Python predicate joins the prefilter, so the query keeps its LIMIT.
         # Whatever cannot lower stays in ``filters`` and forces the
@@ -246,6 +266,7 @@ class _ReadMixin(_StoreShared):
                     conn,
                     [cast(UUID, r["id"]) for r in rows],
                     filters,
+                    audiences=audiences,
                 )
                 kept = [
                     r
@@ -773,17 +794,18 @@ def _lower_filter(filt: RowFilter, params: list[object]) -> str | None:
 # Returns the texts keyed by session and then by FIELD, for the caller to overlay onto a
 # row it is about to filter -- rather than a rewritten row, which would lose the
 # ``Record`` that ``materialize`` needs.
+#
+# A session whose audience is not in ``audiences`` has no texts here, as a session with
+# no such record has none.
 async def _record_texts(
     conn: Conn,
     ids: Sequence[UUID],
     filters: Sequence[RowFilter],
+    *,
+    audiences: frozenset[str],
 ) -> dict[UUID, dict[str, object]]:
     """One session's IR record texts per id, for the record clauses in ``filters``."""
-    kinds = {
-        kind: field
-        for field in {canonical_filter_field(f.field) for f in filters}
-        if (kind := record_kind_for(field)) is not None
-    }
+    kinds = _record_kinds(filters)
     if not kinds or not ids:
         return {}
     # Exclude stale tail rows beyond the live manifest prefix so a shrunk part's
@@ -791,6 +813,9 @@ async def _record_texts(
     # join binds each record to its OWN part's manifest, so the per-part bound
     # holds even though the aggregate groups across parts.
     join, predicate = manifest_bound("r")
+    params: list[object] = [list(ids), list(kinds)]
+    # Audience: gated -- no text of a session outside ``audiences`` feeds a clause.
+    readable = hidden_exists_sql("r.session_id", params=params, audiences=audiences)
     found = await conn.fetch(
         vetted_sql(
             "SELECT r.session_id, r.kind, array_agg(r.text) AS texts "
@@ -798,10 +823,11 @@ async def _record_texts(
             join,
             "WHERE r.session_id = ANY($1::uuid[]) AND r.kind = ANY($2::text[]) AND ",
             predicate,
+            " AND ",
+            readable,
             " GROUP BY r.session_id, r.kind",
         ),
-        list(ids),
-        list(kinds),
+        *params,
     )
     # A session with no such record is ABSENT rather than an empty list: absent
     # reads as NULL, where an empty list would make ``notnull`` answer true.
@@ -814,6 +840,15 @@ async def _record_texts(
         values = record["texts"]
         texts.setdefault(session_id, {})[kinds[kind]] = values
     return texts
+
+
+def _record_kinds(filters: Sequence[RowFilter]) -> dict[str, str]:
+    """Return the record kind each record field named in ``filters`` selects."""
+    return {
+        kind: field
+        for field in {canonical_filter_field(f.field) for f in filters}
+        if (kind := record_kind_for(field)) is not None
+    }
 
 
 # Returns ``(clauses, remaining)``. The caller may only push ``LIMIT`` into SQL when

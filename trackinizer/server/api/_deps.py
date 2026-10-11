@@ -91,6 +91,20 @@ def get_assistant(request: Request) -> Assistant | None:
     return config.assistant if isinstance(config, Config) else None
 
 
+def get_staff(request: Request) -> tuple[str, ...]:
+    """Return the configured staff patterns; none without a Config.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The staff patterns, empty when nobody is staff.
+
+    """
+    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
+    return config.staff if isinstance(config, Config) else ()
+
+
 def get_chat_orgs(request: Request) -> ChatOrgs:
     """Return how science chats group their users; ``domain`` without a Config.
 

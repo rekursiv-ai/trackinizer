@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -868,6 +868,35 @@ class TestRoutes:
             f': open\n\ndata: {{"id": "{subject_id}"}}\n\n'.encode()
         )
 
+    @pytest.mark.asyncio
+    async def test_subscribe_holds_back_a_hidden_transcripts_ping_from_a_viewer(
+        self,
+    ) -> None:
+        engine = FakeEngine()
+        hidden, shown = new_uuid(), new_uuid()
+        engine.listen_messages = [
+            json.dumps({"id": str(hidden), "audience": "staff"}),
+            json.dumps({"id": str(shown)}),
+        ]
+        request = _request(object(), engine)
+
+        async def relayed(audiences: frozenset[str]) -> list[str | bytes | memoryview]:
+            response = await web.web_subscribe(
+                cast(Request, request),
+                identity=replace(_TEST_IDENTITY, read_audiences=audiences),
+            )
+            return [chunk async for chunk in response.body_iterator]
+
+        def frame(subject: uuid.UUID) -> bytes:
+            return f'data: {{"id": "{subject}"}}\n\n'.encode()
+
+        assert await relayed(frozenset({"open"})) == [b": open\n\n", frame(shown)]
+        assert await relayed(frozenset({"open", "staff"})) == [
+            b": open\n\n",
+            frame(hidden),
+            frame(shown),
+        ]
+
     def test_without_the_app_the_old_paths_serve_nothing(self, tmp_path: Path) -> None:
         # The old pages are gone. Without ``--app-dir`` there is no ``/app/`` to
         # send their paths to, so each answers 404, even where an old build's
@@ -1067,6 +1096,35 @@ class TestFeedReads:
             rooms=("lab",),
         )
         assert scope_of() == WHOLE_FEED
+
+    def test_each_read_is_scoped_to_the_audiences_of_its_caller(self) -> None:
+        store = self._histogram_store()
+        store.read_feed = AsyncMock(return_value=[])
+        store.read_feed_facets = AsyncMock(
+            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        )
+        reads = {
+            "/api/web/feed": store.read_feed,
+            "/api/web/feed/facets": store.read_feed_facets,
+            "/api/web/feed/histogram": store.read_feed_histogram,
+        }
+        app = FastAPI()
+        app.state.engine = FakeEngine()
+        app.state.store = store
+        web.attach(app)
+        client = TestClient(app)
+
+        for audiences in (frozenset({"open"}), frozenset({"open", "staff"})):
+            caller = replace(_TEST_IDENTITY, read_audiences=audiences)
+
+            async def identity(caller: AuthIdentity = caller) -> AuthIdentity:
+                return caller
+
+            app.dependency_overrides[current_user] = identity
+            for path, read in reads.items():
+                assert client.get(path).status_code == 200, path
+                scope = cast(FeedScope, read.call_args.kwargs["scope"])
+                assert scope.audiences == audiences, path
 
     def test_the_feed_keeps_only_conversation_when_asked(self) -> None:
         store = AsyncMock()
@@ -1844,6 +1902,7 @@ async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -
                 rooms=["lab"],
             ),
         ],
+        session_audience="open",
     )
     request = cast(Request, _request(pglite_store, pglite_store.engine))
     for target_id in ids:

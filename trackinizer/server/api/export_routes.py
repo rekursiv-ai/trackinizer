@@ -50,8 +50,11 @@ async def export_route(
 ) -> StreamingResponse:
     """Stream every exported row as one JSON object per line.
 
-    Viewer-gated: it is a read, and a backup or mirror job should be able to
-    run on a read-only key.
+    Viewer-gated: it is a read, so a read-only key can run it. A session's transcript
+    is exported only to a caller whose audiences include the session's, and the
+    header line names the audiences the file was read for, so a file taken by a
+    caller that reads fewer than the deployment holds says so. A backup or mirror
+    that must hold every transcript runs as a caller that reads every audience.
 
     Args:
       request: FastAPI request object for store access.
@@ -61,8 +64,7 @@ async def export_route(
       result: The header line, then one line per row.
 
     """
-    del identity
-    graph = await get_store(request).export_graph()
+    graph = await get_store(request).export_graph(audiences=identity.read_audiences)
     return StreamingResponse(export_lines(graph), media_type=EXPORT_MEDIA_TYPE)
 
 
@@ -81,6 +83,7 @@ def export_lines(graph: GraphExport) -> Iterator[bytes]:
             "format": EXPORT_FORMAT,
             "version": EXPORT_VERSION,
             "migrations": list(graph.migrations),
+            "audiences": list(graph.audiences),
         },
     )
     for table, rows in graph.tables:

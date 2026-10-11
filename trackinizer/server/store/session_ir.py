@@ -114,9 +114,12 @@ class _SessionIRMixin(_CascadeAuditMixin):
 
     Built on the cascade mixin for ``_buffer_notification``: a stored record
     wakes the same ``/api/web/subscribe`` fanout every other session mutation
-    does, so a live viewer follows a capture as it lands.
+    does, so a live viewer follows a capture as it lands. The wake names the
+    session's audience, so a viewer who does not read it is not woken.
     """
 
+    # Audience: gated -- audience_audit_test requires every server caller to call
+    # require_session_access first.
     async def append_session_records(
         self,
         session_id: UUID,
@@ -188,7 +191,7 @@ class _SessionIRMixin(_CascadeAuditMixin):
             # the last batch is always written while the session is still
             # live.
             session = await conn.fetchrow(
-                "SELECT kind, agentsession_ended FROM inquiries "
+                "SELECT kind, agentsession_ended, agentsession_audience FROM inquiries "
                 "WHERE id = $1 FOR UPDATE",
                 session_id,
             )
@@ -248,7 +251,12 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 )
             stored = await self._append_slash_commands(conn, session_id, slash_commands)
             if written or stored:
-                self._buffer_notification(session_id)
+                # The ping names the session's audience, which a live stream holds
+                # back from a viewer who does not read it: the session's own row is
+                # open, but when it receives a record is part of its transcript.
+                audience = session["agentsession_audience"]
+                assert isinstance(audience, str)
+                self._buffer_notification(session_id, audience=audience)
         return (len(written), len(rows) - len(written), stored)
 
     # Server-assigned rather than client-counted: a resumed run's sink restarts at 0, so
@@ -258,6 +266,7 @@ class _SessionIRMixin(_CascadeAuditMixin):
     # Runs on the caller's connection so it shares the record transaction -- a command
     # sits BETWEEN the turns around it, and storing one half of that is a transcript
     # that never happened.
+    # Audience: gated -- append_session_records is gated.
     @classmethod
     async def _append_slash_commands(
         cls,
@@ -289,6 +298,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
         )
         return len(stored)
 
+    # Audience: internal -- no route calls it; audience_audit_test requires a server
+    # caller to call require_session_access first.
     async def read_session_slash_commands(
         self,
         session_id: UUID,
@@ -321,6 +332,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
             )
         return result
 
+    # Audience: gated -- audience_audit_test requires every server caller to call
+    # require_session_access first.
     async def read_session_records(
         self,
         session_id: UUID,
@@ -470,6 +483,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
             )
         return result
 
+    # Audience: gated -- audience_audit_test requires every server caller to call
+    # require_session_access first.
     async def read_recent_session_turns(
         self,
         session_id: UUID,
@@ -516,6 +531,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
             )
         return result
 
+    # Audience: gated -- audience_audit_test requires every server caller to call
+    # require_session_access first.
     async def upsert_session_manifest(
         self,
         session_id: UUID,
@@ -607,6 +624,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 raise NotFoundError(f"session {session_id} not found") from exc
         return part
 
+    # Audience: gated -- audience_audit_test requires every server caller to call
+    # require_session_access first.
     async def read_session_manifests(self, session_id: UUID) -> list[SessionManifest]:
         """Every part of one session, in ``part`` order.
 

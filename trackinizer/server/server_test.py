@@ -235,6 +235,33 @@ class TestPureFunctions:
         flags, _ = _parse_args(argparse.ArgumentParser(), ["--assistant", "s=x@y.z"])
         assert Config.from_args(flags).assistant == Assistant(actor="s", email="x@y.z")
 
+    def test_staff_flag_names_who_holds_the_staff_audience(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("TRACKINIZER_STAFF", raising=False)
+        flags, remaining = _parse_args(
+            argparse.ArgumentParser(),
+            ["--staff", "*@example.com,ada@x.y"],
+        )
+
+        assert remaining == []
+        assert Config.from_args(flags).staff == ("*@example.com", "ada@x.y")
+        assert (
+            Config.from_args(_parse_args(argparse.ArgumentParser(), [])[0]).staff == ()
+        )
+
+    def test_staff_flag_defaults_from_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_STAFF", "*@example.com")
+
+        flags, _ = _parse_args(argparse.ArgumentParser(), [])
+        assert Config.from_args(flags).staff == ("*@example.com",)
+        flags, _ = _parse_args(argparse.ArgumentParser(), ["--staff", "a@x.y"])
+        assert Config.from_args(flags).staff == ("a@x.y",)
+
     def test_parse_args_overrides(self) -> None:
         parser = argparse.ArgumentParser()
         flags, _ = _parse_args(

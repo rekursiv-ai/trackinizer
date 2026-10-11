@@ -76,9 +76,10 @@ async def _legacy_session(store: Store) -> UUID:
         # Building the pre-migration state is the only way to exercise it.
         await conn.execute(_LEGACY_TABLE)
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'legacy')",
+            "'tester@example.com', 'legacy', 'open')",
             session_id,
         )
         await conn.execute(

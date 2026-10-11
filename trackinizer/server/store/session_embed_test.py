@@ -21,7 +21,10 @@ from trackinizer.server.semantic_mapper_footprint import (
     FootprintMapper,
 )
 from trackinizer.server.store.core import Store
-from trackinizer.server.store.session_embed import sweep_session_embeddings
+from trackinizer.server.store.session_embed import (
+    _embed_units,
+    sweep_session_embeddings,
+)
 
 
 if TYPE_CHECKING:
@@ -54,9 +57,10 @@ async def _session(store: Store) -> UUID:
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'embed test')",
+            "'tester@example.com', 'embed test', 'open')",
             session_id,
         )
     return session_id
@@ -545,6 +549,46 @@ async def test_sweep_skips_the_stale_tail_after_a_compaction(store: Store) -> No
     embedded = await _embed_rows(store, session_id)
     assert {idx for _part, idx, *_rest in embedded} == {0}
     assert stats.records_embedded == 1
+
+
+class _CountingBatch(StubEmbedder):
+    """A batch embedder that counts its calls and answers one length vector a text."""
+
+    calls = 0
+
+    @override
+    async def embed(self, text: str) -> list[float]:
+        raise AssertionError(f"the batch path embeds {text!r} one at a time")
+
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        self.calls += 1
+        return [[float(len(text))] for text in texts]
+
+
+@pytest.mark.asyncio
+async def test_no_units_never_reach_a_batch_embedder() -> None:
+    embedder = _CountingBatch(dim=1)
+
+    assert await _embed_units(embedder, []) == []
+    assert embedder.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_batch_embedder_gets_all_the_units_in_one_call() -> None:
+    embedder = _CountingBatch(dim=1)
+
+    assert await _embed_units(embedder, ["a", "bb"]) == [[1.0], [2.0]]
+    assert embedder.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_scalar_embedder_is_called_once_per_unit_in_order() -> None:
+    embedder = StubEmbedder(dim=4)
+
+    vectors = await _embed_units(embedder, ["a", "b"])
+
+    assert vectors == [await embedder.embed("a"), await embedder.embed("b")]
+    assert vectors[0] != vectors[1]
 
 
 if __name__ == "__main__":

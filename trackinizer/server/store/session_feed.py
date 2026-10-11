@@ -19,6 +19,7 @@ import itertools
 
 from treekle import from_plain
 
+from trackinizer.server.audience import OPEN_ONLY, hidden_exists_sql
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import manifest_bound, vetted_sql
@@ -56,13 +57,15 @@ class FeedScope:
 
     An empty field does not filter. ``actors`` names sessions by routing name
     (``owner``), ``rooms`` by a room they joined, ``clis`` by the CLI they wrap;
-    ``kinds`` names record kinds.
+    ``kinds`` names record kinds. ``audiences`` is what the reader may read: a record
+    of a session outside it is on no page and in no count, whatever else is named.
     """
 
     actors: tuple[str, ...] = ()
     rooms: tuple[str, ...] = ()
     clis: tuple[str, ...] = ()
     kinds: tuple[str, ...] = ()
+    audiences: frozenset[str] = OPEN_ONLY
 
     @property
     def names_sessions(self) -> bool:
@@ -95,7 +98,7 @@ class FeedScope:
 
 
 WHOLE_FEED: Final = FeedScope()
-"""The scope that keeps every record."""
+"""The scope that keeps every record an ordinary signed-in caller may read."""
 
 # The formatting audit's "messages only": what a person or agent said, as the
 # transcript shows it. The transcript hides a message with no text and no attachment,
@@ -226,7 +229,8 @@ class _SessionFeedMixin(_StoreShared):
         Args:
           since: Inclusive lower bound on ``created``; unset reads from the start.
           until: Inclusive upper bound on ``created``; unset reads to the end.
-          scope: Which sessions and record kinds to count.
+          scope: Which sessions and record kinds to count, and the audiences the
+            reader may read.
 
         Returns:
           facets: The window by session, newest first, and by room and kind,
@@ -242,6 +246,15 @@ class _SessionFeedMixin(_StoreShared):
             params.append(until)
             clauses.append(f"e.created <= ${len(params)}")
         clauses.extend(FeedScope(kinds=scope.kinds).clauses(params, kind="e.kind"))
+        # Audience: gated -- the records of a session outside ``scope.audiences`` are
+        # in no count, so the sessions, rooms and kinds below name none of them.
+        clauses.append(
+            hidden_exists_sql(
+                "e.session_id",
+                params=params,
+                audiences=scope.audiences,
+            ),
+        )
         if scope.names_sessions:
             picked = replace(scope, kinds=()).clauses(params, kind="")
             clauses.append(
@@ -341,7 +354,8 @@ class _SessionFeedMixin(_StoreShared):
           earliest: The earliest the span may start; an earlier ``since`` starts
             here instead.
           buckets: The most buckets to return, at least 2.
-          scope: Which sessions and record kinds to count.
+          scope: Which sessions and record kinds to count, and the audiences the
+            reader may read.
 
         Returns:
           histogram: Each bucket's start and record count, oldest first.
@@ -351,6 +365,11 @@ class _SessionFeedMixin(_StoreShared):
         params: list[object] = [earliest, end]
         clauses = ["r.created >= $1", "r.created <= $2"]
         clauses.extend(scope.clauses(params, kind="r.kind"))
+        # Audience: gated -- the first record is the first one the reader may count, so
+        # the grid never starts at the time a hidden session began.
+        clauses.append(
+            hidden_exists_sql("r.session_id", params=params, audiences=scope.audiences),
+        )
         joined = (
             "JOIN inquiries i ON i.id = r.session_id " if scope.names_sessions else ""
         )
@@ -415,6 +434,15 @@ async def _count_buckets(
         grid.end,
     ]
     spanned = ["created >= $2", "created < $3"]
+    # Audience: gated -- a bucket counts only the records of sessions the reader may
+    # read, so a count never shows when a hidden session was active.
+    spanned.append(
+        hidden_exists_sql(
+            "session_records.session_id",
+            params=params,
+            audiences=scope.audiences,
+        ),
+    )
     if scope.names_sessions:
         # Records attach only to AgentSessions (``append_session_records`` refuses
         # any other kind), so the session row is read only to pick sessions.

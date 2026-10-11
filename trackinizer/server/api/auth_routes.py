@@ -24,19 +24,25 @@ from trackinizer.server.api._routes_shared import (
     iso_format,
 )
 from trackinizer.server.auth import (
+    AudienceCeilingError,
     AuthIdentity,
     Role,
     RoleCeilingError,
     create_api_key,
     current_user,
+    key_within_caller,
     list_api_keys,
+    mint_open_into,
     revoke_api_key,
     set_api_key_role,
 )
-from trackinizer.wire.json_types import MutableJSON
+from trackinizer.wire.audience import AudienceName
+from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from trackinizer.lib.postgres import Conn
 
 
@@ -66,10 +72,16 @@ class CreateTokenBody(BaseModel):
     defaults to the caller's own role; a stronger role is rejected with
     403, which lets a writer mint a viewer-only token for a read-only
     agent without losing their own write capability.
+
+    ``open_into`` pins the one audience the key opens sessions into. It may not exceed
+    what the caller opens into: an audience beyond that is 403, and a name that is no
+    audience is 422. A key minted by another key that leaves it out inherits that
+    key's pin.
     """
 
     name: str = Field(min_length=1, max_length=128)
     role: RoleLiteral | None = None
+    open_into: AudienceName | None = None
 
 
 class TokenRoleChangeBody(BaseModel):
@@ -123,7 +135,8 @@ async def profile_route(
         id of the API key the request used (``None`` for a browser session), when
         the caller agreed to the rules and to which version, and the current rules
         version with the id of the Issue that holds the rules (both ``None`` while
-        Issue#1 is missing or unlocked).
+        Issue#1 is missing or unlocked), and the audiences the credential reads and
+        opens into, with its pin if any.
 
     """
     engine = engine_of(request)
@@ -156,6 +169,9 @@ async def profile_route(
         "acknowledged_rules_version": acknowledged_version,
         "rules_issue_id": None if rules_issue_id is None else str(rules_issue_id),
         "rules_version": rules_version,
+        "read_audiences": _names(identity.read_audiences),
+        "open_audiences": _names(identity.open_audiences),
+        "pinned_audience": identity.pinned_audience,
     }
 
 
@@ -269,37 +285,43 @@ async def create_token_route(
     *effective* role -- the weaker of their user role and the role of the
     credential they presented -- defaulting to that ceiling when omitted. A
     stronger role returns 403, the boundary that keeps a writer from minting
-    an admin token and a scoped-down key from self-escalating.
+    an admin token and a scoped-down key from self-escalating. The pin follows the
+    same rule: the key opens at most what the caller does.
 
     Args:
-      body: Request body with name and optional role ceiling.
+      body: Request body with name, optional role ceiling and pin.
       request: FastAPI Request context (used to get the store).
       identity: Authenticated user from Bearer token or session cookie.
 
     Returns:
-      result: JSON with key id, name, prefix, role, and plaintext secret.
+      result: JSON with key id, name, prefix, role, the stored pin and plaintext
+        secret.
 
     Raises:
-      HTTPException: 403 if requested role exceeds caller's effective role.
+      HTTPException: 403 if the requested role or pin exceeds the caller's.
 
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:
         try:
+            open_into = mint_open_into(identity, open_into=body.open_into)
             key_id, secret, prefix, role = await create_api_key(
                 conn,
                 user_id=identity.user_id,
                 name=body.name,
                 role=body.role,
                 ceiling=identity.role,
+                open_into=open_into,
+                minter=identity,
             )
-        except RoleCeilingError as exc:
+        except (RoleCeilingError, AudienceCeilingError) as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {
         "id": str(key_id),
         "name": body.name,
         "prefix": prefix,
         "role": role,
+        "open_into": open_into,
         "secret": secret,
     }
 
@@ -337,7 +359,8 @@ async def revoke_token_route(
     """Revoke one of the authenticated user's keys.
 
     Unknown id, foreign owner, and already-revoked all return 404, so an
-    attacker probing UUIDs learns nothing about which keys exist.
+    attacker probing UUIDs learns nothing about which keys exist. A pinned key
+    cannot revoke a key that opens beyond it, and gets the same 404.
 
     Args:
       key_id: API key UUID to revoke.
@@ -353,7 +376,11 @@ async def revoke_token_route(
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:
-        revoked = await revoke_api_key(conn, key_id=key_id, user_id=identity.user_id)
+        revoked = await key_within_caller(
+            conn,
+            identity=identity,
+            key_id=key_id,
+        ) and await revoke_api_key(conn, key_id=key_id, user_id=identity.user_id)
     if not revoked:
         raise HTTPException(status_code=404, detail="token not found")
     # The verified-bearer cache would otherwise keep honoring this key for up
@@ -377,7 +404,8 @@ async def set_token_role_route(
     caller's *effective* role (the weaker of their user role and the
     presented credential's role), and anything stronger returns 403.
     Unknown id, foreign owner, and already-revoked all fold to 404, matching
-    the revoke route's anti-enumeration stance.
+    the revoke route's anti-enumeration stance. A pinned key cannot
+    re-tier a key that opens beyond it, and gets the same 404.
 
     Args:
       key_id: API key UUID to re-tier.
@@ -395,7 +423,11 @@ async def set_token_role_route(
     engine = engine_of(request)
     async with engine.acquire() as conn:
         try:
-            updated = await set_api_key_role(
+            updated = await key_within_caller(
+                conn,
+                identity=identity,
+                key_id=key_id,
+            ) and await set_api_key_role(
                 conn,
                 key_id=key_id,
                 user_id=identity.user_id,
@@ -419,6 +451,7 @@ def _serialize(row: dict[str, object]) -> MutableJSON:
         "name": str(row["name"]),
         "prefix": str(row["prefix"]),
         "role": cast(Role, row["role"]),
+        "open_into": cast("str | None", row["open_into"]),
         "created_at": iso_format(row["created_at"]),
         "last_used_at": iso_format(row["last_used_at"]),
         "revoked_at": iso_format(row["revoked_at"]),
@@ -446,3 +479,8 @@ async def _rules(conn: Conn) -> tuple[uuid.UUID | None, str | None]:
         from_plain(row["id"], uuid.UUID),
         from_plain(iso_format(row["version"]), str),
     )
+
+
+def _names(audiences: Collection[str]) -> list[MutableJSONValue]:
+    """Return audience names sorted, as JSON."""
+    return list[MutableJSONValue](sorted(audiences))

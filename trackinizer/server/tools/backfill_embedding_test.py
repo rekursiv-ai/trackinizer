@@ -107,9 +107,10 @@ async def _one_record(store: Store) -> UUID:
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'follow test')",
+            "'tester@example.com', 'follow test', 'open')",
             session_id,
         )
         await conn.execute(
@@ -198,9 +199,10 @@ async def _session_with_records(store: Store, count: int) -> UUID:
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'scan test')",
+            "'tester@example.com', 'scan test', 'open')",
             session_id,
         )
         for idx in range(count):
@@ -341,9 +343,10 @@ async def _session_with_typed_records(
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'scan test')",
+            "'tester@example.com', 'scan test', 'open')",
             session_id,
         )
         for idx, (kind, text) in enumerate(rows):

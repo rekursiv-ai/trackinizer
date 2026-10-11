@@ -101,6 +101,7 @@
       },
       {
         "account": "no-auth@localhost",
+        "audience": "open",
         "cli": "claude",
         "cli_session_id": null,
         "created": "2026-01-01T00:00:00.000000+00:00",

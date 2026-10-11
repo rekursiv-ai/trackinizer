@@ -152,6 +152,7 @@ async def sweep_session_embeddings(
 
 # Keyset on the console-feed index ``(created, session_id, part, idx)``: a plain
 # OFFSET would re-scan the prefix every page and drift under concurrent inserts.
+# Audience: internal -- a background job; nothing it reads reaches a caller.
 async def _page(
     conn: Conn,
     cursor: tuple[object, UUID, int, int] | None,
@@ -229,6 +230,7 @@ async def _up_to_date(
 # no vector at all -- just its freshness marker -- rather than re-sweeping forever.
 # Delete-then-insert-then-mark in one transaction so a shrunk unit set leaves no orphan
 # and a reader never sees a torn set.
+# Audience: internal -- a background job; nothing it reads reaches a caller.
 async def _reembed(
     conn: Conn,
     session_id: UUID,

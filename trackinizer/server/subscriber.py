@@ -40,6 +40,7 @@ import json
 import logging
 
 from trackinizer.server.inbound import Inbound, InboundQueue
+from trackinizer.wire.audience import OPEN
 
 
 if TYPE_CHECKING:
@@ -192,10 +193,24 @@ async def _deliver_change(
 ) -> None:
     """Enqueue one change to every snapshot subscriber's live sessions."""
     payload = _change_payload(change, subject_seq)
+    bare = _change_payload(change, subject_seq, named=False)
     for subscriber in change.subscribers_snapshot:
         sessions = await store.resolve_live_sessions(subscriber)
+        audiences = await store.read_session_audiences(
+            [session_id for session_id, _rooms in sessions],
+        )
+        # A session that is not open takes the bare envelope: the writer's handle
+        # and ``reason`` are free text, and the bridge makes an inbound line the
+        # session's next user turn, so a writer who subscribed a staff lead to a
+        # row could otherwise speak to it. A missing audience reads as not open.
         targets = [
-            (session_id, Inbound(text=payload, source="trackinizer"))
+            (
+                session_id,
+                Inbound(
+                    text=payload if audiences.get(session_id) == OPEN else bare,
+                    source="trackinizer",
+                ),
+            )
             for session_id, _rooms in sessions
         ]
         if targets:
@@ -227,7 +242,12 @@ async def _deliver_change(
 # trax verb does -- the short ``issue 42`` ref, not a 36-char UUID (a token-waste for
 # the model reading it). The seq is resolved by the sweep's JOIN; a purged subject (no
 # inquiries row) falls back to the UUID, which stays correct forever.
-def _change_payload(change: Change, subject_seq: int | None) -> str:
+def _change_payload(
+    change: Change,
+    subject_seq: int | None,
+    *,
+    named: bool = True,
+) -> str:
     """One change as a compact JSON envelope: metadata, not the record."""
     subject_ref = (
         f"{(change.subject_kind or 'inquiry').lower()} "
@@ -241,15 +261,16 @@ def _change_payload(change: Change, subject_seq: int | None) -> str:
         else f"{change.kind} changed"
     )
     envelope: dict[str, object] = {
-        "agent_message": f"FYI: trax {subject_ref} {happening} (by {change.actor})",
+        "agent_message": f"FYI: trax {subject_ref} {happening}"
+        + (f" (by {change.actor})" if named else ""),
         "id": str(change.id),
         "created": change.created.isoformat(),
-        "actor": change.actor,
+        "actor": change.actor if named else None,
         "kind": change.kind,
         "subject_kind": change.subject_kind,
         "subject_id": str(change.subject_id),
         "subject_ref": subject_ref,
-        "reason": change.reason,
+        "reason": change.reason if named else None,
     }
     if change.caused_by is not None:
         envelope["caused_by"] = str(change.caused_by)

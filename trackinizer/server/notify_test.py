@@ -21,6 +21,7 @@ from trackinizer.server.notify import (
     NOTIFY_CHANNEL,
     Notification,
     _publish_notifications,
+    iter_changed_ids,
     iter_sse_events,
     notify_after_commit,
     tx,
@@ -108,6 +109,134 @@ class TestTx:
         assert len(engine.notify_calls) == 2, (
             "expected one NOTIFY per distinct subject_id, not one per buffered entry"
         )
+
+
+class TestPingAudience:
+    @pytest.mark.asyncio
+    async def test_a_ping_names_the_audience_its_viewers_must_read(self) -> None:
+        engine = FakeEngine()
+        engine.notify_calls.clear()
+        hidden, plain = new_uuid(), new_uuid()
+        await _publish_notifications(
+            [
+                Notification(
+                    engine=cast(DatabaseEngine, engine),
+                    subject_id=hidden,
+                    audience="staff",
+                ),
+                Notification(engine=cast(DatabaseEngine, engine), subject_id=plain),
+            ],
+        )
+        assert [json.loads(payload) for _, payload in engine.notify_calls] == [
+            {"id": str(hidden), "audience": "staff"},
+            {"id": str(plain)},
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "audiences",
+        [("staff", None), (None, "staff")],
+        ids=["audience first", "audience last"],
+    )
+    async def test_a_ping_for_every_viewer_covers_the_one_for_readers(
+        self,
+        audiences: tuple[str | None, str | None],
+    ) -> None:
+        # The ping for every viewer already wakes the readers, so the second says
+        # nothing more; and it must not be the only one sent, which would wake no
+        # viewer who does not read the audience.
+        engine = FakeEngine()
+        engine.notify_calls.clear()
+        subject = new_uuid()
+        await _publish_notifications(
+            [
+                Notification(
+                    engine=cast(DatabaseEngine, engine),
+                    subject_id=subject,
+                    audience=audience,
+                )
+                for audience in audiences
+            ],
+        )
+        assert [json.loads(payload) for _, payload in engine.notify_calls] == [
+            {"id": str(subject)},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_stream_drops_a_ping_for_a_session_its_viewer_may_not_read(
+        self,
+    ) -> None:
+        engine = FakeEngine()
+        hidden, shown, plain = new_uuid(), new_uuid(), new_uuid()
+        engine.listen_messages = [
+            json.dumps({"id": str(hidden), "audience": "staff"}),
+            json.dumps({"id": str(shown), "audience": "open"}),
+            json.dumps({"id": str(plain)}),
+        ]
+
+        async def relayed(audiences: frozenset[str]) -> list[bytes]:
+            stream = iter_sse_events(cast(DatabaseEngine, engine), audiences=audiences)
+            return [frame async for frame in stream]
+
+        def frame(subject: object) -> bytes:
+            return f'data: {{"id": "{subject}"}}\n\n'.encode()
+
+        assert await relayed(frozenset({"open"})) == [
+            b": open\n\n",
+            frame(shown),
+            frame(plain),
+        ]
+        assert await relayed(frozenset({"open", "staff"})) == [
+            b": open\n\n",
+            frame(hidden),
+            frame(shown),
+            frame(plain),
+        ]
+        assert await relayed(frozenset()) == [b": open\n\n", frame(plain)]
+        # A stream told nothing of its viewer relays what an ordinary viewer sees.
+        by_default = [
+            each async for each in iter_sse_events(cast(DatabaseEngine, engine))
+        ]
+        assert by_default == await relayed(frozenset({"open"}))
+
+    @pytest.mark.asyncio
+    async def test_the_canvas_stream_drops_it_too(self) -> None:
+        engine = FakeEngine()
+        hidden, shown = new_uuid(), new_uuid()
+        engine.listen_messages = [
+            json.dumps({"id": str(hidden), "audience": "staff"}),
+            json.dumps({"id": str(shown)}),
+        ]
+
+        async def changed(audiences: frozenset[str]) -> list[str]:
+            return [
+                subject
+                async for subject in iter_changed_ids(
+                    cast(DatabaseEngine, engine),
+                    audiences=audiences,
+                )
+            ]
+
+        assert await changed(frozenset({"open"})) == [str(shown)]
+        assert await changed(frozenset({"open", "staff"})) == [str(hidden), str(shown)]
+
+    @pytest.mark.asyncio
+    async def test_a_ping_whose_audience_is_no_name_is_logged_and_dropped(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        engine = FakeEngine()
+        engine.listen_messages = ['{"id": "abc-123", "audience": 5}']
+        with caplog.at_level("WARNING"):
+            frames = [
+                frame
+                async for frame in iter_sse_events(
+                    cast(DatabaseEngine, engine),
+                    audiences=frozenset({"open", "staff"}),
+                )
+            ]
+        assert frames == [b": open\n\n"]
+        assert [r.levelname for r in caplog.records] == ["WARNING"]
 
 
 class TestSseEvents:

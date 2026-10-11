@@ -84,6 +84,7 @@ async def post_chat_line_route(
             inbound=get_inbound(request),
             assistant=get_assistant(request),
             orgs=get_chat_orgs(request),
+            audiences=identity.read_audiences,
         )
     except ForeignChatError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error

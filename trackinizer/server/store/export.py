@@ -6,7 +6,7 @@ plain Python values; the route owns turning them into JSON lines. A pure leaf
 like :class:`_ReadMixin`: it reads through ``self.engine`` and calls no other
 mixin.
 
-Two choices worth knowing before changing this:
+Three choices worth knowing before changing this:
 
 * **One snapshot for every table.** Under ``--engine pg`` a write landing
   between two tables' reads would leave, say, an edge whose inquiry the export
@@ -15,6 +15,10 @@ Two choices worth knowing before changing this:
   single connection, so streaming the response straight off a cursor would
   hold it for as long as the slowest client takes to read the body, and every
   other request would wait behind it.
+* **A session's transcript is exported to a caller who reads its audience.** A
+  backup or mirror that must hold every transcript runs as a caller that reads
+  every audience. The header names the audiences the export was read for, so a
+  file taken by a caller that reads fewer does not pass for a whole backup.
 
 Columns come from the catalog rather than a list kept here, so a column added
 by a migration is exported without touching this file. A new TABLE is a
@@ -29,6 +33,7 @@ from typing import TYPE_CHECKING, Final, cast
 
 import json
 
+from trackinizer.server.audience import OPEN_ONLY, hidden_exists_sql
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import vetted_sql
@@ -72,20 +77,35 @@ class GraphExport:
 
     Attributes:
       migrations: Applied schema files, oldest first.
+      audiences: The audiences the export was read for, sorted. A session outside
+        them has no transcript in ``tables``, so a file that names fewer audiences
+        than the deployment has is not a whole backup.
       tables: ``(table, rows)`` in :data:`EXPORT_TABLES` order; each row maps
         column name to value in the table's column order.
 
     """
 
     migrations: tuple[str, ...]
+    audiences: tuple[str, ...]
     tables: tuple[tuple[str, tuple[dict[str, object], ...]], ...]
 
 
 class _ExportMixin(_StoreShared):
     """The logical export for :class:`Store`."""
 
-    async def export_graph(self) -> GraphExport:
+    async def export_graph(
+        self,
+        *,
+        audiences: frozenset[str] = OPEN_ONLY,
+    ) -> GraphExport:
         """Read the whole graph in one read-only snapshot.
+
+        Every table keyed by a session leaves out the rows of a session whose audience
+        is not in ``audiences``. The session's own row stays, as it does in the graph
+        a caller reads: only the transcript is gated.
+
+        Args:
+          audiences: What the caller reads.
 
         Returns:
           graph: The applied migrations and every exported table's rows.
@@ -105,11 +125,15 @@ class _ExportMixin(_StoreShared):
             )
             columns = await _exported_columns(conn)
             tables = [
-                (table, await _read_table(conn, table, columns[table]))
+                (
+                    table,
+                    await _read_table(conn, table, columns[table], audiences=audiences),
+                )
                 for table in EXPORT_TABLES
             ]
         return GraphExport(
             migrations=tuple(cast(str, row["name"]) for row in migrations),
+            audiences=tuple(sorted(audiences)),
             tables=tuple(tables),
         )
 
@@ -137,11 +161,38 @@ async def _read_table(
     conn: Conn,
     table: str,
     columns: tuple[tuple[str, bool], ...],
+    *,
+    audiences: frozenset[str],
 ) -> tuple[dict[str, object], ...]:
-    """Every row of ``table``, in its export order, as plain Python values."""
+    """Every row of ``table`` the caller may read, in its export order, as plain values."""
     select = ", ".join(f'"{name}"' for name, _ in columns)
+    params: list[object] = []
+    # Audience: gated -- a table keyed by session leaves out the rows of a session
+    # outside ``audiences``. Found from the columns, so a session table the export
+    # gains is gated without an edit here.
+    where = (
+        vetted_sql(
+            " WHERE ",
+            hidden_exists_sql(
+                f"{table}.session_id",
+                params=params,
+                audiences=audiences,
+            ),
+        )
+        if any(name == "session_id" for name, _ in columns)
+        else ""
+    )
     records = await conn.fetch(
-        vetted_sql("SELECT ", select, " FROM ", table, " ORDER BY ", _ORDER_BY[table]),
+        vetted_sql(
+            "SELECT ",
+            select,
+            " FROM ",
+            table,
+            where,
+            " ORDER BY ",
+            _ORDER_BY[table],
+        ),
+        *params,
     )
     json_columns = [name for name, is_json in columns if is_json]
     rows: list[dict[str, object]] = []

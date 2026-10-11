@@ -78,6 +78,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         *,
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
+        session_audience: str | None = None,
         conn: Conn | None = None,
     ) -> UUID:
         """Create ``req`` through its own kind's ``submit_X``.
@@ -88,13 +89,16 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
           req: A concrete submit body.
           api_key_id: API key that authorized the submit, if any.
           actor: Audit actor recorded on the new row.
+          session_audience: Who may read the transcript of a session ``req`` opens.
+            No other kind has an audience, so it is ignored for them.
           conn: Transaction to join; None opens one.
 
         Returns:
           inquiry_id: The server-minted id.
 
         Raises:
-          TypeError: ``req`` is not a concrete kind's body.
+          TypeError: ``req`` is not a concrete kind's body, or it is a session and
+            ``session_audience`` is unset.
 
         """
         match req:
@@ -155,8 +159,17 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     conn=conn,
                 )
             case SubmitAgentSession():
+                # A session with no named audience is refused, never opened to
+                # everyone: a caller that forgot to resolve one would publish a
+                # transcript its key is pinned away from.
+                if session_audience is None:
+                    raise TypeError(
+                        "A session opens into an audience its caller was granted; "
+                        "pass session_audience.",
+                    )
                 created = self.submit_agentsession(
                     req,
+                    audience=session_audience,
                     api_key_id=api_key_id,
                     actor=actor,
                     conn=conn,
@@ -662,6 +675,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         self,
         req: SubmitAgentSession,
         *,
+        audience: str,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
         conn: Conn | None = None,
@@ -682,6 +696,9 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 # authorize by matching the credential (G1). NULL under
                 # --no-auth, which the drain check treats as a self-match.
                 "agentsession_opened_by_api_key_id": api_key_id,
+                # Required by the schema and never defaulted here: the caller names
+                # the audience it granted, so no path can open a session by omission.
+                "agentsession_audience": audience,
             },
             conn=conn,
         )
@@ -693,6 +710,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         edges: Sequence[BatchEdge] = (),
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
+        session_audience: str | None = None,
     ) -> list[UUID]:
         """Create many inquiries and their edges in one all-or-nothing tx.
 
@@ -713,9 +731,15 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
           edges: Edges linking the new rows, endpoints named by item index.
           api_key_id: Server-stamped credential id, applied to every item.
           actor: Audit actor applied to every item/edge lacking its own.
+          session_audience: Who may read the transcript of each session among
+            ``items``; required when one is, and ignored by the other kinds.
 
         Returns:
           ids: Server-minted inquiry ids, aligned to ``items`` order.
+
+        Raises:
+          TypeError: An item is a session and ``session_audience`` is unset; no
+            item of the batch is created.
 
         """
         async with (
@@ -730,6 +754,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     item,
                     api_key_id=api_key_id,
                     actor=item.actor or actor,
+                    session_audience=session_audience,
                     conn=conn,
                 )
                 for item in items

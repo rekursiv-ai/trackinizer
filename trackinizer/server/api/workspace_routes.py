@@ -57,9 +57,10 @@ async def workspace_events_route(
     move of the page; ``highlight`` the inquiries it points at; and ``changed`` an
     inquiry id, as ``/api/web/subscribe`` relays it, so a tab needs this one stream.
     A Chat conversation is an AgentSession, so a line added to it reaches every
-    viewer of the session as the session's ``changed`` id; no frame is Chat's own.
-    The stream opens with a comment and sends another after 25 s without a frame. A subscriber more than 256 frames
-    behind is dropped; it reconnects from the ``workspace`` frame.
+    viewer who reads the session's audience as the session's ``changed`` id; no frame
+    is Chat's own. The stream opens with a comment and sends another after 25 s without
+    a frame. A subscriber more than 256 frames behind is dropped; it reconnects from
+    the ``workspace`` frame.
 
     Args:
       workspace_id: Canvas to follow.
@@ -84,7 +85,10 @@ async def workspace_events_route(
             workspace_id=workspace_id,
             read_state=read_state,
             is_active=partial(_owner_is_active, request, user_id=identity.user_id),
-            changes=iter_changed_ids(engine_of(request)),
+            changes=iter_changed_ids(
+                engine_of(request),
+                audiences=identity.read_audiences,
+            ),
         ),
         media_type="text/event-stream",
     )

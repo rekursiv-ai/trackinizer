@@ -102,8 +102,13 @@ async def insert_inquiry(
     # NOT NULL 500. Reject both at the call site instead, before any SQL runs.
     if unknown := set(values) - set(derived_columns):
         raise ValueError(f"insert_inquiry: unknown column(s) {sorted(unknown)}")
+    # A kind-specific column is required of that kind's rows alone.
     if missing := [
-        c for c in derived_columns if COLUMN_SPECS[c].required and values.get(c) is None
+        c
+        for c in derived_columns
+        if COLUMN_SPECS[c].required
+        and kind in (COLUMN_SPECS[c].applies_to_inquiry_kinds or {kind})
+        and values.get(c) is None
     ]:
         raise ValueError(f"insert_inquiry: missing required column(s) {missing}")
     # ``id`` ($1), ``kind`` ($2), ``seq`` (nextval), ``status`` (COALESCE'd $3);

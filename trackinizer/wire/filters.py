@@ -314,13 +314,18 @@ IDENTITY_COLUMNS: Final[frozenset[str]] = frozenset(
 # presence-op validation. A column is NOT NULL when its spec is ``required``
 # (``status``, ``title``) or ``flatten``-ed (the cost axes, ``NOT NULL DEFAULT 0`` in
 # ``schema.sql``); everything else is a ``| None`` field on the Inquiry dataclass.
+# A required column of one kind (``AgentSession.audience``) is NULL on every other
+# kind's rows, so it stays nullable here: the schema asks for it per kind.
 def _derive_non_nullable_columns() -> frozenset[str]:
     """Canonical columns that are NOT NULL in ``inquiries``."""
     columns = set(IDENTITY_COLUMNS)
     for source in INQUIRY_CLASSES:
         for name, flat in flat_column_specs(source).items():
-            if flat.spec.required or flat.spec.flatten is not None:
-                columns.add(storage_name(name, flat.spec))
+            spec = flat.spec
+            if (
+                spec.required and spec.applies_to_inquiry_kinds is None
+            ) or spec.flatten is not None:
+                columns.add(storage_name(name, spec))
     return frozenset(columns)
 
 

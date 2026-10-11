@@ -56,6 +56,7 @@ MAX_CHATS: Final = 50
 _CHAT: Final = (
     "WITH chat AS (SELECT sess.id AS session_id, "
     "sess.agentsession_cli_session_id AS cli_session_id, "
+    "sess.agentsession_audience AS audience, "
     "sess.title, sess.account, sess.labels, sess.created, "
     "credential.user_id AS opener_id, "
     "GREATEST(sess.modified, COALESCE(liveness.last_seen, sess.modified)) "
@@ -122,12 +123,18 @@ _FORKED_FROM: Final = (
 )
 
 # A line is a person's, or an answer with words: the records the Chat panel shows.
+# Whether a record exists, and of what kind, is read off the transcript, so a yes is
+# given only for a session whose audience the caller reads ($6). For any other the
+# answer is the no that a position past the end gets, and a caller cannot tell a hidden
+# line from a missing one.
+# Audience: gated -- the session's audience must be one of $6.
 _LINE: Final = (
     "SELECT EXISTS (SELECT 1 FROM session_records AS line "
     "WHERE line.session_id = $3 AND line.part = $4 AND line.idx = $5 "
     "AND (line.kind = 'AgentToAgentMessage' OR (line.kind = 'AssistantMessage' "
     "AND COALESCE(line.payload ->> 'content', '') <> ''))) "
-    "AND EXISTS (SELECT 1 FROM chat WHERE session_id = $3)"
+    "AND EXISTS (SELECT 1 FROM chat WHERE session_id = $3 "
+    "AND audience = ANY($6::text[]))"
 )
 
 
@@ -278,6 +285,7 @@ async def science_chat_exists_at(
     assistant: Assistant | None,
     email: str,
     fork: ChatForkAt,
+    audiences: frozenset[str],
 ) -> bool:
     """Say whether ``fork`` names a line of a science chat's session.
 
@@ -286,10 +294,11 @@ async def science_chat_exists_at(
       assistant: The configured assistant, if any.
       email: The person asking; the chat of their own helper is found too.
       fork: The session, part and position.
+      audiences: What the person reads. A session outside them has no line to name.
 
     Returns:
-      found: True when the session is a science chat the person may find and the
-        record is a person's line or an answer with words.
+      found: True when the session is a science chat the person may find and read
+        and the record is a person's line or an answer with words.
 
     """
     return bool(
@@ -300,6 +309,7 @@ async def science_chat_exists_at(
             fork.session_id,
             fork.part,
             fork.idx,
+            sorted(audiences),
         ),
     )
 

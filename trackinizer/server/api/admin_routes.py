@@ -24,14 +24,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from treekle import from_plain
 
-from trackinizer.server.api._deps import get_store
+from trackinizer.server.api._deps import get_staff, get_store
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
     engine_of,
     iso_format,
 )
+from trackinizer.server.audience import audiences_for
 from trackinizer.server.auth import AuthIdentity, Role, require_role
 from trackinizer.server.notify import tx
+from trackinizer.wire.audience import STAFF
 from trackinizer.wire.json_types import MutableJSON
 
 
@@ -89,16 +91,18 @@ async def admin_list_users_route(
 
     Returns:
       users: List of user records with id, email, name, role, status,
-        created_at, last_login.
+        created_at, last_login, and ``staff``, read-only: whether the deployment's
+        staff setting makes the user staff. No route writes it.
 
     """
     del identity
     engine = engine_of(request)
     async with engine.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, email, name, role, status, created_at, last_login "
-            "FROM users ORDER BY created_at DESC, id DESC",
+            "SELECT id, email, name, role, status, created_at, last_login, "
+            "hosted_domain FROM users ORDER BY created_at DESC, id DESC",
         )
+    staff = get_staff(request)
     return {
         "users": [
             {
@@ -112,6 +116,12 @@ async def admin_list_users_route(
                     None
                     if row["last_login"] is None
                     else from_plain(row["last_login"], datetime),
+                ),
+                "staff": STAFF
+                in audiences_for(
+                    from_plain(row["email"], str),
+                    hosted_domain=from_plain(row["hosted_domain"], str, default=None),
+                    staff=staff,
                 ),
             }
             for row in rows

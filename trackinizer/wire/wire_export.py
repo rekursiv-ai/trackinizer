@@ -7,10 +7,14 @@ nothing here imports it back.
 
 Line 1 is the header::
 
-    {"format": "trackinizer-export", "version": 1, "migrations": [...]}
+    {"format": "trackinizer-export", "version": 1, "migrations": [...],
+     "audiences": [...]}
 
 ``migrations`` names the applied schema files, oldest first, so a reader knows
-which column set the rows were written under. Every later line is one row::
+which column set the rows were written under. ``audiences`` names, sorted, the
+audiences the caller reads: the session tables hold no row of a session outside
+them, so a file that names fewer than the deployment has is a partial backup.
+Every later line is one row::
 
     {"table": "<name>", "row": {"<column>": <value>, ...}}
 

@@ -553,6 +553,7 @@ class TestIntegrationEndToEnd:
                 cli_session_id="abc123",
             ),
             requested_actor="scientist",
+            audience="open",
         )
         assert seq0 == 0
         await _record(integ_store, sid, idx=0, text="first")
@@ -568,6 +569,7 @@ class TestIntegrationEndToEnd:
                 cli_session_id="abc123",
             ),
             requested_actor="scientist",
+            audience="open",
         )
         assert rsid == sid
         assert rowner == owner
@@ -615,6 +617,7 @@ class TestIntegrationEndToEnd:
             ),
             requested_actor="alice",
             api_key_id=alice_key,
+            audience="open",
         )
         # Bob, knowing the cli_session_id, must NOT resume Alice's session.
         b_sid, _b_owner, _ = await integ_store.start_session(
@@ -626,6 +629,7 @@ class TestIntegrationEndToEnd:
             ),
             requested_actor="bob",
             api_key_id=bob_key,
+            audience="open",
         )
         assert b_sid != a_sid  # Bob got a fresh session, not Alice's.
 
@@ -639,6 +643,7 @@ class TestIntegrationEndToEnd:
             ),
             requested_actor="alice",
             api_key_id=alice_key,
+            audience="open",
         )
         assert a_resume == a_sid
 
@@ -662,6 +667,7 @@ class TestIntegrationEndToEnd:
             ),
             requested_actor="scientist",
             api_key_id=None,
+            audience="open",
         )
         resumed, _, _ = await integ_store.start_session(
             SubmitAgentSession(
@@ -672,6 +678,7 @@ class TestIntegrationEndToEnd:
             ),
             requested_actor="scientist",
             api_key_id=None,
+            audience="open",
         )
         assert resumed == sid  # re-attached, not a fresh session.
 
@@ -694,6 +701,7 @@ class TestIntegrationEndToEnd:
                 rooms=["a"],
             ),
             requested_actor="scientist",
+            audience="open",
         )
         # No end_session: the session is still live. Resume with a new room.
         resumed, _, _ = await integ_store.start_session(
@@ -705,6 +713,7 @@ class TestIntegrationEndToEnd:
                 rooms=["a", "b"],
             ),
             requested_actor="scientist",
+            audience="open",
         )
         assert resumed == sid
         row = await integ_store.get_inquiry(sid)
@@ -726,6 +735,7 @@ class TestIntegrationEndToEnd:
                 rooms=["a"],
             ),
             requested_actor="scientist",
+            audience="open",
         )
         await integ_store.end_session(sid, ended=datetime.now(UTC), actor=owner)
         # Resume with a new room set.
@@ -738,6 +748,7 @@ class TestIntegrationEndToEnd:
                 rooms=["a", "b"],
             ),
             requested_actor="scientist",
+            audience="open",
         )
         assert rsid == sid
         row = await integ_store.get_inquiry(sid)
@@ -757,6 +768,7 @@ class TestIntegrationEndToEnd:
                 cli_session_id="audit-id",
             ),
             requested_actor="alice",
+            audience="open",
         )
         await integ_store.end_session(sid, ended=datetime.now(UTC), actor=owner)
         # A different actor resumes; the re-open change must credit THEM.
@@ -768,6 +780,7 @@ class TestIntegrationEndToEnd:
                 cli_session_id="audit-id",
             ),
             requested_actor="bob",
+            audience="open",
         )
         async with integ_store.engine.acquire() as conn:
             actor = await _fetchval(
@@ -790,10 +803,12 @@ class TestIntegrationEndToEnd:
         sid_a, owner_a, _ = await integ_store.start_session(
             SubmitAgentSession(account="tester@example.com", title="a", cli="claude"),
             requested_actor="scientist",
+            audience="open",
         )
         sid_b, owner_b, _ = await integ_store.start_session(
             SubmitAgentSession(account="tester@example.com", title="b", cli="claude"),
             requested_actor="scientist",
+            audience="open",
         )
         assert sid_a != sid_b
         assert (owner_a, owner_b) == ("scientist", "scientist#2")
@@ -818,6 +833,7 @@ class TestIntegrationEndToEnd:
         sid, _owner, _seq = await integ_store.start_session(
             SubmitAgentSession(account="tester@example.com", title="run", cli="codex"),
             requested_actor="alice",
+            audience="open",
         )
         # Replay the same start: K is on the slot, the probe peeks it, returns
         # the original (id, owner) -- and MUST drain the slot.
@@ -825,6 +841,7 @@ class TestIntegrationEndToEnd:
         replay_sid, _, _ = await integ_store.start_session(
             SubmitAgentSession(account="tester@example.com", title="run", cli="codex"),
             requested_actor="alice",
+            audience="open",
         )
         assert replay_sid == sid
         # The leaked key must NOT survive into a subsequent keyless write.
@@ -846,6 +863,7 @@ class TestIntegrationEndToEnd:
         """An ``end_session`` replay must not leak the change-id into the next write."""
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(account="tester@example.com", title="run", cli="codex"),
+            audience="open",
         )
         key = new_uuid()
         set_client_change_id(key)
@@ -876,6 +894,7 @@ class TestIntegrationEndToEnd:
         """
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(account="tester@example.com", title="run", cli="codex"),
+            audience="open",
         )
         await integ_store.end_session(sid, ended=datetime.now(UTC), actor="u")
         async with integ_store.engine.acquire() as conn:
@@ -910,6 +929,7 @@ class TestIntegrationEndToEnd:
                 owner="scientist",
             ),
             actor="scientist",
+            audience="open",
         )
         assert await integ_store.reserve_session_actor("scientist") == "scientist#2"
 
@@ -922,6 +942,7 @@ class TestIntegrationEndToEnd:
                 owner="scientist#2",
             ),
             actor="scientist#2",
+            audience="open",
         )
         assert await integ_store.reserve_session_actor("scientist") == "scientist#3"
 
@@ -949,6 +970,7 @@ class TestIntegrationEndToEnd:
                     cli="codex",
                 ),
                 requested_actor="scientist",
+                audience="open",
             ),
             integ_store.start_session(
                 SubmitAgentSession(
@@ -957,6 +979,7 @@ class TestIntegrationEndToEnd:
                     cli="codex",
                 ),
                 requested_actor="scientist",
+                audience="open",
             ),
         )
         granted = sorted(name for _, name, _ in results)
@@ -987,6 +1010,7 @@ class TestIntegrationEndToEnd:
                 idempotency_key=key,
             ),
             requested_actor="alice",
+            audience="open",
         )
         retry_id, retry_owner, _ = await integ_store.start_session(
             SubmitAgentSession(
@@ -996,6 +1020,7 @@ class TestIntegrationEndToEnd:
                 idempotency_key=key,
             ),
             requested_actor="alice",
+            audience="open",
         )
         assert retry_id == first_id
         assert first_owner == "alice"
@@ -1023,12 +1048,14 @@ class TestIntegrationEndToEnd:
                     values={
                         "title": "zombie",
                         "account": "tester@example.com",
+                        "agentsession_audience": "open",
                         "agentsession_ended": datetime.now(UTC),
                     },
                 )
 
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(account="tester@example.com", title="live", cli="codex"),
+            audience="open",
         )
         # A2b: completing without stamping ended (set_status alone) -> 409.
         with pytest.raises(ConflictError, match="check constraint"):
@@ -1047,6 +1074,7 @@ class TestIntegrationEndToEnd:
                 title="aband",
                 cli="codex",
             ),
+            audience="open",
         )
         await integ_store.set_status(sid2, "abandoned", actor="u")
         abandoned = await integ_store.get_inquiry(sid2)
@@ -1721,6 +1749,7 @@ class TestIntegrationEndToEnd:
                 owner="scientist",
                 rooms=["sear"],
             ),
+            audience="open",
         )
         eng = await integ_store.submit_agentsession(
             SubmitAgentSession(
@@ -1730,6 +1759,7 @@ class TestIntegrationEndToEnd:
                 owner="eng",
                 rooms=["lab"],
             ),
+            audience="open",
         )
         # Interleave appends so created-order spans both sessions.
         await _record(integ_store, sci, idx=0, text="a")
@@ -1789,6 +1819,7 @@ class TestIntegrationEndToEnd:
                 cli="codex",
                 owner="a-actor",
             ),
+            audience="open",
         )
         b = await integ_store.submit_agentsession(
             SubmitAgentSession(
@@ -1797,6 +1828,7 @@ class TestIntegrationEndToEnd:
                 cli="codex",
                 owner="b-actor",
             ),
+            audience="open",
         )
         # Force an exact ``created`` tie across the two sessions (the column
         # defaults to clock_timestamp(); set it explicitly here).
@@ -1851,6 +1883,7 @@ class TestIntegrationEndToEnd:
                 title="inbox",
                 cli="claude",
             ),
+            audience="open",
         )
         app = FastAPI()
         app.state.engine = integ_store.engine
@@ -1953,6 +1986,7 @@ class TestIntegrationEndToEnd:
                 cli="claude",
                 cli_session_id="sess-9",
             ),
+            audience="open",
         )
 
         app = FastAPI()
@@ -1991,6 +2025,7 @@ class TestIntegrationEndToEnd:
     ) -> None:
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(account="tester@example.com", title="run", cli="claude"),
+            audience="open",
         )
         await _record(integ_store, sid, idx=0, text="captured")
         await integ_store.purge(sid, actor="user")

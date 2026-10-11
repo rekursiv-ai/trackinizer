@@ -318,6 +318,17 @@ def _parse_args(
         ),
     )
     parser.add_argument(
+        "--staff",
+        default=os.environ.get("TRACKINIZER_STAFF", ""),
+        metavar="PATTERNS",
+        help=(
+            "Who holds the staff audience: comma-separated patterns, each "
+            "user@host or *@domain. A *@domain pattern also needs the person's "
+            "Google Workspace domain to be that domain. Empty means nobody is "
+            "staff (default: $TRACKINIZER_STAFF)."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         default=None,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],

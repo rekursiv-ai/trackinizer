@@ -152,6 +152,118 @@ class TestCreateToken:
         assert not any("INSERT INTO api_keys" in s for s in sqls)
 
 
+def _as_caller(
+    *,
+    read: set[str],
+    opening: set[str],
+    pinned: str | None = None,
+    key: bool = True,
+) -> None:
+    """Make the next requests come from a caller holding these audiences."""
+    caller = AuthIdentity(
+        user_id=uuid.uuid4(),
+        api_key_id=uuid.uuid4() if key else None,
+        email="caller@example.com",
+        role="writer",
+        read_audiences=frozenset(read),
+        open_audiences=frozenset(opening),
+        pinned_audience=pinned,
+    )
+
+    async def resolve() -> AuthIdentity:
+        return caller
+
+    app.dependency_overrides[current_user] = resolve
+
+
+def _insert_pin(engine: FakeEngine) -> object:
+    """Return the ``open_into`` the key was stored with."""
+    (insert,) = [
+        c
+        for c in engine.conn.execute.call_args_list
+        if "INSERT INTO api_keys" in _sql(c)
+    ]
+    return insert.args[7]
+
+
+class TestCreateTokenAudiences:
+    """A key opens at most what the caller does."""
+
+    def test_a_staff_session_mints_a_key_pinned_to_staff(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _as_caller(read={"open", "staff"}, opening={"open", "staff"}, key=False)
+        engine.conn.fetchval = AsyncMock(return_value="writer")
+        r = client.post(
+            "/api/me/tokens",
+            json={"name": "campaign", "open_into": "staff"},
+        )
+        assert r.status_code == 200, r.text
+        body = from_plain(r.json(), dict[str, object])
+        assert "read_audiences" not in body
+        assert body["open_into"] == "staff"
+        assert _insert_pin(engine) == "staff"
+
+    def test_a_key_minted_with_no_pin_by_a_session_stays_unpinned(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _as_caller(read={"open", "staff"}, opening={"open", "staff"}, key=False)
+        engine.conn.fetchval = AsyncMock(return_value="writer")
+        r = client.post("/api/me/tokens", json={"name": "laptop"})
+        assert r.status_code == 200, r.text
+        assert _insert_pin(engine) is None
+
+    def test_a_pin_beyond_the_callers_is_403_and_stores_nothing(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _as_caller(read={"open"}, opening={"open"})
+        engine.conn.fetchval = AsyncMock(return_value="writer")
+        r = client.post("/api/me/tokens", json={"name": "k", "open_into": "staff"})
+        assert r.status_code == 403, r.text
+        assert "staff" in from_plain(
+            from_plain(r.json(), dict[str, object])["detail"],
+            str,
+        )
+        sqls = [_sql(c) for c in engine.conn.execute.call_args_list]
+        assert not any("INSERT INTO api_keys" in s for s in sqls)
+
+    def test_a_pinned_key_cannot_shed_its_pin_by_minting_another(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _as_caller(read={"open"}, opening={"open"}, pinned="open")
+        engine.conn.fetchval = AsyncMock(return_value="writer")
+        r = client.post("/api/me/tokens", json={"name": "child"})
+        assert r.status_code == 200, r.text
+        body = from_plain(r.json(), dict[str, object])
+        assert body["open_into"] == "open"
+        assert _insert_pin(engine) == "open"
+
+    @pytest.mark.parametrize(
+        "limits",
+        [
+            {"open_into": "gold"},
+            {"open_into": ""},
+        ],
+    )
+    def test_a_name_that_is_no_audience_is_422(
+        self,
+        limits: dict[str, object],
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        _as_caller(read={"open", "staff"}, opening={"open", "staff"})
+        r = client.post("/api/me/tokens", json={"name": "k", **limits})
+        assert r.status_code == 422
+
+
 class TestListTokens:
     def test_returns_rows_without_hashes(
         self,
@@ -167,6 +279,7 @@ class TestListTokens:
                     "name": "laptop",
                     "prefix": "trax_aBcDeFgH",
                     "role": "viewer",
+                    "open_into": "open",
                     "created_at": datetime(2025, 1, 1, tzinfo=UTC),
                     "last_used_at": None,
                     "revoked_at": None,
@@ -185,6 +298,8 @@ class TestListTokens:
         # The new ``role`` column lands in the wire shape so the UI can
         # render a per-row dropdown.
         assert tok["role"] == "viewer"
+        assert "read_audiences" not in tok
+        assert tok["open_into"] == "open"
         # The wire shape must not leak ``secret_hash`` or a recoverable
         # plaintext -- this is the central confidentiality invariant.
         assert "secret_hash" not in tok

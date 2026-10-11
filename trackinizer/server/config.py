@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, Self
 
 import os
+import re
 import shutil
 import time
 import uuid
@@ -34,6 +35,7 @@ __all__ = [
     "parse_assistant",
     "parse_chat_orgs",
     "parse_engine",
+    "parse_staff",
 ]
 
 
@@ -86,6 +88,7 @@ class ConfigFlags(Protocol):
     session_max_age_seconds: int
     auth: bool
     assistant: str
+    staff: str
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -117,6 +120,10 @@ class Config:
       auth_disabled: Bypass auth -- every request becomes a synthetic
         admin. Local demos only; never in production.
       assistant: The Chat partner of every canvas; none when unset.
+      staff: Who holds the ``staff`` audience: patterns, each ``user@host`` or
+        ``*@domain``, lowercase. A domain pattern also needs Google's ``hd`` claim
+        to name the domain. Empty means nobody is staff and no staff session can
+        be opened. Deployment property: ``--staff`` or ``TRACKINIZER_STAFF``.
       chat_orgs: ``domain`` (the default) gives each verified email domain its own
         organisation, consumer domains none: a user outside the starter's forks the
         chat instead. ``single`` makes every user one organisation, so a science chat
@@ -164,6 +171,7 @@ class Config:
     session_max_age_seconds: int = _DEFAULT_SESSION_MAX_AGE_SECONDS
     auth_disabled: bool = False
     assistant: Assistant | None = None
+    staff: tuple[str, ...] = ()
     chat_orgs: ChatOrgs = "domain"
     machine_limit: int = 64
     machine_max_ttl_sec: int = 86_400
@@ -199,6 +207,7 @@ class Config:
             session_max_age_seconds=session_max_age_from_env(),
             auth_disabled=auth_disabled_from_env(),
             assistant=parse_assistant(os.environ.get("TRACKINIZER_ASSISTANT", "")),
+            staff=parse_staff(os.environ.get("TRACKINIZER_STAFF", "")),
             chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
             machine_limit=machine_limit,
             machine_max_ttl_sec=machine_max_ttl_sec,
@@ -234,6 +243,7 @@ class Config:
             session_max_age_seconds=flags.session_max_age_seconds,
             auth_disabled=not flags.auth,
             assistant=parse_assistant(flags.assistant),
+            staff=parse_staff(flags.staff),
             # Like the secrets, a deployment property that no flag overrides.
             chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
             machine_limit=machine_limit,
@@ -349,6 +359,35 @@ def parse_assistant(value: str) -> Assistant | None:
         raise ConfigError(f"--assistant must be ACTOR=EMAIL, got {value!r}")
     # users.email is stored lowercase, so only a lowercase one can match it.
     return Assistant(actor=actor.strip(), email=email.strip().lower())
+
+
+def parse_staff(value: str) -> tuple[str, ...]:
+    """Parse ``--staff`` / ``$TRACKINIZER_STAFF``: comma-separated staff patterns.
+
+    Each pattern is ``user@host`` or ``*@domain``, the allowlist's grammar, so a bare
+    word or a lone ``*`` is a typo that would make everyone staff or no one.
+
+    Args:
+      value: The flag or variable; blank means nobody is staff.
+
+    Returns:
+      patterns: The patterns, lowercase and without repeats, in the order given.
+
+    Raises:
+      ConfigError: A pattern is not ``user@host`` or ``*@domain``.
+
+    """
+    patterns: dict[str, None] = {}
+    for raw in value.split(","):
+        pattern = raw.strip().lower()
+        if not pattern:
+            continue
+        if re.fullmatch(r"(?:[^@\s*]+|\*)@[^@\s*]+", pattern) is None:
+            raise ConfigError(
+                f"--staff takes user@host or *@domain patterns, got {raw.strip()!r}",
+            )
+        patterns[pattern] = None
+    return tuple(patterns)
 
 
 def parse_chat_orgs(value: str) -> ChatOrgs:

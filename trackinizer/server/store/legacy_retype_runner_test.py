@@ -71,9 +71,10 @@ async def _legacy_session(store: Store) -> UUID:
     async with store.engine.acquire() as conn:
         await conn.execute(_LEGACY_TABLE)
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'legacy')",
+            "'tester@example.com', 'legacy', 'open')",
             session_id,
         )
         await conn.execute(
@@ -398,6 +399,13 @@ def test_a_malformed_row_names_the_field(
 ) -> None:
     rows = _Rows([_row("UserMessage", "{}", **{field: value})])
     with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        _read(rows, uuid4())
+
+
+def test_a_payload_that_is_not_an_object_is_a_read_error() -> None:
+    """The payload parses as an object, so a list fails at the read, not later."""
+    rows = _Rows([_row("UserMessage", "[1]")])
+    with pytest.raises(ReadError):
         _read(rows, uuid4())
 
 

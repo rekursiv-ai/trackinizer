@@ -34,6 +34,9 @@ _MAX_MESSAGE_CHARS: Final = 16_384
 ``inject`` writes to the PTY under the pump lock (each write stalls human
 keystrokes for its duration) and the memory a process-local queue holds."""
 
+_MAX_ACCOUNT_CHARS: Final = 254
+"""Upper bound on an account email, which RFC 5321 caps at 254 characters."""
+
 
 # Every textual identity/scope field on these bodies (``cli``, ``actor``,
 # ``cli_session_id``, ``room``) is matched or stored verbatim, so a whitespace-only
@@ -321,20 +324,33 @@ class FeedHistogramResponse(BaseModel):
 class InboundEnqueueRequest(BaseModel):
     """A message a client asks trackinizer to inject into a live session.
 
-    The enqueue **request** carries only ``text`` -- the one field the route
-    uses. ``source`` is attested by the route from the authenticated principal
-    (a client cannot forge another sender), and ``room`` has no enqueue
-    semantics (the direct-session enqueue route discards it; routed delivery is
-    the separate ``@actor:room`` send-message path). ``extra="forbid"`` makes a
-    client-sent ``source`` or ``room`` a 422 rather than a silently-ignored
-    field -- the request and response shapes are deliberately distinct (the
-    response :class:`InboundDrainItem` carries both ``source`` and ``room``), so
-    neither can be confused for the other.
+    The enqueue **request** carries ``text`` -- the one field the route delivers --
+    and, from the configured assistant alone, the ``asker`` it sends for. ``source``
+    is attested by the route from the authenticated principal (a client cannot forge
+    another sender), and ``room`` has no enqueue semantics (the direct-session
+    enqueue route discards it; routed delivery is the separate ``@actor:room``
+    send-message path). ``extra="forbid"`` makes a client-sent ``source`` or ``room``
+    a 422 rather than a silently-ignored field -- the request and response shapes are
+    deliberately distinct (the response :class:`InboundDrainItem` carries both
+    ``source`` and ``room``), so neither can be confused for the other.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
+
+    asker: str | None = Field(default=None, max_length=_MAX_ACCOUNT_CHARS)
+    """The account of the user the configured assistant sends this line for.
+
+    The server lets the assistant send to a session the assistant cannot read only
+    for a user who may write to it (that session's account, or a writer who holds its
+    audience), so the assistant names whom it speaks for. Any other sender's ``asker``
+    is ignored.
+    """
+
+    _validate_scalars = field_validator("asker", mode="after")(
+        staticmethod(_reject_blank),
+    )
 
 
 class WorkspaceRecordContext(BaseModel):
@@ -513,7 +529,14 @@ class SendMessage(BaseModel):
     text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
     """The message body to inject into each matched session."""
 
-    _validate_scalars = field_validator("actor", "room", mode="after")(
+    asker: str | None = Field(default=None, max_length=_MAX_ACCOUNT_CHARS)
+    """The account of the user the configured assistant sends this message for.
+
+    See :attr:`InboundEnqueueRequest.asker`: the assistant names whom it speaks for,
+    and any other sender's ``asker`` is ignored.
+    """
+
+    _validate_scalars = field_validator("actor", "room", "asker", mode="after")(
         staticmethod(_reject_blank),
     )
 

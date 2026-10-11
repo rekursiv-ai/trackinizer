@@ -123,9 +123,9 @@ async def _session(
     await conn.execute(
         "INSERT INTO inquiries (id, kind, seq, status, account, title, owner, "
         "agentsession_opened_by_api_key_id, agentsession_cli, agentsession_ended, "
-        "agentsession_cli_session_id, labels) "
+        "agentsession_cli_session_id, labels, agentsession_audience) "
         "VALUES ($1, 'AgentSession', $2, $3, $7, 'S', $4, $5, "
-        "$8, CASE WHEN $6 THEN clock_timestamp() END, $9, $10)",
+        "$8, CASE WHEN $6 THEN clock_timestamp() END, $9, $10, 'open')",
         session_id,
         seq,
         "complete" if ended else "active",

@@ -580,12 +580,23 @@ class _CascadeAuditMixin(_StoreShared):
     # documented Store API always wrap in :func:`notify_after_commit`; tests and one-off
     # helpers that drive :meth:`emit_change` directly should not crash on a missing
     # buffer.
-    def _buffer_notification(self, subject_id: UUID) -> None:
+    #
+    # ``audience`` is set by a write to a session's transcript and names the session's
+    # audience: a live stream relays that ping only to a viewer who reads it, where a
+    # change to the row itself, which is open, reaches every viewer.
+    def _buffer_notification(
+        self,
+        subject_id: UUID,
+        *,
+        audience: str | None = None,
+    ) -> None:
         """Queue a notify payload for post-commit publish."""
         buffer = NOTIFICATION_BUFFER.get()
         if buffer is None:
             return
-        buffer.append(Notification(engine=self.engine, subject_id=subject_id))
+        buffer.append(
+            Notification(engine=self.engine, subject_id=subject_id, audience=audience),
+        )
 
     # Known gap: a keyed retry of a purge that landed is not replayed. It finds the
     # row gone and answers 404. A client can read that 404, after an unanswered

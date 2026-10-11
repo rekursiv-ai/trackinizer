@@ -408,6 +408,7 @@ async def _session(store: Store, *, cli_session_id: str | None = None) -> UUID:
             cli_session_id=cli_session_id,
         ),
         requested_actor="agent",
+        audience="open",
     )
     return session_id
 

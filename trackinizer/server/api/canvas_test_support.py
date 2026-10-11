@@ -215,6 +215,7 @@ async def seed_session(
                 "account": account or agent.email,
                 "labels": canonical_strs(labels),
                 "subscribers": (),
+                "agentsession_audience": "open",
                 "agentsession_cli": cli,
                 "agentsession_cli_session_id": cli_session_id,
                 "agentsession_rooms": (),

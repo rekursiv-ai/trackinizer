@@ -209,9 +209,10 @@ async def test_the_console_feed_reads_an_index_not_the_whole_table(
     session_id = uuid.uuid4()
     async with scratch_engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'feed')",
+            "'tester@example.com', 'feed', 'open')",
             session_id,
         )
         await conn.execute(
@@ -255,8 +256,9 @@ async def test_session_records_context_id_check_rejects_a_forward_reference(
     async with scratch_engine.acquire() as conn:
         sid = uuid.uuid4()
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
-            "VALUES ($1, 'AgentSession', 2, 'active', 'tester@example.com', 't')",
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
+            "VALUES ($1, 'AgentSession', 2, 'active', 'tester@example.com', 't', 'open')",
             sid,
         )
         insert = (
@@ -340,9 +342,10 @@ async def test_migration_023_preserves_existing_1024_rows_byte_for_byte(
         await conn.execute(load_sql("schema.022"))
         session_id = uuid.uuid4()
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'row survives 023')",
+            "'tester@example.com', 'row survives 023', 'open')",
             session_id,
         )
         vector = "[" + ",".join("0.0123456" for _ in range(1024)) + "]"
@@ -422,9 +425,10 @@ async def test_migration_024_backfills_markers_from_existing_vectors(
         # Rebuild the PRE-024 state: embeddings present, no marker table.
         await conn.execute("DROP TABLE session_index_state")
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'marker backfill')",
+            "'tester@example.com', 'marker backfill', 'open')",
             session_id,
         )
         vector = "[" + ",".join("0.01" for _ in range(1024)) + "]"
@@ -838,6 +842,173 @@ async def test_machine_host_checks_bound_each_column(
         # A revoked row does not count against the one live credential.
         await conn.execute(insert, machine, digest, datetime.now(UTC))
         await conn.execute(insert, machine, digest, datetime.now(UTC))
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_040_matches_the_baseline_audience_columns(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """The columns 040 adds to ``users`` and ``api_keys`` equal the fresh-install ones.
+
+    Bootstrap builds the baseline shape. This drops the three columns (as a pre-040
+    database lacks them), replays ``schema.040`` alone, and compares every column,
+    constraint and index of both tables against what the baseline produced.
+    """
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    async with scratch_engine.acquire() as conn:
+        baseline = {t: await _table_shape(conn, t) for t in ("users", "api_keys")}
+        assert {"hosted_domain", "google_sub"} <= {
+            c["column_name"] for c in baseline["users"][0]
+        }
+        assert "open_into" in {c["column_name"] for c in baseline["api_keys"][0]}
+
+        await conn.execute(
+            "ALTER TABLE users DROP COLUMN hosted_domain, DROP COLUMN google_sub",
+        )
+        await conn.execute(
+            "ALTER TABLE api_keys DROP COLUMN open_into",
+        )
+        await conn.execute(load_sql("schema.040"))
+        migrated = {t: await _table_shape(conn, t) for t in ("users", "api_keys")}
+        # Replaying it over the existing columns is a no-op, not an error.
+        await conn.execute(load_sql("schema.040"))
+
+    assert migrated == baseline
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_audience_checks_bound_each_column(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """A bad shape is refused; absent and well-formed values are kept."""
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    async with scratch_engine.acquire() as conn:
+        user = await conn.fetchval(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES (gen_random_uuid(), 'a@x.y', 'a', 'writer', 'active') RETURNING id",
+        )
+        for domain in ("Example.com", "a" * 254):
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(
+                    "UPDATE users SET hosted_domain = $2 WHERE id = $1",
+                    user,
+                    domain,
+                )
+        for domain in ("example.com", None):
+            await conn.execute(
+                "UPDATE users SET hosted_domain = $2 WHERE id = $1",
+                user,
+                domain,
+            )
+        for sub in ("", "s" * 256):
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(
+                    "UPDATE users SET google_sub = $2 WHERE id = $1",
+                    user,
+                    sub,
+                )
+        for sub in ("1234567890", None):
+            await conn.execute(
+                "UPDATE users SET google_sub = $2 WHERE id = $1",
+                user,
+                sub,
+            )
+        insert = (
+            "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role, open_into) "
+            "VALUES (gen_random_uuid(), $1, 'k', 'h', 'p', 'writer', $2)"
+        )
+        for pin in ("Staff", "", "a" * 33, "0open"):
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(insert, user, pin)
+        for pin in (None, "staff"):
+            await conn.execute(insert, user, pin)
+
+
+# Table-level constraints are unnamed in the baseline, so the catalog picks names the
+# migration cannot predict; what must agree is what each one checks. An added column
+# lands last, where the baseline puts it among the others, so columns are compared by
+# name.
+async def _inquiries_shape(
+    conn: postgres.Conn,
+) -> tuple[list[dict[str, object]], list[str], set[str]]:
+    """Return ``inquiries``' columns and constraint definitions, names aside."""
+    columns, constraints, indexes = await _table_shape(conn, "inquiries")
+    return (
+        sorted(columns, key=lambda column: str(column["column_name"])),
+        sorted(definition for _, definition in constraints),
+        indexes,
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_041_brings_a_pre_audience_database_to_the_baseline_shape(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """An existing database that applies 041 ends with the column a fresh one has.
+
+    Bootstrap builds the baseline. This takes the audience column away again (its
+    CHECK goes with it), leaves a session behind as such a database holds it, and lets
+    the runner apply the migration. The session must come out ``open``, and every
+    column and constraint of ``inquiries`` must equal the baseline's, and a replay of
+    the file changes nothing.
+    """
+    store = Store(scratch_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    async with scratch_engine.acquire() as conn:
+        baseline = await _inquiries_shape(conn)
+        await conn.execute("ALTER TABLE inquiries DROP COLUMN agentsession_audience")
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "VALUES (gen_random_uuid(), 'AgentSession', 1, 'active', "
+            "'tester@example.com', 'before')",
+        )
+        await conn.execute(
+            "DELETE FROM applied_migrations WHERE name = 'schema.041.sql'",
+        )
+
+    await store.bootstrap()
+    async with scratch_engine.acquire() as conn:
+        migrated = await _inquiries_shape(conn)
+        audience = await conn.fetchval(
+            "SELECT agentsession_audience FROM inquiries WHERE title = 'before'",
+        )
+        await conn.execute(load_sql("schema.041"))
+        replayed = await _inquiries_shape(conn)
+
+    assert audience == "open"
+    assert migrated == baseline
+    assert replayed == baseline
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_audience_column_checks_the_shape_and_the_kind_of_row(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """A session needs a well-formed audience; no other row may hold one."""
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    session = (
+        "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+        "agentsession_audience) VALUES (gen_random_uuid(), 'AgentSession', "
+        "nextval('seq_agentsession'), 'active', 'a@x.y', 't', $1)"
+    )
+    issue = (
+        "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+        "agentsession_audience) VALUES (gen_random_uuid(), 'Issue', "
+        "nextval('seq_issue'), 'active', 'a@x.y', 't', $1)"
+    )
+    async with scratch_engine.acquire() as conn:
+        for bad in (None, "", "Staff", "has space", "0open", "a" * 33, "open,staff"):
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(session, bad)
+        for good in ("open", "staff", "partner-1", "a" * 32):
+            await conn.execute(session, good)
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute(issue, "open")
+        await conn.execute(issue, None)
 
 
 async def _table_shape(

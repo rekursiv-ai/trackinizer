@@ -27,7 +27,7 @@ design.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import (
@@ -246,10 +246,10 @@ async def web_search_sessions(
     Returns:
       body: ``{"hits": [...], "semantic": bool, "degraded": bool}`` -- each hit
         carries ``session_id``/``part``/``idx`` (where the console opens),
-        ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``.
+        ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``. A session
+        whose audience the caller does not read has no hit.
 
     """
-    del identity
     if limit < 1 or limit > _SESSION_SEARCH_MAX_LIMIT:
         raise HTTPException(
             status_code=400,
@@ -271,6 +271,7 @@ async def web_search_sessions(
         # skipped; 1 is a valid placeholder the query never reaches.
         dim=embedder.dim if embedder is not None else 1,
         limit=limit,
+        audiences=identity.read_audiences,
     )
     return {
         "hits": [_session_hit_to_dict(hit) for hit in hits],
@@ -508,11 +509,10 @@ async def web_subscribe(
     Forwards every ``NOTIFY_CHANNEL`` payload as ``{"id": "<uuid>"}``
     via :func:`iter_sse_events` -- shared with ``/api/change_log/stream``
     so both routes emit one wire shape. Gated at ``viewer`` like every
-    read route (see the Auth section of ``docs/design.md``). The stream
-    is unfiltered: every subscriber sees every mutated id and the SPA
-    decides what to fetch. Per-subscriber server-side filtering is a
-    future refinement, not a security boundary -- authz already gates
-    who may open the stream at all.
+    read route (see the Auth section of ``docs/design.md``). Every subscriber
+    sees every mutated id and the SPA decides what to fetch, except that a
+    record written to a session's transcript is relayed only to a subscriber
+    whose audiences include the session's.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -522,9 +522,11 @@ async def web_subscribe(
       stream: Server-sent events of mutated node ids.
 
     """
-    del identity
     engine = _state(request).engine
-    return StreamingResponse(iter_sse_events(engine), media_type="text/event-stream")
+    return StreamingResponse(
+        iter_sse_events(engine, audiences=identity.read_audiences),
+        media_type="text/event-stream",
+    )
 
 
 _PROBE_MAX_SEC: Final = 600.0
@@ -669,10 +671,10 @@ async def web_feed(
       tail: Return newest page first (true) or oldest available (false).
 
     Returns:
-      feed: Turns across all sessions, pagination cursor for next poll.
+      feed: Turns across the sessions the caller reads, pagination cursor for next
+        poll. A session whose audience the caller does not read has no turn here.
 
     """
-    del identity
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be in [1, 1000]")
     _check_window(since, until)
@@ -681,7 +683,7 @@ async def web_feed(
         after=after,
         since=since,
         until=until,
-        scope=scope,
+        scope=replace(scope, audiences=identity.read_audiences),
         conversation=conversation,
         limit=limit,
         tail=tail,
@@ -729,15 +731,15 @@ async def web_feed_facets(
       until: Window end (inclusive); unset counts to the last.
 
     Returns:
-      facets: Per session, room and record kind, what the window holds.
+      facets: Per session, room and record kind, what the window holds of the
+        sessions the caller reads.
 
     """
-    del identity
     _check_window(since, until)
     return await get_store(request).read_feed_facets(
         since=since,
         until=until,
-        scope=scope,
+        scope=replace(scope, audiences=identity.read_audiences),
     )
 
 
@@ -768,14 +770,14 @@ async def web_feed_histogram(
       buckets: Most buckets to return, 2 to 1000.
 
     Returns:
-      histogram: The grid and each bucket's record count, oldest first.
+      histogram: The grid and each bucket's record count, oldest first, of the
+        sessions the caller reads.
 
     Raises:
       HTTPException: 400 for ``buckets`` outside 2 to 1000, an ``until`` before
         ``since``, or an ``until`` more than 7 days ago.
 
     """
-    del identity
     if buckets < 2 or buckets > 1_000:
         raise HTTPException(status_code=400, detail="buckets must be in [2, 1000]")
     _check_window(since, until)
@@ -793,7 +795,7 @@ async def web_feed_histogram(
         until=until,
         earliest=earliest,
         buckets=buckets,
-        scope=scope,
+        scope=replace(scope, audiences=identity.read_audiences),
     )
 
 

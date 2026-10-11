@@ -11,6 +11,15 @@
       "email": "no-auth@localhost",
       "last_login": null,
       "name": "no-auth",
+      "open_audiences": [
+        "open",
+        "staff"
+      ],
+      "pinned_audience": null,
+      "read_audiences": [
+        "open",
+        "staff"
+      ],
       "role": "admin",
       "rules_issue_id": null,
       "rules_version": null,

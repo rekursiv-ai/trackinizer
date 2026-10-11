@@ -1632,7 +1632,11 @@ class Client:
           result: Number of messages now queued for this session.
 
         """
-        body = wire_sessions.InboundEnqueueRequest(text=text).model_dump(mode="json")
+        # This client never names an asker, and an older server forbids the field.
+        body = wire_sessions.InboundEnqueueRequest(text=text).model_dump(
+            mode="json",
+            exclude={"asker"},
+        )
         where = wire_sessions.session_inbound_path(session_id)
         response = self._request("POST", where, body=body)
         return _validate_model(
@@ -1703,8 +1707,10 @@ class Client:
           result: Session IDs the message was enqueued to.
 
         """
+        # This client never names an asker, and an older server forbids the field.
         body = wire_sessions.SendMessage(actor=actor, room=room, text=text).model_dump(
             mode="json",
+            exclude={"asker"},
         )
         response = self._request("POST", wire_sessions.SEND_MESSAGE_PATH, body=body)
         return _validate_model(

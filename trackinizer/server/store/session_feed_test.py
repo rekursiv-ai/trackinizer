@@ -7,6 +7,7 @@ keeps, which records count as conversation, and which a histogram counts.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -223,7 +224,7 @@ async def test_a_scope_keeps_any_value_of_a_field_and_every_named_field(
         )
 
     async def kept(**scope: tuple[str, ...]) -> set[tuple[str, str]]:
-        events = await integ_store.read_feed(scope=FeedScope(**scope))
+        events = await integ_store.read_feed(scope=replace(WHOLE_FEED, **scope))
         return {(event.actor, event.kind) for event in events}
 
     both = {"UserMessage", "ToolCall"}
@@ -743,9 +744,10 @@ async def _session(
     async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO inquiries (id, kind, seq, status, account, title, owner, "
-            "agentsession_cli, agentsession_rooms, agentsession_ended) "
+            "agentsession_cli, agentsession_rooms, agentsession_ended, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), $2, "
-            "'tester@example.com', $3, $3, $4, $5, $6)",
+            "'tester@example.com', $3, $3, $4, $5, $6, 'open')",
             session_id,
             "complete" if ended else "active",
             owner,

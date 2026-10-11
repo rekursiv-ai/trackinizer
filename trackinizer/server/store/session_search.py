@@ -36,10 +36,18 @@ the API route are the next task.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 from uuid import UUID
+from weakref import WeakKeyDictionary
 
+import re
+
+from treekle import from_plain
+
+from trackinizer.server.audience import OPEN_ONLY, visible_sql
+from trackinizer.server.notify import tx
 from trackinizer.server.values import manifest_bound, vec_to_text, vetted_sql
+from trackinizer.wire.audience import AUDIENCES
 
 
 if TYPE_CHECKING:
@@ -107,6 +115,7 @@ async def search_session_records(
     model: str,
     dim: int,
     limit: int = 20,
+    audiences: frozenset[str] = OPEN_ONLY,
 ) -> list[SessionSearchHit]:
     """Search the session index, RRF-merging the arms that are present.
 
@@ -122,6 +131,16 @@ async def search_session_records(
         partial HNSW index (a bare ``halfvec`` compare over the dimension-free
         column seqscans 4.7M rows); the cast MUST match the index's cast.
       limit: Maximum merged hits to return, in ``[1, 200]``.
+      audiences: What the caller reads. The full-text arm keeps only the sessions in
+        it before it ranks and cuts to ``limit``, so a hit on a hidden session neither
+        appears nor takes the place of one the caller may see. The semantic arm does
+        the same, though its HNSW index offers hidden units among the nearest: for a
+        caller that lacks an audience it has the index keep offering candidates until
+        ``limit`` pass, by an iterative scan where pgvector has them (0.8.0 and later)
+        and by widening the list otherwise. A caller that reads every audience is
+        searched as it always was. The shortfall that remains is where the index
+        ends: ``hnsw.max_scan_tuples``, 20,000 index tuples by default, with iterative
+        scans, and 1,000 candidates without.
 
     Returns:
       hits: Merged, deduplicated hits ordered by descending score.
@@ -152,15 +171,55 @@ async def search_session_records(
                 model=model,
                 dim=dim,
                 limit=limit,
+                audiences=audiences,
+                scan=await _scan_for(engine, conn, audiences),
             )
             if query_vector is not None
             else []
         )
-        fts = await _fts_arm(conn, query_text, limit=limit) if has_text else []
+        fts = (
+            await _fts_arm(conn, query_text, limit=limit, audiences=audiences)
+            if has_text
+            else []
+        )
     return _merge(semantic, fts, limit=limit)
 
 
 _MAX_LIMIT: Final = 200
+
+# Whether each engine's pgvector scans iteratively (0.8.0 and later). It is read from
+# the database when a reader that lacks an audience first searches by meaning, and then
+# kept: the answer changes only with an extension upgrade, which a restart follows. The
+# engines are held weakly, so a closed one takes its entry with it.
+_ITERATIVE_SCAN: Final[WeakKeyDictionary[DatabaseEngine, bool]] = WeakKeyDictionary()
+
+# How the semantic arm keeps ``limit`` hits against the audiences its reader lacks: not
+# at all, for a reader that lacks none; by an iterative index scan; or, where pgvector
+# has none, by widening the list of candidates the index offers.
+type _Scan = Literal["plain", "iterative", "widening"]
+
+
+# A reader of every audience loses no candidate to the audience test, so it is scanned
+# as it always was and the database is asked nothing more for it.
+async def _scan_for(
+    engine: DatabaseEngine,
+    conn: Conn,
+    audiences: frozenset[str],
+) -> _Scan:
+    """Choose how the semantic arm keeps ``limit`` hits against ``audiences``."""
+    if audiences >= AUDIENCES:
+        return "plain"
+    known = _ITERATIVE_SCAN.get(engine)
+    if known is None:
+        version = await conn.fetchval(
+            "SELECT extversion FROM pg_extension WHERE extname = 'vector'",
+        )
+        found = re.match(r"(\d+)\.(\d+)", version) if isinstance(version, str) else None
+        known = _ITERATIVE_SCAN[engine] = found is not None and (
+            int(found[1]),
+            int(found[2]),
+        ) >= (0, 8)
+    return "iterative" if known else "widening"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -192,13 +251,30 @@ async def _semantic_arm(
     model: str,
     dim: int,
     limit: int,
+    audiences: frozenset[str],
+    scan: _Scan,
 ) -> list[_ArmHit]:
     """Cosine-nearest units in the ``(mapper, model)`` slice, best first."""
     # Bind the manifest to the RECORD coords (r), not the embedding row: a
     # compaction-restart can leave a stale embedding whose record is now beyond
     # the live prefix, and the record's idx is what the bound applies to.
     manifest_join, manifest_predicate = manifest_bound("r")
-    rows = await conn.fetch(
+    params: list[object] = [
+        vec_to_text(query_vector),
+        mapper,
+        model,
+        limit,
+        _SNIPPET_HEAD,
+    ]
+    # Audience: gated -- in the WHERE, which the HNSW index does not see: it offers its
+    # ``hnsw.ef_search`` nearest units of every audience and the filter drops the hidden
+    # ones afterwards. A reader that lacks an audience would therefore get fewer than
+    # ``limit`` hits, or none, when more hidden units than that sit nearest its query,
+    # and the shortfall would tell it that they do. ``scan`` has the index keep offering
+    # candidates until ``limit`` of them pass the filter (see ``_nearest``). The FTS arm
+    # needs none: it ranks every match before it cuts.
+    visible = visible_sql("i.agentsession_audience", params=params, audiences=audiences)
+    sql = (
         f"SELECT e.session_id, e.part, e.idx, e.field, e.chunk, "  # noqa: S608 -- ``dim`` is a validated int; a typmod cannot be a bound parameter.
         f"left(r.text, $5) AS snippet, i.title AS title "
         f"FROM session_embeddings e "
@@ -206,26 +282,82 @@ async def _semantic_arm(
         f"  ON r.session_id = e.session_id AND r.part = e.part AND r.idx = e.idx "
         f"JOIN inquiries i ON i.id = e.session_id "
         f"{manifest_join}"
-        f"WHERE e.mapper = $2 AND e.model = $3 AND {manifest_predicate} "
+        f"WHERE e.mapper = $2 AND e.model = $3 AND {manifest_predicate} AND {visible} "
         f"ORDER BY (e.embedding::halfvec({dim})) <=> $1::halfvec({dim}) "
-        f"LIMIT $4",
-        vec_to_text(query_vector),
-        mapper,
-        model,
-        limit,
-        _SNIPPET_HEAD,
+        f"LIMIT $4"
     )
+    rows = await _nearest(conn, sql, params, limit=limit, scan=scan)
     return [_semantic_hit(row) for row in rows]
+
+
+# Both scans run in a transaction and set only for it, never for the connection: the
+# PGlite connection is the only one there is, and a pooled one serves other queries
+# next, which a setting left behind would change.
+async def _nearest(
+    conn: Conn,
+    sql: str,
+    params: list[object],
+    *,
+    limit: int,
+    scan: _Scan,
+) -> list[Record]:
+    """Run the semantic query, with the index kept offering candidates as ``scan`` says."""
+    match scan:
+        case "plain":
+            return await conn.fetch(sql, *params)
+        case "iterative":
+            async with tx(conn):
+                await conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
+                return await conn.fetch(sql, *params)
+        case "widening":
+            async with tx(conn):
+                return await _widened(conn, sql, params, limit=limit)
+
+
+# Without iterative scans the index offers its ``hnsw.ef_search`` nearest units and no
+# more, whatever ``LIMIT`` asks. So a query that falls short is asked again with a
+# list four times as long, up to 1000, the most pgvector accepts. The first answer
+# comes before the setting is read: the extension's settings exist on a connection only
+# once a query has used it.
+async def _widened(
+    conn: Conn,
+    sql: str,
+    params: list[object],
+    *,
+    limit: int,
+) -> list[Record]:
+    """Ask for the semantic query's rows, widening the candidate list while short."""
+    rows = await conn.fetch(sql, *params)
+    if len(rows) < limit:
+        ef_search = int(from_plain(await conn.fetchval("SHOW hnsw.ef_search"), str))
+        while len(rows) < limit and ef_search < 1000:
+            ef_search = min(4 * ef_search, 1000)
+            await conn.execute(
+                "SELECT set_config('hnsw.ef_search', $1, true)",
+                str(ef_search),
+            )
+            rows = await conn.fetch(sql, *params)
+    return rows
 
 
 # ``'simple'`` matches the stored ``to_tsvector('simple', text)`` column;
 # ``websearch_to_tsquery`` gives users quoted-phrase / OR / negation syntax. An FTS hit
 # is a whole record, so it carries no unit (``field=""``, ``chunk=0``) and a
 # ``ts_headline`` snippet.
-async def _fts_arm(conn: Conn, query_text: str, *, limit: int) -> list[_ArmHit]:
+async def _fts_arm(
+    conn: Conn,
+    query_text: str,
+    *,
+    limit: int,
+    audiences: frozenset[str],
+) -> list[_ArmHit]:
     """Return records matching the scoped tsvector, ts_rank order, best first."""
     # Exclude stale tail rows beyond the live manifest prefix (see _semantic_arm).
     manifest_join, manifest_predicate = manifest_bound("r")
+    params: list[object] = [query_text, limit]
+    # Audience: gated -- in the WHERE, before the ``LIMIT``, so a hidden hit that ranks
+    # higher does not take the place of one the reader may see.
+    visible = visible_sql("i.agentsession_audience", params=params, audiences=audiences)
     rows = await conn.fetch(
         vetted_sql(
             "SELECT r.session_id, r.part, r.idx, "
@@ -236,10 +368,11 @@ async def _fts_arm(conn: Conn, query_text: str, *, limit: int) -> list[_ArmHit]:
             manifest_join,
             "WHERE r.search @@ q AND ",
             manifest_predicate,
+            " AND ",
+            visible,
             " ORDER BY ts_rank(r.search, q) DESC, r.session_id, r.part, r.idx LIMIT $2",
         ),
-        query_text,
-        limit,
+        *params,
     )
     hits: list[_ArmHit] = []
     for row in rows:

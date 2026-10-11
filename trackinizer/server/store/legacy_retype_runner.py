@@ -93,6 +93,7 @@ class RetypeStats:
     slash_commands: int = 0
 
 
+# Audience: internal -- an operator tool run on the server; no caller sees it.
 async def retype_all(
     engine: DatabaseEngine,
     *,
@@ -206,6 +207,7 @@ class _Output:
     ciphertext: str
 
 
+# Audience: internal -- an operator tool run on the server; no caller sees it.
 async def _read_sources(conn: Conn, session_id: UUID) -> list[_Source]:
     """Read the part's rows in ``idx`` order, ciphertext joined, rows locked."""
     # pragma: no mutate start -- the db_pglite tests exercise this SQL, and the
@@ -340,6 +342,7 @@ def _outputs_for(
     return outputs
 
 
+# Audience: internal -- an operator tool run on the server; no caller sees it.
 async def _replace_part(
     conn: Conn,
     session_id: UUID,
@@ -405,6 +408,7 @@ async def _replace_part(
 # Server-numbered from the session's own max, matching
 # ``session_ir.py::_append_slash_commands`` -- a retyped session may hold
 # commands from a live post-migration run already.
+# Audience: internal -- an operator tool run on the server; no caller sees it.
 async def _insert_slash_commands(
     conn: Conn,
     session_id: UUID,

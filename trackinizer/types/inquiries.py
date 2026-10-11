@@ -89,6 +89,7 @@ everything above it::
                 ended
                 rooms
                 opened_by_api_key_id
+                audience
 """
 
 from __future__ import annotations
@@ -1216,6 +1217,25 @@ class AgentSession(Artifact):
     keeps demo mode draining its own sessions). ``immutable``: stamped once at
     submit, never edited -- so it carries no setter, route, or change_log
     mirror."""
+
+    audience: str | None = field(
+        default=None,
+        metadata=ColumnSpec(
+            applies_to_inquiry_kinds=frozenset({"AgentSession"}),
+            sql_type="TEXT",
+            # ``wire/audience.py`` spells the same shape; ``types`` cannot import it.
+            sql_check="audience ~ '^[a-z][a-z0-9_-]{0,31}$'",
+            required=True,
+            immutable=True,
+        ),
+    )
+    """Who may read this session's transcript: ``open`` or ``staff``.
+
+    Only the transcript is gated; the envelope (title, actor, times, cost, edges)
+    and the rows a session files stay open. Stamped once at submit and never
+    edited, so it carries no setter, route, or change_log mirror. The shape is
+    checked in SQL and the accepted set in code, so a new value is not a migration.
+    Required on every AgentSession and NULL on every other kind."""
 
 
 # Walks the ``Inquiry`` subclass tree so a new kind registers itself with no parallel

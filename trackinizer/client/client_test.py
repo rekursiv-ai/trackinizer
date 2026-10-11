@@ -2134,6 +2134,37 @@ class TestSessionMethods:
 
         assert reads == [42.0]
 
+    def test_send_message_sends_the_body_an_older_server_accepts(self) -> None:
+        """A server that predates ``asker`` forbids a field it does not know."""
+        bodies: list[object] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            bodies.append(json_loads(request.content))
+            return httpx2.Response(200, json={"delivered": []})
+
+        with Client("http://server") as client:
+            _install_mock_transport(client, handler)
+            _ = client.send_message("lead", "hi")
+            _ = client.send_message("lead", "hi", room="ops")
+
+        assert bodies == [
+            {"actor": "lead", "room": None, "text": "hi"},
+            {"actor": "lead", "room": "ops", "text": "hi"},
+        ]
+
+    def test_enqueue_inbound_sends_the_body_an_older_server_accepts(self) -> None:
+        bodies: list[object] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            bodies.append(json_loads(request.content))
+            return httpx2.Response(200, json={"queued": 1})
+
+        with Client("http://server") as client:
+            _install_mock_transport(client, handler)
+            _ = client.enqueue_inbound(uuid.uuid4(), "hi")
+
+        assert bodies == [{"text": "hi"}]
+
 
 class TestExport:
     def test_yields_each_line_without_its_newline(self) -> None:

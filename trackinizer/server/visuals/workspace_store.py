@@ -117,6 +117,7 @@ async def send_chat_line(
     inbound: InboundQueue,
     assistant: Assistant | None,
     orgs: ChatOrgs,
+    audiences: frozenset[str],
 ) -> ChatSent | None:
     """Queue a browser line for a science chat's assistant, with its canvas context.
 
@@ -137,6 +138,8 @@ async def send_chat_line(
       inbound: Session message queue.
       assistant: The configured assistant, if any.
       orgs: How the server groups its users into organisations.
+      audiences: What the poster reads; a fork point in a session outside them is
+        no line, as one past the end of a session is none.
 
     Returns:
       sent: The conversation, and its session when the assistant has it open; None
@@ -171,6 +174,7 @@ async def send_chat_line(
             assistant=assistant,
             orgs=orgs,
             inbound=inbound,
+            audiences=audiences,
         )
         state = state_from_row(cast("Mapping[str, object]", row))
         partner = await resolve_partner(
@@ -706,6 +710,7 @@ async def _check_fork_or_membership(
     assistant: Assistant | None,
     orgs: ChatOrgs,
     inbound: InboundQueue,
+    audiences: frozenset[str],
 ) -> None:
     """Refuse a fork of what is no chat's line, and a post into another's chat."""
     if body.fork is not None and not await science_chat_exists_at(
@@ -713,6 +718,7 @@ async def _check_fork_or_membership(
         assistant=assistant,
         email=email,
         fork=body.fork,
+        audiences=audiences,
     ):
         raise ValueError("The fork point is not a line of a science chat")
     starter = inbound.sender_of(conversation_id) or await read_starter(

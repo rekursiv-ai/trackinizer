@@ -672,6 +672,9 @@
         "title": "ArtifactSectionDraft",
         "type": "object"
       },
+      "AudienceName": {
+        "type": "string"
+      },
       "BatchEdge": {
         "description": "One edge in a :class:`SubmitBatch`.\n\nEach endpoint is named EITHER by batch item index (``from_index`` /\n``to_index``, 0-based into ``items``) for a row created in this batch,\nOR by an existing row's ``from_id`` / ``to_id`` UUID. Exactly one of\nindex/id must be set per endpoint. Index references are the only way to\nlink two brand-new rows -- inline-created targets have no id until the\nbatch commits. Annotations mirror :class:`CreateEdge`.",
         "properties": {
@@ -1440,13 +1443,23 @@
         "type": "object"
       },
       "CreateTokenBody": {
-        "description": "Request body for minting an API key.\n\n``name`` is a human-facing label stored on the key so the UI can show\nwhat runs from where. ``role`` is an optional per-key ceiling that\ndefaults to the caller's own role; a stronger role is rejected with\n403, which lets a writer mint a viewer-only token for a read-only\nagent without losing their own write capability.",
+        "description": "Request body for minting an API key.\n\n``name`` is a human-facing label stored on the key so the UI can show\nwhat runs from where. ``role`` is an optional per-key ceiling that\ndefaults to the caller's own role; a stronger role is rejected with\n403, which lets a writer mint a viewer-only token for a read-only\nagent without losing their own write capability.\n\n``open_into`` pins the one audience the key opens sessions into. It may not exceed\nwhat the caller opens into: an audience beyond that is 403, and a name that is no\naudience is 422. A key minted by another key that leaves it out inherits that\nkey's pin.",
         "properties": {
           "name": {
             "maxLength": 128,
             "minLength": 1,
             "title": "Name",
             "type": "string"
+          },
+          "open_into": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AudienceName"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "role": {
             "anyOf": [
@@ -3343,8 +3356,20 @@
       },
       "InboundEnqueueRequest": {
         "additionalProperties": false,
-        "description": "A message a client asks trackinizer to inject into a live session.\n\nThe enqueue **request** carries only ``text`` -- the one field the route\nuses. ``source`` is attested by the route from the authenticated principal\n(a client cannot forge another sender), and ``room`` has no enqueue\nsemantics (the direct-session enqueue route discards it; routed delivery is\nthe separate ``@actor:room`` send-message path). ``extra=\"forbid\"`` makes a\nclient-sent ``source`` or ``room`` a 422 rather than a silently-ignored\nfield -- the request and response shapes are deliberately distinct (the\nresponse :class:`InboundDrainItem` carries both ``source`` and ``room``), so\nneither can be confused for the other.",
+        "description": "A message a client asks trackinizer to inject into a live session.\n\nThe enqueue **request** carries ``text`` -- the one field the route delivers --\nand, from the configured assistant alone, the ``asker`` it sends for. ``source``\nis attested by the route from the authenticated principal (a client cannot forge\nanother sender), and ``room`` has no enqueue semantics (the direct-session\nenqueue route discards it; routed delivery is the separate ``@actor:room``\nsend-message path). ``extra=\"forbid\"`` makes a client-sent ``source`` or ``room``\na 422 rather than a silently-ignored field -- the request and response shapes are\ndeliberately distinct (the response :class:`InboundDrainItem` carries both\n``source`` and ``room``), so neither can be confused for the other.",
         "properties": {
+          "asker": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asker"
+          },
           "text": {
             "maxLength": 16384,
             "minLength": 1,
@@ -5012,6 +5037,18 @@
             "minLength": 1,
             "title": "Actor",
             "type": "string"
+          },
+          "asker": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asker"
           },
           "room": {
             "anyOf": [
@@ -8990,7 +9027,7 @@
     },
     "/api/admin/users": {
       "get": {
-        "description": "List every user row for the admin table.\n\nArgs:\n  request: FastAPI Request object containing app state with db engine.\n  identity: Admin identity from authentication dependency.\n\nReturns:\n  users: List of user records with id, email, name, role, status,\n    created_at, last_login.",
+        "description": "List every user row for the admin table.\n\nArgs:\n  request: FastAPI Request object containing app state with db engine.\n  identity: Admin identity from authentication dependency.\n\nReturns:\n  users: List of user records with id, email, name, role, status,\n    created_at, last_login, and ``staff``, read-only: whether the deployment's\n    staff setting makes the user staff. No route writes it.",
         "operationId": "admin_list_users_route_api_admin_users_get",
         "responses": {
           "200": {
@@ -10106,7 +10143,7 @@
     },
     "/api/change_log/stream": {
       "get": {
-        "description": "Stream change ids over SSE.\n\nShares ``iter_sse_events`` with ``/api/web/subscribe`` so both emit\none wire shape; offline catch-up uses ``GET /api/change_log``.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, viewer-role-gated.\n\nReturns:\n  result: Server-sent events stream emitting change ids.",
+        "description": "Stream change ids over SSE.\n\nShares ``iter_sse_events`` with ``/api/web/subscribe`` so both emit\none wire shape; offline catch-up uses ``GET /api/change_log``. A record\nwritten to a session's transcript is streamed only to a caller whose\naudiences include the session's.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, viewer-role-gated.\n\nReturns:\n  result: Server-sent events stream emitting change ids.",
         "operationId": "change_log_stream_route_api_change_log_stream_get",
         "responses": {
           "200": {
@@ -11908,7 +11945,7 @@
     },
     "/api/export": {
       "get": {
-        "description": "Stream every exported row as one JSON object per line.\n\nViewer-gated: it is a read, and a backup or mirror job should be able to\nrun on a read-only key.\n\nArgs:\n  request: FastAPI request object for store access.\n  identity: Authenticated user identity, viewer-role-gated.\n\nReturns:\n  result: The header line, then one line per row.",
+        "description": "Stream every exported row as one JSON object per line.\n\nViewer-gated: it is a read, so a read-only key can run it. A session's transcript\nis exported only to a caller whose audiences include the session's, and the\nheader line names the audiences the file was read for, so a file taken by a\ncaller that reads fewer than the deployment holds says so. A backup or mirror\nthat must hold every transcript runs as a caller that reads every audience.\n\nArgs:\n  request: FastAPI request object for store access.\n  identity: Authenticated user identity, viewer-role-gated.\n\nReturns:\n  result: The header line, then one line per row.",
         "operationId": "export_route_api_export_get",
         "responses": {
           "200": {
@@ -11925,7 +11962,7 @@
     },
     "/api/inquiries": {
       "get": {
-        "description": "List inquiries across one or more ``kind`` query params.\n\nResults from every requested kind are concatenated, one block per\nDISTINCT kind: a repeated ``kind`` param yields one block, not several.\n``limit`` and\n``offset`` apply per kind, since each kind runs its own query. At\nleast one ``kind`` is required. Each ``seq_range`` param is one\ninclusive ``a..b`` interval; their union selects rows across disjoint\nseq windows in a single query.\n\nEach ``fields`` param names one key every row keeps; the others are left\nout. A key only another kind's rows carry is absent from this kind's. The\nedges are read only when a relation (``narrows``, ``proved_by``, ...) is\nnamed. Without ``fields`` each row is whole.\n\n``ancestors=narrows`` adds ``ancestors`` to each row, after ``fields``: the\nIssues it narrows, theirs, and so on up to the roots, nearest first, each\nas ``{id, kind, seq, title, status, child_ids}``. ``child_ids`` names which\nof the row and its listed ancestors narrow that one, so a row with several\nparents keeps them all. The walk stops 8 levels up and at 200 ancestors\nfor the whole response, nearest first.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, viewer-role-gated.\n  kind: Inquiry kinds to list; deduplicated before query.\n  status: Optional status filter applied to each kind's query.\n  limit: Rows per kind (validated in [1, MAX_LIST_LIMIT]).\n  offset: Skip this many rows in each kind's result.\n  seq_range: Inclusive seq intervals; union selects rows.\n  filter_: JSON filter expressions; one per repeated param.\n  fields: Row keys to send, one per repeated param; unset sends every key.\n  ancestors: ``narrows`` adds each row's ``narrows`` ancestry; unset adds none.\n\nReturns:\n  out: One JSON object per distinct kind, with inquiries for that kind.",
+        "description": "List inquiries across one or more ``kind`` query params.\n\nResults from every requested kind are concatenated, one block per\nDISTINCT kind: a repeated ``kind`` param yields one block, not several.\n``limit`` and\n``offset`` apply per kind, since each kind runs its own query. At\nleast one ``kind`` is required. Each ``seq_range`` param is one\ninclusive ``a..b`` interval; their union selects rows across disjoint\nseq windows in a single query.\n\nEach ``fields`` param names one key every row keeps; the others are left\nout. A key only another kind's rows carry is absent from this kind's. The\nedges are read only when a relation (``narrows``, ``proved_by``, ...) is\nnamed. Without ``fields`` each row is whole.\n\n``ancestors=narrows`` adds ``ancestors`` to each row, after ``fields``: the\nIssues it narrows, theirs, and so on up to the roots, nearest first, each\nas ``{id, kind, seq, title, status, child_ids}``. ``child_ids`` names which\nof the row and its listed ancestors narrow that one, so a row with several\nparents keeps them all. The walk stops 8 levels up and at 200 ancestors\nfor the whole response, nearest first.\n\nA ``filter`` on a record of an ``AgentSession`` (``user_message``, ``tool_call``,\n...) is answered from its transcript, so it meets only the sessions whose audience\nthe caller reads; a session the caller does not read is neither found by it nor\nruled out by it.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, viewer-role-gated.\n  kind: Inquiry kinds to list; deduplicated before query.\n  status: Optional status filter applied to each kind's query.\n  limit: Rows per kind (validated in [1, MAX_LIST_LIMIT]).\n  offset: Skip this many rows in each kind's result.\n  seq_range: Inclusive seq intervals; union selects rows.\n  filter_: JSON filter expressions; one per repeated param.\n  fields: Row keys to send, one per repeated param; unset sends every key.\n  ancestors: ``narrows`` adds each row's ``narrows`` ancestry; unset adds none.\n\nReturns:\n  out: One JSON object per distinct kind, with inquiries for that kind.",
         "operationId": "list_inquiries_route_api_inquiries_get",
         "parameters": [
           {
@@ -14607,7 +14644,7 @@
     },
     "/api/me/profile": {
       "get": {
-        "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, canvas opt-in, the\n    id of the API key the request used (``None`` for a browser session), when\n    the caller agreed to the rules and to which version, and the current rules\n    version with the id of the Issue that holds the rules (both ``None`` while\n    Issue#1 is missing or unlocked).",
+        "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, canvas opt-in, the\n    id of the API key the request used (``None`` for a browser session), when\n    the caller agreed to the rules and to which version, and the current rules\n    version with the id of the Issue that holds the rules (both ``None`` while\n    Issue#1 is missing or unlocked), and the audiences the credential reads and\n    opens into, with its pin if any.",
         "operationId": "profile_route_api_me_profile_get",
         "responses": {
           "200": {
@@ -14643,7 +14680,7 @@
         "summary": "List Tokens Route"
       },
       "post": {
-        "description": "Create a new API key for the authenticated user.\n\nThe plaintext ``secret`` is returned exactly once; the server stores\nonly its hash and prefix. A client that loses the secret rotates by\ncreating a new key and revoking the old one.\n\nThe optional ``role`` field caps the new key at or below the caller's\n*effective* role -- the weaker of their user role and the role of the\ncredential they presented -- defaulting to that ceiling when omitted. A\nstronger role returns 403, the boundary that keeps a writer from minting\nan admin token and a scoped-down key from self-escalating.\n\nArgs:\n  body: Request body with name and optional role ceiling.\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with key id, name, prefix, role, and plaintext secret.\n\nRaises:\n  HTTPException: 403 if requested role exceeds caller's effective role.",
+        "description": "Create a new API key for the authenticated user.\n\nThe plaintext ``secret`` is returned exactly once; the server stores\nonly its hash and prefix. A client that loses the secret rotates by\ncreating a new key and revoking the old one.\n\nThe optional ``role`` field caps the new key at or below the caller's\n*effective* role -- the weaker of their user role and the role of the\ncredential they presented -- defaulting to that ceiling when omitted. A\nstronger role returns 403, the boundary that keeps a writer from minting\nan admin token and a scoped-down key from self-escalating. The pin follows the\nsame rule: the key opens at most what the caller does.\n\nArgs:\n  body: Request body with name, optional role ceiling and pin.\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with key id, name, prefix, role, the stored pin and plaintext\n    secret.\n\nRaises:\n  HTTPException: 403 if the requested role or pin exceeds the caller's.",
         "operationId": "create_token_route_api_me_tokens_post",
         "requestBody": {
           "content": {
@@ -14682,7 +14719,7 @@
     },
     "/api/me/tokens/{key_id}/revoke": {
       "post": {
-        "description": "Revoke one of the authenticated user's keys.\n\nUnknown id, foreign owner, and already-revoked all return 404, so an\nattacker probing UUIDs learns nothing about which keys exist.\n\nArgs:\n  key_id: API key UUID to revoke.\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with {\"ok\": true} on success.\n\nRaises:\n  HTTPException: 404 if key not found, owned by another user, or already revoked.",
+        "description": "Revoke one of the authenticated user's keys.\n\nUnknown id, foreign owner, and already-revoked all return 404, so an\nattacker probing UUIDs learns nothing about which keys exist. A pinned key\ncannot revoke a key that opens beyond it, and gets the same 404.\n\nArgs:\n  key_id: API key UUID to revoke.\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with {\"ok\": true} on success.\n\nRaises:\n  HTTPException: 404 if key not found, owned by another user, or already revoked.",
         "operationId": "revoke_token_route_api_me_tokens__key_id__revoke_post",
         "parameters": [
           {
@@ -14723,7 +14760,7 @@
     },
     "/api/me/tokens/{key_id}/role": {
       "put": {
-        "description": "Re-tier one of the caller's keys within the caller's effective ceiling.\n\nSame policy as create: a key can move to any role at or below the\ncaller's *effective* role (the weaker of their user role and the\npresented credential's role), and anything stronger returns 403.\nUnknown id, foreign owner, and already-revoked all fold to 404, matching\nthe revoke route's anti-enumeration stance.\n\nArgs:\n  key_id: API key UUID to re-tier.\n  body: Request body with new role.\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with {\"ok\": true, \"role\": new_role} on success.\n\nRaises:\n  HTTPException: 403 if role exceeds caller's effective ceiling; 404 otherwise.",
+        "description": "Re-tier one of the caller's keys within the caller's effective ceiling.\n\nSame policy as create: a key can move to any role at or below the\ncaller's *effective* role (the weaker of their user role and the\npresented credential's role), and anything stronger returns 403.\nUnknown id, foreign owner, and already-revoked all fold to 404, matching\nthe revoke route's anti-enumeration stance. A pinned key cannot\nre-tier a key that opens beyond it, and gets the same 404.\n\nArgs:\n  key_id: API key UUID to re-tier.\n  body: Request body with new role.\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with {\"ok\": true, \"role\": new_role} on success.\n\nRaises:\n  HTTPException: 403 if role exceeds caller's effective ceiling; 404 otherwise.",
         "operationId": "set_token_role_route_api_me_tokens__key_id__role_put",
         "parameters": [
           {
@@ -14813,7 +14850,7 @@
     },
     "/api/messages": {
       "post": {
-        "description": "Resolve a routing name to live sessions and enqueue the message.\n\nThe ergonomic front door for ``trax send``: the server resolves ``actor``\n(optionally scoped to ``room``) to the live sessions that match and\nenqueues the text to each, so the caller never needs a session id. Sender\nis route-attested (the principal), never the body. Delivery is\ndrop-if-absent -- the response lists the sessions enqueued; an empty list\nmeans no live session matched.\n\nPolicy: anyone (any ``writer``) may message anyone's agent -- this is\nintentional. Sessions are a shared workspace and cross-agent messaging is\nthe feature, so there is no per-opener ownership gate here (or on the\ndirect ``/inbound`` route). The sender is always truthfully attested.\n\nA bare ``actor`` (no ``room``) is rejected when the matched session belongs\nto more than one room: a single PTY interleaves every room's messages, so\nthe caller must name the room (``@actor:room``) to give the agent context.\nRetries that reuse the request's ``Idempotency-Key`` return the original\nreceipt without re-enqueuing (the send path writes no ``change_log`` row to\ndedup against), but only a delivery that reached at least one live session\nis recorded: an empty send leaves the key unrecorded so a later retry --\nonce the session is live -- still delivers instead of replaying nothing.\n\nArgs:\n  body: Message text and optional room scope to address by actor name.\n  request: Starlette request object.\n  identity: Authenticated user (sender is attested, not from body).\n\nReturns:\n  response: SendMessageResponse with list of (session_id,\n    message_count) pairs of all sessions enqueued (may be empty if no\n    live session matched).",
+        "description": "Resolve a routing name to live sessions and enqueue the message.\n\nThe ergonomic front door for ``trax send``: the server resolves ``actor``\n(optionally scoped to ``room``) to the live sessions that match and\nenqueues the text to each, so the caller never needs a session id. Sender\nis route-attested (the principal), never the body. Delivery is\ndrop-if-absent -- the response lists the sessions enqueued; an empty list\nmeans no live session matched.\n\nPolicy: any ``writer`` may message the agent of any session whose audience it\nreads. The configured assistant may message one it does not read only for an\n``asker`` it names, who is that session's account or a writer who holds its\naudience: it relays a user's line and passes on that user's rights, not its own.\nSessions are a shared workspace and cross-agent messaging is the feature, so there\nis no per-opener ownership gate here (or on the direct ``/inbound`` route). The\nsender is always truthfully attested. When any live session the name resolves to\nis one the sender may not message, the whole send is 403 ``session_audience`` and\nnothing is queued, so a send never reports a delivery that did not happen.\n\nA bare ``actor`` (no ``room``) is rejected when the matched session belongs\nto more than one room: a single PTY interleaves every room's messages, so\nthe caller must name the room (``@actor:room``) to give the agent context.\nRetries that reuse the request's ``Idempotency-Key`` return the original\nreceipt without re-enqueuing (the send path writes no ``change_log`` row to\ndedup against), but only a delivery that reached at least one live session\nis recorded: an empty send leaves the key unrecorded so a later retry --\nonce the session is live -- still delivers instead of replaying nothing.\n\nArgs:\n  body: Message text and optional room scope to address by actor name, and the\n    user the assistant sends it for.\n  request: Starlette request object.\n  identity: Authenticated user (sender is attested, not from body).\n\nReturns:\n  response: SendMessageResponse with list of (session_id,\n    message_count) pairs of all sessions enqueued (may be empty if no\n    live session matched).",
         "operationId": "send_message_route_api_messages_post",
         "requestBody": {
           "content": {
@@ -15906,7 +15943,7 @@
     },
     "/api/sessions/start": {
       "post": {
-        "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so ``trax run``\nadopts whatever it was given.\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, started, rooms,\n    account, idempotency_key).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, and granted actor\n    name.",
+        "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so ``trax run``\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``. A pin the caller no longer holds is 403 ``audience_not_held``.\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, started, rooms,\n    account, idempotency_key).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, and granted actor\n    name.",
         "operationId": "session_start_route_api_sessions_start_post",
         "requestBody": {
           "content": {
@@ -15945,7 +15982,7 @@
     },
     "/api/sessions/{session_id}/end": {
       "post": {
-        "description": "Close a session atomically and release its inbound queue.\n\n``end_session`` stamps ``ended`` + ``status`` (and backfills\n``cli_session_id`` when given) in one transaction, so a partial\nfailure can never leave a zombie session -- ``ended`` set yet\n``status`` non-terminal -- and the inbound queue is drained only after\nthe close commits, so a failed end never silently discards undelivered\nsteering messages. A second end on an already-closed session is a 409.\n\nArgs:\n  session_id: UUID of the session to close.\n  body: Session status and optional cli_session_id backfill.\n  request: Starlette request object.\n  identity: Authenticated user (audit actor for the change).\n\nReturns:\n  response: SessionEndResponse with session id and committed ended\n    timestamp (original value on idempotent replay).",
+        "description": "Close a session atomically and release its inbound queue.\n\n``end_session`` stamps ``ended`` + ``status`` (and backfills\n``cli_session_id`` when given) in one transaction, so a partial\nfailure can never leave a zombie session -- ``ended`` set yet\n``status`` non-terminal -- and the inbound queue is drained only after\nthe close commits, so a failed end never silently discards undelivered\nsteering messages. A second end on an already-closed session is a 409. A\nsession whose audience the caller neither reads nor opened is 403\n``session_audience``.\n\nArgs:\n  session_id: UUID of the session to close.\n  body: Session status and optional cli_session_id backfill.\n  request: Starlette request object.\n  identity: Authenticated user (audit actor for the change).\n\nReturns:\n  response: SessionEndResponse with session id and committed ended\n    timestamp (original value on idempotent replay).",
         "operationId": "session_end_route_api_sessions__session_id__end_post",
         "parameters": [
           {
@@ -15996,7 +16033,7 @@
     },
     "/api/sessions/{session_id}/inbound": {
       "get": {
-        "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's ``trax run`` to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nWriters retain shared access to the drains of ordinary sessions, but a science\nchat and the assistant's or a helper's service session are drained by their\nopening key alone (403 otherwise). Viewer access is scoped to the opening API\nkey so reading chat does not grant graph-write permission.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text,\n    source, room), oldest first, or empty list if none are queued.",
+        "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's ``trax run`` to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nThe drain is 403 ``session_audience`` unless the caller opened the session or reads\nits audience.\n\nWriters retain shared access to the drains of ordinary sessions, but a science\nchat and the assistant's or a helper's service session are drained by their\nopening key alone (403 otherwise). Viewer access is scoped to the opening API\nkey so reading chat does not grant graph-write permission.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text,\n    source, room), oldest first, or empty list if none are queued.",
         "operationId": "session_inbound_drain_route_api_sessions__session_id__inbound_get",
         "parameters": [
           {
@@ -16045,7 +16082,7 @@
         "summary": "Session Inbound Drain Route"
       },
       "post": {
-        "description": "Enqueue a message to inject into a live session's input.\n\nThe sender is **attested by the route**, never trusted from the body: the\nstored ``source`` is always the authenticated principal, so an agent\ncannot forge another sender. The request body (:class:`InboundEnqueueRequest`)\ncarries no ``source`` at all -- a client that sends one gets 422, not a\nsilently-ignored field. The session must exist and have a recent inbound\npoll; an ended or stale session is rejected (409) because no poller will\ndrain it.\n\nArgs:\n  session_id: UUID of the session to message.\n  body: Message text to inject.\n  request: Starlette request object.\n  identity: Authenticated user (sender is attested, not from body).\n\nReturns:\n  response: InboundEnqueueResponse with list of (session_id,\n    message_count) pairs of sessions enqueued (always the one target).",
+        "description": "Enqueue a message to inject into a live session's input.\n\nThe sender is **attested by the route**, never trusted from the body: the\nstored ``source`` is always the authenticated principal, so an agent\ncannot forge another sender. The request body (:class:`InboundEnqueueRequest`)\ncarries no ``source`` at all -- a client that sends one gets 422, not a\nsilently-ignored field. The session must exist and have a recent inbound\npoll; an ended or stale session is rejected (409) because no poller will\ndrain it. A session whose audience the sender does not read is 403\n``session_audience``, unless the sender is the configured assistant sending for\nan ``asker`` who is that session's account or a writer who holds its audience.\n\nArgs:\n  session_id: UUID of the session to message.\n  body: Message text to inject, and the user the assistant sends it for.\n  request: Starlette request object.\n  identity: Authenticated user (sender is attested, not from body).\n\nReturns:\n  response: InboundEnqueueResponse with list of (session_id,\n    message_count) pairs of sessions enqueued (always the one target).",
         "operationId": "session_inbound_enqueue_route_api_sessions__session_id__inbound_post",
         "parameters": [
           {
@@ -16096,7 +16133,7 @@
     },
     "/api/sessions/{session_id}/parts": {
       "get": {
-        "description": "List the files this session was captured from, in ``part`` order.\n\nArgs:\n  session_id: AgentSession ID to list parts from.\n  request: FastAPI request (carries auth and store).\n\nReturns:\n  result: ReadPartsResponse with manifest info for each part.",
+        "description": "List the files this session was captured from, in ``part`` order.\n\nArgs:\n  session_id: AgentSession ID to list parts from.\n  request: FastAPI request (carries auth and store).\n  identity: Authenticated reader.\n\nReturns:\n  result: ReadPartsResponse with manifest info for each part.",
         "operationId": "read_session_parts_route_api_sessions__session_id__parts_get",
         "parameters": [
           {
@@ -16137,7 +16174,7 @@
     },
     "/api/sessions/{session_id}/records": {
       "get": {
-        "description": "Read one page of a part's records.\n\n``after_idx`` is an EXCLUSIVE lower bound rather than an offset, so paging\nis stable while a capture is still appending: an offset would re-window\nevery time the part grew.\n\n``plaintext_only`` skips the ciphertext splice, which is what a viewer\nwants -- only a replay needs the encrypted half, and it is the largest\nthing on the row.\n\nArgs:\n  session_id: AgentSession ID to read from.\n  request: FastAPI request (carries auth and store).\n  part: Which file, as ``GET .../parts`` numbers it; ``-1`` holds turns\n    backfilled from the retired event log.\n  after_idx: Exclusive lower bound on idx (cursor-based paging).\n  limit: Max rows per page.\n  plaintext_only: Omit ciphertext.\n\nReturns:\n  result: ReadRecordsResponse with matching records.",
+        "description": "Read one page of a part's records.\n\n``after_idx`` is an EXCLUSIVE lower bound rather than an offset, so paging\nis stable while a capture is still appending: an offset would re-window\nevery time the part grew.\n\n``plaintext_only`` skips the ciphertext splice, which is what a viewer\nwants -- only a replay needs the encrypted half, and it is the largest\nthing on the row.\n\nArgs:\n  session_id: AgentSession ID to read from.\n  request: FastAPI request (carries auth and store).\n  identity: Authenticated reader.\n  part: Which file, as ``GET .../parts`` numbers it; ``-1`` holds turns\n    backfilled from the retired event log.\n  after_idx: Exclusive lower bound on idx (cursor-based paging).\n  limit: Max rows per page.\n  plaintext_only: Omit ciphertext.\n\nReturns:\n  result: ReadRecordsResponse with matching records.",
         "operationId": "read_session_records_route_api_sessions__session_id__records_get",
         "parameters": [
           {
@@ -16267,7 +16304,7 @@
     },
     "/api/sessions/{session_id}/turns": {
       "get": {
-        "description": "Read recent conversation turns without transferring intervening tools.\n\nArgs:\n  session_id: AgentSession ID to read from.\n  request: FastAPI request carrying auth and store.\n  limit: Maximum user and assistant turns, from 1 through 100.\n\nReturns:\n  result: The newest turns in display order across session parts.",
+        "description": "Read recent conversation turns without transferring intervening tools.\n\nArgs:\n  session_id: AgentSession ID to read from.\n  request: FastAPI request carrying auth and store.\n  identity: Authenticated reader.\n  limit: Maximum user and assistant turns, from 1 through 100.\n\nReturns:\n  result: The newest turns in display order across session parts.",
         "operationId": "read_recent_session_turns_route_api_sessions__session_id__turns_get",
         "parameters": [
           {
@@ -16528,7 +16565,7 @@
     },
     "/api/web/feed": {
       "get": {
-        "description": "Cross-session captured-turn feed for the multi-agent console.\n\nInterleaves every session's turns into one time-ordered stream so the\nconsole shows many agents at once.\n\n``after_created`` / ``after_session`` / ``after_part`` / ``after_seq``\ntogether form the composite keyset cursor a poll resumes past (all are\nrequired; the order key is composite so a bare ``created`` resume would\nskip same-instant ties, and ``part`` joined it when the feed moved to IR\nrecords -- position restarts within each source file). ``since`` / ``until``\nbound a fixed historical window; ``actor`` / ``room`` / ``cli`` / ``kind``\nfilter (:func:`feed_scope`), and ``conversation=true`` keeps only what the\nfacets count as conversation. ``tail=true`` returns the\nnewest page (the live console's first load) so a backlog does not force a\nreplay from the beginning. The response carries ``next_after`` (a composite\ncursor) for the next poll; an empty page echoes the supplied cursor so the\ntail does not rewind.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  scope: Which sessions and record kinds to read.\n  after_created: Resume cursor: creation timestamp of last-seen turn.\n  after_session: Resume cursor: session id of last-seen turn.\n  after_part: Resume cursor: part index within the session.\n  after_seq: Resume cursor: sequence number within the part.\n  since: Absolute window start (inclusive).\n  until: Absolute window end (inclusive).\n  conversation: Keep only conversation, what a person or agent said.\n  limit: Maximum turns to return.\n  tail: Return newest page first (true) or oldest available (false).\n\nReturns:\n  feed: Turns across all sessions, pagination cursor for next poll.",
+        "description": "Cross-session captured-turn feed for the multi-agent console.\n\nInterleaves every session's turns into one time-ordered stream so the\nconsole shows many agents at once.\n\n``after_created`` / ``after_session`` / ``after_part`` / ``after_seq``\ntogether form the composite keyset cursor a poll resumes past (all are\nrequired; the order key is composite so a bare ``created`` resume would\nskip same-instant ties, and ``part`` joined it when the feed moved to IR\nrecords -- position restarts within each source file). ``since`` / ``until``\nbound a fixed historical window; ``actor`` / ``room`` / ``cli`` / ``kind``\nfilter (:func:`feed_scope`), and ``conversation=true`` keeps only what the\nfacets count as conversation. ``tail=true`` returns the\nnewest page (the live console's first load) so a backlog does not force a\nreplay from the beginning. The response carries ``next_after`` (a composite\ncursor) for the next poll; an empty page echoes the supplied cursor so the\ntail does not rewind.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  scope: Which sessions and record kinds to read.\n  after_created: Resume cursor: creation timestamp of last-seen turn.\n  after_session: Resume cursor: session id of last-seen turn.\n  after_part: Resume cursor: part index within the session.\n  after_seq: Resume cursor: sequence number within the part.\n  since: Absolute window start (inclusive).\n  until: Absolute window end (inclusive).\n  conversation: Keep only conversation, what a person or agent said.\n  limit: Maximum turns to return.\n  tail: Return newest page first (true) or oldest available (false).\n\nReturns:\n  feed: Turns across the sessions the caller reads, pagination cursor for next\n    poll. A session whose audience the caller does not read has no turn here.",
         "operationId": "web_feed_api_web_feed_get",
         "parameters": [
           {
@@ -16769,7 +16806,7 @@
     },
     "/api/web/feed/facets": {
       "get": {
-        "description": "Count the feed between ``since`` and ``until`` by session, room and kind.\n\nThe counts are of the records ``/feed`` returns for the same window and\nfilters, so the console can list agents, rooms and verbosity levels with\ntheir sizes before it loads any of them.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  scope: Which sessions and record kinds to count.\n  since: Window start (inclusive); unset counts from the first record.\n  until: Window end (inclusive); unset counts to the last.\n\nReturns:\n  facets: Per session, room and record kind, what the window holds.",
+        "description": "Count the feed between ``since`` and ``until`` by session, room and kind.\n\nThe counts are of the records ``/feed`` returns for the same window and\nfilters, so the console can list agents, rooms and verbosity levels with\ntheir sizes before it loads any of them.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  scope: Which sessions and record kinds to count.\n  since: Window start (inclusive); unset counts from the first record.\n  until: Window end (inclusive); unset counts to the last.\n\nReturns:\n  facets: Per session, room and record kind, what the window holds of the\n    sessions the caller reads.",
         "operationId": "web_feed_facets_api_web_feed_facets_get",
         "parameters": [
           {
@@ -16914,7 +16951,7 @@
     },
     "/api/web/feed/histogram": {
       "get": {
-        "description": "Count the feed's records per time bucket, over at most the last 7 days.\n\nBuckets have a round width (seconds up to hours, then whole days), the\nfinest that fits the span in at most ``buckets``, and start on a multiple of\nit from the Unix epoch; every bucket from the one holding ``since`` through\nthe one holding ``until`` is listed, empty ones as 0. A ``since`` more than\n7 days ago starts the span 7 days ago.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  scope: Which sessions and record kinds to count.\n  since: Span start; unset starts at the first record of the last 7 days.\n  until: Span end; unset ends now.\n  buckets: Most buckets to return, 2 to 1000.\n\nReturns:\n  histogram: The grid and each bucket's record count, oldest first.\n\nRaises:\n  HTTPException: 400 for ``buckets`` outside 2 to 1000, an ``until`` before\n    ``since``, or an ``until`` more than 7 days ago.",
+        "description": "Count the feed's records per time bucket, over at most the last 7 days.\n\nBuckets have a round width (seconds up to hours, then whole days), the\nfinest that fits the span in at most ``buckets``, and start on a multiple of\nit from the Unix epoch; every bucket from the one holding ``since`` through\nthe one holding ``until`` is listed, empty ones as 0. A ``since`` more than\n7 days ago starts the span 7 days ago.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  scope: Which sessions and record kinds to count.\n  since: Span start; unset starts at the first record of the last 7 days.\n  until: Span end; unset ends now.\n  buckets: Most buckets to return, 2 to 1000.\n\nReturns:\n  histogram: The grid and each bucket's record count, oldest first, of the\n    sessions the caller reads.\n\nRaises:\n  HTTPException: 400 for ``buckets`` outside 2 to 1000, an ``until`` before\n    ``since``, or an ``until`` more than 7 days ago.",
         "operationId": "web_feed_histogram_api_web_feed_histogram_get",
         "parameters": [
           {
@@ -17360,7 +17397,7 @@
     },
     "/api/web/search_sessions": {
       "get": {
-        "description": "Hybrid session search: embeddings + scoped tsvector, RRF-merged.\n\nRuns the full-text arm always, and the semantic arm only when ``semantic``\nis requested AND a session embedder is available. With no embedder the route\ndegrades to full-text-only rather than 500 -- a keyword search must never\ntrigger a model load -- and flags the degrade in the response\n(``degraded: true``, ``semantic: false``). The query embedding uses the\nembedder's query-side prefix; the corpus stayed prefix-free at ingest.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  q: The search query. Full-text terms feed ``websearch_to_tsquery``.\n  identity: Authenticated user, validated to have viewer role.\n  semantic: Request the embedding arm (default true); ignored when no\n    session embedder is available.\n  limit: Maximum merged hits, 1-200.\n  model: Optional A/B override -- a bare slug or full ``slug@dim`` of an\n    embedder to query INSTEAD of the serving default (its rows must already\n    be swept). Unknown names are a 400. Empty uses the process default.\n  dim: Optional dim override paired with ``model`` (a Matryoshka model\n    accepts any dim in its range); must agree with any ``@dim`` in ``model``.\n\nReturns:\n  body: ``{\"hits\": [...], \"semantic\": bool, \"degraded\": bool}`` -- each hit\n    carries ``session_id``/``part``/``idx`` (where the console opens),\n    ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``.",
+        "description": "Hybrid session search: embeddings + scoped tsvector, RRF-merged.\n\nRuns the full-text arm always, and the semantic arm only when ``semantic``\nis requested AND a session embedder is available. With no embedder the route\ndegrades to full-text-only rather than 500 -- a keyword search must never\ntrigger a model load -- and flags the degrade in the response\n(``degraded: true``, ``semantic: false``). The query embedding uses the\nembedder's query-side prefix; the corpus stayed prefix-free at ingest.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  q: The search query. Full-text terms feed ``websearch_to_tsquery``.\n  identity: Authenticated user, validated to have viewer role.\n  semantic: Request the embedding arm (default true); ignored when no\n    session embedder is available.\n  limit: Maximum merged hits, 1-200.\n  model: Optional A/B override -- a bare slug or full ``slug@dim`` of an\n    embedder to query INSTEAD of the serving default (its rows must already\n    be swept). Unknown names are a 400. Empty uses the process default.\n  dim: Optional dim override paired with ``model`` (a Matryoshka model\n    accepts any dim in its range); must agree with any ``@dim`` in ``model``.\n\nReturns:\n  body: ``{\"hits\": [...], \"semantic\": bool, \"degraded\": bool}`` -- each hit\n    carries ``session_id``/``part``/``idx`` (where the console opens),\n    ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``. A session\n    whose audience the caller does not read has no hit.",
         "operationId": "web_search_sessions_api_web_search_sessions_get",
         "parameters": [
           {
@@ -17446,7 +17483,7 @@
     },
     "/api/web/subscribe": {
       "get": {
-        "description": "SSE relay of mutated inquiry ids for the SPA.\n\nForwards every ``NOTIFY_CHANNEL`` payload as ``{\"id\": \"<uuid>\"}``\nvia :func:`iter_sse_events` -- shared with ``/api/change_log/stream``\nso both routes emit one wire shape. Gated at ``viewer`` like every\nread route (see the Auth section of ``docs/design.md``). The stream\nis unfiltered: every subscriber sees every mutated id and the SPA\ndecides what to fetch. Per-subscriber server-side filtering is a\nfuture refinement, not a security boundary -- authz already gates\nwho may open the stream at all.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n\nReturns:\n  stream: Server-sent events of mutated node ids.",
+        "description": "SSE relay of mutated inquiry ids for the SPA.\n\nForwards every ``NOTIFY_CHANNEL`` payload as ``{\"id\": \"<uuid>\"}``\nvia :func:`iter_sse_events` -- shared with ``/api/change_log/stream``\nso both routes emit one wire shape. Gated at ``viewer`` like every\nread route (see the Auth section of ``docs/design.md``). Every subscriber\nsees every mutated id and the SPA decides what to fetch, except that a\nrecord written to a session's transcript is relayed only to a subscriber\nwhose audiences include the session's.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n\nReturns:\n  stream: Server-sent events of mutated node ids.",
         "operationId": "web_subscribe_api_web_subscribe_get",
         "responses": {
           "200": {
@@ -18161,7 +18198,7 @@
     },
     "/api/workspaces/{workspace_id}/events": {
       "get": {
-        "description": "Stream a canvas's changes to its owner's browser as server-sent events.\n\nEach frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:\n``workspace`` carries the whole canvas on open, after every change by a\nbrowser or an agent, and when its partner changes, with ``shown`` naming the\ninstance an agent's show brought up; ``navigate`` an agent's\nmove of the page; ``highlight`` the inquiries it points at; and ``changed`` an\ninquiry id, as ``/api/web/subscribe`` relays it, so a tab needs this one stream.\nA Chat conversation is an AgentSession, so a line added to it reaches every\nviewer of the session as the session's ``changed`` id; no frame is Chat's own.\nThe stream opens with a comment and sends another after 25 s without a frame. A subscriber more than 256 frames\nbehind is dropped; it reconnects from the ``workspace`` frame.\n\nArgs:\n  workspace_id: Canvas to follow.\n  request: Request carrying the database engine and the event hub.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  stream: Server-sent frames.",
+        "description": "Stream a canvas's changes to its owner's browser as server-sent events.\n\nEach frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:\n``workspace`` carries the whole canvas on open, after every change by a\nbrowser or an agent, and when its partner changes, with ``shown`` naming the\ninstance an agent's show brought up; ``navigate`` an agent's\nmove of the page; ``highlight`` the inquiries it points at; and ``changed`` an\ninquiry id, as ``/api/web/subscribe`` relays it, so a tab needs this one stream.\nA Chat conversation is an AgentSession, so a line added to it reaches every\nviewer who reads the session's audience as the session's ``changed`` id; no frame\nis Chat's own. The stream opens with a comment and sends another after 25 s without\na frame. A subscriber more than 256 frames behind is dropped; it reconnects from\nthe ``workspace`` frame.\n\nArgs:\n  workspace_id: Canvas to follow.\n  request: Request carrying the database engine and the event hub.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  stream: Server-sent frames.",
         "operationId": "workspace_events_route_api_workspaces__workspace_id__events_get",
         "parameters": [
           {

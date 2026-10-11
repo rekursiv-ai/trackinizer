@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.locks import referenced_ids, require_unlocked
+from trackinizer.server.api.session_access import granted_audience
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,
@@ -98,6 +99,7 @@ async def submit_batch_route(
     """
     await require_unlocked(request, identity, referenced_ids(req))
     store = get_store(request)
+    session_audience = _opening_audience(identity, *req.items)
     # Resolve each item's account, then validate the DISTINCT set before the
     # all-or-nothing transaction: a single inactive account fails the whole
     # batch (matching the single-submit contract) without writing a partial
@@ -118,6 +120,7 @@ async def submit_batch_route(
         # item override it. Without this a CLI ``--as`` reached edits but not
         # creates, which recorded the wrong author on every batch-created row.
         actor=req.actor or identity.email,
+        session_audience=session_audience,
     )
     body: MutableJSON = {"ids": [str(row_id) for row_id in ids]}
     return body
@@ -179,10 +182,21 @@ async def _submit_one(
     req: SubmitBase,
     identity: AuthIdentity,
 ) -> UUID:
+    session_audience = _opening_audience(identity, req)
     account = _resolve_account(req, identity)
     await assert_account_active(store.engine, account)
     return await store.submit(
         req.model_copy(update={"account": account}),
         api_key_id=identity.api_key_id,
         actor=req.actor or identity.email,
+        session_audience=session_audience,
     )
+
+
+# Resolved only when a session is being opened: the pin says where a session goes, and a
+# key whose pin its owner lost still files an Issue or an Artifact.
+def _opening_audience(identity: AuthIdentity, *bodies: SubmitBase) -> str | None:
+    """Return the audience the sessions among ``bodies`` open into, else ``None``."""
+    if any(isinstance(body, SubmitAgentSession) for body in bodies):
+        return granted_audience(identity)
+    return None

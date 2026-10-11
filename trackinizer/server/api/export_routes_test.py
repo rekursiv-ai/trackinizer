@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -40,6 +41,7 @@ def _graph() -> GraphExport:
     created = datetime(2026, 9, 19, 12, 30, tzinfo=UTC)
     return GraphExport(
         migrations=("schema.sql", "schema.019.sql"),
+        audiences=("open",),
         tables=(
             (
                 "inquiries",
@@ -71,7 +73,8 @@ def export_client(
     """Return a route client whose store exports :func:`_graph`."""
     client, store, _engine = route_client
 
-    async def export_graph() -> GraphExport:
+    async def export_graph(*, audiences: frozenset[str]) -> GraphExport:
+        del audiences
         return _graph()
 
     monkeypatch.setattr(store, "export_graph", export_graph)
@@ -92,6 +95,7 @@ def test_the_header_comes_first_then_one_line_per_row(
         "format": EXPORT_FORMAT,
         "version": EXPORT_VERSION,
         "migrations": ["schema.sql", "schema.019.sql"],
+        "audiences": ["open"],
     }
     assert [row["table"] for row in rows] == ["inquiries", "change_log"]
 
@@ -130,6 +134,29 @@ def test_export_without_auth_is_401(export_client: TestClient) -> None:
     clear_identity_override()
 
     assert export_client.get(EXPORT_API_PATH).status_code == 401
+
+
+def test_the_export_is_read_for_the_audiences_of_its_caller(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store, _engine = route_client
+    asked: list[frozenset[str]] = []
+
+    async def export_graph(*, audiences: frozenset[str]) -> GraphExport:
+        asked.append(audiences)
+        return _graph()
+
+    monkeypatch.setattr(store, "export_graph", export_graph)
+
+    install_identity(make_test_identity())
+    assert client.get(EXPORT_API_PATH).status_code == 200
+    install_identity(
+        replace(make_test_identity(), read_audiences=frozenset({"open", "staff"})),
+    )
+    assert client.get(EXPORT_API_PATH).status_code == 200
+
+    assert asked == [frozenset({"open"}), frozenset({"open", "staff"})]
 
 
 if __name__ == "__main__":

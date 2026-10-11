@@ -32,7 +32,11 @@ from trackinizer.server.api.canvas_test_support import (
     seed_session,
     send_chat,
 )
-from trackinizer.server.api.conftest import TEST_USER_EMAIL
+from trackinizer.server.api.conftest import (
+    TEST_USER_EMAIL,
+    install_identity,
+    make_test_identity,
+)
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_science_chat import (
@@ -384,6 +388,50 @@ async def test_a_fork_needs_a_line_of_a_science_chat_and_names_no_conversation(
     assert await _fork(client, body, chat.at(0), **named) == 422
     assert await _fork(client, body, chat.at(0)) == 200
     assert (await _heard(client, session_id=chat.session)) == []
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_fork_cannot_probe_the_lines_of_a_chat_its_caller_may_not_read(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    chat = await _original(store, starter=TEST_USER_EMAIL)
+    workspace_id, chat_id = await _canvas(client, email=OTHER_EMAIL)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET agentsession_audience = 'staff' WHERE id = $1",
+            chat.session,
+        )
+    body = {
+        "workspace_id": str(workspace_id),
+        "text": "fork",
+        "chat_instance_id": str(chat_id),
+    }
+    # The chat's three lines, two a person's and one an answer, and a position past its
+    # end: a caller who may read the chat is told which are lines.
+    positions = (0, 1, 2, 9)
+
+    async def answers() -> list[int]:
+        return [
+            await _fork(client, body, {**chat.at(0), "idx": idx}) for idx in positions
+        ]
+
+    opened = await answers()
+    install_identity(
+        replace(
+            make_test_identity(
+                user_id=OTHER_USER_ID,
+                api_key_id=None,
+                email=OTHER_EMAIL,
+            ),
+            read_audiences=frozenset({"open", "staff"}),
+        ),
+    )
+    staffed = await answers()
+
+    assert staffed == [200, 200, 200, 422]
+    assert opened == [422, 422, 422, 422]
 
 
 @pytest.mark.db_pglite

@@ -592,7 +592,16 @@ CREATE TABLE IF NOT EXISTS users (
     -- The welcome flow's agreement: when, and to which rules version (see
     -- ``api/auth_routes.py``).
     acknowledged_at            TIMESTAMPTZ,
-    acknowledged_rules_version TEXT
+    acknowledged_rules_version TEXT,
+    -- Google's ``hd`` claim from the last login: the Workspace domain, absent for a
+    -- consumer account. A ``*@domain`` staff pattern needs it to name that domain.
+    hosted_domain TEXT
+        CHECK (hosted_domain = lower(hosted_domain) AND char_length(hosted_domain) <= 253),
+    -- Google's ``sub`` of the account that first signed in as this email. NULL until
+    -- the next login after 040. A login with another ``sub`` is refused, so a second
+    -- Google account on one address cannot reach this row's sessions and keys.
+    google_sub TEXT
+        CHECK (char_length(google_sub) BETWEEN 1 AND 255)
 );
 
 -- Who set or cleared an inquiry's ``locked`` flag, and when (``api/locks.py``).
@@ -625,7 +634,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
                   CHECK (role IN ('viewer', 'writer', 'admin')),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     last_used_at  TIMESTAMPTZ,
-    revoked_at    TIMESTAMPTZ
+    revoked_at    TIMESTAMPTZ,
+    -- The one audience the key opens sessions into, NULL for none pinned.
+    open_into     TEXT
+        CHECK (open_into ~ '^[a-z][a-z0-9_-]{0,31}$')
 );
 
 -- Auth v2 self-heal: ``api_keys.role`` was added after Phase 1 shipped.

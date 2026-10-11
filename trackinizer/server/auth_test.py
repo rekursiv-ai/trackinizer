@@ -14,6 +14,7 @@ Three layers:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, NoReturn, cast
@@ -38,6 +39,7 @@ from trackinizer.server.auth import (
     BOOTSTRAP_ADMIN_ENV,
     BOOTSTRAP_TOKEN_FILE_ENV,
     TOKEN_PREFIX_LEN,
+    AudienceCeilingError,
     AuthIdentity,
     RoleCeilingError,
     _publish_bootstrap_token,
@@ -49,6 +51,9 @@ from trackinizer.server.auth import (
     effective_role,
     generate_token,
     hash_secret,
+    key_within_caller,
+    require_role,
+    revoke_api_key,
     set_api_key_role,
     verify_secret,
 )
@@ -155,6 +160,8 @@ def _row(
     key_id: uuid.UUID | None = None,
     user_role: str | None = None,
     key_role: str | None = None,
+    hosted_domain: str | None = None,
+    open_into: str | None = None,
 ) -> dict[str, object]:
     """Build one ``api_keys JOIN users`` row as ``_resolve_identity`` reads it."""
     return {
@@ -165,6 +172,8 @@ def _row(
         "user_role": role if user_role is None else user_role,
         "key_role": role if key_role is None else key_role,
         "status": status,
+        "hosted_domain": hosted_domain,
+        "open_into": open_into,
     }
 
 
@@ -821,6 +830,209 @@ class TestCurrentUserNoAuth:
         assert identity.role == "admin"
         engine.conn.fetch.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_the_synthetic_admin_holds_every_audience(self) -> None:
+        """A demo server has one tenant, so nothing is hidden from it."""
+        identity = await current_user(
+            _request_with(FakeEngine(), None, config=Config(auth_disabled=True)),
+        )
+        assert identity.read_audiences == {"open", "staff"}
+        assert identity.open_audiences == {"open", "staff"}
+        assert identity.pinned_audience is None
+
+
+# ---- audiences ------------------------------------------------------------
+
+
+@pytest.fixture
+def cheap_scrypt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hash secrets at the smallest accepted cost so a test pays no scrypt round."""
+    monkeypatch.setattr("trackinizer.server.auth._SCRYPT_N", 2)
+
+
+async def _bearer_identity(
+    *,
+    email: str,
+    staff: tuple[str, ...] = (),
+    hosted_domain: str | None = None,
+    open_into: str | None = None,
+) -> AuthIdentity:
+    """Resolve one bearer request against a canned ``api_keys JOIN users`` row."""
+    secret, _ = generate_token()
+    engine = FakeEngine()
+    engine.conn.fetch.return_value = [
+        _row(
+            secret_hash=hash_secret(secret),
+            email=email,
+            hosted_domain=hosted_domain,
+            open_into=open_into,
+        ),
+    ]
+    return await current_user(
+        _request_with(engine, f"Bearer {secret}", config=Config(staff=staff)),
+    )
+
+
+@pytest.mark.usefixtures("cheap_scrypt")
+class TestBearerAudiences:
+    """A key reads what its owner reads and opens into its pin, if any."""
+
+    @pytest.mark.asyncio
+    async def test_unset_staff_means_nobody_holds_staff(self) -> None:
+        identity = await _bearer_identity(email="ada@example.com")
+        assert identity.read_audiences == {"open"}
+        assert identity.open_audiences == {"open"}
+        assert identity.pinned_audience is None
+
+    @pytest.mark.asyncio
+    async def test_a_literal_staff_pattern_matches_the_email(self) -> None:
+        identity = await _bearer_identity(
+            email="ada@example.com",
+            staff=("ada@example.com",),
+        )
+        assert identity.read_audiences == {"open", "staff"}
+        assert identity.open_audiences == {"open", "staff"}
+
+    @pytest.mark.asyncio
+    async def test_a_domain_pattern_needs_the_hosted_domain_claim(self) -> None:
+        staff = ("*@example.com",)
+        member = await _bearer_identity(
+            email="ada@example.com",
+            hosted_domain="example.com",
+            staff=staff,
+        )
+        consumer = await _bearer_identity(email="ada@example.com", staff=staff)
+        assert member.read_audiences == {"open", "staff"}
+        assert consumer.read_audiences == {"open"}
+
+    @pytest.mark.asyncio
+    async def test_a_pinned_key_opens_only_its_pin(self) -> None:
+        identity = await _bearer_identity(
+            email="ada@example.com",
+            staff=("ada@example.com",),
+            open_into="staff",
+        )
+        assert identity.read_audiences == {"open", "staff"}
+        assert identity.open_audiences == {"staff"}
+        assert identity.pinned_audience == "staff"
+
+    @pytest.mark.asyncio
+    async def test_a_pin_the_owner_does_not_hold_opens_nothing(self) -> None:
+        identity = await _bearer_identity(email="bob@example.com", open_into="staff")
+        assert identity.open_audiences == frozenset()
+        assert identity.pinned_audience == "staff"
+
+    @pytest.mark.asyncio
+    async def test_the_cache_keeps_the_audiences_for_the_ttl(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A repeat hit returns the same sets without reading the owner again."""
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [
+            _row(
+                secret_hash=hash_secret(secret),
+                email="ada@example.com",
+            ),
+        ]
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
+        config = Config(staff=("ada@example.com",))
+        request = _request_with(engine, f"Bearer {secret}", config=config, store=store)
+
+        first = await current_user(request)
+        again = await current_user(request)
+
+        assert again == first
+        assert again.read_audiences == {"open", "staff"}
+        assert engine.conn.fetch.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_new_email_changes_the_audiences_once_the_entry_expires(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Staff is recomputed from the owner's current email, not stored on the key."""
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        clock = [1_000.0]
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
+        request = _request_with(
+            engine,
+            f"Bearer {secret}",
+            config=Config(staff=("ada@example.com",)),
+            store=store,
+        )
+        engine.conn.fetch.return_value = [
+            _row(secret_hash=hash_secret(secret), email="ada@example.com"),
+        ]
+        before = await current_user(request)
+        engine.conn.fetch.return_value = [
+            _row(secret_hash=hash_secret(secret), email="ada@other.org"),
+        ]
+        clock[0] += auth.VERIFIED_BEARER_TTL_SEC + 1.0
+
+        after = await current_user(request)
+
+        assert before.read_audiences == {"open", "staff"}
+        assert after.read_audiences == {"open"}
+
+
+async def _session_identity(
+    *,
+    email: str,
+    hosted_domain: str | None,
+    staff: tuple[str, ...],
+) -> AuthIdentity:
+    """Resolve a signed session cookie for a canned active ``users`` row."""
+    user_id = uuid.uuid4()
+    signing_key = "session-signing-x"
+    engine = FakeEngine()
+    engine.conn.fetchrow = AsyncMock(
+        return_value={
+            "id": user_id,
+            "email": email,
+            "role": "writer",
+            "status": "active",
+            "hosted_domain": hosted_domain,
+        },
+    )
+    return await current_user(
+        _request_with(
+            engine,
+            authorization=None,
+            cookies={SESSION_COOKIE_NAME: _session_cookie_value(user_id, signing_key)},
+            config=replace(_config_with_session_secret(signing_key), staff=staff),
+        ),
+    )
+
+
+class TestSessionAudiences:
+    """A browser session holds what its user holds, with no key limits."""
+
+    @pytest.mark.asyncio
+    async def test_a_workspace_member_of_the_staff_domain_holds_staff(self) -> None:
+        identity = await _session_identity(
+            email="ada@example.com",
+            hosted_domain="example.com",
+            staff=("*@example.com",),
+        )
+        assert identity.read_audiences == {"open", "staff"}
+        assert identity.open_audiences == {"open", "staff"}
+        assert identity.pinned_audience is None
+
+    @pytest.mark.asyncio
+    async def test_a_consumer_account_on_the_staff_domain_holds_open_only(self) -> None:
+        identity = await _session_identity(
+            email="ada@example.com",
+            hosted_domain=None,
+            staff=("*@example.com",),
+        )
+        assert identity.read_audiences == {"open"}
+        assert identity.open_audiences == {"open"}
+
 
 # ---- bootstrap_admin tests ------------------------------------------------
 
@@ -1404,6 +1616,7 @@ class TestCurrentUserSession:
                 "email": "u@example.com",
                 "role": "writer",
                 "status": "active",
+                "hosted_domain": None,
             },
         )
         request = _request_with(
@@ -1468,6 +1681,49 @@ class TestCurrentUserSession:
         with pytest.raises(HTTPException) as exc_info:
             await current_user(request)
         assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_a_cookie_is_not_a_session_when_the_app_has_no_config(self) -> None:
+        engine = FakeEngine()
+        request = _request_with(
+            engine,
+            authorization=None,
+            cookies={SESSION_COOKIE_NAME: _session_cookie_value(uuid.uuid4(), "s")},
+        )
+        # A test that skips the lifespan leaves the app without a config.
+        cast("MagicMock", request).app = SimpleNamespace(
+            state=SimpleNamespace(
+                store=Store(cast(DatabaseEngine, engine), embed=StubEmbedder()),
+            ),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await current_user(request)
+        assert exc_info.value.status_code == 401
+        engine.conn.fetchrow.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_cookie_older_than_the_ttl_is_not_a_session(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        signing_key = "session-signing-x"
+        monkeypatch.setattr("itsdangerous.timed.time.time", lambda: 1_000_000.0)
+        cookie = _session_cookie_value(uuid.uuid4(), signing_key)
+        monkeypatch.setattr(
+            "itsdangerous.timed.time.time",
+            lambda: 1_000_000.0 + 10_000.0,
+        )
+        engine = FakeEngine()
+        request = _request_with(
+            engine,
+            authorization=None,
+            cookies={SESSION_COOKIE_NAME: cookie},
+            config=_config_with_session_secret(signing_key),
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await current_user(request)
+        assert exc_info.value.status_code == 401
+        engine.conn.fetchrow.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_bearer_wins_when_both_present(self) -> None:
@@ -1743,6 +1999,203 @@ class TestCreateApiKey:
             ceiling="viewer",
         )
         assert role == "viewer"
+
+
+def _minter(
+    *,
+    read: set[str],
+    opening: set[str],
+    pinned: str | None = None,
+    key: bool = False,
+) -> AuthIdentity:
+    """Build the identity of a caller minting a key, session-authed unless ``key``."""
+    return AuthIdentity(
+        user_id=uuid.uuid4(),
+        api_key_id=uuid.uuid4() if key else None,
+        email="ada@example.com",
+        role="admin",
+        read_audiences=frozenset(read),
+        open_audiences=frozenset(opening),
+        pinned_audience=pinned,
+    )
+
+
+async def _mint(minter: AuthIdentity, *, open_into: str | None = None) -> list[_Call]:
+    """Mint a key as ``minter``; return the INSERT calls it made."""
+    conn = make_conn()
+    conn.fetchval = AsyncMock(return_value="admin")
+    await create_api_key(
+        cast(Conn, conn),
+        user_id=minter.user_id,
+        name="k",
+        ceiling="admin",
+        open_into=open_into,
+        minter=minter,
+    )
+    return [c for c in conn.execute.call_args_list if "INSERT" in _sql(c)]
+
+
+@pytest.mark.usefixtures("cheap_scrypt")
+class TestCreateApiKeyAudiences:
+    """A key's pin stays inside what its minter opens into."""
+
+    @pytest.mark.asyncio
+    async def test_the_insert_carries_the_requested_pin(self) -> None:
+        minter = _minter(read={"open", "staff"}, opening={"open", "staff"})
+        (insert,) = await _mint(minter, open_into="staff")
+        assert insert.args[7] == "staff"
+
+    @pytest.mark.asyncio
+    async def test_a_browser_mint_with_no_request_leaves_the_key_unpinned(
+        self,
+    ) -> None:
+        minter = _minter(read={"open", "staff"}, opening={"open", "staff"})
+        (insert,) = await _mint(minter)
+        assert insert.args[7] is None
+
+    @pytest.mark.asyncio
+    async def test_a_pin_outside_the_minters_open_set_is_refused(self) -> None:
+        minter = _minter(read={"open"}, opening={"open"})
+        with pytest.raises(AudienceCeilingError, match="staff"):
+            await _mint(minter, open_into="staff")
+
+    @pytest.mark.asyncio
+    async def test_a_refused_mint_inserts_nothing(self) -> None:
+        minter = _minter(read={"open"}, opening={"open"})
+        conn = make_conn()
+        conn.fetchval = AsyncMock(return_value="admin")
+        with pytest.raises(AudienceCeilingError):
+            await create_api_key(
+                cast(Conn, conn),
+                user_id=minter.user_id,
+                name="k",
+                ceiling="admin",
+                open_into="staff",
+                minter=minter,
+            )
+        assert not any("INSERT" in _sql(c) for c in conn.execute.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_key_minting_a_key_passes_its_own_pin_on(self) -> None:
+        """A pinned key cannot shed its pin by minting a key with none."""
+        minter = _minter(read={"open"}, opening={"open"}, pinned="open", key=True)
+        (insert,) = await _mint(minter)
+        assert insert.args[7] == "open"
+
+    @pytest.mark.asyncio
+    async def test_an_unpinned_key_mints_an_unpinned_key(self) -> None:
+        minter = _minter(read={"open"}, opening={"open"}, key=True)
+        (insert,) = await _mint(minter)
+        assert insert.args[7] is None
+
+    @pytest.mark.asyncio
+    async def test_a_staff_pinned_key_keeps_its_pin_when_the_owner_lost_staff(
+        self,
+    ) -> None:
+        minter = _minter(read={"open"}, opening=set(), pinned="staff", key=True)
+        (insert,) = await _mint(minter)
+        assert insert.args[7] == "staff"
+
+
+class TestKeyWithinCaller:
+    """A pinned key manages its own key and keys pinned inside its open set."""
+
+    @classmethod
+    async def _within(
+        cls,
+        caller: AuthIdentity,
+        *,
+        target: str | None,
+        absent: bool = False,
+        key_id: uuid.UUID | None = None,
+    ) -> tuple[bool, int]:
+        """Run the check against a target key's pin (``absent``: no such key)."""
+        conn = make_conn()
+        conn.fetchrow = AsyncMock(
+            return_value=None if absent else {"open_into": target},
+        )
+        within = await key_within_caller(
+            cast(Conn, conn),
+            identity=caller,
+            key_id=key_id or uuid.uuid4(),
+        )
+        return within, conn.fetchrow.await_count
+
+    @pytest.mark.asyncio
+    async def test_a_session_and_an_unpinned_key_manage_any_key_unasked(self) -> None:
+        for caller in (
+            _minter(read={"open"}, opening={"open"}),
+            _minter(read={"open", "staff"}, opening={"open", "staff"}, key=True),
+        ):
+            assert await self._within(caller, target=None) == (True, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_pinned_key_manages_its_own_key(self) -> None:
+        caller = _minter(read={"open"}, opening={"open"}, pinned="open", key=True)
+        assert caller.api_key_id is not None
+        within = await self._within(caller, target=None, key_id=caller.api_key_id)
+        assert within == (True, 0)
+
+    @pytest.mark.asyncio
+    async def test_a_pinned_key_manages_only_a_key_pinned_inside_its_open_set(
+        self,
+    ) -> None:
+        caller = _minter(
+            read={"open", "staff"},
+            opening={"staff"},
+            pinned="staff",
+            key=True,
+        )
+        assert (await self._within(caller, target=None))[0] is False
+        assert (await self._within(caller, target="open"))[0] is False
+        assert (await self._within(caller, target="staff"))[0] is True
+
+    @pytest.mark.asyncio
+    async def test_an_absent_key_passes_so_the_route_answers_404(self) -> None:
+        caller = _minter(read={"open"}, opening={"open"}, pinned="open", key=True)
+        assert (await self._within(caller, target=None, absent=True))[0] is True
+
+
+class TestRevokeApiKey:
+    """The UPDATE is scoped to the owner's live keys."""
+
+    @pytest.mark.asyncio
+    async def test_reports_whether_one_live_key_was_revoked(self) -> None:
+        conn = make_conn()
+        user_id = uuid.uuid4()
+        key_id = uuid.uuid4()
+        conn.execute = AsyncMock(return_value="UPDATE 1")
+        assert await revoke_api_key(cast(Conn, conn), key_id=key_id, user_id=user_id)
+        assert _sql(conn.execute.call_args) == (
+            "UPDATE api_keys SET revoked_at = clock_timestamp() "
+            "WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL"
+        )
+        assert conn.execute.call_args.args[1:] == (key_id, user_id)
+        conn.execute = AsyncMock(return_value="UPDATE 0")
+        assert not await revoke_api_key(
+            cast(Conn, conn),
+            key_id=key_id,
+            user_id=user_id,
+        )
+
+
+class TestRequireRole:
+    """The dependency passes a role at or above the minimum and 403s below it."""
+
+    @pytest.mark.asyncio
+    async def test_a_weaker_role_is_403_and_an_equal_one_passes(self) -> None:
+        writer = _minter(read={"open"}, opening={"open"})
+        writer = AuthIdentity(
+            user_id=writer.user_id,
+            api_key_id=None,
+            email=writer.email,
+            role="writer",
+        )
+        assert await require_role("writer")(writer) is writer
+        assert await require_role("viewer")(writer) is writer
+        with pytest.raises(HTTPException) as caught:
+            await require_role("admin")(writer)
+        assert caught.value.status_code == 403
 
 
 class TestSetApiKeyRole:

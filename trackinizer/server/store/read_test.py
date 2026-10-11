@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -18,7 +18,10 @@ from trackinizer.conftest import (
     new_uuid,
     queue_field_rows,
 )
+from trackinizer.lib.postgres import Conn
+from trackinizer.server.audience import hidden_exists_sql
 from trackinizer.server.store import read
+from trackinizer.server.values import manifest_bound, vetted_sql
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import NotFoundError, ValidationError
 from trackinizer.wire.filters import Filter
@@ -419,6 +422,147 @@ class TestListKindFilterLowering:
         )
 
         assert "LIMIT" not in sql
+
+
+class TestListKindAudiences:
+    """A filter on a session's records is asked only of the sessions its caller reads.
+
+    The session list is open, so a plain list names no audience. A record filter is
+    answered from the transcript, and the SQL a record clause lowers to names no
+    audience, so the list restricts the rows the clause meets. That the hidden
+    session is then found by none of the operators is proven against a real engine in
+    ``audience_aggregates_pglite_test``.
+    """
+
+    @classmethod
+    async def asked(
+        cls,
+        kind: Inquiry.InquiryKind,
+        *filters: Filter,
+    ) -> tuple[str, list[object]]:
+        """Return the SELECT ``list_kind`` issues for a caller that reads staff too."""
+        conn = make_conn()
+        conn.fetch.side_effect = [[], []]
+        store, _engine = make_store(conn)
+        await store.list_kind(
+            kind,
+            filters=filters,
+            audiences=frozenset({"open", "staff"}),
+        )
+        sql, *params = conn.fetch.call_args_list[0].args
+        return str(sql), list(params)
+
+    @pytest.mark.asyncio
+    async def test_a_record_filter_meets_only_the_sessions_the_caller_reads(
+        self,
+    ) -> None:
+        sql, params = await self.asked(
+            "AgentSession",
+            Filter(field="tool_call", op="notnull", value=""),
+        )
+
+        assert "agentsession_audience = ANY($2::text[])" in sql
+        assert params[:2] == ["AgentSession", ["open", "staff"]]
+
+    @pytest.mark.asyncio
+    async def test_a_list_with_no_record_filter_names_no_audience(self) -> None:
+        sql, params = await self.asked(
+            "AgentSession",
+            Filter(field="title", op="is", value="run"),
+        )
+
+        assert "agentsession_audience" not in sql
+        assert ["open", "staff"] not in params
+
+    @pytest.mark.asyncio
+    async def test_a_record_filter_on_another_kind_names_no_audience(self) -> None:
+        sql, _params = await self.asked(
+            "Issue",
+            Filter(field="tool_call", op="notnull", value=""),
+        )
+
+        assert "agentsession_audience" not in sql
+
+
+class TestRecordTexts:
+    """``_record_texts`` reads the texts a filter names, for the sessions it may."""
+
+    @pytest.mark.asyncio
+    async def test_it_reads_each_named_record_field_for_the_audiences_it_is_given(
+        self,
+    ) -> None:
+        session = new_uuid()
+        conn = make_conn()
+        conn.fetch.return_value = [
+            {"session_id": session, "kind": "ToolCall", "texts": ["ls", "pwd"]},
+        ]
+
+        texts = await read._record_texts(
+            cast(Conn, conn),
+            [session],
+            [
+                Filter(field="tool_call", op="notnull", value=""),
+                Filter(field="title", op="is", value="run"),
+            ],
+            audiences=frozenset({"open"}),
+        )
+
+        assert texts == {session: {"tool_call": ["ls", "pwd"]}}
+        join, predicate = manifest_bound("r")
+        assert conn.fetch.await_args is not None
+        sql, *params = conn.fetch.await_args.args
+        assert params == [[session], ["ToolCall"], ["open"]]
+        assert sql == vetted_sql(
+            "SELECT r.session_id, r.kind, array_agg(r.text) AS texts "
+            "FROM session_records r ",
+            join,
+            "WHERE r.session_id = ANY($1::uuid[]) AND r.kind = ANY($2::text[]) AND ",
+            predicate,
+            " AND ",
+            hidden_exists_sql("r.session_id", params=[[], []], audiences=frozenset()),
+            " GROUP BY r.session_id, r.kind",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_session_with_no_such_record_is_absent_not_empty(self) -> None:
+        with_text, without = new_uuid(), new_uuid()
+        conn = make_conn()
+        conn.fetch.return_value = [
+            {"session_id": with_text, "kind": "UserMessage", "texts": ["hi"]},
+        ]
+
+        texts = await read._record_texts(
+            cast(Conn, conn),
+            [with_text, without],
+            [Filter(field="user_message", op="re", value="h")],
+            audiences=frozenset({"open"}),
+        )
+
+        assert texts == {with_text: {"user_message": ["hi"]}}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("named", ["no record field", "no session"])
+    async def test_it_asks_nothing_when_there_is_nothing_to_read(
+        self,
+        named: str,
+    ) -> None:
+        conn = make_conn()
+
+        texts = await read._record_texts(
+            cast(Conn, conn),
+            [] if named == "no session" else [new_uuid()],
+            [
+                Filter(
+                    field="user_message" if named == "no session" else "title",
+                    op="is",
+                    value="x",
+                ),
+            ],
+            audiences=frozenset({"open"}),
+        )
+
+        assert texts == {}
+        conn.fetch.assert_not_awaited()
 
 
 class TestUnboundableRegexRefusal:

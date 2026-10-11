@@ -32,7 +32,7 @@ from trackinizer.server.api._routes_shared import (
     parse_seq_ranges,
 )
 from trackinizer.server.api.locks import require_unlocked
-from trackinizer.server.api.session_access import require_chat_opener_of
+from trackinizer.server.api.session_access import require_session_row_write
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import iter_sse_events
 from trackinizer.server.primitives import lookup_kinds
@@ -238,6 +238,11 @@ async def list_inquiries_route(
     parents keeps them all. The walk stops 8 levels up and at 200 ancestors
     for the whole response, nearest first.
 
+    A ``filter`` on a record of an ``AgentSession`` (``user_message``, ``tool_call``,
+    ...) is answered from its transcript, so it meets only the sessions whose audience
+    the caller reads; a session the caller does not read is neither found by it nor
+    ruled out by it.
+
     Args:
       request: FastAPI request object for middleware access.
       identity: Authenticated user identity, viewer-role-gated.
@@ -254,7 +259,6 @@ async def list_inquiries_route(
       out: One JSON object per distinct kind, with inquiries for that kind.
 
     """
-    del identity
     if limit < 1 or limit > MAX_LIST_LIMIT:
         raise HTTPException(
             status_code=400,
@@ -300,6 +304,7 @@ async def list_inquiries_route(
                     seq_ranges=seq_ranges,
                     filters=filters,
                     edges=edges,
+                    audiences=identity.read_audiences,
                 )
         except asyncio.CancelledError:
             outcome = "cancelled"
@@ -475,7 +480,7 @@ async def delete_inquiry_route(
 
     """
     await require_unlocked(request, identity, [target_id], include_peers=True)
-    await require_chat_opener_of(request, identity, target_id)
+    await require_session_row_write(request, identity, target_id)
     store = get_store(request)
     change_id = await store.purge(
         target_id,
@@ -500,7 +505,9 @@ async def change_log_stream_route(
     """Stream change ids over SSE.
 
     Shares ``iter_sse_events`` with ``/api/web/subscribe`` so both emit
-    one wire shape; offline catch-up uses ``GET /api/change_log``.
+    one wire shape; offline catch-up uses ``GET /api/change_log``. A record
+    written to a session's transcript is streamed only to a caller whose
+    audiences include the session's.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -510,14 +517,16 @@ async def change_log_stream_route(
       result: Server-sent events stream emitting change ids.
 
     """
-    del identity
     app_obj = cast(FastAPI, request.app)
     state_data = cast(
         dict[str, object],
         object.__getattribute__(app_obj.state, "_state"),
     )
     engine = cast(DatabaseEngine, state_data["engine"])
-    return StreamingResponse(iter_sse_events(engine), media_type="text/event-stream")
+    return StreamingResponse(
+        iter_sse_events(engine, audiences=identity.read_audiences),
+        media_type="text/event-stream",
+    )
 
 
 @router.get("/api/change_log/{change_id}")

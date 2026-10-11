@@ -13,7 +13,7 @@ joining to ``inquiries``.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import Annotated, cast
 from uuid import UUID
 
 import logging
@@ -27,9 +27,13 @@ from trackinizer.server.api._deps import (
     get_store,
 )
 from trackinizer.server.api.session_access import (
+    granted_audience,
     is_a_science_chat,
     require_chat_opener,
+    require_session,
+    require_session_access,
     require_session_write_access,
+    resolve_asker,
 )
 from trackinizer.server.auth import (
     AuthIdentity,
@@ -61,10 +65,6 @@ from trackinizer.wire.wire_sessions import (
 )
 
 
-if TYPE_CHECKING:
-    from trackinizer.server.store.core import Store
-
-
 _logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -82,6 +82,9 @@ async def session_start_route(
     unique among live sessions (suffix on collision); the granted name is the
     owner stamped on the row and is echoed in the response so ``trax run``
     adopts whatever it was given.
+
+    The session opens into the audience the caller's key is pinned to, else
+    ``open``. A pin the caller no longer holds is 403 ``audience_not_held``.
 
     Args:
       body: Session metadata (title, cli, cli_session_id, started, rooms,
@@ -104,6 +107,7 @@ async def session_start_route(
             status_code=403,
             detail="Own session key and account required",
         )
+    audience = granted_audience(identity)
     # An AgentSession is an inquiry like any other, so it carries the same
     # account attribution: default to the authenticated creator, validate it is
     # an active user before minting the row (the gate the submit / edit routes
@@ -127,9 +131,10 @@ async def session_start_route(
             idempotency_key=body.idempotency_key,
         ),
         requested_actor=_actor(identity, body.actor),
+        audience=audience,
         api_key_id=identity.api_key_id,
     )
-    row = await _require_session(store, session_id)
+    row = await require_session(store, session_id)
     require_session_write_access(identity, row)
     get_hub(request).nudge()
     return SessionStartResponse(
@@ -157,11 +162,13 @@ async def session_inbound_enqueue_route(
     carries no ``source`` at all -- a client that sends one gets 422, not a
     silently-ignored field. The session must exist and have a recent inbound
     poll; an ended or stale session is rejected (409) because no poller will
-    drain it.
+    drain it. A session whose audience the sender does not read is 403
+    ``session_audience``, unless the sender is the configured assistant sending for
+    an ``asker`` who is that session's account or a writer who holds its audience.
 
     Args:
       session_id: UUID of the session to message.
-      body: Message text to inject.
+      body: Message text to inject, and the user the assistant sends it for.
       request: Starlette request object.
       identity: Authenticated user (sender is attested, not from body).
 
@@ -170,7 +177,14 @@ async def session_inbound_enqueue_route(
         message_count) pairs of sessions enqueued (always the one target).
 
     """
-    session = await _require_session(get_store(request), session_id)
+    session = await require_session(get_store(request), session_id)
+    require_session_access(
+        identity,
+        session=session,
+        mode="input",
+        assistant=get_assistant(request),
+        asker=await resolve_asker(request, identity, email=body.asker),
+    )
     _refuse_a_chat_helper(session)
     if session.ended is not None:
         raise HTTPException(
@@ -217,10 +231,15 @@ async def send_message_route(
     drop-if-absent -- the response lists the sessions enqueued; an empty list
     means no live session matched.
 
-    Policy: anyone (any ``writer``) may message anyone's agent -- this is
-    intentional. Sessions are a shared workspace and cross-agent messaging is
-    the feature, so there is no per-opener ownership gate here (or on the
-    direct ``/inbound`` route). The sender is always truthfully attested.
+    Policy: any ``writer`` may message the agent of any session whose audience it
+    reads. The configured assistant may message one it does not read only for an
+    ``asker`` it names, who is that session's account or a writer who holds its
+    audience: it relays a user's line and passes on that user's rights, not its own.
+    Sessions are a shared workspace and cross-agent messaging is the feature, so there
+    is no per-opener ownership gate here (or on the direct ``/inbound`` route). The
+    sender is always truthfully attested. When any live session the name resolves to
+    is one the sender may not message, the whole send is 403 ``session_audience`` and
+    nothing is queued, so a send never reports a delivery that did not happen.
 
     A bare ``actor`` (no ``room``) is rejected when the matched session belongs
     to more than one room: a single PTY interleaves every room's messages, so
@@ -232,7 +251,8 @@ async def send_message_route(
     once the session is live -- still delivers instead of replaying nothing.
 
     Args:
-      body: Message text and optional room scope to address by actor name.
+      body: Message text and optional room scope to address by actor name, and the
+        user the assistant sends it for.
       request: Starlette request object.
       identity: Authenticated user (sender is attested, not from body).
 
@@ -246,6 +266,8 @@ async def send_message_route(
     idempotency_key = _idempotency_key(request)
 
     store = get_store(request)
+    # Once for every session the name reaches: the asker's rights do not vary by session.
+    asker = await resolve_asker(request, identity, email=body.asker)
     # Resolve liveness BEFORE the in-memory critical section: the DB resolve
     # (and the per-session liveness re-check below) is async and must not run
     # while ``send_once`` holds the queue lock.
@@ -267,6 +289,16 @@ async def send_message_route(
         # and the enqueue are separate steps, and a concurrent ``end`` between
         # them would otherwise drop the message into a queue nobody drains.
         session = await store.get_inquiry(session_id)
+        if session is not None:
+            # Before the liveness skip: the send is refused whole, so a caller
+            # cannot read which hidden sessions are live from what was delivered.
+            require_session_access(
+                identity,
+                session=cast(AgentSession, session),
+                mode="input",
+                assistant=get_assistant(request),
+                asker=asker,
+            )
         if (
             session is None
             or cast(AgentSession, session).ended is not None
@@ -320,6 +352,9 @@ async def session_inbound_drain_route(
     a proxy that would otherwise cut it. Ending the session ends the hold, so
     the run that ends it as it exits is not kept waiting on its own poller.
 
+    The drain is 403 ``session_audience`` unless the caller opened the session or reads
+    its audience.
+
     Writers retain shared access to the drains of ordinary sessions, but a science
     chat and the assistant's or a helper's service session are drained by their
     opening key alone (403 otherwise). Viewer access is scoped to the opening API
@@ -338,7 +373,8 @@ async def session_inbound_drain_route(
 
     """
     store = get_store(request)
-    session = await _require_session(store, session_id)
+    session = await require_session(store, session_id)
+    require_session_access(identity, session=session, mode="drain")
     # Its queue holds every user's Chat, and a science chat's queue holds its posters'
     # lines, so no one but the opening key reads either. That is every chat and every
     # `trax helper` session, the assistant's or a user's own: a drain by another
@@ -373,7 +409,7 @@ async def session_inbound_drain_route(
         store,
         session_id=session_id,
     ):
-        session = await _require_session(store, session_id)
+        session = await require_session(store, session_id)
     polling = session.status == "active" and session.ended is None
     if polling:
         if not inbound.has_poller(session_id):
@@ -427,7 +463,9 @@ async def session_end_route(
     failure can never leave a zombie session -- ``ended`` set yet
     ``status`` non-terminal -- and the inbound queue is drained only after
     the close commits, so a failed end never silently discards undelivered
-    steering messages. A second end on an already-closed session is a 409.
+    steering messages. A second end on an already-closed session is a 409. A
+    session whose audience the caller neither reads nor opened is 403
+    ``session_audience``.
 
     Args:
       session_id: UUID of the session to close.
@@ -441,8 +479,9 @@ async def session_end_route(
 
     """
     store = get_store(request)
-    session = await _require_session(store, session_id)
+    session = await require_session(store, session_id)
     require_session_write_access(identity, session)
+    require_session_access(identity, session=session, mode="write")
     require_chat_opener(identity, session=session)
     actor = _actor(identity, body.actor)
     # Always stamp a real ``ended``: ``ended IS NULL`` is the "live" predicate
@@ -494,14 +533,6 @@ def _no_direct_line() -> HTTPException:
 def _actor(identity: AuthIdentity, supplied: str | None) -> str:
     """Return the audit actor: the client-supplied value, else the principal email."""
     return supplied or identity.email
-
-
-async def _require_session(store: Store, session_id: UUID) -> AgentSession:
-    """Fetch an AgentSession row or raise 404; reject non-session ids."""
-    row = await store.get_inquiry(session_id)
-    if not isinstance(row, AgentSession):
-        raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
-    return row
 
 
 async def _takes_chat_lines(request: Request, *, session: AgentSession) -> bool:

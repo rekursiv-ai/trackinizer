@@ -114,9 +114,10 @@ async def _seed(store: Store) -> dict[str, UUID]:
     session = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'export test')",
+            "'tester@example.com', 'export test', 'open')",
             session,
         )
     part = await store.upsert_session_manifest(

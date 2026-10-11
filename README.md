@@ -402,6 +402,7 @@ trackinizer --engine pg --dsn ...  # against real Postgres
 trackinizer --no-auth              # single-user local mode: everyone is admin
 trackinizer --app-dir DIR          # the web app built in DIR at /app/
 trackinizer --assistant ACTOR=EMAIL  # the shared Chat partner (or $TRACKINIZER_ASSISTANT)
+trackinizer --staff PATTERNS         # who is staff: user@host or *@domain (or $TRACKINIZER_STAFF)
 trackinizer --no-web               # without /api/web, /app/ or the login page
 ```
 

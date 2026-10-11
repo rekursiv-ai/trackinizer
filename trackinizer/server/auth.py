@@ -40,8 +40,10 @@ import uuid
 from fastapi import Depends, HTTPException, Request
 
 from trackinizer.lib.userdirs import data_dir
+from trackinizer.server.audience import audiences_for, key_audiences
 from trackinizer.server.notify import tx
 from trackinizer.server.session import read_session_cookie
+from trackinizer.wire.audience import OPEN, STAFF
 from trackinizer.wire.wire_machine_host import (
     CREDENTIAL_PREFIX,
     ENROLLMENT_PREFIX,
@@ -49,7 +51,7 @@ from trackinizer.wire.wire_machine_host import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
 
@@ -62,6 +64,7 @@ __all__ = [
     "BOOTSTRAP_TOKEN_FILE_ENV",
     "ROLE_ORDER",
     "TOKEN_PREFIX_LEN",
+    "AudienceCeilingError",
     "AuthIdentity",
     "Role",
     "RoleCeilingError",
@@ -74,8 +77,10 @@ __all__ = [
     "extract_bearer",
     "generate_token",
     "hash_secret",
+    "key_within_caller",
     "list_api_keys",
     "lookup_user_by_id",
+    "mint_open_into",
     "require_role",
     "revoke_api_key",
     "seed_no_auth_user",
@@ -147,6 +152,15 @@ class RoleCeilingError(Exception):
     """
 
 
+class AudienceCeilingError(Exception):
+    """The requested pin exceeds what the minting caller opens into.
+
+    Raised when a caller mints a key pinned to open into an audience the caller cannot
+    open; the route turns it into a 403 so a key can never be handed more than its
+    minter holds.
+    """
+
+
 def effective_role(user_role: Role, key_role: Role) -> Role:
     """Return the weaker of the user's role and the key's role ceiling.
 
@@ -182,6 +196,12 @@ class AuthIdentity:
         NULL there marks a session-authed write.
       email: Principal's email; the human-readable identity.
       role: ``viewer`` / ``writer`` / ``admin``.
+      read_audiences: Audiences whose session transcripts this credential may read:
+        its owner's.
+      open_audiences: Audiences it may open a session into: its owner's, or the
+        key's pin when the owner still holds it.
+      pinned_audience: The audience the key is pinned to open into, or ``None``. A pin
+        the owner no longer holds leaves ``open_audiences`` empty.
 
     """
 
@@ -189,6 +209,9 @@ class AuthIdentity:
     api_key_id: uuid.UUID | None
     email: str
     role: Role
+    read_audiences: frozenset[str] = frozenset({OPEN})
+    open_audiences: frozenset[str] = frozenset({OPEN})
+    pinned_audience: str | None = None
 
 
 def hash_secret(secret: str) -> str:
@@ -313,7 +336,11 @@ async def current_user(request: Request) -> AuthIdentity:
             api_key_id=None,
             email=_NO_AUTH_EMAIL,
             role="admin",
+            read_audiences=frozenset({OPEN, STAFF}),
+            open_audiences=frozenset({OPEN, STAFF}),
         )
+    # Unset staff patterns, or a test that skipped the lifespan, make nobody staff.
+    staff = () if config is None else config.staff
     # The Store carries the per-process ``last_used_at`` throttle.
     store = state.store
     bearer = extract_bearer(request)
@@ -325,6 +352,7 @@ async def current_user(request: Request) -> AuthIdentity:
         identity = await _resolve_identity(
             store,
             bearer,
+            staff=staff,
             request_id=str(getattr(request.state, "request_id", "")),
         )
         if identity is None:
@@ -332,7 +360,11 @@ async def current_user(request: Request) -> AuthIdentity:
         return identity
     session_user_id = _try_read_session_user_id(request)
     if session_user_id is not None:
-        identity = await _resolve_session_identity(store.engine, session_user_id)
+        identity = await _resolve_session_identity(
+            store.engine,
+            session_user_id,
+            staff=staff,
+        )
         if identity is not None:
             return identity
     raise HTTPException(status_code=401, detail="not authenticated")
@@ -388,6 +420,8 @@ async def create_api_key(
     name: str,
     role: Role | None = None,
     ceiling: Role,
+    open_into: str | None = None,
+    minter: AuthIdentity | None = None,
 ) -> tuple[uuid.UUID, str, str, Role]:
     """Insert a fresh ``api_keys`` row; return ``(key_id, secret, prefix, role)``.
 
@@ -401,6 +435,9 @@ async def create_api_key(
     returned ``secret`` is the plaintext token, shown once and never
     re-derivable from the row.
 
+    The pin follows :func:`mint_open_into`: with a ``minter`` it stays inside what it
+    opens; the credential-less bootstrap seed passes none and mints an unpinned key.
+
     Args:
       conn: Open connection; the INSERT runs on it directly.
       user_id: Owning ``users.id``.
@@ -408,13 +445,16 @@ async def create_api_key(
       role: Requested role; defaults to the effective ceiling.
       ceiling: Effective role of the presenting credential (or the seeded role
         for the credential-less bootstrap path).
-
+      open_into: The one audience the key opens sessions into; ``None`` for no pin.
+      minter: The identity that presented the request, or ``None`` for the
+        bootstrap seed.
 
     Returns:
       result: Tuple of (key_id, secret, prefix, role) for the new key.
 
     Raises:
       RoleCeilingError: ``role`` is stronger than the effective ceiling.
+      AudienceCeilingError: The pin exceeds what ``minter`` opens into.
       LookupError: ``user_id`` is not a row in ``users``.
 
     """
@@ -425,20 +465,88 @@ async def create_api_key(
         raise RoleCeilingError(
             f"requested role {final_role!r} exceeds ceiling {max_role!r}",
         )
+    if minter is not None:
+        open_into = mint_open_into(minter, open_into=open_into)
     key_id = uuid.uuid4()
     secret, prefix = generate_token()
     secret_hash = hash_secret(secret)
     await conn.execute(
-        "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role) "
-        "VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO api_keys "
+        "(id, user_id, name, secret_hash, prefix, role, open_into) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7)",
         key_id,
         user_id,
         name,
         secret_hash,
         prefix,
         final_role,
+        open_into,
     )
     return key_id, secret, prefix, final_role
+
+
+def mint_open_into(minter: AuthIdentity, *, open_into: str | None) -> str | None:
+    """Return the pin a key minted by ``minter`` is stored with.
+
+    A key opens at most what its minter opens. A key that mints a key hands its own
+    pin on when the request names none, so a pinned key cannot shed its pin by minting
+    an unpinned one. A browser session carries no pin of its own, and its request
+    stays as asked.
+
+    Args:
+      minter: The identity that presented the mint request.
+      open_into: The requested pin, or ``None`` for no pin.
+
+    Returns:
+      pin: The audience to pin the key to, or ``None``.
+
+    Raises:
+      AudienceCeilingError: The request opens beyond the minter.
+
+    """
+    if open_into is not None and open_into not in minter.open_audiences:
+        raise AudienceCeilingError(
+            f"requested pin {open_into!r} exceeds the audiences the caller opens "
+            f"into, {sorted(minter.open_audiences)}",
+        )
+    if open_into is None and minter.api_key_id is not None:
+        return minter.pinned_audience
+    return open_into
+
+
+async def key_within_caller(
+    conn: Conn,
+    *,
+    identity: AuthIdentity,
+    key_id: uuid.UUID,
+) -> bool:
+    """Return whether ``identity`` may revoke or re-tier the owner's key ``key_id``.
+
+    A browser session and an unpinned key may manage any of the owner's keys. A pinned
+    key may manage its own key, and a key pinned to an audience it opens into.
+    Otherwise a campaign key could revoke the operator's unpinned key, or move it to
+    another role, through the owner's key list. A key that is absent, foreign or
+    revoked passes, so the caller's own 404 answers for it and nothing here tells the
+    cases apart.
+
+    Args:
+      conn: Open database connection.
+      identity: The presenting credential.
+      key_id: ``api_keys.id`` to manage.
+
+    Returns:
+      within: ``False`` when the key opens beyond the caller.
+
+    """
+    if identity.pinned_audience is None or identity.api_key_id == key_id:
+        return True
+    row = await conn.fetchrow(
+        "SELECT open_into FROM api_keys "
+        "WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL",
+        key_id,
+        identity.user_id,
+    )
+    return row is None or row["open_into"] in identity.open_audiences
 
 
 async def set_api_key_role(
@@ -523,12 +631,13 @@ async def list_api_keys(conn: Conn, *, user_id: uuid.UUID) -> list[dict[str, obj
       user_id: Owning user's UUID for scope and authorization.
 
     Returns:
-      result: List of key dicts (id, name, prefix, role, timestamps, status).
+      result: List of key dicts (id, name, prefix, role, pin, timestamps,
+        status).
 
     """
     rows = await conn.fetch(
-        "SELECT id, name, prefix, role, created_at, last_used_at, revoked_at "
-        "FROM api_keys WHERE user_id = $1 "
+        "SELECT id, name, prefix, role, open_into, created_at, "
+        "last_used_at, revoked_at FROM api_keys WHERE user_id = $1 "
         "ORDER BY created_at DESC, id DESC",
         user_id,
     )
@@ -612,6 +721,7 @@ async def lookup_user_by_id(
     conn: Conn,
     *,
     user_id: uuid.UUID,
+    staff: Sequence[str],
 ) -> AuthIdentity | None:
     """Resolve a ``users.id`` to an :class:`AuthIdentity` for session auth.
 
@@ -622,13 +732,15 @@ async def lookup_user_by_id(
     Args:
       conn: Open database connection.
       user_id: User UUID to look up.
+      staff: The configured staff patterns, which decide whether the user holds
+        ``staff``.
 
     Returns:
       result: AuthIdentity if active; None if not found or disabled.
 
     """
     row = await conn.fetchrow(
-        "SELECT id, email, role, status FROM users WHERE id = $1",
+        "SELECT id, email, role, status, hosted_domain FROM users WHERE id = $1",
         user_id,
     )
     if row is None or row["status"] != "active":
@@ -637,11 +749,18 @@ async def lookup_user_by_id(
     email = row["email"]
     assert isinstance(row_id, uuid.UUID)
     assert isinstance(email, str)
+    owner = audiences_for(
+        email,
+        hosted_domain=cast("str | None", row["hosted_domain"]),
+        staff=staff,
+    )
     return AuthIdentity(
         user_id=row_id,
         api_key_id=None,
         email=email,
         role=cast(Role, row["role"]),
+        read_audiences=owner,
+        open_audiences=owner,
     )
 
 
@@ -847,10 +966,12 @@ def _try_read_session_user_id(request: Request) -> uuid.UUID | None:
 async def _resolve_session_identity(
     engine: DatabaseEngine,
     user_id: uuid.UUID,
+    *,
+    staff: Sequence[str],
 ) -> AuthIdentity | None:
     """Look up the ``users`` row for a session-cookie principal."""
     async with engine.acquire() as conn:
-        return await lookup_user_by_id(conn, user_id=user_id)
+        return await lookup_user_by_id(conn, user_id=user_id, staff=staff)
 
 
 # Returns ``None`` (a 401 at the route) when no live key matches. Disabled users also
@@ -870,6 +991,7 @@ async def _resolve_identity(
     store: _StoreLike,
     secret: str,
     *,
+    staff: Sequence[str],
     request_id: str,
 ) -> AuthIdentity | None:
     """Resolve a bearer secret to an identity, bumping ``last_used_at``."""
@@ -893,7 +1015,8 @@ async def _resolve_identity(
         query_started = time.perf_counter()
         rows = await conn.fetch(
             "SELECT k.id AS key_id, k.secret_hash, k.role AS key_role, "
-            "u.id AS user_id, u.email, u.role AS user_role, u.status "
+            "k.open_into, "
+            "u.id AS user_id, u.email, u.role AS user_role, u.status, u.hosted_domain "
             "FROM api_keys k JOIN users u ON u.id = k.user_id "
             "WHERE k.prefix = $1 AND k.revoked_at IS NULL",
             prefix,
@@ -937,6 +1060,14 @@ async def _resolve_identity(
             email = row["email"]
             assert isinstance(user_id, uuid.UUID)
             assert isinstance(email, str)
+            audiences = key_audiences(
+                audiences_for(
+                    email,
+                    hosted_domain=cast("str | None", row["hosted_domain"]),
+                    staff=staff,
+                ),
+                open_into=cast("str | None", row["open_into"]),
+            )
             identity = AuthIdentity(
                 user_id=user_id,
                 api_key_id=key_id,
@@ -945,6 +1076,9 @@ async def _resolve_identity(
                     cast(Role, row["user_role"]),
                     cast(Role, row["key_role"]),
                 ),
+                read_audiences=audiences.read,
+                open_audiences=audiences.opening,
+                pinned_audience=audiences.pinned,
             )
             store.remember_bearer_identity(secret, identity)
             _log_auth_resolution(
@@ -1040,6 +1174,7 @@ def _b64decode(encoded: str) -> bytes:
 
 class _ConfigLike(Protocol):
     auth_disabled: bool
+    staff: tuple[str, ...]
     session_secret: str
     session_max_age_seconds: int
 

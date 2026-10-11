@@ -11,6 +11,7 @@ embedder is configured (a keyword search must never load an 8 GB model).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 from unittest.mock import Mock
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from trackinizer.lib.postgres import PostgresEngine
+    from trackinizer.server.store.session_search import SessionSearchHit
 
 
 _VIEWER = AuthIdentity(
@@ -93,9 +95,10 @@ async def _session(store: Store, *, title: str = "route search") -> UUID:
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', $2)",
+            "'tester@example.com', $2, 'open')",
             session_id,
             title,
         )
@@ -431,6 +434,36 @@ async def test_feed_rejects_reversed_window_before_reading_store() -> None:
             until=since - timedelta(days=1),
         )
     assert caught.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_the_search_is_read_for_the_audiences_of_its_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[frozenset[str]] = []
+
+    async def search(
+        engine: object,
+        *,
+        audiences: frozenset[str],
+        **rest: object,
+    ) -> list[SessionSearchHit]:
+        del engine, rest
+        asked.append(audiences)
+        return []
+
+    monkeypatch.setattr(web, "search_session_records", search)
+    request = _request(cast(Store, Mock()), session_embedder="")
+
+    for audiences in (frozenset({"open"}), frozenset({"open", "staff"})):
+        _ = await web.web_search_sessions(
+            request,
+            q="x",
+            identity=replace(_VIEWER, read_audiences=audiences),
+            semantic=False,
+        )
+
+    assert asked == [frozenset({"open"}), frozenset({"open", "staff"})]
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ from trackinizer.server.config import (
     parse_assistant,
     parse_chat_orgs,
     parse_engine,
+    parse_staff,
 )
 from trackinizer.server.embedders.stub import StubEmbedder
 
@@ -415,6 +416,59 @@ class TestAssistant:
             Config.from_env()
 
 
+class TestStaff:
+    """``--staff PATTERNS`` names who holds the ``staff`` audience; unset names nobody."""
+
+    def test_nothing_set_means_nobody_is_staff(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("TRACKINIZER_STAFF", raising=False)
+        assert Config().staff == ()
+        assert Config.from_env().staff == ()
+        assert Config.from_args(_server_args()).staff == ()
+
+    def test_blank_means_nobody(self) -> None:
+        assert parse_staff("") == ()
+        assert parse_staff("  ,  ") == ()
+
+    def test_patterns_are_split_trimmed_and_lowercased(self) -> None:
+        assert parse_staff(" Ada@Example.com, *@Corp.EXAMPLE ") == (
+            "ada@example.com",
+            "*@corp.example",
+        )
+
+    def test_a_repeated_pattern_is_kept_once(self) -> None:
+        assert parse_staff("a@x.y,A@X.Y") == ("a@x.y",)
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["staff", "*", "@x.y", "a@", "*@", "a*@x.y", "*@*.y", "a@b@c.d", "a b@x.y"],
+    )
+    def test_a_pattern_that_is_not_an_email_or_a_domain_is_a_config_error(
+        self,
+        raw: str,
+    ) -> None:
+        with pytest.raises(ConfigError, match="--staff"):
+            parse_staff(raw)
+
+    def test_the_flag_and_the_environment_supply_the_patterns(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_STAFF", "*@x.y")
+        assert Config.from_env().staff == ("*@x.y",)
+        assert Config.from_args(_server_args(staff="a@x.y")).staff == ("a@x.y",)
+
+    def test_a_malformed_environment_value_is_a_config_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_STAFF", "*")
+        with pytest.raises(ConfigError, match="--staff"):
+            Config.from_env()
+
+
 class TestSecrets:
     """``secrets`` names the secret backend and comes from the environment only."""
 
@@ -506,6 +560,7 @@ def _server_args(**overrides: object) -> ConfigFlags:
         "auth": True,
         "session_max_age_seconds": 30 * 24 * 60 * 60,
         "assistant": "",
+        "staff": "",
     }
     base.update(overrides)
     return cast(ConfigFlags, argparse.Namespace(**base))

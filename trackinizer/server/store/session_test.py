@@ -69,6 +69,7 @@ class TestStartSession:
                     account="tester@example.com",
                 ),
                 requested_actor="alice",
+                audience="open",
             )
 
     @pytest.mark.asyncio
@@ -116,6 +117,7 @@ class TestStartSession:
                     account="tester@example.com",
                 ),
                 requested_actor="alice",
+                audience="open",
             )
         assert sid == existing_id
         assert owner == "alice"
@@ -475,6 +477,7 @@ async def _open(store: Store) -> UUID:
     session_id, _, _ = await store.start_session(
         SubmitAgentSession(title="s", cli="claude", account="t@e"),
         requested_actor="agent",
+        audience="open",
     )
     return session_id
 

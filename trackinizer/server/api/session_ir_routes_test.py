@@ -87,7 +87,7 @@ class TestReadParts:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude")),
+            AsyncMock(return_value=AgentSession(cli="claude", audience="open")),
         )
         monkeypatch.setattr(
             store,
@@ -140,7 +140,7 @@ class TestReadParts:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="sh")),
+            AsyncMock(return_value=AgentSession(cli="sh", audience="open")),
         )
         monkeypatch.setattr(
             store,
@@ -193,7 +193,7 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude")),
+            AsyncMock(return_value=AgentSession(cli="claude", audience="open")),
         )
         monkeypatch.setattr(
             store,
@@ -226,7 +226,7 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="codex")),
+            AsyncMock(return_value=AgentSession(cli="codex", audience="open")),
         )
         monkeypatch.setattr(
             store,
@@ -261,7 +261,7 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude")),
+            AsyncMock(return_value=AgentSession(cli="claude", audience="open")),
         )
         monkeypatch.setattr(store, "read_session_records", read)
 
@@ -285,7 +285,7 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude")),
+            AsyncMock(return_value=AgentSession(cli="claude", audience="open")),
         )
         monkeypatch.setattr(store, "read_session_records", read)
 
@@ -307,7 +307,7 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude")),
+            AsyncMock(return_value=AgentSession(cli="claude", audience="open")),
         )
         monkeypatch.setattr(store, "read_session_records", read)
 
@@ -328,7 +328,7 @@ class TestRecentTurns:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="codex")),
+            AsyncMock(return_value=AgentSession(cli="codex", audience="open")),
         )
         read = AsyncMock(
             return_value=[
@@ -370,7 +370,7 @@ class TestRecentTurns:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="codex")),
+            AsyncMock(return_value=AgentSession(cli="codex", audience="open")),
         )
         read = AsyncMock(return_value=[])
         monkeypatch.setattr(store, "read_recent_session_turns", read)
@@ -397,6 +397,7 @@ class TestViewerOwnedCapture:
             AsyncMock(
                 return_value=AgentSession(
                     cli="codex",
+                    audience="open",
                     opened_by_api_key_id=TEST_API_KEY_ID
                     if owns_session
                     else uuid.uuid4(),
@@ -435,7 +436,7 @@ class TestLegacyPart:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude")),
+            AsyncMock(return_value=AgentSession(cli="claude", audience="open")),
         )
         monkeypatch.setattr(
             store,
@@ -551,9 +552,10 @@ async def _legacy_session(store: Store, *, turns: int) -> uuid.UUID:
     session_id = uuid.uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'legacy')",
+            "'tester@example.com', 'legacy', 'open')",
             session_id,
         )
         await conn.execute(

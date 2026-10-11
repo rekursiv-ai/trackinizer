@@ -151,6 +151,7 @@ class TestSubmit:
                     idempotency_key=idempotency_key,
                     account="tester@example.com",
                 ),
+                audience="open",
             )
         assert caught.value.constraint_name == "uq_inquiries_live_session_owner"
 
@@ -601,6 +602,94 @@ class TestSubmitDispatch:
                 actor="me",
             )
 
+    @pytest.mark.asyncio
+    async def test_a_session_is_opened_into_the_audience_it_is_given(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        expected = new_uuid()
+        called = AsyncMock(return_value=expected)
+        monkeypatch.setattr(store, "submit_agentsession", called)
+        body = SubmitAgentSession(title="s", account="a@example.com")
+
+        opened = await store.submit(
+            body,
+            api_key_id=None,
+            actor="me",
+            session_audience="staff",
+        )
+
+        assert opened == expected
+        called.assert_awaited_once_with(
+            body,
+            audience="staff",
+            api_key_id=None,
+            actor="me",
+            conn=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_session_given_no_audience_is_refused_not_opened_to_everyone(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        called = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "submit_agentsession", called)
+
+        with pytest.raises(TypeError, match="session_audience"):
+            await store.submit(
+                SubmitAgentSession(title="s", account="a@example.com"),
+                api_key_id=None,
+                actor="me",
+            )
+
+        called.assert_not_awaited()
+
+
+class TestSubmitArtifact:
+    @pytest.mark.asyncio
+    async def test_forwards_its_key_actor_and_connection_to_the_generic_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        generic = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "_submit_generic", generic)
+        body = SubmitArtifact(title="a", account="a@example.com")
+        key = new_uuid()
+
+        await store.submit_artifact(body, api_key_id=key, actor="alice")
+
+        generic.assert_awaited_once_with(
+            body,
+            kind="Artifact",
+            api_key_id=key,
+            actor="alice",
+            conn=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_submit_naming_no_actor_is_the_systems(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        generic = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "_submit_generic", generic)
+        body = SubmitArtifact(title="a", account="a@example.com")
+
+        await store.submit_artifact(body)
+
+        generic.assert_awaited_once_with(
+            body,
+            kind="Artifact",
+            api_key_id=None,
+            actor="system",
+            conn=None,
+        )
+
 
 class TestSubmitBatch:
     """``submit_batch`` is all-or-nothing in one shared transaction."""
@@ -705,6 +794,55 @@ class TestSubmitBatch:
         assert len(ids) == 2
         verbs = _tx_verbs(conn)
         assert verbs == ["BEGIN", "COMMIT"]
+
+    @pytest.mark.asyncio
+    async def test_every_item_is_given_the_audience_sessions_open_into(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        submitted = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "submit", submitted)
+
+        await store.submit_batch(
+            [
+                SubmitIssue(title="i1", account="tester@example.com"),
+                SubmitAgentSession(title="s1", account="tester@example.com"),
+            ],
+            session_audience="staff",
+        )
+
+        audiences = [
+            call.kwargs["session_audience"] for call in submitted.await_args_list
+        ]
+        assert audiences == ["staff", "staff"]
+
+    @pytest.mark.asyncio
+    async def test_a_session_in_a_batch_given_no_audience_rolls_the_batch_back(
+        self,
+    ) -> None:
+        conn = make_conn()
+        store, _engine = make_store(conn)
+
+        with pytest.raises(TypeError, match="session_audience"):
+            await store.submit_batch(
+                [
+                    SubmitIssue(
+                        title="i1",
+                        idempotency_key=new_uuid(),
+                        account="tester@example.com",
+                    ),
+                    SubmitAgentSession(
+                        title="s1",
+                        idempotency_key=new_uuid(),
+                        account="tester@example.com",
+                    ),
+                ],
+            )
+
+        verbs = _tx_verbs(conn)
+        assert verbs.count("ROLLBACK") == 1
+        assert "COMMIT" not in verbs
 
     # Edge wiring (index/UUID resolution + atomicity with rows) is proven
     # against real Postgres in integration_test.py

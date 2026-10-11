@@ -15,6 +15,8 @@ from uuid import UUID
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import asyncpg
 
     from trackinizer.lib.postgres import Conn
@@ -26,6 +28,7 @@ else:
 
 from treekle import from_plain
 
+from trackinizer.server.audience import visible_sql
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -128,6 +131,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         req: SubmitAgentSession,
         *,
         requested_actor: str,
+        audience: str,
         api_key_id: UUID | None = None,
         max_reserve_attempts: int = 16,
     ) -> tuple[UUID, str, int]:
@@ -156,6 +160,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         Args:
           req: SubmitAgentSession body (may include cli_session_id for resume).
           requested_actor: Desired routing name; suffixed with #N if taken.
+          audience: Who may read the transcript of a session this call mints.
           api_key_id: API key that opened this session; used in resume correlation.
           max_reserve_attempts: Max retries on live-owner unique constraint.
 
@@ -213,6 +218,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             try:
                 session_id = await self.submit_agentsession(
                     req.model_copy(update={"owner": granted}),
+                    audience=audience,
                     api_key_id=api_key_id,
                     actor=granted,
                 )
@@ -593,6 +599,34 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             for row in rows
         ]
 
+    async def read_session_audiences(
+        self,
+        session_ids: Sequence[UUID],
+    ) -> dict[UUID, str | None]:
+        """Read the audience of each session in ``session_ids``.
+
+        Args:
+          session_ids: Session ids to look up.
+
+        Returns:
+          audiences: The audience by id. An id that is no session is absent.
+
+        """
+        async with self.engine.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, agentsession_audience FROM inquiries "
+                "WHERE kind = 'AgentSession' AND id = ANY($1::uuid[])",
+                list(session_ids),
+            )
+        return {
+            _uuid(row["id"]): from_plain(
+                row["agentsession_audience"],
+                str,
+                default=None,
+            )
+            for row in rows
+        }
+
     async def read_feed(
         self,
         *,
@@ -621,7 +655,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             start (distinct from ``after``, which is the exclusive resume
             cursor); combine with ``until`` to bound a fixed window.
           until: Inclusive upper bound on ``created``; bounds a window's end.
-          scope: Which sessions and record kinds to keep.
+          scope: Which sessions and record kinds to keep, and the audiences the
+            reader may read: no turn of another session is returned.
           conversation: Keep only conversation, the records the facets count as
             what a person or agent said (``session_feed.CONVERSATION``), so a page
             of ``limit`` holds that many of them.
@@ -652,6 +687,15 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             params.append(until)
             clauses.append(f"e.created <= ${len(params)}")
         clauses.extend(scope.clauses(params, kind="e.kind"))
+        # Audience: gated -- a turn of a session outside ``scope.audiences`` is not in
+        # the feed.
+        clauses.append(
+            visible_sql(
+                "i.agentsession_audience",
+                params=params,
+                audiences=scope.audiences,
+            ),
+        )
         if conversation:
             # In a CASE, so the planner neither estimates the test nor scans an
             # index for its kinds. Bare, beside the Messages level's kind filter, it

@@ -95,9 +95,12 @@ def test_non_nullable_columns_match_schema_metadata() -> None:
         AgentSession,
     ):
         for name, flat in flat_column_specs(src).items():
-            if flat.spec.required or flat.spec.flatten is not None:
+            # A column required of one kind is NULL on the other kinds' rows.
+            kind_free = flat.spec.applies_to_inquiry_kinds is None
+            if (flat.spec.required and kind_free) or flat.spec.flatten is not None:
                 expected.add(storage_name(name, flat.spec))
     assert set(NON_NULLABLE_COLUMNS) == expected
+    assert "agentsession_audience" not in NON_NULLABLE_COLUMNS
 
 
 def test_validate_presence_op_rejects_not_null_allows_nullable() -> None:

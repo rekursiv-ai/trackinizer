@@ -9,14 +9,15 @@ AgentSession list (``trax agentsession tool_call re bar``), not a second query
 surface with its own grammar.
 
 The append requires ``writer``, and for a science chat the key that opened it; the
-reads require ``viewer``. Tenant scope is
+reads require ``viewer``. Each route also answers 403 ``session_audience`` to a caller
+who neither opened the session nor reads its audience. Tenant scope is
 derived by joining to ``inquiries``, as every session route does.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -25,12 +26,13 @@ from treekle import from_plain, immutable
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.session_access import (
     require_chat_opener,
+    require_session,
+    require_session_access,
     require_session_write_access,
 )
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.store.session_ir import SlashCommandRow
-from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from trackinizer.wire.wire_session_ir import (
     AppendRecordsRequest,
@@ -42,10 +44,6 @@ from trackinizer.wire.wire_session_ir import (
     RecentTurnBody,
     RecordBody,
 )
-
-
-if TYPE_CHECKING:
-    from trackinizer.server.store.core import Store
 
 
 router = APIRouter()
@@ -82,8 +80,9 @@ async def append_session_records_route(
 
     """
     store = get_store(request)
-    session = await _require_session(store, session_id)
+    session = await require_session(store, session_id)
     require_session_write_access(identity, session)
+    require_session_access(identity, session=session, mode="write")
     require_chat_opener(identity, session=session)
     # A run closed for silence that uploads again was alive all along; reopen
     # its session first, or the append is refused as a write to an ended one.
@@ -128,26 +127,26 @@ async def append_session_records_route(
     )
 
 
-@router.get(
-    "/api/sessions/{session_id}/parts",
-    dependencies=[Depends(require_role("viewer"))],
-)
+@router.get("/api/sessions/{session_id}/parts")
 async def read_session_parts_route(
     session_id: UUID,
     request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> ReadPartsResponse:
     """List the files this session was captured from, in ``part`` order.
 
     Args:
       session_id: AgentSession ID to list parts from.
       request: FastAPI request (carries auth and store).
+      identity: Authenticated reader.
 
     Returns:
       result: ReadPartsResponse with manifest info for each part.
 
     """
     store = get_store(request)
-    await _require_session(store, session_id)
+    session = await require_session(store, session_id)
+    require_session_access(identity, session=session, mode="read")
     manifests = await store.read_session_manifests(session_id)
     return ReadPartsResponse(
         parts=[
@@ -166,13 +165,11 @@ async def read_session_parts_route(
     )
 
 
-@router.get(
-    "/api/sessions/{session_id}/records",
-    dependencies=[Depends(require_role("viewer"))],
-)
+@router.get("/api/sessions/{session_id}/records")
 async def read_session_records_route(
     session_id: UUID,
     request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
     part: int = 0,
     after_idx: int = -1,
@@ -192,6 +189,7 @@ async def read_session_records_route(
     Args:
       session_id: AgentSession ID to read from.
       request: FastAPI request (carries auth and store).
+      identity: Authenticated reader.
       part: Which file, as ``GET .../parts`` numbers it; ``-1`` holds turns
         backfilled from the retired event log.
       after_idx: Exclusive lower bound on idx (cursor-based paging).
@@ -211,7 +209,8 @@ async def read_session_records_route(
     # reader fetches every part it names, so refusing one blanks the transcript.
     # A number no file resolved to has no manifest and reads as empty.
     store = get_store(request)
-    await _require_session(store, session_id)
+    session = await require_session(store, session_id)
+    require_session_access(identity, session=session, mode="read")
     rows = await store.read_session_records(
         session_id,
         part=part,
@@ -222,13 +221,11 @@ async def read_session_records_route(
     return ReadRecordsResponse(part=part, records=[RecordBody.of(row) for row in rows])
 
 
-@router.get(
-    "/api/sessions/{session_id}/turns",
-    dependencies=[Depends(require_role("viewer"))],
-)
+@router.get("/api/sessions/{session_id}/turns")
 async def read_recent_session_turns_route(
     session_id: UUID,
     request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
     limit: int = 20,
 ) -> ReadRecentTurnsResponse:
@@ -237,6 +234,7 @@ async def read_recent_session_turns_route(
     Args:
       session_id: AgentSession ID to read from.
       request: FastAPI request carrying auth and store.
+      identity: Authenticated reader.
       limit: Maximum user and assistant turns, from 1 through 100.
 
     Returns:
@@ -246,7 +244,8 @@ async def read_recent_session_turns_route(
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=400, detail="limit must be in [1, 100]")
     store = get_store(request)
-    await _require_session(store, session_id)
+    session = await require_session(store, session_id)
+    require_session_access(identity, session=session, mode="read")
     turns = await store.read_recent_session_turns(session_id, limit=limit)
     return ReadRecentTurnsResponse(
         turns=[
@@ -259,11 +258,3 @@ async def read_recent_session_turns_route(
             for turn in turns
         ],
     )
-
-
-async def _require_session(store: Store, session_id: UUID) -> AgentSession:
-    """Fetch an AgentSession row or 404; reject a non-session id."""
-    row = await store.get_inquiry(session_id)
-    if not isinstance(row, AgentSession):
-        raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
-    return row

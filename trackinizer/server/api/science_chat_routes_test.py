@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -720,12 +721,23 @@ class _Stream:
 
     async def has_frame(self, kind: str, *, id: str) -> bool:
         """Read frames until a ``kind`` frame for ``id`` arrives; False after 5 s."""
+        return bool(await self.ids_until(kind, id=id))
+
+    async def ids_until(self, kind: str, *, id: str) -> list[object]:
+        """Read ``kind`` frames until one for ``id`` arrives; return their ids.
+
+        The frames come in the order of the changes, so an id not returned did not
+        precede ``id``. The list is empty when none for ``id`` arrives in 5 s.
+        """
         deadline = asyncio.get_running_loop().time() + 5.0
+        ids: list[object] = []
         while (left := deadline - asyncio.get_running_loop().time()) > 0:
             frame = await self._frame(timeout_sec=left)
-            if frame is not None and (frame["type"], frame.get("id")) == (kind, id):
-                return True
-        return False
+            if frame is not None and frame["type"] == kind:
+                ids.append(frame.get("id"))
+                if ids[-1] == id:
+                    return ids
+        return []
 
     async def _frame(self, *, timeout_sec: float) -> dict[str, object] | None:
         """Return the next data frame, or None when none arrives in time."""
@@ -753,13 +765,17 @@ async def _opened_stream(
     *,
     user_id: uuid.UUID,
     email: str,
+    audiences: frozenset[str] = frozenset({"open"}),
 ) -> _Stream:
-    """Open a user's events route and read past its opening frames."""
+    """Open a user's events route, as a reader of ``audiences``, past its opening frames."""
     request = Request({"type": "http", "app": app, "headers": [], "method": "GET"})
     response = await workspace_routes.workspace_events_route(
         workspace_id,
         request,
-        make_test_identity(user_id=user_id, api_key_id=None, email=email),
+        replace(
+            make_test_identity(user_id=user_id, api_key_id=None, email=email),
+            read_audiences=audiences,
+        ),
     )
     stream = _Stream(aiter(response.body_iterator))
     await stream.opened()
@@ -803,6 +819,60 @@ async def test_a_record_appended_to_a_chat_reaches_every_viewers_stream(
     for stream in (first, second):
         assert await stream.has_frame("changed", id=str(chat))
         await stream.close()
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_record_appended_to_a_staff_chat_reaches_only_a_viewer_who_reads_staff(
+    pglite_route_client: _Client,
+) -> None:
+    """A viewer of open hears of the open chat's line, and of nothing the staff chat got."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    first_canvas, _ = await _canvas(client)
+    second_canvas, _ = await _canvas(client, other=True)
+    staff_chat = await seed_science_chat(store, conversation_id=uuid.uuid4())
+    open_chat = await seed_science_chat(store, conversation_id=uuid.uuid4())
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET agentsession_audience = 'staff' WHERE id = $1",
+            staff_chat,
+        )
+    staff_reader = await _opened_stream(
+        first_canvas,
+        user_id=TEST_USER_ID,
+        email=TEST_USER_EMAIL,
+        audiences=frozenset({"open", "staff"}),
+    )
+    open_reader = await _opened_stream(
+        second_canvas,
+        user_id=OTHER_USER_ID,
+        email=OTHER_EMAIL,
+    )
+
+    # The open chat's line comes last, so a ping for the staff chat that reached the
+    # open reader would be among the frames that arrive before the open chat's own.
+    act_as_assistant("writer")
+    for chat in (staff_chat, open_chat):
+        appended = await client.post(
+            f"/api/sessions/{chat}/records",
+            json=_append(
+                AgentToAgentMessage(
+                    sender=OTHER_EMAIL,
+                    content="a line",
+                    timestamp=datetime.now(UTC).isoformat(),
+                ),
+            ),
+        )
+        assert appended.status_code == 200, appended.text
+
+    staff_heard = await staff_reader.ids_until("changed", id=str(open_chat))
+    open_heard = await open_reader.ids_until("changed", id=str(open_chat))
+    for stream in (staff_reader, open_reader):
+        await stream.close()
+
+    assert str(staff_chat) in staff_heard
+    assert open_heard == [str(open_chat)]
 
 
 async def _seed_screen_records(store: Store) -> tuple[uuid.UUID, uuid.UUID]:

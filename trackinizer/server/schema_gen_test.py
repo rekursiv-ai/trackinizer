@@ -13,11 +13,15 @@ from trackinizer.server.schema_gen import (
     generate_edge_metadata_columns,
     generate_edge_metadata_mirror_new,
     generate_edge_metadata_mirror_old,
+    generate_inquiry_kind_columns,
     quote_literal,
     substitute_schema_placeholders,
 )
 from trackinizer.server.sql import load_sql, schema_migrations
 from trackinizer.types.change_log import Snapshot
+from trackinizer.types.columns import column_specs
+from trackinizer.types.inquiries import AgentSession
+from trackinizer.wire.audience import AUDIENCE_SHAPE
 
 
 # Snapshot fields generated OUTSIDE ``CHANGE_LOG_COLUMN_ORDER``: the edge-metadata
@@ -216,7 +220,24 @@ class TestSchema:
             "schema.037.sql",
             "schema.038.sql",
             "schema.039.sql",
+            "schema.040.sql",
+            "schema.041.sql",
         ]
+
+    def test_the_pin_check_spells_the_wire_shape(self) -> None:
+        """The baseline and 040 check the shape ``wire/audience.py`` accepts."""
+        for sql in (load_sql("schema"), load_sql("schema.040")):
+            assert f"CHECK (open_into ~ '{AUDIENCE_SHAPE}')" in sql
+
+    def test_the_session_audience_column_spells_the_wire_shape(self) -> None:
+        """``types`` cannot import ``wire``, so the two spellings are compared here."""
+        spec = column_specs(AgentSession)["audience"]
+        assert spec.sql_check == f"audience ~ '{AUDIENCE_SHAPE}'"
+        assert spec.required
+        assert f"~ '{AUDIENCE_SHAPE}'" in load_sql("schema.041")
+        assert f"agentsession_audience ~ '{AUDIENCE_SHAPE}'" in (
+            generate_inquiry_kind_columns()
+        )
 
     def test_canonical_schema_contains_artifact_audit_columns(self) -> None:
         sql = substitute_schema_placeholders(load_sql("schema"))

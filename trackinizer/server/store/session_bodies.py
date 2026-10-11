@@ -187,6 +187,7 @@ def spliced_payload(payload_text: str, body_zst: bytes | None) -> str:
 # Batches claim rows with ``FOR UPDATE SKIP LOCKED`` so concurrent shards (or a
 # sweep racing live ingest) never deadlock on the same record; the shard
 # predicate makes overlap rare, the lock makes it harmless.
+# Audience: internal -- a background job; nothing it reads reaches a caller.
 async def _offload_batch(
     conn: Conn,
     shards: int,

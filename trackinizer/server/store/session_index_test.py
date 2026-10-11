@@ -73,9 +73,10 @@ async def _seed_rows(store: Store, count: int) -> None:
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'index test')",
+            "'tester@example.com', 'index test', 'open')",
             session_id,
         )
         for idx in range(count):

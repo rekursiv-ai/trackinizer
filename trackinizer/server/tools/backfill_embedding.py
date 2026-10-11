@@ -363,6 +363,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
 # pending forever. The marker is written for every swept record, embedded or not,
 # so it is the ONE freshness oracle -- the scanner, the count, and the workers'
 # re-check (:func:`_read_stage`) all read it.
+# Audience: internal -- an operator tool run on the server; no caller sees it.
 def _pending_page_sql(join: str, predicate: str, *, first: bool) -> str:
     """Return the keyset page SQL over INDEXABLE + PENDING rows for one scan step."""
     keyset = (
@@ -671,6 +672,7 @@ async def _worker(
 # The span read re-applies the scanner's own pending filter (:func:`_pending_where`), so
 # a row another worker finished since the scan is skipped by the same freshness oracle
 # that queued it.
+# Audience: internal -- an operator tool run on the server; no caller sees it.
 async def _read_stage(
     conn: Conn,
     queue: Queue[PageTask | None],
@@ -797,6 +799,7 @@ async def _embed_pool(
 # leak that made three runs write zero. Keys on ``session_index_state`` (the
 # marker), so an fts-only record counts pending until swept and fresh after, never
 # forever. ``md5(r.text)`` is computed in-DB, matching the worker's app-side md5.
+# Audience: internal -- an operator tool run on the server; no caller sees it.
 async def _pending_count(
     dsn: str,
     *,
@@ -889,6 +892,7 @@ def _format_eta(remaining: int, rate: float) -> str:
     return f"{hours}:{minutes:02d}"
 
 
+# Audience: internal -- an operator tool run on the server; no caller sees it.
 async def _write_pool(
     conn: Conn,
     pool: Pool,
