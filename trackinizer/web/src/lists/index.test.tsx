@@ -162,16 +162,20 @@ test("the focused row scrolls into view in the next frame, not in the task that 
   const frames: FrameRequestCallback[] = [];
   vi.stubGlobal("requestAnimationFrame", (frame: FrameRequestCallback) => frames.push(frame));
   vi.stubGlobal("cancelAnimationFrame", () => {});
-  const nextFrame = () => act(() => frames.splice(0).forEach((frame) => frame(performance.now())));
+  // The effect that requests the frame may run after the rows show: wait for it.
+  const nextFrame = async () => {
+    await waitFor(() => expect(frames).not.toHaveLength(0));
+    act(() => frames.splice(0).forEach((frame) => frame(performance.now())));
+  };
   const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
   serve([row({ title: "First" }), row({ title: "Second" })]);
   show(<ListView kind="Issue" />);
   expect(await titles()).toEqual(["Second", "First"]);
   expect(scrolled).not.toHaveBeenCalled();
-  nextFrame();
+  await nextFrame();
   expect(scrolled.mock.contexts.map((element) => (element as Element).querySelector(".row-title")?.textContent)).toEqual(["Second"]);
   await userEvent.setup().keyboard("j");
-  nextFrame();
+  await nextFrame();
   expect(scrolled.mock.contexts.map((element) => (element as Element).querySelector(".row-title")?.textContent)).toEqual(["Second", "First"]);
 });
 
