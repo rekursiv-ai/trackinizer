@@ -676,7 +676,7 @@ def test_deleting_one_call_does_not_move_another_across_prose() -> None:
 
 def _content_blocks(native: str) -> list[dict[str, object]]:
     """Return the message content blocks of a written line."""
-    record = from_plain(json_loads(native.splitlines()[0]), dict[str, object])
+    record = json_loads(native.splitlines()[0], dict[str, object])
     message = from_plain(record.get("message"), dict[str, object], default={})
     return list(from_plain(message.get("content"), list[dict[str, object]], default=[]))
 
@@ -898,7 +898,7 @@ def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(
         for at, line in enumerate(lines)
         if at == index or any(f'"{id_}"' in line for id_ in ids)
     ]
-    record = from_plain(json_loads(lines[index]), dict[str, object])
+    record = json_loads(lines[index], dict[str, object])
     failed: list[str] = []
     for path, changed in mistyped(record):
         session = _swapped(lines, window, index, changed)

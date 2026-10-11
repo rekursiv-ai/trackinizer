@@ -2194,7 +2194,7 @@ class TestSubscribeProbe:
         if status != 200:
             return status, headers, []
         frames = [
-            from_plain(json_loads(frame.removeprefix(b"data: ")), dict[str, object])
+            json_loads(frame.removeprefix(b"data: "), dict[str, object])
             for frame in body.split(b"\n\n")[:-1]
         ]
         return status, headers, frames

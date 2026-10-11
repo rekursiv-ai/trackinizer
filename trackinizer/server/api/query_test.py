@@ -667,7 +667,7 @@ class TestRoutes:
         )
         r = client.post("/api/inquiries/lookup", json=[str(good), str(bad)])
         assert r.status_code == 200
-        body = from_plain(json_loads(r.content), dict[str, object])
+        body = json_loads(r.content, dict[str, object])
         assert body["found"] == {str(good): "Issue"}
         assert body["missing"] == [str(bad)]
 

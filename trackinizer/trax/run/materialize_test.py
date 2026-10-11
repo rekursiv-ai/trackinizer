@@ -117,7 +117,7 @@ class TestTheFileIsThisMachinesOwn:
         written = materialize(target="claude", records=_records(), encoding=_encoding())
 
         declared = {
-            from_plain(json_loads(line), dict[str, object])["sessionId"]
+            json_loads(line, dict[str, object])["sessionId"]
             for line in written.path.read_text(encoding="utf-8").splitlines()
         }
         assert declared == {str(written.cli_session_id)}
@@ -145,7 +145,7 @@ class TestTheFileIsThisMachinesOwn:
         )
 
         declared = {
-            from_plain(json_loads(line), dict[str, object]).get("sessionId")
+            json_loads(line, dict[str, object]).get("sessionId")
             for line in written.path.read_text(encoding="utf-8").splitlines()
         }
         assert declared == {str(written.cli_session_id)}
@@ -342,8 +342,8 @@ class TestMaterializingCodex:
             encoding=immutable({}),
         )
 
-        declared = from_plain(
-            json_loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
+        declared = json_loads(
+            written.path.read_text(encoding="utf-8").splitlines()[0],
             dict[str, object],
         )
         payload = from_plain(declared["payload"], dict[str, object])
@@ -365,8 +365,8 @@ class TestMaterializingCodex:
             encoding=immutable({}),
         )
 
-        declared = from_plain(
-            json_loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
+        declared = json_loads(
+            written.path.read_text(encoding="utf-8").splitlines()[0],
             dict[str, object],
         )
         payload = from_plain(declared["payload"], dict[str, object])
@@ -493,8 +493,8 @@ class TestMaterializingCodex:
             encoding=immutable({}),
         )
 
-        declared = from_plain(
-            json_loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
+        declared = json_loads(
+            written.path.read_text(encoding="utf-8").splitlines()[0],
             dict[str, object],
         )
         timestamp = declared["timestamp"]
@@ -521,7 +521,7 @@ class TestMaterializingCodex:
         )
 
         lines = [
-            from_plain(json_loads(line), dict[str, object])
+            json_loads(line, dict[str, object])
             for line in written.path.read_text(encoding="utf-8").splitlines()
         ]
         assert all(isinstance(line.get("timestamp"), str) for line in lines)
@@ -558,8 +558,8 @@ class TestMaterializingCodex:
         )
 
         payload = from_plain(
-            from_plain(
-                json_loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
+            json_loads(
+                written.path.read_text(encoding="utf-8").splitlines()[0],
                 dict[str, object],
             )["payload"],
             dict[str, object],
@@ -583,7 +583,7 @@ class TestMaterializingCodex:
 
         index = next(iter(CodexAdapter().session_dirs())).parent / "session_index.jsonl"
         entries = [
-            from_plain(json_loads(line), dict[str, object])
+            json_loads(line, dict[str, object])
             for line in index.read_text(encoding="utf-8").splitlines()
         ]
         assert [entry["id"] for entry in entries] == [str(written.cli_session_id)]
@@ -604,7 +604,7 @@ class TestMaterializingCodex:
         )
 
         ids = [
-            from_plain(json_loads(line), dict[str, object])["id"]
+            json_loads(line, dict[str, object])["id"]
             for line in index.read_text(encoding="utf-8").splitlines()
         ]
         assert ids == ["kept", str(written.cli_session_id)]

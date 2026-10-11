@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 import asyncio
 import uuid
 
-from treekle import from_plain
 from treekle.wire import json_loads
 
 import httpx2
@@ -298,10 +297,7 @@ def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
         "conversation_id": str(conversation),
     }
     assert continued.headers["Idempotency-Key"] == str(key)
-    assert (
-        from_plain(json_loads(started.content), dict[str, object])["conversation_id"]
-        is None
-    )
+    assert json_loads(started.content, dict[str, object])["conversation_id"] is None
     assert uuid.UUID(started.headers["Idempotency-Key"]) != key
 
 
@@ -324,7 +320,7 @@ def test_a_posted_line_names_the_line_it_forks_when_given_one() -> None:
     )
 
     [forked] = server.asked
-    assert from_plain(json_loads(forked.content), dict[str, object])["fork"] == fork
+    assert json_loads(forked.content, dict[str, object])["fork"] == fork
 
 
 def test_the_assistant_opens_a_conversation_as_its_science_chat() -> None:
@@ -388,13 +384,10 @@ def test_conversing_posts_a_line_then_has_the_assistant_open_its_session() -> No
 
     assert opened == session_id
     posted, started, _ = server.asked
-    assert (
-        from_plain(json_loads(posted.content), dict[str, object])["text"]
-        == "hello there"
+    assert json_loads(posted.content, dict[str, object])["text"] == "hello there"
+    assert json_loads(started.content, dict[str, object])["cli_session_id"] == (
+        f"chat:{conversation}"
     )
-    assert from_plain(json_loads(started.content), dict[str, object])[
-        "cli_session_id"
-    ] == (f"chat:{conversation}")
 
 
 def test_a_refused_send_names_no_conversation() -> None:

@@ -90,7 +90,7 @@ async def test_workspace_operations_are_shared_revisioned_and_idempotent(
     install_identity(make_test_identity(api_key_id=None))
     created = await client.post("/api/workspaces")
     assert created.status_code == 200
-    initial = from_plain(json_loads(created.content), dict[str, object])
+    initial = json_loads(created.content, dict[str, object])
     workspace_id = from_plain(initial["id"], str)
     assert initial["revision"] == 0
     assert [
@@ -109,7 +109,7 @@ async def test_workspace_operations_are_shared_revisioned_and_idempotent(
         headers={"Idempotency-Key": key},
     )
     assert shown.status_code == 200
-    updated = from_plain(json_loads(shown.content), dict[str, object])
+    updated = json_loads(shown.content, dict[str, object])
     assert updated["revision"] == 1
     assert {
         from_plain(item, dict[str, object])["type"]
@@ -136,7 +136,7 @@ async def test_workspace_operations_are_shared_revisioned_and_idempotent(
         headers={"Idempotency-Key": key},
     )
     assert mismatched_replay.status_code == 409
-    mismatch = from_plain(json_loads(mismatched_replay.content), dict[str, object])
+    mismatch = json_loads(mismatched_replay.content, dict[str, object])
     assert from_plain(mismatch["current"], dict[str, object])["revision"] == 1
     same_dump_different_intent = await client.post(
         f"/api/workspaces/{workspace_id}/operations",
@@ -159,7 +159,7 @@ async def test_workspace_operations_are_shared_revisioned_and_idempotent(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert stale.status_code == 409
-    conflict = from_plain(json_loads(stale.content), dict[str, object])
+    conflict = json_loads(stale.content, dict[str, object])
     assert from_plain(conflict["current"], dict[str, object])["revision"] == 1
 
     response = await client.get(f"/api/workspaces/{workspace_id}")
@@ -183,7 +183,7 @@ async def test_workspace_can_show_record_resolved_by_a_separate_read_profile(
     install_identity(make_test_identity(api_key_id=None))
     created = await client.post("/api/workspaces")
     workspace_id = from_plain(
-        from_plain(json_loads(created.content), dict[str, object])["id"],
+        json_loads(created.content, dict[str, object])["id"],
         str,
     )
     record_id = str(uuid.uuid4())
@@ -202,7 +202,7 @@ async def test_workspace_can_show_record_resolved_by_a_separate_read_profile(
     )
     assert shown.status_code == 200
     visuals = from_plain(
-        from_plain(json_loads(shown.content), dict[str, object])["visuals"],
+        json_loads(shown.content, dict[str, object])["visuals"],
         list[object],
     )
     assert from_plain(visuals[-1], dict[str, object])["record_id"] == record_id
@@ -237,7 +237,7 @@ async def test_browser_chat_can_target_record_in_separate_read_profile(
     )
     assert shown.status_code == 200
     visuals = from_plain(
-        from_plain(json_loads(shown.content), dict[str, object])["visuals"],
+        json_loads(shown.content, dict[str, object])["visuals"],
         list[object],
     )
     chat_id = from_plain(from_plain(visuals[-1], dict[str, object])["id"], str)
@@ -255,7 +255,7 @@ async def test_browser_chat_can_target_record_in_separate_read_profile(
     act_as_assistant()
     drained = await drain(client, session_id=session_id)
     messages = from_plain(
-        from_plain(json_loads(drained.content), dict[str, object])["messages"],
+        json_loads(drained.content, dict[str, object])["messages"],
         list[object],
     )
     context = from_plain(
@@ -283,12 +283,12 @@ async def test_workspace_preference_does_not_gate_owned_canvas(
     created = await client.post("/api/workspaces")
     assert created.status_code == 200
     workspace_id = from_plain(
-        from_plain(json_loads(created.content), dict[str, object])["id"],
+        json_loads(created.content, dict[str, object])["id"],
         str,
     )
     enabled = await client.put("/api/me/visual-workspace", json={"enabled": True})
     assert enabled.status_code == 200
-    assert from_plain(json_loads(enabled.content), dict[str, object])["enabled"] is True
+    assert json_loads(enabled.content, dict[str, object])["enabled"] is True
     disabled = await client.put("/api/me/visual-workspace", json={"enabled": False})
     assert disabled.status_code == 200
     still_owned = await client.get(f"/api/workspaces/{workspace_id}")
@@ -348,7 +348,7 @@ async def test_an_assistant_that_stops_polling_is_not_messageable(
         json={"cli": "codex", "actor": KB_ACTOR},
     )
     session_id = from_plain(
-        from_plain(json_loads(started.content), dict[str, object])["id"],
+        json_loads(started.content, dict[str, object])["id"],
         str,
     )
     browser()
@@ -423,7 +423,7 @@ async def _show_chat_on_record(
     )
     assert shown.status_code == 200
     return from_plain(
-        from_plain(json_loads(shown.content), dict[str, object])["visuals"],
+        json_loads(shown.content, dict[str, object])["visuals"],
         list[object],
     )
 
@@ -467,7 +467,7 @@ async def _messages(
     drained = await drain(client, session_id=session_id)
     assert drained.status_code == 200
     return from_plain(
-        from_plain(json_loads(drained.content), dict[str, object])["messages"],
+        json_loads(drained.content, dict[str, object])["messages"],
         list[dict[str, object]],
     )
 
@@ -515,7 +515,7 @@ async def test_browser_chat_reaches_the_assistant_with_persisted_canvas_context(
     headers = {"Idempotency-Key": str(uuid.uuid4())}
     sent = await client.post(path, json=body, headers=headers)
     assert sent.status_code == 200
-    receipt = from_plain(json_loads(sent.content), dict[str, object])
+    receipt = json_loads(sent.content, dict[str, object])
     # The assistant has not opened the conversation's session yet, and a new
     # conversation is named by the key that started it.
     assert receipt["session_id"] is None
@@ -735,7 +735,7 @@ async def test_workspace_receipts_remain_bounded_without_losing_recent_replay(
     assert created.status_code == 200
     workspace_id = uuid.UUID(
         from_plain(
-            from_plain(json_loads(created.content), dict[str, object])["id"],
+            json_loads(created.content, dict[str, object])["id"],
             str,
         ),
     )
@@ -870,7 +870,7 @@ async def _publish(
     return _Report(
         issue_id=uuid.UUID(from_plain(payload["issue_id"], str)),
         artifact_id=from_plain(
-            from_plain(json_loads(published.content), dict[str, object])["artifact_id"],
+            json_loads(published.content, dict[str, object])["artifact_id"],
             str,
         ),
         viewer_id=viewer_id,
@@ -1017,7 +1017,7 @@ async def _viewer_messages(
     drained = await client.get(f"/api/sessions/{report.session_id}/inbound")
     assert drained.status_code == 200, drained.text
     return from_plain(
-        from_plain(json_loads(drained.content), dict[str, object])["messages"],
+        json_loads(drained.content, dict[str, object])["messages"],
         list[dict[str, object]],
     )
 
@@ -1036,7 +1036,7 @@ async def _report_canvas(client: httpx2.AsyncClient, report: _Report) -> str:
     created = await client.post("/api/workspaces")
     assert created.status_code == 200, created.text
     return from_plain(
-        from_plain(json_loads(created.content), dict[str, object])["id"],
+        json_loads(created.content, dict[str, object])["id"],
         str,
     )
 
@@ -1060,7 +1060,7 @@ async def _chat_on_report(
     chat_id = next(
         from_plain(visual["id"], str)
         for visual in from_plain(
-            from_plain(json_loads(shown_chat.content), dict[str, object])["visuals"],
+            json_loads(shown_chat.content, dict[str, object])["visuals"],
             list[dict[str, object]],
         )
         if visual["type"] == "trax.chat"
@@ -1188,7 +1188,7 @@ async def test_a_line_keeps_the_evidence_of_its_revision_when_a_newer_one_and_th
     )
     assert newer.status_code == 201, newer.text
     newer_artifact_id = from_plain(
-        from_plain(json_loads(newer.content), dict[str, object])["artifact_id"],
+        json_loads(newer.content, dict[str, object])["artifact_id"],
         str,
     )
     async with store.engine.acquire() as conn:
@@ -1249,7 +1249,7 @@ async def test_workspace_uses_the_deployments_configured_catalog(
     install_identity(make_test_identity(api_key_id=None))
     created = await client.post("/api/workspaces")
     assert created.status_code == 200
-    initial = from_plain(json_loads(created.content), dict[str, object])
+    initial = json_loads(created.content, dict[str, object])
     assert [
         from_plain(item, dict[str, object])["type"]
         for item in from_plain(initial["visuals"], list[object])
@@ -1281,8 +1281,8 @@ async def _state(
     *,
     workspace_id: uuid.UUID,
 ) -> dict[str, object]:
-    return from_plain(
-        json_loads((await client.get(f"/api/workspaces/{workspace_id}")).content),
+    return json_loads(
+        (await client.get(f"/api/workspaces/{workspace_id}")).content,
         dict[str, object],
     )
 
@@ -1327,13 +1327,12 @@ async def test_a_canvas_talks_to_the_assistant_however_its_session_is_named(
     )
     assert sent.status_code == 200
     # The line waits on the assistant's own session until it opens the chat.
-    assert from_plain(json_loads(sent.content), dict[str, object])["session_id"] is None
+    assert json_loads(sent.content, dict[str, object])["session_id"] is None
     act_as_assistant()
     messages = from_plain(
-        from_plain(
-            json_loads((await drain(client, session_id=kb)).content),
-            dict[str, object],
-        )["messages"],
+        json_loads((await drain(client, session_id=kb)).content, dict[str, object])[
+            "messages"
+        ],
         list[object],
     )
     assert from_plain(messages[0], dict[str, object])["text"] == "hello scout"
@@ -1503,10 +1502,7 @@ async def test_navigate_moves_the_page_without_changing_the_canvas(
             headers={"Idempotency-Key": str(key)},
         )
         assert first.status_code == 200
-        assert (
-            from_plain(json_loads(first.content), dict[str, object])["revision"]
-            == revision
-        )
+        assert json_loads(first.content, dict[str, object])["revision"] == revision
         replay = await client.post(
             path,
             json=body,
@@ -1552,10 +1548,7 @@ async def test_navigate_moves_the_page_without_changing_the_canvas(
             headers={"Idempotency-Key": str(key)},
         )
         assert later.status_code == 200
-        assert (
-            from_plain(json_loads(later.content), dict[str, object])["revision"]
-            == revision + 1
-        )
+        assert json_loads(later.content, dict[str, object])["revision"] == revision + 1
         assert _frames(stream) == []
     async with store.engine.acquire() as conn:
         stored = await conn.fetchval(
@@ -1682,10 +1675,7 @@ async def test_highlight_points_at_inquiries_without_changing_the_canvas(
             headers={"Idempotency-Key": str(key)},
         )
         assert first.status_code == 200
-        assert (
-            from_plain(json_loads(first.content), dict[str, object])["revision"]
-            == revision
-        )
+        assert json_loads(first.content, dict[str, object])["revision"] == revision
         replay = await client.post(
             path,
             json=body,
@@ -1904,10 +1894,7 @@ async def _next_frame(
         chunk = await asyncio.wait_for(anext(stream), 5)
         text = chunk if isinstance(chunk, str) else bytes(chunk).decode()
         if text.startswith("data: "):
-            return from_plain(
-                json_loads(text.removeprefix("data: ")),
-                dict[str, object],
-            )
+            return json_loads(text.removeprefix("data: "), dict[str, object])
 
 
 @pytest.mark.db_pglite
@@ -2051,8 +2038,8 @@ async def _partner(
     workspace_id: str,
 ) -> dict[str, object]:
     """Read the partner the canvas reports as the installed browser."""
-    state = from_plain(
-        json_loads((await client.get(f"/api/workspaces/{workspace_id}")).content),
+    state = json_loads(
+        (await client.get(f"/api/workspaces/{workspace_id}")).content,
         dict[str, object],
     )
     return from_plain(state["partner"], dict[str, object])

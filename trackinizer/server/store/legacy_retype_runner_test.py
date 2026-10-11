@@ -18,7 +18,7 @@ import asyncio
 import json
 import re
 
-from treekle import from_plain, mutable
+from treekle import ReadError, from_plain, mutable
 
 import pytest
 import pytest_asyncio
@@ -364,6 +364,14 @@ def test_each_row_reads_as_a_source_naming_its_legacy_kind() -> None:
             ciphertext="c2VhbGVk",
         ),
     ]
+
+
+def test_a_payload_that_is_not_an_object_is_refused_by_type() -> None:
+    """Only an object carries ``kind``; a list is a typed read error, not a crash."""
+    rows = _Rows([_row("UncategorizedRecord", '["kind"]')])
+
+    with pytest.raises(ReadError):
+        _read(rows, uuid4())
 
 
 @pytest.mark.parametrize(

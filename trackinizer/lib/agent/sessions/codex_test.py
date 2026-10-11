@@ -365,7 +365,7 @@ def test_a_foreign_subtype_is_not_written_as_a_codex_role() -> None:
 
     codex.denormalize([SystemMessage(content="", subtype="turn_duration")], out)
 
-    outer = from_plain(json_loads(out.getvalue().splitlines()[0]), dict[str, object])
+    outer = json_loads(out.getvalue().splitlines()[0], dict[str, object])
     payload = from_plain(outer["payload"], dict[str, object])
     assert payload["role"] == "system"
 
@@ -1625,7 +1625,7 @@ def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(index: int) -> N
     The rest of the rollout stays as written, so a line read in context -- a
     result after its call, an item after its turn -- meets its wrong field there.
     """
-    record = from_plain(json_loads(FIXTURE[index]), dict[str, object])
+    record = json_loads(FIXTURE[index], dict[str, object])
     failed: list[str] = []
     for path, changed in mistyped(record):
         records = list(codex.normalize(StringIO(_swapped(index, changed))))

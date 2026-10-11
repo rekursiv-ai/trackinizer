@@ -120,7 +120,7 @@ def test_session_json_is_a_bare_array_of_tagged_records() -> None:
 
     text = stream.getvalue()
     assert text.endswith("\n")
-    document = from_plain(json_loads(text), list[dict[str, object]])
+    document = json_loads(text, list[dict[str, object]])
     assert [
         from_plain(entry.get("py/object"), str, default="").rpartition(".")[2]
         for entry in document

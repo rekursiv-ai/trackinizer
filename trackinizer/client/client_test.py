@@ -1495,7 +1495,7 @@ def test_a_stale_workspace_operation_is_retried_once_on_the_live_revision() -> N
                 json={"id": str(workspace), "revision": next(revisions)},
             )
         revision = from_plain(
-            from_plain(json_loads(request.content), dict[str, object])["revision"],
+            json_loads(request.content, dict[str, object])["revision"],
             int,
         )
         sent.append((revision, request.headers["Idempotency-Key"]))
@@ -1539,7 +1539,7 @@ def test_a_navigation_reads_no_revision_and_names_the_route() -> None:
             (
                 request.method,
                 request.url.path,
-                from_plain(json_loads(request.content), dict[str, object]),
+                json_loads(request.content, dict[str, object]),
             ),
         )
         return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
@@ -1568,7 +1568,7 @@ def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
             (
                 request.method,
                 request.url.path,
-                from_plain(json_loads(request.content), dict[str, object]),
+                json_loads(request.content, dict[str, object]),
             ),
         )
         return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
@@ -1651,7 +1651,7 @@ def test_append_records_with_no_arguments_sends_a_bare_slash_command_free_body()
     sent: list[dict[str, object]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
-        sent.append(from_plain(json_loads(request.content), dict[str, object]))
+        sent.append(json_loads(request.content, dict[str, object]))
         return httpx2.Response(200, json={"part": None, "written": 0, "skipped": 0})
 
     with Client("http://server") as client:
@@ -1678,7 +1678,7 @@ def test_append_records_posts_the_file_its_manifest_records_and_flags() -> None:
             (
                 request.method,
                 request.url.path,
-                from_plain(json_loads(request.content), dict[str, object]),
+                json_loads(request.content, dict[str, object]),
             ),
         )
         return httpx2.Response(200, json={"part": 2, "written": 1, "skipped": 0})

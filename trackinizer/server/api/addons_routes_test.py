@@ -11,7 +11,6 @@ import asyncio
 from configgle import Fig, Makes
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
-from treekle import from_plain
 from treekle.wire import json_loads
 
 from trackinizer.addons.addon import AddonManifest
@@ -69,7 +68,7 @@ def test_the_catalog_is_empty_without_a_deployment(
     client, _, _ = route_client
     response = client.get("/api/addons")
     assert response.status_code == 200
-    assert from_plain(json_loads(response.content), dict[str, object]) == {"addons": []}
+    assert json_loads(response.content, dict[str, object]) == {"addons": []}
 
 
 def test_the_module_app_always_has_a_visual_catalog() -> None:
@@ -84,10 +83,7 @@ def test_mounted_routes_are_prefixed_listed_and_need_a_viewer() -> None:
     app.dependency_overrides[current_user] = _viewer
     assert client.get("/api/addons/probe/ping").json() == {"pong": True}
     assert client.get("/ping").status_code == 404
-    listed = from_plain(
-        json_loads(client.get("/api/addons").content),
-        dict[str, object],
-    )
+    listed = json_loads(client.get("/api/addons").content, dict[str, object])
     assert listed["addons"] == [
         {
             "name": "probe",

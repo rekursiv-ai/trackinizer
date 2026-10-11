@@ -163,7 +163,7 @@ async def start_session(
     if started.status_code != 201:
         raise ValueError(f"session start answered {started.status_code}")
     session_id = from_plain(
-        from_plain(json_loads(started.content), dict[str, object])["id"],
+        json_loads(started.content, dict[str, object])["id"],
         str,
     )
     polled = await client.get(f"/api/sessions/{session_id}/inbound")
@@ -362,7 +362,7 @@ async def open_workspace(
         raise ValueError(f"workspace create answered {created.status_code}")
     return uuid.UUID(
         from_plain(
-            from_plain(json_loads(created.content), dict[str, object])["id"],
+            json_loads(created.content, dict[str, object])["id"],
             str,
         ),
     )
@@ -393,7 +393,7 @@ async def open_canvas(
     created = await client.post("/api/workspaces")
     if created.status_code != 200:
         raise ValueError(f"workspace create answered {created.status_code}")
-    state = from_plain(json_loads(created.content), dict[str, object])
+    state = json_loads(created.content, dict[str, object])
     workspace_id = uuid.UUID(from_plain(state["id"], str))
     chat_id = await _show_chat_at(
         client,
@@ -485,7 +485,7 @@ def conversation_of(response: httpx2.Response) -> uuid.UUID:
     """
     if response.status_code != 200:
         raise ValueError(f"send answered {response.status_code}")
-    receipt = from_plain(json_loads(response.content), dict[str, object])
+    receipt = json_loads(response.content, dict[str, object])
     return uuid.UUID(from_plain(receipt["conversation_id"], str))
 
 
@@ -558,8 +558,8 @@ async def revision_of(client: httpx2.AsyncClient, *, workspace_id: uuid.UUID) ->
       revision: Its current revision.
 
     """
-    state = from_plain(
-        json_loads((await client.get(f"/api/workspaces/{workspace_id}")).content),
+    state = json_loads(
+        (await client.get(f"/api/workspaces/{workspace_id}")).content,
         dict[str, object],
     )
     return from_plain(state["revision"], int)
@@ -604,7 +604,7 @@ async def _show_chat_at(
     if shown.status_code != 200:
         raise ValueError(f"show answered {shown.status_code}")
     visuals = from_plain(
-        from_plain(json_loads(shown.content), dict[str, object])["visuals"],
+        json_loads(shown.content, dict[str, object])["visuals"],
         list[dict[str, object]],
     )
     chat = next(v for v in visuals if v["type"] == "trax.chat")

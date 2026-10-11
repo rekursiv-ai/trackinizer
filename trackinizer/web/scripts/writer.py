@@ -153,7 +153,7 @@ def answer(client: Writes, line: str, *, clock: Clock) -> dict[str, object]:
     try:
         return _run(
             client,
-            from_plain(json_loads(line), dict[str, object]),
+            json_loads(line, dict[str, object]),
             clock=clock,
         )
     except (ClientError, KeyError, TypeError, ValueError) as error:

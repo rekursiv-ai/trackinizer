@@ -2148,7 +2148,7 @@ def test_search_json_output_is_the_raw_body(
 ) -> None:
     run(["search-sessions", "lock", "--format", "json"], client)
     out = capsys.readouterr().out
-    body = from_plain(json_loads(out), dict[str, object])
+    body = json_loads(out, dict[str, object])
     assert "hits" in body
     assert body["semantic"] is True
 

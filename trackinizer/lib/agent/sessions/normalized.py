@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING, TextIO
 
 import json
 
-from treekle import from_plain
 from treekle.wire import json_loads
 
 from trackinizer.lib.agent.types.sessions import SessionRecord
@@ -45,7 +44,7 @@ def normalize(stream: TextIO) -> Iterator[SessionRecord]:
     # Each record carries its own ``py/object`` tag, which is what selects the
     # union member -- so the whole list decodes as the annotated type rather
     # than one class named up front.
-    yield from from_plain(json_loads(stream.read()), list[SessionRecord])
+    yield from json_loads(stream.read(), list[SessionRecord])
 
 
 def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:

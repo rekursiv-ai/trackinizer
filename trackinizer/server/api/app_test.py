@@ -79,7 +79,7 @@ class TestCLIHelpers:
             assert response.status_code == 409
             # ``response.body`` is ``bytes | memoryview``; coerce to
             # ``bytes`` for json.loads's narrower type signature.
-            body = from_plain(json_loads(bytes(response.body)), dict[str, object])
+            body = json_loads(bytes(response.body), dict[str, object])
             assert prefix in from_plain(body["detail"], str)
 
     def test_handlers_do_not_leak_constraint_detail(self) -> None:
@@ -102,7 +102,7 @@ class TestCLIHelpers:
             asyncio.run(unique_violation_handler(req, unique_exc)),
         ]
         for response in responses:
-            body = from_plain(json_loads(bytes(response.body)), dict[str, object])
+            body = json_loads(bytes(response.body), dict[str, object])
             assert response.status_code == 409
             detail = from_plain(body["detail"], str)
             assert leak not in detail
@@ -112,21 +112,21 @@ class TestCLIHelpers:
     def test_conflict_handler_emits_error_code(self) -> None:
         req = cast(Request, Mock())
         response = asyncio.run(conflict_handler(req, ConflictError("clash")))
-        body = from_plain(json_loads(bytes(response.body)), dict[str, object])
+        body = json_loads(bytes(response.body), dict[str, object])
         assert response.status_code == 409
         assert body == {"detail": "clash", "code": "conflict"}
 
     def test_not_found_handler_emits_404_and_code(self) -> None:
         req = cast(Request, Mock())
         response = asyncio.run(not_found_handler(req, NotFoundError("gone")))
-        body = from_plain(json_loads(bytes(response.body)), dict[str, object])
+        body = json_loads(bytes(response.body), dict[str, object])
         assert response.status_code == 404
         assert body == {"detail": "gone", "code": "not_found"}
 
     def test_validation_handler_emits_422_and_code(self) -> None:
         req = cast(Request, Mock())
         response = asyncio.run(validation_handler(req, ValidationError("bad input")))
-        body = from_plain(json_loads(bytes(response.body)), dict[str, object])
+        body = json_loads(bytes(response.body), dict[str, object])
         assert response.status_code == 422
         assert body == {"detail": "bad input", "code": "validation"}
 

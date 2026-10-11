@@ -351,7 +351,7 @@ def _bodies(
     picked: Showcase,
 ) -> list[dict[str, object]]:
     """Each node's submit body: title, status and owner, a Belief's verdict, the showcase's text."""
-    contents = from_plain(json_loads(GRAPH_CONTENTS.read_text()), dict[str, object])
+    contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
     written = from_plain(contents["roots"], list[str])
     named = {root: written[k % len(written)] for k, root in enumerate(found.roots)}
     kinds = from_plain(contents.get("kinds"), dict[str, object])

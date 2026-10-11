@@ -255,10 +255,7 @@ def _frames(frames: list[bytes], *, at_sec: float) -> str:
     parts: list[str] = []
     for frame in frames:
         try:
-            data = from_plain(
-                json_loads(frame.removeprefix(b"data: ")),
-                dict[str, object],
-            )
+            data = json_loads(frame.removeprefix(b"data: "), dict[str, object])
         except (json.JSONDecodeError, TypeError):
             parts.append(f"not a probe frame: {frame[:40]!r}")
             continue

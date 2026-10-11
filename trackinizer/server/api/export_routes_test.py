@@ -87,7 +87,7 @@ def test_the_header_comes_first_then_one_line_per_row(
     assert r.status_code == 200
     assert r.headers["content-type"].startswith(EXPORT_MEDIA_TYPE)
     header, *rows = [
-        from_plain(json_loads(line), dict[str, object]) for line in r.text.splitlines()
+        json_loads(line, dict[str, object]) for line in r.text.splitlines()
     ]
     assert header == {
         "format": EXPORT_FORMAT,
@@ -101,7 +101,7 @@ def test_uuids_and_timestamps_become_strings(export_client: TestClient) -> None:
     r = export_client.get(EXPORT_API_PATH)
 
     inquiry = from_plain(
-        from_plain(json_loads(r.text.splitlines()[1]), dict[str, object])["row"],
+        json_loads(r.text.splitlines()[1], dict[str, object])["row"],
         dict[str, object],
     )
     assert inquiry == {

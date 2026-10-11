@@ -27,7 +27,7 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
     client, _, _ = route_client
     response = client.get("/api/visuals")
     assert response.status_code == 200
-    body = from_plain(json_loads(response.content), dict[str, object])
+    body = json_loads(response.content, dict[str, object])
     assert from_plain(body["default_visual"], str) == "trax.browse"
     visuals = [
         from_plain(item, dict[str, object])
@@ -102,7 +102,7 @@ def test_visuals_route_serves_the_deployments_configured_catalog(
         default_visual="x.notes",
     ).make()
     monkeypatch.setattr(app.state, "visual_catalog", configured, raising=False)
-    body = from_plain(json_loads(client.get("/api/visuals").content), dict[str, object])
+    body = json_loads(client.get("/api/visuals").content, dict[str, object])
     assert from_plain(body["default_visual"], str) == "x.notes"
     assert [
         from_plain(item, dict[str, object])["title"]

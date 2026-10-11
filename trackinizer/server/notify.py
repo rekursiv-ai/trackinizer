@@ -230,7 +230,7 @@ def changed_id(payload: str) -> str | None:
 
     """
     try:
-        payload_data = from_plain(json_loads(payload), dict[str, object])
+        payload_data = json_loads(payload, dict[str, object])
         return from_plain(payload_data["id"], str)
     except (json.JSONDecodeError, KeyError, TypeError):
         # Drop one bad payload rather than kill the stream, but LOG it: a

@@ -2056,7 +2056,7 @@ def _read_tool_call(
 def _parse_arguments(text: str) -> dict[str, object] | None:
     """Parse a provider-supplied JSON argument string, or ``None`` if invalid."""
     try:
-        return from_plain(json_loads(text), dict[str, object])
+        return json_loads(text, dict[str, object])
     except json.JSONDecodeError:
         return None
 

@@ -30,7 +30,6 @@ import hashlib
 import json
 import sys
 
-from treekle import from_plain
 from treekle.wire import json_loads
 
 import httpx2
@@ -128,7 +127,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
 def _served_schema(url: str) -> Mapping[str, object]:
     response = httpx2.get(f"{url.rstrip('/')}/openapi.json", timeout=30.0)
     _ = response.raise_for_status()
-    return from_plain(json_loads(response.text), dict[str, object])
+    return json_loads(response.text, dict[str, object])
 
 
 class _Flags(Protocol):

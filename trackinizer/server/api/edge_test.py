@@ -246,7 +246,7 @@ class TestCreate:
             f"/api/edges/{new_uuid()}/proves/{new_uuid()}",
             json={"actor": "u", "note": "load-bearing", "valence": 0.5},
         )
-        body = from_plain(json_loads(r.content), dict[str, object])
+        body = json_loads(r.content, dict[str, object])
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -261,7 +261,7 @@ class TestCreate:
             f"/api/edges/{new_uuid()}/narrows/{new_uuid()}",
             json={},
         )
-        body = from_plain(json_loads(r.content), dict[str, object])
+        body = json_loads(r.content, dict[str, object])
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -409,7 +409,7 @@ class TestBatch:
             },
         )
         assert r.status_code == 200
-        response = from_plain(json_loads(r.content), dict[str, object])
+        response = json_loads(r.content, dict[str, object])
         items = from_plain(response["items"], list[dict[str, object]])
         item = items[0]
         error = from_plain(item["error"], str)
@@ -476,7 +476,7 @@ class TestDelete:
             f"/api/edges/{from_id}/narrows/{to_id}",
             json={"actor": "u"},
         )
-        body = from_plain(json_loads(r.content), dict[str, object])
+        body = json_loads(r.content, dict[str, object])
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -495,7 +495,7 @@ class TestAnnotate:
             f"/api/edges/{from_id}/narrows/{to_id}/note",
             json={"value": "contextual note", "actor": "u"},
         )
-        body = from_plain(json_loads(r.content), dict[str, object])
+        body = json_loads(r.content, dict[str, object])
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -511,7 +511,7 @@ class TestAnnotate:
             f"/api/edges/{from_id}/narrows/{to_id}/labels",
             json={"value": ["context"], "actor": "u"},
         )
-        body = from_plain(json_loads(r.content), dict[str, object])
+        body = json_loads(r.content, dict[str, object])
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -528,7 +528,7 @@ class TestAnnotate:
             f"/api/edges/{from_id}/narrows/{to_id}/note",
             json={"actor": "u"},
         )
-        body = from_plain(json_loads(r.content), dict[str, object])
+        body = json_loads(r.content, dict[str, object])
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -550,7 +550,7 @@ class TestAnnotate:
             f"/api/edges/{from_id}/narrows/{to_id}/labels",
             json={"op": "add", "value": "context", "actor": "u"},
         )
-        body = from_plain(json_loads(r.content), dict[str, object])
+        body = json_loads(r.content, dict[str, object])
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -570,7 +570,7 @@ class TestAnnotate:
             f"/api/edges/{from_id}/narrows/{to_id}/labels",
             json={"op": "sub", "value": "context", "actor": "u"},
         )
-        body = from_plain(json_loads(r.content), dict[str, object])
+        body = json_loads(r.content, dict[str, object])
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None

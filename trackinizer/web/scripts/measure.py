@@ -145,7 +145,7 @@ def main() -> int:
     if flags.baseline:
         changes = moved(
             rows,
-            from_plain(json_loads(flags.baseline.read_text()), dict[str, object]),
+            json_loads(flags.baseline.read_text(), dict[str, object]),
         )
         print(f"\nmoved more than 2x from {flags.baseline}: {len(changes) or 'none'}")
         for name, what, before, after in changes:
@@ -221,10 +221,7 @@ def sample_stream(http: httpx2.Client, *, seconds: float) -> Stream:
                 return Stream(seconds=0.0, frames=0, distinct_ids=0, status=status)
             for line in response.iter_lines():
                 if line.startswith("data:"):
-                    frame = from_plain(
-                        json_loads(line.removeprefix("data:")),
-                        dict[str, object],
-                    )
+                    frame = json_loads(line.removeprefix("data:"), dict[str, object])
                     ids.append(from_plain(frame.get("id"), str))
                 if time.perf_counter() - start >= seconds:
                     break

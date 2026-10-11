@@ -19,7 +19,6 @@ from uuid import UUID
 
 import asyncio
 
-from treekle import from_plain
 from treekle.wire import json_loads
 
 import pytest
@@ -157,7 +156,7 @@ class TestPushChanges:
         drained = inbound.drain(session_id)
         assert len(drained) == 1
         assert drained[0].source == "trackinizer"
-        payload = from_plain(json_loads(drained[0].text), dict[str, object])
+        payload = json_loads(drained[0].text, dict[str, object])
         assert payload["kind"] == "created"
         assert payload["subject_id"] == str(change.subject_id)
 
@@ -520,7 +519,7 @@ class TestPayloadAndKey:
     def test_change_payload_is_a_compact_envelope(self) -> None:
         """The payload is metadata only: who did what to which row, when."""
         change = _change(kind="status")
-        payload = from_plain(json_loads(_change_payload(change, 42)), dict[str, object])
+        payload = json_loads(_change_payload(change, 42), dict[str, object])
         assert payload["kind"] == "status"
         assert payload["actor"] == "bob"
         assert payload["subject_kind"] == "Issue"
@@ -537,7 +536,7 @@ class TestPayloadAndKey:
         ``subject_ref`` carries the bare address for programmatic reuse.
         """
         change = _change(kind="status")
-        payload = from_plain(json_loads(_change_payload(change, 42)), dict[str, object])
+        payload = json_loads(_change_payload(change, 42), dict[str, object])
         assert payload["agent_message"] == "FYI: trax issue 42 status changed (by bob)"
         assert payload["subject_ref"] == "issue 42"
         assert payload["row"] == "trax issue 42"
@@ -545,17 +544,14 @@ class TestPayloadAndKey:
     def test_payload_falls_back_to_uuid_for_purged_subjects(self) -> None:
         """A purged subject has no seq (LEFT JOIN miss); the UUID still works."""
         change = _change(kind="purged")
-        payload = from_plain(
-            json_loads(_change_payload(change, None)),
-            dict[str, object],
-        )
+        payload = json_loads(_change_payload(change, None), dict[str, object])
         assert payload["subject_ref"] == f"issue {change.subject_id}"
         assert payload["row"] == f"trax issue {change.subject_id}"
 
     def test_agent_message_reads_naturally_for_event_kinds(self) -> None:
         """Event kinds (created, edge_added) read bare -- no 'changed' suffix."""
-        payload = from_plain(
-            json_loads(_change_payload(_change(kind="edge_added"), 7)),
+        payload = json_loads(
+            _change_payload(_change(kind="edge_added"), 7),
             dict[str, object],
         )
         assert payload["agent_message"] == "FYI: trax issue 7 edge_added (by bob)"

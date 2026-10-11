@@ -102,7 +102,7 @@ async def _drained(
     response = await drain(client, session_id=session_id)
     assert response.status_code == 200
     return from_plain(
-        from_plain(json_loads(response.content), dict[str, object])["messages"],
+        json_loads(response.content, dict[str, object])["messages"],
         list[dict[str, object]],
     )
 
@@ -129,7 +129,7 @@ async def test_a_writer_starts_a_conversation_and_the_assistant_hears_the_line(
     )
 
     assert sent.status_code == 200
-    receipt = from_plain(json_loads(sent.content), dict[str, object])
+    receipt = json_loads(sent.content, dict[str, object])
     # A new conversation is named by its key, and has no session until the
     # assistant opens it.
     assert receipt == {"conversation_id": str(key), "session_id": None}
@@ -341,7 +341,7 @@ async def test_a_second_writer_posts_into_the_first_ones_open_chat(
     )
 
     assert joined.status_code == 200
-    assert from_plain(json_loads(joined.content), dict[str, object]) == {
+    assert json_loads(joined.content, dict[str, object]) == {
         "conversation_id": str(started),
         "session_id": str(chat),
     }
@@ -382,9 +382,7 @@ async def test_a_chat_the_assistant_closed_is_reopened_through_its_service_sessi
     )
 
     assert again.status_code == 200
-    assert (
-        from_plain(json_loads(again.content), dict[str, object])["session_id"] is None
-    )
+    assert json_loads(again.content, dict[str, object])["session_id"] is None
     [heard] = await _drained(client, session_id=kb)
     assert heard["text"] == "b"
     context = from_plain(heard["context"], dict[str, object])
@@ -414,9 +412,7 @@ async def test_lines_still_queued_when_a_chat_is_closed_go_to_the_assistants_ser
         text="b",
         conversation_id=started,
     )
-    assert from_plain(json_loads(joined.content), dict[str, object])[
-        "session_id"
-    ] == str(
+    assert json_loads(joined.content, dict[str, object])["session_id"] == str(
         chat,
     )
 
@@ -473,14 +469,14 @@ async def test_a_conversation_is_found_by_its_id_once_the_assistant_opened_it(
             role="viewer",
         ),
     )
-    found = from_plain(json_loads((await client.get(path)).content), dict[str, object])
+    found = json_loads((await client.get(path)).content, dict[str, object])
     assert found["session_id"] == str(chat)
     assert (found["account"], found["live"]) == (TEST_USER_EMAIL, True)
 
     act_as_assistant("writer")
     await client.post(f"/api/sessions/{chat}/end", json={"status": "completed"})
     browser()
-    closed = from_plain(json_loads((await client.get(path)).content), dict[str, object])
+    closed = json_loads((await client.get(path)).content, dict[str, object])
     assert closed["live"] is False
 
 
@@ -508,7 +504,7 @@ async def test_a_session_that_only_carries_the_id_is_not_the_conversation(
 
     assert (await client.get(f"/api/chats/{conversation}")).status_code == 404
     listed = await client.get("/api/chats")
-    assert from_plain(json_loads(listed.content), list[object]) == []
+    assert json_loads(listed.content, list[object]) == []
 
 
 @pytest.mark.db_pglite
@@ -538,8 +534,8 @@ async def test_the_history_is_the_chats_i_started_or_posted_in(
     assert other
 
     browser()
-    mine_list = from_plain(
-        json_loads((await client.get("/api/chats")).content),
+    mine_list = json_loads(
+        (await client.get("/api/chats")).content,
         list[dict[str, object]],
     )
     assert {each["conversation_id"] for each in mine_list} == {str(mine), str(joined)}
@@ -549,8 +545,8 @@ async def test_the_history_is_the_chats_i_started_or_posted_in(
     assert by_id[str(joined)]["account"] == OTHER_EMAIL
 
     browser(OTHER_USER_ID, email=OTHER_EMAIL)
-    others_list = from_plain(
-        json_loads((await client.get("/api/chats")).content),
+    others_list = json_loads(
+        (await client.get("/api/chats")).content,
         list[dict[str, object]],
     )
     assert {each["conversation_id"] for each in others_list} == {
@@ -602,13 +598,13 @@ async def test_a_rotated_assistant_key_leaves_one_chat_read_from_its_newest_sess
     browser()
 
     assert reopened != old
-    head = from_plain(
-        json_loads((await client.get(f"/api/chats/{conversation}")).content),
+    head = json_loads(
+        (await client.get(f"/api/chats/{conversation}")).content,
         dict[str, object],
     )
     assert (head["session_id"], head["live"]) == (str(reopened), True)
-    listed = from_plain(
-        json_loads((await client.get("/api/chats")).content),
+    listed = json_loads(
+        (await client.get("/api/chats")).content,
         list[dict[str, object]],
     )
     assert [(each["conversation_id"], each["session_id"]) for each in listed] == [
@@ -637,8 +633,8 @@ async def test_the_listing_a_restart_reads_selects_the_assistants_own_recent_cha
             squatter,
         )
     act_as_assistant("writer")
-    profile = from_plain(
-        json_loads((await client.get("/api/me/profile")).content),
+    profile = json_loads(
+        (await client.get("/api/me/profile")).content,
         dict[str, object],
     )
     key = from_plain(profile["api_key_id"], str)
@@ -667,7 +663,7 @@ async def test_the_listing_a_restart_reads_selects_the_assistants_own_recent_cha
         assert found.status_code == 200, found.text
         return [
             from_plain(row["id"], str)
-            for row in from_plain(json_loads(found.content), list[dict[str, object]])
+            for row in json_loads(found.content, list[dict[str, object]])
         ]
 
     assert await listed(datetime.now(UTC) - timedelta(days=7)) == [str(own)]
@@ -687,10 +683,7 @@ async def test_without_an_assistant_there_are_no_chats(
     monkeypatch.setattr(app.state, "config", None, raising=False)
     browser()
 
-    assert (
-        from_plain(json_loads((await client.get("/api/chats")).content), list[object])
-        == []
-    )
+    assert json_loads((await client.get("/api/chats")).content, list[object]) == []
     assert (await client.get(f"/api/chats/{conversation}")).status_code == 404
 
 
@@ -747,10 +740,7 @@ class _Stream:
             self._next = None
             text = chunk if isinstance(chunk, str) else bytes(chunk).decode()
             if text.startswith("data: "):
-                return from_plain(
-                    json_loads(text.removeprefix("data: ")),
-                    dict[str, object],
-                )
+                return json_loads(text.removeprefix("data: "), dict[str, object])
 
     async def close(self) -> None:
         """Stop reading."""
@@ -946,7 +936,7 @@ async def _state(
 ) -> dict[str, object]:
     response = await client.get(f"/api/workspaces/{workspace_id}")
     assert response.status_code == 200
-    return from_plain(json_loads(response.content), dict[str, object])
+    return json_loads(response.content, dict[str, object])
 
 
 async def _choose(
@@ -974,8 +964,8 @@ async def _drained_by_helper(
     """Drain a session as the owner's own key, which opened it; return its messages."""
     act_as_user_agent()
     return from_plain(
-        from_plain(
-            json_loads((await drain(client, session_id=session_id)).content),
+        json_loads(
+            (await drain(client, session_id=session_id)).content,
             dict[str, object],
         )["messages"],
         list[dict[str, object]],
@@ -1000,7 +990,7 @@ async def test_a_local_choice_makes_the_owners_helper_the_partner(
 
     chosen = await _choose(client, workspace_id=workspace_id, choice="local")
     assert chosen.status_code == 200
-    assert _partner(from_plain(json_loads(chosen.content), dict[str, object])) == {
+    assert _partner(json_loads(chosen.content, dict[str, object])) == {
         "session_id": str(helper),
         "actor": "helper",
         "cli": CHAT_HELPER_CLI,
@@ -1017,7 +1007,7 @@ async def test_a_local_choice_makes_the_owners_helper_the_partner(
         chat_id=chat_id,
         text="hello",
     )
-    assert from_plain(json_loads(sent.content), dict[str, object])["session_id"] is None
+    assert json_loads(sent.content, dict[str, object])["session_id"] is None
     [heard] = await _drained_by_helper(client, session_id=helper)
     assert (heard["text"], heard["source"]) == ("hello", TEST_USER_EMAIL)
     assert await _drained(client, session_id=scout) == []
@@ -1056,16 +1046,11 @@ async def test_a_chat_the_helper_opened_is_read_through_the_owners_key_and_not_t
         text="and then?",
         conversation_id=conversation,
     )
-    assert (
-        from_plain(json_loads(joined.content), dict[str, object])["session_id"] is None
-    )
+    assert json_loads(joined.content, dict[str, object])["session_id"] is None
     [again] = await _drained_by_helper(client, session_id=helper)
     assert again["text"] == "and then?"
     assert await _drained_by_owner(client, session_id=chat) == []
-    listed = from_plain(
-        json_loads((await client.get("/api/chats")).content),
-        list[object],
-    )
+    listed = json_loads((await client.get("/api/chats")).content, list[object])
     assert [
         from_plain(each, dict[str, object])["conversation_id"] for each in listed
     ] == [
@@ -1108,7 +1093,7 @@ async def start_unpolled(
     assert started.status_code == 201, started.text
     return uuid.UUID(
         from_plain(
-            from_plain(json_loads(started.content), dict[str, object])["id"],
+            json_loads(started.content, dict[str, object])["id"],
             str,
         ),
     )
@@ -1184,7 +1169,7 @@ async def _drained_by_owner(
     response = await drain(client, session_id=session_id)
     assert response.status_code == 200
     return from_plain(
-        from_plain(json_loads(response.content), dict[str, object])["messages"],
+        json_loads(response.content, dict[str, object])["messages"],
         list[dict[str, object]],
     )
 
@@ -1227,9 +1212,7 @@ async def test_another_writer_cannot_poll_a_helper_chat_to_divert_the_owners_lin
         conversation_id=conversation,
     )
 
-    assert (
-        from_plain(json_loads(second.content), dict[str, object])["session_id"] is None
-    )
+    assert json_loads(second.content, dict[str, object])["session_id"] is None
     act_as_other_agent("writer")
     assert (await drain(client, session_id=chat)).status_code == 403
     assert [m["text"] for m in await _drained_by_owner(client, session_id=helper)] == [
@@ -1300,7 +1283,7 @@ async def test_a_local_choice_with_no_helper_running_refuses_a_post(
 
     chosen = await _choose(client, workspace_id=workspace_id, choice="local")
     assert chosen.status_code == 200
-    assert _partner(from_plain(json_loads(chosen.content), dict[str, object])) == {
+    assert _partner(json_loads(chosen.content, dict[str, object])) == {
         "session_id": None,
         "actor": None,
         "cli": None,
@@ -1350,7 +1333,7 @@ async def test_another_users_helper_never_becomes_this_owners_partner(
     assert refused.status_code == 409
     act_as_other_agent()
     drained = await drain(client, session_id=foreign)
-    assert from_plain(json_loads(drained.content), dict[str, object])["messages"] == []
+    assert json_loads(drained.content, dict[str, object])["messages"] == []
     assert await _drained(client, session_id=scout) == []
 
 

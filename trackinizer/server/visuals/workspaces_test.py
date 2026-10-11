@@ -351,10 +351,6 @@ def test_a_visual_that_takes_no_record_refuses_one() -> None:
         )
 
 
-def _show(visual: str, *, record: uuid.UUID | None) -> ShowVisual:
-    return ShowVisual(kind="show", visual_type=visual, record_id=record)
-
-
 def _entry(visual: str) -> VisualDescription:
     entry = default_workspace().visual(visual)
     assert entry is not None
@@ -383,7 +379,7 @@ def test_refuse_record_applies_the_catalogs_kinds(
 ) -> None:
     """One rule, callable without a database: a reason, or None."""
     reason = refuse_record(
-        _show(visual, record=uuid.uuid4()),
+        ShowVisual(kind="show", visual_type=visual, record_id=uuid.uuid4()),
         descriptor=_entry(visual),
         kind=kind,
     )
@@ -393,7 +389,7 @@ def test_refuse_record_applies_the_catalogs_kinds(
 def test_refuse_record_names_the_kinds_and_what_it_found() -> None:
     """The sentence a refused caller reads says what the visual shows."""
     reason = refuse_record(
-        _show("trax.artifact", record=uuid.uuid4()),
+        ShowVisual(kind="show", visual_type="trax.artifact", record_id=uuid.uuid4()),
         descriptor=_entry("trax.artifact"),
         kind="Belief",
     )
@@ -403,14 +399,18 @@ def test_refuse_record_names_the_kinds_and_what_it_found() -> None:
     )
     assert (
         refuse_record(
-            _show("trax.artifact", record=uuid.uuid4()),
+            ShowVisual(
+                kind="show",
+                visual_type="trax.artifact",
+                record_id=uuid.uuid4(),
+            ),
             descriptor=two,
             kind="Belief",
         )
         == "Artifact shows Paper or Issue records, not Belief."
     )
     unknown = refuse_record(
-        _show("trax.artifact", record=uuid.uuid4()),
+        ShowVisual(kind="show", visual_type="trax.artifact", record_id=uuid.uuid4()),
         descriptor=_entry("trax.artifact"),
         kind=None,
     )
@@ -418,7 +418,7 @@ def test_refuse_record_names_the_kinds_and_what_it_found() -> None:
     assert unknown.endswith("not an unknown record.")
     assert (
         refuse_record(
-            _show("trax.browse", record=uuid.uuid4()),
+            ShowVisual(kind="show", visual_type="trax.browse", record_id=uuid.uuid4()),
             descriptor=_entry("trax.browse"),
             kind=None,
         )
@@ -430,7 +430,7 @@ def test_a_show_without_a_record_is_never_refused_for_one() -> None:
     """Whether a record is required is another rule."""
     assert (
         refuse_record(
-            _show("trax.browse", record=None),
+            ShowVisual(kind="show", visual_type="trax.browse", record_id=None),
             descriptor=_entry("trax.browse"),
             kind=None,
         )
@@ -438,7 +438,7 @@ def test_a_show_without_a_record_is_never_refused_for_one() -> None:
     )
     assert (
         refuse_record(
-            _show("trax.timeline", record=None),
+            ShowVisual(kind="show", visual_type="trax.timeline", record_id=None),
             descriptor=_entry("trax.timeline"),
             kind=None,
         )

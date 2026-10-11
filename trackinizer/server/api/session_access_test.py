@@ -59,7 +59,7 @@ def _line(content: str) -> AgentToAgentMessage:
 
 
 def _records(response: httpx2.Response) -> list[dict[str, object]]:
-    body = from_plain(json_loads(response.content), dict[str, object])
+    body = json_loads(response.content, dict[str, object])
     return from_plain(body["records"], list[dict[str, object]])
 
 

@@ -223,7 +223,7 @@ def _poison_records(stream: TextIO) -> Iterator[SessionRecord]:
 # position it already held rather than the reader having to remember what it emitted.
 def _document_records(stream: TextIO) -> Iterator[SessionRecord]:
     """Every message a whole document holds, re-read from its start."""
-    obj = from_plain(json_loads(stream.read()), dict[str, object])
+    obj = json_loads(stream.read(), dict[str, object])
     for text in from_plain(obj.get("messages"), list[str], default=[]):
         yield UserMessage(content=text)
 
@@ -1787,7 +1787,7 @@ def _uuid_line(marker: str) -> bytes:
 def _uuid_records(stream: TextIO) -> Iterator[SessionRecord]:
     """Read the claude-shaped fixture lines ``_uuid_line`` writes."""
     for line in stream:
-        obj = from_plain(json_loads(line), dict[str, object])
+        obj = json_loads(line, dict[str, object])
         message = from_plain(obj["message"], dict[str, object])
         yield UserMessage(content=str(message["content"]))
 

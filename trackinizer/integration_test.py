@@ -1084,7 +1084,7 @@ class TestIntegrationEndToEnd:
                     json={"cli": "claude", "actor": "scientist"},
                 )
                 assert first.status_code == 201, first.text
-                first_body = _json_object(first)
+                first_body = from_plain(first.json(), dict[str, object])
                 assert from_plain(first_body["actor"], str) == "scientist"
                 # A second concurrent start with the same name is suffixed.
                 second = await http.post(
@@ -1092,7 +1092,7 @@ class TestIntegrationEndToEnd:
                     json={"cli": "claude", "actor": "scientist"},
                 )
                 assert second.status_code == 201, second.text
-                second_body = _json_object(second)
+                second_body = from_plain(second.json(), dict[str, object])
                 assert from_plain(second_body["actor"], str) == "scientist#2"
 
                 # ``rooms`` round-trips: start with membership, read it back
@@ -1102,7 +1102,9 @@ class TestIntegrationEndToEnd:
                     json={"cli": "codex", "actor": "eng", "rooms": ["sear", "lab"]},
                 )
                 assert roomed.status_code == 201, roomed.text
-                sid = UUID(from_plain(_json_object(roomed)["id"], str))
+                sid = UUID(
+                    from_plain(from_plain(roomed.json(), dict[str, object])["id"], str),
+                )
         finally:
             app.dependency_overrides.pop(current_user, None)
         row = await integ_store.get_inquiry(sid)
@@ -1155,14 +1157,17 @@ class TestIntegrationEndToEnd:
                     },
                 )
                 assert logged.status_code == 200, logged.text
-                assert _json_object(logged) == {"logged": 3, "skipped": 0}
+                assert from_plain(logged.json(), dict[str, object]) == {
+                    "logged": 3,
+                    "skipped": 0,
+                }
 
                 metrics_response = await http.get(
                     f"/api/experiments/{eid}/metrics",
                 )
                 assert metrics_response.status_code == 200, metrics_response.text
                 pts = from_plain(
-                    _json_object(metrics_response)["points"],
+                    from_plain(metrics_response.json(), dict[str, object])["points"],
                     list[object],
                 )
                 assert [
@@ -1181,7 +1186,7 @@ class TestIntegrationEndToEnd:
                 # ``config`` surfaces on the SPA detail view verbatim.
                 detail = await http.get(f"/api/web/get/{eid}")
                 assert detail.status_code == 200, detail.text
-                detail_body = _json_object(detail)
+                detail_body = from_plain(detail.json(), dict[str, object])
                 assert (
                     from_plain(detail_body["self"], dict[str, object])["config"] == cfg
                 )
@@ -1200,7 +1205,13 @@ class TestIntegrationEndToEnd:
                 assert over_resp.status_code == 422, over_resp.text
                 still = await http.get(f"/api/experiments/{eid}/metrics")
                 assert (
-                    len(from_plain(_json_object(still)["points"], list[object])) == 3
+                    len(
+                        from_plain(
+                            from_plain(still.json(), dict[str, object])["points"],
+                            list[object],
+                        ),
+                    )
+                    == 3
                 )  # Unchanged.
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1243,7 +1254,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "router-eng", "rooms": ["sear"]},
                 )
-                sid = from_plain(_json_object(start)["id"], str)
+                sid = from_plain(from_plain(start.json(), dict[str, object])["id"], str)
 
                 # PUT overwrites the whole membership.
                 put = await http.put(
@@ -1332,7 +1343,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "scientist", "rooms": ["sear"]},
                 )
-                sid = from_plain(_json_object(start)["id"], str)
+                sid = from_plain(from_plain(start.json(), dict[str, object])["id"], str)
                 assert (
                     await http.get(f"/api/sessions/{sid}/inbound")
                 ).status_code == 200
@@ -1343,7 +1354,10 @@ class TestIntegrationEndToEnd:
                     json={"actor": "scientist", "room": "sear", "text": "go"},
                 )
                 assert hit.status_code == 200, hit.text
-                assert from_plain(_json_object(hit)["delivered"], list[str]) == [
+                assert from_plain(
+                    from_plain(hit.json(), dict[str, object])["delivered"],
+                    list[str],
+                ) == [
                     str(sid),
                 ]
 
@@ -1352,13 +1366,22 @@ class TestIntegrationEndToEnd:
                     "/api/messages",
                     json={"actor": "scientist", "room": "other", "text": "go"},
                 )
-                assert from_plain(_json_object(miss)["delivered"], list[object]) == []
+                assert (
+                    from_plain(
+                        from_plain(miss.json(), dict[str, object])["delivered"],
+                        list[object],
+                    )
+                    == []
+                )
 
                 # The reaching send landed in the session's inbound queue,
                 # carrying the attested sender and the routed room so the
                 # poller can render the ``[room] sender:`` injection context.
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
-                msgs = from_plain(_json_object(drain)["messages"], list[object])
+                msgs = from_plain(
+                    from_plain(drain.json(), dict[str, object])["messages"],
+                    list[object],
+                )
                 assert [
                     from_plain(from_plain(m, dict[str, object])["text"], str)
                     for m in msgs
@@ -1403,7 +1426,10 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "multi", "rooms": ["a", "b"]},
                 )
-                sid = from_plain(_json_object(started)["id"], str)
+                sid = from_plain(
+                    from_plain(started.json(), dict[str, object])["id"],
+                    str,
+                )
                 assert (
                     await http.get(f"/api/sessions/{sid}/inbound")
                 ).status_code == 200
@@ -1414,7 +1440,7 @@ class TestIntegrationEndToEnd:
                 )
                 assert bare.status_code == 409, bare.text
                 assert "address one explicitly" in from_plain(
-                    _json_object(bare)["detail"],
+                    from_plain(bare.json(), dict[str, object])["detail"],
                     str,
                 )
                 # Naming a room resolves it.
@@ -1424,7 +1450,12 @@ class TestIntegrationEndToEnd:
                 )
                 assert scoped.status_code == 200, scoped.text
                 assert (
-                    len(from_plain(_json_object(scoped)["delivered"], list[object]))
+                    len(
+                        from_plain(
+                            from_plain(scoped.json(), dict[str, object])["delivered"],
+                            list[object],
+                        ),
+                    )
                     == 1
                 )
         finally:
@@ -1463,7 +1494,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "idem", "rooms": ["sear"]},
                 )
-                sid = from_plain(_json_object(start)["id"], str)
+                sid = from_plain(from_plain(start.json(), dict[str, object])["id"], str)
                 assert (
                     await http.get(f"/api/sessions/{sid}/inbound")
                 ).status_code == 200
@@ -1479,13 +1510,22 @@ class TestIntegrationEndToEnd:
                     json=body,
                     headers={"Idempotency-Key": key},
                 )
-                assert from_plain(_json_object(first)["delivered"], list[str]) == [sid]
+                assert from_plain(
+                    from_plain(first.json(), dict[str, object])["delivered"],
+                    list[str],
+                ) == [sid]
                 # Replay returns the same receipt, but does not enqueue again.
-                assert from_plain(_json_object(replay)["delivered"], list[str]) == [sid]
+                assert from_plain(
+                    from_plain(replay.json(), dict[str, object])["delivered"],
+                    list[str],
+                ) == [sid]
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
                 assert [
                     from_plain(from_plain(m, dict[str, object])["text"], str)
-                    for m in from_plain(_json_object(drain)["messages"], list[object])
+                    for m in from_plain(
+                        from_plain(drain.json(), dict[str, object])["messages"],
+                        list[object],
+                    )
                 ] == ["once"]
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1526,7 +1566,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "race", "rooms": ["sear"]},
                 )
-                sid = from_plain(_json_object(start)["id"], str)
+                sid = from_plain(from_plain(start.json(), dict[str, object])["id"], str)
                 assert (
                     await http.get(f"/api/sessions/{sid}/inbound")
                 ).status_code == 200
@@ -1544,13 +1584,22 @@ class TestIntegrationEndToEnd:
                         headers={"Idempotency-Key": key},
                     ),
                 )
-                assert from_plain(_json_object(first)["delivered"], list[str]) == [sid]
-                assert from_plain(_json_object(second)["delivered"], list[str]) == [sid]
+                assert from_plain(
+                    from_plain(first.json(), dict[str, object])["delivered"],
+                    list[str],
+                ) == [sid]
+                assert from_plain(
+                    from_plain(second.json(), dict[str, object])["delivered"],
+                    list[str],
+                ) == [sid]
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
                 # Exactly one copy despite two concurrent same-key sends.
                 assert [
                     from_plain(from_plain(m, dict[str, object])["text"], str)
-                    for m in from_plain(_json_object(drain)["messages"], list[object])
+                    for m in from_plain(
+                        from_plain(drain.json(), dict[str, object])["messages"],
+                        list[object],
+                    )
                 ] == ["once"]
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1590,7 +1639,9 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "ending", "rooms": ["sear"]},
                 )
-                sid = UUID(from_plain(_json_object(start)["id"], str))
+                sid = UUID(
+                    from_plain(from_plain(start.json(), dict[str, object])["id"], str),
+                )
                 # Close via ``end_session`` (ended + status=complete together)
                 # so the AgentSession lifecycle CHECK holds.
                 await integ_store.end_session(
@@ -1612,7 +1663,7 @@ class TestIntegrationEndToEnd:
                     "/api/messages",
                     json={"actor": "ending", "room": "sear", "text": "late"},
                 )
-                assert _json_object(resp)["delivered"] == []
+                assert from_plain(resp.json(), dict[str, object])["delivered"] == []
                 assert app.state.inbound.pending(sid) == 0
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1834,11 +1885,17 @@ class TestIntegrationEndToEnd:
                     json={"text": "check the logs"},
                 )
                 assert enq.status_code == 200, enq.text
-                assert from_plain(_json_object(enq)["queued"], int) == 1
+                assert (
+                    from_plain(from_plain(enq.json(), dict[str, object])["queued"], int)
+                    == 1
+                )
 
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
                 assert drain.status_code == 200, drain.text
-                messages = from_plain(_json_object(drain)["messages"], list[object])
+                messages = from_plain(
+                    from_plain(drain.json(), dict[str, object])["messages"],
+                    list[object],
+                )
                 assert [
                     from_plain(from_plain(m, dict[str, object])["text"], str)
                     for m in messages
@@ -1854,7 +1911,7 @@ class TestIntegrationEndToEnd:
 
                 # Drain emptied it: a second drain returns nothing.
                 again = await http.get(f"/api/sessions/{sid}/inbound")
-                assert _json_object(again)["messages"] == []
+                assert from_plain(again.json(), dict[str, object])["messages"] == []
 
                 # Unknown session -> 404 on both verbs.
                 missing = uuid.uuid4()
@@ -1869,7 +1926,7 @@ class TestIntegrationEndToEnd:
                 end = await http.post(f"/api/sessions/{sid}/end", json={})
                 assert end.status_code == 200, end.text
                 # REV-31: end with no ``ended`` body still stamps a real time.
-                assert _json_object(end)["ended"] is not None
+                assert from_plain(end.json(), dict[str, object])["ended"] is not None
                 rejected = await http.post(
                     f"/api/sessions/{sid}/inbound",
                     json={"text": "late"},
@@ -1916,7 +1973,10 @@ class TestIntegrationEndToEnd:
             ) as http:
                 r = await http.get(f"/api/web/get/{sid}")
                 assert r.status_code == 200, r.text
-                self_view = from_plain(_json_object(r)["self"], dict[str, object])
+                self_view = from_plain(
+                    from_plain(r.json(), dict[str, object])["self"],
+                    dict[str, object],
+                )
                 assert from_plain(self_view["kind"], str) == "AgentSession"
                 assert self_view["cli"] == "claude"
                 assert self_view["cli_session_id"] == "sess-9"
@@ -1980,7 +2040,10 @@ class TestIntegrationEndToEnd:
             ) as http:
                 r = await http.post("/api/sessions/start", json={"cli": "codex"})
                 assert r.status_code == 201, r.text
-                session_id = from_plain(_json_object(r)["id"], str)
+                session_id = from_plain(
+                    from_plain(r.json(), dict[str, object])["id"],
+                    str,
+                )
 
                 key = str(uuid.uuid4())
                 # Empty body: the route stamps a fresh ``now()``. The replay
@@ -2003,7 +2066,10 @@ class TestIntegrationEndToEnd:
                 )
                 assert retry.status_code == 200, retry.text
                 assert retry.json() == first.json()
-                assert _json_object(retry)["ended"] == _json_object(first)["ended"]
+                assert (
+                    from_plain(retry.json(), dict[str, object])["ended"]
+                    == from_plain(first.json(), dict[str, object])["ended"]
+                )
 
                 # A different key on the already-ended session -> 409.
                 other = await http.post(
@@ -2058,7 +2124,10 @@ class TestIntegrationEndToEnd:
                 # real change (the cli emit then consumes K).
                 r = await http.post("/api/sessions/start", json={"cli": "codex"})
                 assert r.status_code == 201, r.text
-                session_id = from_plain(_json_object(r)["id"], str)
+                session_id = from_plain(
+                    from_plain(r.json(), dict[str, object])["id"],
+                    str,
+                )
 
                 key = str(uuid.uuid4())
                 body = {"ended": "2026-05-31T16:00:00Z", "cli_session_id": "vendor-9"}
@@ -4619,7 +4688,7 @@ class TestIntegrationEndToEnd:
                 # the citing artifact, the from-side).
                 r = await http.get(f"/api/web/get/{paper_id}")
                 assert r.status_code == 200, r.text
-                paper_body = _json_object(r)
+                paper_body = from_plain(r.json(), dict[str, object])
                 assert (
                     from_plain(
                         from_plain(paper_body["self"], dict[str, object])["source"],
@@ -4650,7 +4719,7 @@ class TestIntegrationEndToEnd:
                 # the to-side), projecting the Paper peer.
                 r = await http.get(f"/api/web/get/{belief_id}")
                 assert r.status_code == 200, r.text
-                body = _json_object(r)
+                body = from_plain(r.json(), dict[str, object])
                 assert (
                     from_plain(
                         from_plain(body["self"], dict[str, object])["judgement"],
@@ -5584,11 +5653,6 @@ class _FetchValConnection(Protocol):
     """The asyncpg connection slice used by scalar integration assertions."""
 
     async def fetchval(self, query: str, *args: object) -> object: ...
-
-
-def _json_object(response: httpx2.Response) -> dict[str, object]:
-    """Narrow an HTTP JSON object at the response boundary."""
-    return from_plain(response.json(), dict[str, object])
 
 
 def _json_objects(response: httpx2.Response) -> list[dict[str, object]]:

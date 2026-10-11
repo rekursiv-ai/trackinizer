@@ -51,10 +51,10 @@ def test_a_node_sits_by_its_nearest_root_and_the_newest_of_those_as_near() -> No
     structure = Structure(
         nodes=(*[Node(kind="Issue", status="active")] * 2, *_EXPERIMENTS),
         edges=(
-            _link(2, 0, "produced_by"),
-            _link(2, 1, "produced_by"),
-            _link(3, 0, "produced_by"),
-            _link(3, 2, "produced_by"),
+            Link(from_index=2, to_index=0, kind="produced_by", sign=0),
+            Link(from_index=2, to_index=1, kind="produced_by", sign=0),
+            Link(from_index=3, to_index=0, kind="produced_by", sign=0),
+            Link(from_index=3, to_index=2, kind="produced_by", sign=0),
         ),
     )
     assert islands(structure).home == {0: 0, 1: 1, 2: 1, 3: 0}
@@ -118,7 +118,7 @@ def test_every_person_is_an_example_address() -> None:
 
 def test_roots_take_written_titles_and_the_showcase_its_own_text() -> None:
     client, _ = _seeded()
-    contents = from_plain(json_loads(GRAPH_CONTENTS.read_text()), dict[str, object])
+    contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
     written = from_plain(contents.get("roots"), list[str], default=[])
     shown = from_plain(contents.get("showcase"), dict[str, object], default={})
     titles = [body["title"] for _, body in client.items]
@@ -145,8 +145,8 @@ def test_a_beliefs_confidence_follows_its_verdict() -> None:
         nodes=(*_STRUCTURE.nodes, *[Node(kind="Belief", status="active")] * 2),
         edges=(
             *_STRUCTURE.edges,
-            _link(2, 10, "proves", -1),
-            _link(4, 11, "proves", 1),
+            Link(from_index=2, to_index=10, kind="proves", sign=(-1)),
+            Link(from_index=4, to_index=11, kind="proves", sign=1),
         ),
     )
     client = _FakeClient()
@@ -176,7 +176,7 @@ def test_only_a_complete_session_is_created_active() -> None:
 def test_a_kind_takes_its_built_titles_in_order() -> None:
     client, _ = _seeded()
     kinds = from_plain(
-        from_plain(json_loads(GRAPH_CONTENTS.read_text()), dict[str, object]).get(
+        json_loads(GRAPH_CONTENTS.read_text(), dict[str, object]).get(
             "kinds",
         ),
         dict[str, object],
@@ -191,7 +191,7 @@ def test_no_kind_repeats_a_built_title_before_it_has_used_every_one() -> None:
     # reads as a placeholder.
     client = _FakeClient()
     seed_graph(client, load(GRAPH_STRUCTURE.read_text()), actor="ada@example.com")
-    contents = from_plain(json_loads(GRAPH_CONTENTS.read_text()), dict[str, object])
+    contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
     shown = from_plain(contents.get("showcase"), dict[str, object], default={})
     written = {
         *from_plain(contents.get("roots"), list[str], default=[]),
@@ -247,10 +247,11 @@ def test_edges_no_batch_can_carry_are_refused_before_anything_is_written() -> No
         edges=(
             *_STRUCTURE.edges,
             *(
-                _link(
-                    len(_STRUCTURE.nodes) + k,
-                    len(_STRUCTURE.nodes) + count,
-                    "proves",
+                Link(
+                    from_index=(len(_STRUCTURE.nodes) + k),
+                    to_index=(len(_STRUCTURE.nodes) + count),
+                    kind="proves",
+                    sign=0,
                 )
                 for k in range(count)
             ),
@@ -270,7 +271,8 @@ def test_more_edges_than_nodes_can_carry_are_refused_before_anything_is_written(
         nodes=_STRUCTURE.nodes,
         edges=(
             *_STRUCTURE.edges,
-            *(_link(1, 0, "narrows"),) * (BATCH_MAX_ITEMS * len(_STRUCTURE.nodes)),
+            *(Link(from_index=1, to_index=0, kind="narrows", sign=0),)
+            * (BATCH_MAX_ITEMS * len(_STRUCTURE.nodes)),
         ),
     )
     client = _FakeClient()
@@ -292,17 +294,17 @@ def test_the_showcase_counts_only_evidence_on_a_belief() -> None:
             Node(kind="Experiment", status="complete"),
         ),
         edges=(
-            _link(1, 0, "produced_by"),
-            _link(2, 0, "produced_by"),
-            _link(3, 0, "produced_by"),
-            _link(1, 3, "proves", 1),
-            _link(2, 3, "proves", -1),
-            _link(5, 4, "produced_by"),
-            _link(6, 4, "produced_by"),
-            _link(7, 4, "produced_by"),
-            _link(5, 7, "proves", 1),
-            _link(6, 7, "proves", -1),
-            _link(5, 6, "favors", -1),
+            Link(from_index=1, to_index=0, kind="produced_by", sign=0),
+            Link(from_index=2, to_index=0, kind="produced_by", sign=0),
+            Link(from_index=3, to_index=0, kind="produced_by", sign=0),
+            Link(from_index=1, to_index=3, kind="proves", sign=1),
+            Link(from_index=2, to_index=3, kind="proves", sign=(-1)),
+            Link(from_index=5, to_index=4, kind="produced_by", sign=0),
+            Link(from_index=6, to_index=4, kind="produced_by", sign=0),
+            Link(from_index=7, to_index=4, kind="produced_by", sign=0),
+            Link(from_index=5, to_index=7, kind="proves", sign=1),
+            Link(from_index=6, to_index=7, kind="proves", sign=(-1)),
+            Link(from_index=5, to_index=6, kind="favors", sign=(-1)),
         ),
     )
     assert showcase(structure, islands(structure)) == Showcase(root=0, belief=3)
@@ -313,7 +315,7 @@ def test_the_committed_structure_has_a_showcase_and_a_title_for_every_root() -> 
     found = islands(structure)
     picked = showcase(structure, found)
     assert found.home[picked.belief] == picked.root
-    contents = from_plain(json_loads(GRAPH_CONTENTS.read_text()), dict[str, object])
+    contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
     assert len(from_plain(contents.get("roots"), list[str], default=[])) >= len(
         found.roots,
     )
@@ -323,10 +325,6 @@ _EXPERIMENTS = (
     Node(kind="Experiment", status="complete"),
     Node(kind="Experiment", status="complete"),
 )
-
-
-def _link(from_index: int, to_index: int, kind: Edge.Kind, sign: int = 0) -> Link:
-    return Link(from_index=from_index, to_index=to_index, kind=kind, sign=sign)
 
 
 _STRUCTURE = Structure(
@@ -343,16 +341,16 @@ _STRUCTURE = Structure(
         Node(kind="Belief", status="active"),
     ),
     edges=(
-        _link(1, 0, "narrows"),
-        _link(2, 1, "produced_by"),
-        _link(3, 1, "produced_by"),
-        _link(4, 0, "produced_by"),
-        _link(4, 3, "proves", 1),
-        _link(2, 3, "proves", -1),
-        _link(5, 3, "favors", -1),
-        _link(5, 6, "produced_by"),
-        _link(7, 6, "produced_by"),
-        _link(9, 6, "produced_by"),
+        Link(from_index=1, to_index=0, kind="narrows", sign=0),
+        Link(from_index=2, to_index=1, kind="produced_by", sign=0),
+        Link(from_index=3, to_index=1, kind="produced_by", sign=0),
+        Link(from_index=4, to_index=0, kind="produced_by", sign=0),
+        Link(from_index=4, to_index=3, kind="proves", sign=1),
+        Link(from_index=2, to_index=3, kind="proves", sign=(-1)),
+        Link(from_index=5, to_index=3, kind="favors", sign=(-1)),
+        Link(from_index=5, to_index=6, kind="produced_by", sign=0),
+        Link(from_index=7, to_index=6, kind="produced_by", sign=0),
+        Link(from_index=9, to_index=6, kind="produced_by", sign=0),
     ),
 )
 

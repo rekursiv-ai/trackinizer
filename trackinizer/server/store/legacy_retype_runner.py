@@ -264,9 +264,7 @@ async def _read_sources(conn: Conn, session_id: UUID) -> list[_Source]:
                 text=text,
                 # A row already retyped has no legacy ``kind``.
                 legacy_kind=from_plain(
-                    from_plain(json_loads(payload_text), dict[str, object]).get(
-                        "kind",
-                    ),
+                    json_loads(payload_text, dict[str, object]).get("kind"),
                     str,
                     default="",
                 ),
@@ -302,10 +300,7 @@ def _outputs_for(
                 ciphertext=source.ciphertext,
             ),
         ]
-    record = from_plain(
-        from_plain(json_loads(source.payload_text), dict[str, object]),
-        UncategorizedRecord,
-    )
+    record = json_loads(source.payload_text, UncategorizedRecord)
     out = retype(
         record,
         timestamp=(

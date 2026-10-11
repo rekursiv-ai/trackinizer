@@ -209,7 +209,7 @@ def load(text: str) -> Structure:
         an index outside the list it indexes, or an edge whose end is not a node.
 
     """
-    columns = from_plain(json_loads(text), dict[str, object])
+    columns = json_loads(text, dict[str, object])
     kinds = from_plain(columns.get("kinds"), list[str], default=[])
     statuses = from_plain(columns.get("statuses"), list[str], default=[])
     edge_kinds = from_plain(columns.get("edge_kinds"), list[str], default=[])

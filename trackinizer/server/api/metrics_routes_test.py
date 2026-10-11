@@ -220,7 +220,7 @@ async def test_rank_returns_every_cell_up_to_the_cap_and_refuses_more(
     )
     assert ranked.status_code == 200
     rows = from_plain(
-        from_plain(json_loads(ranked.content), dict[str, object])["rows"],
+        json_loads(ranked.content, dict[str, object])["rows"],
         list[object],
     )
     assert len(rows) == 60

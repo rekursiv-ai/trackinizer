@@ -203,7 +203,7 @@ async def test_the_header_names_the_applied_migrations(store: Store) -> None:
     async with store.engine.acquire() as conn:
         applied = await conn.fetch("SELECT name FROM applied_migrations")
 
-    header = from_plain(json_loads(next(iter(export_lines(graph)))), dict[str, object])
+    header = json_loads(next(iter(export_lines(graph))), dict[str, object])
 
     assert header["format"] == EXPORT_FORMAT
     assert header["version"] == EXPORT_VERSION

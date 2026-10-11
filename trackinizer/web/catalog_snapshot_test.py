@@ -29,10 +29,7 @@ def test_every_catalog_visual_has_matching_frontend_renderer() -> None:
     manifest = _CWD / "src/visuals/renderer-versions.json"
     versions = {
         key: from_plain(value, int)
-        for key, value in from_plain(
-            json_loads(manifest.read_bytes()),
-            dict[str, object],
-        ).items()
+        for key, value in json_loads(manifest.read_bytes(), dict[str, object]).items()
     }
     assert versions == {
         visual.type: visual.version for visual in default_catalog().visuals

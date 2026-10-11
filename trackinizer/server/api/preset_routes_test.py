@@ -52,8 +52,8 @@ async def test_save_on_one_client_and_open_on_another(
     act_as_assistant()
     session_id = await start_session(client, actor=KB_ACTOR)
     install_identity(make_test_identity(api_key_id=None))
-    first = from_plain(
-        json_loads((await client.post("/api/workspaces")).content),
+    first = json_loads(
+        (await client.post("/api/workspaces")).content,
         dict[str, object],
     )
     workspace_id = from_plain(first["id"], str)
@@ -70,7 +70,7 @@ async def test_save_on_one_client_and_open_on_another(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert shown.status_code == 200
-    current = from_plain(json_loads(shown.content), dict[str, object])
+    current = json_loads(shown.content, dict[str, object])
     chat = next(
         from_plain(item, dict[str, object])
         for item in from_plain(current["visuals"], list[object])
@@ -96,7 +96,7 @@ async def test_save_on_one_client_and_open_on_another(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert save.status_code == 200
-    preset = from_plain(json_loads(save.content), dict[str, object])
+    preset = json_loads(save.content, dict[str, object])
     assert preset["name"] == "ARC3 investigation"
     assert preset["agent_instructions"] == "Trace evidence before proposing a change."
     assert from_plain(
@@ -120,7 +120,7 @@ async def test_save_on_one_client_and_open_on_another(
         assert listed.status_code == 200
         assert [
             from_plain(row, dict[str, object])["id"]
-            for row in from_plain(json_loads(listed.content), list[object])
+            for row in json_loads(listed.content, list[object])
         ] == [preset["id"]]
         read_response = await second_browser.get(
             f"/api/workspace-presets/{preset['id']}",
@@ -137,7 +137,7 @@ async def test_save_on_one_client_and_open_on_another(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert changed.status_code == 200
-    second = from_plain(json_loads(changed.content), dict[str, object])
+    second = json_loads(changed.content, dict[str, object])
     async with httpx2.AsyncClient(
         transport=httpx2.ASGITransport(app=app, raise_app_exceptions=False),
         base_url="http://second-browser",
@@ -148,7 +148,7 @@ async def test_save_on_one_client_and_open_on_another(
             headers={"Idempotency-Key": str(uuid.uuid4())},
         )
     assert opened.status_code == 200
-    restored = from_plain(json_loads(opened.content), dict[str, object])
+    restored = json_loads(opened.content, dict[str, object])
     assert restored["revision"] == from_plain(second["revision"], int) + 1
     assert restored["agent_instructions"] == preset["agent_instructions"]
     assert restored["continuation_record_id"] == preset["continuation_record_id"]
@@ -163,7 +163,7 @@ async def test_save_on_one_client_and_open_on_another(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert resaved.status_code == 200
-    second_preset = from_plain(json_loads(resaved.content), dict[str, object])
+    second_preset = json_loads(resaved.content, dict[str, object])
     assert second_preset["agent_instructions"] == preset["agent_instructions"]
     assert second_preset["continuation_record_id"] == preset["continuation_record_id"]
     focused = await client.post(
@@ -175,7 +175,7 @@ async def test_save_on_one_client_and_open_on_another(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert focused.status_code == 200
-    continued = from_plain(json_loads(focused.content), dict[str, object])
+    continued = json_loads(focused.content, dict[str, object])
     assert continued["agent_instructions"] == preset["agent_instructions"]
     assert continued["continuation_record_id"] == preset["continuation_record_id"]
     sent = await client.post(
@@ -192,7 +192,7 @@ async def test_save_on_one_client_and_open_on_another(
     act_as_assistant()
     drained = await drain(client, session_id=session_id)
     messages = from_plain(
-        from_plain(json_loads(drained.content), dict[str, object])["messages"],
+        json_loads(drained.content, dict[str, object])["messages"],
         list[object],
     )
     context = from_plain(
@@ -220,8 +220,8 @@ async def test_presets_enforce_revision_owner_and_floating_target(
             foreign_id,
         )
     install_identity(make_test_identity(api_key_id=None))
-    workspace = from_plain(
-        json_loads((await client.post("/api/workspaces")).content),
+    workspace = json_loads(
+        (await client.post("/api/workspaces")).content,
         dict[str, object],
     )
     workspace_id = from_plain(workspace["id"], str)
@@ -283,7 +283,7 @@ async def test_presets_enforce_revision_owner_and_floating_target(
     )
     assert saved.status_code == 200
     preset_id = from_plain(
-        from_plain(json_loads(saved.content), dict[str, object])["id"],
+        json_loads(saved.content, dict[str, object])["id"],
         str,
     )
     assert (
@@ -314,8 +314,7 @@ async def test_presets_enforce_revision_owner_and_floating_target(
     )
     assert revised.status_code == 200
     assert (
-        from_plain(json_loads(revised.content), dict[str, object])["name"]
-        == "Research revisited"
+        json_loads(revised.content, dict[str, object])["name"] == "Research revisited"
     )
     assert (
         await client.post(
@@ -358,8 +357,8 @@ async def test_preset_save_and_open_replay_once(
             TEST_USER_ID,
         )
     install_identity(make_test_identity(api_key_id=None))
-    workspace = from_plain(
-        json_loads((await client.post("/api/workspaces")).content),
+    workspace = json_loads(
+        (await client.post("/api/workspaces")).content,
         dict[str, object],
     )
     workspace_id = from_plain(workspace["id"], str)
@@ -384,7 +383,7 @@ async def test_preset_save_and_open_replay_once(
     )
     assert mismatched_save.status_code == 409
     assert "Idempotency-Key" in from_plain(
-        from_plain(json_loads(mismatched_save.content), dict[str, object])["detail"],
+        json_loads(mismatched_save.content, dict[str, object])["detail"],
         str,
     )
     async with store.engine.acquire() as conn:
@@ -396,7 +395,7 @@ async def test_preset_save_and_open_replay_once(
             == 1
         )
     preset_id = from_plain(
-        from_plain(json_loads(saved.content), dict[str, object])["id"],
+        json_loads(saved.content, dict[str, object])["id"],
         str,
     )
     open_body = {"workspace_id": workspace_id, "revision": 0}
@@ -413,8 +412,8 @@ async def test_preset_save_and_open_replay_once(
     )
     assert opened.status_code == replayed_open.status_code == 200
     assert json.loads(opened.content) == json.loads(replayed_open.content)
-    current = from_plain(
-        json_loads((await client.get(f"/api/workspaces/{workspace_id}")).content),
+    current = json_loads(
+        (await client.get(f"/api/workspaces/{workspace_id}")).content,
         dict[str, object],
     )
     assert current["revision"] == 1
@@ -425,7 +424,7 @@ async def test_preset_save_and_open_replay_once(
     )
     assert mismatched_open.status_code == 409
     assert "Idempotency-Key" in from_plain(
-        from_plain(json_loads(mismatched_open.content), dict[str, object])["detail"],
+        json_loads(mismatched_open.content, dict[str, object])["detail"],
         str,
     )
     revision = 1
@@ -471,7 +470,7 @@ async def test_preset_save_and_open_replay_once(
         )
         assert transient.status_code == 200
         transient_id = from_plain(
-            from_plain(json_loads(transient.content), dict[str, object])["id"],
+            json_loads(transient.content, dict[str, object])["id"],
             str,
         )
         assert (
@@ -511,7 +510,7 @@ async def test_opening_a_preset_pushes_the_canvas_once_and_its_replay_pushes_not
     )
     assert saved.status_code == 200
     preset_id = from_plain(
-        from_plain(json_loads(saved.content), dict[str, object])["id"],
+        json_loads(saved.content, dict[str, object])["id"],
         str,
     )
     key = str(uuid.uuid4())

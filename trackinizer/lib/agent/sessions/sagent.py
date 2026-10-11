@@ -152,7 +152,7 @@ class _Reader:
 
         """
         try:
-            record = from_plain(json_loads(line), dict[str, object])
+            record = json_loads(line, dict[str, object])
         except (json.JSONDecodeError, ValueError, TypeError):
             return [IncompleteRecord(text=line)]
         # The WHOLE read is the guarded region, not only the parse: every field
@@ -260,8 +260,10 @@ class _Reader:
             )
         tokens = _dict(record.get("tokens"))
         spend = _dict(record.get("spend"))
-        total_cost = _float(record.get("total_cost_usd"))
-        cost = total_cost or sum(_float(v) for v in spend.values())
+        total_cost = from_plain(record.get("total_cost_usd"), float, default=0.0)
+        cost = total_cost or sum(
+            from_plain(v, float, default=0.0) for v in spend.values()
+        )
         out.append(
             TokenUsage(
                 info=immutable(
@@ -534,7 +536,7 @@ def _plain(content: object, parts: list[dict[str, object]]) -> str:
 # past year 5000 in seconds is nanoseconds.
 def _stamp(value: object) -> str | None:
     """Return an epoch timestamp as ISO-8601 UTC, or ``None``."""
-    seconds = _float(value)
+    seconds = from_plain(value, float, default=0.0)
     if seconds <= 0:
         return None
     if seconds > 1e11:
@@ -554,10 +556,6 @@ def _bool(value: object) -> bool:
 
 def _int(value: object) -> int:
     return from_plain(value, int, default=0)
-
-
-def _float(value: object) -> float:
-    return from_plain(value, float, default=0.0)
 
 
 def _dict(value: object) -> dict[str, object]:
