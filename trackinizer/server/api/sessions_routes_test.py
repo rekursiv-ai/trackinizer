@@ -18,7 +18,8 @@ import asyncio
 import uuid
 
 from fastapi import FastAPI
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import httpx2
 import pytest
@@ -657,7 +658,10 @@ async def test_a_dead_run_is_closed_and_a_returning_one_reopened(
         json=_SLASH_ONLY,
     )
     assert uploaded.status_code == 200, uploaded.text
-    assert from_plain(loads(uploaded.content), dict[str, object])["slash_commands"] == 1
+    assert (
+        from_plain(json_loads(uploaded.content), dict[str, object])["slash_commands"]
+        == 1
+    )
     assert (await _session(store, session_id=session_id)).status == "active"
 
 
@@ -788,7 +792,7 @@ async def _start(client: httpx2.AsyncClient) -> uuid.UUID:
     assert started.status_code == 201, started.text
     return uuid.UUID(
         from_plain(
-            from_plain(loads(started.content), dict[str, object])["id"],
+            from_plain(json_loads(started.content), dict[str, object])["id"],
             str,
         ),
     )
@@ -883,7 +887,7 @@ async def test_a_chat_helper_takes_messages_only_through_chat(
     # Nothing reached its queue.
     act_as_user_agent()
     drained = from_plain(
-        loads((await drain(client, session_id=helper)).content),
+        json_loads((await drain(client, session_id=helper)).content),
         dict[str, object],
     )
     assert drained["messages"] == []
@@ -1018,7 +1022,7 @@ async def test_a_line_posted_before_the_assistant_restarted_is_heard_when_it_res
     assert resumed == kb
     act_as_assistant()
     drained = from_plain(
-        loads((await drain(client, session_id=resumed)).content),
+        json_loads((await drain(client, session_id=resumed)).content),
         dict[str, object],
     )
     [heard] = from_plain(drained["messages"], list[dict[str, object]])
@@ -1087,7 +1091,7 @@ async def test_a_helper_service_session_keeps_its_unread_lines_when_it_resumes(
 
     assert resumed == helper
     drained = from_plain(
-        loads((await drain(client, session_id=resumed)).content),
+        json_loads((await drain(client, session_id=resumed)).content),
         dict[str, object],
     )
     [heard] = from_plain(drained["messages"], list[dict[str, object]])
@@ -1111,7 +1115,7 @@ async def test_a_session_starting_ending_or_taking_a_lease_nudges_the_streams(
         assert started.status_code == 201
         assert stream.nudged.is_set()
         stream.nudged.clear()
-        session_id = from_plain(loads(started.content), dict[str, object])["id"]
+        session_id = from_plain(json_loads(started.content), dict[str, object])["id"]
         assert (
             await client.get(f"/api/sessions/{session_id}/inbound")
         ).status_code == 200
@@ -1153,7 +1157,7 @@ async def test_a_drained_chat_message_carries_its_senders_role(
         assert sent.status_code == 200
     act_as_assistant()
     drained = from_plain(
-        loads((await drain(client, session_id=kb)).content),
+        json_loads((await drain(client, session_id=kb)).content),
         dict[str, object],
     )
     assert [
@@ -1228,7 +1232,7 @@ async def test_the_assistant_long_polls_and_a_chat_message_reaches_it_at_once(
     response = await asyncio.wait_for(waiting, 5)
     assert response.status_code == 200
     messages = from_plain(
-        from_plain(loads(response.content), dict[str, object])["messages"],
+        from_plain(json_loads(response.content), dict[str, object])["messages"],
         list[object],
     )
     assert [from_plain(m, dict[str, object])["text"] for m in messages] == ["wake up"]
@@ -1277,7 +1281,7 @@ async def test_a_session_starts_on_an_app_built_by_hand_with_no_hub_or_config(
     ) as client:
         started = await client.post("/api/sessions/start", json={"cli": "codex"})
         assert started.status_code == 201
-        session_id = from_plain(loads(started.content), dict[str, object])["id"]
+        session_id = from_plain(json_loads(started.content), dict[str, object])["id"]
         polled = await client.get(f"/api/sessions/{session_id}/inbound")
         assert polled.status_code == 200
         ended = await client.post(

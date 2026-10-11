@@ -50,7 +50,8 @@ import json
 import statistics
 import time
 
-from treekle import PlainTree, ReadError, from_plain, loads
+from treekle import PlainTree, ReadError, from_plain
+from treekle.wire import json_loads
 
 import httpx2
 
@@ -144,7 +145,7 @@ def main() -> int:
     if flags.baseline:
         changes = moved(
             rows,
-            from_plain(loads(flags.baseline.read_text()), dict[str, object]),
+            from_plain(json_loads(flags.baseline.read_text()), dict[str, object]),
         )
         print(f"\nmoved more than 2x from {flags.baseline}: {len(changes) or 'none'}")
         for name, what, before, after in changes:
@@ -221,7 +222,7 @@ def sample_stream(http: httpx2.Client, *, seconds: float) -> Stream:
             for line in response.iter_lines():
                 if line.startswith("data:"):
                     frame = from_plain(
-                        loads(line.removeprefix("data:")),
+                        json_loads(line.removeprefix("data:")),
                         dict[str, object],
                     )
                     ids.append(from_plain(frame.get("id"), str))
@@ -648,7 +649,7 @@ def _get(http: httpx2.Client, path: str, params: Params = ()) -> Sample:
 def _message(body: bytes) -> str:
     """Return an error body's `detail`, else its JSON, else the start of its text."""
     try:
-        value = loads(body)
+        value = json_loads(body)
     except ValueError:
         return body[:200].decode(errors="replace")
     try:
@@ -698,7 +699,7 @@ def _decoded(raw: bytes, content_encoding: str) -> bytes:
 
 def _read(http: httpx2.Client, path: str, params: Params = ()) -> PlainTree:
     """GET untimed, for what the measurements need to know first."""
-    return loads(
+    return json_loads(
         http.get(path, params=params).raise_for_status().content.decode(),
     )
 

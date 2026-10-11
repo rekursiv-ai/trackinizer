@@ -17,14 +17,8 @@ from uuid import NAMESPACE_DNS, UUID, uuid5
 
 import json
 
-from treekle import (
-    MutablePlainTree,
-    ReadError,
-    from_plain,
-    immutable,
-    loads,
-    mutable,
-)
+from treekle import MutablePlainTree, ReadError, from_plain, immutable, mutable
+from treekle.wire import json_loads
 
 from trackinizer.lib.agent.sessions.provider_fields import read_or_default
 from trackinizer.lib.agent.sessions.unmodeled import extract_unmodeled_fields
@@ -289,7 +283,7 @@ def _read(text: str) -> list[SessionRecord]:
     if not text.strip():
         return out
     try:
-        decoded = loads(text)
+        decoded = json_loads(text)
     except json.JSONDecodeError:
         return [*out, IncompleteRecord(text=text)]
     # A document that is not an object carries no session: an array or a bare

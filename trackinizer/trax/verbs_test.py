@@ -6,7 +6,8 @@ import argparse
 import io
 import uuid
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -2147,7 +2148,7 @@ def test_search_json_output_is_the_raw_body(
 ) -> None:
     run(["search-sessions", "lock", "--format", "json"], client)
     out = capsys.readouterr().out
-    body = from_plain(loads(out), dict[str, object])
+    body = from_plain(json_loads(out), dict[str, object])
     assert "hits" in body
     assert body["semantic"] is True
 

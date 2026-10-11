@@ -47,7 +47,8 @@ import os
 import subprocess
 import threading
 
-from treekle import ReadError, from_plain, loads
+from treekle import ReadError, from_plain
+from treekle.wire import json_loads
 
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.userdirs import state_dir
@@ -174,7 +175,7 @@ class Claude:
 
         """
         try:
-            result = _object(loads(stdout))
+            result = _object(json_loads(stdout))
         except ValueError:
             result = {}
         text = _text(result.get("result"))
@@ -243,7 +244,7 @@ class Codex:
         text = ""
         for line in stdout.splitlines():
             try:
-                event = _object(loads(line))
+                event = _object(json_loads(line))
             except ValueError:
                 continue
             item = _object(event.get("item"))
@@ -291,7 +292,7 @@ class Memory:
 
     def _read(self) -> dict[str, object]:
         try:
-            return _object(loads(self.path.read_text(encoding="utf-8")))
+            return _object(json_loads(self.path.read_text(encoding="utf-8")))
         except (OSError, ValueError):
             return {}
 

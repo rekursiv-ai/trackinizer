@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 
 import uuid
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -58,7 +59,7 @@ def _line(content: str) -> AgentToAgentMessage:
 
 
 def _records(response: httpx2.Response) -> list[dict[str, object]]:
-    body = from_plain(loads(response.content), dict[str, object])
+    body = from_plain(json_loads(response.content), dict[str, object])
     return from_plain(body["records"], list[dict[str, object]])
 
 

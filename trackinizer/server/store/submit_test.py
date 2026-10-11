@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock
 
 import inspect
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import asyncpg
 import pytest
@@ -52,7 +53,7 @@ class TestSubmit:
         assert len(engine.notify_calls) == 1
         ch, payload = engine.notify_calls[0]
         assert ch == NOTIFY_CHANNEL
-        decoded = from_plain(loads(payload), dict[str, object])
+        decoded = from_plain(json_loads(payload), dict[str, object])
         assert decoded == {"id": str(issue_id)}
 
     @pytest.mark.asyncio

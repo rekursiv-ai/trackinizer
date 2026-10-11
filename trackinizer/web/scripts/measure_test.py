@@ -11,7 +11,8 @@ import argparse
 import gzip
 import json
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import httpx2
 import pytest
@@ -292,7 +293,7 @@ def test_moved_flags_a_median_time_or_size_over_2x_either_way() -> None:
         return Row(name=name, samples=(sample,))
 
     baseline = from_plain(
-        loads(
+        json_loads(
             json.dumps(
                 report(
                     [
@@ -348,7 +349,7 @@ def test_an_error_answer_is_reported_but_never_timed_as_a_read() -> None:
     ]
     assert summaries[1]["statuses"] == [502]
     baseline = from_plain(
-        loads(
+        json_loads(
             json.dumps(
                 report(
                     [Row(name="mixed", samples=(ok,))],
@@ -369,7 +370,7 @@ def test_a_baseline_row_with_no_successful_answer_is_not_compared() -> None:
     ok = Sample(seconds=1.0, status=200, json_bytes=1000, wire_bytes=100)
     stream = Stream(seconds=1.0, frames=0, distinct_ids=0, status=200)
     baseline = from_plain(
-        loads(
+        json_loads(
             json.dumps(
                 report(
                     [Row(name="r", samples=(refused,))],
@@ -452,7 +453,7 @@ def test_two_reports_in_one_second_never_overwrite_each_other(tmp_path: Path) ->
 
     assert first != second
     assert [
-        from_plain(loads(p.read_text()), dict[str, object])["run"]
+        from_plain(json_loads(p.read_text()), dict[str, object])["run"]
         for p in (first, second)
     ] == [
         1,

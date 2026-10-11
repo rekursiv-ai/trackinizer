@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 import asyncio
 import uuid
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -65,7 +66,7 @@ def _frame(chunk: bytes) -> dict[str, object]:
     text = chunk.decode()
     assert text.startswith("data: ")
     assert text.endswith("\n\n")
-    return from_plain(loads(text.removeprefix("data: ")), dict[str, object])
+    return from_plain(json_loads(text.removeprefix("data: ")), dict[str, object])
 
 
 def _events(

@@ -14,7 +14,8 @@ import io
 import json
 import threading
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -2071,7 +2072,7 @@ def _stored_by(client: _FakeClient) -> str:
 
 
 def _row(line: str) -> dict[str, object]:
-    return from_plain(loads(line), dict[str, object])
+    return from_plain(json_loads(line), dict[str, object])
 
 
 if __name__ == "__main__":

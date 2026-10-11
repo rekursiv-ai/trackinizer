@@ -34,7 +34,8 @@ import sys
 import time
 import uuid
 
-from treekle import PlainTree, from_plain, loads, mutable
+from treekle import PlainTree, from_plain, mutable
+from treekle.wire import json_loads
 
 import httpx2
 import pytest
@@ -826,7 +827,7 @@ def _uuid_key(name: str) -> uuid.UUID:
 def _parsed(response: httpx2.Response) -> MutablePlainTree:
     """Return the body as JSON when the server says it is, else as text."""
     if "json" in response.headers.get("content-type", ""):
-        return mutable(loads(response.text))
+        return mutable(json_loads(response.text))
     return response.text
 
 

@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING
 import itertools
 import uuid
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -117,7 +118,7 @@ def test_every_person_is_an_example_address() -> None:
 
 def test_roots_take_written_titles_and_the_showcase_its_own_text() -> None:
     client, _ = _seeded()
-    contents = from_plain(loads(GRAPH_CONTENTS.read_text()), dict[str, object])
+    contents = from_plain(json_loads(GRAPH_CONTENTS.read_text()), dict[str, object])
     written = from_plain(contents.get("roots"), list[str], default=[])
     shown = from_plain(contents.get("showcase"), dict[str, object], default={})
     titles = [body["title"] for _, body in client.items]
@@ -175,7 +176,7 @@ def test_only_a_complete_session_is_created_active() -> None:
 def test_a_kind_takes_its_built_titles_in_order() -> None:
     client, _ = _seeded()
     kinds = from_plain(
-        from_plain(loads(GRAPH_CONTENTS.read_text()), dict[str, object]).get(
+        from_plain(json_loads(GRAPH_CONTENTS.read_text()), dict[str, object]).get(
             "kinds",
         ),
         dict[str, object],
@@ -190,7 +191,7 @@ def test_no_kind_repeats_a_built_title_before_it_has_used_every_one() -> None:
     # reads as a placeholder.
     client = _FakeClient()
     seed_graph(client, load(GRAPH_STRUCTURE.read_text()), actor="ada@example.com")
-    contents = from_plain(loads(GRAPH_CONTENTS.read_text()), dict[str, object])
+    contents = from_plain(json_loads(GRAPH_CONTENTS.read_text()), dict[str, object])
     shown = from_plain(contents.get("showcase"), dict[str, object], default={})
     written = {
         *from_plain(contents.get("roots"), list[str], default=[]),
@@ -312,7 +313,7 @@ def test_the_committed_structure_has_a_showcase_and_a_title_for_every_root() -> 
     found = islands(structure)
     picked = showcase(structure, found)
     assert found.home[picked.belief] == picked.root
-    contents = from_plain(loads(GRAPH_CONTENTS.read_text()), dict[str, object])
+    contents = from_plain(json_loads(GRAPH_CONTENTS.read_text()), dict[str, object])
     assert len(from_plain(contents.get("roots"), list[str], default=[])) >= len(
         found.roots,
     )

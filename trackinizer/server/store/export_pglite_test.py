@@ -13,7 +13,8 @@ from uuid import UUID, uuid4
 
 import json
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 import pytest_asyncio
@@ -202,7 +203,7 @@ async def test_the_header_names_the_applied_migrations(store: Store) -> None:
     async with store.engine.acquire() as conn:
         applied = await conn.fetch("SELECT name FROM applied_migrations")
 
-    header = from_plain(loads(next(iter(export_lines(graph)))), dict[str, object])
+    header = from_plain(json_loads(next(iter(export_lines(graph)))), dict[str, object])
 
     assert header["format"] == EXPORT_FORMAT
     assert header["version"] == EXPORT_VERSION

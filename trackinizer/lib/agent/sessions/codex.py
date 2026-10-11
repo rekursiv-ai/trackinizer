@@ -27,10 +27,10 @@ from treekle import (
     ReadError,
     from_plain,
     immutable,
-    loads,
     mutable,
 )
 from treekle.absent import Absent
+from treekle.wire import json_loads
 
 from trackinizer.lib.agent.sessions.codex_orders import payload_orders
 from trackinizer.lib.agent.sessions.provider_fields import read_or_default
@@ -1308,7 +1308,7 @@ class _Reader:
             self._pending.append(IncompleteRecord(text=line))
             return
         try:
-            decoded = loads(line)
+            decoded = json_loads(line)
         except json.JSONDecodeError:
             self._pending.append(IncompleteRecord(text=line))
             return
@@ -2056,7 +2056,7 @@ def _read_tool_call(
 def _parse_arguments(text: str) -> dict[str, object] | None:
     """Parse a provider-supplied JSON argument string, or ``None`` if invalid."""
     try:
-        return from_plain(loads(text), dict[str, object])
+        return from_plain(json_loads(text), dict[str, object])
     except json.JSONDecodeError:
         return None
 

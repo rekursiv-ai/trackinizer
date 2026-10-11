@@ -7,7 +7,8 @@ from typing import Final
 
 import json
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 from trackinizer.server.visuals.catalog import default_catalog
 
@@ -29,7 +30,7 @@ def test_every_catalog_visual_has_matching_frontend_renderer() -> None:
     versions = {
         key: from_plain(value, int)
         for key, value in from_plain(
-            loads(manifest.read_bytes()),
+            json_loads(manifest.read_bytes()),
             dict[str, object],
         ).items()
     }

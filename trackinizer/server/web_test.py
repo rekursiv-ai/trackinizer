@@ -32,7 +32,8 @@ else:
 
     asyncpg = lazy_import("asyncpg")
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 import pytest_asyncio
@@ -2193,7 +2194,7 @@ class TestSubscribeProbe:
         if status != 200:
             return status, headers, []
         frames = [
-            from_plain(loads(frame.removeprefix(b"data: ")), dict[str, object])
+            from_plain(json_loads(frame.removeprefix(b"data: ")), dict[str, object])
             for frame in body.split(b"\n\n")[:-1]
         ]
         return status, headers, frames

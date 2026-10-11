@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING, Final
 
 import uuid
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -144,7 +145,7 @@ async def _heard(
     response = await drain(client, session_id=session_id)
     assert response.status_code == 200
     return from_plain(
-        from_plain(loads(response.content), dict[str, object])["messages"],
+        from_plain(json_loads(response.content), dict[str, object])["messages"],
         list[dict[str, object]],
     )
 
@@ -159,7 +160,7 @@ async def _head(
     browser(OTHER_USER_ID, email=email)
     response = await client.get(f"/api/chats/{conversation}")
     assert response.status_code == 200, response.text
-    return from_plain(loads(response.content), dict[str, object])
+    return from_plain(json_loads(response.content), dict[str, object])
 
 
 async def _link_fork(
@@ -220,7 +221,7 @@ async def test_typing_in_a_chat_of_my_organisation_posts_into_it(
         conversation_id=chat.conversation,
     )
 
-    assert from_plain(loads(joined.content), dict[str, object]) == {
+    assert from_plain(json_loads(joined.content), dict[str, object]) == {
         "conversation_id": str(chat.conversation),
         "session_id": str(chat.session),
     }
@@ -252,7 +253,7 @@ async def test_fork_from_here_in_my_organisation_starts_a_new_chat_at_that_line(
 
     # The fork is a new conversation named by the key; it has no session until the
     # assistant opens it, and the original's own queue hears nothing.
-    assert from_plain(loads(forked.content), dict[str, object]) == {
+    assert from_plain(json_loads(forked.content), dict[str, object]) == {
         "conversation_id": str(key),
         "session_id": None,
     }

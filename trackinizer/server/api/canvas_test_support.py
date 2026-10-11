@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING, Final
 
 import uuid
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
@@ -162,7 +163,7 @@ async def start_session(
     if started.status_code != 201:
         raise ValueError(f"session start answered {started.status_code}")
     session_id = from_plain(
-        from_plain(loads(started.content), dict[str, object])["id"],
+        from_plain(json_loads(started.content), dict[str, object])["id"],
         str,
     )
     polled = await client.get(f"/api/sessions/{session_id}/inbound")
@@ -360,7 +361,10 @@ async def open_workspace(
     if created.status_code != 200:
         raise ValueError(f"workspace create answered {created.status_code}")
     return uuid.UUID(
-        from_plain(from_plain(loads(created.content), dict[str, object])["id"], str),
+        from_plain(
+            from_plain(json_loads(created.content), dict[str, object])["id"],
+            str,
+        ),
     )
 
 
@@ -389,7 +393,7 @@ async def open_canvas(
     created = await client.post("/api/workspaces")
     if created.status_code != 200:
         raise ValueError(f"workspace create answered {created.status_code}")
-    state = from_plain(loads(created.content), dict[str, object])
+    state = from_plain(json_loads(created.content), dict[str, object])
     workspace_id = uuid.UUID(from_plain(state["id"], str))
     chat_id = await _show_chat_at(
         client,
@@ -481,7 +485,7 @@ def conversation_of(response: httpx2.Response) -> uuid.UUID:
     """
     if response.status_code != 200:
         raise ValueError(f"send answered {response.status_code}")
-    receipt = from_plain(loads(response.content), dict[str, object])
+    receipt = from_plain(json_loads(response.content), dict[str, object])
     return uuid.UUID(from_plain(receipt["conversation_id"], str))
 
 
@@ -555,7 +559,7 @@ async def revision_of(client: httpx2.AsyncClient, *, workspace_id: uuid.UUID) ->
 
     """
     state = from_plain(
-        loads((await client.get(f"/api/workspaces/{workspace_id}")).content),
+        json_loads((await client.get(f"/api/workspaces/{workspace_id}")).content),
         dict[str, object],
     )
     return from_plain(state["revision"], int)
@@ -600,7 +604,7 @@ async def _show_chat_at(
     if shown.status_code != 200:
         raise ValueError(f"show answered {shown.status_code}")
     visuals = from_plain(
-        from_plain(loads(shown.content), dict[str, object])["visuals"],
+        from_plain(json_loads(shown.content), dict[str, object])["visuals"],
         list[dict[str, object]],
     )
     chat = next(v for v in visuals if v["type"] == "trax.chat")

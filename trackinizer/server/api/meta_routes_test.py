@@ -11,7 +11,8 @@ import subprocess
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -68,7 +69,7 @@ def test_enums_route_reflects_the_type_literals(client: TestClient) -> None:
     """
     r = client.get("/api/meta/enums")
     assert r.status_code == 200
-    body = from_plain(loads(r.content), dict[str, object])
+    body = from_plain(json_loads(r.content), dict[str, object])
     assert from_plain(body["status"], list[str]) == list(
         map(str, get_args(cast(object, Issue.Status.__value__))),
     )
@@ -99,7 +100,7 @@ def test_fields_route_matches_server_route_table(client: TestClient) -> None:
     """
     r = client.get("/api/meta/fields")
     assert r.status_code == 200
-    body = from_plain(loads(r.content), dict[str, object])
+    body = from_plain(json_loads(r.content), dict[str, object])
     assert body == field_owner_kind()
     # The fields that actually drifted must be present and correctly owned.
     # ``ended`` is intentionally NOT a field route: it is stamped only by
@@ -121,7 +122,7 @@ def test_edges_route_serves_topology_and_labels(client: TestClient) -> None:
     """
     r = client.get("/api/meta/edges")
     assert r.status_code == 200
-    body = from_plain(loads(r.content), dict[str, object])
+    body = from_plain(json_loads(r.content), dict[str, object])
     # The payload is topology merged with labels, one entry per kind.
     for kind, topo in edge_topology().items():
         entry = from_plain(body[kind], dict[str, object])
@@ -154,7 +155,7 @@ def test_edges_route_adds_each_kinds_annotations(client: TestClient) -> None:
     below; here, the shape: additive, the ``Edge`` field names in field order.
     """
     body = from_plain(
-        loads(client.get("/api/meta/edges").content),
+        json_loads(client.get("/api/meta/edges").content),
         dict[str, object],
     )
     columns = list(column_specs(Edge))
@@ -188,7 +189,7 @@ async def test_served_annotations_are_what_the_annotate_route_takes_on_a_real_en
     served = {
         kind: from_plain(from_plain(rule, dict[str, object])["annotations"], list[str])
         for kind, rule in from_plain(
-            loads((await http.get("/api/meta/edges")).content),
+            json_loads((await http.get("/api/meta/edges")).content),
             dict[str, object],
         ).items()
     }

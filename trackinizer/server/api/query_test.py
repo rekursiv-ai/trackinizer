@@ -23,7 +23,8 @@ from hypothesis import (
     settings,
     strategies as st,
 )
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import httpx2
 import pytest
@@ -666,7 +667,7 @@ class TestRoutes:
         )
         r = client.post("/api/inquiries/lookup", json=[str(good), str(bad)])
         assert r.status_code == 200
-        body = from_plain(loads(r.content), dict[str, object])
+        body = from_plain(json_loads(r.content), dict[str, object])
         assert body["found"] == {str(good): "Issue"}
         assert body["missing"] == [str(bad)]
 

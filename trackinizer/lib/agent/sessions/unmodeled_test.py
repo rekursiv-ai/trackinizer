@@ -9,8 +9,9 @@ import inspect
 import json
 import math
 
-from treekle import Invalid, loads
+from treekle import Invalid
 from treekle.absent import ABSENT
+from treekle.wire import json_loads
 
 import pytest
 
@@ -69,7 +70,7 @@ class TestLosslessFields:
         }
 
         stored = extract_unmodeled_fields(source, fields=fields)
-        encoded = loads(json.dumps(stored))
+        encoded = json_loads(json.dumps(stored))
         restored = restore_unmodeled_fields(
             cast(Mapping[str, object], encoded),
             {"missing": "default", "null": "now set", "value": "new", "invalid": 9},
@@ -174,7 +175,7 @@ class TestLosslessFields:
         }
 
         restored = restore_unmodeled_fields(
-            _d(loads(json.dumps(extract_unmodeled_fields(source)))),
+            _d(json_loads(json.dumps(extract_unmodeled_fields(source)))),
             {},
         )
 

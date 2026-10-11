@@ -50,7 +50,8 @@ from uuid import UUID
 
 import json
 
-from treekle import from_plain, loads, mutable
+from treekle import from_plain, mutable
+from treekle.wire import json_loads
 
 from trackinizer.lib.agent.types.sessions import UncategorizedRecord
 from trackinizer.server.notify import tx
@@ -263,7 +264,7 @@ async def _read_sources(conn: Conn, session_id: UUID) -> list[_Source]:
                 text=text,
                 # A row already retyped has no legacy ``kind``.
                 legacy_kind=from_plain(
-                    from_plain(loads(payload_text), dict[str, object]).get(
+                    from_plain(json_loads(payload_text), dict[str, object]).get(
                         "kind",
                     ),
                     str,
@@ -302,7 +303,7 @@ def _outputs_for(
             ),
         ]
     record = from_plain(
-        from_plain(loads(source.payload_text), dict[str, object]),
+        from_plain(json_loads(source.payload_text), dict[str, object]),
         UncategorizedRecord,
     )
     out = retype(

@@ -13,7 +13,8 @@ import json
 import logging
 import uuid
 
-from treekle import PlainTree, from_plain, loads
+from treekle import PlainTree, from_plain
+from treekle.wire import json_loads
 
 import httpx2
 import pytest
@@ -1494,7 +1495,7 @@ def test_a_stale_workspace_operation_is_retried_once_on_the_live_revision() -> N
                 json={"id": str(workspace), "revision": next(revisions)},
             )
         revision = from_plain(
-            from_plain(loads(request.content), dict[str, object])["revision"],
+            from_plain(json_loads(request.content), dict[str, object])["revision"],
             int,
         )
         sent.append((revision, request.headers["Idempotency-Key"]))
@@ -1538,7 +1539,7 @@ def test_a_navigation_reads_no_revision_and_names_the_route() -> None:
             (
                 request.method,
                 request.url.path,
-                from_plain(loads(request.content), dict[str, object]),
+                from_plain(json_loads(request.content), dict[str, object]),
             ),
         )
         return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
@@ -1567,7 +1568,7 @@ def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
             (
                 request.method,
                 request.url.path,
-                from_plain(loads(request.content), dict[str, object]),
+                from_plain(json_loads(request.content), dict[str, object]),
             ),
         )
         return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
@@ -1650,7 +1651,7 @@ def test_append_records_with_no_arguments_sends_a_bare_slash_command_free_body()
     sent: list[dict[str, object]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
-        sent.append(from_plain(loads(request.content), dict[str, object]))
+        sent.append(from_plain(json_loads(request.content), dict[str, object]))
         return httpx2.Response(200, json={"part": None, "written": 0, "skipped": 0})
 
     with Client("http://server") as client:
@@ -1677,7 +1678,7 @@ def test_append_records_posts_the_file_its_manifest_records_and_flags() -> None:
             (
                 request.method,
                 request.url.path,
-                from_plain(loads(request.content), dict[str, object]),
+                from_plain(json_loads(request.content), dict[str, object]),
             ),
         )
         return httpx2.Response(200, json={"part": 2, "written": 1, "skipped": 0})
@@ -2226,7 +2227,7 @@ class TestVariableMethods:
 
         [request] = seen
         assert (request.method, request.url.path) == ("PUT", "/api/variables/TOKEN")
-        assert loads(request.content) == {"value": "s3", "secret": True}
+        assert json_loads(request.content) == {"value": "s3", "secret": True}
 
     def test_put_variable_escapes_the_name_in_the_path(self) -> None:
         seen: list[httpx2.Request] = []
@@ -2347,7 +2348,7 @@ class TestMachineMethods:
         assert [(r.method, r.url.path) for r in seen] == [
             ("PUT", "/api/machines/gpu-box"),
         ] * 3
-        assert [loads(r.content) for r in seen] == [
+        assert [json_loads(r.content) for r in seen] == [
             {"role": "dev"},
             {"how": ""},
             {"role": "", "how": "ssh gpu-box"},
@@ -2409,7 +2410,7 @@ class TestMachineMethods:
         assert [(r.method, r.url.path) for r in seen] == [
             ("PATCH", "/api/machines/gpu-box/labels"),
         ] * 2
-        assert [loads(r.content) for r in seen] == [
+        assert [json_loads(r.content) for r in seen] == [
             {"add": ["gpu"], "remove": []},
             {"add": [], "remove": ["a100"]},
         ]
@@ -2458,7 +2459,7 @@ class TestMachineHostMethods:
             enrolled = client.enroll_machine("gpu-box")
 
         assert [(r.method, r.url.path) for r in seen] == [("POST", ENROLL_PATH)]
-        assert loads(seen[0].content) == {"name": "gpu-box"}
+        assert json_loads(seen[0].content) == {"name": "gpu-box"}
         assert enrolled.token == _ENROLLMENT_TOKEN
 
     def test_join_machine_sends_once_and_parses_the_credential(self) -> None:
@@ -2488,7 +2489,7 @@ class TestMachineHostMethods:
         assert len(seen) == 1
         assert err.value.status_code == 503
         assert [(r.method, r.url.path) for r in seen] == [("POST", JOIN_PATH)]
-        assert loads(seen[0].content) == {
+        assert json_loads(seen[0].content) == {
             "name": "gpu-box",
             "token": _ENROLLMENT_TOKEN,
             "instance": str(_INSTANCE),
@@ -2582,7 +2583,7 @@ class TestMachineHostMethods:
             ("POST", HEARTBEAT_PATH.format(machine_id=_MACHINE_ID)),
         ] * 2
         assert seen[0].headers["Authorization"] == f"Bearer {_CREDENTIAL}"
-        assert [loads(r.content) for r in seen] == [
+        assert [json_loads(r.content) for r in seen] == [
             {"instance": str(_INSTANCE), "host_version": "0.1"},
             {"instance": str(_INSTANCE), "host_version": "0.1", "facts": {"cpus": 4}},
         ]

@@ -6,7 +6,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -86,7 +87,7 @@ def test_the_header_comes_first_then_one_line_per_row(
     assert r.status_code == 200
     assert r.headers["content-type"].startswith(EXPORT_MEDIA_TYPE)
     header, *rows = [
-        from_plain(loads(line), dict[str, object]) for line in r.text.splitlines()
+        from_plain(json_loads(line), dict[str, object]) for line in r.text.splitlines()
     ]
     assert header == {
         "format": EXPORT_FORMAT,
@@ -100,7 +101,7 @@ def test_uuids_and_timestamps_become_strings(export_client: TestClient) -> None:
     r = export_client.get(EXPORT_API_PATH)
 
     inquiry = from_plain(
-        from_plain(loads(r.text.splitlines()[1]), dict[str, object])["row"],
+        from_plain(json_loads(r.text.splitlines()[1]), dict[str, object])["row"],
         dict[str, object],
     )
     assert inquiry == {

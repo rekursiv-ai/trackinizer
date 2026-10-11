@@ -12,7 +12,8 @@ import asyncio
 import json
 import logging
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import asyncpg
 
@@ -229,7 +230,7 @@ def changed_id(payload: str) -> str | None:
 
     """
     try:
-        payload_data = from_plain(loads(payload), dict[str, object])
+        payload_data = from_plain(json_loads(payload), dict[str, object])
         return from_plain(payload_data["id"], str)
     except (json.JSONDecodeError, KeyError, TypeError):
         # Drop one bad payload rather than kill the stream, but LOG it: a

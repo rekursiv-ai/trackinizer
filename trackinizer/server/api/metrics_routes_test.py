@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING
 
 import uuid
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -219,7 +220,7 @@ async def test_rank_returns_every_cell_up_to_the_cap_and_refuses_more(
     )
     assert ranked.status_code == 200
     rows = from_plain(
-        from_plain(loads(ranked.content), dict[str, object])["rows"],
+        from_plain(json_loads(ranked.content), dict[str, object])["rows"],
         list[object],
     )
     assert len(rows) == 60

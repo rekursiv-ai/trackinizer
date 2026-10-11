@@ -27,7 +27,8 @@ from typing import TYPE_CHECKING
 
 import json
 
-from treekle import ReadError, from_plain, immutable, loads
+from treekle import ReadError, from_plain, immutable
+from treekle.wire import json_loads
 
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
@@ -109,7 +110,7 @@ def is_sagent(head: str) -> bool:
         if not line.strip():
             continue
         try:
-            record = loads(line)
+            record = json_loads(line)
         except json.JSONDecodeError:
             return False
         if not isinstance(record, dict):
@@ -151,7 +152,7 @@ class _Reader:
 
         """
         try:
-            record = from_plain(loads(line), dict[str, object])
+            record = from_plain(json_loads(line), dict[str, object])
         except (json.JSONDecodeError, ValueError, TypeError):
             return [IncompleteRecord(text=line)]
         # The WHOLE read is the guarded region, not only the parse: every field

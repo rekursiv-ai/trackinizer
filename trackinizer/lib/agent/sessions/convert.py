@@ -35,7 +35,7 @@ import sys
 import threading
 import time
 
-from treekle import loads
+from treekle.wire import json_loads
 
 from trackinizer.lib.agent.sessions import claude, codex, gemini, normalized, sagent
 from trackinizer.lib.agent.sessions.fuse import chain, fuse, names_of, unfuse
@@ -311,7 +311,7 @@ def detect_format(native: str) -> Format:
         if not line.strip():
             continue
         try:
-            record = loads(line)
+            record = json_loads(line)
         except json.JSONDecodeError:
             continue
         if not isinstance(record, dict):
@@ -329,7 +329,7 @@ def _is_gemini_document(text: str) -> bool:
     if not text.startswith("{"):
         return False
     try:
-        document = loads(text)
+        document = json_loads(text)
     except json.JSONDecodeError:
         return False
     return isinstance(document, dict) and {"sessionId", "messages"} <= set(document)

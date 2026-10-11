@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING
 
 import json
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 
 if TYPE_CHECKING:
@@ -132,7 +133,7 @@ def render_fork_lines(rendered: str, *, lines: Sequence[ForkLine]) -> str:
 def _envelope_agent_message(text: str) -> str | None:
     """Return the ``agent_message`` line of a change envelope, or None if not one."""
     try:
-        payload = loads(text)
+        payload = json_loads(text)
     except json.JSONDecodeError:
         return None
     if not isinstance(payload, dict):

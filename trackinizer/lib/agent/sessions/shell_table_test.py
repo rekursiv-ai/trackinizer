@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING
 
 import json
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -281,7 +282,7 @@ def test_editing_a_lifted_path_rewrites_the_replayed_command(
 def _replayed_command(native: str) -> str:
     """Return the Bash command a rewritten claude transcript carries."""
     for line in native.splitlines():
-        record = from_plain(loads(line), dict[str, object])
+        record = from_plain(json_loads(line), dict[str, object])
         message = from_plain(record.get("message"), dict[str, object], default={})
         for block in from_plain(
             message.get("content"),

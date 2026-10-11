@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING
 
 import uuid
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import httpx2
 import pytest
@@ -460,7 +461,7 @@ class _Target:
 
     def handle(self, request: httpx2.Request) -> httpx2.Response:
         path = request.url.path
-        raw = loads(request.content or b"null")
+        raw = json_loads(request.content or b"null")
         body = {} if raw is None else from_plain(raw, dict[str, object])
         if request.method == "GET":
             return self._get(path)

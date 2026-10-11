@@ -34,7 +34,8 @@ from typing import TYPE_CHECKING, Final, Protocol, cast, get_args
 import argparse
 import json
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 from trackinizer.client.client import Client, server_url
 from trackinizer.trax.profile import load_profile
@@ -208,7 +209,7 @@ def load(text: str) -> Structure:
         an index outside the list it indexes, or an edge whose end is not a node.
 
     """
-    columns = from_plain(loads(text), dict[str, object])
+    columns = from_plain(json_loads(text), dict[str, object])
     kinds = from_plain(columns.get("kinds"), list[str], default=[])
     statuses = from_plain(columns.get("statuses"), list[str], default=[])
     edge_kinds = from_plain(columns.get("edge_kinds"), list[str], default=[])

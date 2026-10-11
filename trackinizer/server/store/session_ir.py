@@ -22,7 +22,8 @@ from uuid import UUID
 
 import json
 
-from treekle import PlainTree, immutable, loads, mutable
+from treekle import PlainTree, immutable, mutable
+from treekle.wire import json_loads
 
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.cascade import _CascadeAuditMixin
@@ -665,7 +666,7 @@ def _encoded_payload(payload: Mapping[str, PlainTree]) -> str:
 # the plain objects they are stored as, for the record decoder and the web client.
 def _decoded_payload(raw: str) -> Mapping[str, PlainTree]:
     """Return the stored payload text back as frozen JSON, key order intact."""
-    payload = loads(raw)
+    payload = json_loads(raw)
     if not isinstance(payload, dict):
         raise TypeError(f"stored payload is not a JSON object: {raw[:80]!r}")
     return immutable(payload)

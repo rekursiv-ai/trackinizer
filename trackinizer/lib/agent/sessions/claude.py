@@ -28,9 +28,9 @@ from treekle import (
     ReadError,
     from_plain,
     immutable,
-    loads,
     mutable,
 )
+from treekle.wire import json_loads
 
 from trackinizer.lib.agent.sessions.claude_orders import (
     assistant_order,
@@ -1993,7 +1993,7 @@ def _parse(line: str) -> dict[str, object] | None:
     if not line.strip():
         return None
     try:
-        parsed = loads(line)
+        parsed = json_loads(line)
     except json.JSONDecodeError:
         return None
     if not isinstance(parsed, Mapping):

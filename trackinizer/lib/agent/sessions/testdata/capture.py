@@ -55,7 +55,8 @@ import threading
 import time
 import zlib
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 from trackinizer.lib.posix.relay import ThreadedRelay
 
@@ -450,7 +451,7 @@ def _seed_onboarding(home: Path, work: Path, *, real_home: Path) -> None:
     source = Path.home() / ".claude.json"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
     if real_home.name != ".claude" or not source.is_file():
         return
-    real = from_plain(loads(source.read_text(encoding="utf-8")), dict[str, object])
+    real = from_plain(json_loads(source.read_text(encoding="utf-8")), dict[str, object])
     seeded: dict[str, object] = {
         key: value for key, value in real.items() if key != "projects"
     }

@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 import asyncio
 import uuid
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import httpx2
 import pytest
@@ -158,13 +159,13 @@ def test_a_started_session_is_polled_once_so_it_is_live() -> None:
     assert _run(server, call=start_session) == session_id
 
     started, polled, started_bare, _ = server.asked
-    assert loads(started.content) == {
+    assert json_loads(started.content) == {
         "cli": "codex",
         "actor": "scout",
         "cli_session_id": None,
         "account": None,
     }
-    assert loads(started_bare.content) == {
+    assert json_loads(started_bare.content) == {
         "cli": "codex",
         "actor": None,
         "cli_session_id": None,
@@ -248,7 +249,7 @@ def test_chat_is_shown_at_the_canvas_current_revision() -> None:
     )
 
     shown = server.asked[1]
-    assert loads(shown.content) == {
+    assert json_loads(shown.content) == {
         "revision": 7,
         "operation": {"kind": "show", "visual_type": "trax.chat"},
     }
@@ -289,7 +290,7 @@ def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
 
     assert conversation_of(sent) == conversation
     continued, started = server.asked
-    assert loads(continued.content) == {
+    assert json_loads(continued.content) == {
         "workspace_id": str(workspace_id),
         "text": "hi",
         "chat_instance_id": str(chat),
@@ -298,7 +299,8 @@ def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
     }
     assert continued.headers["Idempotency-Key"] == str(key)
     assert (
-        from_plain(loads(started.content), dict[str, object])["conversation_id"] is None
+        from_plain(json_loads(started.content), dict[str, object])["conversation_id"]
+        is None
     )
     assert uuid.UUID(started.headers["Idempotency-Key"]) != key
 
@@ -322,7 +324,7 @@ def test_a_posted_line_names_the_line_it_forks_when_given_one() -> None:
     )
 
     [forked] = server.asked
-    assert from_plain(loads(forked.content), dict[str, object])["fork"] == fork
+    assert from_plain(json_loads(forked.content), dict[str, object])["fork"] == fork
 
 
 def test_the_assistant_opens_a_conversation_as_its_science_chat() -> None:
@@ -347,7 +349,7 @@ def test_the_assistant_opens_a_conversation_as_its_science_chat() -> None:
     )
 
     assert opened == session_id
-    assert loads(server.asked[0].content) == {
+    assert json_loads(server.asked[0].content) == {
         "cli": "codex",
         "actor": f"chat-{conversation.hex[:12]}",
         "cli_session_id": f"chat:{conversation}",
@@ -386,10 +388,13 @@ def test_conversing_posts_a_line_then_has_the_assistant_open_its_session() -> No
 
     assert opened == session_id
     posted, started, _ = server.asked
-    assert from_plain(loads(posted.content), dict[str, object])["text"] == "hello there"
-    assert from_plain(loads(started.content), dict[str, object])["cli_session_id"] == (
-        f"chat:{conversation}"
+    assert (
+        from_plain(json_loads(posted.content), dict[str, object])["text"]
+        == "hello there"
     )
+    assert from_plain(json_loads(started.content), dict[str, object])[
+        "cli_session_id"
+    ] == (f"chat:{conversation}")
 
 
 def test_a_refused_send_names_no_conversation() -> None:

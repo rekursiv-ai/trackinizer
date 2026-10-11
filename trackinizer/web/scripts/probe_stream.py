@@ -41,7 +41,8 @@ import argparse
 import json
 import time
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import httpx2
 
@@ -255,7 +256,7 @@ def _frames(frames: list[bytes], *, at_sec: float) -> str:
     for frame in frames:
         try:
             data = from_plain(
-                loads(frame.removeprefix(b"data: ")),
+                json_loads(frame.removeprefix(b"data: ")),
                 dict[str, object],
             )
         except (json.JSONDecodeError, TypeError):

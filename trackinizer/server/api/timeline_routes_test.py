@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 
 import uuid
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 import pytest
 
@@ -120,7 +121,7 @@ async def test_timeline_caps_rows_and_preserves_signed_claim_edges(
         params={"direction_limit": 2, "results_per_direction": 1},
     )
     assert response.status_code == 200, response.text
-    body = from_plain(loads(response.content), dict[str, object])
+    body = from_plain(json_loads(response.content), dict[str, object])
     target = from_plain(body["target"], dict[str, object])
     assert len(from_plain(target["title"], str)) == 2_000
     assert len(from_plain(target["description"], str)) == 2_000
@@ -223,7 +224,7 @@ async def test_experiment_anchor_keeps_the_selected_result_in_its_issue_timeline
         params={"results_per_direction": 1},
     )
     assert response.status_code == 200, response.text
-    body = from_plain(loads(response.content), dict[str, object])
+    body = from_plain(json_loads(response.content), dict[str, object])
     assert from_plain(body["issue"], dict[str, object])["id"] == str(issue_id)
     results = from_plain(body["root_results"], list[dict[str, object]])
     assert len(results) == 1
@@ -256,7 +257,7 @@ async def test_orphan_experiment_has_no_issue_but_keeps_its_selected_result(
     response = await client.get(f"/api/visuals/timeline/{experiment_id}")
 
     assert response.status_code == 200, response.text
-    body = from_plain(loads(response.content), dict[str, object])
+    body = from_plain(json_loads(response.content), dict[str, object])
     assert body["issue"] is None
     selected = from_plain(body["selected_result"], dict[str, object])
     assert from_plain(selected["record"], dict[str, object])["id"] == str(experiment_id)
@@ -379,7 +380,7 @@ async def test_experiment_centres_on_its_producer_with_the_producers_leads(
 
     response = await client.get(f"/api/visuals/timeline/{experiment}")
     assert response.status_code == 200, response.text
-    body = from_plain(loads(response.content), dict[str, object])
+    body = from_plain(json_loads(response.content), dict[str, object])
     assert from_plain(body["target"], dict[str, object])["title"] == "Run"
     assert from_plain(body["issue"], dict[str, object])["title"] == "Producer"
     assert _titles(response.content, field="leads") == ["Lead"]
@@ -439,7 +440,7 @@ async def test_other_kinds_centre_on_themselves_with_the_linked_issues_context(
 
     response = await client.get(f"/api/visuals/timeline/{belief}")
     assert response.status_code == 200, response.text
-    body = from_plain(loads(response.content), dict[str, object])
+    body = from_plain(json_loads(response.content), dict[str, object])
     assert from_plain(body["target"], dict[str, object])["title"] == "Claim"
     assert from_plain(body["issue"], dict[str, object])["title"] == "Anchor"
     assert body["selected_result"] is None
@@ -467,7 +468,7 @@ async def test_unlinked_record_of_any_kind_is_shown_alone(
         )
     response = await client.get(f"/api/visuals/timeline/{paper_id}")
     assert response.status_code == 200, response.text
-    body = from_plain(loads(response.content), dict[str, object])
+    body = from_plain(json_loads(response.content), dict[str, object])
     assert from_plain(body["target"], dict[str, object])["kind"] == "Paper"
     assert body["issue"] is None
     assert body["leads"] == []
@@ -614,7 +615,7 @@ def _titles(content: bytes, *, field: str) -> list[object]:
     return [
         item["title"]
         for item in from_plain(
-            from_plain(loads(content), dict[str, object])[field],
+            from_plain(json_loads(content), dict[str, object])[field],
             list[dict[str, object]],
         )
     ]
@@ -622,7 +623,7 @@ def _titles(content: bytes, *, field: str) -> list[object]:
 
 def _direction_titles(content: bytes) -> list[object]:
     """Return the Issue titles of a timeline response's directions, in order."""
-    body = from_plain(loads(content), dict[str, object])
+    body = from_plain(json_loads(content), dict[str, object])
     directions = from_plain(body["directions"], list[dict[str, object]])
     return [
         from_plain(item["issue"], dict[str, object])["title"] for item in directions

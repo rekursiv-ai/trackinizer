@@ -32,7 +32,8 @@ import math
 import string
 import uuid
 
-from treekle import from_plain, loads
+from treekle import from_plain
+from treekle.wire import json_loads
 
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
 
@@ -350,7 +351,7 @@ def _bodies(
     picked: Showcase,
 ) -> list[dict[str, object]]:
     """Each node's submit body: title, status and owner, a Belief's verdict, the showcase's text."""
-    contents = from_plain(loads(GRAPH_CONTENTS.read_text()), dict[str, object])
+    contents = from_plain(json_loads(GRAPH_CONTENTS.read_text()), dict[str, object])
     written = from_plain(contents["roots"], list[str])
     named = {root: written[k % len(written)] for k, root in enumerate(found.roots)}
     kinds = from_plain(contents.get("kinds"), dict[str, object])
