@@ -652,6 +652,81 @@ class TestAcknowledge:
         assert not engine.conn.fetchval.called
 
 
+def _service_account() -> AuthIdentity:
+    """Serve the next requests as a service account's writer key."""
+    service = AuthIdentity(
+        user_id=uuid.uuid4(),
+        api_key_id=uuid.uuid4(),
+        email="agent@service.invalid",
+        role="writer",
+    )
+
+    async def resolve() -> AuthIdentity:
+        return service
+
+    app.dependency_overrides[current_user] = resolve
+    return service
+
+
+class TestServiceAccountCannotManageTokens:
+    """A leaked service key cannot make more keys, re-role them or revoke them."""
+
+    def test_it_cannot_mint_a_token(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _service_account()
+        r = client.post("/api/me/tokens", json={"name": "more"})
+        assert r.status_code == 403, r.text
+        assert "service account" in r.text
+        assert not engine.conn.execute.called
+        assert not engine.conn.fetchval.called
+
+    def test_it_is_refused_before_the_body_is_read(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        _service_account()
+        assert client.post("/api/me/tokens", json={"name": ""}).status_code == 403
+
+    def test_it_cannot_re_role_a_token(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        service = _service_account()
+        r = client.put(
+            f"/api/me/tokens/{service.api_key_id}/role",
+            json={"role": "viewer"},
+        )
+        assert r.status_code == 403, r.text
+        assert not engine.conn.execute.called
+        assert not engine.conn.fetchval.called
+
+    def test_it_cannot_revoke_a_token_not_even_its_own(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        service = _service_account()
+        r = client.post(f"/api/me/tokens/{service.api_key_id}/revoke")
+        assert r.status_code == 403, r.text
+        assert not engine.conn.execute.called
+
+    def test_it_still_lists_its_keys(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        service = _service_account()
+        engine.conn.fetch = AsyncMock(return_value=[])
+        r = client.get("/api/me/tokens")
+        assert r.status_code == 200, r.text
+        assert engine.conn.fetch.call_args.args[1] == service.user_id
+
+
 class TestRouteRequiresAuth:
     """Without an override, the routes must demand a bearer token."""
 

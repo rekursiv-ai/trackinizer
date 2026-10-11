@@ -16,7 +16,7 @@ has them ready.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated, Final, cast
 
 import uuid
 
@@ -33,15 +33,22 @@ from trackinizer.server.api._routes_shared import (
 from trackinizer.server.audience import audiences_for
 from trackinizer.server.auth import AuthIdentity, Role, require_role
 from trackinizer.server.notify import tx
+from trackinizer.server.values import vetted_sql
 from trackinizer.wire.audience import STAFF
 from trackinizer.wire.json_types import MutableJSON
+from trackinizer.wire.wire_service_accounts import is_service_address
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from asyncpg import Record
+
     from trackinizer.lib.postgres import Conn
 
 
 __all__ = [
+    "USER_COLUMNS",
     "AllowlistAddBody",
     "RoleChangeBody",
     "admin_add_allowlist_route",
@@ -53,10 +60,16 @@ __all__ = [
     "admin_remove_user_route",
     "admin_set_allowlist_role_route",
     "admin_set_user_role_route",
+    "user_entry",
 ]
 
 
 router = APIRouter()
+
+USER_COLUMNS: Final = (
+    "id, email, name, role, status, created_at, last_login, hosted_domain"
+)
+"""The ``users`` columns :func:`user_entry` reads."""
 
 
 class RoleChangeBody(BaseModel):
@@ -90,43 +103,23 @@ async def admin_list_users_route(
       identity: Admin identity from authentication dependency.
 
     Returns:
-      users: List of user records with id, email, name, role, status,
-        created_at, last_login, and ``staff``, read-only: whether the deployment's
-        staff setting makes the user staff. No route writes it.
+      users: List of user records with id, email, name, role, status, created_at,
+        last_login, and ``staff``, read-only: whether the deployment's staff setting
+        makes the user staff. No route writes it.
 
     """
     del identity
     engine = engine_of(request)
     async with engine.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, email, name, role, status, created_at, last_login, "
-            "hosted_domain FROM users ORDER BY created_at DESC, id DESC",
+            vetted_sql(
+                "SELECT ",
+                USER_COLUMNS,
+                " FROM users ORDER BY created_at DESC, id DESC",
+            ),
         )
     staff = get_staff(request)
-    return {
-        "users": [
-            {
-                "id": str(row["id"]),
-                "email": from_plain(row["email"], str),
-                "name": from_plain(row["name"], str),
-                "role": cast(Role, from_plain(row["role"], str)),
-                "status": from_plain(row["status"], str),
-                "created_at": iso_format(from_plain(row["created_at"], datetime)),
-                "last_login": iso_format(
-                    None
-                    if row["last_login"] is None
-                    else from_plain(row["last_login"], datetime),
-                ),
-                "staff": STAFF
-                in audiences_for(
-                    from_plain(row["email"], str),
-                    hosted_domain=from_plain(row["hosted_domain"], str, default=None),
-                    staff=staff,
-                ),
-            }
-            for row in rows
-        ],
-    }
+    return {"users": [user_entry(row, staff=staff) for row in rows]}
 
 
 @router.put("/api/admin/users/{user_id}/role")
@@ -137,6 +130,8 @@ async def admin_set_user_role_route(
     identity: Annotated[AuthIdentity, Depends(require_role("admin"))],
 ) -> MutableJSON:
     """Update one user's role; 404 when the id matches no row.
+
+    A service account is a viewer or a writer: promoting one to admin answers 422.
 
     Args:
       user_id: UUID of the user to update.
@@ -155,6 +150,17 @@ async def admin_set_user_role_route(
         )
     engine = engine_of(request)
     async with engine.acquire() as conn, tx(conn):
+        if body.role == "admin" and is_service_address(
+            from_plain(
+                await conn.fetchval("SELECT email FROM users WHERE id = $1", user_id),
+                str,
+                default="",
+            ),
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="A service account cannot be an admin.",
+            )
         if body.role != "admin":
             await _lock_admin_roster(conn)
             await _refuse_last_admin_loss(conn, user_id)
@@ -328,7 +334,9 @@ async def admin_add_allowlist_route(
     """Insert a new allowlist entry; 409 on a duplicate ``email_or_pattern``.
 
     The 409 comes from the global unique-violation handler in
-    ``api.app``, so this route needs no try/except of its own.
+    ``api.app``, so this route needs no try/except of its own. An entry at the
+    service-account domain, an address or ``*@service.invalid``, answers 422: a
+    service account never signs in.
 
     Args:
       body: Request body with email_or_pattern and role to add.
@@ -340,6 +348,14 @@ async def admin_add_allowlist_route(
 
     """
     email_or_pattern = _canonical_allowlist_entry(body.email_or_pattern)
+    if is_service_address(email_or_pattern):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "A service account never signs in, so no allowlist entry may name "
+                "the service-account domain."
+            ),
+        )
     engine = engine_of(request)
     async with engine.acquire() as conn:
         await conn.execute(
@@ -423,6 +439,42 @@ async def admin_remove_allowlist_route(
     if not result.endswith(" 1"):
         raise HTTPException(status_code=404, detail="allowlist entry not found")
     return {"ok": True}
+
+
+def user_entry(row: Record, *, staff: Sequence[str]) -> MutableJSON:
+    """Build the wire shape of one ``users`` row selected with :data:`USER_COLUMNS`.
+
+    The listing and the answer that creates a service account use it, so a created
+    user reads exactly as the listing shows it.
+
+    Args:
+      row: A row with the :data:`USER_COLUMNS`.
+      staff: The configured staff patterns, which decide the ``staff`` flag.
+
+    Returns:
+      entry: JSON with id, email, name, role, status, created_at, last_login and staff.
+
+    """
+    email = from_plain(row["email"], str)
+    return {
+        "id": str(row["id"]),
+        "email": email,
+        "name": from_plain(row["name"], str),
+        "role": cast(Role, from_plain(row["role"], str)),
+        "status": from_plain(row["status"], str),
+        "created_at": iso_format(from_plain(row["created_at"], datetime)),
+        "last_login": iso_format(
+            None
+            if row["last_login"] is None
+            else from_plain(row["last_login"], datetime),
+        ),
+        "staff": STAFF
+        in audiences_for(
+            email,
+            hosted_domain=from_plain(row["hosted_domain"], str, default=None),
+            staff=staff,
+        ),
+    }
 
 
 # The last-admin guard is a cross-row invariant. Under Read Committed, two concurrent

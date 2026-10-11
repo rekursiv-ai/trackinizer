@@ -263,6 +263,37 @@ class TestRequestLogging:
         assert from_plain(fields.get("error_type"), str, default="?") == ""
         assert 0.0 <= from_plain(fields.get("duration_sec"), float, default=-1) < 60.0
 
+    def test_a_span_reads_the_request_from_the_asgi_scope(self) -> None:
+        """The span names the request and leaves its id on the scope's state."""
+        request_id = uuid4()
+        scope: dict[str, object] = {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/x",
+            "headers": [(b"x-request-id", str(request_id).encode())],
+        }
+        send = AsyncMock()
+
+        span = _RequestLogSpan.from_scope(scope, send=send)
+
+        assert scope["state"] == {"request_id": str(request_id)}
+        assert (span.request_id, span.method, span.path) == (
+            str(request_id),
+            "POST",
+            "/api/x",
+        )
+        assert span.downstream is send
+        assert 0.0 < span.started <= time.perf_counter()
+
+    def test_a_span_for_a_bare_scope_has_an_empty_method_and_path(self) -> None:
+        scope: dict[str, object] = {"type": "http"}
+
+        span = _RequestLogSpan.from_scope(scope, send=AsyncMock())
+
+        assert (span.method, span.path) == ("", "")
+        assert str(UUID(span.request_id)) == span.request_id
+        assert scope["state"] == {"request_id": span.request_id}
+
 
 class TestAuthDisabledWarning:
     """The lifespan loudly warns when auth is disabled (synthetic-admin mode)."""

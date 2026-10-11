@@ -299,6 +299,41 @@ class TestAdminUsers:
         (user,) = from_plain(body["users"], list[dict[str, object]])
         assert user["staff"] is False
 
+    def test_a_service_account_cannot_be_made_an_admin(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        """A role change to admin for a service account is refused and writes nothing."""
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        engine.conn.fetchval = AsyncMock(return_value="agent@service.invalid")
+        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        r = client.put(
+            f"/api/admin/users/{uuid.uuid4()}/role",
+            json={"role": "admin"},
+        )
+        assert r.status_code == 422, r.text
+        assert "service account" in _json_detail(r)
+        assert not any("UPDATE users SET role" in s for s in _executed_sql(engine))
+
+    def test_a_service_account_may_change_between_viewer_and_writer(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        engine.conn.fetchval = AsyncMock(return_value="agent@service.invalid")
+        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        engine.conn.fetchrow = AsyncMock(
+            return_value={"target_is_admin_active": False, "other_admins": 1},
+        )
+        r = client.put(
+            f"/api/admin/users/{uuid.uuid4()}/role",
+            json={"role": "viewer"},
+        )
+        assert r.status_code == 200, r.text
+        assert any("UPDATE users SET role" in s for s in _executed_sql(engine))
+
     def test_no_admin_route_can_make_a_user_staff(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
@@ -861,6 +896,31 @@ class TestAdminAllowlist:
         )
         assert insert.args[1] == "*@example.com"
         assert _json(r)["email_or_pattern"] == "*@example.com"
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "campaign@service.invalid",
+            " Campaign@Service.Invalid ",
+            "*@service.invalid",
+            "*@SERVICE.INVALID",
+        ],
+    )
+    def test_add_refuses_an_entry_that_could_admit_a_service_address(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        entry: str,
+    ) -> None:
+        """No service account signs in, so no allowlist entry may name one."""
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        r = client.post(
+            "/api/admin/allowlist",
+            json={"email_or_pattern": entry, "role": "viewer"},
+        )
+        assert r.status_code == 422, r.text
+        assert "service" in _json_detail(r)
+        assert not any("INSERT INTO allowlist" in s for s in _executed_sql(engine))
 
     def test_set_allowlist_role_canonicalizes_path_param(
         self,

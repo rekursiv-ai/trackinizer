@@ -47,11 +47,13 @@ from trackinizer.server.auth import (
     allowlist_match,
     bootstrap_admin,
     create_api_key,
+    current_human,
     current_user,
     effective_role,
     generate_token,
     hash_secret,
     key_within_caller,
+    lookup_user_by_id,
     require_role,
     revoke_api_key,
     set_api_key_role,
@@ -1034,6 +1036,54 @@ class TestSessionAudiences:
         assert identity.open_audiences == {"open"}
 
 
+# ---- service accounts -----------------------------------------------------
+
+
+class TestCurrentHuman:
+    """Routes that manage credentials answer a person and never a service account."""
+
+    @pytest.mark.asyncio
+    async def test_a_person_passes_unchanged(self) -> None:
+        person = AuthIdentity(
+            user_id=uuid.uuid4(),
+            api_key_id=uuid.uuid4(),
+            email="ada@example.com",
+            role="writer",
+        )
+        assert await current_human(person) is person
+
+    @pytest.mark.asyncio
+    async def test_a_service_account_is_refused_with_403(self) -> None:
+        service = AuthIdentity(
+            user_id=uuid.uuid4(),
+            api_key_id=uuid.uuid4(),
+            email="campaign@service.invalid",
+            role="writer",
+        )
+        with pytest.raises(HTTPException) as refused:
+            await current_human(service)
+        assert refused.value.status_code == 403
+        assert "service account" in str(refused.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_a_session_resolves_only_a_person(self) -> None:
+        """No cookie opens the row of a service account, whoever signed it."""
+        conn = make_conn()
+        conn.fetchrow = AsyncMock(
+            return_value={
+                "id": uuid.uuid4(),
+                "email": "campaign@service.invalid",
+                "role": "writer",
+                "status": "active",
+                "hosted_domain": None,
+            },
+        )
+        assert (
+            await lookup_user_by_id(cast(Conn, conn), user_id=uuid.uuid4(), staff=())
+            is None
+        )
+
+
 # ---- bootstrap_admin tests ------------------------------------------------
 
 
@@ -1125,6 +1175,22 @@ class TestBootstrapAdmin:
             c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
         assert inserts == []
+
+    @pytest.mark.asyncio
+    async def test_refuses_to_seed_a_person_at_a_service_address(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """An address at the service domain names a service account, never a person."""
+        monkeypatch.setenv(BOOTSTRAP_ADMIN_ENV, "Root@Service.Invalid")
+        monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(tmp_path / "bt"))
+        conn = make_conn()
+        conn.fetchval = AsyncMock(return_value=None)
+        with pytest.raises(ValueError, match="service"):
+            await bootstrap_admin(cast(Conn, conn))
+        assert conn.execute.call_count == 0
+        assert not (tmp_path / "bt").exists()
 
     def test_bootstrap_token_file_is_created_private_before_chmod(
         self,
@@ -1873,6 +1939,28 @@ class TestAllowlistMatch:
         conn.fetchval = AsyncMock(return_value=None)
         role = await allowlist_match(cast(Conn, conn), email="no-at-symbol")
         assert role is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "email",
+        ["campaign@service.invalid", "Campaign@Service.INVALID", "a@b@service.invalid"],
+    )
+    async def test_a_service_address_is_never_admitted_and_the_table_is_not_read(
+        self,
+        email: str,
+    ) -> None:
+        """A row naming the address, or ``*@service.invalid``, admits no one."""
+        conn = make_conn()
+        conn.fetchval = AsyncMock(return_value="admin")
+        assert await allowlist_match(cast(Conn, conn), email=email) is None
+        conn.fetchval.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_another_domain_is_still_looked_up(self) -> None:
+        conn = make_conn()
+        conn.fetchval = AsyncMock(return_value="writer")
+        role = await allowlist_match(cast(Conn, conn), email="ada@example.com")
+        assert role == "writer"
 
 
 class TestEffectiveRole:

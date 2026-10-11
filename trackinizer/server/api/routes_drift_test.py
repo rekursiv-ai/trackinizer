@@ -46,6 +46,11 @@ from trackinizer.wire.wire_metrics import METRICS_API_PATHS
 from trackinizer.wire.wire_metrics_query import (
     METRICS_QUERY_API_PATHS,
 )
+from trackinizer.wire.wire_service_accounts import (
+    SERVICE_ACCOUNT_KEY_REVOKE_PATH,
+    SERVICE_ACCOUNT_TOKENS_PATH,
+    SERVICE_ACCOUNTS_PATH,
+)
 from trackinizer.wire.wire_sessions import SESSION_API_PATHS
 from trackinizer.wire.wire_variables import VARIABLE_PATH, VARIABLES_PATH
 
@@ -257,6 +262,22 @@ def test_machine_host_paths_are_registered_and_documented() -> None:
     assert f"POST   {JOIN_PATH}" in api_md
     assert "POST   /api/machines/<uuid>/heartbeat" in api_md
     assert "POST   /api/machines/<name>/revoke" in api_md
+
+
+def test_service_account_paths_are_registered_and_documented() -> None:
+    """The service-account routes exist on the live app and appear in ``docs/api.md``."""
+    registered = registered_paths(app)
+    api_md = (_CWD.parents[1] / "docs" / "api.md").read_text()
+    for path in (
+        SERVICE_ACCOUNTS_PATH,
+        SERVICE_ACCOUNT_TOKENS_PATH,
+        SERVICE_ACCOUNT_KEY_REVOKE_PATH,
+    ):
+        assert path in registered
+    assert f"POST   {SERVICE_ACCOUNTS_PATH}" in api_md
+    assert "POST   /api/admin/service-accounts/<uuid>/tokens\n" in api_md
+    assert "GET    /api/admin/service-accounts/<uuid>/tokens\n" in api_md
+    assert "POST   /api/admin/service-accounts/<uuid>/tokens/<uuid>/revoke\n" in api_md
 
 
 def test_derived_read_routes_are_registered_and_documented() -> None:

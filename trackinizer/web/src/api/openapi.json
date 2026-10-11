@@ -4830,6 +4830,86 @@
         "title": "SendMessageResponse",
         "type": "object"
       },
+      "ServiceAccount": {
+        "additionalProperties": false,
+        "description": "A service account, in the shape ``GET /api/admin/users`` lists a user.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_login": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Login"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/ServiceRole"
+          },
+          "staff": {
+            "title": "Staff",
+            "type": "boolean"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "disabled"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "name",
+          "role",
+          "status",
+          "created_at",
+          "last_login",
+          "staff"
+        ],
+        "title": "ServiceAccount",
+        "type": "object"
+      },
+      "ServiceAccountCreate": {
+        "additionalProperties": false,
+        "description": "Create a service account.",
+        "properties": {
+          "name": {
+            "pattern": "^[a-z][a-z0-9-]{1,30}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/ServiceRole"
+          }
+        },
+        "required": [
+          "name",
+          "role"
+        ],
+        "title": "ServiceAccountCreate",
+        "type": "object"
+      },
       "ServiceDescription": {
         "description": "One service as the catalog shows it.",
         "properties": {
@@ -4857,6 +4937,184 @@
           "placement"
         ],
         "title": "ServiceDescription",
+        "type": "object"
+      },
+      "ServiceRole": {
+        "enum": [
+          "viewer",
+          "writer"
+        ],
+        "type": "string"
+      },
+      "ServiceToken": {
+        "additionalProperties": false,
+        "description": "One key of a service account, as listed; never its secret or hash.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "open_into": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Into"
+          },
+          "prefix": {
+            "title": "Prefix",
+            "type": "string"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "role": {
+            "$ref": "#/components/schemas/TokenRole"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prefix",
+          "role",
+          "open_into",
+          "created_at",
+          "last_used_at",
+          "revoked_at"
+        ],
+        "title": "ServiceToken",
+        "type": "object"
+      },
+      "ServiceTokenCreate": {
+        "additionalProperties": false,
+        "description": "Mint a key for a service account.",
+        "properties": {
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "open_into": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AudienceName"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TokenRole"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ServiceTokenCreate",
+        "type": "object"
+      },
+      "ServiceTokenCreated": {
+        "additionalProperties": false,
+        "description": "A freshly minted key, with its secret, which no later answer repeats.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "open_into": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open Into"
+          },
+          "prefix": {
+            "title": "Prefix",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/TokenRole"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prefix",
+          "role",
+          "open_into",
+          "secret"
+        ],
+        "title": "ServiceTokenCreated",
+        "type": "object"
+      },
+      "ServiceTokenList": {
+        "additionalProperties": false,
+        "description": "Every key of a service account, newest first.",
+        "properties": {
+          "tokens": {
+            "items": {
+              "$ref": "#/components/schemas/ServiceToken"
+            },
+            "title": "Tokens",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tokens"
+        ],
+        "title": "ServiceTokenList",
         "type": "object"
       },
       "SessionEnd": {
@@ -7280,6 +7538,14 @@
         "title": "TimelineRecord",
         "type": "object"
       },
+      "TokenRole": {
+        "enum": [
+          "viewer",
+          "writer",
+          "admin"
+        ],
+        "type": "string"
+      },
       "TokenRoleChangeBody": {
         "description": "Request body carrying a key's new role ceiling.\n\nThe role is bounded by the caller's own role; anything stronger\nsurfaces as 403.",
         "properties": {
@@ -8578,7 +8844,7 @@
         "summary": "Admin List Allowlist Route"
       },
       "post": {
-        "description": "Insert a new allowlist entry; 409 on a duplicate ``email_or_pattern``.\n\nThe 409 comes from the global unique-violation handler in\n``api.app``, so this route needs no try/except of its own.\n\nArgs:\n  body: Request body with email_or_pattern and role to add.\n  request: FastAPI Request object containing app state with db engine.\n  identity: Admin identity from authentication dependency.\n\nReturns:\n  confirmation: Success flag, canonical email_or_pattern, and role.",
+        "description": "Insert a new allowlist entry; 409 on a duplicate ``email_or_pattern``.\n\nThe 409 comes from the global unique-violation handler in\n``api.app``, so this route needs no try/except of its own. An entry at the\nservice-account domain, an address or ``*@service.invalid``, answers 422: a\nservice account never signs in.\n\nArgs:\n  body: Request body with email_or_pattern and role to add.\n  request: FastAPI Request object containing app state with db engine.\n  identity: Admin identity from authentication dependency.\n\nReturns:\n  confirmation: Success flag, canonical email_or_pattern, and role.",
         "operationId": "admin_add_allowlist_route_api_admin_allowlist_post",
         "requestBody": {
           "content": {
@@ -8756,9 +9022,189 @@
         "summary": "Set Lock Route"
       }
     },
+    "/api/admin/service-accounts": {
+      "post": {
+        "description": "Create a service account; 409 when its name is taken, whatever the row's status.\n\nA disabled account keeps its name until an admin deletes it, so creating the name\nagain never revives it; a deleted account takes its keys with it, and a new account\nof the same name starts with none. The account holds the audiences the staff\nsetting gives its address, and a caller cannot create one that holds more than it\ndoes.\n\nArgs:\n  body: The account's name and role.\n  request: Request carrying the database engine and the configuration.\n  identity: Admin principal, recorded in the log as who created it.\n\nReturns:\n  user: The new user, as ``GET /api/admin/users`` lists one.\n\nRaises:\n  HTTPException: 403 when the account would hold an audience the caller does not,\n    409 when the name is taken.",
+        "operationId": "create_service_account_route_api_admin_service_accounts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceAccountCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceAccount"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Service Account Route"
+      }
+    },
+    "/api/admin/service-accounts/{user_id}/tokens": {
+      "get": {
+        "description": "List the keys of a service account, never a secret or a hash.\n\nArgs:\n  user_id: The service account.\n  request: Request carrying the database engine.\n  identity: Admin principal.\n\nReturns:\n  tokens: Every key of the account, live and revoked, newest first.\n\nRaises:\n  HTTPException: 404 when the id is no service account, a person's included.",
+        "operationId": "list_service_tokens_route_api_admin_service_accounts__user_id__tokens_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceTokenList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Service Tokens Route"
+      },
+      "post": {
+        "description": "Mint one API key for a service account; the secret is shown once.\n\nThe key's role is at most the account's and defaults to it. Its pin stays\ninside the audiences the account holds under the staff setting, and inside what\nthe caller's own credential reads and opens into; a pinned key hands its pin on.\nThe account row stays locked until the key is stored, so a disable cannot slip\nbetween the check and the insert.\n\nArgs:\n  user_id: The service account.\n  body: The key's label, and optionally its role and pin.\n  request: Request carrying the database engine and the configuration.\n  response: Response, marked ``no-store`` because it carries a secret.\n  identity: Admin principal, recorded in the log as who minted it.\n\nReturns:\n  token: The key's id, label, prefix, role, stored pin and plaintext secret.\n\nRaises:\n  HTTPException: 403 when the role or the pin exceeds the account's or the\n    caller's, 404 when the id is no service account, 409 when it is disabled.",
+        "operationId": "create_service_token_route_api_admin_service_accounts__user_id__tokens_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceTokenCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceTokenCreated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Service Token Route"
+      }
+    },
+    "/api/admin/service-accounts/{user_id}/tokens/{key_id}/revoke": {
+      "post": {
+        "description": "Revoke one key of a service account.\n\nUnknown id, another account's key, and an already revoked key all answer 404, as\ndoes an id that is no service account: the route never reaches a person's keys.\n\nArgs:\n  user_id: The service account.\n  key_id: The key to revoke.\n  request: Request carrying the database engine and the bearer cache.\n  identity: Admin principal, recorded in the log as who revoked it.\n\nReturns:\n  result: ``{\"ok\": true}``.\n\nRaises:\n  HTTPException: 404 when the account or its live key is not found.",
+        "operationId": "revoke_service_token_route_api_admin_service_accounts__user_id__tokens__key_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutableJSON"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Service Token Route"
+      }
+    },
     "/api/admin/users": {
       "get": {
-        "description": "List every user row for the admin table.\n\nArgs:\n  request: FastAPI Request object containing app state with db engine.\n  identity: Admin identity from authentication dependency.\n\nReturns:\n  users: List of user records with id, email, name, role, status,\n    created_at, last_login, and ``staff``, read-only: whether the deployment's\n    staff setting makes the user staff. No route writes it.",
+        "description": "List every user row for the admin table.\n\nArgs:\n  request: FastAPI Request object containing app state with db engine.\n  identity: Admin identity from authentication dependency.\n\nReturns:\n  users: List of user records with id, email, name, role, status, created_at,\n    last_login, and ``staff``, read-only: whether the deployment's staff setting\n    makes the user staff. No route writes it.",
         "operationId": "admin_list_users_route_api_admin_users_get",
         "responses": {
           "200": {
@@ -8893,7 +9339,7 @@
     },
     "/api/admin/users/{user_id}/role": {
       "put": {
-        "description": "Update one user's role; 404 when the id matches no row.\n\nArgs:\n  user_id: UUID of the user to update.\n  body: Request body with new role assignment.\n  request: FastAPI Request object containing app state with db engine.\n  identity: Admin identity from authentication dependency.\n\nReturns:\n  confirmation: Success flag and updated role.",
+        "description": "Update one user's role; 404 when the id matches no row.\n\nA service account is a viewer or a writer: promoting one to admin answers 422.\n\nArgs:\n  user_id: UUID of the user to update.\n  body: Request body with new role assignment.\n  request: FastAPI Request object containing app state with db engine.\n  identity: Admin identity from authentication dependency.\n\nReturns:\n  confirmation: Success flag and updated role.",
         "operationId": "admin_set_user_role_route_api_admin_users__user_id__role_put",
         "parameters": [
           {
@@ -14088,7 +14534,7 @@
         "summary": "List Tokens Route"
       },
       "post": {
-        "description": "Create a new API key for the authenticated user.\n\nThe plaintext ``secret`` is returned exactly once; the server stores\nonly its hash and prefix. A client that loses the secret rotates by\ncreating a new key and revoking the old one.\n\nThe optional ``role`` field caps the new key at or below the caller's\n*effective* role -- the weaker of their user role and the role of the\ncredential they presented -- defaulting to that ceiling when omitted. A\nstronger role returns 403, the boundary that keeps a writer from minting\nan admin token and a scoped-down key from self-escalating. The pin follows the\nsame rule: the key opens at most what the caller does.\n\nArgs:\n  body: Request body with name, optional role ceiling and pin.\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with key id, name, prefix, role, the stored pin and plaintext\n    secret.\n\nRaises:\n  HTTPException: 403 if the requested role or pin exceeds the caller's.",
+        "description": "Create a new API key for the authenticated user.\n\nThe plaintext ``secret`` is returned exactly once; the server stores\nonly its hash and prefix. A client that loses the secret rotates by\ncreating a new key and revoking the old one.\n\nThe optional ``role`` field caps the new key at or below the caller's\n*effective* role -- the weaker of their user role and the role of the\ncredential they presented -- defaulting to that ceiling when omitted. A\nstronger role returns 403, the boundary that keeps a writer from minting\nan admin token and a scoped-down key from self-escalating. The pin follows the\nsame rule: the key opens at most what the caller does.\n\nArgs:\n  body: Request body with name, optional role ceiling and pin.\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated person from Bearer token or session cookie.\n\nReturns:\n  result: JSON with key id, name, prefix, role, the stored pin and plaintext\n    secret.\n\nRaises:\n  HTTPException: 403 if the requested role or pin exceeds the caller's, or if\n    the caller is a service account.",
         "operationId": "create_token_route_api_me_tokens_post",
         "requestBody": {
           "content": {
@@ -14127,7 +14573,7 @@
     },
     "/api/me/tokens/{key_id}/revoke": {
       "post": {
-        "description": "Revoke one of the authenticated user's keys.\n\nUnknown id, foreign owner, and already-revoked all return 404, so an\nattacker probing UUIDs learns nothing about which keys exist. A pinned key\ncannot revoke a key that opens beyond it, and gets the same 404.\n\nArgs:\n  key_id: API key UUID to revoke.\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with {\"ok\": true} on success.\n\nRaises:\n  HTTPException: 404 if key not found, owned by another user, or already revoked.",
+        "description": "Revoke one of the authenticated user's keys.\n\nUnknown id, foreign owner, and already-revoked all return 404, so an\nattacker probing UUIDs learns nothing about which keys exist. A pinned key\ncannot revoke a key that opens beyond it, and gets the same 404.\n\nArgs:\n  key_id: API key UUID to revoke.\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated person from Bearer token or session cookie.\n\nReturns:\n  result: JSON with {\"ok\": true} on success.\n\nRaises:\n  HTTPException: 403 if the caller is a service account; 404 if key not found,\n    owned by another user, or already revoked.",
         "operationId": "revoke_token_route_api_me_tokens__key_id__revoke_post",
         "parameters": [
           {
@@ -14168,7 +14614,7 @@
     },
     "/api/me/tokens/{key_id}/role": {
       "put": {
-        "description": "Re-tier one of the caller's keys within the caller's effective ceiling.\n\nSame policy as create: a key can move to any role at or below the\ncaller's *effective* role (the weaker of their user role and the\npresented credential's role), and anything stronger returns 403.\nUnknown id, foreign owner, and already-revoked all fold to 404, matching\nthe revoke route's anti-enumeration stance. A pinned key cannot\nre-tier a key that opens beyond it, and gets the same 404.\n\nArgs:\n  key_id: API key UUID to re-tier.\n  body: Request body with new role.\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with {\"ok\": true, \"role\": new_role} on success.\n\nRaises:\n  HTTPException: 403 if role exceeds caller's effective ceiling; 404 otherwise.",
+        "description": "Re-tier one of the caller's keys within the caller's effective ceiling.\n\nSame policy as create: a key can move to any role at or below the\ncaller's *effective* role (the weaker of their user role and the\npresented credential's role), and anything stronger returns 403.\nUnknown id, foreign owner, and already-revoked all fold to 404, matching\nthe revoke route's anti-enumeration stance. A pinned key cannot\nre-tier a key that opens beyond it, and gets the same 404.\n\nArgs:\n  key_id: API key UUID to re-tier.\n  body: Request body with new role.\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated person from Bearer token or session cookie.\n\nReturns:\n  result: JSON with {\"ok\": true, \"role\": new_role} on success.\n\nRaises:\n  HTTPException: 403 if role exceeds caller's effective ceiling or the caller is\n    a service account; 404 otherwise.",
         "operationId": "set_token_role_route_api_me_tokens__key_id__role_put",
         "parameters": [
           {

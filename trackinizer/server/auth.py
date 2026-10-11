@@ -48,6 +48,7 @@ from trackinizer.wire.wire_machine_host import (
     CREDENTIAL_PREFIX,
     ENROLLMENT_PREFIX,
 )
+from trackinizer.wire.wire_service_accounts import is_service_address
 
 
 if TYPE_CHECKING:
@@ -72,6 +73,7 @@ __all__ = [
     "allowlist_match",
     "bootstrap_admin",
     "create_api_key",
+    "current_human",
     "current_user",
     "effective_role",
     "extract_bearer",
@@ -413,6 +415,34 @@ def require_role(min_role: Role) -> Callable[..., Awaitable[AuthIdentity]]:
     return _RoleRequirement(min_role=min_role)
 
 
+async def current_human(
+    identity: Annotated[AuthIdentity, Depends(current_user)],
+) -> AuthIdentity:
+    """FastAPI dependency that answers a person and never a service account.
+
+    The routes that mint, re-tier or revoke API keys depend on it, so a leaked service
+    key cannot make more keys or end its siblings: an admin manages a service account's
+    keys through ``/api/admin/service-accounts``. Missing or bad credentials still 401
+    first, through :func:`current_user`.
+
+    Args:
+      identity: The principal :func:`current_user` resolved.
+
+    Returns:
+      identity: The same principal, a person.
+
+    Raises:
+      HTTPException: 403 when the principal is a service account.
+
+    """
+    if is_service_address(identity.email):
+        raise HTTPException(
+            status_code=403,
+            detail="A service account cannot manage tokens; an admin does.",
+        )
+    return identity
+
+
 async def create_api_key(
     conn: Conn,
     *,
@@ -688,6 +718,10 @@ async def allowlist_match(conn: Conn, *, email: str) -> Role | None:
       result: Granted role (viewer/writer/admin) or None if not allowed.
 
     """
+    # A service account never signs in, so no row admits its address: not its own, not
+    # ``*@service.invalid``, whoever wrote it. The table is not even read.
+    if is_service_address(email):
+        return None
     literal = cast(
         Role | None,
         await conn.fetchval(
@@ -727,7 +761,8 @@ async def lookup_user_by_id(
 
     Session requests have no ``api_keys`` row, so ``api_key_id`` is ``None``.
     A missing or disabled user returns ``None`` -- indistinguishable cases,
-    so a stolen-cookie attacker learns nothing.
+    so a stolen-cookie attacker learns nothing. A service account is one of them: only
+    a person has a browser session.
 
     Args:
       conn: Open database connection.
@@ -743,7 +778,13 @@ async def lookup_user_by_id(
         "SELECT id, email, role, status, hosted_domain FROM users WHERE id = $1",
         user_id,
     )
-    if row is None or row["status"] != "active":
+    # A browser session is a person's. A service account's row answers as an absent one,
+    # so a cookie naming it opens nothing, whoever signed it.
+    if (
+        row is None
+        or row["status"] != "active"
+        or is_service_address(cast("str", row["email"]))
+    ):
         return None
     row_id = row["id"]
     email = row["email"]
@@ -819,6 +860,10 @@ async def bootstrap_admin(conn: Conn) -> None:
     Args:
       conn: Open database connection within a transaction context.
 
+    Raises:
+      ValueError: The variable names an address at the service-account domain, when
+        the seed would otherwise run.
+
     """
     # Lowercase to match the admin-UI canonical form and the read path; the
     # column is case-sensitive, so a mixed-case env value would duplicate.
@@ -828,6 +873,13 @@ async def bootstrap_admin(conn: Conn) -> None:
     existing_user = await conn.fetchval("SELECT 1 FROM users LIMIT 1")
     if existing_user is not None:
         return
+    # The seed is a person on the allowlist; an address at the service domain names a
+    # service account, which neither signs in nor sits on the allowlist.
+    if is_service_address(email):
+        raise ValueError(
+            f"{BOOTSTRAP_ADMIN_ENV} names {email!r}, a service account address; "
+            "the first admin is a person who signs in",
+        )
     # Two-phase write across DB + FS so a rolled-back api_keys row never
     # leaves a live plaintext secret at the final path. See the docstring.
     token_path = _bootstrap_token_path()

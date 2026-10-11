@@ -102,6 +102,41 @@ class TestAudiencesFor:
         )
 
 
+class TestServiceAccounts:
+    """A service account has no hosted domain, so only an exact entry makes it staff."""
+
+    def test_an_exact_address_entry_makes_the_account_staff(self) -> None:
+        assert (
+            audiences_for(
+                "campaign@service.invalid",
+                hosted_domain=None,
+                staff=("campaign@service.invalid",),
+            )
+            == _BOTH
+        )
+
+    def test_a_domain_pattern_never_matches_a_service_account(self) -> None:
+        """No hosted domain, so ``*@service.invalid`` names no one."""
+        assert (
+            audiences_for(
+                "campaign@service.invalid",
+                hosted_domain=None,
+                staff=("*@service.invalid",),
+            )
+            == _OPEN
+        )
+
+    def test_an_entry_for_one_account_leaves_its_neighbours_open_only(self) -> None:
+        assert (
+            audiences_for(
+                "assistant@service.invalid",
+                hosted_domain=None,
+                staff=("campaign@service.invalid", "*@service.invalid"),
+            )
+            == _OPEN
+        )
+
+
 class TestKeyAudiences:
     def test_a_plain_key_holds_what_its_owner_holds(self) -> None:
         assert key_audiences(_BOTH, open_into=None) == Audiences(

@@ -283,6 +283,10 @@ A pinned key can revoke (`POST .../revoke`) or re-tier (`PUT .../role`) only its
 key and keys pinned to an audience it opens into. Any other key answers 404, as an
 absent one does. A browser session or an unpinned key manages every key of its owner.
 
+A service account's key (section 1.18) answers 403 on `POST /api/me/tokens`,
+`PUT .../role` and `POST .../revoke`, before the body is read; an admin manages
+its keys.
+
 ### 1.18 Admin users
 
 ```
@@ -292,10 +296,73 @@ PUT    /api/admin/users/<uuid>/role
 POST   /api/admin/users/<uuid>/disable
 POST   /api/admin/users/<uuid>/enable
 DELETE /api/admin/users/<uuid>
+POST   /api/admin/service-accounts
+POST   /api/admin/service-accounts/<uuid>/tokens
+GET    /api/admin/service-accounts/<uuid>/tokens
+POST   /api/admin/service-accounts/<uuid>/tokens/<uuid>/revoke
 ```
 
 `GET /api/admin/users` marks each user with `staff`, true when the server's staff
 setting makes them staff. It is derived and read-only.
+
+#### Service accounts
+
+A service account is a user whose address is `NAME@service.invalid`; no column
+marks it. An admin creates one for a program, without a sign-in:
+a chat assistant, a job runner, the shell an agent runs in. It has its own
+identity and its own keys, and nobody has to create a fake person for it. All four
+routes are admin role. Bodies: section 3.27.
+
+`NAME` matches `^[a-z][a-z0-9-]{1,30}$`. `.invalid` is reserved by RFC 2606, so no identity
+provider issues it. `POST /api/admin/service-accounts` takes a `name` and a `role`,
+`viewer` or `writer`, and answers 201 with the user, as `GET /api/admin/users`
+lists one. A name is taken while any row holds it, a disabled one included, and
+answers 409: creating a name again never revives a disabled account. Deleting the
+account (`DELETE /api/admin/users/<uuid>`) frees the name and removes its keys, so a
+new account of the same name starts with none and no old key opens it.
+
+`POST /api/admin/service-accounts/<uuid>/tokens` mints one API key for the account
+and answers 201 with the secret, once, marked `Cache-Control: no-store`. The body
+is a `name` and, optionally, `role` and `open_into`, which mean what they mean in
+section 1.17. The key's role is at most the account's and
+defaults to it; a stronger role answers 403. Its pin is at most what the
+account holds under the server's staff setting: `open`, and `staff` only for an
+exact address entry such as `campaign@service.invalid`. A `*@domain` pattern never
+matches a service account, which has no Workspace domain. A pin beyond that
+answers 403, and a name that is no audience answers 422. The key is also held to what
+the minting admin's own credential reads and opens into, because a key never
+grants more than it holds: an admin who does not hold `staff` cannot hand it on
+(403), and a pinned key hands its pin to the keys it mints.
+Creating an account whose address the staff setting names is held to the same
+rule. An id that is not a service account, a person's included, answers 404, and a
+disabled account answers 409.
+
+`GET /api/admin/service-accounts/<uuid>/tokens` lists the account's keys, live
+and revoked, newest first, with no secret or hash.
+`POST /api/admin/service-accounts/<uuid>/tokens/<uuid>/revoke` revokes one and
+answers 404 for a key that is not the account's or is already revoked. Disabling
+the account revokes all its keys at once and enabling it restores none; mint
+fresh ones.
+
+A service account can never:
+
+- sign in. The allowlist refuses an entry at the service domain (422), whether an
+  address or `*@service.invalid`, and no sign-in admits such an address. No
+  session cookie opens one.
+- be an admin. Creating one as `admin` and `PUT /api/admin/users/<uuid>/role` to
+  `admin` answer 422, and a key's role is at most its account's, so no key of
+  the account ever holds it.
+- hold a Google account or a Workspace domain: no sign-in writes either to its
+  row.
+- manage keys. Its own key answers 403 on `POST /api/me/tokens`,
+  `PUT /api/me/tokens/<uuid>/role` and `POST /api/me/tokens/<uuid>/revoke`, its
+  own key included, so a leaked key cannot make more. `GET /api/me/profile` and
+  `GET /api/me/tokens` still answer.
+
+Creating an account and minting or revoking a key are logged at WARNING with the admin
+who acted (user id, address and key id) and the account acted on (user id and
+address), and a key's id and label, never a secret. Admin actions on users keep no
+other record.
 
 ### 1.19 Admin allowlist
 
@@ -1334,7 +1401,8 @@ action          -> {"ok": true}
       "role": "<role>",
       "status": "active" | "disabled",
       "created_at": "<ts>",
-      "last_login": "<ts>" | null
+      "last_login": "<ts>" | null,
+      "staff": <bool>
     }
   ]
 }
@@ -1458,6 +1526,34 @@ NUL, an integer within 64 bits, a boolean, or a list of such strings; at most 64
 keys and 4096 bytes as compact JSON. `host_version` is at most 64 characters
 with no NUL. Anything else answers 422.
 
+### 3.27 Service accounts
+
+```
+POST /api/admin/service-accounts
+     {"name": "<name>", "role": "viewer" | "writer"}
+     -> 201 {"id": "<uuid>", "email": "<name>@service.invalid", "name": "<name>",
+             "role": "viewer" | "writer", "status": "active",
+             "created_at": "<ts>", "last_login": null, "staff": <bool>}
+POST /api/admin/service-accounts/<uuid>/tokens
+     {"name": "<label>", "role": "viewer" | "writer" | "admin" | null,
+      "open_into": "<audience>" | null}
+     -> 201 {"id": "<uuid>", "name": "<label>", "prefix": "<prefix>",
+             "role": "<role>", "open_into": "<audience>" | null,
+             "secret": "trax_..."}
+GET  /api/admin/service-accounts/<uuid>/tokens
+     -> 200 {"tokens": [{"id": "<uuid>", "name": "<label>", "prefix": "<prefix>",
+                         "role": "<role>", "open_into": "<audience>" | null,
+                         "created_at": "<ts>",
+                         "last_used_at": "<ts>" | null, "revoked_at": "<ts>" | null}]}
+POST /api/admin/service-accounts/<uuid>/tokens/<uuid>/revoke
+     -> 200 {"ok": true}
+```
+
+`name` matches `^[a-z][a-z0-9-]{1,30}$`; any other field, `email` among them,
+answers 422, as does `role: "admin"` on the account. A key's `role` and
+`open_into` are optional and default to the account's role and to no pin. `secret` is in the one answer that mints the key and in no
+later one.
+
 ## 4. Other details
 
 ### 4.1 HTTP status codes
@@ -1468,9 +1564,9 @@ with no NUL. Anything else answers 422.
 302  auth redirect
 400  invalid body, invalid field for kind, invalid projected edge mutation
 401  missing or invalid auth; an unusable enrollment token or machine credential
-403  role too low
+403  role too low; a service account's key on a route that manages keys; a grant beyond the caller's role or audiences
 404  row not found
-409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, machine in service, another host connected
+409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, machine in service, another host connected, service account name taken or account disabled
 410  machine credential revoked
 422  well-formed body rejected by domain validation (e.g. self-loop edge, priority on a non-priority edge kind)
 500  server fault

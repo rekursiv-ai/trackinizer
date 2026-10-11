@@ -5,6 +5,9 @@ dependency. The token endpoints let a caller mint a key (the plaintext
 secret is shown exactly once), list their keys without exposing secrets
 or hashes, revoke a key, and re-tier a key's role. Keys not owned by the
 caller (or already revoked) return 404, never a hint that they exist.
+
+Minting, revoking and re-tiering answer a person only (``current_human``): a service
+account's key gets 403 on them, since an admin manages a service account's keys.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from trackinizer.server.auth import (
     Role,
     RoleCeilingError,
     create_api_key,
+    current_human,
     current_user,
     key_within_caller,
     list_api_keys,
@@ -273,7 +277,7 @@ async def set_visual_workspace_preference(
 async def create_token_route(
     body: CreateTokenBody,
     request: Request,
-    identity: Annotated[AuthIdentity, Depends(current_user)],
+    identity: Annotated[AuthIdentity, Depends(current_human)],
 ) -> MutableJSON:
     """Create a new API key for the authenticated user.
 
@@ -291,14 +295,15 @@ async def create_token_route(
     Args:
       body: Request body with name, optional role ceiling and pin.
       request: FastAPI Request context (used to get the store).
-      identity: Authenticated user from Bearer token or session cookie.
+      identity: Authenticated person from Bearer token or session cookie.
 
     Returns:
       result: JSON with key id, name, prefix, role, the stored pin and plaintext
         secret.
 
     Raises:
-      HTTPException: 403 if the requested role or pin exceeds the caller's.
+      HTTPException: 403 if the requested role or pin exceeds the caller's, or if
+        the caller is a service account.
 
     """
     engine = engine_of(request)
@@ -354,7 +359,7 @@ async def list_tokens_route(
 async def revoke_token_route(
     key_id: uuid.UUID,
     request: Request,
-    identity: Annotated[AuthIdentity, Depends(current_user)],
+    identity: Annotated[AuthIdentity, Depends(current_human)],
 ) -> MutableJSON:
     """Revoke one of the authenticated user's keys.
 
@@ -365,13 +370,14 @@ async def revoke_token_route(
     Args:
       key_id: API key UUID to revoke.
       request: FastAPI Request context (used to get the store).
-      identity: Authenticated user from Bearer token or session cookie.
+      identity: Authenticated person from Bearer token or session cookie.
 
     Returns:
       result: JSON with {"ok": true} on success.
 
     Raises:
-      HTTPException: 404 if key not found, owned by another user, or already revoked.
+      HTTPException: 403 if the caller is a service account; 404 if key not found,
+        owned by another user, or already revoked.
 
     """
     engine = engine_of(request)
@@ -396,7 +402,7 @@ async def set_token_role_route(
     key_id: uuid.UUID,
     body: TokenRoleChangeBody,
     request: Request,
-    identity: Annotated[AuthIdentity, Depends(current_user)],
+    identity: Annotated[AuthIdentity, Depends(current_human)],
 ) -> MutableJSON:
     """Re-tier one of the caller's keys within the caller's effective ceiling.
 
@@ -411,13 +417,14 @@ async def set_token_role_route(
       key_id: API key UUID to re-tier.
       body: Request body with new role.
       request: FastAPI Request context (used to get the store).
-      identity: Authenticated user from Bearer token or session cookie.
+      identity: Authenticated person from Bearer token or session cookie.
 
     Returns:
       result: JSON with {"ok": true, "role": new_role} on success.
 
     Raises:
-      HTTPException: 403 if role exceeds caller's effective ceiling; 404 otherwise.
+      HTTPException: 403 if role exceeds caller's effective ceiling or the caller is
+        a service account; 404 otherwise.
 
     """
     engine = engine_of(request)
