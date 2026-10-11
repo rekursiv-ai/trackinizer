@@ -378,7 +378,7 @@ async def test_a_malformed_body_never_echoes_the_value(
 
     assert response.status_code == 422
     assert _HIDDEN not in response.text
-    assert from_plain(_detail(response), list[dict[str, object]])
+    assert isinstance(_detail(response), list)
 
 
 @pytest.mark.usefixtures("vault")

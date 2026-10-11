@@ -77,7 +77,8 @@ def test_listing_asks_for_every_machine_in_byte_order_of_name(
         ("b-box", "", ["gpu"]),
     ]
     sql, *args = engine.conn.fetch.call_args.args
-    assert 'OR name = $2 ORDER BY name COLLATE "C"' in from_plain(sql, str)
+    assert isinstance(sql, str)
+    assert 'OR name = $2 ORDER BY name COLLATE "C"' in sql
     assert args == [OFFLINE_AFTER_SEC, None]
 
 
@@ -126,7 +127,8 @@ def test_getting_one_machine_asks_for_it_by_name(
     assert response.status_code == 200
     assert from_plain(response.json(), dict[str, object])["how"] == "ssh dev-1"
     sql, *args = engine.conn.fetch.call_args.args
-    assert "WHERE $2::text IS NULL OR name = $2" in from_plain(sql, str)
+    assert isinstance(sql, str)
+    assert "WHERE $2::text IS NULL OR name = $2" in sql
     assert args == [OFFLINE_AFTER_SEC, "dev-1"]
 
 
@@ -317,10 +319,11 @@ def test_labels_are_added_then_removed_in_one_statement(
 
     assert (response.status_code, response.content) == (204, b"")
     sql, *args = engine.conn.fetchval.call_args.args
+    assert isinstance(sql, str)
     assert args == ["dev-1", ["gpu", "a100"], ["old"], TEST_USER_EMAIL]
-    assert "WHERE name = $1 RETURNING name" in " ".join(from_plain(sql, str).split())
-    assert "labels || $2::text[]" in from_plain(sql, str)
-    assert "<> ALL($3::text[])" in from_plain(sql, str)
+    assert "WHERE name = $1 RETURNING name" in " ".join(sql.split())
+    assert "labels || $2::text[]" in sql
+    assert "<> ALL($3::text[])" in sql
 
 
 def test_labels_of_an_absent_machine_are_not_found(

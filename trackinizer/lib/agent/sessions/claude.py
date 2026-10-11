@@ -2010,7 +2010,7 @@ def _update_tools(
     content = message.get("content")
     blocks = (
         [
-            from_plain(cast(dict[str, object], block), dict[str, object])
+            cast(dict[str, object], block)
             for block in cast(list[object], content)
             if isinstance(block, dict)
         ]

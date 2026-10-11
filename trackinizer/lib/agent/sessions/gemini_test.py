@@ -10,10 +10,10 @@ would replay, and about a re-read yielding the same records the last one did.
 from __future__ import annotations
 
 from io import StringIO
+from typing import TypedDict
 
 import json
 
-from treekle import from_plain
 from treekle.wire import json_loads
 
 import pytest
@@ -32,6 +32,11 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
+
+
+class _Document(TypedDict):
+    sessionId: str
+    messages: list[dict[str, object]]
 
 
 def _content(record: SessionRecord) -> str:
@@ -145,18 +150,12 @@ def test_a_call_after_a_user_turn_gets_its_own_assistant_turn() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = from_plain(
-        json_loads(out.getvalue(), dict[str, object]).get("messages"),
-        list[object],
-    )
-    assert [
-        from_plain(from_plain(message, dict[str, object]).get("type"), str)
-        for message in messages
-    ] == [
+    messages = json_loads(out.getvalue(), _Document)["messages"]
+    assert [message["type"] for message in messages] == [
         "user",
         "gemini",
     ]
-    assert "toolCalls" not in from_plain(messages[0], dict[str, object])
+    assert "toolCalls" not in messages[0]
 
 
 def test_a_leading_tool_call_writes_a_turn_rather_than_crashing() -> None:
@@ -171,10 +170,7 @@ def test_a_leading_tool_call_writes_a_turn_rather_than_crashing() -> None:
 
     gemini.denormalize([ToolCall(call_id="t1", name="read_file")], out)
 
-    assert from_plain(
-        json_loads(out.getvalue(), dict[str, object]).get("messages"),
-        list[object],
-    ) == [
+    assert json_loads(out.getvalue(), _Document)["messages"] == [
         {
             "type": "gemini",
             "content": "",
@@ -200,14 +196,8 @@ def test_one_incomplete_record_does_not_discard_the_session() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = from_plain(
-        json_loads(out.getvalue(), dict[str, object]).get("messages"),
-        list[object],
-    )
-    assert [
-        from_plain(from_plain(m, dict[str, object]).get("content"), str)
-        for m in messages
-    ] == [
+    messages = json_loads(out.getvalue(), _Document)["messages"]
+    assert [m["content"] for m in messages] == [
         "real turn",
         "answer",
     ]
@@ -225,10 +215,7 @@ def test_a_crossed_session_declares_an_id_it_can_be_recognized_by() -> None:
     gemini.denormalize([UserMessage(content="hi")], out)
 
     assert detect_format(out.getvalue()) == "gemini"
-    assert from_plain(
-        json_loads(out.getvalue(), dict[str, object]).get("sessionId"),
-        str,
-    )
+    assert json_loads(out.getvalue(), _Document)["sessionId"]
 
 
 def test_a_foreign_encoding_key_is_not_written_as_a_document_field() -> None:
@@ -306,10 +293,7 @@ def test_a_record_gemini_cannot_express_is_dropped_not_written() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = from_plain(
-        json_loads(out.getvalue(), dict[str, object]).get("messages"),
-        list[object],
-    )
+    messages = json_loads(out.getvalue(), _Document)["messages"]
     assert len(messages) == 1
 
 
@@ -329,11 +313,8 @@ def test_a_tool_call_after_a_user_turn_gets_a_timestamped_gemini_turn() -> None:
         out,
     )
 
-    messages = from_plain(
-        json_loads(out.getvalue(), dict[str, object]).get("messages"),
-        list[object],
-    )
-    assert from_plain(messages[1], dict[str, object]) == {
+    messages = json_loads(out.getvalue(), _Document)["messages"]
+    assert messages[1] == {
         "type": "gemini",
         "content": "",
         "$timestamp": "t",
@@ -349,10 +330,7 @@ def test_an_uncategorized_record_is_written_as_its_payload() -> None:
         out,
     )
 
-    assert from_plain(
-        json_loads(out.getvalue(), dict[str, object]).get("messages"),
-        list[object],
-    ) == [
+    assert json_loads(out.getvalue(), _Document)["messages"] == [
         {"type": "future", "x": 1},
     ]
 
@@ -378,10 +356,7 @@ def test_different_foreign_streams_of_one_length_get_different_ids() -> None:
     def session_id(content: str) -> str:
         out = StringIO()
         gemini.denormalize([UserMessage(content=content)], out)
-        return from_plain(
-            json_loads(out.getvalue(), dict[str, object])["sessionId"],
-            str,
-        )
+        return json_loads(out.getvalue(), _Document)["sessionId"]
 
     assert session_id("a") != session_id("b")
     assert session_id("a") == session_id("a")

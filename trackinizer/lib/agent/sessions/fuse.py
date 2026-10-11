@@ -195,7 +195,7 @@ def chain(
     found = list(parts)
     by_id: dict[str, Sequence[SessionRecord]] = {}
     for part in found:
-        own = from_plain(_declared(part).get("id"), str, default="")
+        own = _declared(part).get("id", "")
         if own:
             by_id[own] = part
     # A LIST per parent: a thread may be resumed more than once, and keeping
@@ -204,7 +204,7 @@ def chain(
     successors: dict[str, list[Sequence[SessionRecord]]] = {}
     roots: list[Sequence[SessionRecord]] = []
     for part in found:
-        parent = from_plain(_declared(part).get(forked_from), str, default="")
+        parent = _declared(part).get(forked_from, "")
         if parent in by_id:
             successors.setdefault(parent, []).append(part)
         else:
@@ -223,7 +223,7 @@ def chain(
                 continue
             seen.add(id(part))
             ordered.append(part)
-            own = from_plain(_declared(part).get("id"), str, default="")
+            own = _declared(part).get("id", "")
             stack.extend(reversed(successors.get(own, [])))
     # A component whose links form a CYCLE has no root, so the walk above never
     # started on it -- the ``seen`` guard only stops a re-visit, it cannot reach
@@ -246,11 +246,12 @@ def _bare(value: object) -> str:
 # The first context CARRYING a payload, not merely the first context: a rollout whose
 # first line is blank states its encoding before it declares itself, and that opening
 # context holds no launch settings -- the rule ``codex.denormalize`` applies too.
-def _declared(part: Sequence[SessionRecord]) -> dict[str, object]:
-    """Return the launch settings a part declared, by its wire key names."""
+def _declared(part: Sequence[SessionRecord]) -> dict[str, str]:
+    """Return the launch settings' string fields a part declared, by wire key."""
     for record in part:
         if isinstance(record, TurnContext) and "payload" in record.extra:
-            return from_plain(record.extra["payload"], dict[str, object], default={})
+            payload = from_plain(record.extra["payload"], dict[str, object], default={})
+            return {k: v for k, v in payload.items() if isinstance(v, str)}
     return {}
 
 

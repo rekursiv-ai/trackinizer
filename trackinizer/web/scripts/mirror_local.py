@@ -430,7 +430,12 @@ def mirror(
     """
     clock = _Stopwatch()
     chosen = select_sessions(_sample(source, now=now, hours=hours), limit=sessions)
-    picked = [_node(source.get(f"/api/inquiries/{a.session_id}")) for a in chosen]
+    picked = [
+        _node(
+            from_plain(source.get(f"/api/inquiries/{a.session_id}"), dict[str, object]),
+        )
+        for a in chosen
+    ]
     transcripts = [_transcript(source, a.session_id, limit=records) for a in chosen]
     clock.lap("read sessions")
     graph, edges = _read_graph(source)
@@ -621,8 +626,7 @@ def _runs(seqs: Sequence[int]) -> list[list[int]]:
     return runs
 
 
-def _node(row: object) -> SourceNode:
-    fields = from_plain(row, dict[str, object])
+def _node(fields: dict[str, object]) -> SourceNode:
     created = from_plain(fields.get("created"), datetime)
     return SourceNode(
         id=UUID(from_plain(fields.get("id"), str)),

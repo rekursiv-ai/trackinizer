@@ -10,7 +10,7 @@ records route reads.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 from unittest.mock import AsyncMock
 
 import uuid
@@ -44,6 +44,23 @@ if TYPE_CHECKING:
 
     from trackinizer.conftest import FakeEngine
     from trackinizer.server.store.core import Store
+
+
+class _Indexed(TypedDict):
+    idx: int
+
+
+class _Page(TypedDict):
+    part: int
+    records: list[_Indexed]
+
+
+class _Part(TypedDict):
+    part: int
+
+
+class _Parts(TypedDict):
+    parts: list[_Part]
 
 
 _CIPHERTEXT = "gAAAAABqPBiCY9-vjMraAiiOTNS8xKmaodTJ4D2l6XR2pMszVFyz"
@@ -514,22 +531,15 @@ async def test_a_legacy_transcript_reads_every_listed_part(integ_store: Store) -
         page.text for page in pages
     ]
     assert [
-        (
-            from_plain(body["part"], int),
-            from_plain(from_plain(record, dict[str, object])["idx"], int),
-        )
-        for body in (from_plain(page.json(), dict[str, object]) for page in pages)
-        for record in from_plain(body["records"], list[object])
+        (body["part"], record["idx"])
+        for body in (from_plain(page.json(), _Page) for page in pages)
+        for record in body["records"]
     ] == [(-1, 0), (-1, 1), (0, 0)]
 
 
 def _listed_parts(response: httpx2.Response) -> list[int]:
     """Return the ``part`` of every entry a ``GET .../parts`` response lists."""
-    body = from_plain(response.json(), dict[str, object])
-    return [
-        from_plain(from_plain(entry, dict[str, object])["part"], int)
-        for entry in from_plain(body["parts"], list[object])
-    ]
+    return [entry["part"] for entry in from_plain(response.json(), _Parts)["parts"]]
 
 
 # The rows migration 020 writes for a session captured before the IR: its turns at the

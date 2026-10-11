@@ -74,10 +74,10 @@ class TestFileSink:
         )
         lines = buf.getvalue().splitlines()
         assert len(lines) == 2
-        first = _row(lines[0])
+        first = json_loads((lines[0]), dict[str, object])
         # Position within the part, derived and numbered from 0.
         assert first["idx"] == 0
-        assert _row(lines[1])["idx"] == 1
+        assert json_loads((lines[1]), dict[str, object])["idx"] == 1
         assert first["kind"] == "UserMessage"
         assert first["adapter"] == "codex"
         # The BASENAME, matching how the server resolves a part.
@@ -97,7 +97,9 @@ class TestFileSink:
         sink.emit("claude", _event("a1", path=_PART))
         sink.emit("claude", _event("b1", path=_OTHER))
         sink.emit("claude", _event("a2", path=_PART))
-        rows = [_row(line) for line in buf.getvalue().splitlines()]
+        rows = [
+            json_loads(line, dict[str, object]) for line in buf.getvalue().splitlines()
+        ]
         assert [(r["part_name"], r["idx"]) for r in rows] == [
             ("a.jsonl", 0),
             ("b.jsonl", 0),
@@ -118,7 +120,10 @@ class TestFileSink:
         sink.restart(_PART)
         sink.emit("claude", _event("compacted", restart=True))
         sink.emit("claude", _event("after"))
-        idxs = [_row(line)["idx"] for line in buf.getvalue().splitlines()]
+        idxs = [
+            json_loads(line, dict[str, object])["idx"]
+            for line in buf.getvalue().splitlines()
+        ]
         assert idxs == [0, 1, 0, 1]
 
     def test_slash_command_is_written_as_its_own_shape(self) -> None:
@@ -127,7 +132,7 @@ class TestFileSink:
         sink = FileSink(buf)
         sink.emit_slash_command(SlashCommand(command="model", args="opus"), _AT)
         (line,) = buf.getvalue().splitlines()
-        row = _row(line)
+        row = json_loads(line, dict[str, object])
         command = row["slash_command"]
         assert isinstance(command, dict)
         assert command["command"] == "model"
@@ -147,9 +152,9 @@ class TestFileSink:
         sink.emit_slash_command(SlashCommand(command="exit"), _AT)
         sink.emit("claude", _event("after"))
         idxs = [
-            _row(line)["idx"]
+            json_loads(line, dict[str, object])["idx"]
             for line in buf.getvalue().splitlines()
-            if "idx" in _row(line)
+            if "idx" in json_loads(line, dict[str, object])
         ]
         assert idxs == [0, 1]
 
@@ -220,7 +225,10 @@ class TestFileSinkWriteBody:
         sink.write_body("claude", _PART, body)
         sink.write_body("claude", _PART, body.model_copy(update={"idx": 1}))
         sink.emit("claude", _event("after replay"))
-        idxs = [_row(line)["idx"] for line in buf.getvalue().splitlines()]
+        idxs = [
+            json_loads(line, dict[str, object])["idx"]
+            for line in buf.getvalue().splitlines()
+        ]
         assert idxs == [0, 1, 2]
 
     def test_replay_advances_only_the_replayed_file(self) -> None:
@@ -229,7 +237,9 @@ class TestFileSinkWriteBody:
         sink = FileSink(buf)
         sink.write_body("claude", _PART, RecordBody(idx=7, kind="UserMessage"))
         sink.emit("claude", _event("other", path=_OTHER))
-        rows = [_row(line) for line in buf.getvalue().splitlines()]
+        rows = [
+            json_loads(line, dict[str, object]) for line in buf.getvalue().splitlines()
+        ]
         assert [(r["part_name"], r["idx"]) for r in rows] == [
             ("a.jsonl", 7),
             ("b.jsonl", 0),
@@ -786,7 +796,10 @@ class TestCatchUp:
         assert _sent_positions(client) == [[0], [1, 2], [3]]
         # The local file holds the outage, numbered as the server numbers it.
         assert [
-            (_row(line)["text"], _row(line)["idx"])
+            (
+                json_loads(line, dict[str, object])["text"],
+                json_loads(line, dict[str, object])["idx"],
+            )
             for line in fallback_path.read_text(encoding="utf-8").splitlines()
         ] == [("during", 1), ("still down", 2)]
         err = capsys.readouterr().err
@@ -1071,7 +1084,7 @@ def _fallback_texts(path: Path) -> list[str]:
     """Return the ``text`` of each record row the fallback file holds."""
     texts: list[str] = []
     for line in path.read_text(encoding="utf-8").splitlines():
-        row = _row(line)
+        row = json_loads(line, dict[str, object])
         if "text" not in row:
             continue
         text = row["text"]
@@ -1149,7 +1162,7 @@ class TestResilientSink:
         sink.flush()
         sink.close()
         idxs = [
-            _row(line)["idx"]
+            json_loads(line, dict[str, object])["idx"]
             for line in fallback_path.read_text(encoding="utf-8").splitlines()
         ]
         assert idxs == [0, 1]
@@ -1306,7 +1319,7 @@ class TestResilientSink:
         sink.close()
 
         rows = [
-            _row(line)
+            json_loads(line, dict[str, object])
             for line in fallback_path.read_text(encoding="utf-8").splitlines()
         ]
         command = rows[0]["slash_command"]
@@ -1364,7 +1377,9 @@ class TestSinkFeed:
         sink = FileSink(buf)
         kinds = sink.feed(IOStreamAdapter(), _PART, b"hello\n")
         assert kinds == ["TurnContext", "ContextClear", "Stdout"]
-        rows = [_row(line) for line in buf.getvalue().splitlines()]
+        rows = [
+            json_loads(line, dict[str, object]) for line in buf.getvalue().splitlines()
+        ]
         assert rows[-1]["text"] == "hello\n"
 
     def test_two_files_get_separate_readers(self) -> None:
@@ -1379,7 +1394,9 @@ class TestSinkFeed:
         adapter = IOStreamAdapter()
         sink.feed(adapter, _PART, b"a\n")
         sink.feed(adapter, _OTHER, b"b\n")
-        rows = [_row(line) for line in buf.getvalue().splitlines()]
+        rows = [
+            json_loads(line, dict[str, object]) for line in buf.getvalue().splitlines()
+        ]
         assert [(r["part_name"], r["idx"]) for r in rows] == [
             ("a.jsonl", 0),
             ("a.jsonl", 1),
@@ -1403,7 +1420,9 @@ class TestSinkFeed:
         sink.feed(adapter, _PART, b"one\n")
         sink.feed(adapter, _PART, b"two\n")
         sink.feed(adapter, _PART, b"rewritten\n", restart=True)
-        rows = [_row(line) for line in buf.getvalue().splitlines()]
+        rows = [
+            json_loads(line, dict[str, object]) for line in buf.getvalue().splitlines()
+        ]
         assert [r["idx"] for r in rows] == [0, 1, 2, 3, 0, 1, 2]
 
     def test_the_reader_comes_from_the_adapter(self) -> None:
@@ -1694,7 +1713,10 @@ def test_consecutive_restart_chunks(
             owner = primary if destination == "locked" else sink
             readers.append(owner.readers[_PART])
         if destination == "file":
-            positions = [_row(line)["idx"] for line in output.getvalue().splitlines()]
+            positions = [
+                json_loads(line, dict[str, object])["idx"]
+                for line in output.getvalue().splitlines()
+            ]
         else:
             sink.close()
             positions = [b.idx for _, _, bodies, _ in client.appended for b in bodies]
@@ -1718,7 +1740,10 @@ def test_restart_closes_displaced_reader_without_emitting_eof() -> None:
     try:
         reader.join(timeout=1)
         assert not reader.is_alive()
-        rows = [_row(line) for line in output.getvalue().splitlines()]
+        rows = [
+            json_loads(line, dict[str, object])
+            for line in output.getvalue().splitlines()
+        ]
         assert [row["idx"] for row in rows] == [0, 1, 2] * 2
         assert [row["kind"] for row in rows] == [
             "TurnContext",
@@ -1748,7 +1773,10 @@ def test_repeated_claude_replacement_pipeline(tmp_path: Path, *, server: bool) -
         positions = (
             [b.idx for _, _, bodies, _ in client.appended for b in bodies]
             if server
-            else [_row(line)["idx"] for line in output.getvalue().splitlines()]
+            else [
+                json_loads(line, dict[str, object])["idx"]
+                for line in output.getvalue().splitlines()
+            ]
         )
         assert positions == list(range(5)) * 3
         if server:
@@ -1814,7 +1842,10 @@ def test_restart_flush_failure_preserves_old_positions_in_fallback(
         sink.feed(IOStreamAdapter(), _PART, b"new\n", restart=True)
         sink.feed(IOStreamAdapter(), _PART, b"latest\n", restart=True)
         sink.flush()
-        rows = [_row(line) for line in fallback.read_text().splitlines()]
+        rows = [
+            json_loads(line, dict[str, object])
+            for line in fallback.read_text().splitlines()
+        ]
         assert [row["idx"] for row in rows] == [0, 1, 2] * 3
         assert all(row["adapter"] == "sh" for row in rows)
     finally:
@@ -1858,7 +1889,10 @@ def test_empty_restart_chunk_resets_only_its_part(*, server: bool) -> None:
                 False,
             ]
         else:
-            parsed = [_row(line) for line in output.getvalue().splitlines()]
+            parsed = [
+                json_loads(line, dict[str, object])
+                for line in output.getvalue().splitlines()
+            ]
             rows = [(row["part_name"], row["idx"]) for row in parsed]
         assert rows == [
             (_PART.name, 0),
@@ -2069,10 +2103,6 @@ def _stored_by(client: _FakeClient) -> str:
     return "".join(body.model_dump_json() for body in bodies) + "".join(
         body.model_dump_json() for body in client.slash
     )
-
-
-def _row(line: str) -> dict[str, object]:
-    return json_loads(line, dict[str, object])
 
 
 if __name__ == "__main__":

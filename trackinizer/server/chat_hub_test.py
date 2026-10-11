@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 import asyncio
 import uuid
 
-from treekle import from_plain
 from treekle.wire import json_loads
 
 import pytest
@@ -62,11 +61,25 @@ class _Canvas:
         return self.is_active
 
 
-def _frame(chunk: bytes) -> dict[str, object]:
+class _Partner(TypedDict):
+    status: str
+
+
+class _State(TypedDict):
+    revision: int
+    partner: _Partner
+
+
+class _WorkspaceFrame(TypedDict):
+    type: str
+    state: _State
+
+
+def _frame[T](chunk: bytes, schema: type[T]) -> T:
     text = chunk.decode()
     assert text.startswith("data: ")
     assert text.endswith("\n\n")
-    return json_loads(text.removeprefix("data: "), dict[str, object])
+    return json_loads(text.removeprefix("data: "), schema)
 
 
 def _events(
@@ -94,13 +107,9 @@ async def _ids(*ids: str) -> AsyncGenerator[str]:
 
 
 async def _partner_status(events: AsyncGenerator[bytes]) -> str:
-    changed = _frame(await asyncio.wait_for(anext(events), 2))
+    changed = _frame(await asyncio.wait_for(anext(events), 2), _WorkspaceFrame)
     assert changed["type"] == "workspace"
-    partner = from_plain(
-        from_plain(changed["state"], dict[str, object])["partner"],
-        dict[str, object],
-    )
-    return str(partner["status"])
+    return changed["state"]["partner"]["status"]
 
 
 @pytest.mark.asyncio
@@ -109,14 +118,14 @@ async def test_stream_opens_with_a_comment_then_the_state_then_every_frame() -> 
     hub = ChatHub()
     events = _events(hub, canvas=_Canvas())
     assert await anext(events) == b": open\n\n"
-    opened = _frame(await anext(events))
+    opened = _frame(await anext(events), _WorkspaceFrame)
     assert opened["type"] == "workspace"
-    assert from_plain(opened["state"], dict[str, object])["revision"] == 3
+    assert opened["state"]["revision"] == 3
 
     hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/graph"))
     hub.publish(uuid.uuid4(), frame=NavigateFrame(route="#/elsewhere"))
     hub.publish(_WORKSPACE, frame=HighlightFrame(ids=[_RECORD]))
-    frames = [_frame(await anext(events)) for _ in range(2)]
+    frames = [_frame(await anext(events), dict[str, object]) for _ in range(2)]
     assert [f["type"] for f in frames] == ["navigate", "highlight"]
     assert frames[1]["ids"] == [str(_RECORD)]
     assert all(isinstance(f["t"], int) and f["t"] > 0 for f in frames)
@@ -131,7 +140,7 @@ async def test_the_stream_carries_no_chat_frames_of_its_own() -> None:
     events = _events(hub, canvas=_Canvas(), changes=_ids("session-1"))
     await anext(events)
     await anext(events)
-    frame = _frame(await asyncio.wait_for(anext(events), 2))
+    frame = _frame(await asyncio.wait_for(anext(events), 2), dict[str, object])
     assert (frame["type"], frame["id"]) == ("changed", "session-1")
     await events.aclose()
 
@@ -180,13 +189,9 @@ async def test_keepalive_rechecks_the_partner_and_sends_the_canvas_when_it_chang
     chunk = await anext(events)
     while chunk == b": keepalive\n\n":
         chunk = await anext(events)
-    changed = _frame(chunk)
+    changed = _frame(chunk, _WorkspaceFrame)
     assert changed["type"] == "workspace"
-    partner = from_plain(
-        from_plain(changed["state"], dict[str, object])["partner"],
-        dict[str, object],
-    )
-    assert partner["status"] == "unavailable"
+    assert changed["state"]["partner"]["status"] == "unavailable"
     await events.aclose()
 
 
@@ -214,9 +219,15 @@ async def test_a_nudge_with_the_same_partner_sends_nothing() -> None:
     await anext(events)
     hub.nudge()
     hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/after"))
-    assert _frame(await asyncio.wait_for(anext(events), 2))["route"] == "#/after"
+    assert (
+        _frame(await asyncio.wait_for(anext(events), 2), dict[str, object])["route"]
+        == "#/after"
+    )
     hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/again"))
-    assert _frame(await asyncio.wait_for(anext(events), 2))["route"] == "#/again"
+    assert (
+        _frame(await asyncio.wait_for(anext(events), 2), dict[str, object])["route"]
+        == "#/again"
+    )
     assert canvas.reads >= 2
     await events.aclose()
 
@@ -228,8 +239,8 @@ async def test_changed_inquiry_ids_are_relayed_as_frames() -> None:
     events = _events(hub, canvas=_Canvas(), changes=_ids("a-1", "b-2"))
     await anext(events)
     await anext(events)
-    first = _frame(await asyncio.wait_for(anext(events), 2))
-    second = _frame(await asyncio.wait_for(anext(events), 2))
+    first = _frame(await asyncio.wait_for(anext(events), 2), dict[str, object])
+    second = _frame(await asyncio.wait_for(anext(events), 2), dict[str, object])
     assert (first["type"], first["id"]) == ("changed", "a-1")
     assert second["id"] == "b-2"
     assert isinstance(first["t"], int)
@@ -249,7 +260,10 @@ async def test_a_finished_change_source_does_not_end_the_stream() -> None:
     await anext(events)
     await anext(events)
     hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/still"))
-    assert _frame(await asyncio.wait_for(anext(events), 2))["route"] == "#/still"
+    assert (
+        _frame(await asyncio.wait_for(anext(events), 2), dict[str, object])["route"]
+        == "#/still"
+    )
     await events.aclose()
 
 
