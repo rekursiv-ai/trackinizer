@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "treekle",
+    "treekle>=0.1.0",
     # database
     "asyncpg>=0.31.0",
     "py-pglite[asyncpg,extensions]>=0.5.3",
