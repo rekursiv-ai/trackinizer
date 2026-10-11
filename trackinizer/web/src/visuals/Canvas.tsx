@@ -18,6 +18,7 @@ import { parseHash } from "../router/route";
 import { useBrowserState } from "../state/store";
 import type { TileMemory } from "../state/value";
 import { type CanvasSizes, heldWidth, MIN_COLUMN, MIN_FLOAT, readCanvasSizes, writeCanvasSizes } from "./canvasSizes";
+import { followColumns } from "./chatColumn";
 import { CLICK_SLOP, EDGES, finishGesture, moveGesture, rememberedTile, resizeRect, slideDivider, snapZone, startGesture, TEAR_SLOP, withTile, type Edge, type Gesture, type Rect, type Zone } from "./floatingTile";
 import { orderVisuals, SIDES } from "./layout";
 import { preloadRenderers, RENDERERS, VisualPane } from "./registry";
@@ -83,6 +84,10 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const panes = orderVisuals(visible, workspace?.focused_instance ?? null);
   /** Whether `pane` is drawn floating over the stage. */
   const floats = (pane: (typeof panes)[number]) => pane.placement === "floating";
+  // Three columns, the left, the page's and the right, take the room Chat stands in.
+  const threeColumns = SIDES.every(({ placement }) => panes.some((pane) => pane.placement === placement && !floats(pane)))
+    && panes.some((pane) => (pane.placement ?? "main") === "main");
+  useEffect(() => followColumns(threeColumns), [threeColumns]);
   /** Whether floating `pane` is folded to its bar, as it was left. */
   const folded = (pane: (typeof panes)[number]) => foldedTypes[pane.type] ?? rememberedTile(browser, pane.type).collapsed;
   const route = parseHash(window.location.hash, []);

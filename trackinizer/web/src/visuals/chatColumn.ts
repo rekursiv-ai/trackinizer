@@ -24,6 +24,9 @@ const listeners = new Set<() => void>();
  */
 let state: ChatColumnState = { side: readSide(), hidden: false, fullscreen: false };
 
+/** Chat is hidden because the workbench stood three columns: fewer give it back. */
+let hiddenByColumns = false;
+
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -58,7 +61,25 @@ export function flipChatSide(): void {
 
 /** Fold Chat to its strip, or show it again. A folded Chat is not full screen. */
 export function setChatHidden(hidden: boolean): void {
+  hiddenByColumns = false;
   change(hidden ? { hidden, fullscreen: false } : { hidden });
+}
+
+/**
+ * Follow the workbench's columns, told when they reach three or fall below it:
+ * three take the room Chat stands in, so Chat folds to its strip, and fewer show
+ * it again if the columns were what hid it. A hide or show by the user or the
+ * agent since stands, and a full screen Chat is not hidden.
+ */
+export function followColumns(three: boolean): void {
+  if (three) {
+    if (state.hidden || state.fullscreen) return;
+    change({ hidden: true });
+    hiddenByColumns = true;
+  } else if (hiddenByColumns) {
+    hiddenByColumns = false;
+    change({ hidden: false });
+  }
 }
 
 /** Hide Chat if shown, show it if hidden. */

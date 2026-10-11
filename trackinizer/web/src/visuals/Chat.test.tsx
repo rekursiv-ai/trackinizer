@@ -165,6 +165,16 @@ test("scout is the partner with no pairing, and Chat is ready to send", () => {
   expect(getChatHead).not.toHaveBeenCalled();
 });
 
+test("a button in the header hides Chat, where Pin stands while it is hidden", () => {
+  setChatHidden(false);
+  shell();
+  fireEvent.click(screen.getByRole("button", { name: "Hide Chat" }));
+  expect(currentChatColumn().hidden).toBe(true);
+  expect(screen.queryByRole("button", { name: "Hide Chat" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Pin Chat beside the page" })).toBeTruthy();
+  setChatHidden(false);
+});
+
 test("a button in the header moves Chat to the other side, and says which way", () => {
   setChatSide("left");
   shell();

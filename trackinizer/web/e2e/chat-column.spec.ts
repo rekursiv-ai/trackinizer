@@ -152,6 +152,41 @@ test("the shortcut hides Chat to a strip in the accent colour; the strip shows i
   await expect(column).toBeVisible();
 });
 
+test("the Hide button in Chat's header folds it to its strip, and Pin stands it beside the page again", async ({ page }) => {
+  const { column } = await open(page);
+  await column.getByRole("button", { name: "Hide Chat" }).click();
+  await expect(column).toBeHidden();
+  const strip = page.getByRole("button", { name: "Show Chat" });
+  await expect(strip).toBeVisible();
+  await strip.hover();
+  await column.getByRole("button", { name: "Pin Chat beside the page" }).click();
+  await expect(strip).toHaveCount(0);
+  await expect(column.getByRole("button", { name: "Hide Chat" })).toBeVisible();
+});
+
+test("a workbench of three columns hides Chat, and closing one gives it back", async ({ page, request }) => {
+  const issue = (await (await request.post("/api/inquiries/issue", {
+    data: { title: `Three columns ${crypto.randomUUID().slice(0, 8)}`, idempotency_key: crypto.randomUUID() },
+  })).json()) as { id: string };
+  let station = (await (await request.post("/api/workspaces")).json()) as { id: string; revision: number };
+  for (const [type, placement] of [["trax.timeline", "left"], ["trax.subgraph", "side"]] as const) {
+    const answer = await request.post(`/api/workspaces/${station.id}/operations`, {
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+      data: { revision: station.revision, operation: { kind: "show", visual_type: type, placement, record_id: issue.id } },
+    });
+    expect(answer.ok(), await answer.text()).toBe(true);
+    station = (await answer.json()) as typeof station;
+  }
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto(`/app/#/lookup/${issue.id}`);
+  const strip = page.getByRole("button", { name: "Show Chat" });
+  await expect(strip).toBeVisible();
+  await expect(page.locator(".chat-column")).toBeHidden();
+  await page.locator(".visual-side-column-left").getByTitle("Dismiss visual").click();
+  await expect(page.locator(".chat-column").getByRole("region", { name: "Chat" })).toBeVisible();
+  await expect(strip).toHaveCount(0);
+});
+
 test("Alt+Enter takes Chat over the whole main area, the workbench kept; Esc and Alt+Enter return it", async ({ page }) => {
   const { column, stage } = await open(page);
   const main = await box(page.locator("main.main"));

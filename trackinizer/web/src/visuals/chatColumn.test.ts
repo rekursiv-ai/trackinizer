@@ -63,3 +63,28 @@ test("a change to what the column already is leaves its state as it was, so no o
   column.setChatHidden(true);
   expect(column.currentChatColumn()).not.toBe(before);
 });
+
+test("three columns hide Chat and two show it again, unless someone hid it, or showed it, since", async () => {
+  const column = await fresh();
+  column.followColumns(true);
+  expect(column.currentChatColumn().hidden).toBe(true);
+  column.followColumns(false);
+  expect(column.currentChatColumn().hidden).toBe(false);
+  // Shown by hand while three columns stand, it stays until the columns change again.
+  column.followColumns(true);
+  column.setChatHidden(false);
+  column.followColumns(false);
+  expect(column.currentChatColumn().hidden).toBe(false);
+  // Hidden by hand, it stays hidden when a column goes.
+  column.setChatHidden(true);
+  column.followColumns(true);
+  column.followColumns(false);
+  expect(column.currentChatColumn().hidden).toBe(true);
+});
+
+test("a full screen Chat is not hidden by the workbench's columns", async () => {
+  const column = await fresh();
+  column.setChatFullscreen(true);
+  column.followColumns(true);
+  expect(column.currentChatColumn()).toMatchObject({ hidden: false, fullscreen: true });
+});

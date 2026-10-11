@@ -19,6 +19,7 @@ import { setStation } from "../stations/store";
 import { storageKey } from "../state/store";
 import { EMPTY_STATE, parseState } from "../state/value";
 import { Canvas } from "./Canvas";
+import { currentChatColumn, setChatHidden } from "./chatColumn";
 import { CLICK_SLOP, rememberedTile, SNAP_SIDE, SNAP_TOP, TEAR_SLOP, withTile } from "./floatingTile";
 
 vi.mock("../api/visuals", () => ({ getVisualCatalog: vi.fn() }));
@@ -343,6 +344,20 @@ async function mountNote() {
   await waitFor(() => expect(document.querySelector(NOTE_TILE)).not.toBeNull(), { interval: 1 });
   return { state, tile: document.querySelector<HTMLElement>(NOTE_TILE)! };
 }
+
+test("a workbench of three columns hides Chat, and gives it back when a column goes", async () => {
+  setChatHidden(false);
+  const { state } = await mountNote();
+  expect(currentChatColumn().hidden).toBe(false);
+  const three: WorkspaceState = { ...state, revision: 4, visuals: [...state.visuals,
+    { id: "left-note", type: "test.note", version: 1, placement: "left", record_id: null, params: {} }] };
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue(three);
+  fireEvent.click(within(document.querySelector<HTMLElement>(NOTE_TILE)!).getByRole("button", { name: "Dock Note at the left" }));
+  await waitFor(() => expect(currentChatColumn().hidden).toBe(true), { interval: 1 });
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...state, revision: 5 });
+  fireEvent.click(within(document.querySelector<HTMLElement>(".visual-side-column-left")!).getByTitle("Dismiss visual"));
+  await waitFor(() => expect(currentChatColumn().hidden).toBe(false), { interval: 1 });
+});
 
 test("a dock button moves a tile to that side of the page at once; the page itself has none", async () => {
   const { state, tile } = await mountNote();

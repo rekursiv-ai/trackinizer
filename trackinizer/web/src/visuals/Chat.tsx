@@ -6,6 +6,7 @@ import { type ChatFork, conversationOf, getChatHead, SCIENCE_CHAT_LABEL, sendCha
 import { getWorkspace } from "../api/workspaces";
 import type { WorkspacePartner, WorkspaceState } from "../api/workspaces";
 import { MetaContext, useProfile, useWriteMode } from "../app/boot";
+import { keyCaps } from "../commands/registry";
 import { Composer } from "../composer/Composer";
 import { detailQueries } from "../detail/queries";
 import { useLiveDetail } from "../live";
@@ -16,6 +17,7 @@ import { HelperCommands } from "../settings/ChatPartner";
 import { stationForChat } from "../api/stations";
 import { StationMenu } from "../stations/StationMenu";
 import { showStation } from "../stations/useStation";
+import { Icon } from "../ui/icons";
 import { type ChatPart, type Line, type LineAt, linesThrough, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
 import { chatRecordsKey, OPENING, readChatParts, useLiveChat } from "./chatRecords";
 import { useChatFeed } from "./chatFeed";
@@ -236,8 +238,13 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
         </div>
         <div className="chat-head-actions" role="toolbar" aria-label="Chat controls">
           {/* Hidden, Chat is open over the page by hovering its strip; pinning stands it beside the page again. */}
-          {hidden && <button className="btn ghost" type="button" title="Pin Chat beside the page"
-            aria-label="Pin Chat beside the page" onClick={() => setChatHidden(false)}>Pin</button>}
+          {hidden
+            ? <button className="btn ghost" type="button" title="Pin Chat beside the page"
+                aria-label="Pin Chat beside the page" onClick={() => setChatHidden(false)}>Pin</button>
+            : <button className="btn ghost" type="button" title={`Hide Chat (${keyCaps("$mod+\\").join(" ")})`}
+                aria-label="Hide Chat" onClick={() => setChatHidden(true)}>
+                <Icon name={side === "left" ? "panelLeftClose" : "panelRightClose"} size={14} />
+              </button>}
           <button className="btn ghost" type="button" title={`Move Chat to the ${side === "left" ? "right" : "left"}`}
             aria-label={`Move Chat to the ${side === "left" ? "right" : "left"}`} onClick={flipChatSide}>{side === "left" ? "▷" : "◁"}</button>
         </div>
