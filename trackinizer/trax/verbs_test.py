@@ -3604,6 +3604,7 @@ class _CanvasClient:
         self.operations: list[dict[str, object]] = []
         self.navigations: list[str] = []
         self.highlights: list[list[uuid.UUID]] = []
+        self.chat_windows: list[bool] = []
         self.reads: list[str] = []
         self.workspace = uuid.uuid4()
 
@@ -3643,6 +3644,16 @@ class _CanvasClient:
     ) -> dict[str, object]:
         del workspace_id
         self.highlights.append(list(ids))
+        return self._state(8, visuals=[])
+
+    def chat_window(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        hidden: bool,
+    ) -> dict[str, object]:
+        del workspace_id
+        self.chat_windows.append(hidden)
         return self._state(8, visuals=[])
 
     def _state(self, revision: int, *, visuals: list[object]) -> dict[str, object]:
@@ -3793,6 +3804,44 @@ def test_workspace_navigate_takes_exactly_one_route(arguments: list[str]) -> Non
         _workspace(client, *arguments)
 
     assert client.navigations == []
+
+
+def test_workspace_hide_or_show_chat_moves_the_window_without_an_operation() -> None:
+    client = _CanvasClient()
+
+    _workspace(client, "hide", "chat")
+    _workspace(client, "show", "chat")
+
+    assert client.chat_windows == [True, False]
+    assert client.operations == []
+    assert client.reads == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["hide", "chat", "--record", str(uuid.uuid4())],
+        ["show", "chat", "--placement", "main"],
+        ["show", "chat", "--param", "hops=2"],
+    ],
+)
+def test_workspace_chat_takes_no_other_argument(arguments: list[str]) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match="chat takes no other argument"):
+        _workspace(client, *arguments)
+
+    assert client.chat_windows == []
+    assert client.reads == []
+
+
+def test_workspace_chat_is_not_a_verb_of_its_own() -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(SystemExit):
+        _workspace(client, "chat", "hide")
+
+    assert client.chat_windows == []
 
 
 def test_workspace_highlight_sends_the_ids_without_an_operation() -> None:

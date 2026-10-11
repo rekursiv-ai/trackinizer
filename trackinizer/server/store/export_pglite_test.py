@@ -61,7 +61,6 @@ _LEFT_OUT: Final = frozenset(
         "visual_report_revisions",
         "visual_reports",
         "visual_workspace_operations",
-        "visual_workspace_presets",
         "visual_workspaces",
     },
 )

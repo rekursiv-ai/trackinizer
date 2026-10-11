@@ -12,18 +12,6 @@
       "record_kinds": []
     },
     {
-      "type": "trax.chat",
-      "version": 1,
-      "title": "Chat",
-      "description": "Talk with the assistant or a trax run session.",
-      "requires": [
-        "session"
-      ],
-      "default_size": "compact",
-      "parameter_schema": {},
-      "record_kinds": null
-    },
-    {
       "type": "trax.subgraph",
       "version": 1,
       "title": "Context graph",

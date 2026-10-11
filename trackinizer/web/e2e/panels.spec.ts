@@ -106,12 +106,19 @@ test("the app's sidebar: its button collapses it to a rail of its entries' icons
   const sidebar = page.getByRole("navigation", { name: "Sidebar" });
   const entries = sidebar.locator("a.nav-item");
   const names = (await entries.allTextContents()).map((name) => name.trim());
+  // It starts as a rail; pinned open, it is the wide sidebar the rail is measured against.
+  await sidebar.getByRole("button", { name: "Expand sidebar" }).click();
+  await page.mouse.move(600, 400);
   const wide = (await sidebar.boundingBox())!.width;
   const canvas = page.locator(".graph-canvas");
   const narrow = (await canvas.boundingBox())!.width;
   await sidebar.getByRole("button", { name: "Collapse sidebar" }).click();
   const expand = sidebar.getByRole("button", { name: "Expand sidebar" });
   await expect(expand).toBeFocused();
+  // The focus on the button holds an opened rail open, as the keyboard in it does; a reload leaves the bare rail.
+  await page.mouse.move(600, 400);
+  await page.reload();
+  await expect(entries.first()).toHaveAttribute("title", names[0]!);
   const rail = (await sidebar.boundingBox())!;
   expect(rail.width).toBeGreaterThanOrEqual(48);
   expect(rail.width).toBeLessThanOrEqual(56);
@@ -137,7 +144,11 @@ test("the app's sidebar: its button collapses it to a rail of its entries' icons
   await expect(me).toHaveAttribute("title", /@/);
   expect((await me.boundingBox())!.width).toBeLessThanOrEqual(rail.width);
   // The keyboard walks the rail top to bottom, each stop's focus showing.
-  const stops = [sidebar.getByRole("button", { name: "Search" }), sidebar.getByRole("button", { name: /^New / }), ...names.map((_, n) => entries.nth(n))];
+  const settings = names.indexOf("Your settings");
+  const workbench = (await sidebar.locator(".workbench-rail").isVisible()) ? [sidebar.locator(".workbench-rail")] : [];
+  const stops = [sidebar.getByRole("button", { name: "Search" }), sidebar.getByRole("button", { name: /^New / }),
+    ...names.slice(0, settings).map((_, n) => entries.nth(n)), ...workbench, ...names.slice(settings).map((_, n) => entries.nth(settings + n))];
+  await expand.focus();
   for (const stop of stops) {
     await page.keyboard.press("Tab");
     await expect(stop).toBeFocused();
@@ -193,7 +204,7 @@ for (const theme of ["dark", "light"] as const) {
     await page.goto("/app/#/console");
     await page.getByRole("button", { name: "Collapse views and filters" }).click();
     await expect(page.getByRole("complementary", { name: "Views and filters" })).toBeHidden();
-    await page.getByRole("button", { name: "Collapse sidebar" }).click();
+    // The sidebar starts as a rail.
     await expect(page.getByRole("navigation", { name: "Sidebar" }).getByRole("link", { name: "Console" })).toHaveAttribute("title", "Console");
     await audit(page, theme, "console, its rail and the sidebar collapsed");
   });

@@ -36,7 +36,6 @@ from trackinizer.server.server import (
     logger,
     main,
 )
-from trackinizer.server.visuals.catalog import Workspace
 
 
 if TYPE_CHECKING:
@@ -340,10 +339,9 @@ class TestPureFunctions:
         )
         fresh = FastAPI()
         monkeypatch.setattr(server, "app", fresh)
-        server._configure_app(flags)
-        catalog: object = getattr(fresh.state, "visual_catalog", None)
-        assert isinstance(catalog, Workspace)
-        assert catalog.default_visual == "trax.chat"
+        # Chat is no visual, so the override reaches the catalog and is refused there.
+        with pytest.raises(ValueError, match="Default visual must be registered"):
+            server._configure_app(flags)
 
     @pytest.mark.parametrize(
         ("argv", "message"),

@@ -9,12 +9,18 @@ export type ChatPart = { readonly part: number; readonly records: readonly Sessi
 /** Where a stored line is in its session: its part and its position in it. */
 export type LineAt = { readonly part: number; readonly idx: number };
 
-/** One line of the transcript: a person's, an answer, or one still being sent. */
+/**
+ * What starts a line the person's Console sent to agents directly, which the
+ * station's chat records as theirs: `→ lead-2, tiles-a:ops: text`.
+ */
+export const RELAY_MARK = "→ ";
+
+/** One line of the transcript: a person's, an answer, a relay of what they told agents, or one still being sent. */
 export type Line = {
   readonly key: string;
   /** The record the line is, which a fork starts from; null for a line not yet stored. */
   readonly at: LineAt | null;
-  readonly role: "user" | "assistant";
+  readonly role: "user" | "assistant" | "relay";
   /** The poster's attested email for a person's line; null for an answer. */
   readonly author: string | null;
   readonly text: string;
@@ -60,7 +66,10 @@ export function readTranscript(parts: readonly ChatPart[]): Transcript {
     for (const record of records) {
       const key = `${part}:${record.idx}`;
       const payload = record.payload ?? {};
-      if (record.kind === "AgentToAgentMessage") {
+      if (record.kind === "AgentToAgentMessage" && text(payload.content).startsWith(RELAY_MARK)) {
+        // News for the partner, not a question to it: no answer is owed, so the agent is no busier.
+        lines.push({ key, at: { part, idx: record.idx }, role: "relay", author: text(payload.sender) || null, text: text(payload.content), pending: false });
+      } else if (record.kind === "AgentToAgentMessage") {
         lines.push({ key, at: { part, idx: record.idx }, role: "user", author: text(payload.sender) || null, text: text(payload.content), pending: false });
         working = "";
         pointing = false;

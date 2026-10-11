@@ -7,7 +7,7 @@ from typing import Annotated
 
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from trackinizer.server.api._deps import get_assistant, get_hub, get_inbound
@@ -15,6 +15,7 @@ from trackinizer.server.api._routes_shared import engine_of, require_browser
 from trackinizer.server.api.visuals_routes import visual_catalog
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.chat_hub import (
+    ChatFrame,
     HighlightFrame,
     NavigateFrame,
     WorkspaceFrame,
@@ -24,18 +25,27 @@ from trackinizer.server.notify import iter_changed_ids
 from trackinizer.server.visuals.workspace_store import (
     ReplayConflictError,
     RevisionConflictError,
+    StationNameTakenError,
     WorkspaceKeyRefusedError,
     apply_workspace_operation,
-    create_default_workspace,
+    list_workspaces,
+    new_workspace,
+    open_latest_workspace,
     read_workspace,
+    rename_workspace,
+    set_workspace_page,
+    workspace_for_chat,
 )
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
+    ChatWindow,
     Highlight,
     Navigate,
-    ShowVisual,
+    RenameWorkspace,
+    SetPage,
     WorkspaceConflict,
     WorkspaceState,
+    WorkspaceSummary,
 )
 
 
@@ -52,9 +62,9 @@ async def workspace_events_route(
 
     Each frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:
     ``workspace`` carries the whole canvas on open, after every change by a
-    browser or an agent, and when its partner changes, with ``shown`` naming the
-    instance an agent's show brought up; ``navigate`` an agent's
-    move of the page; ``highlight`` the inquiries it points at; and ``changed`` an
+    browser or an agent, and when its partner changes; ``navigate`` an agent's
+    move of the page; ``highlight`` the inquiries it points at; ``chat`` whether it
+    hid (``hidden``) the tab's Chat window; and ``changed`` an
     inquiry id, as ``/api/web/subscribe`` relays it, so a tab needs this one stream.
     A Chat conversation is an AgentSession, so a line added to it reaches every
     viewer who reads the session's audience as the session's ``changed`` id; no frame
@@ -99,24 +109,171 @@ async def create_workspace_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> WorkspaceState:
-    """Create or reopen the principal's default visual workspace.
+    """Open the station the principal changed last, making the first if none.
 
     Args:
       request: Request carrying the database engine.
       identity: Authenticated browser account.
 
     Returns:
-      state: The principal's default workspace.
+      state: The principal's station changed last.
 
     """
     require_browser(identity)
-    return await create_default_workspace(
+    return await open_latest_workspace(
         engine_of(request),
         user_id=identity.user_id,
         catalog=visual_catalog(request).catalog(),
         inbound=get_inbound(request),
         assistant=get_assistant(request),
     )
+
+
+@router.get("/api/workspaces", response_model=list[WorkspaceSummary])
+async def list_workspaces_route(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> list[WorkspaceSummary]:
+    """List the principal's stations, the one changed last first.
+
+    Args:
+      request: Request carrying the database engine.
+      identity: Authenticated browser account.
+
+    Returns:
+      stations: Their ids, names, chats, pages and times.
+
+    """
+    require_browser(identity)
+    return await list_workspaces(engine_of(request), user_id=identity.user_id)
+
+
+@router.post("/api/workspaces/new", response_model=WorkspaceState)
+async def new_workspace_route(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> WorkspaceState:
+    """Make a station named with the lowest free ``unnamed-workstream#N``.
+
+    Args:
+      request: Request carrying the database engine.
+      identity: Authenticated browser account.
+
+    Returns:
+      state: The new station.
+
+    """
+    require_browser(identity)
+    return await new_workspace(
+        engine_of(request),
+        user_id=identity.user_id,
+        catalog=visual_catalog(request).catalog(),
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+    )
+
+
+@router.post(
+    "/api/workspaces/for-chat/{conversation_id}",
+    response_model=WorkspaceState,
+)
+async def workspace_for_chat_route(
+    conversation_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> WorkspaceState:
+    """Find the principal's station that holds a chat, or make one bound to it.
+
+    Args:
+      conversation_id: The science chat to continue.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account.
+
+    Returns:
+      state: The station that holds the chat.
+
+    """
+    require_browser(identity)
+    return await workspace_for_chat(
+        engine_of(request),
+        user_id=identity.user_id,
+        conversation_id=conversation_id,
+        catalog=visual_catalog(request).catalog(),
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+    )
+
+
+@router.patch(
+    "/api/workspaces/{workspace_id}",
+    response_model=WorkspaceState,
+    responses={409: {"description": "The principal has a station of that name."}},
+)
+async def rename_workspace_route(
+    workspace_id: uuid.UUID,
+    body: RenameWorkspace,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> WorkspaceState:
+    """Rename one of the principal's stations.
+
+    Args:
+      workspace_id: The station.
+      body: The new name, 1 to 120 characters once trimmed.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account, which must own the station.
+
+    Returns:
+      state: The renamed station.
+
+    """
+    require_browser(identity)
+    try:
+        state = await rename_workspace(
+            engine_of(request),
+            user_id=identity.user_id,
+            workspace_id=workspace_id,
+            name=body.name,
+            inbound=get_inbound(request),
+            assistant=get_assistant(request),
+        )
+    except StationNameTakenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if state is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return state
+
+
+@router.put("/api/workspaces/{workspace_id}/page", status_code=204)
+async def set_workspace_page_route(
+    workspace_id: uuid.UUID,
+    body: SetPage,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> Response:
+    """Remember the page a station is on, so switching back can restore it.
+
+    No revision changes and nothing is published.
+
+    Args:
+      workspace_id: The station.
+      body: The `#/...` page.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account, which must own the station.
+
+    Returns:
+      response: Empty.
+
+    """
+    require_browser(identity)
+    if not await set_workspace_page(
+        engine_of(request),
+        user_id=identity.user_id,
+        workspace_id=workspace_id,
+        route=body.route,
+    ):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return Response(status_code=204)
 
 
 @router.get("/api/workspaces/{workspace_id}", response_model=WorkspaceState)
@@ -166,9 +323,9 @@ async def workspace_operation_route(
 ) -> WorkspaceState | JSONResponse:
     """Apply one revisioned operation and return the updated canvas.
 
-    A ``navigate`` or ``highlight`` operation, which only an agent key may send,
-    changes neither a visual nor the revision: it pushes a ``navigate`` or
-    ``highlight`` frame. A replay of an applied key returns the original state and
+    A ``navigate``, ``highlight`` or ``chat`` operation, which only an agent key may
+    send, changes neither a visual nor the revision: it pushes a ``navigate``,
+    ``highlight`` or ``chat`` frame. A replay of an applied key returns the original state and
     publishes nothing.
 
     Args:
@@ -222,19 +379,10 @@ async def workspace_operation_route(
             hub.publish(workspace_id, frame=NavigateFrame(route=body.operation.route))
         elif isinstance(body.operation, Highlight):
             hub.publish(workspace_id, frame=HighlightFrame(ids=body.operation.ids))
+        elif isinstance(body.operation, ChatWindow):
+            hub.publish(workspace_id, frame=ChatFrame(hidden=body.operation.hidden))
         else:
-            # A show focuses what it shows. The browser moves Chat out of the way
-            # of an agent's show, and never of its owner's own.
-            shown = (
-                applied.state.focused_instance
-                if identity.api_key_id is not None
-                and isinstance(body.operation, ShowVisual)
-                else None
-            )
-            hub.publish(
-                workspace_id,
-                frame=WorkspaceFrame(state=applied.state, shown=shown),
-            )
+            hub.publish(workspace_id, frame=WorkspaceFrame(state=applied.state))
     return applied.state
 
 

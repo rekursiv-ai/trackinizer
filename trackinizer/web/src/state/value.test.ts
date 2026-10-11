@@ -99,7 +99,7 @@ describe("an import merges into this browser's state and deletes nothing", () =>
   });
 
   test("UI state is not imported: this browser's stays", () => {
-    const mine = state({ ui: { collapsed: ["browse"], lens: "lineage", tiles: { "trax.chat": { collapsed: true, place: null } } } });
+    const mine = state({ ui: { collapsed: ["browse"], lens: "lineage", tiles: { "trax.artifact": { collapsed: true, place: null } } } });
     const merged = mergeImport(mine, state({ ui: { collapsed: ["views"], lens: "details", tiles: {} } }));
     expect(merged.ui).toEqual(mine.ui);
   });
@@ -125,7 +125,7 @@ describe("parsing an export", () => {
       aliases: ["dan"],
       people: { bob: { name: "Bob", type: "person" } },
       read: { boundary: "2026-09-20T10:00:00+00:00", marks: ["c1"] },
-      ui: { collapsed: ["browse"], lens: "lineage", tiles: { "trax.chat": { collapsed: true, place: { left: 12, top: 40.5 } } } },
+      ui: { collapsed: ["browse"], lens: "lineage", tiles: { "trax.artifact": { collapsed: true, place: { left: 12, top: 40.5 } } } },
     });
     expect(parseState(JSON.parse(exportState(full)))).toEqual(full);
   });

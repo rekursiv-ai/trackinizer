@@ -15,6 +15,7 @@ function recorder(): { heard: unknown[][]; listener: WorkspaceEventListener } {
       workspace: (...args) => heard.push(["workspace", ...args]),
       navigate: (...args) => heard.push(["navigate", ...args]),
       highlight: (...args) => heard.push(["highlight", ...args]),
+      chat: (...args) => heard.push(["chat", ...args]),
       changed: (...args) => heard.push(["changed", ...args]),
       open: () => heard.push(["open"]),
       drop: () => heard.push(["drop"]),
@@ -33,19 +34,19 @@ test("the events stream opens on the workspace's route and passes on each kind o
   source.open();
   const frames = [
     { type: "workspace", state, t: 1 },
-    { type: "workspace", state, shown: "v", t: 3 },
-    { type: "workspace", state, shown: null, t: 4 },
+    { type: "workspace", state, t: 3 },
     { type: "navigate", route: "#/lookup/x", t: 2 },
     { type: "highlight", ids: ["a", "b"], t: 21 },
     { type: "highlight", ids: [], t: 22 },
+    { type: "chat", hidden: true, t: 8 },
+    { type: "chat", hidden: false, t: 9 },
     { type: "changed", id: "row", t: 7 },
   ];
   for (const frame of frames) source.send("", JSON.stringify(frame));
   expect(heard).toEqual([
-    // `shown` names the instance an agent's show brought up; a frame without one says null.
-    ["open"], ["workspace", state, 1, null], ["workspace", state, 3, "v"], ["workspace", state, 4, null],
+    ["open"], ["workspace", state, 1], ["workspace", state, 3],
     ["navigate", "#/lookup/x", 2], ["highlight", ["a", "b"], 21], ["highlight", [], 22],
-    ["changed", "row", 7],
+    ["chat", true, 8], ["chat", false, 9], ["changed", "row", 7],
   ]);
 });
 
@@ -58,7 +59,8 @@ test("a frame of another shape is logged and skipped, and the stream goes on", (
   const bad = ["not json", "null", { type: "workspace", state: {}, t: 1 }, { type: "workspace", state }, { type: "status", conversation_id: "c", text: "busy", t: 1 },
     { type: "message", conversation_id: "c", message: {}, t: 1 }, { type: "other", t: 1 }, { type: "navigate", t: 1 },
     { type: "delivered", conversation_id: "c", seq: 7, t: 1 }, { type: "deleted", conversation_id: "c", t: 1 }, { type: "changed", t: 1 },
-    { type: "highlight", t: 1 }, { type: "highlight", ids: "a", t: 1 }, { type: "highlight", ids: [1], t: 1 }];
+    { type: "highlight", t: 1 }, { type: "highlight", ids: "a", t: 1 }, { type: "highlight", ids: [1], t: 1 },
+    { type: "chat", t: 1 }, { type: "chat", hidden: "yes", t: 1 }, { type: "chat", hidden: 1, t: 1 }];
   for (const data of bad) source.send("", typeof data === "string" ? data : JSON.stringify(data));
   source.send("", JSON.stringify({ type: "changed", id: "row", t: 9 }));
   expect(heard).toEqual([["changed", "row", 9]]);

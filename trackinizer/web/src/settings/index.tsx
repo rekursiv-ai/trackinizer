@@ -8,6 +8,7 @@ import { dateTime, relativeTime, useMinuteClock } from "../detail/time";
 import { useOnline } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { ViewHeader } from "../ui/view";
+import { type ChatStyle, chooseChatStyle, useChatStyle } from "../chatStyle";
 import { chooseTheme, type ThemePreference, useTheme } from "../theme";
 import { KeyValue, ReadError, Section } from "./account";
 import { AliasesSection } from "./Aliases";
@@ -77,7 +78,7 @@ function VisualWorkspaceSection() {
         <label className="st-workspace-choice">
           <input type="checkbox" checked={enabled} disabled={!online || change.isPending}
             onChange={(event) => change.mutate(event.target.checked)} />
-          Enable agent-guided canvas
+          Enable agent-guided workbench
         </label>
         {change.isPending && <span className="w-status" role="status">Saving…</span>}
         {change.isError && <span className="form-err" role="alert">Could not save workspace preference.</span>}
@@ -95,6 +96,7 @@ function VisualWorkspaceSection() {
 
 function ThemeSection() {
   const { choice: theme } = useTheme();
+  const chatStyle = useChatStyle();
   return (
     <Section title="Appearance">
       <div className="st-row">
@@ -105,6 +107,16 @@ function ThemeSection() {
           <option value="dark">Dark</option>
           <option value="light">Light</option>
           <option value="system">System</option>
+        </select>
+      </div>
+      {/* This browser's, like the theme: how the Chat panel looks, not what it holds. */}
+      <div className="st-row">
+        <label htmlFor="appearance-chat-style">Chat style</label>
+        <select id="appearance-chat-style" className="st-theme" value={chatStyle} onChange={(event) => {
+          chooseChatStyle(event.target.value as ChatStyle);
+        }}>
+          <option value="default">Default</option>
+          <option value="terminal">Terminal</option>
         </select>
       </div>
     </Section>

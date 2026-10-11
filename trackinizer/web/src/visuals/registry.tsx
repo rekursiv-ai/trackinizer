@@ -14,7 +14,6 @@ export type RendererProps = {
 };
 type Renderer = { readonly version: number; readonly Component: ComponentType<RendererProps> };
 
-const Chat = lazyView(() => import("./Chat"), (module) => module.Chat);
 const ContextGraph = lazyView(() => import("./ContextGraph"), (module) => module.ContextGraph);
 const Timeline = lazyView(() => import("./Timeline"), (module) => module.Timeline);
 const Artifact = lazyView(() => import("./Artifact"), (module) => module.Artifact);
@@ -27,23 +26,12 @@ const Artifact = lazyView(() => import("./Artifact"), (module) => module.Artifac
  * stay out of the first load.
  */
 export function preloadRenderers(): void {
-  for (const view of [Chat, ContextGraph, Timeline, Artifact, DetailView]) void view.preload().catch(() => {});
-}
-
-/**
- * Load the renderer a new canvas shows first, Chat. The shell awaits it with the
- * canvas's own chunk, so the canvas's first render holds no lazy renderer that
- * suspends: a suspended one shows its fallback for React's 300 ms throttle, which
- * made a cold first load of a page 250 to 300 ms slower inside the canvas.
- */
-export function preloadFirstRenderers(): Promise<void> {
-  return Chat.preload().catch(() => {});
+  for (const view of [ContextGraph, Timeline, Artifact, DetailView]) void view.preload().catch(() => {});
 }
 
 /** Frontend counterparts of the backend's inert visual descriptions. */
 export const RENDERERS: Readonly<Record<string, Renderer>> = {
   "trax.browse": { version: rendererVersions["trax.browse"], Component: ({ children }) => <>{children}</> },
-  "trax.chat": { version: rendererVersions["trax.chat"], Component: Chat },
   "trax.subgraph": { version: rendererVersions["trax.subgraph"], Component: ContextGraph },
   "trax.timeline": { version: rendererVersions["trax.timeline"], Component: Timeline },
   "trax.artifact": { version: rendererVersions["trax.artifact"], Component: Artifact },

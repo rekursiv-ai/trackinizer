@@ -44,6 +44,8 @@ _USER_KEY: Final = uuid.UUID("44444444-4444-4444-4444-444444444441")
 _OTHER_KEY: Final = uuid.UUID("44444444-4444-4444-4444-444444444442")
 _KB_KEY: Final = uuid.UUID("44444444-4444-4444-4444-444444444443")
 _WORKSPACE: Final = uuid.UUID("55555555-5555-5555-5555-555555555555")
+_CHAT: Final = uuid.UUID("66666666-6666-6666-6666-666666666666")
+_OTHER_CHAT: Final = uuid.UUID("66666666-6666-6666-6666-666666666667")
 _HELPER: Final = CHAT_HELPER_CLI
 
 
@@ -99,7 +101,8 @@ async def _seed(engine: PGliteEngine) -> Store:
                 f"trax_{key.hex[-4:]}",
             )
         await conn.execute(
-            "INSERT INTO visual_workspaces (id, user_id, state) VALUES ($1, $2, $3)",
+            "INSERT INTO visual_workspaces (id, user_id, station, state) "
+            'VALUES ($1, $2, \'{"name": "unnamed-workstream#1"}\', $3)',
             _WORKSPACE,
             _USER,
             {"visuals": []},
@@ -216,7 +219,14 @@ async def test_attach_names_the_assistant_and_the_partner(
 ) -> None:
     """A canvas state carries both, computed, for every reader."""
     await _seed(pglite_engine)
-    state = WorkspaceState(id=_WORKSPACE, revision=0, visuals=[])
+    state = WorkspaceState(
+        id=_WORKSPACE,
+        revision=0,
+        name="unnamed-workstream#1",
+        conversation_id=None,
+        page=None,
+        visuals=[],
+    )
     async with pglite_engine.acquire() as conn:
         with_assistant = await attach_partner(
             conn,
@@ -283,6 +293,9 @@ async def test_the_local_partner_is_the_owners_newest_live_polled_helper(
         state = WorkspaceState(
             id=_WORKSPACE,
             revision=0,
+            name="unnamed-workstream#1",
+            conversation_id=None,
+            page=None,
             visuals=[],
             partner_choice="local",
         )
@@ -357,6 +370,7 @@ async def test_the_owners_own_key_may_use_a_canvas_with_its_local_helper(
             conn,
             owner_id=_USER,
             partner=partner,
+            conversation_id=_CHAT,
             api_key_id=_USER_KEY,
         )
         _ = await _session(
@@ -365,19 +379,21 @@ async def test_the_owners_own_key_may_use_a_canvas_with_its_local_helper(
             owner="chat-1",
             seq=2,
             cli=_HELPER,
-            cli_session_id=chat_session_id(uuid.uuid4()),
+            cli_session_id=chat_session_id(_CHAT),
             labels=[SCIENCE_CHAT_LABEL],
         )
         assert await assistant_key_may_use(
             conn,
             owner_id=_USER,
             partner=partner,
+            conversation_id=_CHAT,
             api_key_id=_USER_KEY,
         )
         assert not await assistant_key_may_use(
             conn,
             owner_id=_USER,
             partner=partner,
+            conversation_id=_CHAT,
             api_key_id=_OTHER_KEY,
         )
 
@@ -404,6 +420,7 @@ async def test_an_assistant_key_needs_a_live_science_chat_the_owner_is_in(
                 conn,
                 owner_id=owner,
                 partner=partner,
+                conversation_id=_CHAT,
                 api_key_id=key,
             )
 
@@ -413,7 +430,7 @@ async def test_an_assistant_key_needs_a_live_science_chat_the_owner_is_in(
             key=_KB_KEY,
             owner="chat-1",
             seq=2,
-            cli_session_id=chat_session_id(uuid.uuid4()),
+            cli_session_id=chat_session_id(_CHAT),
             labels=[SCIENCE_CHAT_LABEL],
         )
         # The starter is the chat's account; nobody else is in it yet.
@@ -430,6 +447,7 @@ async def test_an_assistant_key_needs_a_live_science_chat_the_owner_is_in(
             conn,
             owner_id=_USER,
             partner=None,
+            conversation_id=_CHAT,
             api_key_id=_KB_KEY,
         )
         await conn.execute(
@@ -439,6 +457,45 @@ async def test_an_assistant_key_needs_a_live_science_chat_the_owner_is_in(
         )
         assert not await may(_USER)
         assert not await may(_OTHER)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_station_takes_the_key_only_of_the_chat_it_holds(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """No chat, or another conversation's chat, gives a key nothing of the station."""
+    await _seed(pglite_engine)
+    async with pglite_engine.acquire() as conn:
+        service = await _session(conn, key=_KB_KEY, owner="scout", seq=1)
+        _ = await _session(
+            conn,
+            key=_KB_KEY,
+            owner="chat-1",
+            seq=2,
+            cli_session_id=chat_session_id(_CHAT),
+            labels=[SCIENCE_CHAT_LABEL],
+        )
+        partner = await resolve_partner(
+            conn,
+            inbound=_polled(service),
+            assistant=_KB,
+            choice="shared",
+            owner_id=_USER,
+        )
+
+        async def may(conversation_id: uuid.UUID | None) -> bool:
+            return await assistant_key_may_use(
+                conn,
+                owner_id=_USER,
+                partner=partner,
+                conversation_id=conversation_id,
+                api_key_id=_KB_KEY,
+            )
+
+        assert await may(_CHAT)
+        assert not await may(None)
+        assert not await may(_OTHER_CHAT)
 
 
 @pytest.mark.db_pglite
@@ -455,7 +512,7 @@ async def test_a_chat_that_is_not_science_gives_the_assistant_no_canvas(
             key=_KB_KEY,
             owner="chat-1",
             seq=2,
-            cli_session_id=chat_session_id(uuid.uuid4()),
+            cli_session_id=chat_session_id(_CHAT),
         )
         partner = await resolve_partner(
             conn,
@@ -468,6 +525,7 @@ async def test_a_chat_that_is_not_science_gives_the_assistant_no_canvas(
             conn,
             owner_id=_USER,
             partner=partner,
+            conversation_id=_CHAT,
             api_key_id=_KB_KEY,
         )
 

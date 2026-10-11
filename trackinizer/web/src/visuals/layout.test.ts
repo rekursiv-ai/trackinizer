@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatHome, orderVisuals } from "./layout";
+import { orderVisuals } from "./layout";
 
 describe("canvas placement", () => {
   const visuals = [
@@ -18,10 +18,5 @@ describe("canvas placement", () => {
     expect(orderVisuals(withTwoFloats, "float").map((visual) => visual.id)).toEqual([
       "main", "left", "side", "float2", "float",
     ]);
-  });
-
-  it("docks Chat where it was placed, main strip or either side; a stored floating reads as the right", () => {
-    expect([chatHome("main"), chatHome("left"), chatHome("side"), chatHome("floating"), chatHome(undefined)])
-      .toEqual(["main", "left", "side", "side", "side"]);
   });
 });

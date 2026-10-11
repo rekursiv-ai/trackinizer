@@ -1,24 +1,27 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type KeyboardEvent, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import { newUuid } from "../api/idempotency";
-import { type ChatFork, conversationOf, getChatHead, listChats, SCIENCE_CHAT_LABEL, sendChatLine } from "../api/chats";
-import type { WorkspacePartner } from "../api/workspaces";
+import { type ChatFork, conversationOf, getChatHead, SCIENCE_CHAT_LABEL, sendChatLine } from "../api/chats";
+import { getWorkspace } from "../api/workspaces";
+import type { WorkspacePartner, WorkspaceState } from "../api/workspaces";
 import { MetaContext, useProfile, useWriteMode } from "../app/boot";
 import { Composer } from "../composer/Composer";
 import { detailQueries } from "../detail/queries";
-import { relativeTime, useMinuteClock } from "../detail/time";
 import { useLiveDetail } from "../live";
 import { Markdown } from "../markdown/Markdown";
-import { formatRoute, parseHash } from "../router/route";
+import { parseHash } from "../router/route";
 import { useHash, validHash, visited } from "../router/trail";
 import { HelperCommands } from "../settings/ChatPartner";
+import { stationForChat } from "../api/stations";
+import { StationMenu } from "../stations/StationMenu";
+import { showStation } from "../stations/useStation";
 import { type ChatPart, type Line, type LineAt, linesThrough, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
 import { chatRecordsKey, OPENING, readChatParts, useLiveChat } from "./chatRecords";
 import { useChatFeed } from "./chatFeed";
+import { flipChatSide, setChatHidden, useChatColumn } from "./chatColumn";
 import { useAnswerHighlights } from "./chatHighlights";
-import type { RendererProps } from "./registry";
-import { useWorkspaceActions } from "./workspaceActions";
+import { ChatPrompt } from "./ChatPrompt";
 
 /** The most characters one message may have, as the server holds it. */
 const MAX_TEXT = 16_384;
@@ -33,7 +36,7 @@ const QUOTED = 80;
 export const PUBLIC_NOTICE = "Chats are public to every user and cannot be deleted. Do not type secrets here.";
 
 /**
- * Talk with the canvas's partner in a science chat: a session the assistant
+ * Talk with the workspace's partner in a science chat: a session the assistant
  * opens, shared with everyone signed in like a Slack thread. Its lines are the
  * session's records (read as the Console reads them, and kept current by the
  * canvas stream's changed ids); a line posted here shows at once, pending, until
@@ -46,16 +49,17 @@ export const PUBLIC_NOTICE = "Chats are public to every user and cannot be delet
  * line, and they land in it. "Fork from here" on any stored line does the same
  * from that line, in any chat; the next message sent starts the fork.
  */
-export function Chat({ instance, workspace }: RendererProps) {
+export function Chat({ workspace }: { readonly workspace: WorkspaceState | null }) {
   const queryClient = useQueryClient();
   const kinds = useContext(MetaContext)?.kinds ?? [];
   const { email: me } = useProfile();
   const writing = useWriteMode() === "enabled";
   const { feed, state } = useChatFeed();
+  const { side, hidden } = useChatColumn();
   const workspaceId = workspace?.id ?? null;
   const partner = workspace?.partner ?? null;
-  const conversationId = feed.openId(workspaceId);
-  const [menu, setMenu] = useState<"history" | null>(null);
+  // The station's chat: bound by its first line, and the same however Chat is mounted again.
+  const conversationId = workspace?.conversation_id ?? null;
   const [pending, setPending] = useState<readonly PendingLine[]>([]);
   const [sending, setSending] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
@@ -63,10 +67,6 @@ export function Chat({ instance, workspace }: RendererProps) {
   const [forkAt, setForkAt] = useState<(LineAt & { readonly quote: string }) | null>(null);
   // When the last line was sent into the open conversation, while its session may still be on its way.
   const [sentAt, setSentAt] = useState<number | null>(null);
-  // Moves when the user picks another conversation; a receipt that comes back
-  // after it no longer decides which one is open.
-  const epoch = useRef(0);
-  const [epochState, setEpochState] = useState(0);
 
   // The conversation's session: absent until the assistant has opened it.
   const head = useQuery({
@@ -124,28 +124,36 @@ export function Chat({ instance, workspace }: RendererProps) {
     if (element && stuck.current) element.scrollTop = element.scrollHeight;
   }, [lines.length, statusText, conversationId, notice]);
 
-  const chatInstanceId = workspace?.visuals.some((visual) => visual.id === instance.id && visual.type === "trax.chat")
-    ? instance.id : null;
-  const expectedRecordId = instance.record_id ?? null;
   // The target names where a draft goes, so a retry under one key only ever
-  // repeats a send to the same place. `epochState` moves when the user picks
-  // another conversation, not when a first line gives a new one its id.
-  const target = JSON.stringify([workspaceId, partner?.session_id ?? null, chatInstanceId, expectedRecordId, epochState, fork]);
+  // repeats a send to the same place.
+  const target = JSON.stringify([workspaceId, partner?.session_id ?? null, fork]);
   const live = !!workspace && partner?.status === "live" && writing;
   // Whose chat this is, and so whether typing joins it or forks it, is known once its head has been read.
   const reading = conversationId !== null && head.isPending;
   const hash = useHash();
   const screen = parseHash(hash, kinds);
 
-  function startConversation(id: string | null) {
-    if (workspaceId) feed.setOpen(workspaceId, id);
-    epoch.current += 1;
-    setEpochState(epoch.current);
-    setMenu(null);
+  // Another station is another conversation: what belonged to this one's pass with it. A
+  // fork's own station keeps the wait for its session, which its first line began.
+  const forkLanding = useRef<string | null>(null);
+  const shownStation = useRef(workspaceId);
+  useEffect(() => {
+    if (shownStation.current === workspaceId) return;
+    shownStation.current = workspaceId;
     setNotice(null);
     setForkAt(null);
-    setSentAt(null);
+    setSentAt(forkLanding.current === workspaceId ? Date.now() : null);
+    forkLanding.current = null;
     stuck.current = true;
+  }, [workspaceId]);
+
+  /** Switch to the user's station that holds `conversation`, which the server makes if there is none. */
+  async function openConversation(conversation: string) {
+    try {
+      showStation(queryClient, await stationForChat(conversation));
+    } catch {
+      if (mounted.current) setNotice("Could not open that chat.");
+    }
   }
 
   // A request from the Console or a session's page: open that science chat here. Taking it
@@ -163,10 +171,10 @@ export function Chat({ instance, workspace }: RendererProps) {
       if (!mounted.current) return;
       const conversation = conversationOf(typeof detail.self.cli_session_id === "string" ? detail.self.cli_session_id : null);
       const labels = Array.isArray(detail.self.labels) ? detail.self.labels : [];
-      if (conversation && labels.includes(SCIENCE_CHAT_LABEL)) startConversation(conversation);
+      if (conversation && labels.includes(SCIENCE_CHAT_LABEL)) void openConversation(conversation);
       else setNotice("That session is not a science chat.");
     }, () => mounted.current && setNotice("Could not open that chat."));
-    // `startConversation` is the same function every render, but for what it closes over.
+    // `openConversation` is the same function every render, but for what it closes over.
   }, [state.request, workspaceId]);
 
   /** The server refuses a post into a chat started outside my organisation; what I typed then forks it at its latest line. */
@@ -183,21 +191,25 @@ export function Chat({ instance, workspace }: RendererProps) {
     // A fork is a new conversation, which the key names; it opens with my own lines up to the fork point.
     const forkOf: ChatFork | null = session && after ? { sessionId: session, part: after.part, idx: after.idx } : null;
     const sentTo = forkOf ? key : conversationId;
-    const sentEpoch = epoch.current;
     const baseline = sentBefore(after && forkOf ? linesThrough(lines, after) : lines, { me });
     setPending((held) => [...held.filter((line) => line.key !== key), { key, text, conversationId: sentTo, baseline }]);
     setSending((held) => new Set(held).add(key));
     try {
       const { page, trail } = whereFrom(location.hash);
-      const sent = await sendChatLine({ workspaceId: workspace!.id, text, chatInstanceId, expectedRecordId, conversationId: forkOf ? null : sentTo,
+      const sent = await sendChatLine({ workspaceId: workspace!.id, text, conversationId: forkOf ? null : sentTo,
         ...(forkOf && { fork: forkOf }), page, trail }, key);
       setPending((held) => held.map((line) => (line.key === key ? { ...line, conversationId: sent.conversation_id } : line)));
-      if (epoch.current === sentEpoch) {
-        feed.setOpen(workspace!.id, sent.conversation_id);
+      if (sent.workspace_id === workspace!.id) {
+        // The first line binds the conversation to the station; the station's state says so from here.
+        queryClient.setQueryData<WorkspaceState>(["workspace", sent.workspace_id], (held) => held && { ...held, conversation_id: sent.conversation_id });
         setForkAt(null);
         setSentAt(Date.now());
+      } else {
+        // A fork is a station of its own, which this tab now shows, on the page it is on.
+        forkLanding.current = sent.workspace_id;
+        showStation(queryClient, await getWorkspace(sent.workspace_id), window.location.hash);
       }
-      void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["stations"] });
       void queryClient.invalidateQueries({ queryKey: ["chat", "head", sent.conversation_id] });
       return "";
     } catch (error) {
@@ -212,16 +224,10 @@ export function Chat({ instance, workspace }: RendererProps) {
     }
   }
 
-  const closeOnEscape = (event: KeyboardEvent) => {
-    if (event.key === "Escape" && menu) {
-      event.stopPropagation();
-      setMenu(null);
-    }
-  };
-
   return (
-    <section className="chat-panel" aria-label="Chat" onKeyDown={closeOnEscape}>
+    <section className="chat-panel" aria-label="Chat">
       <header className="chat-head">
+        {workspace && <StationMenu station={workspace} />}
         <div className="chat-partner" role="group" aria-label="Chat partner">
           {partner && <>
             <strong>{partnerName(partner)}</strong>
@@ -229,17 +235,15 @@ export function Chat({ instance, workspace }: RendererProps) {
           </>}
         </div>
         <div className="chat-head-actions" role="toolbar" aria-label="Chat controls">
-          <button className="btn ghost" type="button" aria-haspopup="menu" aria-expanded={menu === "history"}
-            disabled={!workspace} onClick={() => setMenu(menu === "history" ? null : "history")}>History</button>
-          {/* A new chat, the old one kept in History: a conversation is the partner's memory, resumed by opening it. */}
-          <button className="btn ghost" type="button" disabled={!workspace || (conversationId === null && lines.length === 0)}
-            onClick={() => startConversation(null)}>Clear chat</button>
+          {/* Hidden, Chat is open over the page by hovering its strip; pinning stands it beside the page again. */}
+          {hidden && <button className="btn ghost" type="button" title="Pin Chat beside the page"
+            aria-label="Pin Chat beside the page" onClick={() => setChatHidden(false)}>Pin</button>}
+          <button className="btn ghost" type="button" title={`Move Chat to the ${side === "left" ? "right" : "left"}`}
+            aria-label={`Move Chat to the ${side === "left" ? "right" : "left"}`} onClick={flipChatSide}>{side === "left" ? "▷" : "◁"}</button>
         </div>
       </header>
-      {menu === "history" && <History current={conversationId} onOpen={startConversation} />}
-      {instance.record_id && <ChatRecordContext recordId={instance.record_id} />}
-      {!instance.record_id && screen.name === "lookup" && <ChatScreenContext id={screen.id} label={screen.id} />}
-      {!instance.record_id && screen.name === "ref" && <ChatScreenRef kind={screen.kind} seq={screen.seq} />}
+      {screen.name === "lookup" && <ChatScreenContext id={screen.id} label={screen.id} />}
+      {screen.name === "ref" && <ChatScreenRef kind={screen.kind} seq={screen.seq} />}
       <div className="chat-lines" ref={stage} role="log" aria-label="Messages" aria-live="polite"
         onScroll={(event) => {
           const element = event.currentTarget;
@@ -257,11 +261,11 @@ export function Chat({ instance, workspace }: RendererProps) {
           Say something to {partner?.actor ?? "your partner"}.</p>}
         {head.data && head.data.account !== me && <p className="chat-note">Started by {head.data.account}.</p>}
         {head.data?.forked_from && <p className="chat-note">Forked from{" "}
-          <button className="btn ghost" type="button" onClick={() => startConversation(head.data!.forked_from!)}>another chat</button>.</p>}
+          <button className="btn ghost" type="button" onClick={() => void openConversation(head.data!.forked_from!)}>another chat</button>.</p>}
         {head.data && head.data.forks > 0 && <p className="chat-note">{forkedTimes(head.data.forks)}</p>}
         {forks && <p className="chat-note" role="status">This chat was started outside your organisation, so what you type
           starts a fork of your own from its latest line.</p>}
-        {lines.map((line) => <ChatLine key={line.key} line={line} me={me} kinds={kinds} onFork={live && head.data ? pickFork : undefined} />)}
+        {lines.map((line) => <ChatLine key={line.key} line={line} me={me} station={workspace?.name ?? ""} kinds={kinds} onFork={live && head.data ? pickFork : undefined} />)}
         {/* One working line, the last tool call's name, in place of a status the partner no longer sends. */}
         {statusText && <p className="chat-status" role="status">{statusText}</p>}
         {workspace && writing && !live && !loading && <ChatOff local={workspace.partner_choice === "local"} />}
@@ -272,7 +276,7 @@ export function Chat({ instance, workspace }: RendererProps) {
       </p>}
       <p className="chat-notice">{PUBLIC_NOTICE}</p>
       <Composer send={send} target={target} enabled={live && !reading} editable
-        placeholder={reading ? "Loading the conversation…" : live ? `Message ${partner?.actor ?? "your partner"}…` : readOnly(partner?.status, writing)}
+        placeholder={reading ? "Loading the conversation…" : live ? `Ask ${partner?.actor ?? "your partner"}…` : readOnly(partner?.status, writing)}
         check={checkText} retryable={resendable}
         failure={(error) => error instanceof ApiError && error.status >= 400 && error.status < 500 && error.detail
           ? error.detail : "Could not send this message. Retry to send the same draft safely."} />
@@ -332,20 +336,27 @@ function ChatOff({ local }: { readonly local: boolean }) {
  * so the panel's renders (a status, the canvas around it) leave each line's
  * Markdown alone unless its text changed. A line by someone else says who.
  */
-const ChatLine = memo(function ChatLine({ line, me, kinds, onFork }: {
+const ChatLine = memo(function ChatLine({ line, me, station, kinds, onFork }: {
   readonly line: Line;
   readonly me: string;
+  /** The station's name, which the Terminal style's prompt shows. */
+  readonly station: string;
   readonly kinds: readonly string[];
   /** Pick this stored line as where a fork starts; absent where a fork cannot be started. */
   readonly onFork?: (at: LineAt, quote: string) => void;
 }) {
   const other = line.role === "user" && line.author !== null && line.author !== me;
   const at = line.at;
+  if (line.role === "relay") {
+    // What the person told agents from the Console: "you → lead-2: text", neither a message to the partner nor an answer.
+    const who = line.author === null || line.author === me ? "you" : line.author.split("@")[0];
+    return <article className="chat-line chat-line-relay"><p className="chat-line-body">{who} {line.text}</p></article>;
+  }
   return <article className={`chat-line chat-line-${line.role}${other ? " chat-line-other" : ""}${line.pending ? " chat-line-pending" : ""}`}>
     {other && <span className="chat-line-author">{line.author}</span>}
     {line.role === "assistant"
       ? <Markdown source={line.text} kinds={kinds} className="md chat-line-body" images={false} />
-      : <p className="chat-line-body">{line.text}</p>}
+      : <p className="chat-line-body"><ChatPrompt author={line.author ?? me} station={station} />{line.text}</p>}
     {onFork && at && <button className="btn ghost chat-line-fork" type="button" onClick={() => onFork(at, quoted(line.text))}>Fork from here</button>}
   </article>;
 });
@@ -360,50 +371,13 @@ function forkedTimes(count: number): string {
   return count === 1 ? "Forked once." : `Forked ${count} times.`;
 }
 
-function History({ current, onOpen }: { readonly current: string | null; readonly onOpen: (id: string) => void }) {
-  const now = useMinuteClock();
-  const chats = useQuery({
-    queryKey: ["chats"],
-    queryFn: ({ signal }) => listChats({ signal }),
-  });
-  return <div className="chat-menu" role="menu" aria-label="History">
-    {chats.isPending && <p className="chat-note">Loading history…</p>}
-    {chats.isError && <p role="alert" className="chat-error">Could not load history.{" "}
-      <button className="btn ghost" type="button" onClick={() => void chats.refetch()}>Retry</button></p>}
-    {chats.isSuccess && chats.data.length === 0 && <p className="chat-note">No conversations yet.</p>}
-    {chats.data?.map((chat) => <button key={chat.conversation_id} className="chat-menu-option" type="button" role="menuitemradio"
-      aria-checked={chat.conversation_id === current} onClick={() => onOpen(chat.conversation_id)}>
-      <strong>{chat.title}</strong>
-      <span>{relativeTime(chat.modified, now)} · {chat.account}</span>
-    </button>)}
-  </div>;
-}
-
-/** The record this Chat is about, a link that only moves the page, and the way back to plain Chat. */
-function ChatRecordContext({ recordId }: { readonly recordId: string }) {
-  const actions = useWorkspaceActions();
-  const record = useQuery(detailQueries.detail(recordId));
-  useLiveDetail(recordId);
-  return (
-    <p className="chat-record-context" aria-label="Record context">
-      Context: <a href={formatRoute({ name: "lookup", id: recordId })}>
-        {record.data ? `${record.data.self.kind}#${record.data.self.seq} ${record.data.self.title}` : recordId}
-      </a>
-      <button className="btn ghost" type="button" disabled={!actions || actions.busy}
-        onClick={() => actions?.operate({ kind: "show", visual_type: "trax.chat", record_id: null })}>
-        Clear context
-      </button>
-    </p>
-  );
-}
-
 /** The record the page names by `Kind#seq`, once its id is found. */
 function ChatScreenRef({ kind, seq }: { readonly kind: string; readonly seq: number }) {
   const id = useQuery(detailQueries.ref(kind, seq));
   return <ChatScreenContext id={id.data ?? null} label={`${kind}#${seq}`} />;
 }
 
-/** What is on screen when Chat is pinned to no record: the record the page shows, as it changes. */
+/** What is on screen: the record the page shows, as it changes. */
 function ChatScreenContext({ id, label }: { readonly id: string | null; readonly label: string }) {
   return (
     <p className="chat-record-context" aria-label="Screen context">

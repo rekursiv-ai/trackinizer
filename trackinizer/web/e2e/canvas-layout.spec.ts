@@ -3,8 +3,8 @@ import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
-// The canvas lays Chat and the other visuals out without sideways scroll at
-// 1280 x 800, and usably at 390 px (a phone).
+// The canvas, with Chat as a column beside it, lays the other visuals out
+// without sideways scroll at 1280 x 800, and usably at 390 px (a phone).
 
 test.use({ canvas: true });
 
@@ -56,22 +56,19 @@ async function overflow(page: Page): Promise<string[]> {
     const wide = (element: Element, name: string) => (element.scrollWidth > element.clientWidth + 1 ? [`${name} ${element.scrollWidth}>${element.clientWidth}`] : []);
     return [
       ...wide(document.documentElement, "page"),
-      ...[...document.querySelectorAll(".visual-stage")].flatMap((element) => wide(element, "stage")),
+      ...[...document.querySelectorAll(".visual-stage, .chat-column")].flatMap((element) => wide(element, element.className.split(" ")[0]!)),
       ...[...document.querySelectorAll(".visual-tile")].flatMap((element) => wide(element, `tile ${element.querySelector(".visual-tile-toolbar span")?.textContent ?? "page"}`)),
     ];
   });
 }
 
 const CASES: { name: string; operations: (issue: string, artifact: string) => Operation[] }[] = [
-  { name: "chat-side", operations: () => [{ kind: "show", visual_type: "trax.chat", placement: "side" }] },
-  { name: "chat-side-timeline-main", operations: (issue) => [
-    { kind: "show", visual_type: "trax.chat", placement: "side" },
+  { name: "page-alone", operations: () => [] },
+  { name: "timeline-main", operations: (issue) => [
     { kind: "show", visual_type: "trax.timeline", placement: "main", record_id: issue }] },
-  { name: "chat-side-subgraph-side", operations: (issue) => [
-    { kind: "show", visual_type: "trax.chat", placement: "side" },
+  { name: "subgraph-side", operations: (issue) => [
     { kind: "show", visual_type: "trax.subgraph", placement: "side", record_id: issue }] },
-  { name: "chat-main-subgraph-main", operations: (issue) => [
-    { kind: "show", visual_type: "trax.chat", placement: "main" },
+  { name: "subgraph-main", operations: (issue) => [
     { kind: "show", visual_type: "trax.subgraph", placement: "main", record_id: issue }] },
 ];
 
@@ -102,7 +99,7 @@ for (const { name, operations } of CASES) {
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
     expect(bounds.y + bounds.height).toBeLessThanOrEqual(844);
     // Chat and the page, the two a phone mostly shows, fit the screen together: the send button is on it too.
-    if (name === "chat-side") {
+    if (name === "page-alone") {
       const send = (await page.getByRole("button", { name: "Send message" }).boundingBox())!;
       expect(send.y + send.height).toBeLessThanOrEqual(844);
     }
@@ -111,14 +108,13 @@ for (const { name, operations } of CASES) {
 }
 
 const FIVE = (issue: string, artifact: string): Operation[] => [
-  { kind: "show", visual_type: "trax.chat", placement: "side" },
   { kind: "show", visual_type: "trax.timeline", placement: "main", record_id: issue },
   { kind: "show", visual_type: "trax.artifact", placement: "main", record_id: artifact },
   { kind: "show", visual_type: "trax.subgraph", placement: "side", record_id: issue },
 ];
 
 for (const screen of [{ width: 1280, height: 800 }, { width: 1440, height: 900 }]) {
-  test(`at ${screen.width} px the page with four visuals has no sideways scroll, and Chat's controls are all reachable`, async ({ page, request }) => {
+  test(`at ${screen.width} px the page with three visuals has no sideways scroll, and Chat's header controls are all reachable`, async ({ page, request }) => {
     mkdirSync(SHOTS, { recursive: true });
     await arrange(request, FIVE);
     await page.setViewportSize(screen);
@@ -128,17 +124,15 @@ for (const screen of [{ width: 1280, height: 800 }, { width: 1440, height: 900 }
     await page.waitForTimeout(500);
     await page.screenshot({ path: `${SHOTS}/five-${screen.width}.png` });
     expect(await overflow(page)).toEqual([]);
-    for (const name of ["History", "Clear chat"]) {
-      await expect(page.getByRole("button", { name, exact: true }), `Chat's ${name}`).toBeInViewport({ ratio: 1 });
-    }
+    await expect(page.locator(".station-name"), "Chat's station name").toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole("button", { name: "Move Chat to the right" }), "Chat's side button").toBeInViewport({ ratio: 1 });
     await expect(page.getByRole("textbox", { name: "Message" })).toBeInViewport({ ratio: 1 });
   });
 }
 
 test("with Chat beside the page, an Issue's title stays readable beside its label chips", async ({ page, request }) => {
-  // The page narrowed as far as the default canvas narrows it: Chat and a second main visual beside it.
+  // The page narrowed as far as the default canvas narrows it: Chat's column and a second main visual beside it.
   await arrange(request, (issue) => [
-    { kind: "show", visual_type: "trax.chat", placement: "side" },
     { kind: "show", visual_type: "trax.timeline", placement: "main", record_id: issue }]);
   const title = "A title long enough that its labels cannot take all of the row";
   const created = await request.post("/api/inquiries/issue", {

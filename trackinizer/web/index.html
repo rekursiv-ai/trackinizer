@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#090a0b" />
-    <script>try{const t=localStorage.getItem("trackinizer.theme");if(t==="light"||(t==="system"&&!matchMedia("(prefers-color-scheme: dark)").matches)){document.documentElement.dataset.theme="light";document.querySelector('meta[name="theme-color"]').content="#edf1f5"}}catch{}</script>
+    <script>try{const t=localStorage.getItem("trackinizer.theme");if(t==="light"||(t==="system"&&!matchMedia("(prefers-color-scheme: dark)").matches)){document.documentElement.dataset.theme="light";document.querySelector('meta[name="theme-color"]').content="#edf1f5"}}catch{}try{if(localStorage.getItem("trackinizer.chat.style")==="terminal")document.documentElement.dataset.chatStyle="terminal"}catch{}</script>
     <meta
       name="description"
       content="Trackinizer: issues, beliefs, papers, experiments and agent sessions as one graph, updated live."

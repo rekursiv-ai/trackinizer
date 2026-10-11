@@ -5,7 +5,7 @@ import { expect, test } from "./fixtures";
 
 // axe's WCAG 2.0 and 2.1 A and AA rules (the a11y spec's) on the default layout:
 // the canvas, with Chat beside a list and a detail, with a conversation open and
-// its History menu open, and with the partner picker open, at 1280 and 390 px,
+// its station menu open, and with the partner picker open, at 1280 and 390 px,
 // in both themes. The conversation and the sessions are served by the test, since
 // no partner runs on the e2e server.
 
@@ -48,7 +48,6 @@ for (const theme of ["dark", "light"] as const) {
         const issue = await (await request.post("/api/inquiries/issue", {
           data: { title: `Canvas a11y ${tag}`, idempotency_key: crypto.randomUUID() },
         })).json();
-        const workspace = await (await request.post("/api/workspaces")).json();
         const chat = "0b1f6f3e-6c1e-4d3a-9a55-3a1c2f7d9a10";
         const created = "2026-10-03T10:00:00.000000Z";
         const session = "0b1f6f3e-6c1e-4d3a-9a55-3a1c2f7d9a30";
@@ -67,16 +66,17 @@ for (const theme of ["dark", "light"] as const) {
           conversation_id: chat, session_id: session, title: "What changed", account: "ada@example.com", live: true,
           forks: 0, forked_from: null, forks_on_typing: false,
         } }));
-        await page.route("**/api/chats", (route) => route.fulfill({ json: [
-          { conversation_id: chat, session_id: session, title: "What changed", account: "ada@example.com", modified: created },
-        ] }));
-        await page.addInitScript(([key, id]) => {
+        // The user's station for that chat. Finding it again changes nothing, so the tab is
+        // told to open it, as "Continue in Chat" leaves the tab on it.
+        const found = await request.post(`/api/workspaces/for-chat/${chat}`);
+        expect(found.ok()).toBe(true);
+        await page.addInitScript((id) => {
           try {
-            localStorage.setItem(key!, id!);
+            localStorage.setItem("trackinizer.station.current", id);
           } catch {
             // about:blank has no storage.
           }
-        }, [`trackinizer.v2.chat.${workspace.id}`, chat]);
+        }, (await found.json()).id as string);
         return { issue: issue.id as string };
       }
 
@@ -91,14 +91,14 @@ for (const theme of ["dark", "light"] as const) {
         await audit(page, theme, `a detail with Chat, ${size.width} px`);
       });
 
-      test("Chat with a conversation open, and its History menu open", async ({ page, request }) => {
+      test("Chat with a conversation open, and its station menu open", async ({ page, request }) => {
         const { issue } = await seed(page, request);
         await page.goto(`/app/#/lookup/${issue}`);
         await expect(page.getByText("Two things:")).toBeVisible();
         await audit(page, theme, `a conversation, ${size.width} px`);
-        await page.getByRole("button", { name: "History" }).click();
-        await expect(page.getByRole("menuitemradio", { name: /What changed/ })).toBeVisible();
-        await audit(page, theme, `the History menu, ${size.width} px`);
+        await page.locator(".station-name").click();
+        await expect(page.getByRole("dialog", { name: "Stations" }).getByRole("button", { name: /unnamed-workstream/ }).first()).toBeVisible();
+        await audit(page, theme, `the station menu, ${size.width} px`);
       });
     });
   }

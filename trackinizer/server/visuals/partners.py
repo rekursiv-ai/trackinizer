@@ -301,26 +301,34 @@ async def assistant_key_may_use(
     *,
     owner_id: uuid.UUID,
     partner: WorkspacePartner | None,
+    conversation_id: uuid.UUID | None,
     api_key_id: uuid.UUID,
 ) -> bool:
-    """Say whether a partner's key may read and operate the canvas.
+    """Say whether a partner's key may read and operate a station.
 
-    The key must have opened the canvas's live partner session, and also a live
-    science chat the canvas's owner started or posted in: a user who never talked
-    to the partner gives it nothing. With a local partner the key is the owner's
-    own, so it passes by the same rule.
+    The key must have opened the station's live partner session, and also the live
+    science chat the station holds, in which the station's owner is the account or a
+    poster. A station without a chat takes no key, and a chat the key did not open, or
+    one of another conversation, gives it nothing. With a local partner the key is the
+    owner's own, so it passes by the same rule.
 
     Args:
       conn: Connection the answer must be consistent with.
-      owner_id: The canvas's owner.
-      partner: The canvas's partner.
+      owner_id: The station's owner.
+      partner: The station's partner.
+      conversation_id: The science chat the station holds, if any.
       api_key_id: The calling key.
 
     Returns:
-      allowed: Whether the key may use the canvas.
+      allowed: Whether the key may use the station.
 
     """
-    if partner is None or partner.session_id is None or partner.status != "live":
+    if (
+        partner is None
+        or partner.session_id is None
+        or partner.status != "live"
+        or conversation_id is None
+    ):
         return False
     return bool(
         await conn.fetchval(
@@ -333,6 +341,7 @@ async def assistant_key_may_use(
             "WHERE chat.kind = 'AgentSession' AND chat.status = 'active' "
             "AND chat.agentsession_ended IS NULL "
             "AND chat.agentsession_opened_by_api_key_id = $2 "
+            "AND chat.agentsession_cli_session_id = $6 "
             "AND $4 = ANY(chat.labels) "
             "AND (chat.account = poster.email "
             "OR $5 || poster.email = ANY(chat.labels)))",
@@ -341,6 +350,7 @@ async def assistant_key_may_use(
             owner_id,
             SCIENCE_CHAT_LABEL,
             POSTER_LABEL_PREFIX,
+            chat_session_id(conversation_id),
         ),
     )
 

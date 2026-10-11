@@ -1,10 +1,13 @@
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useContext, useEffect, useRef, useState } from "react";
-import { createDefaultWorkspace, openWorkspaceEvents, type WorkspaceState } from "../api/workspaces";
+import { openWorkspaceEvents } from "../api/workspaces";
 import { recordFrame, recordNavigation } from "../debug/timings";
 import { LiveContext } from "../live";
 import { parseHash } from "../router/route";
+import { setChatHidden } from "../visuals/chatColumn";
 import { ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
+import { acceptWorkspace } from "../stations/cache";
+import { useStation } from "../stations/useStation";
 import { MetaContext } from "./boot";
 import { HighlightContext, HighlightStore } from "./highlights";
 
@@ -16,9 +19,8 @@ import { HighlightContext, HighlightStore } from "./highlights";
  *
  * It also applies what the stream says about the canvas: the workspace (a
  * revision never replaces a newer one), an agent's navigation, and what it points at
- * (the tab's highlights, `highlights.ts`). An agent that moves the page or shows a
- * visual sends Chat aside, out of the way of it. Chat has no frames of its own: a
- * conversation is a session, and a line added to it is the session's `changed` id, which
+ * (the tab's highlights, `highlights.ts`), and when it hides or shows Chat's
+ * column. Chat's lines have no frames of their own: a conversation is a session, and a line added to it is the session's `changed` id, which
  * the live layer hands to the Chat that follows it. Gap recovery on an open is the
  * live layer's own.
  */
@@ -30,29 +32,22 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
   kindsRef.current = kinds ?? [];
   const [feed] = useState(() => new ChatFeed());
   const [highlights] = useState(() => new HighlightStore());
-  const created = useQuery({
-    queryKey: ["workspace", "default"],
-    queryFn: ({ signal }) => createDefaultWorkspace({ signal }),
-    enabled,
-    staleTime: Infinity,
-  });
+  const created = useStation({ enabled });
   const workspaceId = enabled ? created.data?.id : undefined;
   useEffect(() => {
     if (!workspaceId) return;
     const close = openWorkspaceEvents(workspaceId, {
-      workspace: (state, t, shown) => {
+      workspace: (state, t) => {
         recordFrame(state.revision, t);
         acceptWorkspace(queryClient, state);
-        // Chat makes room for what an agent shows, never for itself.
-        if (state.visuals.some((visual) => visual.id === shown && visual.type !== "trax.chat")) feed.stepAside();
       },
       navigate: (route, t) => {
         if (!route.startsWith("#/") || parseHash(route, kindsRef.current).name === "notFound") return;
         recordNavigation(route, t);
         if (window.location.hash !== route) window.location.hash = route;
-        feed.stepAside();
       },
       highlight: (ids) => highlights.set(ids),
+      chat: (hidden) => setChatHidden(hidden),
       changed: (id) => hub?.change(id),
       open: () => hub?.open(),
       drop: () => hub?.drop(),
@@ -65,20 +60,8 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
     };
   }, [workspaceId, queryClient, hub, highlights, feed]);
   return (
-    <ChatFeedContext value={feed}>
+    <ChatFeedContext value={enabled ? feed : null}>
       <HighlightContext value={highlights}>{children}</HighlightContext>
     </ChatFeedContext>
   );
-}
-
-/** Keep a slower read or replay from replacing a newer canvas revision. */
-export function newerWorkspace(previous: WorkspaceState | undefined, incoming: WorkspaceState): WorkspaceState {
-  if (!previous) return incoming;
-  return incoming.revision >= previous.revision ? incoming : previous;
-}
-
-/** Put a canvas state in the cache under both its keys, unless the cache holds a newer one. */
-export function acceptWorkspace(client: QueryClient, state: WorkspaceState): void {
-  client.setQueryData<WorkspaceState>(["workspace", "default"], (previous) => newerWorkspace(previous, state));
-  client.setQueryData<WorkspaceState>(["workspace", state.id], (previous) => newerWorkspace(previous, state));
 }

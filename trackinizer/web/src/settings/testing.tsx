@@ -8,6 +8,7 @@ import type { AllowlistEntry, User } from "../api/admin";
 import type { Profile, Role, Token } from "../api/me";
 import { AGREED, type Sent, stubFetch } from "../api/testing";
 import type { WorkspaceOperation, WorkspaceState } from "../api/workspaces";
+import { setStation } from "../stations/store";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { Session, SessionContext } from "../app/session";
 import { ToastProvider } from "../ui/toast";
@@ -131,8 +132,10 @@ export function serveAccount(
   caller: Profile,
   seed: { tokens?: Token[]; users?: User[]; allowlist?: AllowlistEntry[]; workspace?: Partial<WorkspaceState> } = {},
 ) {
+  // A tab starts without a station, so a test never opens the one an earlier test left.
+  setStation(null);
   const server = {
-    workspace: { id: "w-ada", revision: 4, visuals: [], partner: null, assistant: "scout", partner_choice: "shared", ...seed.workspace } as WorkspaceState,
+    workspace: { id: "w-ada", name: "unnamed-workstream#1", conversation_id: null, page: null, revision: 4, visuals: [], partner: null, assistant: "scout", partner_choice: "shared", ...seed.workspace } as WorkspaceState,
     tokens: seed.tokens ?? [],
     users: seed.users ?? [],
     allowlist: seed.allowlist ?? [],

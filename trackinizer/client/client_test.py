@@ -1589,6 +1589,34 @@ def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
     ]
 
 
+def test_a_chat_window_reads_no_revision_and_names_the_flag() -> None:
+    workspace = uuid.uuid4()
+    seen: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(
+            (
+                request.method,
+                request.url.path,
+                json_loads(request.content, dict[str, object]),
+            ),
+        )
+        return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        state = client.chat_window(workspace, hidden=True)
+
+    assert state["revision"] == 4
+    assert seen == [
+        (
+            "POST",
+            f"/api/workspaces/{workspace}/operations",
+            {"revision": 0, "operation": {"kind": "chat", "hidden": True}},
+        ),
+    ]
+
+
 def _answering(payload: PlainTree) -> Client:
     """Return a client whose server answers every request with ``payload``."""
 
@@ -2047,17 +2075,19 @@ class TestSessionMethods:
                             "source": "viewer@example.com",
                             "context": {
                                 "workspace_id": str(workspace_id),
-                                "record_id": str(record_id),
                                 "agent_instructions": "Trace the evidence.",
                                 "continuation_record_id": str(record_id),
-                                "record": {
-                                    "id": str(record_id),
-                                    "kind": "Issue",
-                                    "seq": 21_706,
-                                    "title": "ARC3 effort",
+                                "page": {
+                                    "route": f"#/lookup/{record_id}",
+                                    "record": {
+                                        "id": str(record_id),
+                                        "kind": "Issue",
+                                        "seq": 21_706,
+                                        "title": "ARC3 effort",
+                                    },
                                 },
                                 "visible_visuals": [
-                                    {"id": str(visual_id), "type": "trax.chat"},
+                                    {"id": str(visual_id), "type": "trax.browse"},
                                 ],
                             },
                         },
@@ -2075,24 +2105,51 @@ class TestSessionMethods:
         assert context is not None
         assert context.model_dump(mode="json") == {
             "workspace_id": str(workspace_id),
-            "record_id": str(record_id),
             "agent_instructions": "Trace the evidence.",
             "continuation_record_id": str(record_id),
-            "record": {
-                "id": str(record_id),
-                "kind": "Issue",
-                "seq": 21_706,
-                "title": "ARC3 effort",
-            },
-            "artifact_content": None,
             "visible_visuals": [
-                {"id": str(visual_id), "type": "trax.chat", "record": None},
+                {"id": str(visual_id), "type": "trax.browse", "record": None},
             ],
             "conversation_id": None,
             "fork": None,
-            "page": None,
+            "page": {
+                "route": f"#/lookup/{record_id}",
+                "record": {
+                    "id": str(record_id),
+                    "kind": "Issue",
+                    "seq": 21_706,
+                    "title": "ARC3 effort",
+                },
+            },
             "trail": [],
+            "relay": None,
         }
+
+    def test_inbound_drain_preserves_a_console_relay(self) -> None:
+        session_id = uuid.uuid4()
+        relay = {
+            "targets": [{"actor": "lead-2", "room": None}],
+            "text": "rerun the suite",
+        }
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            context: dict[str, object] = {
+                "workspace_id": str(uuid.uuid4()),
+                "visible_visuals": [],
+                "relay": relay,
+            }
+            message: dict[str, object] = {"text": "rerun the suite", "context": context}
+            return httpx2.Response(200, json={"messages": [message]})
+
+        with Client("http://server") as client:
+            _install_mock_transport(client, handler)
+            ((_text, _source, _room, context),) = client.drain_inbound(session_id)
+
+        assert context is not None
+        assert context.relay is not None
+        assert context.relay.model_dump(mode="json") == relay
+        assert context.relay.line() == "→ lead-2: rerun the suite"
 
     @pytest.mark.parametrize("wait_sec", [0.0, 30.0])
     def test_inbound_drain_read_timeout_outlasts_the_hold(

@@ -1,0 +1,12 @@
+.station { position: relative; min-width: 0; }
+.station-name { max-width: 14em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.station-menu { position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; display: flex; flex-direction: column; gap: 6px; width: min(320px, 90vw); padding: 8px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
+.station-menu input { width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.station-list { display: flex; flex-direction: column; max-height: 240px; margin: 0; padding: 0; overflow: auto; list-style: none; }
+.station-list .muted { padding: 6px 8px; font-size: 12px; }
+.station-option { width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.station-option:hover, .station-option-active { background: var(--surface-overlay); }
+.station-option[aria-current="true"] { box-shadow: inset 2px 0 0 var(--accent); }
+.station-actions { display: flex; gap: 4px; }
+.station-rename { display: flex; gap: 4px; }
+.station-problem { margin: 0; color: var(--error-text); font-size: 12px; }

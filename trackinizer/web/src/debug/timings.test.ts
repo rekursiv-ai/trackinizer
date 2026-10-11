@@ -34,7 +34,7 @@ test("a mark lands on the frame of its revision after the frame paints, and wait
 });
 
 test("a revision no frame carried is not recorded, and only the newest 200 frames are kept", () => {
-  markAfterPaint(99, "trax.chat", "paint");
+  markAfterPaint(99, "trax.artifact", "paint");
   paint();
   expect(recentTimings()).toEqual([]);
   for (let revision = 0; revision < 205; revision++) recordFrame(revision, revision);

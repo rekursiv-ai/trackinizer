@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useState } from "react";
+import { Suspense, useCallback, useRef, useState } from "react";
 import { createCommands } from "../commands/create";
 import { PaletteContext, usePaletteState } from "../commands/palette";
 import { useCommands } from "../commands/registry";
@@ -14,6 +14,8 @@ import { BarStack, OfflineBar, PausedBar } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { kindLook } from "../ui/kinds";
 import { panelCommand, usePanel } from "../ui/panel";
+import { useChatColumn } from "../visuals/chatColumn";
+import { useHoverOpen } from "../visuals/hoverOpen";
 import { EmptyState, OpenDrawerContext, ViewHeader } from "../ui/view";
 import { useMeta, useProfile, useWriteMode } from "./boot";
 import { SIDEBAR, Sidebar } from "./Sidebar";
@@ -22,27 +24,29 @@ import { SIDEBAR, Sidebar } from "./Sidebar";
  * The agent canvas around the views, for users who have not opted out
  * (`visual_workspace_enabled`, on by default): a chunk of its own, so that a
  * first load without it does not carry it, loaded only for a user who has it on,
- * with the first renderer it shows.
+ * with Chat's column and the registry of the renderers it shows.
  */
 const Canvas = lazyView(
   async () => {
-    // With the renderer it shows first, so its first render suspends on nothing.
-    // The registry chunk loads in parallel with the canvas chunk, not after it.
-    const [module, registry] = await Promise.all([import("../visuals/Canvas"), import("../visuals/registry")]);
-    await registry.preloadFirstRenderers();
+    // Chat's column loads in parallel with the canvas chunk and with it, so the
+    // column's first render suspends on nothing.
+    const [module] = await Promise.all([import("../visuals/Canvas"), import("../visuals/registry"), ChatColumn.preload()]);
     return module;
   },
   (module) => module.Canvas,
 );
+
+/** Chat, a column beside the canvas rather than a visual in it. */
+const ChatColumn = lazyView(() => import("../visuals/ChatColumn"), (module) => module.ChatColumn);
 
 /** A route that shows a view; a new inquiry shows its form over one. */
 type ViewRoute = Exclude<Route, { name: "new" }>;
 
 /**
  * The signed-in app: the sidebar, the bars, the current route's view, and the
- * palette and the create form, with the shell's own commands. Collapsed, the
- * sidebar is a rail of its icons; narrow, it is a drawer whether collapsed or
- * not.
+ * palette and the create form, with the shell's own commands. The sidebar
+ * stands opposite Chat, a rail of its icons that opens over the workbench while
+ * hovered, or pinned open; narrow, it is a drawer whether collapsed or not.
  */
 export function Shell() {
   const { route, navigate } = useRouter();
@@ -61,7 +65,20 @@ export function Shell() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const openDrawer = useCallback(() => setDrawerOpen(true), []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
-  const sidebar = usePanel(SIDEBAR);
+  // The sidebar stands opposite Chat, so one flip of Chat's side moves both.
+  const sidebar = usePanel({ ...SIDEBAR, side: useChatColumn().side === "left" ? "right" : "left" });
+  // A rail opens over the workbench while the pointer rests on it or the keyboard is in it.
+  const dock = useRef<HTMLDivElement>(null);
+  const peek = useHoverOpen(dock);
+  const peeking = sidebar.collapsed && peek.open;
+  const navigated = () => {
+    closeDrawer();
+    peek.set(false);
+  };
+  const openWorkbench = () => {
+    peek.set(true);
+    requestAnimationFrame(() => dock.current?.querySelector<HTMLElement>(".workbench-slot input:not(:disabled), .workbench-slot button:not(:disabled)")?.focus());
+  };
 
   useCommands([
     {
@@ -108,8 +125,10 @@ export function Shell() {
   return (
     <PaletteContext value={palette}>
       <OpenDrawerContext value={openDrawer}>
-        <div className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}`}>
-          <Sidebar onNavigate={closeDrawer} panel={sidebar} />
+        <div className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}${peeking ? " sidebar-peek" : ""}${sidebar.side === "right" ? " sidebar-right" : ""}`}>
+          <div ref={dock} className="sidebar-dock" {...peek.handlers}>
+            <Sidebar onNavigate={navigated} onWorkbench={openWorkbench} panel={sidebar} />
+          </div>
           <div className="drawer-scrim" onClick={closeDrawer} />
           <main className="main">
             <BarStack>
@@ -120,7 +139,7 @@ export function Shell() {
                 {/* A canvas route holds the shell's busy frame until the canvas's chunk is in, then mounts its view once, inside it. */}
                 {isCanvasRoute(view ?? background) && visualWorkspaceEnabled ? (
                   canvasLoaded ? (
-                    <Canvas><RouteView route={view ?? background} /></Canvas>
+                    <ChatColumn><Canvas><RouteView route={view ?? background} /></Canvas></ChatColumn>
                   ) : (
                     <div className="view" aria-busy="true" />
                   )
@@ -142,7 +161,7 @@ export function Shell() {
   );
 }
 
-/** The canvas wraps every route but Settings and Admin, so Chat stays while an agent moves the page. */
+/** The canvas and Chat's column wrap every route but Settings and Admin, so Chat stays while an agent moves the page. */
 function isCanvasRoute(route: ViewRoute): boolean {
   return route.name !== "settings" && route.name !== "admin";
 }

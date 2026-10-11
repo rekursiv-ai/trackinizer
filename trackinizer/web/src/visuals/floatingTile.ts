@@ -122,11 +122,3 @@ export function rememberedTile(state: BrowserState, type: string): TileMemory {
 export function withTile(state: BrowserState, type: string, change: Partial<TileMemory>): BrowserState {
   return { ...state, ui: { ...state.ui, tiles: { ...state.ui.tiles, [type]: { ...rememberedTile(state, type), ...change } } } };
 }
-
-/** `state` with every tile's dragged place forgotten, so a saved layout's places show. */
-export function withoutPlaces(state: BrowserState): BrowserState {
-  return {
-    ...state,
-    ui: { ...state.ui, tiles: Object.fromEntries(Object.entries(state.ui.tiles).map(([type, tile]) => [type, { ...tile, place: null }])) },
-  };
-}

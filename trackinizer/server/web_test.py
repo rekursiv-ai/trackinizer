@@ -51,7 +51,11 @@ from trackinizer.server.route_iter import (
     registered_paths,
 )
 from trackinizer.server.store.core import Store
-from trackinizer.server.store.session_feed import WHOLE_FEED, FeedScope
+from trackinizer.server.store.session_feed import (
+    WHOLE_FEED,
+    FeedScope,
+    StationAgents,
+)
 from trackinizer.types.columns import column_specs, storage_name
 from trackinizer.types.inquiries import INQUIRY_CLASSES, KIND_TO_CLASS, Inquiry
 from trackinizer.wire.bodies import (
@@ -1135,6 +1139,32 @@ class TestFeedReads:
             response = client.get("/api/web/feed", params=params)
             assert response.status_code == 200, response.text
             assert store.read_feed.call_args.kwargs["conversation"] is conversation
+
+    def test_a_station_filters_all_three_reads_to_its_callers_agents(self) -> None:
+        store = self._histogram_store()
+        store.read_feed = AsyncMock(return_value=[])
+        store.read_feed_facets = AsyncMock(
+            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        )
+        client = self._client(store)
+        station = uuid.uuid4()
+        wanted = FeedScope(
+            station=StationAgents(workspace_id=station, user_id=_TEST_IDENTITY.user_id),
+            kinds=("ToolCall",),
+        )
+
+        for path, read in (
+            ("/api/web/feed", store.read_feed),
+            ("/api/web/feed/facets", store.read_feed_facets),
+            ("/api/web/feed/histogram", store.read_feed_histogram),
+        ):
+            response = client.get(
+                path,
+                params={"station": str(station), "kind": "ToolCall"},
+            )
+            assert response.status_code == 200, response.text
+            assert read.call_args.kwargs["scope"] == wanted
+        assert client.get("/api/web/feed", params={"station": "x"}).status_code == 422
 
     def test_facets_count_a_window_under_the_filters(self) -> None:
         store = AsyncMock()

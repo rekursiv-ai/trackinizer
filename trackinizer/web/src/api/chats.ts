@@ -1,8 +1,6 @@
 import { ApiError, type CallOptions, client, send, TIMEOUT_MS } from "./client";
 import type { components } from "./generated/schema";
 
-/** One science chat in the signed-in user's History. */
-export type ChatSummary = components["schemas"]["ChatSummary"];
 /** A conversation's session, its starter and whether the assistant still has it open. */
 export type ChatHead = components["schemas"]["ChatHead"];
 /** What a posted line was queued for. */
@@ -21,10 +19,6 @@ export type ChatFork = {
 export type ChatLine = {
   readonly workspaceId: string;
   readonly text: string;
-  /** The Chat visual it is typed in, when the canvas holds one. */
-  readonly chatInstanceId: string | null;
-  /** The record that Chat visual is about, which the server checks is still the one. */
-  readonly expectedRecordId: string | null;
   /** The conversation it joins; null starts one, which the key then names. */
   readonly conversationId: string | null;
   /** Start a new conversation, named by the key, from this line of another instead of joining one. */
@@ -39,6 +33,11 @@ export type ChatLine = {
 export const CHAT_SESSION_PREFIX = "chat:";
 export const SCIENCE_CHAT_LABEL = "science-chat";
 
+/** The routing name the assistant opens a conversation's session under: `chat-` and the first twelve hex digits of its id. */
+export function chatHandleOf(conversationId: string): string {
+  return `chat-${conversationId.replaceAll("-", "").slice(0, 12)}`;
+}
+
 /** Whether a session's routing name is the one the assistant opens a science chat under: `chat-` and twelve hex digits. */
 export function isChatHandle(actor: string): boolean {
   return /^chat-[0-9a-f]{12}$/.test(actor);
@@ -47,16 +46,6 @@ export function isChatHandle(actor: string): boolean {
 /** The conversation id a science chat session's `cli_session_id` names, or null for any other session. */
 export function conversationOf(cliSessionId: string | null | undefined): string | null {
   return cliSessionId?.startsWith(CHAT_SESSION_PREFIX) ? cliSessionId.slice(CHAT_SESSION_PREFIX.length) : null;
-}
-
-/** Read the science chats the signed-in user started or posted in, newest first. */
-export async function listChats({ signal }: CallOptions = {}): Promise<ChatSummary[]> {
-  const chats = await send(TIMEOUT_MS.read, signal, (signal) => client.GET("/api/chats", { signal }));
-  if (!Array.isArray(chats) || !chats.every((chat) => chat && typeof chat.conversation_id === "string"
-    && typeof chat.session_id === "string" && typeof chat.title === "string")) {
-    throw new Error("Invalid chat list");
-  }
-  return chats;
 }
 
 /**
@@ -88,8 +77,8 @@ export async function sendChatLine(line: ChatLine, key: string): Promise<ChatSen
   return send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/chats", {
     params: { header: { "Idempotency-Key": key } },
     body: {
-      kind: "science", workspace_id: line.workspaceId, text: line.text, chat_instance_id: line.chatInstanceId,
-      expected_record_id: line.expectedRecordId, conversation_id: line.conversationId,
+      kind: "science", workspace_id: line.workspaceId, text: line.text,
+      conversation_id: line.conversationId,
       ...(line.fork && { fork: { session_id: line.fork.sessionId, part: line.fork.part, idx: line.fork.idx } }),
       page: line.page, trail: [...line.trail],
     },

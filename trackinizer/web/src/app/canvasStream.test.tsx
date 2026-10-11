@@ -1,25 +1,29 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { useContext } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { createDefaultWorkspace, openWorkspaceEvents, type WorkspaceEventListener, type WorkspaceState } from "../api/workspaces";
 import { recentTimings, resetTimings } from "../debug/timings";
 import { META } from "../detail/testing";
 import { LiveContext } from "../live";
 import { LiveHub as LiveHubClass, type LiveHub } from "../live/hub";
-import { useChatFeed } from "../visuals/chatFeed";
+import { currentChatColumn, setChatFullscreen, setChatSide } from "../visuals/chatColumn";
+import { ChatFeedContext, useChatFeed } from "../visuals/chatFeed";
 import { MetaContext } from "./boot";
-import { acceptWorkspace, CanvasStream, newerWorkspace } from "./canvasStream";
+import { setStation } from "../stations/store";
+import { CanvasStream } from "./canvasStream";
 import { useHighlighted } from "./highlights";
 
 vi.mock("../api/workspaces", () => ({ createDefaultWorkspace: vi.fn(), openWorkspaceEvents: vi.fn() }));
 
-const workspace: WorkspaceState = { id: "w1", revision: 3, focused_instance: null, visuals: [] };
+const workspace: WorkspaceState = { id: "w1", name: "unnamed-workstream#1", conversation_id: null, page: null, revision: 3, focused_instance: null, visuals: [] };
 
 const hub = { change: vi.fn(), open: vi.fn(), drop: vi.fn(), refuse: vi.fn() };
 let client: QueryClient;
 const close = vi.fn();
 
 beforeEach(() => {
+  setStation(null);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
   vi.mocked(openWorkspaceEvents).mockReturnValue(close);
@@ -34,7 +38,7 @@ afterEach(() => {
 
 function Probe() {
   const { state } = useChatFeed();
-  return <output>{JSON.stringify([state.openVersion, state.request])}</output>;
+  return <output role="status">{JSON.stringify(state.request)}</output>;
 }
 
 function show(enabled: boolean, child: React.ReactNode = <Probe />) {
@@ -88,14 +92,12 @@ test("the live layer takes its inquiry ids and its gaps from the stream", async 
   expect(hub.refuse).toHaveBeenCalledOnce();
 });
 
-test("a workspace frame is applied under both keys, and an older one never replaces a newer", async () => {
+test("a workspace frame is applied under its station's key, and an older one never replaces a newer", async () => {
   show(true);
   const stream = await listener();
-  act(() => stream.workspace({ ...workspace, revision: 6 }, 10, null));
-  act(() => stream.workspace({ ...workspace, revision: 4, focused_instance: "stale" }, 11, null));
-  for (const key of [["workspace", "default"], ["workspace", "w1"]]) {
-    expect(client.getQueryData<WorkspaceState>(key)).toMatchObject({ revision: 6, focused_instance: null });
-  }
+  act(() => stream.workspace({ ...workspace, revision: 6 }, 10));
+  act(() => stream.workspace({ ...workspace, revision: 4, focused_instance: "stale" }, 11));
+  expect(client.getQueryData<WorkspaceState>(["workspace", "w1"])).toMatchObject({ revision: 6, focused_instance: null });
   expect(recentTimings().map((frame) => [frame.frame, frame.revision, frame.t])).toEqual([["workspace", 6, 10], ["workspace", 4, 11]]);
 });
 
@@ -130,26 +132,53 @@ test("a navigation to where the page already is changes nothing", async () => {
   window.removeEventListener("hashchange", listen);
 });
 
-function Aside() {
-  return <output data-testid="aside">{useChatFeed().state.aside}</output>;
+test("the stream follows the station: switching to another closes it and opens one on the new station", async () => {
+  show(true);
+  await listener();
+  expect(openWorkspaceEvents).toHaveBeenCalledWith("w1", expect.any(Object));
+  client.setQueryData(["workspace", "w2"], { ...workspace, id: "w2" });
+  act(() => setStation("w2"));
+  await waitFor(() => expect(openWorkspaceEvents).toHaveBeenCalledWith("w2", expect.any(Object)), { interval: 1 });
+  expect(close).toHaveBeenCalledOnce();
+  expect(openWorkspaceEvents).toHaveBeenCalledTimes(2);
+});
+
+test("a chat frame hides or shows Chat's column in this tab; a hide leaves full screen, a show leaves the side", async () => {
+  setChatSide("right");
+  setChatFullscreen(true);
+  show(true);
+  const stream = await listener();
+  act(() => stream.chat(true, 1));
+  expect(currentChatColumn()).toEqual({ side: "right", hidden: true, fullscreen: false });
+  act(() => stream.chat(false, 2));
+  expect(currentChatColumn()).toEqual({ side: "right", hidden: false, fullscreen: false });
+  // A frame the tab already agrees with changes nothing.
+  const before = currentChatColumn();
+  act(() => stream.chat(false, 3));
+  expect(currentChatColumn()).toBe(before);
+  setChatSide("left");
+});
+
+function Feed() {
+  return <output data-testid="feed">{useContext(ChatFeedContext) ? "feed" : "none"}</output>;
 }
 
-test("an agent that moves the page or shows a visual sends Chat aside; nothing else does", async () => {
-  show(true, <Aside />);
+test("an agent that moves the page or shows a visual leaves Chat where it is: the stream holds no state of Chat's", async () => {
+  show(true, <Probe />);
   const stream = await listener();
-  const aside = () => screen.getByTestId("aside").textContent;
-  const shown: WorkspaceState = { ...workspace, revision: 4, visuals: [
-    { id: "graph", type: "trax.subgraph", version: 1 }, { id: "chat", type: "trax.chat", version: 1 }] };
-  // The owner's own change, an agent's show of Chat itself, and a route the router refuses.
-  act(() => stream.workspace(shown, 1, null));
-  act(() => stream.workspace({ ...shown, revision: 5 }, 2, "chat"));
-  act(() => stream.navigate("#/nowhere", 3));
-  act(() => stream.highlight(["row-1"], 4));
-  expect(aside()).toBe("0");
-  act(() => stream.workspace({ ...shown, revision: 6 }, 5, "graph"));
-  expect(aside()).toBe("1");
-  act(() => stream.navigate("#/list/Issue", 6));
-  expect(aside()).toBe("2");
+  const feed = () => screen.getByRole("status").textContent;
+  const before = feed();
+  const shown: WorkspaceState = { ...workspace, revision: 4, visuals: [{ id: "graph", type: "trax.subgraph", version: 1 }] };
+  act(() => stream.workspace(shown, 1));
+  act(() => stream.navigate("#/list/Issue", 2));
+  expect(feed()).toBe(before);
+});
+
+test("the shell's Chat feed is there for a user with the canvas on, and for no one else", async () => {
+  const { again } = show(true, <Feed />);
+  expect(screen.getByTestId("feed").textContent).toBe("feed");
+  again(false);
+  expect(screen.getByTestId("feed").textContent).toBe("none");
 });
 
 function Marks() {
@@ -178,7 +207,7 @@ test("a highlight moves neither the page nor the canvas", async () => {
   const stream = await listener();
   act(() => stream.highlight(["a"], 1));
   expect(window.location.hash).toBe("#/list/Issue");
-  expect(client.getQueryData(["workspace", "w1"])).toBeUndefined();
+  expect(client.getQueryData(["workspace", "w1"])).toBe(workspace);
   expect(recentTimings()).toEqual([]);
 });
 
@@ -191,7 +220,7 @@ test("a chat has no frames of its own: its session's change reaches the live lay
   expect(hub.change).toHaveBeenCalledTimes(2);
   expect(hub.change).toHaveBeenCalledWith("session-1");
   expect(invalidate).not.toHaveBeenCalled();
-  expect(Object.keys(stream).toSorted()).toEqual(["changed", "drop", "highlight", "navigate", "open", "refuse", "workspace"]);
+  expect(Object.keys(stream).toSorted()).toEqual(["changed", "chat", "drop", "highlight", "navigate", "open", "refuse", "workspace"]);
 });
 
 test("the stream's state drives the live layer's paused bar: down for 10 s pauses it, an open clears it", async () => {
@@ -211,19 +240,4 @@ test("the stream's state drives the live layer's paused bar: down for 10 s pause
   stream.open();
   expect(real.status()).toBe("connected");
   vi.useRealTimers();
-});
-
-test("newerWorkspace keeps the newer revision, a tie going to the incoming one", () => {
-  const older = { ...workspace, revision: 2 };
-  expect(newerWorkspace(workspace, older)).toBe(workspace);
-  expect(newerWorkspace(older, workspace)).toBe(workspace);
-  expect(newerWorkspace(undefined, older)).toBe(older);
-  const tie = { ...workspace };
-  expect(newerWorkspace(workspace, tie)).toBe(tie);
-});
-
-test("acceptWorkspace fills both keys", () => {
-  acceptWorkspace(client, workspace);
-  expect(client.getQueryData(["workspace", "default"])).toBe(workspace);
-  expect(client.getQueryData(["workspace", "w1"])).toBe(workspace);
 });

@@ -24,7 +24,8 @@ export type FieldProps = {
  * A draft goes under one idempotency key, which Retry sends again, so a send
  * whose answer was lost reaches the agent once; an edited draft, or the draft
  * sent to another `target`, takes a fresh key. Enter sends, and Shift+Enter (or
- * Enter while an input method composes) types a line break. A failure keeps the
+ * Enter while an input method composes) types a line break. Alt+Enter never sends:
+ * it is Chat's full screen key. A failure keeps the
  * draft and says `failure(error)`; a success empties the box and shows what
  * `send` resolved with. A draft `check` finds wrong (it names the problem, or
  * returns `""`) is not sent: the composer says why until the draft changes. Under a new `target`, the old key, failure and receipt
@@ -112,7 +113,7 @@ export function Composer({
           rows: 3,
           onChange: (event) => edit(event.currentTarget.value),
           onKeyDown: (event) => {
-            if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+            if (event.key !== "Enter" || event.shiftKey || event.altKey || event.nativeEvent.isComposing) return;
             event.preventDefault();
             event.currentTarget.form?.requestSubmit();
           },

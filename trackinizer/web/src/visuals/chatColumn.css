@@ -1,0 +1,28 @@
+/* Chat beside the workbench: a column of its own, on either side of it. */
+.chat-row { position: relative; display: flex; flex: 1; min-height: 0; min-width: 0; }
+.chat-workbench { display: flex; flex: 1 1 0; flex-direction: column; min-width: 0; min-height: 0; }
+.chat-workbench[hidden], .chat-column[hidden] { display: none; }
+/* A third of the screen or 80 characters, whichever is less. The characters are Chat's own, so the font is set on the column: `ch` is measured where the width is used. The 24 px is the padding of Chat's lines. */
+.chat-column { display: flex; flex: 0 0 var(--chat-width, min(33.333vw, calc(80ch + 24px))); flex-direction: column; min-width: 280px; max-width: 70%; min-height: 0; font-size: 13px; border-right: 1px solid var(--line); }
+.chat-row-right .chat-column { border-right: 0; border-left: 1px solid var(--line); }
+.chat-row-fullscreen .chat-column { flex: 1 1 auto; max-width: none; border: 0; }
+/* The edge between the column and the workbench: 6 px to grab, 3 px over each of them, so it takes no room of its own. */
+.chat-column-edge { position: relative; z-index: 5; flex: 0 0 6px; margin: 0 -3px; cursor: col-resize; touch-action: none; }
+.chat-column-edge:hover, .chat-column-edge:focus-visible, .chat-column-edge:active { background: var(--accent); outline: 0; }
+/* Hidden, Chat leaves this strip at its edge, in the accent colour: pressing it shows Chat. */
+.chat-strip { flex: 0 0 8px; padding: 0; border: 0; background: var(--accent); cursor: pointer; }
+.chat-strip:hover, .chat-strip:focus-visible { background: var(--accent-hover); outline: 0; }
+/* Hidden, hovering the strip opens Chat over the workbench at its column width, which the workbench does not give way to. */
+.chat-column-peek { position: absolute; z-index: 30; top: 0; bottom: 0; width: var(--chat-width, min(33.333vw, calc(80ch + 24px))); background: var(--bg); box-shadow: 0 16px 48px #0008; }
+.chat-row-left .chat-column-peek { left: 0; }
+.chat-row-right .chat-column-peek { right: 0; }
+/* A phone has one column: Chat stands under the page at full width, its strip a bar along the bottom. */
+@media (max-width: 900px) {
+  .chat-row { flex-direction: column; }
+  .chat-workbench { order: 1; }
+  .chat-column { order: 2; flex: 0 0 min(480px, 60vh); width: 100%; min-width: 0; max-width: none; border-width: 1px 0 0; border-style: solid; border-color: var(--line); }
+  .chat-row-fullscreen .chat-column { flex: 1 1 auto; border: 0; }
+  .chat-column-edge { display: none; }
+  .chat-strip { order: 2; }
+  .chat-column-peek { top: auto; right: 0; bottom: 0; left: 0; width: 100%; height: min(480px, 60vh); }
+}

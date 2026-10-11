@@ -91,19 +91,21 @@ async function frameWith(page: Page, pick: { revision: number } | { route: strin
 }
 
 test("with the canvas on the tab holds one stream, the canvas's, through Settings and back", async ({ page, request }) => {
+  // Open on a station of its own: the last one an earlier spec left may hold a chat the page then asks for.
+  await resetCanvas(request);
   await page.addInitScript(exposeEventSources);
   await ok(await request.put("/api/me/visual-workspace", { data: { enabled: true } }));
   const open = () => page.evaluate(() => (window as unknown as { heldEventSources: EventSource[] }).heldEventSources
     .filter((source) => source.readyState !== 2).map((source) => new URL(source.url).pathname.replace(/[0-9a-f-]{36}/, "<id>")));
   await page.goto("/app/#/list/Issue");
-  await expect(page.getByRole("toolbar", { name: "Canvas controls" })).toBeVisible();
+  await expect(page.locator(".visual-canvas")).toBeVisible();
   await page.waitForFunction(() => (window as unknown as { trackinizer: { timings(): unknown[] } }).trackinizer.timings().length > 0);
   expect(await open()).toEqual(["/api/workspaces/<id>/events"]);
   await page.goto("/app/#/settings");
   await expect(page.getByRole("heading", { name: /settings/i }).first()).toBeVisible();
   expect(await open()).toEqual(["/api/workspaces/<id>/events"]);
   await page.goto("/app/#/list/Issue");
-  await expect(page.getByRole("toolbar", { name: "Canvas controls" })).toBeVisible();
+  await expect(page.locator(".visual-canvas")).toBeVisible();
   expect(await open()).toEqual(["/api/workspaces/<id>/events"]);
 });
 
@@ -123,7 +125,7 @@ test("a visual of every type paints within 100 ms of the server accepting its op
   }
   // The page must not see a stale browse pane from a previous run's canvas.
   await page.goto("/app/#/list/Issue");
-  await expect(page.getByRole("toolbar", { name: "Canvas controls" })).toBeVisible();
+  await expect(page.locator(".visual-canvas")).toBeVisible();
   // The stream's first frame is the canvas as it stands: the page is listening.
   await page.waitForFunction(() => (window as unknown as { trackinizer: { timings(): unknown[] } }).trackinizer.timings().length > 0);
   let revision = (await ok<{ revision: number }>(await request.get(`/api/workspaces/${workspace.id}`))).revision;
@@ -142,7 +144,6 @@ test("a visual of every type paints within 100 ms of the server accepting its op
   // the target's page drawn with its data (`page`).
   const types: { type: string; mark: string; operation: (n: number) => Operation; kinds: ("paint" | "data" | "page")[] }[] = [
     { type: "page", mark: "page", operation: (n) => ({ kind: "navigate", route: `#/lookup/${issues[n]!}` }), kinds: ["page"] },
-    { type: "trax.chat", mark: "trax.chat", operation: (n) => ({ kind: "show", visual_type: "trax.chat", placement: n % 2 ? "side" : "main" }), kinds: ["paint"] },
     { type: "trax.subgraph", mark: "trax.subgraph", operation: (n) => ({ kind: "show", visual_type: "trax.subgraph", record_id: issues[n]! }), kinds: ["paint", "data"] },
     { type: "trax.timeline", mark: "trax.timeline", operation: (n) => ({ kind: "show", visual_type: "trax.timeline", record_id: issues[n]! }), kinds: ["paint", "data"] },
     { type: "trax.artifact", mark: "trax.artifact", operation: (n) => ({ kind: "show", visual_type: "trax.artifact", record_id: artifacts[n]! }), kinds: ["paint", "data"] },

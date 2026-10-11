@@ -58,6 +58,23 @@ test("list keys run their handlers, and not while typing in a field", async () =
   expect(list.next).toHaveBeenCalledTimes(2);
 });
 
+test("a chord whose last key is also a single key mounted later still fires, and the single key still fires alone", async () => {
+  const [chord, single] = [vi.fn(), vi.fn()];
+  const { user } = setup(
+    <>
+      <Mount commands={[{ id: "go.next", title: "Next", keys: ["g ]"], run: chord }]} />
+      <Mount commands={[{ id: "rail.toggle", title: "Rail", keys: ["]"], run: single }]} />
+    </>,
+  );
+  await user.keyboard("g]");
+  expect([chord.mock.calls.length, single.mock.calls.length]).toEqual([1, 0]);
+  await user.keyboard("]");
+  expect([chord.mock.calls.length, single.mock.calls.length]).toEqual([1, 1]);
+  // The chord's first key alone, then a key that is not its second, runs neither.
+  await user.keyboard("gx");
+  expect([chord.mock.calls.length, single.mock.calls.length]).toEqual([1, 1]);
+});
+
 test("a digit typed in a menu's search box types the digit (COLD-15)", async () => {
   const pick = vi.fn();
   const { user } = setup(

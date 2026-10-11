@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Literal
+from datetime import datetime
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 if TYPE_CHECKING:
@@ -14,6 +15,10 @@ if TYPE_CHECKING:
         VisualCatalogBody,
         VisualDescription,
     )
+
+
+ROUTE_PATTERN: Final = r"^#/[^\s\x00-\x1f\x7f]*$"
+"""A `#/...` hash with no space or control character."""
 
 
 type Placement = Literal["main", "left", "side", "floating"]
@@ -48,6 +53,11 @@ class VisualInstance(BaseModel):
     floating_rect: FloatingRect | None = None
 
 
+RETIRED_VISUAL_TYPES: frozenset[str] = frozenset({"trax.chat"})
+"""Visual types a canvas once held and no catalog offers now. Chat is a column of its
+own beside the canvas, so a stored canvas that still holds it reads without it."""
+
+
 class WorkspaceData(BaseModel):
     """The portion of workspace state stored as one JSONB value."""
 
@@ -57,6 +67,30 @@ class WorkspaceData(BaseModel):
     continuation_record_id: uuid.UUID | None = None
     partner_choice: PartnerChoice = "shared"
     """Whose session Chat talks to: the shared assistant or the owner's helper."""
+
+    @model_validator(mode="after")
+    def _drop_retired_visuals(self) -> WorkspaceData:
+        retired = {v.id for v in self.visuals if v.type in RETIRED_VISUAL_TYPES}
+        if retired:
+            self.visuals = [v for v in self.visuals if v.id not in retired]
+            if self.focused_instance in retired:
+                self.focused_instance = None
+        return self
+
+
+class StationData(BaseModel):
+    """A canvas's station fields: the optional ``station`` JSON only the workbench reads.
+
+    A key is stored only once it is set, so a station without a chat or a page has
+    neither key.
+    """
+
+    name: str
+    """The station's name, unique among its owner's: ``unnamed-workstream#N`` until
+    renamed."""
+
+    conversation_id: uuid.UUID | None = None
+    page: str | None = None
 
 
 class WorkspacePartner(BaseModel):
@@ -78,14 +112,60 @@ class WorkspacePartner(BaseModel):
 
 
 class WorkspaceState(WorkspaceData):
-    """A revisioned canvas state returned to browser and agent clients."""
+    """A revisioned station state returned to browser and agent clients."""
 
     id: uuid.UUID
     revision: int = Field(ge=0)
+    name: str
+    """The station's name, unique among its owner's: ``unnamed-workstream#N`` until
+    renamed."""
+
+    conversation_id: uuid.UUID | None
+    """The science chat the station holds, once a line has been sent from it."""
+
+    page: str | None
+    """The `#/...` page the station was last on, for coming back to it."""
+
     assistant: str | None = None
     """The configured assistant's actor, or None when the server has none."""
 
     partner: WorkspacePartner | None = None
+
+
+class WorkspaceSummary(BaseModel):
+    """One of a user's stations, as the station list shows it."""
+
+    id: uuid.UUID
+    name: str
+    conversation_id: uuid.UUID | None
+    page: str | None
+    created_at: datetime
+
+
+class RenameWorkspace(BaseModel):
+    """A station's new name, which must be free among its owner's."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(max_length=1_000)
+
+    @field_validator("name")
+    @classmethod
+    def _trimmed_and_bounded(cls, name: str) -> str:
+        """Trim the name and hold it to 1 to 120 characters."""
+        name = name.strip()
+        if not name or len(name) > 120:
+            raise ValueError("A station name is 1 to 120 characters.")
+        return name
+
+
+class SetPage(BaseModel):
+    """The page a station is on, as the browser reports it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    route: str = Field(max_length=512, pattern=ROUTE_PATTERN)
+    """A `#/...` hash with no space or control character, as a navigation's."""
 
 
 class OperationModel(BaseModel):
@@ -105,7 +185,7 @@ class ShowVisual(OperationModel):
 
 
 class HideVisual(OperationModel):
-    """Dismiss one visual instance without deleting a saved preset."""
+    """Dismiss one visual instance."""
 
     kind: Literal["hide"]
     instance_id: uuid.UUID
@@ -130,7 +210,7 @@ class Navigate(OperationModel):
     """Move the browser's page. An event: no visual and no revision changes."""
 
     kind: Literal["navigate"]
-    route: str = Field(max_length=512, pattern=r"^#/[^\s\x00-\x1f\x7f]*$")
+    route: str = Field(max_length=512, pattern=ROUTE_PATTERN)
     """A `#/...` hash with no space or control character."""
 
 
@@ -140,6 +220,14 @@ class Highlight(OperationModel):
     kind: Literal["highlight"]
     ids: list[uuid.UUID] = Field(max_length=50)
     """The inquiries to mark; the newest event wins and an empty list clears."""
+
+
+class ChatWindow(OperationModel):
+    """Hide or show the browser tab's Chat window. An event, as navigate is."""
+
+    kind: Literal["chat"]
+    hidden: bool
+    """True to hide Chat, false to show it again; the tab keeps no memory of it."""
 
 
 class ChoosePartner(OperationModel):
@@ -156,6 +244,7 @@ type Operation = Annotated[
     | PlaceVisual
     | Navigate
     | Highlight
+    | ChatWindow
     | ChoosePartner,
     Field(discriminator="kind"),
 ]
@@ -176,7 +265,7 @@ class WorkspaceConflict(BaseModel):
 
 
 def initial_data(catalog: VisualCatalogBody) -> WorkspaceData:
-    """Start a new canvas with the default visual, and Chat beside it if offered.
+    """Start a new canvas with the default visual.
 
     Args:
       catalog: Trusted visual definitions and initial selection.
@@ -188,32 +277,16 @@ def initial_data(catalog: VisualCatalogBody) -> WorkspaceData:
     default = next(
         visual for visual in catalog.visuals if visual.type == catalog.default_visual
     )
-    chat = next(
-        (
-            visual
-            for visual in catalog.visuals
-            if visual.type == "trax.chat" and visual is not default
-        ),
-        None,
-    )
-    visuals = [
-        VisualInstance(
-            id=uuid.uuid4(),
-            type=default.type,
-            version=default.version,
-            placement="main",
-        ),
-    ]
-    if chat is not None:
-        visuals.append(
+    return WorkspaceData(
+        visuals=[
             VisualInstance(
                 id=uuid.uuid4(),
-                type=chat.type,
-                version=chat.version,
-                placement="side",
+                type=default.type,
+                version=default.version,
+                placement="main",
             ),
-        )
-    return WorkspaceData(visuals=visuals)
+        ],
+    )
 
 
 def refuse_record(
@@ -335,7 +408,7 @@ def apply_operation(
         )
         updated.visuals.append(instance)
         updated.focused_instance = instance.id
-    elif isinstance(operation, Navigate | Highlight):
+    elif isinstance(operation, Navigate | Highlight | ChatWindow):
         pass
     elif isinstance(operation, ChoosePartner):
         updated.partner_choice = operation.choice

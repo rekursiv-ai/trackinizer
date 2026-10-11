@@ -20,7 +20,7 @@ export type Histogram = components["schemas"]["FeedHistogramResponse"];
 
 /** Fetch `GET /api/web/feed/histogram`: how many feed records fall in each bucket of a window, under the feed's filters. */
 export async function readHistogram(
-  { actor, room, cli, kind, since, until, buckets }: HistogramRead,
+  { actor, room, cli, kind, station, since, until, buckets }: HistogramRead,
   { signal }: CallOptions = {},
 ): Promise<Histogram> {
   return send(TIMEOUT_MS.read, signal, (signal) =>
@@ -31,6 +31,7 @@ export async function readHistogram(
           ...(room ? { room: [...room] } : {}),
           ...(cli ? { cli: [...cli] } : {}),
           ...(kind ? { kind: [...kind] } : {}),
+          ...(station ? { station } : {}),
           ...(since ? { since } : {}),
           ...(until ? { until } : {}),
           ...(buckets ? { buckets } : {}),

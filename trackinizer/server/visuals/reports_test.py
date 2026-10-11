@@ -19,7 +19,6 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import make_store, queue_field_rows
-from trackinizer.lib.postgres import Conn
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
@@ -33,7 +32,6 @@ from trackinizer.server.visuals.reports import (
     PublishArtifactContent,
     publish_artifact_content,
     read_artifact_content,
-    read_artifact_content_on_conn,
 )
 from trackinizer.wire.bodies import SubmitArtifact
 
@@ -84,8 +82,7 @@ _EDGE: Final = (
 )
 _READ: Final = (
     "SELECT revisions.report_id, revisions.revision, revisions.artifact_id, "
-    "CASE WHEN $2 THEN revisions.content ELSE revisions.content - 'html' END "
-    "AS content, revisions.created_at, "
+    "revisions.content, revisions.created_at, "
     "revisions.author_email AS author, "
     "reports.issue_id FROM visual_report_revisions AS revisions "
     "JOIN visual_reports AS reports ON reports.id = revisions.report_id "
@@ -260,49 +257,8 @@ async def test_read_artifact_content_returns_the_stored_revision_or_none() -> No
     assert (revision.revision, revision.html) == (2, "<h1>Hi</h1>")
     sql, *params = engine.conn.fetchrow.call_args.args
     assert sql == _READ
-    assert params == [artifact_id, True]
+    assert params == [artifact_id]
     assert await read_artifact_content(store, uuid.uuid4()) is None
-
-
-@pytest.mark.asyncio
-async def test_read_without_html_keeps_metadata_and_nulls_html() -> None:
-    """A workspace read skips the HTML body but keeps every other field."""
-    artifact_id = uuid.uuid4()
-    issue_id = uuid.uuid4()
-    content: dict[str, object] = {
-        "title": "Site",
-        "summary": "A published site.",
-        "format": "html",
-        "sections": [],
-        "citations": [],
-    }
-    row = {
-        "report_id": uuid.uuid4(),
-        "revision": 4,
-        "artifact_id": artifact_id,
-        "content": content,
-        "created_at": _CREATED_AT,
-        "author": "publisher@example.com",
-        "issue_id": issue_id,
-    }
-    db = _Db(answers={_READ: [row]})
-    revision = await read_artifact_content_on_conn(
-        cast(Conn, db.conn),
-        artifact_id,
-        include_html=False,
-    )
-    assert revision == ArtifactContentRevision.model_validate(
-        {
-            **content,
-            "html": None,
-            "revision": 4,
-            "artifact_id": artifact_id,
-            "issue_id": issue_id,
-            "author": "publisher@example.com",
-            "created_at": _CREATED_AT,
-        },
-    )
-    assert db.calls == [("fetchrow", _READ, (artifact_id, False))]
 
 
 def test_nested_citations_have_a_global_limit() -> None:

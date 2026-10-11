@@ -7,7 +7,7 @@ export type WorkspaceState = components["schemas"]["WorkspaceState"];
 export type WorkspacePartner = NonNullable<WorkspaceState["partner"]>;
 export type WorkspaceOperation = components["schemas"]["Operation"];
 
-/** Create or reopen the signed-in user's default canvas. */
+/** The station the signed-in user changed last, or their first, made if there is none. */
 export async function createDefaultWorkspace({ signal }: CallOptions = {}): Promise<WorkspaceState> {
   return valid(await send(TIMEOUT_MS.write, signal, (signal) => client.POST("/api/workspaces", { signal })));
 }
@@ -32,7 +32,7 @@ export async function applyWorkspaceOperation(
   })));
 }
 
-function valid(state: WorkspaceState): WorkspaceState {
+export function valid(state: WorkspaceState): WorkspaceState {
   if (!state || typeof state.id !== "string" || !Number.isInteger(state.revision)
     || !Array.isArray(state.visuals)
     || !state.visuals.every((visual) => visual && typeof visual.id === "string" && typeof visual.type === "string")) {
@@ -43,12 +43,14 @@ function valid(state: WorkspaceState): WorkspaceState {
 
 /** What the workspace's events stream tells its listener; `t` is the server's epoch milliseconds. */
 export type WorkspaceEventListener = {
-  /** The canvas changed, or its first state after the stream opened; `shown` is the instance an agent's show brought up, else null. */
-  readonly workspace: (state: WorkspaceState, t: number, shown: string | null) => void;
+  /** The canvas changed, or its first state after the stream opened. */
+  readonly workspace: (state: WorkspaceState, t: number) => void;
   /** An agent moved the page: `route` is a `#/...` hash, not yet checked against the router. */
   readonly navigate: (route: string, t: number) => void;
   /** An agent pointed at inquiries, by id; the newest list replaces the last and an empty one clears. */
   readonly highlight: (ids: readonly string[], t: number) => void;
+  /** An agent hid Chat's column (`true`) or showed it again (`false`); this tab's state, not the canvas's. */
+  readonly chat: (hidden: boolean, t: number) => void;
   /** An inquiry changed, as `/api/web/subscribe` says it; a chat's new line is its session's change. */
   readonly changed: (id: string, t: number) => void;
   /** The stream is connected: the first time, and after every reconnect. */
@@ -81,9 +83,10 @@ export function openWorkspaceEvents(
         return;
       }
       switch (frame.type) {
-        case "workspace": return listener.workspace(frame.state, frame.t, frame.shown);
+        case "workspace": return listener.workspace(frame.state, frame.t);
         case "navigate": return listener.navigate(frame.route, frame.t);
         case "highlight": return listener.highlight(frame.ids, frame.t);
+        case "chat": return listener.chat(frame.hidden, frame.t);
         case "changed": return listener.changed(frame.id, frame.t);
       }
     },
@@ -91,9 +94,10 @@ export function openWorkspaceEvents(
 }
 
 type Frame =
-  | { readonly type: "workspace"; readonly state: WorkspaceState; readonly shown: string | null; readonly t: number }
+  | { readonly type: "workspace"; readonly state: WorkspaceState; readonly t: number }
   | { readonly type: "navigate"; readonly route: string; readonly t: number }
   | { readonly type: "highlight"; readonly ids: readonly string[]; readonly t: number }
+  | { readonly type: "chat"; readonly hidden: boolean; readonly t: number }
   | { readonly type: "changed"; readonly id: string; readonly t: number };
 
 /** One frame's data as a checked `Frame`, or null. */
@@ -106,17 +110,18 @@ function parseFrame(data: unknown): Frame | null {
     return null;
   }
   if (typeof frame !== "object" || frame === null) return null;
-  const { type, t, state, shown, route, id, ids } = frame as { [name: string]: unknown };
+  const { type, t, state, route, id, ids, hidden } = frame as { [name: string]: unknown };
   if (typeof t !== "number") return null;
   if (type === "workspace") {
     try {
-      return { type, state: valid(state as WorkspaceState), shown: typeof shown === "string" ? shown : null, t };
+      return { type, state: valid(state as WorkspaceState), t };
     } catch {
       return null;
     }
   }
   if (type === "navigate") return typeof route === "string" ? { type, route, t } : null;
   if (type === "highlight") return Array.isArray(ids) && ids.every((each) => typeof each === "string") ? { type, ids, t } : null;
+  if (type === "chat") return typeof hidden === "boolean" ? { type, hidden, t } : null;
   if (type === "changed") return typeof id === "string" ? { type, id, t } : null;
   return null;
 }

@@ -11,8 +11,9 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { isChatHandle } from "../api/chats";
+import { chatHandleOf, isChatHandle } from "../api/chats";
 import { newUuid } from "../api/idempotency";
+import { relayToStation } from "../api/stations";
 import {
   type FeedActorFacet,
   type FeedEvent,
@@ -22,7 +23,7 @@ import {
   readFeedFacets,
   sendRoutedMessage,
 } from "../api/sessions";
-import { useMeta, useWriteMode } from "../app/boot";
+import { useMeta, useProfile, useWriteMode } from "../app/boot";
 import { useCommands } from "../commands/registry";
 import { Composer } from "../composer/Composer";
 import { useDrawnFrom } from "../detail/transcript/drawing";
@@ -44,6 +45,7 @@ import { MentionField } from "./MentionField";
 import { Minimap } from "./Minimap";
 import { parseLine, receipt, targetName } from "./send";
 import { useViews } from "./views";
+import { useStation } from "../stations/useStation";
 import { useContinueInChat } from "../visuals/continueChat";
 import { ViewsSection } from "./ViewsRail";
 import "./console.css";
@@ -79,12 +81,22 @@ export function ConsoleView() {
   const rail = usePanel(RAIL);
   useCommands([panelCommand(rail)]);
   const [active, setActive] = useState<Active>("1h");
-  const facets = useFacets(view.range, active, EVERY_AGENT);
-  const agents = useMemo(() => facets.data?.actors ?? [], [facets.data]);
+  // Opened inside a station, the console starts on that station's agents; one control widens it to every session.
+  // Only a user with the canvas has stations; the first read waits for the one this tab shows, so no feed is read unscoped first.
+  const stationRead = useStation({ enabled: useProfile().visual_workspace_enabled });
+  const station = stationRead.data ?? null;
+  const [widenedFor, setWidenedFor] = useState<string | null>(null);
+  const scoped = station !== null && widenedFor !== station.id;
+  const stationId = scoped ? station.id : undefined;
+  // The station's own chat is the Chat column, not an agent: widened, its lines are hidden and it is no target.
+  const ownChat = station?.conversation_id ? chatHandleOf(station.conversation_id) : null;
+  const facets = useFacets(view.range, active, stationRead.isLoading ? null : stationId ? { ...EVERY_AGENT, station: stationId } : EVERY_AGENT);
+  const agents = useMemo(() => (facets.data?.actors ?? []).filter(({ actor }) => actor !== ownChat), [facets.data, ownChat]);
   const seen = useSeen(agents);
   // A pattern picks among the agents the facets know, so its feed waits for them.
-  const waiting = !facets.data && [...view.agents, ...view.rooms].some((pick) => pick.includes("*"));
-  const filter = waiting ? undefined : feedFilter(view, seen);
+  const waiting = stationRead.isLoading || (!facets.data && [...view.agents, ...view.rooms].some((pick) => pick.includes("*")));
+  const picks = waiting ? undefined : feedFilter(view, seen);
+  const filter = picks && stationId ? { ...picks, station: stationId } : picks;
   const feed = useFeed(view.range, filter, view.level);
   const state = useSyncExternalStore(feed?.subscribe ?? noSubscription, feed?.getSnapshot ?? emptyFeed);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -99,9 +111,12 @@ export function ConsoleView() {
       setFailure(null);
     };
   }, [feed, hub, view.range.live]);
-  const visible = useMemo(() => state.held.filter(({ event }) => levelOf(event) <= view.level), [state.held, view.level]);
+  const visible = useMemo(
+    () => state.held.filter(({ event }) => levelOf(event) <= view.level && event.actor !== ownChat),
+    [state.held, view.level, ownChat],
+  );
   // Counted under the view's picks, its records by kind are its own; with no picks, it is the read above.
-  const counting = useFacets(view.range, active, filter ? { actor: filter.actor, room: filter.room, cli: filter.cli } : null);
+  const counting = useFacets(view.range, active, filter ? { actor: filter.actor, room: filter.room, cli: filter.cli, station: filter.station } : null);
   // A view that reads nothing counts nothing, whatever counts the last picks kept.
   const counted = filter ? counting.data : undefined;
   const counts = counted
@@ -113,7 +128,8 @@ export function ConsoleView() {
     : [];
   const showing = shown(view, seen);
   const rooms = picked(view.rooms, roomsOf(seen));
-  const targets = showing.everyone ? [] : toTargets(showing.agents, rooms);
+  // Only agents are told things from here: a chat's own box is its station's.
+  const targets = showing.everyone ? [] : toTargets(showing.agents.filter(({ actor }) => !isChatHandle(actor)), rooms);
   // The chips left out of each view, by its id.
   const [leftOut, setLeftOut] = useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
   const out = leftOut.get(view.id) ?? new Set<string>();
@@ -133,7 +149,16 @@ export function ConsoleView() {
     const route = routes.current.get(key) ?? routeOf(line, shownEvents, to);
     routes.current.set(key, route);
     const results = await Promise.allSettled(route.targets.map((target) => sendRoutedMessage(target.target, route.text, target.key)));
-    return receipt(route.targets.map(({ target }) => target), results);
+    const sent = receipt(route.targets.map(({ target }) => target), results);
+    // The station's chat is told once, what went to the agents that took it. A send that failed
+    // for a target threw above, so a Retry sends every target again under its keys, and tells it then.
+    const accepted = route.targets.filter((_, k) => {
+      const result = results[k];
+      return result?.status === "fulfilled" && result.value.delivered.length > 0;
+    }).map(({ target }) => target);
+    if (!station || !accepted.length) return sent;
+    const told = await relayToStation(station.id, accepted, route.text, route.relayKey).catch(() => false);
+    return told ? sent : `${sent}; Chat not told`;
   }
 
   return (
@@ -176,6 +201,16 @@ export function ConsoleView() {
               ))}
             </div>
             <RangeControls key={JSON.stringify(view.range)} range={view.range} onRange={(range) => change({ ...view, range })} />
+            {station ? (
+              <div className="console-seg" role="group" aria-label="Scope">
+                <button type="button" aria-pressed={scoped} title="Only the agents this station's chat started" onClick={() => setWidenedFor(null)}>
+                  This station
+                </button>
+                <button type="button" aria-pressed={!scoped} title="Every session" onClick={() => setWidenedFor(station.id)}>
+                  All sessions
+                </button>
+              </div>
+            ) : null}
           </div>
           {filter ? (
             <Minimap
@@ -225,7 +260,7 @@ export function ConsoleView() {
                 enabled={mode === "enabled"}
                 placeholder={
                   to.length
-                    ? `Message ${to.length === 1 ? "1 agent" : `${to.length} agents`}… (@agent, @agent:room and @* still work)`
+                    ? `Message ${to.map(({ actor, room }) => (room === null ? actor : `${actor}:${room}`)).join(", ")}… (@agent, @agent:room and @* still work)`
                     : "@agent message · @agent:room message · @a,@b message · @* message to every agent shown"
                 }
                 failure={(error) => error.message}
@@ -233,7 +268,7 @@ export function ConsoleView() {
                   <MentionField
                     field={props}
                     edit={edit}
-                    context={{ agents: seen, lines: shownEvents, shown: showing.everyone ? [] : showing.agents.map(({ actor }) => actor), rooms }}
+                    context={{ agents: seen.filter(({ actor }) => !isChatHandle(actor)), lines: shownEvents, shown: showing.everyone ? [] : showing.agents.map(({ actor }) => actor), rooms }}
                     adding={adding}
                   />
                 )}
@@ -430,7 +465,7 @@ export const ConsoleLine = memo(function ConsoleLine({
     <li className={`turn console-line turn-${view.shape}`}>
       <div className="turn-h">
         <time dateTime={at}>{clock(at)}</time>
-        {onMention ? (
+        {onMention && !isChatHandle(event.actor) ? (
           <button type="button" className={agent} title={event.actor} aria-label={`Message ${event.actor}`} onClick={() => onMention(event)}>
             {event.actor}
           </button>
@@ -441,7 +476,7 @@ export const ConsoleLine = memo(function ConsoleLine({
         )}
         {onContinue && isChatHandle(event.actor) ? (
           <button type="button" className="btn ghost console-continue" onClick={() => onContinue(event.session_id)}>
-            Continue in Chat
+            Open station
           </button>
         ) : null}
       </div>
@@ -501,13 +536,18 @@ function RangeControls({ range, onRange }: { range: Range; onRange: (range: Rang
 }
 
 /** Where a line goes: its text, and each target with the idempotency key it goes under. */
-type Route = { readonly text: string; readonly targets: readonly { readonly target: MessageTarget; readonly key: string }[] };
+type Route = {
+  readonly text: string;
+  readonly targets: readonly { readonly target: MessageTarget; readonly key: string }[];
+  /** The key the station's chat is told under, so a Retry tells it once. */
+  readonly relayKey: string;
+};
 
 /** `line` read against the events `shown` and the To targets (`parseLine`), each under a fresh key; a line it cannot send throws why. */
 function routeOf(line: string, shown: readonly FeedEvent[], to: readonly MessageTarget[]): Route {
   const parsed = parseLine(line, shown, to);
   if ("problem" in parsed) throw new Error(parsed.problem);
-  return { text: parsed.text, targets: parsed.targets.map((target) => ({ target, key: newUuid() })) };
+  return { text: parsed.text, targets: parsed.targets.map((target) => ({ target, key: newUuid() })), relayKey: newUuid() };
 }
 
 /** Each CLI among `agents`, with its records, the busiest first. */

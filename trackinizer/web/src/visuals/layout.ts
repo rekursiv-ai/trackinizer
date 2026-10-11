@@ -21,14 +21,3 @@ export function orderVisuals<T extends PlacedVisual>(visuals: readonly T[], focu
     return 0;
   });
 }
-
-/**
- * Where Chat stands when it is docked: a panel beside the page, in either
- * column, or in the main strip when it was placed there. Chat floats only while
- * it stands aside for what the assistant shows, which is the tab's own state and
- * never a stored placement; a canvas made when Chat floated by default still
- * stores "floating" for it, which reads as the right-hand column.
- */
-export function chatHome(placement: Placement | undefined): "main" | "left" | "side" {
-  return placement === "main" || placement === "left" ? placement : "side";
-}

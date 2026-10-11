@@ -184,7 +184,7 @@ test("outside a canvas, or in one without the context graph, there is no Expand"
   await screen.findByRole("link", { name: "Open in graph: Issue#1, 2 hops" });
   expect(screen.queryByRole("button", { name: /^Expand/ })).toBeNull();
   cleanup();
-  renderDetail({ kind: "Issue", seq: 1 }, undefined, { workspace: canvas({ visualTypes: new Set(["trax.chat"]) }) });
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, { workspace: canvas({ visualTypes: new Set(["trax.timeline"]) }) });
   await screen.findByRole("link", { name: "Open in graph: Issue#1, 2 hops" });
   expect(screen.queryByRole("button", { name: /^Expand/ })).toBeNull();
 });

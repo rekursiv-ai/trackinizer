@@ -66,6 +66,8 @@ test("a viewer sees no Admin entry or command, a link to Admin is refused, and n
   });
   await page.goto("/app/#/list/Issue");
   const sidebar = page.getByRole("navigation", { name: "Sidebar" });
+  // The sidebar is a rail until it is opened, and the role is not shown on a rail.
+  await sidebar.getByRole("button", { name: "Expand sidebar" }).click();
   await expect(sidebar.getByText("viewer")).toBeVisible();
   await expect(sidebar.getByRole("link", { name: "Your settings" })).toBeVisible();
   await expect(sidebar.getByRole("link", { name: "Admin" })).toHaveCount(0);

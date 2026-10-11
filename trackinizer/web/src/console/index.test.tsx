@@ -7,10 +7,14 @@ import { type Sent, stubFetch } from "../api/testing";
 import { MetaContext, ProfileContext } from "../app/boot";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { META, PROFILE } from "../detail/testing";
+import type { WorkspaceState } from "../api/workspaces";
+import { setStation } from "../stations/store";
+import { ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
 import { clock, ConsoleView } from ".";
 import { type Level, levelOf } from "./levels";
 
 afterEach(() => {
+  setStation(null);
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -121,6 +125,8 @@ function passes(event: FeedEvent, query: URLSearchParams): boolean {
 function serve(
   message: (body: { actor: string; room: string | null }) => Response = () => Response.json({ delivered: ["s1"] }),
   events: readonly FeedEvent[] = EVENTS,
+  station: WorkspaceState | null = null,
+  relay: (body: unknown) => Response = () => Response.json({ delivered: true }),
 ): Sent[] {
   const now = Date.now();
   return stubFetch(async (request) => {
@@ -139,11 +145,14 @@ function serve(
       return Response.json({ start: "2026-10-01T10:00:00Z", end: "2026-10-01T11:00:00Z", bucket_seconds: 3600, counts: [] });
     }
     if (url.pathname === "/api/messages") return message(await request.json());
+    if (station && url.pathname === "/api/workspaces" && request.method === "POST") return Response.json(station);
+    if (station && url.pathname === `/api/workspaces/${station.id}` && request.method === "GET") return Response.json(station);
+    if (station && url.pathname === `/api/workspaces/${station.id}/relay`) return relay(await request.json());
     return Response.json({ detail: "not found" }, { status: 404 });
   });
 }
 
-function renderConsole(profile = PROFILE) {
+function renderConsole(profile = PROFILE, feed: ChatFeed | null = null) {
   // jsdom lays nothing out: the minimap's band has no width, so it reads no bars.
   vi.stubGlobal(
     "ResizeObserver",
@@ -159,7 +168,9 @@ function renderConsole(profile = PROFILE) {
         <ProfileContext value={profile}>
           <CommandRegistryContext value={new CommandRegistry()}>
             <Shortcuts />
-            <ConsoleView />
+            <ChatFeedContext value={feed}>
+              <ConsoleView />
+            </ChatFeedContext>
           </CommandRegistryContext>
         </ProfileContext>
       </MetaContext>
@@ -718,4 +729,196 @@ test("a viewer reads the console but gets no send box", async () => {
   expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
   // Nor a line's agent to address it to.
   expect(user!.querySelector(".console-actor")!.tagName).toBe("B");
+});
+
+const STATION: WorkspaceState = {
+  id: "w1", name: "my work", conversation_id: "3d0e9f1a-1b2c-4d5e-8f60-7a8b9c0d1e2f", page: null, revision: 1, focused_instance: null, visuals: [],
+};
+const OWN_CHAT = "chat-3d0e9f1a1b2c";
+const OTHER_CHAT = "chat-aaaabbbbcccc";
+const CHAT_A = "00000000-0000-4000-8000-0000000000d1";
+const CHAT_B = "00000000-0000-4000-8000-0000000000d2";
+Object.assign(SESSIONS, {
+  [CHAT_A]: { actor: OWN_CHAT, rooms: [], cli: "trax-helper" },
+  [CHAT_B]: { actor: OTHER_CHAT, rooms: [], cli: "trax-helper" },
+});
+const WITH_CHATS = [
+  ...EVENTS,
+  said(7, CHAT_A, "AssistantMessage", { content: "In my own chat." }, "In my own chat."),
+  said(8, CHAT_B, "AssistantMessage", { content: "In another chat." }, "In another chat."),
+];
+
+/** A user with the canvas, whose console has a station to be scoped to. */
+const CANVAS_USER = { ...PROFILE, visual_workspace_enabled: true };
+
+/** The reads of one kind, by their `station` parameter. */
+const stationOf = (sent: readonly Sent[], path: string) =>
+  sent.filter((request) => request.path === path).map((request) => new URLSearchParams(request.query).get("station"));
+
+test("opened inside a station, the console reads its agents only; All sessions widens it, This station narrows it again", async () => {
+  setStation("w1");
+  const sent = serve(undefined, EVENTS, STATION);
+  renderConsole(CANVAS_USER);
+  await lines(3);
+  const scope = within(screen.getByRole("group", { name: "Scope" }));
+  expect(scope.getByRole("button", { name: "This station" }).getAttribute("aria-pressed")).toBe("true");
+  expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set(["w1"]));
+  expect(new Set(stationOf(sent, "/api/web/feed/facets"))).toEqual(new Set(["w1"]));
+
+  sent.length = 0;
+  fireEvent.click(scope.getByRole("button", { name: "All sessions" }));
+  await waitFor(() => expect(stationOf(sent, "/api/web/feed").length).toBeGreaterThan(0));
+  await waitFor(() => expect(stationOf(sent, "/api/web/feed/facets").length).toBeGreaterThan(0));
+  expect(scope.getByRole("button", { name: "All sessions" }).getAttribute("aria-pressed")).toBe("true");
+  expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set([null]));
+  expect(new Set(stationOf(sent, "/api/web/feed/facets"))).toEqual(new Set([null]));
+
+  sent.length = 0;
+  fireEvent.click(scope.getByRole("button", { name: "This station" }));
+  await waitFor(() => expect(stationOf(sent, "/api/web/feed").length).toBeGreaterThan(0));
+  expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set(["w1"]));
+});
+
+test("with no station there is no scope control and nothing is scoped", async () => {
+  const sent = serve();
+  renderConsole();
+  await lines(3);
+  expect(screen.queryByRole("group", { name: "Scope" })).toBeNull();
+  expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set([null]));
+});
+
+test("the station's own chat is hidden from the widened console, and no chat is offered to message", async () => {
+  setStation("w1");
+  serve(undefined, WITH_CHATS, STATION);
+  const feed = new ChatFeed();
+  renderConsole(CANVAS_USER, feed);
+  await lines(4);
+  fireEvent.click(within(screen.getByRole("group", { name: "Scope" })).getByRole("button", { name: "All sessions" }));
+  // Every line but the station's own chat's: three of Messages, and the other station's chat.
+  const shown = await waitFor(() => {
+    const found = [...document.querySelectorAll<HTMLElement>(".console-line")];
+    expect(found.map((one) => one.textContent).join("|")).toContain("In another chat.");
+    return found;
+  });
+  expect(shown.map((one) => one.textContent).join("|")).not.toContain("In my own chat.");
+  // The other station's chat is no agent to message: its name is no button, and it offers its station.
+  expect(screen.queryByLabelText(`Message ${OTHER_CHAT}`)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Open station" }));
+  // The chat's session is asked of Chat, which opens the user's station for it.
+  expect(feed.snapshot().request).toMatchObject({ sessionId: CHAT_B });
+  // Neither chat is in the agents the rail lists to pick for sending.
+  expect(agentBoxes().some((name) => name?.includes(OWN_CHAT))).toBe(false);
+});
+
+test("a line to a chat, named or by @*, is refused: it is the station's to talk to", async () => {
+  setStation("w1");
+  const sent = serve(undefined, WITH_CHATS, STATION);
+  renderConsole(CANVAS_USER);
+  await lines(4);
+  fireEvent.click(within(screen.getByRole("group", { name: "Scope" })).getByRole("button", { name: "All sessions" }));
+  await screen.findByText("In another chat.");
+  const box = screen.getByRole("textbox", { name: "Message" });
+  fireEvent.change(box, { target: { value: `@${OTHER_CHAT} hello` } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  expect((await screen.findByRole("alert")).textContent).toBe(`${OTHER_CHAT} is a chat: open its station to talk to it`);
+  fireEvent.change(box, { target: { value: "@* hello" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(document.querySelector(".composer-receipt")).not.toBeNull());
+  const told = sent.filter((request) => request.path === "/api/messages").map((request) => (request.body as { actor: string }).actor);
+  expect(told).not.toContain(OTHER_CHAT);
+  expect(told).not.toContain(OWN_CHAT);
+});
+
+test("a line settles per target, then the station's chat is told once with the targets that took it, under one key", async () => {
+  setStation("w1");
+  const sent = serve(({ actor }) => Response.json({ delivered: actor === "claude" ? [] : ["s1"] }), EVENTS, STATION);
+  renderConsole(CANVAS_USER);
+  await lines(3);
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@tiles-a:ops,@claude rerun the suite" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(document.querySelector(".composer-receipt")).not.toBeNull());
+  const relays = sent.filter((request) => request.path === "/api/workspaces/w1/relay");
+  expect(relays).toHaveLength(1);
+  // claude had no live session: it took nothing, and the chat is not told it was.
+  expect(relays[0]!.body).toEqual({ targets: [{ actor: "tiles-a", room: "ops" }], text: "rerun the suite" });
+  expect(relays[0]!.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
+  // The relay went after every message was answered.
+  const order = sent.map((request) => request.path);
+  expect(order.lastIndexOf("/api/messages")).toBeLessThan(order.indexOf("/api/workspaces/w1/relay"));
+  expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session; no live session for @claude");
+});
+
+test("a send that failed for a target tells the chat nothing; Retry sends again under the same keys and tells it once", async () => {
+  setStation("w1");
+  let refuse = true;
+  const sent = serve(
+    ({ actor }) => (refuse && actor === "claude" ? Response.json({ detail: "statement timeout" }, { status: 500 }) : Response.json({ delivered: ["s1"] })),
+    EVENTS,
+    STATION,
+  );
+  renderConsole(CANVAS_USER);
+  await lines(3);
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@tiles-a:ops,@claude rerun the suite" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await screen.findByRole("alert");
+  expect(sent.filter((request) => request.path === "/api/workspaces/w1/relay")).toHaveLength(0);
+  refuse = false;
+  fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
+  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 2 sessions"));
+  const relays = sent.filter((request) => request.path === "/api/workspaces/w1/relay");
+  expect(relays).toHaveLength(1);
+  expect(relays[0]!.body).toEqual({ targets: [{ actor: "tiles-a", room: "ops" }, { actor: "claude", room: null }], text: "rerun the suite" });
+});
+
+test("a chat that was not told is said quietly, whether the server says so or the relay fails; the send itself still succeeded", async () => {
+  setStation("w1");
+  serve(undefined, EVENTS, STATION, () => Response.json({ delivered: false }));
+  renderConsole(CANVAS_USER);
+  await lines(3);
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@claude go" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session; Chat not told"));
+  cleanup();
+  serve(undefined, EVENTS, STATION, () => Response.json({ detail: "down" }, { status: 500 }));
+  renderConsole(CANVAS_USER);
+  await lines(3);
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@claude go" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session; Chat not told"));
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("no relay goes when no agent took the line, or when there is no station", async () => {
+  setStation("w1");
+  let sent = serve(() => Response.json({ delivered: [] }), EVENTS, STATION);
+  renderConsole(CANVAS_USER);
+  await lines(3);
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@claude go" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(document.querySelector(".composer-receipt")).not.toBeNull());
+  expect(sent.filter((request) => request.path.endsWith("/relay"))).toHaveLength(0);
+  cleanup();
+  setStation(null);
+  sent = serve();
+  renderConsole(CANVAS_USER);
+  await lines(3);
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@claude go" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session"));
+  expect(sent.filter((request) => request.path.endsWith("/relay"))).toHaveLength(0);
+});
+
+test("the box names its targets: Message lead-2, or each of several, never a count", async () => {
+  serve();
+  renderConsole();
+  await lines(3);
+  const agents = rail("Agents");
+  fireEvent.click(agents.getByRole("checkbox", { name: "claude" }));
+  await screen.findByLabelText("To", { selector: "[role=group]" });
+  expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toBe("Message claude… (@agent, @agent:room and @* still work)");
+  fireEvent.click(agents.getByRole("checkbox", { name: "claude" }));
+  fireEvent.change(agents.getByRole("searchbox", { name: "Find agents" }), { target: { value: "tiles-*" } });
+  fireEvent.click(agents.getByRole("button", { name: "Pick tiles-*" }));
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toBe(
+    "Message tiles-a:ops, tiles-a:lab… (@agent, @agent:room and @* still work)"));
 });

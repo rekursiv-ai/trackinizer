@@ -1032,6 +1032,16 @@ class FakeClient:
         self.calls.append(("highlight", (workspace_id,), {"ids": list(ids)}))
         return {"id": str(workspace_id), "revision": 0, "visuals": []}
 
+    def chat_window(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        hidden: bool,
+    ) -> dict[str, PlainTree]:
+        """Hide or show Chat."""
+        self.calls.append(("chat_window", (workspace_id,), {"hidden": hidden}))
+        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+
     def add_subscriber(
         self,
         target_id: uuid.UUID,

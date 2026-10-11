@@ -97,6 +97,8 @@ export type FeedFilters = {
   readonly room?: readonly string[];
   readonly cli?: readonly string[];
   readonly kind?: readonly string[];
+  /** A station's id: only the sessions its chat started agents in, and not the chat itself. */
+  readonly station?: string;
 };
 
 /** Which page of the feed to read: its newest (`tail`), past a cursor, or within a window. */
@@ -168,12 +170,13 @@ export async function readFeedFacets({ since, until, ...filters }: FacetsRead, {
 }
 
 /** The filters as query parameters, each value repeated and empty ones left out. */
-function filterQuery({ actor, room, cli, kind }: FeedFilters) {
+function filterQuery({ actor, room, cli, kind, station }: FeedFilters) {
   return {
     ...(actor?.length ? { actor: [...actor] } : {}),
     ...(room?.length ? { room: [...room] } : {}),
     ...(cli?.length ? { cli: [...cli] } : {}),
     ...(kind?.length ? { kind: [...kind] } : {}),
+    ...(station ? { station } : {}),
   };
 }
 

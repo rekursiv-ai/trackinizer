@@ -5,8 +5,9 @@ their trusted configgle `Fig` configurations into a `Workspace`. A deployment
 supplies its own `Workspace`; the default is `default_workspace()`. Every
 route reads that one catalog and returns safe descriptions through
 `GET /api/visuals`. The default visual must not require a record. The
-browser selects a renderer by visual type and version. It loads the Chat chunk
-only when Chat is visible.
+browser selects a renderer by visual type and version. It loads a renderer's
+chunk only when its visual is shown. Chat is not a visual: it is a column of its
+own beside the canvas.
 
 ## Add a visual
 
@@ -59,7 +60,15 @@ Authorization: Bearer <user-token>
 Idempotency-Key: 4d5a0dc1-a916-4d4b-9c23-a58b654c4376
 Content-Type: application/json
 
-{"revision":1,"operation":{"kind":"show","visual_type":"trax.chat","placement":"side"}}
+{
+  "revision": 1,
+  "operation": {
+    "kind": "show",
+    "visual_type": "trax.subgraph",
+    "record_id": "<record-id>",
+    "placement": "side"
+  }
+}
 ```
 
 The response is the full workspace at revision 2. The caller may retry that
@@ -81,22 +90,18 @@ server's shared assistant; `WorkspaceState.partner_choice` can instead be
 operation sets. A partner that is not `live` disables the composer. A server with
 no assistant of its own can run `trax helper claude --as ACTOR` as one.
 
-The canvas's one `Chat` button shows `trax.chat`; on a record's page it puts
-the record UUID in `record_id`, and elsewhere it clears it. To
-send, the browser calls `POST /api/chats` with
-the persisted Chat instance UUID and a fresh `Idempotency-Key`:
+Chat is a column beside the canvas, on the left by default; the browser keeps
+its side and width, and a key hides it. It is no visual, so a canvas has no Chat
+instance and a line pins no record. To send, the browser calls `POST /api/chats`
+with a fresh `Idempotency-Key`:
 
 ```json
-{"kind":"science","workspace_id":"<workspace-id>","text":"What led to this experiment?","chat_instance_id":"<chat-instance-id>","expected_record_id":"<record-id>"}
+{"kind":"science","workspace_id":"<workspace-id>","text":"What led to this experiment?"}
 ```
 
-The server checks the signed-in writer, a live assistant, and the Chat
-instance, and that its record still matches `expected_record_id`. A changed
-record returns 409 before queueing. The server adds the persisted record UUID,
-workspace UUID, and visible visual identities to a typed inbound context.
-When the record exists in this server's graph, the context also includes its
-kind, sequence, and bounded title. A record resolved through a separate read
-profile carries its UUID without invented metadata. The browser also sends
+The server checks the signed-in writer and a live assistant. It adds the
+workspace UUID and the visible visual identities to a typed inbound context.
+The browser also sends
 `page`, the `#/...` address it is on, and `trail`, the addresses before it,
 oldest first and at most 8; a malformed address, or a longer trail, returns
 422. The server resolves them: `#/lookup/<id>`, `#/inquiry/<id>`,
@@ -108,13 +113,11 @@ no record. Each visible visual carries the record it shows the same way, so
 context beside the message and reads the cited graph rows through trax.
 The receipt names the conversation, and the session once the assistant has it
 open; it does not claim the agent answered. Retry the same draft with the
-same key. When the canvas has no persisted visuals, send null for both
-`chat_instance_id` and `expected_record_id`; Chat remains the fallback view.
+same key.
 
 A conversation is an AgentSession (label `science-chat`). Chat reads its
 records and refreshes when the canvas event stream says the session changed;
-a line by another poster shows its sender. History lists the chats the user
-started or posted in; Clear chat starts a new one and deletes nothing, and the
+a line by another poster shows its sender. The station menu lists the user's stations, each holding one chat; the
 composer says chats are public to every user and cannot be deleted. A science
 chat's session in the Console or on its detail page offers Continue in Chat.
 Subgraph, timeline, and Artifact visuals use the same catalog and operation
@@ -140,24 +143,18 @@ that Issue becomes its nearest lead; with no such Issue it is shown alone.
 Leads are the anchor's `narrows` ancestors, at most three (`_LEAD_LEVELS` in
 `server/visuals/timeline.py`), one indexed lookup per level.
 
-## Save and reopen a workflow
+## Stations
 
-The signed-in browser can save the current canvas with
-`POST /api/workspace-presets`. Supply the workspace UUID and revision, a name,
-optional agent instructions and continuation record UUID, and rectangles for
-floating panes. The server snapshots the persisted visual instances only if
-the revision still matches. Supply an `Idempotency-Key` UUID and reuse it when
-retrying the same save. A stale save returns 409 with the current canvas.
-
-`GET /api/workspace-presets` lists up to 100 saved views for the account. To
-continue on another device, open the default canvas and call
-`POST /api/workspace-presets/<preset-id>/open` with that canvas UUID, revision,
-and an `Idempotency-Key` UUID. Reuse the key when retrying the same open.
-Opening restores visuals, placement, floating rectangles, and the
-workflow context at a new revision. The next message carries saved guidance
-and the continuation record in its typed context.
-Presets never store session credentials. Existing browser-only saved inquiry
-queries remain a separate feature.
+A canvas is a station: a named canvas that holds at most one science chat. The
+signed-in browser lists its stations with `GET /api/workspaces`, makes one with
+`POST /api/workspaces/new`, renames it with `PATCH /api/workspaces/<id>`, and
+returns to it with `POST /api/workspaces/<id>/open`; `POST /api/workspaces` opens
+the one used last. A station keeps its visual instances, agent instructions and
+continuation record as its canvas state, and the page it was last on
+(`PUT /api/workspaces/<id>/page`). The next chat message carries the station's
+guidance and continuation record in its typed context. A station never stores
+session credentials. Existing browser-only saved inquiry queries remain a separate
+feature.
 
 ## Publish shared Artifact content
 
@@ -208,7 +205,6 @@ Any signed-in teammate can read the exact revision at
 `/app/#/lookup/<artifact-id>` or through
 `GET /api/artifacts/<artifact-id>/content`. An agent can show it on a canvas
 with `visual_type: "trax.artifact"` and `record_id` set to the Artifact ID.
-The renderer loads only when shown. `Chat` on its page uses the same `record_id`;
-the agent receives frozen citations and a link to the full content. Custom HTML
+The renderer loads only when shown. Custom HTML
 runs in an opaque-origin iframe with a restrictive content security policy;
 it cannot read the app's session.

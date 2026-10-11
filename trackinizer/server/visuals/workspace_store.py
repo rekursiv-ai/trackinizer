@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, cast
+from itertools import count
+from typing import TYPE_CHECKING, Final, cast
 
 import hashlib
 import json
+import re
 import uuid
 
 from treekle import from_plain
 
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import tx
+from trackinizer.server.values import vetted_sql
 from trackinizer.server.visuals.chat_forks import (
     ConversationTakenError,
     ForeignChatError,
@@ -26,7 +29,6 @@ from trackinizer.server.visuals.partners import (
     live_chat_session,
     resolve_partner,
 )
-from trackinizer.server.visuals.reports import read_artifact_content_on_conn
 from trackinizer.server.visuals.science_chats import (
     read_starter,
     science_chat_exists_at,
@@ -34,31 +36,47 @@ from trackinizer.server.visuals.science_chats import (
 from trackinizer.server.visuals.screens import read_screen
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
+    ChatWindow,
     ChoosePartner,
     Highlight,
     Navigate,
     ShowVisual,
+    StationData,
     WorkspaceData,
     WorkspaceState,
+    WorkspaceSummary,
     apply_operation,
     initial_data,
     refuse_record,
 )
 from trackinizer.wire.wire_science_chat import ChatSend, ChatSent
-from trackinizer.wire.wire_sessions import (
-    WorkspaceArtifactContent,
-    WorkspaceMessageContext,
-    WorkspaceRecordContext,
-)
+from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
+
+    from asyncpg import Record
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
     from trackinizer.server.auth import Role
     from trackinizer.server.config import Assistant, ChatOrgs
     from trackinizer.server.visuals.catalog import VisualCatalogBody
+
+
+UNNAMED_PREFIX: Final = "unnamed-workstream#"
+"""The name a station has until its owner renames it, followed by a number."""
+
+_UNNAMED: Final = re.compile(rf"{re.escape(UNNAMED_PREFIX)}([0-9]+)")
+
+_STATION: Final = "id, revision, state, station"
+"""The `visual_workspaces` columns :func:`state_from_row` reads."""
+
+_SELECT_STATION: Final = vetted_sql("SELECT ", _STATION, " FROM visual_workspaces ")
+_RETURNING_STATION: Final = vetted_sql(" RETURNING ", _STATION)
+
+_NAME_ATTEMPTS: Final = 8
+"""Tries at a free name before a station gives up: another create took it each time."""
 
 
 class RevisionConflictError(Exception):
@@ -93,8 +111,12 @@ class PartnerBusyError(Exception):
     """The partner's inbound queue is full, so a message would evict an unread one."""
 
 
-class WorkspaceContextChangedError(Exception):
-    """The chat visual now targets a different record or report."""
+class StationChatError(Exception):
+    """A line would give a station a second chat, or one that another station holds."""
+
+
+class StationNameTakenError(Exception):
+    """The station's owner already has a station of that name."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -119,19 +141,25 @@ async def send_chat_line(
     orgs: ChatOrgs,
     audiences: frozenset[str],
 ) -> ChatSent | None:
-    """Queue a browser line for a science chat's assistant, with its canvas context.
+    """Queue a browser line for a science chat's assistant, with its page and trail.
 
-    Nothing is stored here: the assistant records the line in the conversation's
-    session. A conversation whose session the assistant has open takes the line on
-    that session's own queue; any other, and a new one, goes to the assistant's
-    service session, which opens or resumes the conversation's session before it
-    answers. A new conversation is named by ``key``, so a retry under the same key
-    queues nothing again and answers with the same conversation.
+    The line's conversation is the one it names, else the one its station already
+    holds, else a new one named by ``key``, so a retry under the same key queues
+    nothing again and answers with the same conversation. A station without a chat
+    takes the line's conversation as its own, in the transaction that queues the
+    line; a station holds one chat only. A fork starts a new station instead: a copy
+    of the station it was sent from, bound to the fork's conversation.
+
+    Nothing of the line is stored here: the assistant records it in the
+    conversation's session. A conversation whose session the assistant has open takes
+    the line on that session's own queue; any other, and a new one, goes to the
+    assistant's service session, which opens or resumes the conversation's session
+    before it answers.
 
     Args:
       engine: Database connection source.
       user_id: Authenticated browser account.
-      body: The line, its canvas, and optional conversation and chat visual identity.
+      body: The line, its station, and optional conversation, fork, page and trail.
       key: Required idempotency key.
       source: Attested browser principal email.
       source_role: That principal's role.
@@ -142,30 +170,38 @@ async def send_chat_line(
         no line, as one past the end of a session is none.
 
     Returns:
-      sent: The conversation, and its session when the assistant has it open; None
-        for a foreign canvas.
+      sent: The conversation, the station it went to, and its session when the
+        assistant has it open; None for a foreign station.
 
     Raises:
-      WorkspaceSessionUnavailableError: The canvas has no live partner, or its local
+      WorkspaceSessionUnavailableError: The station has no live partner, or its local
         helper was asked into a conversation the shared assistant holds.
       PartnerBusyError: The queue the line would join is full.
-      WorkspaceContextChangedError: The chat visual targets another record now.
+      StationChatError: The station's chat is another conversation, or another
+        station of the poster holds the one named.
       IdempotencyReuseError: ``key`` already posted another line.
       ForeignChatError: The conversation was started outside the poster's organisation.
       ConversationTakenError: The fork's key names a conversation someone else began.
       ValueError: The fork names no line of a science chat.
 
     """
-    conversation_id = key if body.fork else (body.conversation_id or key)
-    async with engine.acquire() as conn:
+    async with engine.acquire() as conn, tx(conn):
         row = await conn.fetchrow(
-            "SELECT id, revision, state FROM visual_workspaces "
-            "WHERE id = $1 AND user_id = $2",
+            vetted_sql(
+                _SELECT_STATION,
+                "WHERE id = $1 AND user_id = $2 FOR UPDATE",
+            ),
             body.workspace_id,
             user_id,
         )
         if row is None:
             return None
+        state = state_from_row(cast("Mapping[str, object]", row))
+        conversation_id = (
+            key
+            if body.fork is not None
+            else (body.conversation_id or state.conversation_id or key)
+        )
         await _check_fork_or_membership(
             conn,
             body=body,
@@ -176,7 +212,6 @@ async def send_chat_line(
             inbound=inbound,
             audiences=audiences,
         )
-        state = state_from_row(cast("Mapping[str, object]", row))
         partner = await resolve_partner(
             conn,
             inbound=inbound,
@@ -214,57 +249,69 @@ async def send_chat_line(
         target = chat or partner.session_id
         if inbound.is_full(target):
             raise PartnerBusyError("Partner busy: too many unread messages; try again.")
-        record_id, record, artifact_content = await _chat_target(
-            conn,
-            state=state,
-            body=body,
-        )
         screen = await read_screen(
             conn,
             page=body.page,
             trail=body.trail,
             visuals=state.visuals,
         )
-    _ = inbound.send_once(
-        key,
-        [
-            (
-                target,
-                Inbound(
-                    text=body.text,
-                    source=source,
-                    source_role=source_role,
-                    context=WorkspaceMessageContext(
-                        workspace_id=body.workspace_id,
-                        record_id=record_id,
-                        record=record,
-                        artifact_content=artifact_content,
-                        visible_visuals=screen.visuals,
-                        agent_instructions=state.agent_instructions,
-                        continuation_record_id=state.continuation_record_id,
-                        conversation_id=conversation_id,
-                        fork=body.fork,
-                        page=screen.page,
-                        trail=screen.trail,
+        # Last, so a refused line leaves the station as it was.
+        station_id = (
+            await _fork_station(
+                conn,
+                user_id=user_id,
+                source=row,
+                conversation_id=conversation_id,
+            )
+            if body.fork is not None
+            else await _bind_chat(
+                conn,
+                user_id=user_id,
+                state=state,
+                conversation_id=conversation_id,
+            )
+        )
+        _ = inbound.send_once(
+            key,
+            [
+                (
+                    target,
+                    Inbound(
+                        text=body.text,
+                        source=source,
+                        source_role=source_role,
+                        context=WorkspaceMessageContext(
+                            workspace_id=station_id,
+                            visible_visuals=screen.visuals,
+                            agent_instructions=state.agent_instructions,
+                            continuation_record_id=state.continuation_record_id,
+                            conversation_id=conversation_id,
+                            fork=body.fork,
+                            page=screen.page,
+                            trail=screen.trail,
+                        ),
                     ),
                 ),
-            ),
-        ],
-        fingerprint=hashlib.sha256(
-            "\0".join(
-                (
-                    str(conversation_id),
-                    str(body.workspace_id),
-                    body.text,
-                    str(body.fork),
-                ),
-            ).encode(),
-        ).hexdigest(),
+            ],
+            fingerprint=hashlib.sha256(
+                "\0".join(
+                    (
+                        str(conversation_id),
+                        str(body.workspace_id),
+                        body.text,
+                        str(body.fork),
+                    ),
+                ).encode(),
+            ).hexdigest(),
+        )
+    return ChatSent(
+        conversation_id=conversation_id,
+        session_id=chat,
+        workspace_id=station_id,
     )
-    return ChatSent(conversation_id=conversation_id, session_id=chat)
 
 
-async def create_default_workspace(
+async def open_latest_workspace(
     engine: DatabaseEngine,
     *,
     user_id: uuid.UUID,
@@ -272,36 +319,38 @@ async def create_default_workspace(
     inbound: InboundQueue,
     assistant: Assistant | None,
 ) -> WorkspaceState:
-    """Return the user's default canvas, creating it once across races.
+    """Return the station the user changed last, creating the first once.
+
+    Two first requests that race create one station between them: the loser's insert
+    finds the name taken and reads the winner's.
 
     Args:
       engine: Database connection source.
-      user_id: Owner of the default canvas.
+      user_id: Owner of the stations.
       catalog: Trusted visual definitions and the initial selection.
       inbound: In-process poller leases.
       assistant: The configured assistant, if any.
 
     Returns:
-      state: The existing or newly created workspace, with its partner.
+      state: The existing or newly created station, with its partner.
 
     """
-    workspace_id = uuid.uuid4()
-    state = initial_data(catalog)
     async with engine.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO visual_workspaces (id, user_id, state) VALUES ($1, $2, $3) "
-            "ON CONFLICT DO NOTHING",
-            workspace_id,
-            user_id,
-            state.model_dump(mode="json"),
+        latest = vetted_sql(
+            _SELECT_STATION,
+            "WHERE user_id = $1 ORDER BY modified_at DESC, id DESC LIMIT 1",
         )
-        row = await conn.fetchrow(
-            "SELECT id, revision, state FROM visual_workspaces "
-            "WHERE user_id = $1 AND is_default",
-            user_id,
-        )
+        row = await conn.fetchrow(latest, user_id)
         if row is None:
-            raise RuntimeError("default workspace insert was not visible")
+            _ = await _insert_station(
+                conn,
+                user_id=user_id,
+                name=next_station_name(()),
+                data=initial_data(catalog),
+            )
+            row = await conn.fetchrow(latest, user_id)
+        if row is None:
+            raise RuntimeError("first workspace insert was not visible")
         return await attach_partner(
             conn,
             state=state_from_row(cast("Mapping[str, object]", row)),
@@ -309,6 +358,229 @@ async def create_default_workspace(
             inbound=inbound,
             assistant=assistant,
         )
+
+
+async def new_workspace(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    catalog: VisualCatalogBody,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> WorkspaceState:
+    """Create a station named with the lowest free ``unnamed-workstream#N``.
+
+    Args:
+      engine: Database connection source.
+      user_id: Owner of the new station.
+      catalog: Trusted visual definitions and the initial selection.
+      inbound: In-process poller leases.
+      assistant: The configured assistant, if any.
+
+    Returns:
+      state: The new station, with its partner.
+
+    """
+    async with engine.acquire() as conn:
+        row = await _new_station(conn, user_id=user_id, data=initial_data(catalog))
+        if row is None:
+            raise RuntimeError("no free station name")
+        return await attach_partner(
+            conn,
+            state=state_from_row(cast("Mapping[str, object]", row)),
+            owner_id=user_id,
+            inbound=inbound,
+            assistant=assistant,
+        )
+
+
+async def workspace_for_chat(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    catalog: VisualCatalogBody,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> WorkspaceState:
+    """Find the user's station that holds a conversation, or make one bound to it.
+
+    Args:
+      engine: Database connection source.
+      user_id: Owner of the station.
+      conversation_id: The science chat to continue.
+      catalog: Trusted visual definitions and the initial selection.
+      inbound: In-process poller leases.
+      assistant: The configured assistant, if any.
+
+    Returns:
+      state: The station that holds the conversation, with its partner.
+
+    """
+    async with engine.acquire() as conn:
+        row = await _chat_station_row(
+            conn,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+        if row is None:
+            row = await _new_station(
+                conn,
+                user_id=user_id,
+                data=initial_data(catalog),
+                conversation_id=conversation_id,
+            )
+        if row is None:
+            # A racing request bound the conversation to a station first.
+            row = await _chat_station_row(
+                conn,
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
+        if row is None:
+            raise RuntimeError("no free station name")
+        return await attach_partner(
+            conn,
+            state=state_from_row(cast("Mapping[str, object]", row)),
+            owner_id=user_id,
+            inbound=inbound,
+            assistant=assistant,
+        )
+
+
+async def list_workspaces(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+) -> list[WorkspaceSummary]:
+    """List the user's stations, the one changed last first.
+
+    Args:
+      engine: Database connection source.
+      user_id: Owner of the stations.
+
+    Returns:
+      stations: Every station of the user.
+
+    """
+    async with engine.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, station, created_at FROM visual_workspaces "
+            "WHERE user_id = $1 ORDER BY modified_at DESC, id DESC",
+            user_id,
+        )
+    return [
+        WorkspaceSummary.model_validate(
+            StationData.model_validate(row["station"]).model_dump()
+            | {"id": row["id"], "created_at": row["created_at"]},
+        )
+        for row in rows
+    ]
+
+
+async def rename_workspace(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    name: str,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> WorkspaceState | None:
+    """Rename one of the user's stations.
+
+    Args:
+      engine: Database connection source.
+      user_id: Owner of the station.
+      workspace_id: The station.
+      name: The new name, already trimmed and within 1 to 120 characters.
+      inbound: In-process poller leases.
+      assistant: The configured assistant, if any.
+
+    Returns:
+      state: The renamed station with its partner, or None when the user has no
+        such station.
+
+    Raises:
+      StationNameTakenError: The user has another station of that name.
+
+    """
+    async with engine.acquire() as conn:
+        if await conn.fetchval(
+            "SELECT 1 FROM visual_workspaces "
+            "WHERE user_id = $1 AND station->>'name' = $2 AND id <> $3",
+            user_id,
+            name,
+            workspace_id,
+        ):
+            raise StationNameTakenError("You already have a station with that name")
+        row = await conn.fetchrow(
+            vetted_sql(
+                "UPDATE visual_workspaces SET station = coalesce(station, '{}') || ",
+                "jsonb_build_object('name', $3::text), modified_at = clock_timestamp() ",
+                "WHERE id = $1 AND user_id = $2",
+                _RETURNING_STATION,
+            ),
+            workspace_id,
+            user_id,
+            name,
+        )
+        return await _with_partner(
+            conn,
+            row=row,
+            user_id=user_id,
+            inbound=inbound,
+            assistant=assistant,
+        )
+
+
+async def set_workspace_page(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    route: str,
+) -> bool:
+    """Remember the page a station is on. No revision changes and nothing is published.
+
+    The station is then the one changed last, which the app opens.
+
+    Args:
+      engine: Database connection source.
+      user_id: Owner of the station.
+      workspace_id: The station.
+      route: The `#/...` hash, already validated.
+
+    Returns:
+      found: Whether the user has such a station.
+
+    """
+    async with engine.acquire() as conn:
+        return (
+            await conn.fetchval(
+                "UPDATE visual_workspaces SET station = coalesce(station, '{}') || "
+                "jsonb_build_object('page', $3::text), modified_at = clock_timestamp() "
+                "WHERE id = $1 AND user_id = $2 RETURNING 1",
+                workspace_id,
+                user_id,
+                route,
+            )
+            is not None
+        )
+
+
+def next_station_name(names: Iterable[str]) -> str:
+    """Name a station with the lowest ``unnamed-workstream#N`` not in ``names``.
+
+    Args:
+      names: The names the user's stations have.
+
+    Returns:
+      name: ``unnamed-workstream#N`` for the smallest N of 1 or more that is free.
+
+    """
+    taken = {int(m[1]) for name in names if (m := _UNNAMED.fullmatch(name))}
+    return f"{UNNAMED_PREFIX}{next(n for n in count(1) if n not in taken)}"
 
 
 async def read_workspace(
@@ -370,7 +642,7 @@ async def apply_workspace_operation(
 ) -> AppliedOperation | None:
     """Apply one compare-and-swap operation and persist its replay receipt.
 
-    A ``navigate`` or ``highlight`` operation moves no visual and no revision: it
+    A ``navigate``, ``highlight`` or ``chat`` operation moves no visual and no revision: it
     is only recorded, for replay, and an agent key alone may send it. A show names
     a record the visual accepts: its catalog lists the kinds, and one that takes no
     record refuses any.
@@ -431,19 +703,24 @@ async def apply_workspace_operation(
             # computed from the choice now.
             replay = (
                 current
-                if isinstance(body.operation, Navigate | Highlight)
-                else WorkspaceState.model_validate(receipt["response"]).model_copy(
-                    update={"partner_choice": current.partner_choice},
-                )
+                if isinstance(body.operation, Navigate | Highlight | ChatWindow)
+                else WorkspaceState.model_validate(
+                    from_plain(receipt["response"], dict[str, object])
+                    | {
+                        "name": current.name,
+                        "conversation_id": current.conversation_id,
+                        "page": current.page,
+                    },
+                ).model_copy(update={"partner_choice": current.partner_choice})
             )
             return AppliedOperation(
                 state=await with_partner(state=replay),
                 replayed=True,
             )
-        if isinstance(body.operation, Navigate | Highlight):
+        if isinstance(body.operation, Navigate | Highlight | ChatWindow):
             # Nothing changes, so only the key is kept: a retry publishes nothing.
             if agent_api_key_id is None:
-                raise ValueError("Only an agent navigates or highlights.")
+                raise ValueError("Only an agent navigates, highlights or hides Chat.")
             await _remember(
                 conn,
                 workspace_id=workspace_id,
@@ -476,6 +753,9 @@ async def apply_workspace_operation(
         updated = WorkspaceState(
             id=current.id,
             revision=current.revision + 1,
+            name=current.name,
+            conversation_id=current.conversation_id,
+            page=current.page,
             visuals=updated_data.visuals,
             focused_instance=updated_data.focused_instance,
             agent_instructions=updated_data.agent_instructions,
@@ -524,16 +804,20 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
     """Validate stored JSON before returning it as API state.
 
     Args:
-      row: A `visual_workspaces` row with id, revision and state.
+      row: A `visual_workspaces` row with the `_STATION` columns.
 
     Returns:
       state: The validated workspace state.
 
     """
     data = WorkspaceData.model_validate(row["state"])
+    station = StationData.model_validate(row["station"])
     return WorkspaceState(
         id=cast(uuid.UUID, row["id"]),
         revision=from_plain(row.get("revision"), int),
+        name=station.name,
+        conversation_id=station.conversation_id,
+        page=station.page,
         visuals=data.visuals,
         focused_instance=data.focused_instance,
         agent_instructions=data.agent_instructions,
@@ -542,52 +826,182 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
     )
 
 
-async def _chat_target(
+async def _insert_station(
     conn: Conn,
     *,
-    state: WorkspaceState,
-    body: ChatSend,
-) -> tuple[
-    uuid.UUID | None,
-    WorkspaceRecordContext | None,
-    WorkspaceArtifactContent | None,
-]:
-    """Check the chat visual the message came from, and read the record it shows."""
-    if body.chat_instance_id is None and state.visuals:
-        raise ValueError("Chat visual instance required.")
-    record_id = None
-    if body.chat_instance_id is not None:
-        chat = next((v for v in state.visuals if v.id == body.chat_instance_id), None)
-        if chat is None or chat.type != "trax.chat":
-            raise ValueError("Chat visual instance not found.")
-        record_id = chat.record_id
-    if record_id != body.expected_record_id:
-        raise WorkspaceContextChangedError(
-            "Chat target changed; refresh before sending.",
-        )
-    if record_id is None:
-        return None, None, None
-    record = None
-    record_row = await conn.fetchrow(
-        "SELECT id, kind, seq, title FROM inquiries WHERE id = $1",
-        record_id,
+    user_id: uuid.UUID,
+    name: str,
+    data: WorkspaceData,
+    conversation_id: uuid.UUID | None = None,
+    page: str | None = None,
+) -> Record | None:
+    """Insert a station, or return None when its name or chat is taken."""
+    station = StationData(name=name, conversation_id=conversation_id, page=page)
+    return await conn.fetchrow(
+        vetted_sql(
+            "INSERT INTO visual_workspaces (id, user_id, station, state) "
+            "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+            _RETURNING_STATION,
+        ),
+        uuid.uuid4(),
+        user_id,
+        station.model_dump(mode="json", exclude_none=True),
+        data.model_dump(mode="json"),
     )
-    if record_row is not None:
-        record_fields = dict(record_row)
-        record_fields["title"] = from_plain(record_fields.get("title"), str)[:512]
-        record = WorkspaceRecordContext.model_validate(record_fields)
-    artifact_content = None
-    if record is None or record.kind == "Artifact":
-        revision = await read_artifact_content_on_conn(
-            conn,
-            record_id,
-            include_html=False,
+
+
+# A racing create can take the name between the read and the insert, so the name is
+# chosen again a few times; a racing bind of the same chat ends the tries at once, and
+# the station is then None.
+async def _new_station(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    data: WorkspaceData,
+    conversation_id: uuid.UUID | None = None,
+    page: str | None = None,
+) -> Record | None:
+    """Insert a station under the lowest free unnamed name, or None if its chat is taken."""
+    for _ in range(_NAME_ATTEMPTS):
+        names = await conn.fetch(
+            "SELECT station->>'name' AS name FROM visual_workspaces "
+            "WHERE user_id = $1 AND station->>'name' LIKE $2",
+            user_id,
+            f"{UNNAMED_PREFIX}%",
         )
-        if revision is not None:
-            artifact_content = WorkspaceArtifactContent.model_validate(
-                revision.model_dump(),
+        row = await _insert_station(
+            conn,
+            user_id=user_id,
+            name=next_station_name(from_plain(r["name"], str) for r in names),
+            data=data,
+            conversation_id=conversation_id,
+            page=page,
+        )
+        if row is not None:
+            return row
+        if conversation_id is not None and await _station_of_chat(
+            conn,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        ):
+            return None
+    return None
+
+
+async def _with_partner(
+    conn: Conn,
+    *,
+    row: Record | None,
+    user_id: uuid.UUID,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> WorkspaceState | None:
+    """Return a station row as state with its partner, or None for no row."""
+    if row is None:
+        return None
+    return await attach_partner(
+        conn,
+        state=state_from_row(cast("Mapping[str, object]", row)),
+        owner_id=user_id,
+        inbound=inbound,
+        assistant=assistant,
+    )
+
+
+async def _bind_chat(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    state: WorkspaceState,
+    conversation_id: uuid.UUID,
+) -> uuid.UUID:
+    """Give a station without a chat the conversation of its first line."""
+    if state.conversation_id == conversation_id:
+        return state.id
+    if state.conversation_id is not None:
+        raise StationChatError("This station's chat is another conversation")
+    if await _station_of_chat(conn, user_id=user_id, conversation_id=conversation_id):
+        raise StationChatError("Another station of yours holds this chat")
+    await conn.execute(
+        "UPDATE visual_workspaces SET station = coalesce(station, '{}') || "
+        "jsonb_build_object('conversation_id', $2::text), "
+        "modified_at = clock_timestamp() WHERE id = $1",
+        state.id,
+        str(conversation_id),
+    )
+    return state.id
+
+
+# The new station copies the source's state and page; a retry of the fork finds the
+# station the first try made.
+async def _fork_station(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    source: Record,
+    conversation_id: uuid.UUID,
+) -> uuid.UUID:
+    """Return the station of a fork's conversation, making it from its source once."""
+    made = await _station_of_chat(
+        conn,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+    if made is None:
+        row = await _new_station(
+            conn,
+            user_id=user_id,
+            data=WorkspaceData.model_validate(source["state"]),
+            conversation_id=conversation_id,
+            page=state_from_row(cast("Mapping[str, object]", source)).page,
+        )
+        made = (
+            await _station_of_chat(
+                conn,
+                user_id=user_id,
+                conversation_id=conversation_id,
             )
-    return record_id, record, artifact_content
+            if row is None
+            else cast(uuid.UUID, row["id"])
+        )
+    if made is None:
+        raise RuntimeError("fork station insert was not visible")
+    return made
+
+
+async def _station_of_chat(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """Return the user's station that holds a conversation, if they have one."""
+    return cast(
+        uuid.UUID | None,
+        await conn.fetchval(
+            "SELECT id FROM visual_workspaces "
+            "WHERE user_id = $1 AND station->>'conversation_id' = $2",
+            user_id,
+            str(conversation_id),
+        ),
+    )
+
+
+async def _chat_station_row(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+) -> Record | None:
+    """Return the row of the user's station that holds a conversation, if any."""
+    return await conn.fetchrow(
+        vetted_sql(
+            _SELECT_STATION,
+            "WHERE user_id = $1 AND station->>'conversation_id' = $2",
+        ),
+        user_id,
+        str(conversation_id),
+    )
 
 
 async def _remember(
@@ -644,11 +1058,13 @@ async def _check_record(
         raise ValueError("Artifact content not found.")
 
 
-# A browser sees only its own canvas. An agent key may use a canvas only as its Chat
-# partner: the key opened the partner's live session and a live science chat in
-# which the owner is a poster. With a local partner that is the owner's own key;
-# with the shared assistant, the owner's own key is refused by name, so a terminal
-# `trax workspace` learns why. Any other is told nothing.
+# A browser sees only its own stations. An agent key may use a station only as its Chat
+# partner: the key opened the partner's live session and the live science chat the
+# station holds, in which the station's owner is the account or a poster. A station
+# without a chat has no partner to be, so it refuses every agent key. With a local
+# partner that is the owner's own key; with the shared assistant, the owner's own key
+# is refused by name, so a terminal `trax workspace` learns why. Any other is told
+# nothing.
 async def _workspace_for_principal(
     conn: Conn,
     *,
@@ -661,11 +1077,12 @@ async def _workspace_for_principal(
 ) -> tuple[WorkspaceState, uuid.UUID] | None:
     """Find a canvas the principal may read and operate, with its owner."""
     row = await conn.fetchrow(
-        "SELECT id, user_id, revision, state FROM visual_workspaces "
-        "WHERE id = $1 AND ($3::boolean OR user_id = $2) FOR UPDATE"
-        if for_update
-        else "SELECT id, user_id, revision, state FROM visual_workspaces "
-        "WHERE id = $1 AND ($3::boolean OR user_id = $2)",
+        vetted_sql(
+            "SELECT user_id, ",
+            _STATION,
+            " FROM visual_workspaces WHERE id = $1 AND ($3::boolean OR user_id = $2)",
+            " FOR UPDATE" if for_update else "",
+        ),
         workspace_id,
         user_id,
         agent_api_key_id is not None,
@@ -687,6 +1104,7 @@ async def _workspace_for_principal(
         conn,
         owner_id=owner_id,
         partner=partner,
+        conversation_id=state.conversation_id,
         api_key_id=agent_api_key_id,
     ):
         return state, owner_id

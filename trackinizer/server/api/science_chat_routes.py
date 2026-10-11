@@ -22,10 +22,10 @@ from trackinizer.server.visuals.chat_forks import (
     ConversationTakenError,
     ForeignChatError,
 )
-from trackinizer.server.visuals.science_chats import list_chats, read_head
+from trackinizer.server.visuals.science_chats import read_head
 from trackinizer.server.visuals.workspace_store import (
     PartnerBusyError,
-    WorkspaceContextChangedError,
+    StationChatError,
     WorkspaceSessionUnavailableError,
     send_chat_line,
 )
@@ -35,7 +35,6 @@ from trackinizer.wire.wire_science_chat import (
     ChatHead,
     ChatSend,
     ChatSent,
-    ChatSummary,
 )
 
 
@@ -55,21 +54,27 @@ async def post_chat_line_route(
     and a writer outside it is refused with 403 and forks it instead (``fork`` names the
     line to start from), whether the chat is named by ``conversation_id`` or by the
     ``Idempotency-Key`` of a post that names none; a fork whose key names a
-    conversation someone else began is refused with 409. The line's poster is the
+    conversation someone else began is refused with 409. A station holds one chat: its
+    first line binds the station to the line's conversation, and a line naming another
+    conversation is refused with 409, as is one for a conversation another station of
+    the poster holds. A fork goes to a new station, copied from the one it was sent
+    from and named in the answer's ``workspace_id``. The line's poster is the
     attested identity, never anything in the body. The answer is
     the conversation id at once: the conversation's session appears when the
     assistant opens it, and ``GET /api/chats/{id}`` finds it. A retry under the same
     key queues nothing again.
 
     Args:
-      body: The line, the poster's canvas, and the conversation to post into or the
-        line to fork; neither starts one, named by ``key``.
+      body: The line, the poster's station, and the conversation to post into or the
+        line to fork; neither continues the station's chat, else starts one, named by
+        ``key``.
       request: Request carrying the database engine and inbound queue.
       identity: The signed-in writer, who must own the canvas.
       key: Required retry-safe idempotency key.
 
     Returns:
-      sent: The conversation, and its session when the assistant has it open.
+      sent: The conversation, the station it went to, and its session when the
+        assistant has it open.
 
     """
     require_browser(identity)
@@ -91,9 +96,9 @@ async def post_chat_line_route(
     except (
         WorkspaceSessionUnavailableError,
         PartnerBusyError,
-        WorkspaceContextChangedError,
         IdempotencyReuseError,
         ConversationTakenError,
+        StationChatError,
     ) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
@@ -101,28 +106,6 @@ async def post_chat_line_route(
     if sent is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return sent
-
-
-@router.get(CHATS_PATH, response_model=list[ChatSummary])
-async def list_chats_route(
-    request: Request,
-    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
-) -> list[ChatSummary]:
-    """List the science chats the caller started or posted in, newest first, at most 50.
-
-    Args:
-      request: Request carrying the database engine.
-      identity: The signed-in user.
-
-    Returns:
-      chats: The caller's history. Any other science chat opens by its link.
-
-    """
-    return await list_chats(
-        engine_of(request),
-        assistant=get_assistant(request),
-        email=identity.email,
-    )
 
 
 @router.get(CHAT_PATH, response_model=ChatHead)

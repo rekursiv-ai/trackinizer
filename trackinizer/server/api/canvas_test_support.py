@@ -344,20 +344,22 @@ async def open_workspace(
     *,
     user_id: uuid.UUID = TEST_USER_ID,
     email: str = TEST_USER_EMAIL,
+    new: bool = False,
 ) -> uuid.UUID:
-    """Create the user's canvas as a browser.
+    """Open the user's station as a browser.
 
     Args:
       client: The test client.
       user_id: The signed-in user.
       email: Their email.
+      new: Make another station instead of opening the one used last.
 
     Returns:
-      workspace_id: The canvas.
+      workspace_id: The station.
 
     """
     browser(user_id, email=email)
-    created = await client.post("/api/workspaces")
+    created = await client.post("/api/workspaces/new" if new else "/api/workspaces")
     if created.status_code != 200:
         raise ValueError(f"workspace create answered {created.status_code}")
     return uuid.UUID(
@@ -368,68 +370,10 @@ async def open_workspace(
     )
 
 
-async def open_canvas(
-    client: httpx2.AsyncClient,
-    *,
-    user_id: uuid.UUID = TEST_USER_ID,
-    email: str = TEST_USER_EMAIL,
-) -> tuple[uuid.UUID, uuid.UUID]:
-    """Create the user's canvas as a browser and show its Chat visual.
-
-    What ``open_workspace`` then ``show_chat`` do, reading the new canvas's revision
-    from the answer that created it instead of asking for it again.
-
-    Args:
-      client: The test client.
-      user_id: The signed-in user.
-      email: Their email.
-
-    Returns:
-      workspace_id: The new canvas.
-      chat_id: Its Chat visual's instance id.
-
-    """
-    browser(user_id, email=email)
-    created = await client.post("/api/workspaces")
-    if created.status_code != 200:
-        raise ValueError(f"workspace create answered {created.status_code}")
-    state = json_loads(created.content, dict[str, object])
-    workspace_id = uuid.UUID(from_plain(state["id"], str))
-    chat_id = await _show_chat_at(
-        client,
-        workspace_id=workspace_id,
-        revision=from_plain(state["revision"], int),
-    )
-    return workspace_id, chat_id
-
-
-async def show_chat(
-    client: httpx2.AsyncClient,
-    *,
-    workspace_id: uuid.UUID,
-) -> uuid.UUID:
-    """Show the Chat visual as the installed browser.
-
-    Args:
-      client: The test client.
-      workspace_id: The canvas.
-
-    Returns:
-      chat_id: The Chat visual's instance id.
-
-    """
-    return await _show_chat_at(
-        client,
-        workspace_id=workspace_id,
-        revision=await revision_of(client, workspace_id=workspace_id),
-    )
-
-
 async def send_chat(
     client: httpx2.AsyncClient,
     *,
     workspace_id: uuid.UUID,
-    chat_id: uuid.UUID,
     text: str,
     conversation_id: uuid.UUID | None = None,
     key: uuid.UUID | None = None,
@@ -441,7 +385,6 @@ async def send_chat(
     Args:
       client: The test client.
       workspace_id: The canvas.
-      chat_id: Its Chat visual.
       text: The line.
       conversation_id: The conversation to post into; none starts one.
       key: The idempotency key; a fresh one by default.
@@ -461,8 +404,6 @@ async def send_chat(
         json={
             "workspace_id": str(workspace_id),
             "text": text,
-            "chat_instance_id": str(chat_id),
-            "expected_record_id": None,
             "conversation_id": None
             if conversation_id is None
             else str(conversation_id),
@@ -494,7 +435,6 @@ async def converse(
     store: Store,
     *,
     workspace_id: uuid.UUID,
-    chat_id: uuid.UUID,
     text: str = "hello",
 ) -> uuid.UUID:
     """Post a line as the browser, and have the assistant open the conversation.
@@ -503,7 +443,6 @@ async def converse(
       client: The test client.
       store: The test database.
       workspace_id: The canvas.
-      chat_id: Its Chat visual.
       text: The line.
 
     Returns:
@@ -512,7 +451,7 @@ async def converse(
     """
     browser()
     conversation_id = conversation_of(
-        await send_chat(client, workspace_id=workspace_id, chat_id=chat_id, text=text),
+        await send_chat(client, workspace_id=workspace_id, text=text),
     )
     return await open_science_chat(client, store, conversation_id=conversation_id)
 
@@ -522,7 +461,6 @@ async def seed_converse(
     store: Store,
     *,
     workspace_id: uuid.UUID,
-    chat_id: uuid.UUID,
     text: str = "hello",
 ) -> uuid.UUID:
     """Post a line as the browser, and have the assistant open the conversation.
@@ -533,7 +471,6 @@ async def seed_converse(
       client: The test client.
       store: The test database.
       workspace_id: The canvas.
-      chat_id: Its Chat visual.
       text: The line.
 
     Returns:
@@ -542,7 +479,7 @@ async def seed_converse(
     """
     browser()
     conversation_id = conversation_of(
-        await send_chat(client, workspace_id=workspace_id, chat_id=chat_id, text=text),
+        await send_chat(client, workspace_id=workspace_id, text=text),
     )
     return await seed_science_chat(store, conversation_id=conversation_id)
 
@@ -581,34 +518,6 @@ async def drain(
 
     """
     return await client.get(f"/api/sessions/{session_id}/inbound")
-
-
-async def _show_chat_at(
-    client: httpx2.AsyncClient,
-    *,
-    workspace_id: uuid.UUID,
-    revision: int,
-) -> uuid.UUID:
-    """Show the Chat visual on a canvas at ``revision``; return its instance id."""
-    # pragma: no mutate start -- a header name's case is an equivalent mutant.
-    headers = {"Idempotency-Key": str(uuid.uuid4())}
-    # pragma: no mutate end
-    shown = await client.post(
-        f"/api/workspaces/{workspace_id}/operations",
-        json={
-            "revision": revision,
-            "operation": {"kind": "show", "visual_type": "trax.chat"},
-        },
-        headers=headers,
-    )
-    if shown.status_code != 200:
-        raise ValueError(f"show answered {shown.status_code}")
-    visuals = from_plain(
-        json_loads(shown.content, dict[str, object])["visuals"],
-        list[dict[str, object]],
-    )
-    chat = next(v for v in visuals if v["type"] == "trax.chat")
-    return uuid.UUID(from_plain(chat["id"], str))
 
 
 def _agent(key_id: uuid.UUID, *, user_id: uuid.UUID, email: str, role: Role) -> None:

@@ -4,8 +4,8 @@ A science chat is an AgentSession the assistant account opened, or the reader's 
 ``trax helper`` when their canvas chose it, whose ``cli_session_id`` is
 ``chat:<conversation id>`` and whose labels hold ``science-chat``, and
 ``poster:<email>`` for each person who posted. Nothing here writes: the partner
-records lines, and these are the two reads that find a chat for a person (their
-history) and for a conversation id (a link, or a line just posted). A session
+records lines, and these reads find a chat for a conversation id (a link, or a line
+just posted). A session
 carrying the same id under another account's key is not a chat.
 """
 
@@ -26,9 +26,7 @@ from trackinizer.wire.wire_science_chat import (
     SCIENCE_CHAT_LABEL,
     ChatForkAt,
     ChatHead,
-    ChatSummary,
     chat_session_id,
-    poster_label,
 )
 
 
@@ -38,17 +36,12 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "MAX_CHATS",
     "chat_openers",
-    "list_chats",
     "read_head",
     "read_starter",
     "science_chat_exists_at",
 ]
 
-
-MAX_CHATS: Final = 50
-"""Chats the history lists."""
 
 # A conversation holds one session per assistant key that has spoken in it: a rotated
 # key opens a new one, since a session is resumed only by the key that opened it. The
@@ -69,17 +62,6 @@ _CHAT: Final = (
     "LEFT JOIN session_liveness AS liveness ON liveness.session_id = sess.id "
     "WHERE sess.kind = 'AgentSession' AND opener.email = ANY($1::text[]) "
     "AND sess.agentsession_cli_session_id LIKE 'chat:%' AND $2 = ANY(sess.labels)) "
-)
-
-_LISTED: Final = (
-    ", mine AS (SELECT DISTINCT cli_session_id FROM chat "
-    "WHERE account = $3 OR $4 = ANY(labels)) "
-    "SELECT session_id, cli_session_id, title, account, modified, live "
-    "FROM (SELECT DISTINCT ON (chat.cli_session_id) chat.* FROM chat "
-    "JOIN mine USING (cli_session_id) "
-    "ORDER BY chat.cli_session_id, chat.live DESC, chat.created DESC, "
-    "chat.session_id DESC) AS latest "
-    "ORDER BY modified DESC, session_id DESC LIMIT $5"
 )
 
 _HEAD: Final = (
@@ -136,50 +118,6 @@ _LINE: Final = (
     "AND EXISTS (SELECT 1 FROM chat WHERE session_id = $3 "
     "AND audience = ANY($6::text[]))"
 )
-
-
-async def list_chats(
-    engine: DatabaseEngine,
-    *,
-    assistant: Assistant | None,
-    email: str,
-) -> list[ChatSummary]:
-    """List the science chats a person started or posted in, newest first.
-
-    Args:
-      engine: Database connection source.
-      assistant: The configured assistant, if any; the chats of the person's own
-        helper are listed without one.
-      email: The person.
-
-    Returns:
-      chats: At most :data:`MAX_CHATS` chats, by when they were last heard from.
-
-    """
-    async with engine.acquire() as conn:
-        rows = await conn.fetch(
-            _CHAT + _LISTED,
-            chat_openers(assistant, email=email),
-            SCIENCE_CHAT_LABEL,
-            email,
-            poster_label(email),
-            MAX_CHATS,
-        )
-    chats: list[ChatSummary] = []
-    for row in rows:
-        found = _Row.model_validate(dict(row))
-        conversation = _conversation_named(found.cli_session_id)
-        if conversation is not None:
-            chats.append(
-                ChatSummary(
-                    conversation_id=conversation,
-                    session_id=found.session_id,
-                    title=found.title,
-                    account=found.account,
-                    modified=found.modified,
-                ),
-            )
-    return chats
 
 
 async def read_head(

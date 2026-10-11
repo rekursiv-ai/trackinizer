@@ -22,7 +22,6 @@ def test_default_workspace_builds_the_default_catalog() -> None:
     assert default_workspace().catalog() == default_catalog()
     assert [visual.type for visual in default_catalog().visuals] == [
         "trax.browse",
-        "trax.chat",
         "trax.subgraph",
         "trax.timeline",
         "trax.artifact",
@@ -35,14 +34,14 @@ def test_static_visual_is_configured_by_data() -> None:
         type="x.notes",
         title="Notes",
         description="Free-form notes.",
-        requires=["session"],
+        requires=["record"],
         default_size="compact",
     ).make()
     described = visual.describe()
     assert (described.type, described.title, described.requires) == (
         "x.notes",
         "Notes",
-        ["session"],
+        ["record"],
     )
     assert described.default_size == "compact"
     assert described.parameter_schema == {}
@@ -62,7 +61,6 @@ def test_record_visuals_name_the_kinds_they_accept() -> None:
     kinds = {visual.type: visual.record_kinds for visual in default_catalog().visuals}
     assert kinds == {
         "trax.browse": [],
-        "trax.chat": None,
         "trax.subgraph": None,
         "trax.timeline": None,
         "trax.artifact": ["Artifact"],

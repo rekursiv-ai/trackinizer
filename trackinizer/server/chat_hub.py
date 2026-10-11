@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ChangedFrame",
+    "ChatFrame",
     "ChatHub",
     "Frame",
     "HighlightFrame",
@@ -57,8 +58,6 @@ class WorkspaceFrame(_Stamped):
 
     type: Literal["workspace"] = "workspace"
     state: WorkspaceState
-    shown: UUID | None = None
-    """The instance an agent's show brought up with this change, else None."""
 
 
 class NavigateFrame(_Stamped):
@@ -75,6 +74,13 @@ class HighlightFrame(_Stamped):
     ids: list[UUID]
 
 
+class ChatFrame(_Stamped):
+    """An agent hid or showed the tab's Chat window. Not replayed, nor stored."""
+
+    type: Literal["chat"] = "chat"
+    hidden: bool
+
+
 class ChangedFrame(_Stamped):
     """An inquiry changed, as ``/api/web/subscribe`` reports it."""
 
@@ -82,7 +88,7 @@ class ChangedFrame(_Stamped):
     id: str
 
 
-type Frame = WorkspaceFrame | NavigateFrame | HighlightFrame | ChangedFrame
+type Frame = WorkspaceFrame | NavigateFrame | HighlightFrame | ChatFrame | ChangedFrame
 
 
 @dataclass(frozen=True, slots=True, kw_only=True, eq=False)

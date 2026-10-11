@@ -384,15 +384,12 @@ async def read_artifact_content(
 async def read_artifact_content_on_conn(
     conn: Conn,
     artifact_id: uuid.UUID,
-    *,
-    include_html: bool = True,
 ) -> ArtifactContentRevision | None:
     """Resolve one published Artifact on the caller's transaction connection.
 
     Args:
       conn: Connection holding the caller's workspace transaction.
       artifact_id: Canonical Artifact identity for this revision.
-      include_html: Whether to transfer the potentially large HTML body.
 
     Returns:
       revision: The requested content, or None when absent.
@@ -400,23 +397,16 @@ async def read_artifact_content_on_conn(
     """
     row = await conn.fetchrow(
         "SELECT revisions.report_id, revisions.revision, revisions.artifact_id, "
-        "CASE WHEN $2 THEN revisions.content ELSE revisions.content - 'html' END "
-        "AS content, revisions.created_at, "
+        "revisions.content, revisions.created_at, "
         "revisions.author_email AS author, "
         "reports.issue_id FROM visual_report_revisions AS revisions "
         "JOIN visual_reports AS reports ON reports.id = revisions.report_id "
         "WHERE revisions.artifact_id = $1",
         artifact_id,
-        include_html,
     )
     if row is None:
         return None
-    if include_html:
-        return _revision_from_row(cast("Mapping[str, object]", row))
-    content = from_plain(row["content"], dict[str, object])
-    return _revision_from_row(
-        {**dict(row), "content": {**content, "html": None}},
-    )
+    return _revision_from_row(cast("Mapping[str, object]", row))
 
 
 async def _snapshot_content(

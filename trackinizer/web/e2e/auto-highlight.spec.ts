@@ -45,8 +45,8 @@ async function openConversation(page: Page, lines: readonly { kind: string; cont
   await page.route(`**/api/chats/${conversation}`, (route) => route.fulfill({ json: {
     conversation_id: conversation, session_id: session, title: "E2E", account: email, live: true, forks: 0, forked_from: null, forks_on_typing: false,
   } }));
-  const workspace = await (await request.post("/api/workspaces")).json();
-  await page.addInitScript(([key, value]) => localStorage.setItem(key!, value!), [`trackinizer.v2.chat.${workspace.id}`, conversation]);
+  // A new station for that chat, which is then the one changed last, so the tab opens on it.
+  expect((await request.post(`/api/workspaces/for-chat/${conversation}`)).ok()).toBe(true);
   return { email, answer: (content: string, at: number) => capture(at, [{ kind: "AssistantMessage", content }]) };
 }
 

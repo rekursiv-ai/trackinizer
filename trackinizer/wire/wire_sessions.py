@@ -19,7 +19,7 @@ not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final, Literal
+from typing import Final
 
 import uuid
 
@@ -52,6 +52,7 @@ def _reject_blank(value: str | None) -> str | None:
 
 
 __all__ = [
+    "CONSOLE_RELAY_MARK",
     "FEED_FACETS_PATH",
     "FEED_HISTOGRAM_PATH",
     "FEED_PATH",
@@ -63,6 +64,9 @@ __all__ = [
     "SESSION_RECORDS_PATH",
     "SESSION_START_PATH",
     "VERSION_PATH",
+    "ConsoleRelay",
+    "ConsoleRelayReceipt",
+    "ConsoleTarget",
     "DrainInboundResponse",
     "FeedActorFacet",
     "FeedBucket",
@@ -82,7 +86,6 @@ __all__ = [
     "SessionEndResponse",
     "SessionStart",
     "SessionStartResponse",
-    "WorkspaceArtifactContent",
     "WorkspaceMessageContext",
     "WorkspaceRecordContext",
     "WorkspaceVisibleVisual",
@@ -354,70 +357,12 @@ class InboundEnqueueRequest(BaseModel):
 
 
 class WorkspaceRecordContext(BaseModel):
-    """A graph record targeted by chat, with a bounded title preview."""
+    """A graph record the sender sees on screen, with a bounded title preview."""
 
     id: uuid.UUID
     kind: str
     seq: int
     title: str = Field(max_length=512)
-
-
-class WorkspaceArtifactCitation(BaseModel):
-    """A publication-time graph row and its optional signed edge."""
-
-    record_id: uuid.UUID
-    kind: str
-    seq: int
-    title: str
-    claim_id: uuid.UUID | None = None
-    claim_kind: str | None = None
-    claim_seq: int | None = None
-    claim_title: str | None = None
-    edge_kind: Literal["proves", "favors"] | None = None
-    valence: float | None = Field(default=None, ge=-1, le=1)
-    note: str | None = None
-
-
-class WorkspaceArtifactOutcome(BaseModel):
-    """The measured result frozen in an Artifact finding."""
-
-    result: str
-    denominator: int
-    split: str
-
-
-class WorkspaceArtifactFinding(BaseModel):
-    """One Artifact conclusion and its publication-time evidence."""
-
-    claim: str
-    outcome: WorkspaceArtifactOutcome
-    uncertainty: str
-    citations: list[WorkspaceArtifactCitation]
-
-
-class WorkspaceArtifactSection(BaseModel):
-    """A published section with its evidenced findings."""
-
-    title: str
-    summary: str
-    details: str
-    findings: list[WorkspaceArtifactFinding]
-
-
-class WorkspaceArtifactContent(BaseModel):
-    """Server-read publication metadata and frozen citations for chat."""
-
-    revision: int = Field(ge=1)
-    artifact_id: uuid.UUID
-    issue_id: uuid.UUID
-    title: str
-    summary: str
-    author: str
-    created_at: datetime
-    scope: Literal["team"]
-    format: Literal["html", "structured"]
-    citations: list[WorkspaceArtifactCitation]
-    sections: list[WorkspaceArtifactSection]
 
 
 class WorkspaceVisibleVisual(BaseModel):
@@ -438,15 +383,62 @@ class WorkspacePage(BaseModel):
     record: WorkspaceRecordContext | None = None
 
 
+class ConsoleTarget(BaseModel):
+    """An agent a Console line was sent to, as ``@actor`` or ``@actor:room``."""
+
+    actor: str = Field(min_length=1)
+    room: str | None = None
+
+    _validate_scalars = field_validator("actor", "room", mode="after")(
+        staticmethod(_reject_blank),
+    )
+
+
+CONSOLE_RELAY_MARK: Final = "→ "
+"""What a Console relay line starts with in a station's chat: an arrow, then a space.
+The web draws a line that starts with it as a relay, neither the person's nor the
+partner's."""
+
+
+class ConsoleRelay(BaseModel):
+    """What a person sent agents directly from the Console, told to their station's chat.
+
+    Posted by the browser after the per-agent sends, and carried in the context of
+    the message the chat's partner then receives. The partner records it in the
+    chat as :meth:`line` and answers nothing, but reads it in its next prompt, so it
+    never contradicts what the person told the agents.
+    """
+
+    targets: list[ConsoleTarget] = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
+
+    def line(self) -> str:
+        """Return the chat line that records the relay: ``-> a, b:room: text``.
+
+        Returns:
+          line: The relay mark, each target as ``actor`` or ``actor:room``, then
+            the text.
+
+        """
+        names = ", ".join(
+            target.actor if target.room is None else f"{target.actor}:{target.room}"
+            for target in self.targets
+        )
+        return f"{CONSOLE_RELAY_MARK}{names}: {self.text}"
+
+
+class ConsoleRelayReceipt(BaseModel):
+    """Whether the station's chat partner took a Console relay."""
+
+    delivered: bool
+    """False when the station has no chat, or its partner is not running or is full.
+    The agents already have the message, so this is not an error."""
+
+
 class WorkspaceMessageContext(BaseModel):
     """Server-derived canvas context attached to an inbound message."""
 
     workspace_id: uuid.UUID
-    record_id: uuid.UUID | None = None
-    """Persisted target ID, including records on a separate read profile."""
-
-    record: WorkspaceRecordContext | None = None
-    artifact_content: WorkspaceArtifactContent | None = None
     visible_visuals: list[WorkspaceVisibleVisual]
     agent_instructions: str | None = Field(default=None, max_length=8_192)
     continuation_record_id: uuid.UUID | None = None
@@ -462,6 +454,10 @@ class WorkspaceMessageContext(BaseModel):
 
     trail: list[WorkspacePage] = Field(default_factory=list)
     """The pages they came through before it, oldest first."""
+
+    relay: ConsoleRelay | None = None
+    """Set when the message is not a question for the partner but a note of what the
+    person told agents from the Console; the message text is the relay's text."""
 
 
 class InboundDrainItem(BaseModel):

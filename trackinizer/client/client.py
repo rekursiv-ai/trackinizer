@@ -1812,6 +1812,32 @@ class Client:
         )
         return dict(_require_mapping(marked, where))
 
+    def chat_window(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        hidden: bool,
+    ) -> dict[str, PlainTree]:
+        """Hide or show the browser tab's Chat window; an event, so no revision is read.
+
+        Args:
+          workspace_id: The canvas.
+          hidden: True to hide Chat, False to show it again.
+
+        Returns:
+          state: The workspace state, which the window does not change.
+
+        """
+        where = f"/api/workspaces/{workspace_id}/operations"
+        windowed = self.post(
+            where,
+            body={
+                "revision": 0,
+                "operation": {"kind": "chat", "hidden": hidden},
+            },
+        )
+        return dict(_require_mapping(windowed, where))
+
     def _revision_of(self, workspace_id: uuid.UUID) -> int:
         """Return the canvas's live revision."""
         where = f"/api/workspaces/{workspace_id}"

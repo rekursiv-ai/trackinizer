@@ -21,7 +21,7 @@ from trackinizer.addons.deployment import (
     deployment_config,
     supervise,
 )
-from trackinizer.server.visuals.catalog import Workspace
+from trackinizer.server.visuals.catalog import StaticVisual, Workspace
 
 
 if TYPE_CHECKING:
@@ -111,6 +111,18 @@ def two_addons() -> Site:
     return Site()
 
 
+def notes_site() -> Site:
+    """Return a deployment of two test addons whose catalog can open on notes."""
+    site = Site()
+    site.visuals = Workspace.Config(
+        visuals=[
+            StaticVisual.Config(type="x.notes", title="Notes", description="Notes."),
+        ],
+        default_visual="x.notes",
+    )
+    return site
+
+
 def not_a_deployment() -> NamedAddon.Config:
     """Return an addon config where a deployment is expected."""
     return NamedAddon.Config()
@@ -129,10 +141,15 @@ def test_the_catalog_describes_each_addon_by_placement() -> None:
 
 def test_the_visual_catalog_is_part_of_the_deployment() -> None:
     cfg = Deployment.Config()
-    cfg.visuals.default_visual = "trax.chat"
+    cfg.visuals = Workspace.Config(
+        visuals=[
+            StaticVisual.Config(type="x.notes", title="Notes", description="Notes."),
+        ],
+        default_visual="x.notes",
+    )
     deployment = cfg.make()
     assert isinstance(deployment.visuals, Workspace)
-    assert deployment.visuals.default_visual == "trax.chat"
+    assert deployment.visuals.default_visual == "x.notes"
 
 
 def test_a_field_that_is_not_an_addon_config_is_refused() -> None:
@@ -170,13 +187,13 @@ def test_a_factory_path_resolves_and_takes_overrides() -> None:
 
 def test_an_override_reaches_a_field_of_a_named_addon() -> None:
     config = deployment_config(
-        f"{__name__}.two_addons",
-        overrides=["second.title=Renamed", "visuals.default_visual=trax.chat"],
+        f"{__name__}.notes_site",
+        overrides=["second.title=Renamed", "visuals.default_visual=x.notes"],
     )
     deployment = config.make()
     assert deployment.manifest("first").title == "Named"
     assert deployment.manifest("second").title == "Renamed"
-    assert deployment.visuals.default_visual == "trax.chat"
+    assert deployment.visuals.default_visual == "x.notes"
 
 
 def test_an_override_naming_an_unknown_addon_is_refused() -> None:

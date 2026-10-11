@@ -34,8 +34,8 @@ from trackinizer.server.api.canvas_test_support import (
     browser,
     conversation_of,
     drain,
-    open_canvas,
     open_science_chat,
+    open_workspace,
     revision_of,
     seed_accounts,
     seed_science_chat,
@@ -82,14 +82,11 @@ async def _canvas(
     client: httpx2.AsyncClient,
     *,
     other: bool = False,
-) -> tuple[
-    uuid.UUID,
-    uuid.UUID,
-]:
-    """Open a user's canvas with its Chat visual; return both ids."""
+) -> uuid.UUID:
+    """Open a user's canvas; return its id."""
     if other:
-        return await open_canvas(client, user_id=OTHER_USER_ID, email=OTHER_EMAIL)
-    return await open_canvas(client)
+        return await open_workspace(client, user_id=OTHER_USER_ID, email=OTHER_EMAIL)
+    return await open_workspace(client)
 
 
 async def _drained(
@@ -117,13 +114,12 @@ async def test_a_writer_starts_a_conversation_and_the_assistant_hears_the_line(
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     key = uuid.uuid4()
 
     sent = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="what do we know about tails?",
         key=key,
     )
@@ -132,7 +128,11 @@ async def test_a_writer_starts_a_conversation_and_the_assistant_hears_the_line(
     receipt = json_loads(sent.content, dict[str, object])
     # A new conversation is named by its key, and has no session until the
     # assistant opens it.
-    assert receipt == {"conversation_id": str(key), "session_id": None}
+    assert receipt == {
+        "conversation_id": str(key),
+        "session_id": None,
+        "workspace_id": str(workspace_id),
+    }
     [heard] = await _drained(client, session_id=kb)
     assert heard["text"] == "what do we know about tails?"
     assert (heard["source"], heard["source_role"]) == (TEST_USER_EMAIL, "writer")
@@ -152,13 +152,12 @@ async def test_a_viewer_cannot_post_and_nothing_is_queued(
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
 
     install_identity(make_test_identity(api_key_id=None, role="viewer"))
     refused = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="let me in",
     )
 
@@ -176,13 +175,12 @@ async def test_a_key_cannot_post_through_a_canvas(
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
 
     act_as_user_agent("writer")
     refused = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="as a key",
     )
 
@@ -199,7 +197,7 @@ async def test_the_poster_is_the_identity_and_the_body_cannot_name_one(
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     browser()
 
     forged = await client.post(
@@ -207,7 +205,6 @@ async def test_the_poster_is_the_identity_and_the_body_cannot_name_one(
         json={
             "workspace_id": str(workspace_id),
             "text": "hi",
-            "chat_instance_id": str(chat_id),
             "source": "ceo@example.com",
         },
         headers={"Idempotency-Key": str(uuid.uuid4())},
@@ -215,7 +212,6 @@ async def test_the_poster_is_the_identity_and_the_body_cannot_name_one(
     honest = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="hi",
     )
 
@@ -234,20 +230,18 @@ async def test_a_retry_under_one_key_queues_the_line_once(
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     key = uuid.uuid4()
 
     first = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="once",
         key=key,
     )
     retry = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="once",
         key=key,
     )
@@ -266,19 +260,17 @@ async def test_a_key_reused_for_another_line_is_refused_and_queues_nothing(
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     key = uuid.uuid4()
     first = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="first",
         key=key,
     )
     other = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="a different line",
         key=key,
     )
@@ -294,12 +286,11 @@ async def test_a_post_with_no_assistant_running_is_refused(
 ) -> None:
     client, store = pglite_route_client
     await seed_accounts(store)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
 
     refused = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="anyone there",
     )
 
@@ -316,12 +307,11 @@ async def test_a_second_writer_posts_into_the_first_ones_open_chat(
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
-    first_canvas, first_chat = await _canvas(client)
+    first_canvas = await _canvas(client)
     started = conversation_of(
         await send_chat(
             client,
             workspace_id=first_canvas,
-            chat_id=first_chat,
             text="hello from ada",
         ),
     )
@@ -331,11 +321,10 @@ async def test_a_second_writer_posts_into_the_first_ones_open_chat(
     ]
 
     browser(OTHER_USER_ID, email=OTHER_EMAIL)
-    second_canvas, second_chat = await _canvas(client, other=True)
+    second_canvas = await _canvas(client, other=True)
     joined = await send_chat(
         client,
         workspace_id=second_canvas,
-        chat_id=second_chat,
         text="and from grace",
         conversation_id=started,
     )
@@ -344,6 +333,7 @@ async def test_a_second_writer_posts_into_the_first_ones_open_chat(
     assert json_loads(joined.content, dict[str, object]) == {
         "conversation_id": str(started),
         "session_id": str(chat),
+        "workspace_id": str(second_canvas),
     }
     assert await _drained(client, session_id=kb) == []
     [heard] = await _drained(client, session_id=chat)
@@ -362,9 +352,9 @@ async def test_a_chat_the_assistant_closed_is_reopened_through_its_service_sessi
     client, store = pglite_route_client
     await seed_accounts(store)
     kb = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     started = conversation_of(
-        await send_chat(client, workspace_id=workspace_id, chat_id=chat_id, text="a"),
+        await send_chat(client, workspace_id=workspace_id, text="a"),
     )
     chat = await seed_science_chat(store, conversation_id=started)
     act_as_assistant("writer")
@@ -376,7 +366,6 @@ async def test_a_chat_the_assistant_closed_is_reopened_through_its_service_sessi
     again = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="b",
         conversation_id=started,
     )
@@ -398,9 +387,9 @@ async def test_lines_still_queued_when_a_chat_is_closed_go_to_the_assistants_ser
     client, store = pglite_route_client
     await seed_accounts(store)
     kb = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     started = conversation_of(
-        await send_chat(client, workspace_id=workspace_id, chat_id=chat_id, text="a"),
+        await send_chat(client, workspace_id=workspace_id, text="a"),
     )
     chat = await seed_science_chat(store, conversation_id=started)
     await _drained(client, session_id=kb)
@@ -408,7 +397,6 @@ async def test_lines_still_queued_when_a_chat_is_closed_go_to_the_assistants_ser
     joined = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="b",
         conversation_id=started,
     )
@@ -433,14 +421,13 @@ async def test_a_foreign_canvas_is_not_found(pglite_route_client: _Client) -> No
     await seed_accounts(store)
     act_as_assistant()
     await start_session(client, actor=KB_ACTOR)
-    _, chat_id = await _canvas(client)
-    foreign, _ = await _canvas(client, other=True)
+    _ = await _canvas(client)
+    foreign = await _canvas(client, other=True)
 
     browser()
     refused = await send_chat(
         client,
         workspace_id=foreign,
-        chat_id=chat_id,
         text="in your canvas",
     )
 
@@ -503,56 +490,6 @@ async def test_a_session_that_only_carries_the_id_is_not_the_conversation(
     browser()
 
     assert (await client.get(f"/api/chats/{conversation}")).status_code == 404
-    listed = await client.get("/api/chats")
-    assert json_loads(listed.content, list[object]) == []
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_the_history_is_the_chats_i_started_or_posted_in(
-    pglite_route_client: _Client,
-) -> None:
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    mine, joined, theirs = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    mine_session = await open_science_chat(client, store, conversation_id=mine)
-    joined_session = await open_science_chat(
-        client,
-        store,
-        conversation_id=joined,
-        account=OTHER_EMAIL,
-        posters=(TEST_USER_EMAIL,),
-    )
-    await open_science_chat(
-        client,
-        store,
-        conversation_id=theirs,
-        account=OTHER_EMAIL,
-    )
-    act_as_assistant("writer")
-    other = await start_session(client, actor="not-a-chat")
-    assert other
-
-    browser()
-    mine_list = json_loads(
-        (await client.get("/api/chats")).content,
-        list[dict[str, object]],
-    )
-    assert {each["conversation_id"] for each in mine_list} == {str(mine), str(joined)}
-    by_id = {each["conversation_id"]: each for each in mine_list}
-    assert by_id[str(mine)]["session_id"] == str(mine_session)
-    assert by_id[str(joined)]["session_id"] == str(joined_session)
-    assert by_id[str(joined)]["account"] == OTHER_EMAIL
-
-    browser(OTHER_USER_ID, email=OTHER_EMAIL)
-    others_list = json_loads(
-        (await client.get("/api/chats")).content,
-        list[dict[str, object]],
-    )
-    assert {each["conversation_id"] for each in others_list} == {
-        str(joined),
-        str(theirs),
-    }
 
 
 @pytest.mark.db_pglite
@@ -603,13 +540,6 @@ async def test_a_rotated_assistant_key_leaves_one_chat_read_from_its_newest_sess
         dict[str, object],
     )
     assert (head["session_id"], head["live"]) == (str(reopened), True)
-    listed = json_loads(
-        (await client.get("/api/chats")).content,
-        list[dict[str, object]],
-    )
-    assert [(each["conversation_id"], each["session_id"]) for each in listed] == [
-        (str(conversation), str(reopened)),
-    ]
 
 
 @pytest.mark.db_pglite
@@ -683,7 +613,6 @@ async def test_without_an_assistant_there_are_no_chats(
     monkeypatch.setattr(app.state, "config", None, raising=False)
     browser()
 
-    assert json_loads((await client.get("/api/chats")).content, list[object]) == []
     assert (await client.get(f"/api/chats/{conversation}")).status_code == 404
 
 
@@ -695,7 +624,6 @@ def test_no_route_deletes_or_edits_a_chat() -> None:
         if path.startswith("/api/chats")
     ]
     assert sorted((path, sorted(methods)) for path, methods in chat_routes) == [
-        ("/api/chats", ["GET"]),
         ("/api/chats", ["POST"]),
         ("/api/chats/{conversation_id}", ["GET"]),
     ]
@@ -790,8 +718,8 @@ async def test_a_record_appended_to_a_chat_reaches_every_viewers_stream(
     """The change is the session's id, on the stream of each user's canvas."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    first_canvas, _ = await _canvas(client)
-    second_canvas, _ = await _canvas(client, other=True)
+    first_canvas = await _canvas(client)
+    second_canvas = await _canvas(client, other=True)
     chat = await seed_science_chat(store, conversation_id=uuid.uuid4())
     first = await _opened_stream(
         first_canvas,
@@ -829,8 +757,8 @@ async def test_a_record_appended_to_a_staff_chat_reaches_only_a_viewer_who_reads
     """A viewer of open hears of the open chat's line, and of nothing the staff chat got."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    first_canvas, _ = await _canvas(client)
-    second_canvas, _ = await _canvas(client, other=True)
+    first_canvas = await _canvas(client)
+    second_canvas = await _canvas(client, other=True)
     staff_chat = await seed_science_chat(store, conversation_id=uuid.uuid4())
     open_chat = await seed_science_chat(store, conversation_id=uuid.uuid4())
     async with store.engine.acquire() as conn:
@@ -903,7 +831,7 @@ async def test_a_line_carries_the_records_of_the_page_trail_and_visuals(
     kb = await start_session(client, actor=KB_ACTOR)
     experiment_id, issue_id = await _seed_screen_records(store)
     missing = uuid.uuid4()
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     shown = await client.post(
         f"/api/workspaces/{workspace_id}/operations",
         json={
@@ -928,7 +856,6 @@ async def test_a_line_carries_the_records_of_the_page_trail_and_visuals(
     sent = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="what about this experiment in context?",
         screen={"page": "#/ref/Experiment/987654", "trail": trail},
     )
@@ -958,7 +885,7 @@ async def test_a_line_carries_the_records_of_the_page_trail_and_visuals(
         ).get("record")
         for item in from_plain(context["visible_visuals"], list[object])
     }
-    assert (visuals["trax.chat"], visuals["trax.subgraph"]) == (None, experiment)
+    assert (visuals["trax.browse"], visuals["trax.subgraph"]) == (None, experiment)
 
 
 @pytest.mark.db_pglite
@@ -980,12 +907,11 @@ async def test_a_line_with_a_bad_route_or_a_long_trail_is_refused(
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
 
     refused = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="hi",
         screen=screen,
     )
@@ -1051,7 +977,7 @@ async def test_a_local_choice_makes_the_owners_helper_the_partner(
     await seed_accounts(store)
     scout = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     helper = await seed_session(store, USER_AGENT, actor="helper", cli=CHAT_HELPER_CLI)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     shared = await _state(client, workspace_id=workspace_id)
     assert shared["partner_choice"] == "shared"
     assert _partner(shared)["session_id"] == str(scout)
@@ -1073,7 +999,6 @@ async def test_a_local_choice_makes_the_owners_helper_the_partner(
     sent = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="hello",
     )
     assert json_loads(sent.content, dict[str, object])["session_id"] is None
@@ -1092,11 +1017,21 @@ async def test_a_chat_the_helper_opened_is_read_through_the_owners_key_and_not_t
     await seed_accounts(store)
     await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     helper = await seed_session(store, USER_AGENT, actor="helper", cli=CHAT_HELPER_CLI)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     assert (
         await _choose(client, workspace_id=workspace_id, choice="local")
     ).status_code == 200
     conversation = uuid.uuid4()
+    first = await send_chat(
+        client,
+        workspace_id=workspace_id,
+        text="first",
+        conversation_id=conversation,
+    )
+    assert first.status_code == 200
+    assert [m["text"] for m in await _drained_by_helper(client, session_id=helper)] == [
+        "first",
+    ]
 
     # The helper opens the chat; the owner's key now passes, the assistant's does not.
     chat = await seed_helper_chat(store, conversation_id=conversation)
@@ -1106,12 +1041,11 @@ async def test_a_chat_the_helper_opened_is_read_through_the_owners_key_and_not_t
     assert (await client.get(f"/api/workspaces/{workspace_id}")).status_code == 404
 
     # Its next line still goes to the helper's service session, which is what the
-    # helper drains; its history finds the chat.
+    # helper drains; the link finds the chat.
     browser()
     joined = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="and then?",
         conversation_id=conversation,
     )
@@ -1119,12 +1053,6 @@ async def test_a_chat_the_helper_opened_is_read_through_the_owners_key_and_not_t
     [again] = await _drained_by_helper(client, session_id=helper)
     assert again["text"] == "and then?"
     assert await _drained_by_owner(client, session_id=chat) == []
-    listed = json_loads((await client.get("/api/chats")).content, list[object])
-    assert [
-        from_plain(each, dict[str, object])["conversation_id"] for each in listed
-    ] == [
-        str(conversation),
-    ]
     head = await client.get(f"/api/chats/{conversation}")
     assert head.status_code == 200
 
@@ -1256,12 +1184,12 @@ async def test_another_writer_cannot_poll_a_helper_chat_to_divert_the_owners_lin
     client, store = pglite_route_client
     await seed_accounts(store)
     helper = await seed_session(store, USER_AGENT, actor="helper", cli=CHAT_HELPER_CLI)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     assert (
         await _choose(client, workspace_id=workspace_id, choice="local")
     ).status_code == 200
     conversation = conversation_of(
-        await send_chat(client, workspace_id=workspace_id, chat_id=chat_id, text="1"),
+        await send_chat(client, workspace_id=workspace_id, text="1"),
     )
     chat = await seed_helper_chat(store, conversation_id=conversation)
     assert [m["text"] for m in await _drained_by_owner(client, session_id=helper)] == [
@@ -1276,7 +1204,6 @@ async def test_another_writer_cannot_poll_a_helper_chat_to_divert_the_owners_lin
     second = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="2",
         conversation_id=conversation,
     )
@@ -1303,9 +1230,9 @@ async def test_a_local_canvas_cannot_post_into_a_chat_the_assistant_holds(
     await seed_accounts(store)
     _ = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     helper = await seed_session(store, USER_AGENT, actor="helper", cli=CHAT_HELPER_CLI)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     started = conversation_of(
-        await send_chat(client, workspace_id=workspace_id, chat_id=chat_id, text="a"),
+        await send_chat(client, workspace_id=workspace_id, text="a"),
     )
     _ = await seed_science_chat(store, conversation_id=started)
     browser()
@@ -1316,7 +1243,6 @@ async def test_a_local_canvas_cannot_post_into_a_chat_the_assistant_holds(
     refused = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="b",
         conversation_id=started,
     )
@@ -1324,12 +1250,14 @@ async def test_a_local_canvas_cannot_post_into_a_chat_the_assistant_holds(
     assert refused.status_code == 409
     assert "shared assistant" in refused.text
     assert await _drained_by_owner(client, session_id=helper) == []
-    # A conversation of its own is still the helper's.
-    browser()
+    # A station of its own, with a conversation of its own, is still the helper's.
+    fresh_id = await open_workspace(client, new=True)
+    assert (
+        await _choose(client, workspace_id=fresh_id, choice="local")
+    ).status_code == 200
     fresh = await send_chat(
         client,
-        workspace_id=workspace_id,
-        chat_id=chat_id,
+        workspace_id=fresh_id,
         text="c",
     )
     assert fresh.status_code == 200
@@ -1348,7 +1276,7 @@ async def test_a_local_choice_with_no_helper_running_refuses_a_post(
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
 
     chosen = await _choose(client, workspace_id=workspace_id, choice="local")
     assert chosen.status_code == 200
@@ -1362,7 +1290,6 @@ async def test_a_local_choice_with_no_helper_running_refuses_a_post(
     refused = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="anyone?",
     )
     assert refused.status_code == 409
@@ -1385,7 +1312,7 @@ async def test_another_users_helper_never_becomes_this_owners_partner(
         actor="helper",
         cli=CHAT_HELPER_CLI,
     )
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     await _choose(client, workspace_id=workspace_id, choice="local")
     state = await _state(client, workspace_id=workspace_id)
     assert state["partner_choice"] == "local"
@@ -1396,7 +1323,6 @@ async def test_another_users_helper_never_becomes_this_owners_partner(
     refused = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="hello",
     )
     assert refused.status_code == 409
@@ -1415,9 +1341,9 @@ async def test_a_shared_canvas_still_refuses_its_owners_own_key(
     client, store = pglite_route_client
     await seed_accounts(store)
     await seed_session(store, ASSISTANT, actor=KB_ACTOR)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     started = conversation_of(
-        await send_chat(client, workspace_id=workspace_id, chat_id=chat_id, text="a"),
+        await send_chat(client, workspace_id=workspace_id, text="a"),
     )
     _ = await seed_science_chat(store, conversation_id=started)
     act_as_user_agent()
@@ -1440,9 +1366,9 @@ async def test_only_the_owners_browser_chooses_the_partner(
     client, store = pglite_route_client
     await seed_accounts(store)
     await seed_session(store, ASSISTANT, actor=KB_ACTOR)
-    workspace_id, chat_id = await _canvas(client)
+    workspace_id = await _canvas(client)
     started = conversation_of(
-        await send_chat(client, workspace_id=workspace_id, chat_id=chat_id, text="a"),
+        await send_chat(client, workspace_id=workspace_id, text="a"),
     )
     _ = await seed_science_chat(store, conversation_id=started)
     act_as_assistant()

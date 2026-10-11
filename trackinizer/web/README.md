@@ -23,7 +23,7 @@ anyone when it runs with `--no-auth`. Any other browser gets the sign-in page.
 - `test/testdata/` holds the server's real answer to the calls of the
   modules in `fixtures_test.py`'s table (see
   [response shapes](#response-shapes-and-fixtures)); the canvas's and Chat's
-  calls (`workspaces`, `chats`, and the visuals, presets, timeline and Artifact
+  calls (`workspaces`, `chats`, and the visuals, timeline and Artifact
   modules) have none.
 - `e2e/` is the Playwright suite, `e2e/live/` its live and responsiveness part.
 - `scripts/` holds the schema dump, the local preview, the seed and writer
@@ -275,20 +275,22 @@ with one response shape, so the fixtures take one per verb.
   each a history entry; j and k move within the deepest column, and Enter opens
   its selection. A click leaves the focus where it was, as a list's buttons do,
   so Enter after a click still opens the selection.
-- The canvas is on for everyone (`visual_workspace_enabled` defaults true;
-  Settings' Agent workspace opts out). It wraps every view but Settings and
-  Admin, so Chat stays while an agent moves the page. Its chunk loads only for a
-  user who has it on, together with Chat's, the renderer it shows first, so the
-  canvas's first render suspends on nothing (a suspended renderer holds its
-  fallback for React's 300 ms throttle, which cost a cold first load of a page
-  250 to 300 ms); until both are in, the shell holds its busy frame, and the view
-  then mounts once, inside the canvas.
+- The workbench (the canvas) is on for everyone (`visual_workspace_enabled`
+  defaults true; Settings' Agent workspace opts out, "Enable agent-guided
+  workbench"). It has no toolbar row: its visual toggles and Artifact link are
+  the sidebar's Workbench section (see the sidebar below). It wraps every view
+  but Settings and Admin, so Chat stays while an agent moves the page. Its chunk
+  loads only for a
+  user who has it on, together with Chat's column (`src/visuals/ChatColumn.tsx`),
+  so neither first render suspends (a suspended view holds its fallback for
+  React's 300 ms throttle, which cost a cold first load of a page 250 to 300 ms);
+  until both are in, the shell holds its busy frame, and the view then mounts
+  once, inside the canvas, inside the column.
 - The page is `trax.browse`: it has no record or parameters, it cannot be
-  dismissed (no ×, and Configure's box is fixed), and a crash in it shows the
-  app's crash screen (Copy details, Reload) inside the canvas, which clears when
-  the page moves. The record the canvas's Chat button means is the one the
-  address names (`#/lookup/<id>`, or `#/ref/<Kind>/<seq>` resolved), never a
-  visual's.
+  dismissed (no ×, and its toggle in the Workbench section is disabled), and a
+  crash in it shows the app's crash screen (Copy details, Reload) inside the
+  canvas, which clears when
+  the page moves.
 - Navigation is an event. An agent's `navigate` frame moves the page when
   `parseHash` accepts its `#/...` route (any other is ignored), and writes
   nothing. The browser's own links, Chat's, the record context, the context
@@ -298,30 +300,84 @@ with one response shape, so the fixtures take one per verb.
   them fit 1280 px beside the sidebar with no sideways scroll; at 900 px and
   narrower they stack, each 400 px or 48% of the screen high, and the stage
   scrolls up and down.
+- Chat is a column of its own beside the canvas (`ChatColumn`), not a visual in
+  it: on the left by default, a third of the screen wide or 80 characters of its
+  own font plus its padding, whichever is less (the CSS sets `ch` on the column,
+  so it is Chat's font that is counted). A divider between Chat and the canvas
+  resizes it by the pointer or the arrow keys (16 px, 48 with Shift), down to
+  280 px and up to seven tenths of the row; the width is kept in
+  `localStorage` with the canvas's sizes (`trackinizer.v2.canvas.sizes`, `chat`).
+  A button in Chat's header moves it to the other side, kept under
+  `trackinizer.chat.side`. State that lasts only for the page, hidden and full
+  screen, lives with the side in one store (`src/visuals/chatColumn.ts`), so a
+  reload shows Chat. `Ctrl+\` (⌘\) hides and shows it, from the box too; hidden,
+  it leaves an 8 px strip in the accent colour at its edge, and a press on the
+  strip shows it. An agent hides and shows it with a `chat` frame
+  (`{type: "chat", hidden, t}`, routed to the store by `CanvasStream`; a hide leaves
+  full screen, a show keeps the side, and a reload shows Chat). Resting the pointer
+  on the strip for 120 ms opens Chat over the canvas at its column width, with no
+  reflow; it folds 300 ms after the pointer and the keyboard have left
+  (`hoverOpen.ts`), and its Pin button, a click on the strip or the hide key stand
+  it beside the canvas again. Alt+Enter makes it fill the main area, the canvas kept
+  mounted and hidden; Esc or Alt+Enter returns. Alt+Enter never sends from a
+  composer. All three are commands in the ⌘K palette, mounted with the column,
+  so they exist only where Chat does. Under 900 px Chat stands under the page at
+  full width. Nothing of Chat covers the canvas while an agent moves it.
+- A station is a named workstream: a canvas with at most one chat, a name and the
+  page it last showed (`src/stations/`). The tab shows one at a time. Its id is the
+  one `stations/store.ts` holds, kept in `localStorage` under
+  `trackinizer.station.current` as the last opened; a tab with none asks the server
+  (`POST /api/workspaces`, the station opened last, or the first), and a kept
+  station that is gone is replaced the same way. `useStation` reads it from the
+  cache the stream keeps (`["workspace", id]`), and `CanvasStream`, the canvas,
+  Chat and the Settings partner choice all read that one entry. Switching
+  (`showStation`) seeds the cache, reopens the stream for the new id and moves the
+  page to the station's own (the graph when it has none). The page is written back
+  by `usePageSync` at most once every 500 ms, and not for a switch until the
+  address is where the switch sent it. The tab's title is `<station name> ·
+  Trackinizer`.
+- Chat's header opens the station menu (`StationMenu`) from the station's name: a
+  search by name (any case), every station newest opened first, Enter or a click to
+  open one, Esc to close, Rename in place (a taken name says "That name is taken")
+  and New station. `g ]` and `g [` walk the renamed stations (names that are not
+  `unnamed-workstream#N`) in the order they were made, wrapping; `g s` opens the
+  menu with the search focused; each station is a palette command, "Open station
+  <name>". There is no History and no Clear chat: search replaces the first, New
+  station the second.
 - Chat talks to the server's assistant (`src/visuals/Chat.tsx`). A conversation is
   a science chat: an AgentSession (label `science-chat`, `cli_session_id`
   `chat:<conversation id>`) that the assistant opens. Chat reads the session's
   records; there is no chat store. Its header names the partner
-  (`workspace.partner`) and has History and Clear chat. The History menu has the
-  `menu` role, its items `menuitemradio` with the current one checked, and Escape
-  closes it. History lists `GET /api/chats` (the chats the user started or posted
-  in: title, age, starter) on each open; picking one opens it. Any other science
-  chat opens by link: a session's page, or the Console line, offers Continue in
-  Chat (`useContinueInChat`, `src/visuals/continueChat.ts`), which leaves a
-  request on the shell's `ChatFeed` and shows Chat; Chat resolves the session
-  (`cli_session_id`, label) and opens its conversation, or says "That session is
-  not a science chat." Clear chat starts an empty conversation and keeps the old
-  one: the next send goes with `conversationId: null`, and the receipt's id
-  becomes the open one, unless the user has picked another conversation since.
-  The open conversation is held by the shell (`ChatFeed`), so Chat mounting again
-  keeps it, and in `localStorage` under `trackinizer.v2.chat.<workspace id>`, so
-  a reload reopens it; with storage refused it lasts until the page does.
+  (`workspace.partner`) and has the side button. Which conversation Chat shows is
+  the station's `conversation_id`, which the first line binds (the receipt's
+  `workspace_id` names the station it went to; a fork is a station of its own, which
+  the tab then shows on the page it is on). Any other science chat opens by link: a
+  session's page, or the Console line, offers Continue in Chat (`useContinueInChat`,
+  `src/visuals/continueChat.ts`), which leaves a request on the shell's `ChatFeed` and
+  shows Chat, if it is hidden; Chat resolves the session (`cli_session_id`, label),
+  and `POST /api/workspaces/for-chat/<conversation>` opens the user's station for it
+  (made, if there is none) and the tab shows that, or says "That session is not a
+  science chat."
+- The Console, opened inside a station, starts on that station's agents: its feed,
+  facets and histogram reads carry `station=<id>` (the sessions its chat started
+  agents in, the chat itself left out), and a Scope control (This station / All
+  sessions) widens it and narrows it again. The station's own chat is hidden
+  widened too, and no `chat-*` actor is a message target (an `@` completion, a To
+  chip, `@*`, or a typed `@chat-...`, which says "open its station"); another
+  station's chat line offers Open station, which goes through Chat's for-chat
+  switch. The box names its targets ("Message lead-2"). When a line's per-target
+  sends have all settled, one `POST /api/workspaces/<id>/relay` tells the station's
+  chat, with the targets that took it, under a key made with the line's route (a
+  Retry reuses it); `{delivered: false}`, or a failed relay, adds "Chat not told" to
+  the receipt. The chat records that as a line starting `→ ` (`RELAY_MARK`), which
+  Chat draws as "you → lead-2: text" in its own style (a dim comment line in the
+  Terminal style), and which counts as none of the person's own lines.
 - Chat sends the page it is on: each line carries `page`, the `#/...` hash as it
   is sent, and `trail`, the up to 8 hashes before it, oldest first (routes only;
   the server resolves their records). `src/router/trail.ts` records them from
-  `main.tsx` on, so pages visited before Chat opened count. With no record
-  pinned, Chat shows `On screen: Kind#seq title` for the record a
-  `#/lookup/<id>` or `#/ref/<Kind>/<seq>` page shows, and follows the page.
+  `main.tsx` on, so pages visited before Chat opened count. Chat shows
+  `On screen: Kind#seq title` for the record a `#/lookup/<id>` or
+  `#/ref/<Kind>/<seq>` page shows, and follows the page; a line pins no record.
 - The partner is the shared assistant, or the owner's own `trax helper` when the
   canvas chooses `local`; with none live, Chat says how to start one
   (`ChatOff`, `HelperCommands`) and the box is off.
@@ -377,10 +433,7 @@ with one response shape, so the fixtures take one per verb.
   refused (4xx) shows the server's reason and offers no Retry; one that got no
   answer, or a 5xx, keeps the draft with Retry under one idempotency key. The
   transcript follows the newest row, the working row too, unless the reader has
-  scrolled up. Chat shows no write error of its own: the canvas shows it once. A
-  Chat about a record links to it and has Clear context, which returns Chat to
-  the side. The canvas toolbar's Chat button shows Chat at the side, or focuses
-  it when it is shown.
+  scrolled up.
 - The graph is the home view. It draws the newest 1,000 inquiries by default,
   or 100, 5,000, all of them, or any count typed into the Nodes menu (a typed
   count picks exactly that count: 50 is 50, and 1,000 the 1k preset), each
@@ -448,16 +501,26 @@ with one response shape, so the fixtures take one per verb.
   stays collapsed as the selection moves, as VS Code's and Linear's panels
   do: only its button, `]`, or Space in a list expands it. Peek's detail shows
   its rail whatever the detail page chose, with no button for it. Collapsing
-  or expanding one frames the graph again. The canvas's Configure opens its
-  panel, and Done collapses it.
-- The app's sidebar collapses too, by the button beside New or ⌘B (Ctrl+B),
-  as VS Code's primary side bar does: `[` and `]` stay each view's own. It
-  narrows to a 48 px rail of its icons, as VS Code's activity bar is: the
-  button that expands it on top, then search, New and every entry in its
-  order, each a link named and titled by its label, the current one marked,
-  and the user's avatar at the foot. Rules stand in for the section headings.
-  The graph frames again in the width it gives. Narrow, the sidebar is the
-  drawer, whole, whether collapsed or not, and has no collapse button.
+  or expanding one frames the graph again.
+- The app's sidebar folds away and stands on one side only, opposite Chat, so
+  flipping Chat's side moves both (`src/app/Shell.tsx`). It starts as a 48 px
+  rail of its icons, as VS Code's activity bar is: the button that pins it open
+  on top, then Search, New and every entry in its order, each a link named and
+  titled by its label, the current one marked, and the user's avatar at the
+  foot. Rules stand in for the section headings. Resting the pointer on the
+  rail for 120 ms opens it over the workbench, which keeps its width; it folds
+  300 ms after the pointer and the keyboard have left it (the timings of
+  Chat's folded tile, `useHoverOpen`), and a link followed folds it at once. The
+  button beside the logo, or ⌘B (Ctrl+B), as VS Code's primary side bar does,
+  pins it open, taking room from the workbench. It stands at the sidebar's outer
+  edge, so it stays put as the rail opens and folds, over a row of Search and
+  New; `[` and `]` stay each view's own. The graph frames again in the width a
+  pin gives. While a workbench is mounted
+  the sidebar has a Workbench section: the visual toggles and the Artifact
+  link (the section's body is a slot, `src/app/workbenchSlot.tsx`, that the
+  canvas draws into). In the rail it is one icon, which opens the sidebar on
+  its controls. Narrow, the sidebar is the drawer, whole, whether collapsed or
+  not, and has no collapse button.
 - The sun or moon beside the user, in the sidebar or its rail, switches the
   theme to light or dark; Settings' Appearance also offers System, and shows
   a switch made here at once (`useTheme` in `src/theme.ts`).
@@ -643,8 +706,7 @@ with one response shape, so the fixtures take one per verb.
   stays in its strip while dragged (the strip would clip it) and a card with
   its name follows the pointer. Every visual but the page also has two dock
   buttons, ◧ and ◨, the same docking by one press or by the keyboard. The page
-  stays the page: docked, its bar only focuses. Chat dragged out floats as it
-  does standing aside (below), open under the pointer that dropped it.
+  stays the page: docked, its bar only focuses.
 - Every boundary on the canvas resizes what it bounds, as a desktop's windows
   and an editor's panes do. A floating window resizes by any of its four edges
   and four corners: the opposite sides stay, it never goes under 280 by 220 px,
@@ -655,21 +717,8 @@ with one response shape, so the fixtures take one per verb.
   other, down to each one's least size. The sizes are this browser's, kept in
   `localStorage` (`trackinizer.v2.canvas.sizes`): a column's width per side, a
   window's size per visual type, and a docked tile's share of its strip per
-  visual type (an even share is 1). Opening a saved view forgets the windows'
-  sizes, as it forgets their places, and shows the view's.
-- Chat is docked beside the page: in the column at either side, or in the main
-  strip when placed there. A canvas that stored it floating shows it at the
-  right. When an
-  agent moves the page (`navigate`) or shows a visual (a `workspace` frame's
-  `shown`), Chat stands aside: the same tile, never mounted again, floats over
-  the page folded to a filled bar. It opens after the pointer has rested on it
-  120 ms, stays open while the pointer is over it or the keyboard is in its
-  contents, and folds 300 ms after both have left; each later navigation or
-  show folds it at once. A dock button on its bar puts it back at that side,
-  and the toolbar's Chat at the side it came from.
-  Standing aside is the tab's own state (`ChatFeed.aside`), never the canvas's:
-  a reload starts docked, and its fold is not remembered.
-- A floating canvas tile (a visual placed Float, or Chat standing aside) moves
+  visual type (an even share is 1).
+- A floating canvas tile (a visual placed Float) moves
   by its whole top bar and by the
   ⠿ handle, which also moves by the arrow keys (16 px, 48 with Shift) and never
   docks. A press on the bar that stays within 4 px is a click, which focuses;
@@ -679,8 +728,7 @@ with one response shape, so the fixtures take one per verb.
   is a transform on the tile alone, kept inside the stage, and the canvas takes
   the place once, on release. The place and the fold are kept per visual type in
   `ui.tiles` (`{collapsed, place: {left, top} | null}`), so they survive a
-  reload; a browser that cannot store keeps them for the session. Opening a
-  saved view forgets the places and shows the view's. A drag and an arrow key
+  reload; a browser that cannot store keeps them for the session. A drag and an arrow key
   start from where the tile is drawn, which the stage's hold may have moved from
   the saved place. The stage holds each tile from the place it is meant to stand
   at, not from where an earlier hold left it, so a tile a narrow window pushed in
@@ -715,16 +763,15 @@ with one response shape, so the fixtures take one per verb.
   them; whether a panel shows is the tab's preference, as the key's is.
 - So is whether each panel that collapses is collapsed, in `sessionStorage`
   under `trackinizer.v2.panel.<id>`: `app.sidebar`, `peek`, `graph.results`,
-  `detail.rail`, `console.rail` and `visuals.configure`. A new tab starts with
-  each expanded, and Configure's closed.
+  `detail.rail` and `console.rail`. A new tab starts with each expanded, but
+  the sidebar, which starts as a rail.
 - Drafts live in their editor's state, never in a cached row, so a refetch
   leaves them alone.
 - The canvas's state is `["workspace", id]` in the cache, filled by the shell's
   workspace events stream (`newerWorkspace` keeps the newest revision) and, once,
-  by a read. A conversation's records are `["chat", "records", session]`, its head
-  `["chat", "head", id]` and its history `["chats"]`. What is not records (how
-  often the stream opened, each canvas's open conversation and a Continue in Chat
-  request) is the shell's `ChatFeed`
+  by a read. A conversation's records are `["chat", "records", session]` and its head
+  `["chat", "head", id]`; the user's stations are `["stations"]`. What is not records
+  (how often the stream opened and a Continue in Chat request) is the shell's `ChatFeed`
   (`src/visuals/chatFeed.ts`), above Chat, which is a lazy chunk that may load
   after a frame arrived and mount again.
 

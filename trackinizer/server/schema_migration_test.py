@@ -29,6 +29,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib import postgres
+from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.sql import load_sql
@@ -38,6 +39,8 @@ from trackinizer.wire.filters import NON_NULLABLE_COLUMNS
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+    from trackinizer.lib.postgres import Conn, DatabaseEngine
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -505,8 +508,8 @@ async def test_migration_033_gives_an_old_canvas_chat_once_on_postgres(
             user,
         )
         await conn.execute(
-            "INSERT INTO visual_workspaces (id, user_id, revision, state) "
-            "VALUES ($1, $2, 5, $3)",
+            "INSERT INTO visual_workspaces (id, user_id, station, revision, state) "
+            'VALUES ($1, $2, \'{"name": "unnamed-workstream#1"}\', 5, $3)',
             workspace,
             user,
             {"visuals": [browse]},
@@ -974,6 +977,170 @@ async def _table_shape(
         },
         {from_plain(r["indexdef"], str) for r in indexes},
     )
+
+
+_CATALOG = (
+    "SELECT 'table' AS kind, tablename AS name, '' AS definition "
+    "FROM pg_tables WHERE schemaname = 'public' "
+    "UNION ALL SELECT 'column', table_name || '.' || column_name, "
+    "data_type || ':' || is_nullable || ':' || coalesce(column_default, '') "
+    "FROM information_schema.columns WHERE table_schema = 'public' "
+    "UNION ALL SELECT 'constraint', relation.relname || '.' || con.conname, "
+    "regexp_replace(pg_get_constraintdef(con.oid), '\\s+', ' ', 'g') "
+    "FROM pg_constraint AS con "
+    "JOIN pg_class AS relation ON relation.oid = con.conrelid "
+    "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+    "WHERE namespace.nspname = 'public' "
+    "UNION ALL SELECT 'index', tablename || '.' || indexname, indexdef "
+    "FROM pg_indexes WHERE schemaname = 'public' "
+    "UNION ALL SELECT 'sequence', relation.relname, '' "
+    "FROM pg_class AS relation "
+    "JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace "
+    "WHERE namespace.nspname = 'public' AND relation.relkind = 'S'"
+)
+"""Every table, column, constraint, index and sequence of the public schema."""
+
+
+async def _make_stations_old(conn: Conn) -> None:
+    """Turn a fresh database's stations back into 038's one-default-canvas shape."""
+    await conn.execute(
+        "ALTER TABLE visual_workspaces DROP COLUMN station, "
+        "ADD COLUMN is_default BOOLEAN NOT NULL DEFAULT TRUE, "
+        "ADD COLUMN session_id UUID REFERENCES inquiries(id) ON DELETE SET NULL",
+    )
+    await conn.execute(
+        "CREATE UNIQUE INDEX uq_visual_workspaces_default_user "
+        "ON visual_workspaces (user_id) WHERE is_default",
+    )
+    await conn.execute(load_sql("schema.027"))
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.042.sql'")
+
+
+async def _seed_old_stations(conn: Conn) -> dict[str, uuid.UUID]:
+    """Give two users a canvas each, and presets that collide in every way."""
+    ada, bo = uuid.uuid4(), uuid.uuid4()
+    for user, email in ((ada, "ada@example.com"), (bo, "bo@example.com")):
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, $2, 'T', 'writer', 'active')",
+            user,
+            email,
+        )
+    canvas, continuation = uuid.uuid4(), uuid.uuid4()
+    for owner in (ada, bo):
+        await conn.execute(
+            "INSERT INTO visual_workspaces (id, user_id, revision, state) "
+            "VALUES ($1, $2, 4, $3)",
+            canvas if owner == ada else uuid.uuid4(),
+            owner,
+            {"visuals": []},
+        )
+    guided: dict[str, object] = {
+        "visuals": [],
+        "agent_instructions": "Compare the tails first.",
+        "continuation_record_id": str(continuation),
+    }
+    empty: dict[str, object] = {"visuals": []}
+    presets = (
+        (ada, "Review", guided, 1),
+        (ada, "Review", empty, 2),
+        (ada, "unnamed-workstream#1", empty, 3),
+        (ada, "x" * 120, empty, 4),
+        (ada, "x" * 120, empty, 5),
+        (bo, "Review", empty, 6),
+    )
+    for owner, name, state, day in presets:
+        await conn.execute(
+            "INSERT INTO visual_workspace_presets "
+            "(id, user_id, name, state, created_at, modified_at) "
+            "VALUES (gen_random_uuid(), $1, $2, $3, $4, $4)",
+            owner,
+            name,
+            state,
+            datetime(2026, 1, day, tzinfo=UTC),
+        )
+    return {"ada": ada, "bo": bo, "canvas": canvas, "continuation": continuation}
+
+
+async def _check_stations_migrated(engine: DatabaseEngine) -> None:
+    """Migrate 038's stations by bootstrap, and compare them with a fresh install."""
+    await Store(engine, embed=StubEmbedder()).bootstrap()
+    async with engine.acquire() as conn:
+        fresh = {tuple(row.values()) for row in await conn.fetch(_CATALOG)}
+        await _make_stations_old(conn)
+        ids = await _seed_old_stations(conn)
+    await Store(engine, embed=StubEmbedder()).bootstrap()
+    async with engine.acquire() as conn:
+        migrated = {tuple(row.values()) for row in await conn.fetch(_CATALOG)}
+        ledger = await conn.fetchval(
+            "SELECT count(*) FROM applied_migrations WHERE name = 'schema.042.sql'",
+        )
+        stations = await conn.fetch(
+            "SELECT id, user_id, station->>'name' AS name, station->>'conversation_id' "
+            "AS conversation_id, revision, state "
+            "FROM visual_workspaces ORDER BY modified_at DESC, station->>'name'",
+        )
+        columns = await conn.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'visual_workspaces' ORDER BY ordinal_position",
+        )
+    assert fresh
+    assert migrated == fresh
+    assert ledger == 1
+    # Trax's columns stay as they were; the station's fields are one optional JSON.
+    assert [r["column_name"] for r in columns] == [
+        "id",
+        "user_id",
+        "revision",
+        "state",
+        "created_at",
+        "modified_at",
+        "station",
+    ]
+    ada = sorted(
+        from_plain(r["name"], str) for r in stations if r["user_id"] == ids["ada"]
+    )
+    assert ada == sorted(
+        [
+            "unnamed-workstream#1",
+            "Review",
+            "Review (2)",
+            "unnamed-workstream#1 (2)",
+            "x" * 120,
+            "x" * 116 + " (2)",
+        ],
+    )
+    assert [r["name"] for r in stations if r["user_id"] == ids["bo"]].count(
+        "Review",
+    ) == 1
+    assert {r["conversation_id"] for r in stations} == {None}
+    # The canvas stays the station the app opens, ahead of every converted view.
+    [canvas] = [r for r in stations if r["id"] == ids["canvas"]]
+    assert (canvas["name"], canvas["revision"]) == ("unnamed-workstream#1", 4)
+    assert ids["canvas"] in {r["id"] for r in stations[:2]}
+    kept = [r for r in stations if r["name"] == "Review" and r["user_id"] == ids["ada"]]
+    state = from_plain(kept[0]["state"], dict[str, object])
+    assert state["agent_instructions"] == "Compare the tails first."
+    assert state["continuation_record_id"] == str(ids["continuation"])
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_042_makes_stations_of_canvases_and_presets_on_pglite(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """Old canvases and saved views become stations, and the catalog equals fresh."""
+    await reset_schema(pglite_engine)
+    await _check_stations_migrated(pglite_engine)
+
+
+@pytest.mark.db_postgres
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_042_makes_stations_of_canvases_and_presets_on_postgres(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """The same on real Postgres, whose constraint and DO-block handling PGlite mirrors."""
+    await _check_stations_migrated(scratch_engine)
 
 
 if __name__ == "__main__":

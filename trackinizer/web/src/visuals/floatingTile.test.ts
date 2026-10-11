@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { EMPTY_STATE } from "../state/value";
-import { CLICK_SLOP, finishGesture, moveGesture, rememberedTile, resizeRect, slideDivider, SNAP_SIDE, SNAP_TOP, snapZone, startGesture, TEAR_SLOP, withoutPlaces, withTile } from "./floatingTile";
+import { CLICK_SLOP, finishGesture, moveGesture, rememberedTile, resizeRect, slideDivider, SNAP_SIDE, SNAP_TOP, snapZone, startGesture, TEAR_SLOP, withTile } from "./floatingTile";
 
 const START = { x: 100, y: 100, left: 50, top: 60, maxLeft: 500, maxTop: 300 };
 
@@ -41,27 +41,18 @@ test("a stage smaller than the tile pins it to the corner", () => {
 });
 
 test("a tile never touched is expanded and unplaced", () => {
-  expect(rememberedTile(EMPTY_STATE, "trax.chat")).toEqual({ collapsed: false, place: null });
+  expect(rememberedTile(EMPTY_STATE, "trax.subgraph")).toEqual({ collapsed: false, place: null });
 });
 
 test("withTile changes one tile's memory and leaves the rest of the state alone", () => {
-  const first = withTile(EMPTY_STATE, "trax.chat", { collapsed: true });
-  expect(rememberedTile(first, "trax.chat")).toEqual({ collapsed: true, place: null });
-  const second = withTile(first, "trax.chat", { place: { left: 8, top: 9 } });
-  expect(rememberedTile(second, "trax.chat")).toEqual({ collapsed: true, place: { left: 8, top: 9 } });
+  const first = withTile(EMPTY_STATE, "trax.subgraph", { collapsed: true });
+  expect(rememberedTile(first, "trax.subgraph")).toEqual({ collapsed: true, place: null });
+  const second = withTile(first, "trax.subgraph", { place: { left: 8, top: 9 } });
+  expect(rememberedTile(second, "trax.subgraph")).toEqual({ collapsed: true, place: { left: 8, top: 9 } });
   expect(second.stars).toBe(EMPTY_STATE.stars);
   expect(second.ui.collapsed).toBe(EMPTY_STATE.ui.collapsed);
   const other = withTile(second, "trax.timeline", { collapsed: true });
-  expect(rememberedTile(other, "trax.chat")).toEqual(rememberedTile(second, "trax.chat"));
-});
-
-test("withoutPlaces forgets where tiles were dragged and keeps whether they are collapsed", () => {
-  const placed = withTile(withTile(EMPTY_STATE, "trax.chat", { collapsed: true, place: { left: 1, top: 2 } }), "trax.timeline", { place: { left: 3, top: 4 } });
-  const cleared = withoutPlaces(placed);
-  expect(cleared.ui.tiles).toEqual({
-    "trax.chat": { collapsed: true, place: null },
-    "trax.timeline": { collapsed: false, place: null },
-  });
+  expect(rememberedTile(other, "trax.subgraph")).toEqual(rememberedTile(second, "trax.subgraph"));
 });
 
 test("a docked tile's press is a click until it has gone the tear slop", () => {

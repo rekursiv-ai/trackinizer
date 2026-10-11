@@ -23,6 +23,7 @@ from trackinizer.server.audience import OPEN_ONLY, hidden_exists_sql
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import manifest_bound, vetted_sql
+from trackinizer.wire.wire_science_chat import CHAT_SESSION_PREFIX
 from trackinizer.wire.wire_sessions import (
     FeedActorFacet,
     FeedBucket,
@@ -47,8 +48,32 @@ __all__ = [
     "WHOLE_FEED",
     "BucketGrid",
     "FeedScope",
+    "StationAgents",
     "_SessionFeedMixin",
 ]
+
+
+_STATION_DEPTH: Final = 4
+"""How many ``produced_by`` edges below its chat's session a station's agents reach:
+the lead, then what it launched, and so on."""
+
+_STATION_AGENTS: Final = 500
+"""The most sessions a station's agents are read from."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StationAgents:
+    """The agents of one station: the sessions its chat's session produced.
+
+    A campaign launched from a chat makes its lead's session ``produced_by`` the
+    chat's, and the lead's workers ``produced_by`` the lead's. The chat is found
+    by ``chat:<conversation id>`` of the station's conversation, read in the same
+    query, and only for the station's ``user_id``: another user's station, and one
+    with no chat, keep nothing.
+    """
+
+    workspace_id: UUID
+    user_id: UUID
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -57,7 +82,8 @@ class FeedScope:
 
     An empty field does not filter. ``actors`` names sessions by routing name
     (``owner``), ``rooms`` by a room they joined, ``clis`` by the CLI they wrap;
-    ``kinds`` names record kinds. ``audiences`` is what the reader may read: a record
+    ``kinds`` names record kinds; ``station`` keeps the agents of one station,
+    never its chat's own session. ``audiences`` is what the reader may read: a record
     of a session outside it is on no page and in no count, whatever else is named.
     """
 
@@ -65,18 +91,20 @@ class FeedScope:
     rooms: tuple[str, ...] = ()
     clis: tuple[str, ...] = ()
     kinds: tuple[str, ...] = ()
+    station: StationAgents | None = None
     audiences: frozenset[str] = OPEN_ONLY
 
     @property
     def names_sessions(self) -> bool:
         """Whether the scope picks sessions, which takes their ``inquiries`` row."""
-        return bool(self.actors or self.rooms or self.clis)
+        return bool(self.actors or self.rooms or self.clis or self.station)
 
     def clauses(self, params: list[object], *, kind: str) -> list[str]:
         """Return the SQL that keeps this scope, binding its values onto ``params``.
 
         Args:
-          params: The query's bound values so far; each named field appends one.
+          params: The query's bound values so far; each named field appends one,
+            and a station five.
           kind: The record-kind column. ``i`` must name the session's
             ``inquiries`` row.
 
@@ -94,6 +122,18 @@ class FeedScope:
             if values:
                 params.append(list(values))
                 out.append(f"{test}(${len(params)}::text[])")
+        if self.station is not None:
+            first = len(params)
+            params.extend(
+                (
+                    self.station.workspace_id,
+                    self.station.user_id,
+                    CHAT_SESSION_PREFIX,
+                    _STATION_DEPTH,
+                    _STATION_AGENTS,
+                ),
+            )
+            out.append(_station_clause(first))
         return out
 
 
@@ -514,3 +554,31 @@ def _room_facets(actors: Sequence[FeedActorFacet]) -> list[FeedRoomFacet]:
         FeedRoomFacet(room=room, count=counts[room], actors=sorted(names[room]))
         for room in sorted(counts, key=lambda room: (-counts[room], room))
     ]
+
+
+def _station_clause(first: int) -> str:
+    """Return the test that ``i`` is an agent of a station, its values at ``first``+1..."""
+    workspace, owner, prefix, depth, limit = (f"${first + n}" for n in range(1, 6))
+    # The chat's session is found by the conversation the owner's station holds, so
+    # one that is not theirs, or holds no chat, gives a NULL id and no root. UNION
+    # drops a repeated (session, depth) so a cycle ends at the depth bound, and a
+    # session met at two depths counts once, at its shallowest. The chat is depth 0
+    # and never one of its own agents.
+    return vetted_sql(
+        "i.id IN (WITH RECURSIVE walk(id, depth) AS (SELECT c.id, 0 FROM inquiries c "
+        "WHERE c.kind = 'AgentSession' AND c.agentsession_cli_session_id = ",
+        prefix,
+        "::text || (SELECT w.station->>'conversation_id' FROM visual_workspaces w "
+        "WHERE w.id = ",
+        workspace,
+        " AND w.user_id = ",
+        owner,
+        ") UNION SELECT e.from_id, walk.depth + 1 FROM walk JOIN edges e "
+        "ON e.to_id = walk.id AND e.edge_kind = 'produced_by' "
+        "AND e.from_kind = 'AgentSession' WHERE walk.depth < ",
+        depth,
+        ") SELECT id FROM walk GROUP BY id HAVING min(depth) > 0 "
+        "ORDER BY min(depth), id LIMIT ",
+        limit,
+        ")",
+    )

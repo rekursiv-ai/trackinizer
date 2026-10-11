@@ -3,15 +3,12 @@ import { useRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FOLD_AFTER_MS, OPEN_AFTER_MS, useHoverOpen } from "./hoverOpen";
 
-/** A tile as the canvas draws one: a bar with a fold button, and contents that take the keyboard. */
+/** A tile that folds on its own: a fold button, a button beside it, and contents that take the keyboard. */
 function Tile() {
   const tile = useRef<HTMLDivElement>(null);
   const hover = useHoverOpen(tile);
   return <div ref={tile} data-testid="tile" data-open={hover.open} {...hover.handlers}>
-    <div className="visual-tile-toolbar">
-      <button type="button" onClick={() => hover.set(!hover.open)}>Fold</button>
-      <button type="button" onClick={hover.enter}>Drop</button>
-    </div>
+    <button type="button" onClick={() => hover.set(!hover.open)}>Fold</button>
     <textarea aria-label="Message" />
   </div>;
 }
@@ -71,25 +68,18 @@ test("the keyboard in the contents holds the tile open after the pointer left, u
   expect(open()).toBe(false);
 });
 
-test("a button on the bar folds the tile at once, takes the keyboard out of it, and never holds it open", () => {
+test("set folds the tile at once and takes the keyboard out of it, and a fold under the pointer stays folded", () => {
   const { tile, open, wait } = mount();
   const fold = screen.getByRole("button", { name: "Fold" });
   fireEvent.click(fold);
   expect(open()).toBe(true);
-  // The pointer is on the bar and the keyboard in the contents: both would hold it open.
+  // The pointer is on the tile and the keyboard in its contents: both would hold it open.
   fireEvent.pointerEnter(tile);
   act(() => screen.getByLabelText("Message").focus());
   fireEvent.click(fold);
   expect(open()).toBe(false);
   expect(document.activeElement).toBe(document.body);
   wait(OPEN_AFTER_MS + FOLD_AFTER_MS);
-  expect(open()).toBe(false);
-
-  // Focus on the bar alone is not the keyboard in the contents.
-  fireEvent.click(fold);
-  act(() => fold.focus());
-  fireEvent.pointerLeave(tile);
-  wait(FOLD_AFTER_MS);
   expect(open()).toBe(false);
 });
 
@@ -102,15 +92,4 @@ test("a touch has no hover: it opens and folds nothing by coming and going", () 
   fireEvent.pointerLeave(tile, { pointerType: "touch" });
   wait(FOLD_AFTER_MS);
   expect(open()).toBe(true);
-});
-
-test("a tile dropped under the pointer is open at once, and folds once the pointer leaves", () => {
-  const { tile, open, wait } = mount();
-  fireEvent.click(screen.getByRole("button", { name: "Drop" }));
-  expect(open()).toBe(true);
-  wait(OPEN_AFTER_MS + FOLD_AFTER_MS);
-  expect(open()).toBe(true);
-  fireEvent.pointerLeave(tile);
-  wait(FOLD_AFTER_MS);
-  expect(open()).toBe(false);
 });

@@ -5,17 +5,22 @@ export type Size = { readonly width: number; readonly height: number };
  * The sizes the user gave the canvas's parts in this browser: how wide the
  * column at each side of the page is, how large each floating window is, by
  * visual type, and each docked tile's share of the strip it stands in, by
- * visual type (1 is an even share). A part never resized has none.
+ * visual type (1 is an even share). A part never resized has none. The Chat
+ * column beside the canvas keeps its width here too.
  */
 export type CanvasSizes = {
   readonly left?: number;
   readonly side?: number;
+  readonly chat?: number;
   readonly floating: { readonly [type: string]: Size };
   readonly share: { readonly [type: string]: number };
 };
 
-/** The narrowest a column goes: Chat's header and box still fit. */
+/** The narrowest a visual's column goes. */
 export const MIN_COLUMN = 260;
+
+/** The narrowest the Chat column goes: its header and box still fit. */
+export const MIN_CHAT = 280;
 
 /** The smallest a floating window goes. */
 export const MIN_FLOAT: Size = { width: 280, height: 220 };
@@ -25,19 +30,20 @@ const MAX_SHARE = 0.7;
 
 const KEY = "trackinizer.v2.canvas.sizes";
 
-/** `width` held between the narrowest column and the most a stage `stageWidth` wide gives one. */
-export function heldWidth(width: number, stageWidth: number): number {
-  return Math.round(Math.max(MIN_COLUMN, Math.min(width, stageWidth * MAX_SHARE)));
+/** `width` held between `least` and the most a stage `stageWidth` wide gives one. */
+export function heldWidth(width: number, stageWidth: number, least = MIN_COLUMN): number {
+  return Math.round(Math.max(least, Math.min(width, stageWidth * MAX_SHARE)));
 }
 
 /** The sizes this browser keeps; none where storage is off or holds something else. */
 export function readCanvasSizes(): CanvasSizes {
   try {
     const kept: unknown = JSON.parse(localStorage.getItem(KEY) ?? "{}");
-    const { left, side, floating, share } = record(kept);
+    const { left, side, chat, floating, share } = record(kept);
     return {
       ...(positive(left) ? { left } : {}),
       ...(positive(side) ? { side } : {}),
+      ...(positive(chat) ? { chat } : {}),
       floating: Object.fromEntries(Object.entries(record(floating)).flatMap(([type, size]) => {
         const { width, height } = record(size);
         return positive(width) && positive(height) ? [[type, { width, height }]] : [];
@@ -49,11 +55,21 @@ export function readCanvasSizes(): CanvasSizes {
   }
 }
 
+/** Keep the canvas's sizes; the Chat column's width, which the canvas does not hold, stays as `writeChatWidth` left it. */
 export function writeCanvasSizes(sizes: CanvasSizes): void {
+  store({ ...sizes, chat: readCanvasSizes().chat });
+}
+
+/** Keep the width the user gave the Chat column, beside the sizes the canvas keeps. */
+export function writeChatWidth(width: number): void {
+  store({ ...readCanvasSizes(), chat: width });
+}
+
+function store(sizes: CanvasSizes): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(sizes));
   } catch {
-    // Storage is off or full: the canvas still holds the sizes until the page goes.
+    // Storage is off or full: the page still holds the sizes until it goes.
   }
 }
 

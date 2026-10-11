@@ -80,6 +80,17 @@ test("Enter sends and Shift+Enter breaks the line; a composer turned off sends n
   expect(screen.getByRole("button", { name: "Send message" })).toHaveProperty("disabled", true);
 });
 
+test("Alt+Enter sends nothing: it is the key that takes Chat full screen", async () => {
+  const send = vi.fn<(text: string, key: string) => Promise<string>>().mockResolvedValue("Queued");
+  const { box } = show(send);
+  fireEvent.change(box, { target: { value: "Line one" } });
+  fireEvent.keyDown(box, { key: "Enter", altKey: true });
+  // A send starts on the next tick.
+  await act(async () => {});
+  expect(send).not.toHaveBeenCalled();
+  expect(box).toHaveProperty("value", "Line one");
+});
+
 test("a draft its check refuses says why, sends nothing and offers no retry; editing it clears that", async () => {
   const send = vi.fn<(text: string, key: string) => Promise<string>>().mockResolvedValue("Queued");
   const { box } = show(send, (text) => (text.startsWith("@") ? "" : "Start with a target: @agent message"));

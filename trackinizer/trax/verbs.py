@@ -2774,6 +2774,7 @@ class Workspace(Command):
             "trax workspace UUID show trax.timeline --record RECORD_UUID --param direction_limit=5",
             "trax workspace UUID navigate '#/list/Issue'",
             "trax workspace UUID highlight RECORD_UUID,RECORD_UUID",
+            "trax workspace UUID hide chat",
             "trax workspace UUID hide INSTANCE_UUID",
         ),
         notes=("Mutations fetch the current revision before applying one operation.",),
@@ -2818,6 +2819,10 @@ class Workspace(Command):
             return
         if flags.action == "highlight":
             updated = client.highlight(workspace_id, ids=_highlight_ids(flags))
+            _print_workspace(updated)
+            return
+        if _is_chat(flags):
+            updated = client.chat_window(workspace_id, hidden=flags.action == "hide")
             _print_workspace(updated)
             return
         parameters = (
@@ -2881,6 +2886,15 @@ def _workspace_operation(
             "placement": subject[1],
         }
     return operation
+
+
+def _is_chat(args: _WorkspaceArgs) -> bool:
+    """Whether the action is `hide chat` or `show chat`: the tab's Chat window."""
+    if args.action not in {"hide", "show"} or args.subject != ["chat"]:
+        return False
+    if args.record is not None or args.placement is not None or args.param:
+        raise ClientError(f"{args.action} chat takes no other argument")
+    return True
 
 
 def _highlight_ids(args: _WorkspaceArgs) -> list[uuid.UUID]:

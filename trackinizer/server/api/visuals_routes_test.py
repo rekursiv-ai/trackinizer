@@ -35,13 +35,11 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
     by_type = {from_plain(visual["type"], str): visual for visual in visuals}
     assert set(by_type) == {
         "trax.browse",
-        "trax.chat",
         "trax.artifact",
         "trax.subgraph",
         "trax.timeline",
     }
     assert by_type["trax.browse"]["version"] == 1
-    assert by_type["trax.chat"]["requires"] == ["session"]
     assert by_type["trax.artifact"]["requires"] == ["record"]
     assert by_type["trax.artifact"]["parameter_schema"] == {}
     assert by_type["trax.subgraph"]["requires"] == ["record"]
@@ -71,7 +69,7 @@ def test_visual_config_composes_titles_and_rejects_invalid_identity() -> None:
     configured = Workspace.Config(
         visuals=[
             StaticVisual.Config(type="trax.browse", title="Explore"),
-            StaticVisual.Config(type="trax.chat", title="Chat"),
+            StaticVisual.Config(type="x.notes", title="Notes"),
         ],
         default_visual="trax.browse",
     ).make()
@@ -86,7 +84,7 @@ def test_visual_config_composes_titles_and_rejects_invalid_identity() -> None:
         ).make()
     with pytest.raises(ValueError, match="registered"):
         Workspace.Config(
-            visuals=[StaticVisual.Config(type="trax.chat", title="Chat")],
+            visuals=[StaticVisual.Config(type="x.notes", title="Notes")],
         ).make()
 
 

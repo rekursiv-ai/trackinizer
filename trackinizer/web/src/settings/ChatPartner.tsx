@@ -1,9 +1,10 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError } from "../api/client";
 import { newUuid } from "../api/idempotency";
-import { applyWorkspaceOperation, createDefaultWorkspace, getWorkspace, type WorkspaceState } from "../api/workspaces";
-import { acceptWorkspace } from "../app/canvasStream";
+import { applyWorkspaceOperation, getWorkspace, type WorkspaceState } from "../api/workspaces";
+import { acceptWorkspace } from "../stations/cache";
+import { useStation } from "../stations/useStation";
 import { useOnline } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { ReadError, Section } from "./account";
@@ -11,19 +12,14 @@ import "./settings.css";
 
 /**
  * Whose session the canvas's Chat talks to: the server's shared assistant, or
- * the user's own `trax helper`. The choice is stored on the user's default
+ * the user's own `trax helper`. The choice is stored on the user's current station's
  * canvas, as a `partner` operation at the canvas's revision; the canvas and its
  * Chat show it from the same cache entry the live stream keeps.
  */
 export function ChatPartnerSection() {
   const queryClient = useQueryClient();
   const online = useOnline();
-  const canvas = useQuery({
-    queryKey: ["workspace", "default"],
-    queryFn: ({ signal }) => createDefaultWorkspace({ signal }),
-    staleTime: Infinity,
-    retry: false,
-  });
+  const canvas = useStation();
   const choose = useMutation({
     mutationFn: (choice: "shared" | "local") => applyWorkspaceOperation(
       canvas.data!.id, canvas.data!.revision, { kind: "partner", choice }, newUuid(),

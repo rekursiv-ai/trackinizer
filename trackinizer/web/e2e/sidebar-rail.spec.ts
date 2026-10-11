@@ -1,0 +1,133 @@
+import type { Locator, Page } from "@playwright/test";
+import { expect, test } from "./fixtures";
+import { resetCanvas } from "./canvasState";
+
+// The navigation sidebar stands opposite Chat as a rail of icons. Hovering the
+// rail opens it over the workbench, a pin (⌘B) opens it for good, and the
+// canvas's controls are its Workbench section, in place of the canvas's old
+// toolbar row.
+
+test.use({ canvas: true });
+
+test.beforeEach(async ({ request }) => {
+  await resetCanvas(request);
+});
+
+async function open(page: Page): Promise<{ sidebar: Locator; app: Locator; main: Locator }> {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/app/#/list/Issue");
+  await expect(page.locator(".chat-column").getByRole("region", { name: "Chat" })).toBeVisible();
+  return { sidebar: page.getByRole("navigation", { name: "Sidebar" }), app: page.locator(".app"), main: page.locator("main.main") };
+}
+
+async function box(locator: Locator) {
+  const found = await locator.boundingBox();
+  expect(found).not.toBeNull();
+  return found!;
+}
+
+async function forget(page: Page): Promise<void> {
+  await page.evaluate(() => localStorage.removeItem("trackinizer.chat.side"));
+}
+
+test("the sidebar starts as a rail at the right, opposite Chat, and the canvas has no toolbar row", async ({ page }) => {
+  const { sidebar, app, main } = await open(page);
+  await expect(app).toHaveClass(/sidebar-collapsed/);
+  await expect(app).toHaveClass(/sidebar-right/);
+  const rail = await box(sidebar);
+  const work = await box(main);
+  expect(Math.round(rail.width)).toBe(48);
+  expect(rail.x).toBeGreaterThanOrEqual(work.x + work.width - 1);
+  expect((await box(page.locator(".chat-column"))).x).toBeLessThan(work.x + work.width / 2);
+  await expect(page.locator(".visual-toolbar")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Configure" })).toHaveCount(0);
+  await expect(sidebar.getByRole("link", { name: "Issues" })).toHaveAttribute("title", "Issues");
+});
+
+test("hovering the rail opens the sidebar over the workbench, which keeps its width; leaving folds it", async ({ page }) => {
+  const { sidebar, app, main } = await open(page);
+  const before = await box(main);
+  await sidebar.hover();
+  await expect(app).toHaveClass(/sidebar-peek/);
+  const wide = await box(sidebar);
+  expect(Math.round(wide.width)).toBe(244);
+  await expect(sidebar.getByRole("link", { name: "Issues" }).locator(".label")).toBeVisible();
+  expect(await box(main)).toEqual(before);
+  // Over the page: the pointer on the sidebar's left part is on the workbench's content, not under it.
+  await page.mouse.move(wide.x + 10, wide.y + 300);
+  expect(await page.evaluate(([x, y]) => document.elementFromPoint(x!, y!)?.closest("nav.sidebar") !== null, [wide.x + 10, wide.y + 300])).toBe(true);
+  await page.mouse.move(300, 400);
+  await expect(app).not.toHaveClass(/sidebar-peek/);
+  expect(Math.round((await box(sidebar)).width)).toBe(48);
+});
+
+test("the pin button, or Ctrl+B, opens the sidebar for good and takes room from the workbench; again, a rail", async ({ page }) => {
+  const { sidebar, app, main } = await open(page);
+  const rail = await box(main);
+  await sidebar.getByRole("button", { name: "Expand sidebar" }).click();
+  await page.mouse.move(300, 400);
+  await expect(app).not.toHaveClass(/sidebar-collapsed/);
+  expect((await box(main)).width).toBeLessThan(rail.width - 150);
+  await page.keyboard.press("Control+b");
+  await expect(app).toHaveClass(/sidebar-collapsed/);
+  expect((await box(main)).width).toBeGreaterThan(rail.width - 2);
+});
+
+test("flipping Chat's side moves the sidebar to the other", async ({ page }) => {
+  const { sidebar, main } = await open(page);
+  await page.locator(".chat-column").getByRole("button", { name: "Move Chat to the right" }).click();
+  const work = await box(main);
+  expect((await box(sidebar)).x).toBeLessThan(work.x);
+  await expect(page.locator(".app")).not.toHaveClass(/sidebar-right/);
+  await forget(page);
+});
+
+/** The middle of `locator`, in whole pixels. */
+async function middle(locator: Locator): Promise<[number, number]> {
+  const { x, y, width, height } = await box(locator);
+  return [Math.round(x + width / 2), Math.round(y + height / 2)];
+}
+
+for (const side of ["right", "left"] as const) {
+  test(`at the ${side}, the pin button stays put as the rail opens and is pinned, over a row of Search and New above Graph`, async ({ page }) => {
+    const { sidebar, app } = await open(page);
+    if (side === "left") await page.locator(".chat-column").getByRole("button", { name: "Move Chat to the right" }).click();
+    const pin = sidebar.locator(".panel-toggle");
+    const rail = await middle(pin);
+    await sidebar.hover();
+    await expect(app).toHaveClass(/sidebar-peek/);
+    expect(await middle(pin)).toEqual(rail);
+    await pin.click();
+    await expect(app).not.toHaveClass(/sidebar-collapsed/);
+    expect(await middle(pin)).toEqual(rail);
+    const search = await box(sidebar.getByRole("button", { name: "Search" }));
+    const create = await middle(sidebar.getByRole("button", { name: /^New / }));
+    const header = await box(pin);
+    expect(search.y).toBeGreaterThanOrEqual(header.y + header.height);
+    expect(create[1]).toBe(Math.round(search.y + search.height / 2));
+    expect((await box(sidebar.getByRole("link", { name: "Graph" }))).y).toBeGreaterThanOrEqual(search.y + search.height);
+    await forget(page);
+  });
+}
+
+test("the rail shows one Workbench icon that opens the sidebar on the visual toggles; there they work", async ({ page }) => {
+  const { sidebar, app } = await open(page);
+  const icon = sidebar.getByRole("button", { name: "Workbench", exact: true }).and(page.locator(".workbench-rail"));
+  await expect(icon).toBeVisible();
+  await expect(sidebar.locator(".workbench-slot")).toBeHidden();
+  await icon.click();
+  await expect(app).toHaveClass(/sidebar-peek/);
+  const browse = sidebar.getByRole("checkbox", { name: /Browse/ });
+  await expect(browse).toBeVisible();
+  await expect(browse).toBeDisabled();
+  await expect(sidebar.getByRole("textbox", { name: "Artifact link" })).toBeVisible();
+  await expect(sidebar.locator(".workbench-slot :focus")).toHaveCount(1);
+});
+
+test("Settings has no canvas, so no Workbench section", async ({ page }) => {
+  const { sidebar } = await open(page);
+  await page.goto("/app/#/settings");
+  await expect(page.getByRole("heading", { name: "Your settings" })).toBeVisible();
+  await expect(sidebar.locator(".workbench-rail")).toBeHidden();
+  await expect(sidebar.getByRole("button", { name: "Workbench" })).toHaveCount(0);
+});

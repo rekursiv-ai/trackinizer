@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 from trackinizer.client.chat_forks import ForkLine
 from trackinizer.trax.run.inbound import render_fork_lines, render_inbound
-from trackinizer.wire.wire_sessions import WorkspaceMessageContext
+from trackinizer.wire.wire_sessions import (
+    ConsoleRelay,
+    ConsoleTarget,
+    WorkspaceMessageContext,
+)
 
 
 class TestRenderForkLines:
@@ -64,17 +69,19 @@ class TestRenderInbound:
         context = WorkspaceMessageContext.model_validate(
             {
                 "workspace_id": "c5286865-67b6-4bd8-ab51-e06e10c326c5",
-                "record_id": "889ffcb2-cf44-43e7-9806-eb08428c6203",
-                "record": {
-                    "id": "889ffcb2-cf44-43e7-9806-eb08428c6203",
-                    "kind": "Issue",
-                    "seq": 21_706,
-                    "title": "ARC3 effort\nwith a newline",
+                "page": {
+                    "route": "#/lookup/889ffcb2-cf44-43e7-9806-eb08428c6203",
+                    "record": {
+                        "id": "889ffcb2-cf44-43e7-9806-eb08428c6203",
+                        "kind": "Issue",
+                        "seq": 21_706,
+                        "title": "ARC3 effort\nwith a newline",
+                    },
                 },
                 "visible_visuals": [
                     {
                         "id": "2de97e19-2624-4e89-804e-f19e7248eec3",
-                        "type": "trax.chat",
+                        "type": "trax.browse",
                     },
                 ],
             },
@@ -107,6 +114,9 @@ class TestRenderInbound:
             "\n  Go to a view: trax workspace c5286865-67b6-4bd8-ab51-e06e10c326c5"
             " navigate '#/list/Issue' (or '#/graph', '#/activity', '#/console',"
             " '#/search/TEXT' with TEXT percent-encoded)"
+            "\n  Hide your Chat window so they look at the page: trax workspace"
+            " c5286865-67b6-4bd8-ab51-e06e10c326c5 hide chat"
+            " (show chat brings it back)"
             "\n  Hide a visual: trax workspace c5286865-67b6-4bd8-ab51-e06e10c326c5"
             " hide INSTANCE_UUID (never the page)"
         )
@@ -126,7 +136,7 @@ class TestRenderInbound:
             " navigate '#/lookup/RECORD_UUID'\n"
         ) in rendered
 
-    def test_a_canvas_without_a_pinned_record_uses_the_record_on_screen(self) -> None:
+    def test_a_canvas_names_the_record_on_screen_for_the_moves(self) -> None:
         context = WorkspaceMessageContext.model_validate(
             {
                 "workspace_id": "c5286865-67b6-4bd8-ab51-e06e10c326c5",
@@ -151,36 +161,6 @@ class TestRenderInbound:
         ) in rendered
         assert "RECORD_UUID" not in rendered
 
-    def test_artifact_chat_points_to_full_immutable_content(self) -> None:
-        context = WorkspaceMessageContext.model_validate(
-            {
-                "workspace_id": "c5286865-67b6-4bd8-ab51-e06e10c326c5",
-                "record_id": "251c60b8-1604-4e3a-9eda-1b5b046c3a4d",
-                "artifact_content": {
-                    "revision": 1,
-                    "artifact_id": "251c60b8-1604-4e3a-9eda-1b5b046c3a4d",
-                    "issue_id": "c5286865-67b6-4bd8-ab51-e06e10c326c5",
-                    "title": "Atlas",
-                    "summary": "Frozen summary",
-                    "author": "viewer@example.com",
-                    "created_at": "2026-09-30T00:00:00Z",
-                    "scope": "team",
-                    "format": "html",
-                    "citations": [],
-                    "sections": [],
-                },
-                "visible_visuals": [],
-            },
-        )
-
-        rendered = render_inbound("Explain the source", None, None, context=context)
-
-        assert "trax artifact 251c60b8-1604-4e3a-9eda-1b5b046c3a4d" in rendered
-        assert (
-            "GET /api/artifacts/251c60b8-1604-4e3a-9eda-1b5b046c3a4d/content"
-            in rendered
-        )
-
 
 _ENVELOPE = json.dumps(
     {
@@ -191,6 +171,36 @@ _ENVELOPE = json.dumps(
         "row": "trax issue 42",
     },
 )
+
+
+class TestRenderConsoleRelay:
+    """A relay is a note of what the person told agents, not a canvas question."""
+
+    def test_it_reads_as_a_note_with_no_canvas_commands(self) -> None:
+        context = WorkspaceMessageContext(
+            workspace_id=uuid.uuid4(),
+            visible_visuals=[],
+            conversation_id=uuid.uuid4(),
+            relay=ConsoleRelay(
+                targets=[
+                    ConsoleTarget(actor="lead-2", room=None),
+                    ConsoleTarget(actor="tiles-a", room="ops"),
+                ],
+                text="rerun the suite",
+            ),
+        )
+
+        rendered = render_inbound(
+            "rerun the suite",
+            "alice@x",
+            None,
+            context=context,
+        )
+
+        assert rendered == (
+            "alice@x: [Console relay: told to these agents directly, not a question "
+            "for you; do not contradict it] → lead-2, tiles-a:ops: rerun the suite"
+        )
 
 
 class TestRenderInboundEnvelopes:

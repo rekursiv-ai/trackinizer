@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { SessionRecord } from "../api/sessions";
-import { type ChatPart, linesThrough, PENDING, readTranscript, sentBefore, withPending } from "./chatLines";
+import { type ChatPart, linesThrough, PENDING, readTranscript, RELAY_MARK, sentBefore, withPending } from "./chatLines";
 
 function record(idx: number, kind: string, payload: { [field: string]: unknown }): SessionRecord {
   return { idx, kind, payload, text: "", context_id: null, timestamp: null, model: null, ciphertext: null } as unknown as SessionRecord;
@@ -100,4 +100,22 @@ test("a send counts the lines the sender already has, sent or sending", () => {
   const sending = withPending(stored, [{ key: "k", text: "more", conversationId: "c", baseline: 1 }], { me: "ada" });
   expect(sentBefore(sending, { me: "ada" })).toBe(2);
   expect(sentBefore(sending, { me: "grace" })).toBe(1);
+});
+
+test("a line that starts with the relay mark is a relay of what the person told agents, not a message to the partner", () => {
+  const relay = `${RELAY_MARK}lead-2, tiles-a:ops: rerun the suite`;
+  const { lines, working } = readTranscript(parts(said(0, "ada@example.com", "q"), answer(1, "a"), said(2, "ada@example.com", relay)));
+  expect(lines.map(({ role, author, text }) => [role, author, text])).toEqual([
+    ["user", "ada@example.com", "q"], ["assistant", null, "a"], ["relay", "ada@example.com", relay],
+  ]);
+  // No answer is owed it: the partner is not working on it.
+  expect(working).toBeNull();
+});
+
+test("a relay is none of the sender's own lines: it neither ends the wait for a line still being sent, nor counts toward the next", () => {
+  const relay = said(1, "ada@example.com", `${RELAY_MARK}lead-2: go`);
+  const transcript = readTranscript(parts(said(0, "ada@example.com", "q"), relay));
+  const pending = [{ key: "k", text: "next", conversationId: "c", baseline: 1 }];
+  expect(withPending(transcript, pending, { me: "ada@example.com" }).map((line) => line.text)).toEqual(["q", `${RELAY_MARK}lead-2: go`, "next"]);
+  expect(sentBefore(transcript.lines, { me: "ada@example.com" })).toBe(1);
 });

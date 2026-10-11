@@ -27,7 +27,7 @@ test("a user who opted out of the canvas has /api/web/subscribe, no canvas and n
     await page.goto("/app/#/list/Issue");
     await subscribed;
     await expect(page.getByRole("heading", { level: 1, name: "Issues" })).toBeVisible();
-    await expect(page.getByRole("toolbar", { name: "Canvas controls" })).toHaveCount(0);
+    await expect(page.locator(".visual-canvas")).toHaveCount(0);
     expect(await page.evaluate(() => (window as unknown as { openedStreams: string[] }).openedStreams)).toEqual(["/api/web/subscribe"]);
     expect(workspaces).toEqual([]);
   } finally {
@@ -40,10 +40,10 @@ test("turning the canvas back on in Settings moves the tab to the canvas's one s
   expect(optedOut.ok(), await optedOut.text()).toBe(true);
   try {
     await page.goto("/app/#/settings");
-    await page.getByRole("checkbox", { name: "Enable agent-guided canvas" }).click();
-    await expect(page.getByRole("checkbox", { name: "Enable agent-guided canvas" })).toBeChecked();
+    await page.getByRole("checkbox", { name: "Enable agent-guided workbench" }).click();
+    await expect(page.getByRole("checkbox", { name: "Enable agent-guided workbench" })).toBeChecked();
     await page.goto("/app/#/list/Issue");
-    await expect(page.getByRole("toolbar", { name: "Canvas controls" })).toBeVisible();
+    await expect(page.locator(".visual-canvas")).toBeVisible();
   } finally {
     // The next spec's fixture sets its own preference.
   }

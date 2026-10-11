@@ -13,9 +13,11 @@ import pytest
 
 from trackinizer.server.chat_hub import (
     ChangedFrame,
+    ChatFrame,
     ChatHub,
     HighlightFrame,
     NavigateFrame,
+    Subscription,
     iter_workspace_events,
 )
 from trackinizer.server.visuals.workspaces import WorkspacePartner, WorkspaceState
@@ -53,6 +55,9 @@ class _Canvas:
         return WorkspaceState(
             id=_WORKSPACE,
             revision=3,
+            name="unnamed-workstream#1",
+            conversation_id=None,
+            page=None,
             visuals=[],
             partner=self.partner,
         )
@@ -125,8 +130,11 @@ async def test_stream_opens_with_a_comment_then_the_state_then_every_frame() -> 
     hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/graph"))
     hub.publish(uuid.uuid4(), frame=NavigateFrame(route="#/elsewhere"))
     hub.publish(_WORKSPACE, frame=HighlightFrame(ids=[_RECORD]))
-    frames = [_frame(await anext(events), dict[str, object]) for _ in range(2)]
-    assert [f["type"] for f in frames] == ["navigate", "highlight"]
+    hub.publish(_WORKSPACE, frame=ChatFrame(hidden=True))
+    frames = [_frame(await anext(events), dict[str, object]) for _ in range(3)]
+    assert [f["type"] for f in frames] == ["navigate", "highlight", "chat"]
+    assert set(frames[2]) == {"t", "type", "hidden"}
+    assert frames[2]["hidden"] is True
     assert frames[1]["ids"] == [str(_RECORD)]
     assert all(isinstance(f["t"], int) and f["t"] > 0 for f in frames)
     assert frames[0]["route"] == "#/graph"
@@ -281,6 +289,21 @@ async def test_subscriber_more_than_256_frames_behind_is_dropped() -> None:
         hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/after"))
         assert healthy.queue.qsize() == 1
     assert [chunk async for chunk in slow] == []
+
+
+def test_a_subscriber_that_leaves_hears_no_more_and_the_last_takes_the_entry() -> None:
+    """Leaving drops only that subscriber; the workspace's entry goes with the last."""
+    held: dict[uuid.UUID, set[Subscription]] = {}
+    hub = ChatHub(_subscribers=held)
+    other = uuid.UUID(int=7)
+    with hub.subscribe(_WORKSPACE) as stays, hub.subscribe(other) as elsewhere:
+        with hub.subscribe(_WORKSPACE) as leaves:
+            assert len(held[_WORKSPACE]) == 2
+        hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/after"))
+        assert (stays.queue.qsize(), leaves.queue.qsize()) == (1, 0)
+        assert elsewhere.queue.qsize() == 0
+        assert set(held) == {_WORKSPACE, other}
+    assert held == {}
 
 
 def test_changed_frame_names_its_inquiry() -> None:

@@ -34,7 +34,6 @@ from trackinizer.server.api.canvas_test_support import (
     revision_of,
     seed_accounts,
     send_chat,
-    show_chat,
     start_session,
 )
 from trackinizer.server.api.conftest import (
@@ -228,38 +227,27 @@ def test_a_canvas_is_opened_by_its_user_as_a_browser(
         _run(server, call=open_workspace)
 
 
-def test_chat_is_shown_at_the_canvas_current_revision() -> None:
-    workspace_id, page, chat = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    visuals = [
-        {"id": str(page), "type": "trax.browse"},
-        {"id": str(chat), "type": "trax.chat"},
-    ]
-    operations = ("POST", f"/api/workspaces/{workspace_id}/operations")
+def test_a_station_is_the_one_used_last_or_a_new_one() -> None:
+    used, made = uuid.uuid4(), uuid.uuid4()
     server = _Server(
         answers={
-            ("GET", f"/api/workspaces/{workspace_id}"): (200, {"revision": 7}),
-            operations: (200, {"visuals": visuals}),
+            ("POST", "/api/workspaces"): (200, {"id": str(used)}),
+            ("POST", "/api/workspaces/new"): (200, {"id": str(made)}),
         },
     )
 
-    assert (
-        _run(server, call=lambda client: show_chat(client, workspace_id=workspace_id))
-        == chat
-    )
+    opened = _run(server, call=open_workspace)
+    another = _run(server, call=lambda client: open_workspace(client, new=True))
 
-    shown = server.asked[1]
-    assert json_loads(shown.content) == {
-        "revision": 7,
-        "operation": {"kind": "show", "visual_type": "trax.chat"},
-    }
-    _ = uuid.UUID(shown.headers["Idempotency-Key"])
-    server.answers[operations] = (409, {})
-    with pytest.raises(ValueError, match="show answered 409"):
-        _run(server, call=lambda client: show_chat(client, workspace_id=workspace_id))
+    assert (opened, another) == (used, made)
+    assert [(each.method, each.url.path) for each in server.asked] == [
+        ("POST", "/api/workspaces"),
+        ("POST", "/api/workspaces/new"),
+    ]
 
 
 def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
-    workspace_id, chat, conversation, key = (uuid.uuid4() for _ in range(4))
+    workspace_id, conversation, key = (uuid.uuid4() for _ in range(3))
     server = _Server(
         answers={
             ("POST", "/api/chats"): (200, {"conversation_id": str(conversation)}),
@@ -271,7 +259,6 @@ def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
         call=lambda client: send_chat(
             client,
             workspace_id=workspace_id,
-            chat_id=chat,
             text="hi",
             conversation_id=conversation,
             key=key,
@@ -282,7 +269,6 @@ def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
         call=lambda client: send_chat(
             client,
             workspace_id=workspace_id,
-            chat_id=chat,
             text="new",
         ),
     )
@@ -292,8 +278,6 @@ def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
     assert json_loads(continued.content) == {
         "workspace_id": str(workspace_id),
         "text": "hi",
-        "chat_instance_id": str(chat),
-        "expected_record_id": None,
         "conversation_id": str(conversation),
     }
     assert continued.headers["Idempotency-Key"] == str(key)
@@ -302,9 +286,9 @@ def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
 
 
 def test_a_posted_line_names_the_line_it_forks_when_given_one() -> None:
-    workspace_id, chat, session = (uuid.uuid4() for _ in range(3))
+    workspace_id, conversation, session = (uuid.uuid4() for _ in range(3))
     server = _Server(
-        answers={("POST", "/api/chats"): (200, {"conversation_id": str(chat)})},
+        answers={("POST", "/api/chats"): (200, {"conversation_id": str(conversation)})},
     )
     fork = {"session_id": str(session), "part": 0, "idx": 3}
 
@@ -313,7 +297,6 @@ def test_a_posted_line_names_the_line_it_forks_when_given_one() -> None:
         call=lambda client: send_chat(
             client,
             workspace_id=workspace_id,
-            chat_id=chat,
             text="hi",
             fork=fork,
         ),
@@ -361,7 +344,7 @@ def test_the_assistant_opens_a_conversation_as_its_science_chat() -> None:
 
 
 def test_conversing_posts_a_line_then_has_the_assistant_open_its_session() -> None:
-    workspace_id, chat, conversation, session_id = (uuid.uuid4() for _ in range(4))
+    workspace_id, conversation, session_id = (uuid.uuid4() for _ in range(3))
     store, _ = make_store()
     server = _Server(
         answers={
@@ -377,7 +360,6 @@ def test_conversing_posts_a_line_then_has_the_assistant_open_its_session() -> No
             client,
             store,
             workspace_id=workspace_id,
-            chat_id=chat,
             text="hello there",
         ),
     )

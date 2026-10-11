@@ -101,7 +101,8 @@ test("export this browser's state, then import it into a fresh browser", async (
   const downloading = page.waitForEvent("download");
   await page.getByRole("region", { name: "This browser" }).getByRole("button", { name: "Download JSON" }).click();
   const exported = await (await downloading).path();
-  expect(JSON.parse(readFileSync(exported, "utf8"))).toMatchObject({ version: 1, stars: ["e2e-star"], aliases: [alias] });
+  // Seeded as version 1, it is exported in the version this build writes.
+  expect(JSON.parse(readFileSync(exported, "utf8"))).toMatchObject({ version: 2, stars: ["e2e-star"], aliases: [alias] });
 
   const fresh = await browser.newContext();
   const other = await fresh.newPage();

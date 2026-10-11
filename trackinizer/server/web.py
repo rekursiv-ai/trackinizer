@@ -75,7 +75,11 @@ from trackinizer.server.notify import iter_sse_events, tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.graph_focus import read_neighbourhood
-from trackinizer.server.store.session_feed import WHOLE_FEED, FeedScope
+from trackinizer.server.store.session_feed import (
+    WHOLE_FEED,
+    FeedScope,
+    StationAgents,
+)
 from trackinizer.server.store.session_search import (
     SessionSearchHit,
     search_session_records,
@@ -597,18 +601,26 @@ async def web_subscribe_probe(
 
 
 def feed_scope(
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
     actor: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     room: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     cli: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     kind: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
+    station: UUID | None = None,
 ) -> FeedScope:
     """Read the feed's filters: each repeatable, any of its values, all of them.
 
     Args:
+      identity: Authenticated user, whose station ``station`` must be.
       actor: Sessions by routing name.
       room: Sessions by a room they joined.
       cli: Sessions by the CLI they wrap.
       kind: Records by kind.
+      station: Only the agents of this station of the caller: the sessions below
+        its chat's by ``produced_by`` edges, to depth 4 and 500 sessions, never the
+        chat's own. A station that is not the caller's, or holds no chat, keeps
+        nothing.
 
     Returns:
       scope: The records the filters keep.
@@ -619,6 +631,11 @@ def feed_scope(
         rooms=tuple(room or ()),
         clis=tuple(cli or ()),
         kinds=tuple(kind or ()),
+        station=(
+            None
+            if station is None
+            else StationAgents(workspace_id=station, user_id=identity.user_id)
+        ),
     )
 
 

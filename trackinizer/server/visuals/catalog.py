@@ -79,7 +79,7 @@ class VisualDescription(BaseModel):
     version: int = Field(ge=1)
     title: str = Field(min_length=1)
     description: str
-    requires: list[Literal["record", "session"]]
+    requires: list[Literal["record"]]
     default_size: Literal["compact", "wide"]
     parameter_schema: dict[str, ParameterDescription]
     record_kinds: list[str] | None = None
@@ -106,7 +106,7 @@ class StaticVisual:
 
     class Config(Fig["StaticVisual"]):
         type: str = ""
-        """Namespaced visual type such as `trax.chat`; keep it stable."""
+        """Namespaced visual type such as `trax.browse`; keep it stable."""
 
         version: int = 1
         """Renderer version; raise it when saved parameters cannot render."""
@@ -117,8 +117,8 @@ class StaticVisual:
         description: str = ""
         """One sentence saying what the visual shows."""
 
-        requires: list[Literal["record", "session"]] = field(
-            default_factory=list[Literal["record", "session"]],
+        requires: list[Literal["record"]] = field(
+            default_factory=list[Literal["record"]],
         )
         """Targets a show operation must supply for the visual."""
 
@@ -266,13 +266,6 @@ class Workspace:
                     title="Browse",
                     description="Browse trax records by kind and query.",
                     record_kinds=[],
-                ),
-                StaticVisual.Config(
-                    type="trax.chat",
-                    title="Chat",
-                    description="Talk with the assistant or a trax run session.",
-                    requires=["session"],
-                    default_size="compact",
                 ),
                 ContextGraphVisual.Config(),
                 TimelineVisual.Config(),

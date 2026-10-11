@@ -24,7 +24,6 @@ import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Annotated, Final, Literal
 
 import uuid
@@ -46,7 +45,6 @@ __all__ = [
     "ChatHead",
     "ChatSend",
     "ChatSent",
-    "ChatSummary",
     "chat_actor",
     "chat_session_id",
     "fork_point_label",
@@ -162,11 +160,9 @@ class ChatSend(BaseModel):
     """What the conversation is; science chat is the only kind."""
 
     workspace_id: uuid.UUID
-    """The poster's own canvas, whose Chat visual the line is sent from."""
+    """The poster's own canvas, which the line is sent from."""
 
     text: str = Field(pattern=r"\S", max_length=16_384)
-    chat_instance_id: uuid.UUID | None = None
-    expected_record_id: uuid.UUID | None = None
     conversation_id: uuid.UUID | None = None
     """The conversation to post into; none starts one, named by the request's
     ``Idempotency-Key`` so a retry starts the same one."""
@@ -195,24 +191,13 @@ class ChatSent(BaseModel):
     """What a posted line was queued for."""
 
     conversation_id: uuid.UUID
+    workspace_id: uuid.UUID
+    """The station the line went to: the one it was sent from, or for a fork the new
+    one made for it."""
+
     session_id: uuid.UUID | None
     """The conversation's session when the assistant had it open; otherwise ``None``,
     and the session appears when the assistant opens it."""
-
-
-class ChatSummary(BaseModel):
-    """One science chat in its person's history."""
-
-    conversation_id: uuid.UUID
-    session_id: uuid.UUID
-    title: str
-    """The first line, cut to 120 characters."""
-
-    account: str
-    """The person who started it."""
-
-    modified: datetime
-    """When the session was last heard from, else when it was last changed."""
 
 
 class ChatHead(BaseModel):

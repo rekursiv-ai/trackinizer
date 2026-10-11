@@ -342,7 +342,6 @@ that workspace. Read the state before choosing an instance ID:
 
 ```bash
 trax workspace WORKSPACE_UUID
-trax workspace WORKSPACE_UUID show trax.chat --record RECORD_UUID --placement side
 trax workspace WORKSPACE_UUID show trax.subgraph --record RECORD_UUID \
   --param hops=2 --param highlight=UUID,UUID
 trax workspace WORKSPACE_UUID show trax.timeline --record RECORD_UUID --placement side
@@ -350,10 +349,11 @@ trax workspace WORKSPACE_UUID focus INSTANCE_UUID
 trax workspace WORKSPACE_UUID place INSTANCE_UUID floating
 trax workspace WORKSPACE_UUID hide INSTANCE_UUID
 trax workspace WORKSPACE_UUID highlight RECORD_UUID,RECORD_UUID
-trax workspace WORKSPACE_UUID highlight ""
+trax workspace WORKSPACE_UUID hide chat
+trax workspace WORKSPACE_UUID show chat
 ```
 
-The catalog registers `trax.browse`, `trax.chat`, `trax.subgraph`, and
+The catalog registers `trax.browse`, `trax.subgraph`, and
 `trax.timeline`. `trax.timeline` (Lineage and timeline) takes a record of any
 kind and shows its lead issues, bounded dated directions, results, and signed
 evidence; it is off in a new canvas. The context graph
@@ -369,6 +369,10 @@ UUID, wherever the user's page draws them (graph nodes, list rows, a record's
 relations), and an empty list clears the marks. Like `navigate` it is an event:
 it changes no visual and no revision, a newer highlight replaces the last, and
 it is not replayed to a tab that was not listening.
+`hide chat` and `show chat` close and reopen the Chat window of the user's browser tab
+so they can look at what you showed; hide it when they should look at the page
+and show it when you want them to read your answer. It is an event too: no revision
+is read or changed, only an agent key may send it, and a reloaded tab shows Chat.
 Pairing and disconnecting remain browser actions.
 
 ## Decomposing a large task

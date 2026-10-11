@@ -14,7 +14,6 @@ from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.sql import load_sql
 from trackinizer.server.store.core import Store
-from trackinizer.server.visuals.workspaces import WorkspaceData
 
 
 if TYPE_CHECKING:
@@ -56,7 +55,9 @@ async def test_workspace_migration_matches_fresh_schema(
         await conn.execute("DROP TABLE visual_workspaces")
         await conn.execute("ALTER TABLE users DROP COLUMN visual_workspace_enabled")
         await conn.execute(load_sql("schema.026"))
+        await conn.execute(load_sql("schema.027"))
         await conn.execute(load_sql("schema.033"))
+        await conn.execute(load_sql("schema.042"))
         migrated_columns = [dict(row) for row in await conn.fetch(columns, tables)]
         migrated_indexes = [dict(row) for row in await conn.fetch(indexes, tables)]
         migrated_preference = await conn.fetchrow(preference_column)
@@ -90,7 +91,8 @@ async def test_the_chat_store_is_gone_from_a_fresh_schema_and_a_migrated_one(
             user,
         )
         await conn.execute(
-            "INSERT INTO visual_workspaces (id, user_id, state) VALUES ($1, $2, $3)",
+            "INSERT INTO visual_workspaces (id, user_id, station, state) "
+            'VALUES ($1, $2, \'{"name": "unnamed-workstream#1"}\', $3)',
             workspace,
             user,
             {"visuals": []},
@@ -156,7 +158,7 @@ def _visual(kind: str, *, placement: str = "main") -> dict[str, object]:
 
 
 async def _canvases_before_chat(conn: Conn) -> dict[str, uuid.UUID]:
-    """Make an old default canvas, one with Chat already, and a full one."""
+    """Make an old canvas, one with Chat already, and a full one."""
     user = uuid.uuid4()
     await conn.execute(
         "INSERT INTO users (id, email, name, role, status) "
@@ -171,11 +173,11 @@ async def _canvases_before_chat(conn: Conn) -> dict[str, uuid.UUID]:
     }
     for name, workspace in ids.items():
         await conn.execute(
-            "INSERT INTO visual_workspaces (id, user_id, is_default, revision, state) "
-            "VALUES ($1, $2, $3, 5, $4)",
+            "INSERT INTO visual_workspaces (id, user_id, station, revision, state) "
+            "VALUES ($1, $2, jsonb_build_object('name', $3::text), 5, $4)",
             workspace,
             user,
-            name == "old",
+            name,
             {"visuals": states[name]},
         )
     return ids
@@ -191,11 +193,17 @@ async def _chat_state(
         workspace,
     )
     assert row is not None
-    data = WorkspaceData.model_validate(row["state"])
-    chats = [v.placement for v in data.visuals if v.type == "trax.chat"]
+    # The stored JSON as the migration left it: reading it as a canvas drops Chat.
+    visuals = from_plain(
+        from_plain(row["state"], dict[str, object])["visuals"],
+        list[dict[str, object]],
+    )
+    chats = [
+        from_plain(v["placement"], str) for v in visuals if v["type"] == "trax.chat"
+    ]
     return (
         from_plain(row["revision"], int),
-        [v.type for v in data.visuals],
+        [from_plain(v["type"], str) for v in visuals],
         ",".join(chats),
     )
 

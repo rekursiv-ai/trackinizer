@@ -115,19 +115,27 @@ export function Shortcuts() {
  * box types the digit, COLD-15), the keys a listbox takes (it prevents their
  * default), and Enter or Space on a button or link. Only `global` commands fire
  * there. A later command bound to the same key wins, global or not: one listener
- * holds every binding, latest first, and tinykeys runs only the first that
- * matches a key, so two can never both run.
+ * holds every binding, chords first and the latest first within each, and tinykeys
+ * runs only the first that matches a key, so two can never both run.
  */
 export function bindShortcuts(target: Window, commands: readonly Command[]): () => void {
-  const bindings: { [key: string]: (event: KeyboardEvent) => void } = {};
+  const chosen = new Map<string, (event: KeyboardEvent) => void>();
   for (const command of commands.toReversed()) {
     for (const key of command.keys ?? []) {
-      bindings[key] ??= (event) => {
-        if ((event.repeat && !command.repeat) || (!command.global && handlesOwnKeys(event))) return;
-        event.preventDefault();
-        command.run();
-      };
+      if (!chosen.has(key)) {
+        chosen.set(key, (event) => {
+          if ((event.repeat && !command.repeat) || (!command.global && handlesOwnKeys(event))) return;
+          event.preventDefault();
+          command.run();
+        });
+      }
     }
+  }
+  // A chord is tried before a single key: tinykeys runs the first binding a key completes, so a
+  // plain `]` mounted after `g ]` would take the chord's last key and the chord would never fire.
+  const bindings: { [key: string]: (event: KeyboardEvent) => void } = {};
+  for (const chords of [true, false]) {
+    for (const [key, run] of chosen) if (key.includes(" ") === chords) bindings[key] = run;
   }
   return tinykeys(target, bindings, { ignore: (event) => event.isComposing });
 }

@@ -241,6 +241,11 @@ async def send_message_route(
     is one the sender may not message, the whole send is 403 ``session_audience`` and
     nothing is queued, so a send never reports a delivery that did not happen.
 
+    A science chat is reached through its station, so a browser's send to one is
+    refused with 409 ("Open its station to talk to this chat"), whether or not the
+    chat is being drained; an agent key's send to a chat being drained is refused
+    with 409 too.
+
     A bare ``actor`` (no ``room``) is rejected when the matched session belongs
     to more than one room: a single PTY interleaves every room's messages, so
     the caller must name the room (``@actor:room``) to give the agent context.
@@ -299,11 +304,19 @@ async def send_message_route(
                 assistant=get_assistant(request),
                 asker=asker,
             )
-        if (
-            session is None
-            or cast(AgentSession, session).ended is not None
-            or not inbound.has_poller(session_id)
+        if session is None or cast(AgentSession, session).ended is not None:
+            continue
+        # A browser reaches a chat through its station, whether or not anything is
+        # draining the chat now; an agent key's send to an idle chat is dropped, as
+        # it is to any session no one drains.
+        if identity.api_key_id is None and is_a_science_chat(
+            cast(AgentSession, session),
         ):
+            raise HTTPException(
+                status_code=409,
+                detail="Open its station to talk to this chat",
+            )
+        if not inbound.has_poller(session_id):
             continue
         _refuse_a_chat_helper(cast(AgentSession, session))
         if is_a_science_chat(cast(AgentSession, session)):

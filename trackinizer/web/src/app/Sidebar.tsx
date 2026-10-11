@@ -9,54 +9,70 @@ import { Icon, Logo } from "../ui/icons";
 import { KindIcon, kindLook } from "../ui/kinds";
 import { type Panel, type PanelSpec, PanelToggle } from "../ui/panel";
 import { useMeta, useProfile } from "./boot";
+import { useWorkbenchPresent, WorkbenchSlot } from "./workbenchSlot";
 
 /**
- * The sidebar as a panel, collapsed by ⌘B (Ctrl+B), as VS Code's primary side
- * bar is: `[` and `]` are each view's own panels'.
+ * The sidebar as a panel, pinned open or collapsed by ⌘B (Ctrl+B), as VS
+ * Code's primary side bar is: `[` and `]` are each view's own panels'. It
+ * starts as a rail, which hovering opens over the workbench. Its side is the
+ * one opposite Chat's, so the shell gives it `side`.
  */
-export const SIDEBAR: PanelSpec = { id: "app.sidebar", name: "sidebar", side: "left", keys: ["$mod+b"] };
+export const SIDEBAR: PanelSpec = { id: "app.sidebar", name: "sidebar", side: "left", keys: ["$mod+b"], startsCollapsed: true };
 
 /** The sidebar's element id, which its collapse and expand button controls. */
 const SIDEBAR_ID = "app-sidebar";
 
 /**
- * The sidebar: the logo, search, New, Graph (the home view), Console,
- * Activity, one Browse entry per kind, Settings (with Admin for admins only),
- * and the signed-in user. The mock's other entries (Starred, Notifications,
- * Views, Later) belong to later phases and stay out until those ship. The
- * button beside New collapses it (`panel`) to a rail, as VS Code's activity bar
- * is: the button that expands it on top, then search, New and every entry's
- * icon, each named and titled by its label, and the user's avatar. On a phone
- * it is the drawer, whole, collapsed or not (styles.css).
+ * The sidebar: the logo, a row of Search and New, Graph (the home view),
+ * Console, Activity, one Browse entry per kind, the Workbench section (the
+ * canvas's visuals and Artifact link, while a canvas is mounted), Settings
+ * (with Admin for admins only), and the signed-in user. The mock's other
+ * entries (Starred, Notifications, Views, Later) belong to later phases and
+ * stay out until those ship. The button beside the logo, at the sidebar's
+ * outer edge, collapses it (`panel`) to a rail, as VS Code's activity bar is:
+ * that button on top, then Search, New and every entry's icon, each named and
+ * titled by its label, and the user's avatar. At the outer edge the button
+ * stays where it is as the rail opens and folds. On a phone it is the drawer,
+ * whole, collapsed or not (styles.css).
  */
-export function Sidebar({ onNavigate, panel }: { onNavigate: () => void; panel: Panel }) {
+export function Sidebar({ onNavigate, onWorkbench, panel }: {
+  readonly onNavigate: () => void;
+  /** The rail's Workbench icon was pressed: open the sidebar on that section. */
+  readonly onWorkbench: () => void;
+  readonly panel: Panel;
+}) {
   const { kinds } = useMeta();
   const profile = useProfile();
   const { route } = useRouter();
   const palette = usePalette();
   const currentKind = route.name === "list" || route.name === "ref" ? route.kind : null;
   const compact = panel.collapsed;
+  const workbench = useWorkbenchPresent();
   const toggle = <PanelToggle panel={panel} controls={SIDEBAR_ID} />;
   return (
     <nav id={SIDEBAR_ID} className="sidebar" aria-label="Sidebar">
       <div className="ws-row">
-        {/* On top in the rail, last beside New: placed here, not by CSS `order`, so Tab meets it where the eye does. */}
-        {compact ? toggle : null}
+        {/* At the outer edge: placed here, not by CSS `order`, so Tab meets it where the eye does. The rail hides the logo. */}
+        {panel.side === "left" ? toggle : null}
         <a className="ws-switch" href={formatRoute({ name: "graph" })} onClick={onNavigate}>
           <Logo />
           Trackinizer
         </a>
+        {panel.side === "right" ? toggle : null}
+      </div>
+      <div className="sidebar-tools">
         <button
           type="button"
-          className="icon-btn"
+          className="sidebar-search"
           onClick={() => palette.show()}
           title={`Search and commands (${keyCaps("$mod+k").join(" ")})`}
           aria-label="Search"
         >
           <Icon name="search" />
+          <span className="label">Search</span>
+          <kbd>{keyCaps("$mod+k").join(" ")}</kbd>
         </button>
         <ComposeButton onNavigate={onNavigate} />
-        {compact ? null : toggle}
       </div>
       <NavItem
         route={{ name: "graph" }}
@@ -94,6 +110,13 @@ export function Sidebar({ onNavigate, panel }: { onNavigate: () => void; panel: 
             onNavigate={onNavigate}
           />
         ))}
+      </NavSection>
+      {/* Its body is where the canvas draws its controls; in the rail only the icon stands, which opens the sidebar on them. */}
+      <NavSection title="Workbench" hidden={!workbench}>
+        <button type="button" className="nav-item workbench-rail" aria-label="Workbench" title="Workbench" onClick={onWorkbench}>
+          <Icon name="sliders" />
+        </button>
+        <WorkbenchSlot />
       </NavSection>
       <NavSection title="Settings">
         <NavItem
@@ -147,10 +170,10 @@ function ThemeButton() {
 }
 
 /** A titled group of entries that its title collapses and opens. */
-function NavSection({ title, children }: { title: string; children: ReactNode }) {
+function NavSection({ title, hidden = false, children }: { title: string; hidden?: boolean; children: ReactNode }) {
   const [open, setOpen] = useState(true);
   return (
-    <div className={open ? "nav-section" : "nav-section is-collapsed"}>
+    <div className={open ? "nav-section" : "nav-section is-collapsed"} hidden={hidden}>
       <button type="button" className="nav-section-h" aria-expanded={open} onClick={() => setOpen(!open)}>
         {title}
         <Icon name="chevD" size={12} />

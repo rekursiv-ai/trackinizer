@@ -26,7 +26,7 @@ from trackinizer.server.api.canvas_test_support import (
     browser,
     conversation_of,
     drain,
-    open_canvas,
+    open_workspace,
     seed_accounts,
     seed_science_chat,
     seed_session,
@@ -133,9 +133,9 @@ async def _canvas(
     client: httpx2.AsyncClient,
     *,
     email: str,
-) -> tuple[uuid.UUID, uuid.UUID]:
-    """Open the second user's canvas, signed in as ``email``; return it and its Chat."""
-    return await open_canvas(client, user_id=OTHER_USER_ID, email=email)
+) -> uuid.UUID:
+    """Open the second user's canvas, signed in as ``email``; return its id."""
+    return await open_workspace(client, user_id=OTHER_USER_ID, email=email)
 
 
 async def _heard(
@@ -214,12 +214,11 @@ async def test_typing_in_a_chat_of_my_organisation_posts_into_it(
 ) -> None:
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
-    workspace_id, chat_id = await _canvas(client, email=OTHER_EMAIL)
+    workspace_id = await _canvas(client, email=OTHER_EMAIL)
 
     joined = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="and from a colleague",
         conversation_id=chat.conversation,
     )
@@ -227,6 +226,7 @@ async def test_typing_in_a_chat_of_my_organisation_posts_into_it(
     assert json_loads(joined.content, dict[str, object]) == {
         "conversation_id": str(chat.conversation),
         "session_id": str(chat.session),
+        "workspace_id": str(workspace_id),
     }
     [heard] = await _heard(client, session_id=chat.session)
     assert heard["source"] == OTHER_EMAIL
@@ -242,13 +242,12 @@ async def test_fork_from_here_in_my_organisation_starts_a_new_chat_at_that_line(
 ) -> None:
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
-    workspace_id, chat_id = await _canvas(client, email=OTHER_EMAIL)
+    workspace_id = await _canvas(client, email=OTHER_EMAIL)
     key = uuid.uuid4()
 
     forked = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="what if a1 were wrong?",
         key=key,
         fork=chat.at(1),
@@ -256,10 +255,10 @@ async def test_fork_from_here_in_my_organisation_starts_a_new_chat_at_that_line(
 
     # The fork is a new conversation named by the key; it has no session until the
     # assistant opens it, and the original's own queue hears nothing.
-    assert json_loads(forked.content, dict[str, object]) == {
-        "conversation_id": str(key),
-        "session_id": None,
-    }
+    receipt = json_loads(forked.content, dict[str, object])
+    forked_station = receipt.pop("workspace_id")
+    assert receipt == {"conversation_id": str(key), "session_id": None}
+    assert forked_station != str(workspace_id)
     [heard] = await _heard(client, session_id=chat.service)
     assert (heard["text"], heard["source"]) == ("what if a1 were wrong?", OTHER_EMAIL)
     context = from_plain(heard["context"], dict[str, object])
@@ -270,26 +269,70 @@ async def test_fork_from_here_in_my_organisation_starts_a_new_chat_at_that_line(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_a_fork_goes_to_a_new_station_that_holds_the_forks_chat(
+    pglite_route_client: _Client,
+) -> None:
+    """The fork's station copies the source's state; a retry finds the same one."""
+    client, store = pglite_route_client
+    chat = await _original(store, starter=TEST_USER_EMAIL)
+    workspace_id = await _canvas(client, email=OTHER_EMAIL)
+    key = uuid.uuid4()
+
+    async def fork() -> dict[str, object]:
+        forked = await send_chat(
+            client,
+            workspace_id=workspace_id,
+            text="what if a1 were wrong?",
+            key=key,
+            fork=chat.at(1),
+        )
+        assert forked.status_code == 200
+        return json_loads(forked.content, dict[str, object])
+
+    first = await fork()
+    again = await fork()
+
+    assert again == first
+    station = json_loads(
+        (await client.get(f"/api/workspaces/{first['workspace_id']}")).content,
+        dict[str, object],
+    )
+    source = json_loads(
+        (await client.get(f"/api/workspaces/{workspace_id}")).content,
+        dict[str, object],
+    )
+    assert (station["name"], station["conversation_id"]) == (
+        "unnamed-workstream#2",
+        str(key),
+    )
+    assert station["visuals"] == source["visuals"]
+    assert source["conversation_id"] is None
+    assert (
+        len(json_loads((await client.get("/api/workspaces")).content, list[object]))
+        == 2
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_typing_in_a_foreign_chat_is_refused_and_forking_it_is_not(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
-    workspace_id, chat_id = await _canvas(client, email=JAN)
+    workspace_id = await _canvas(client, email=JAN)
     head = await _head(client, conversation=chat.conversation, email=JAN)
     assert head["forks_on_typing"] is True
 
     posted = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="jan joins in",
         conversation_id=chat.conversation,
     )
     forked = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="jan forks",
         fork=chat.at(2),
     )
@@ -312,27 +355,24 @@ async def test_consumer_domains_are_no_organisation_but_my_own_chat_stays_mine(
 ) -> None:
     client, store = pglite_route_client
     chat = await _original(store, starter=ALICE)
-    workspace_id, chat_id = await _canvas(client, email=BOB)
+    workspace_id = await _canvas(client, email=BOB)
 
     posted = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="bob joins in",
         conversation_id=chat.conversation,
     )
     forked = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="bob forks",
         fork=chat.at(2),
     )
-    own = await _canvas(client, email=ALICE)
+    own = await open_workspace(client, user_id=OTHER_USER_ID, email=ALICE, new=True)
     mine = await send_chat(
         client,
-        workspace_id=own[0],
-        chat_id=own[1],
+        workspace_id=own,
         text="alice goes on",
         conversation_id=chat.conversation,
     )
@@ -350,12 +390,11 @@ async def test_a_single_organisation_server_never_makes_typing_a_fork(
     monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
-    workspace_id, chat_id = await _canvas(client, email=JAN)
+    workspace_id = await _canvas(client, email=JAN)
 
     posted = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="jan joins in",
         conversation_id=chat.conversation,
     )
@@ -372,14 +411,13 @@ async def test_a_fork_needs_a_line_of_a_science_chat_and_names_no_conversation(
 ) -> None:
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
-    workspace_id, chat_id = await _canvas(client, email=OTHER_EMAIL)
+    workspace_id = await _canvas(client, email=OTHER_EMAIL)
 
     # A record beyond the session's end, a session that is no chat, and a fork that
     # also names the conversation to post into.
     body = {
         "workspace_id": str(workspace_id),
         "text": "fork",
-        "chat_instance_id": str(chat_id),
     }
     assert await _fork(client, body, {**chat.at(0), "idx": 9}) == 422
     other = {**chat.at(0), "session_id": str(chat.service)}
@@ -397,17 +435,13 @@ async def test_a_fork_cannot_probe_the_lines_of_a_chat_its_caller_may_not_read(
 ) -> None:
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
-    workspace_id, chat_id = await _canvas(client, email=OTHER_EMAIL)
+    workspace_id = await _canvas(client, email=OTHER_EMAIL)
     async with store.engine.acquire() as conn:
         await conn.execute(
             "UPDATE inquiries SET agentsession_audience = 'staff' WHERE id = $1",
             chat.session,
         )
-    body = {
-        "workspace_id": str(workspace_id),
-        "text": "fork",
-        "chat_instance_id": str(chat_id),
-    }
+    body = {"workspace_id": str(workspace_id), "text": "fork"}
     # The chat's three lines, two a person's and one an answer, and a position past its
     # end: a caller who may read the chat is told which are lines.
     positions = (0, 1, 2, 9)
@@ -500,21 +534,19 @@ async def test_a_key_that_names_the_original_posts_nothing_into_it(
 ) -> None:
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
-    workspace_id, chat_id = await _canvas(client, email=JAN)
+    workspace_id = await _canvas(client, email=JAN)
 
     # The conversation id is in the link Jan was given; sent as the idempotency key of
     # a post that names no conversation, or of a fork, it is still the original.
     typed = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="jan sneaks in",
         key=chat.conversation,
     )
     forked = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="jan forks into it",
         key=chat.conversation,
         fork=chat.at(0),
@@ -537,8 +569,7 @@ async def test_a_chat_the_assistant_has_not_opened_yet_is_its_starters_already(
     first = await _canvas(client, email=ALICE)
     started = await send_chat(
         client,
-        workspace_id=first[0],
-        chat_id=first[1],
+        workspace_id=first,
         text="alice starts",
     )
     conversation = conversation_of(started)
@@ -547,16 +578,14 @@ async def test_a_chat_the_assistant_has_not_opened_yet_is_its_starters_already(
     # No session carries the conversation yet, only the line that began it.
     posted = await send_chat(
         client,
-        workspace_id=second[0],
-        chat_id=second[1],
+        workspace_id=second,
         text="jan joins in",
         conversation_id=conversation,
     )
     again = await _canvas(client, email=ALICE)
     mine = await send_chat(
         client,
-        workspace_id=again[0],
-        chat_id=again[1],
+        workspace_id=again,
         text="alice goes on",
         conversation_id=conversation,
     )
@@ -576,13 +605,12 @@ async def test_a_forker_may_retry_their_own_fork_under_its_key(
 ) -> None:
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
-    workspace_id, chat_id = await _canvas(client, email=JAN)
+    workspace_id = await _canvas(client, email=JAN)
     key = uuid.uuid4()
 
     first = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="jan forks",
         key=key,
         fork=chat.at(2),
@@ -590,7 +618,6 @@ async def test_a_forker_may_retry_their_own_fork_under_its_key(
     retry = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="jan forks",
         key=key,
         fork=chat.at(2),
@@ -683,12 +710,11 @@ async def test_a_session_another_key_opened_under_the_id_does_not_make_its_owner
         conversation_id=conversation,
         account=TEST_USER_EMAIL,
     )
-    workspace_id, chat_id = await _canvas(client, email=JAN)
+    workspace_id = await _canvas(client, email=JAN)
 
     posted = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="jan claims it",
         conversation_id=conversation,
     )
@@ -703,11 +729,10 @@ async def test_a_writer_outside_the_chat_cannot_drain_its_session_or_the_assista
 ) -> None:
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
-    workspace_id, chat_id = await _canvas(client, email=ALICE)
+    workspace_id = await _canvas(client, email=ALICE)
     _ = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="alice forks",
         fork=chat.at(0),
     )

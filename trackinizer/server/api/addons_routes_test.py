@@ -22,7 +22,7 @@ from trackinizer.server.api.app import _build_app, lifespan
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
-from trackinizer.server.visuals.catalog import Workspace
+from trackinizer.server.visuals.catalog import StaticVisual, Workspace
 
 
 if TYPE_CHECKING:
@@ -101,25 +101,35 @@ def test_mounted_routes_are_prefixed_listed_and_need_a_viewer() -> None:
     ]
 
 
+def _notes_visuals() -> Workspace.Config:
+    """Return a catalog of one visual, which is not the default catalog's."""
+    return Workspace.Config(
+        visuals=[
+            StaticVisual.Config(type="x.notes", title="Notes", description="Notes."),
+        ],
+        default_visual="x.notes",
+    )
+
+
 def test_attaching_sets_the_deployments_visual_catalog() -> None:
     cfg = Deployment.Config()
-    cfg.visuals.default_visual = "trax.chat"
+    cfg.visuals = _notes_visuals()
     deployment = cfg.make()
     app = _app_with(deployment)
     assert _visual_catalog(app) is deployment.visuals
-    assert _visual_catalog(app).default_visual == "trax.chat"
+    assert _visual_catalog(app).default_visual == "x.notes"
 
 
 def test_a_real_deployment_replaces_the_default_one_of_a_built_app() -> None:
     built = _build_app()
     assert deployment_of(built).manifests == {}
     cfg = ProbeSite()
-    cfg.visuals.default_visual = "trax.chat"
+    cfg.visuals = _notes_visuals()
     real = cfg.make()
     attach_deployment(built, deployment=real)
     assert deployment_of(built) is real
     assert _visual_catalog(built) is real.visuals
-    assert _visual_catalog(built).default_visual == "trax.chat"
+    assert _visual_catalog(built).default_visual == "x.notes"
     built.state.store, _ = make_store()
     built.dependency_overrides[current_user] = _viewer
     assert TestClient(built).get("/api/addons/probe/ping").status_code == 200

@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-libra
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import noAuth from "../../test/testdata/me/getProfile.json";
 import { LOGIN_URL } from "../app/session";
+import { chooseChatStyle } from "../chatStyle";
 import { chooseTheme, installTheme } from "../theme";
 import { SettingsView } from ".";
 import { FAST, profile, renderScreen, serveAccount } from "./testing";
@@ -18,6 +19,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   // The page's theme is the module's, which outlives a test: each starts on the default.
   chooseTheme("dark");
+  chooseChatStyle("default");
 });
 
 test("the page shows the profile, refetched on open, and every section", async () => {
@@ -46,7 +48,7 @@ test("agent workspace opt-in updates the account preference", async () => {
   const server = serveAccount(ADA);
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);
   const workspace = within(screen.getByRole("region", { name: "Agent workspace" }));
-  const toggle = workspace.getByRole("checkbox", { name: "Enable agent-guided canvas" });
+  const toggle = workspace.getByRole("checkbox", { name: "Enable agent-guided workbench" });
   expect((toggle as HTMLInputElement).checked).toBe(false);
   fireEvent.click(toggle);
   await waitFor(() => expect(server.writes()).toContainEqual({
@@ -76,6 +78,18 @@ test("appearance choice persists and updates the page immediately", () => {
   fireEvent.change(appearance.getByRole("combobox", { name: "Theme" }), { target: { value: "light" } });
   expect(document.documentElement.dataset.theme).toBe("light");
   expect(localStorage.getItem("trackinizer.theme")).toBe("light");
+});
+
+test("Chat style is Default until Terminal is picked, which marks the page and is kept in this browser", () => {
+  serveAccount(ADA);
+  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
+  const style = within(screen.getByRole("region", { name: "Appearance" })).getByRole<HTMLSelectElement>("combobox", { name: "Chat style" });
+  expect(style.value).toBe("default");
+  expect(Array.from(style.options, (option) => option.textContent)).toEqual(["Default", "Terminal"]);
+  fireEvent.change(style, { target: { value: "terminal" } });
+  expect(style.value).toBe("terminal");
+  expect(document.documentElement.dataset.chatStyle).toBe("terminal");
+  expect(localStorage.getItem("trackinizer.chat.style")).toBe("terminal");
 });
 
 test("the theme picked elsewhere, as by the sidebar's button, shows in Appearance at once", () => {

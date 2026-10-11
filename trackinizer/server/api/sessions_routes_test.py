@@ -37,13 +37,11 @@ from trackinizer.server.api.canvas_test_support import (
     browser,
     conversation_of,
     drain,
-    open_canvas,
     open_workspace,
     revision_of,
     seed_accounts,
     seed_session,
     send_chat,
-    show_chat,
     start_session,
 )
 from trackinizer.server.api.conftest import (
@@ -183,6 +181,82 @@ class TestSendMessageIdempotency:
             str(session_id),
         ]
         assert app.state.inbound.pending(session_id) == 1
+
+
+class TestSendToAScienceChat:
+    """A chat is reached through its station: a browser's Console send is refused."""
+
+    @classmethod
+    def _chat_at(
+        cls,
+        store: Store,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        polled: bool,
+    ) -> tuple[uuid.UUID, InboundQueue]:
+        """Make ``scientist`` resolve to a live science chat, polled or idle."""
+        inbound = InboundQueue()
+        app.state.inbound = inbound
+        session_id = uuid.uuid4()
+        monkeypatch.setattr(
+            store,
+            "resolve_live_sessions",
+            AsyncMock(return_value=[(session_id, ())]),
+        )
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(
+                return_value=AgentSession(
+                    owner="scientist",
+                    cli="sagent",
+                    cli_session_id=chat_session_id(uuid.uuid4()),
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                    audience="open",
+                ),
+            ),
+        )
+        if polled:
+            inbound.mark_poller(session_id)
+        return session_id, inbound
+
+    def test_a_browser_is_told_to_open_the_chats_station_polled_or_not(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        browser()
+        for polled in (True, False):
+            session_id, inbound = self._chat_at(store, monkeypatch, polled=polled)
+
+            refused = client.post(
+                "/api/messages",
+                json={"actor": "scientist", "text": "stop"},
+            )
+
+            assert refused.status_code == 409, refused.text
+            assert from_plain(refused.json(), dict[str, object]) == {
+                "detail": "Open its station to talk to this chat",
+            }
+            assert inbound.pending(session_id) == 0
+
+    def test_an_agent_key_keeps_todays_rules(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        act_as_other_agent("writer")
+        _ = self._chat_at(store, monkeypatch, polled=False)
+        skipped = client.post("/api/messages", json={"actor": "scientist", "text": "x"})
+        session_id, inbound = self._chat_at(store, monkeypatch, polled=True)
+        refused = client.post("/api/messages", json={"actor": "scientist", "text": "x"})
+
+        assert (skipped.status_code, skipped.json()) == (200, {"delivered": []})
+        assert refused.status_code == 409
+        assert "POST /api/chats" in from_plain(refused.json(), dict[str, str])["detail"]
+        assert inbound.pending(session_id) == 0
 
 
 class TestSessionEndAtomicity:
@@ -971,24 +1045,22 @@ async def _post_to_the_assistant(
     *,
     store: Store,
     cli_session_id: str | None,
-) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+) -> tuple[uuid.UUID, uuid.UUID]:
     """Start the assistant, post a line it has not drained, and end its session."""
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR, cli_session_id=cli_session_id)
     workspace_id = await open_workspace(client)
-    chat_id = await show_chat(client, workspace_id=workspace_id)
     sent = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="posted while it deployed",
     )
     assert sent.status_code == 200
     act_as_assistant()
     ended = await client.post(f"/api/sessions/{kb}/end", json={"status": "completed"})
     assert ended.status_code == 200
-    return kb, workspace_id, chat_id
+    return kb, workspace_id
 
 
 @pytest.mark.db_pglite
@@ -1003,7 +1075,7 @@ async def test_a_line_posted_before_the_assistant_restarted_is_heard_when_it_res
     else would answer the line: no chat session holds it yet.
     """
     client, store = pglite_route_client
-    kb, _, _ = await _post_to_the_assistant(
+    kb, _ = await _post_to_the_assistant(
         client,
         store=store,
         cli_session_id="scout-service",
@@ -1057,7 +1129,7 @@ async def test_a_helper_service_session_keeps_its_unread_lines_when_it_resumes(
         cli=CHAT_HELPER_CLI,
         cli_session_id="trax-helper:helper",
     )
-    workspace_id, chat_id = await open_canvas(client)
+    workspace_id = await open_workspace(client)
     chosen = await client.post(
         f"/api/workspaces/{workspace_id}/operations",
         json={
@@ -1070,7 +1142,6 @@ async def test_a_helper_service_session_keeps_its_unread_lines_when_it_resumes(
     sent = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="before the restart",
     )
     assert sent.status_code == 200, sent.text
@@ -1141,13 +1212,11 @@ async def test_a_drained_chat_message_carries_its_senders_role(
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
     workspace_id = await open_workspace(client)
-    chat_id = await show_chat(client, workspace_id=workspace_id)
     for role in ("writer", "admin"):
         install_identity(make_test_identity(api_key_id=None, role=role))
         sent = await send_chat(
             client,
             workspace_id=workspace_id,
-            chat_id=chat_id,
             text=f"as {role}",
         )
         assert sent.status_code == 200
@@ -1202,7 +1271,6 @@ async def test_the_assistant_long_polls_and_a_chat_message_reaches_it_at_once(
     await seed_accounts(store)
     kb = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     workspace_id = await open_workspace(client)
-    chat_id = await show_chat(client, workspace_id=workspace_id)
     holds = _Holds()
     monkeypatch.setattr(
         InboundQueue,
@@ -1222,7 +1290,6 @@ async def test_the_assistant_long_polls_and_a_chat_message_reaches_it_at_once(
     sent = await send_chat(
         client,
         workspace_id=workspace_id,
-        chat_id=chat_id,
         text="wake up",
     )
     response = await asyncio.wait_for(waiting, 5)

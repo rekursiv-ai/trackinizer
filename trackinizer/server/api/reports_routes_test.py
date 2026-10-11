@@ -108,10 +108,8 @@ async def test_report_key_does_not_reuse_an_unrelated_artifact(
         context = await read_artifact_content_on_conn(
             conn,
             artifact_id,
-            include_html=False,
         )
         assert context is not None
-        assert context.html is None
         assert context.title == "Direction atlas"
     replay = await client.post(
         "/api/artifacts/content",
