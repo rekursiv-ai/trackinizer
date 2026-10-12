@@ -2,7 +2,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { stubFetch } from "./api/testing";
 import { applyChatStyle, chooseChatStyle, installChatStyle, readChatStyle, useChatStyle } from "./chatStyle";
-import { preferences, receivePreferences } from "./preferences";
+import { preferences, receivePreferences, sendWaiting } from "./preferences";
 
 function Shown() {
   return <output data-testid="style">{useChatStyle()}</output>;
@@ -10,9 +10,11 @@ function Shown() {
 
 const attribute = () => document.documentElement.dataset.chatStyle;
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
-  // The page's style is the module's, which outlives a test: each starts on the default.
+  // The page's style is the module's, which outlives a test: each starts on the default, once the
+  // test's own sends are answered (one on its way would make the page ignore this).
+  await sendWaiting();
   receivePreferences({ ...preferences(), chat_style: "default" });
 });
 

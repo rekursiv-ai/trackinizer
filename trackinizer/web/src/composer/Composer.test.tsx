@@ -154,3 +154,18 @@ test("a send that resolves with nothing shows no receipt, and still empties the 
   await waitFor(() => expect(box).toHaveProperty("value", ""));
   expect(screen.queryByRole("status")).toBeNull();
 });
+
+test("a draft sent as the box moves to another target still leaves the box, and shows its receipt under neither", async () => {
+  let deliver = (_receipt: string) => {};
+  const send = vi.fn((_text: string, _key: string) => new Promise<string>((resolve) => { deliver = resolve; }));
+  const { box, rerender } = show(send);
+  fireEvent.change(box, { target: { value: "start a fork" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(send).toHaveBeenCalledOnce());
+  rerender("session-b");
+  await act(async () => deliver("Sent."));
+  expect(box).toHaveProperty("value", "");
+  expect(screen.queryByRole("status")).toBeNull();
+  rerender("session-a");
+  expect(screen.queryByRole("status")).toBeNull();
+});

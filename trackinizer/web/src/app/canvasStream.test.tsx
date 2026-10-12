@@ -2,15 +2,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { useContext } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { stubFetch } from "../api/testing";
 import { createDefaultWorkspace, openWorkspaceEvents, type WorkspaceEventListener, type WorkspaceState } from "../api/workspaces";
 import { recentTimings, resetTimings } from "../debug/timings";
 import { META } from "../detail/testing";
 import { LiveContext } from "../live";
 import { LiveHub as LiveHubClass, type LiveHub } from "../live/hub";
-import { preferences, receivePreferences } from "../preferences";
+import { preferences } from "../preferences";
 import { currentChatColumn, setChatFullscreen, setChatSide } from "../visuals/chatColumn";
 import { ChatFeedContext, useChatFeed } from "../visuals/chatFeed";
 import { MetaContext } from "./boot";
+import { resetPreferences } from "../state/testing";
 import { setStation } from "../stations/store";
 import { CanvasStream } from "./canvasStream";
 import { useHighlighted } from "./highlights";
@@ -28,13 +30,18 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
   vi.mocked(openWorkspaceEvents).mockReturnValue(close);
+  // A choice of Chat's side is kept in the preferences: the server takes it.
+  stubFetch(async (request) => Response.json({ ...preferences(), ...(await request.json()) }));
   resetTimings();
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   vi.clearAllMocks();
   history.replaceState(null, "", "#/");
+  // A save still on its way would make the next test's page ignore a preferences frame.
+  await resetPreferences();
+  vi.unstubAllGlobals();
 });
 
 function Probe() {
@@ -157,7 +164,6 @@ test("a chat frame hides or shows Chat's column in this tab; a hide leaves full 
   const before = currentChatColumn();
   act(() => stream.chat(false, 3));
   expect(currentChatColumn()).toBe(before);
-  setChatSide("left");
 });
 
 test("a preferences frame, from the user's other tab or the station's agent, is what the page shows", async () => {
@@ -166,7 +172,6 @@ test("a preferences frame, from the user's other tab or the station's agent, is 
   act(() => stream.preferences({ ...preferences(), theme: "light", chat_side: "right" }, 1));
   expect(preferences()).toMatchObject({ theme: "light", chat_side: "right" });
   expect(currentChatColumn().side).toBe("right");
-  act(() => receivePreferences({ ...preferences(), theme: "dark", chat_side: "left" }));
 });
 
 function Feed() {

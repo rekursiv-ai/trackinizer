@@ -16,7 +16,7 @@ import type { LiveHub } from "../live/hub";
 import type { LiveQuery } from "../live/serial";
 import { startTrail } from "../router/trail";
 import { chooseChatStyle } from "../chatStyle";
-import { preferences, receivePreferences } from "../preferences";
+import { preferences, receivePreferences, sendWaiting } from "../preferences";
 import { Chat } from "./Chat";
 import { setStation, currentStation } from "../stations/store";
 import { useStation } from "../stations/useStation";
@@ -76,7 +76,7 @@ let stopTrail = () => {};
 const FORKED = { conversation_id: "f1", session_id: null, workspace_id: "w-fork" };
 /** The conversation the station holds, set by `open`. */
 let opened: string | null = null;
-afterEach(() => {
+afterEach(async () => {
   opened = null;
   setStation(null);
   vi.useRealTimers();
@@ -88,6 +88,8 @@ afterEach(() => {
   sessions.clear();
   registered = [];
   localStorage.clear();
+  // A save still on its way (a flip of Chat's side, a style) would make the page ignore the next test's preferences.
+  await sendWaiting();
   receivePreferences({ ...preferences(), highlight_mentions: true });
   history.replaceState(null, "", "#/");
 });
@@ -881,9 +883,10 @@ test("Fork from here on an earlier line makes the next message a fork after it, 
   const [line, key] = vi.mocked(sendChatLine).mock.calls[0]!;
   expect(line).toMatchObject({ conversationId: null, fork: { sessionId: "s-c1", part: 0, idx: 1 } });
   expect(typeof key).toBe("string");
-  // The fork is open now, and the banner has done its work.
+  // The fork is open now, the banner has done its work, and the line sent has left the box.
   await waitFor(() => expect(currentStation().id).toBe("w-fork"), { interval: 1 });
   expect(screen.queryByText(/Your next message starts a fork/)).toBeNull();
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("value", ""), { interval: 1 });
   // The line shows in the fork while the assistant opens it, and not in the original.
   expect(await within(screen.getByRole("log")).findByText("is a1 wrong?")).toBeTruthy();
   expect(screen.queryByText("a2")).toBeNull();
@@ -936,6 +939,7 @@ test("typing in a chat started outside my organisation forks it at its latest li
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
   expect(vi.mocked(sendChatLine).mock.calls[0]![0]).toMatchObject({ conversationId: null, fork: { sessionId: "s-c1", part: 0, idx: 3 } });
   await waitFor(() => expect(currentStation().id).toBe("w-fork"), { interval: 1 });
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("value", ""), { interval: 1 });
 });
 
 test("Fork from here in a chat outside my organisation forks after the line picked, not the latest", async () => {

@@ -30,7 +30,7 @@ export type FieldProps = {
  * draft and says `failure(error)`; a success empties the box and shows what
  * `send` resolved with. A draft `check` finds wrong (it names the problem, or
  * returns `""`) is not sent: the composer says why until the draft changes. Under a new `target`, the old key, failure and receipt
- * no longer apply. `field` draws the textarea from the props the composer gives
+ * no longer apply, though a draft sent before the move still leaves the box. `field` draws the textarea from the props the composer gives
  * it, and may change the draft with `edit` as typing does (the console's adds
  * its @ suggestions); by default it is the plain textarea.
  *
@@ -71,11 +71,11 @@ export function Composer({
   const sending = useMutation({
     mutationFn: (message: Sent) => send(message.text, message.key),
     onSuccess: (text, message) => {
-      if (message.target !== currentTarget.current) return;
-      setReceipt({ text, target: message.target });
-      // A draft typed while this one was on its way stays.
+      // Sent, the draft leaves the box even if the box moved meanwhile, as Chat's does to a fork it
+      // started; a draft typed while this one was on its way stays.
       setDraft((current) => (current === message.text ? "" : current));
       setSent((current) => (current?.key === message.key ? null : current));
+      if (message.target === currentTarget.current) setReceipt({ text, target: message.target });
     },
   });
   /** Change the draft as typing does: a changed draft goes under a new key, and the receipt goes. */

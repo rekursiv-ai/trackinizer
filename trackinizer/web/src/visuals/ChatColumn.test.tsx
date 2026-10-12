@@ -8,7 +8,8 @@ import { CommandRegistry, CommandRegistryContext, Shortcuts, useCommandList } fr
 import { setStationMenu, useStationMenu } from "../stations/actions";
 import { currentStation, setStation } from "../stations/store";
 import { ChatColumn } from "./ChatColumn";
-import { currentChatColumn, setChatFullscreen, setChatHidden, setChatSide } from "./chatColumn";
+import { preferences, receivePreferences } from "../preferences";
+import { currentChatColumn, setChatFullscreen, setChatHidden } from "./chatColumn";
 import { FOLD_AFTER_MS, OPEN_AFTER_MS } from "./hoverOpen";
 import { flushLayouts, forgetLayouts, type Layout } from "./stationLayout";
 
@@ -47,7 +48,8 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   localStorage.clear();
-  setChatSide("left");
+  // As the server's word, not the user's choice: a choice would be sent, and its answer outlive the test.
+  receivePreferences({ ...preferences(), chat_side: "left" });
   setChatHidden(false);
   setChatFullscreen(false);
 });
@@ -86,7 +88,7 @@ test("Chat is a column beside the workbench, on the left, and has the user's wor
 });
 
 test("on the right Chat stands after the workbench, with the divider between them", async () => {
-  setChatSide("right");
+  receivePreferences({ ...preferences(), chat_side: "right" });
   const { row } = await show();
   expect(order(row)).toEqual(["chat-workbench", "chat-column-edge", "chat-column"]);
 });
@@ -111,7 +113,7 @@ test("the divider resizes by pointer, never under 280 px or over seven tenths of
 });
 
 test("on the right a drag toward the workbench widens Chat", async () => {
-  setChatSide("right");
+  receivePreferences({ ...preferences(), chat_side: "right" });
   const { row, column } = await show();
   vi.spyOn(row, "getBoundingClientRect").mockReturnValue({ left: 0, right: 1000, width: 1000 } as DOMRect);
   const edge = screen.getByRole("separator", { name: "Resize Chat" });
@@ -184,7 +186,7 @@ test("the shortcut hides Chat to a strip at its edge, even from the box, and the
 });
 
 test("the strip stands at the edge Chat stands at", async () => {
-  setChatSide("right");
+  receivePreferences({ ...preferences(), chat_side: "right" });
   setChatHidden(true);
   const { row } = await show();
   expect(order(row)).toEqual(["chat-workbench", "chat-strip", "chat-column"]);
