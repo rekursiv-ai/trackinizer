@@ -43,6 +43,7 @@
       "role": "admin",
       "rules_issue_id": null,
       "rules_version": null,
+      "summary_accounts": [],
       "user_id": "00000000-0000-4000-9000-000000000001",
       "visual_workspace_enabled": true
     },

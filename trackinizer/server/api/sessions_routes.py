@@ -29,6 +29,7 @@ from trackinizer.server.api._deps import (
 from trackinizer.server.api.session_access import (
     granted_audience,
     is_a_science_chat,
+    require_attributable,
     require_chat_opener,
     require_session,
     require_session_access,
@@ -116,6 +117,7 @@ async def session_start_route(
     # run). Without this the row's account would be the unvalidated routing
     # handle the Store defaults to.
     account = body.account or identity.email
+    require_attributable(identity, account)
     await assert_account_active(store.engine, account)
     # ``start_session`` reserves the routing name and inserts the row, retrying
     # on the live-owner unique index so two concurrent starts for one actor get

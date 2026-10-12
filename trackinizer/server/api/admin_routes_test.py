@@ -15,6 +15,7 @@ import asyncpg
 import pytest
 
 from trackinizer.conftest import executed_sql
+from trackinizer.server.api import auth_routes
 from trackinizer.server.api.admin_routes import _refuse_last_admin_loss
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
@@ -1311,6 +1312,38 @@ class TestProfileRoute:
         assert body["read_audiences"] == sorted(read)
         assert body["open_audiences"] == sorted(opening)
         assert body["pinned_audience"] == pinned
+        assert body["summary_accounts"] == []
+
+    def test_lists_only_the_staff_settings_service_accounts(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, _store, engine = route_client
+        engine.conn.fetchrow = AsyncMock(
+            side_effect=[
+                {
+                    "name": "Alice",
+                    "last_login": None,
+                    "visual_workspace_enabled": False,
+                    "acknowledged_at": None,
+                    "preferences": None,
+                    "acknowledged_rules_version": None,
+                },
+                None,
+            ],
+        )
+        staff = ("lee@staff.example", "campaign@service.invalid", "*@staff.example")
+
+        def staff_of(request: object) -> tuple[str, ...]:
+            del request
+            return staff
+
+        monkeypatch.setattr(auth_routes, "get_staff", staff_of)
+
+        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+
+        assert body["summary_accounts"] == ["campaign@service.invalid"]
 
     def test_401_without_auth(
         self,

@@ -38,6 +38,7 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
         "trax.artifact",
         "trax.subgraph",
         "trax.timeline",
+        "trax.summary",
     }
     assert by_type["trax.browse"]["version"] == 1
     assert by_type["trax.artifact"]["requires"] == ["record"]
@@ -62,6 +63,8 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
     assert by_type["trax.timeline"]["record_kinds"] is None
     assert by_type["trax.artifact"]["record_kinds"] == ["Artifact"]
     assert by_type["trax.subgraph"]["record_kinds"] is None
+    assert by_type["trax.summary"]["requires"] == ["record"]
+    assert by_type["trax.summary"]["record_kinds"] == ["Issue", "AgentSession"]
 
 
 def test_visual_config_composes_titles_and_rejects_invalid_identity() -> None:

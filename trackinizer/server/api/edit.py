@@ -30,6 +30,7 @@ from treekle import from_plain
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.locks import require_unlocked
 from trackinizer.server.api.session_access import (
+    require_attributable,
     require_row_account,
     require_session_id_change,
     require_session_row_write,
@@ -97,6 +98,7 @@ def _make_put(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON]]
         await require_session_row_write(request, identity, target_id)
         if route.column == "account":
             await require_row_account(request, identity, target_id)
+            require_attributable(identity, from_plain(body.value, str, default=""))
         if route.column == "cli_session_id":
             await require_session_id_change(
                 request,

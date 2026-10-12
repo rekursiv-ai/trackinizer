@@ -48,6 +48,16 @@
       "default_size": "wide",
       "parameter_schema": {},
       "record_kinds": ["Artifact"]
+    },
+    {
+      "type": "trax.summary",
+      "version": 1,
+      "title": "Campaign summary",
+      "description": "What a campaign did, for readers who may not read its transcripts: its sessions, steps, phases and beliefs.",
+      "requires": ["record"],
+      "default_size": "wide",
+      "parameter_schema": {},
+      "record_kinds": ["Issue", "AgentSession"]
     }
   ]
 }

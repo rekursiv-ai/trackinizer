@@ -14,7 +14,10 @@ from pydantic import ValidationError
 
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.locks import referenced_ids, require_unlocked
-from trackinizer.server.api.session_access import granted_audience
+from trackinizer.server.api.session_access import (
+    granted_audience,
+    require_attributable,
+)
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,
@@ -109,6 +112,7 @@ async def submit_batch_route(
         for item in req.items
     ]
     for account in {str(item.account) for item in items}:
+        require_attributable(identity, account)
         await assert_account_active(store.engine, account)
     # Gate every edge endpoint that names an EXISTING row by UUID on.
     ids = await store.submit_batch(
@@ -184,6 +188,7 @@ async def _submit_one(
 ) -> UUID:
     session_audience = _opening_audience(identity, req)
     account = _resolve_account(req, identity)
+    require_attributable(identity, account)
     await assert_account_active(store.engine, account)
     return await store.submit(
         req.model_copy(update={"account": account}),

@@ -32,6 +32,7 @@ from trackinizer.server.api.canvas_test_support import (
     seed_accounts,
     start_session,
 )
+from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.api.science_chat_routes_test import (
     _append,
     open_helper_chat,
@@ -40,6 +41,7 @@ from trackinizer.server.api.session_access import (
     Asker,
     SessionAccess,
     granted_audience,
+    require_attributable,
     require_row_account,
     require_row_purge,
     require_session_access,
@@ -773,6 +775,41 @@ class TestGrantedAudience:
             _ = granted_audience(_opener(None))
 
         assert refused.value.detail == {"code": "audience_not_held", "audience": "open"}
+
+
+class TestRequireAttributable:
+    """Only a service account, or an admin, may put its address on a row."""
+
+    @pytest.mark.parametrize(
+        ("role", "email", "account"),
+        [
+            ("writer", "wes@example.com", "wes@example.com"),
+            ("writer", "wes@example.com", "someone@example.com"),
+            ("writer", "campaign@service.invalid", "campaign@service.invalid"),
+            ("writer", "Campaign@Service.invalid", "campaign@service.invalid"),
+            ("admin", "root@example.com", "campaign@service.invalid"),
+        ],
+    )
+    def test_the_account_itself_an_admin_or_an_ordinary_address_passes(
+        self,
+        role: Role,
+        email: str,
+        account: str,
+    ) -> None:
+        require_attributable(make_test_identity(email=email, role=role), account)
+
+    @pytest.mark.parametrize("role", ["viewer", "writer"])
+    def test_another_callers_service_address_is_refused(self, role: Role) -> None:
+        with pytest.raises(HTTPException) as refused:
+            require_attributable(
+                make_test_identity(email="wes@example.com", role=role),
+                "campaign@service.invalid",
+            )
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            403,
+            "A row is attributed to a service account by that account or an admin",
+        )
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ from trackinizer.server.auth import ROLE_ORDER, Role
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.audience import OPEN
 from trackinizer.wire.wire_science_chat import CHAT_SESSION_PREFIX
+from trackinizer.wire.wire_service_accounts import is_service_address
 
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ __all__ = [
     "granted_audience",
     "hidden_session",
     "is_a_science_chat",
+    "require_attributable",
     "require_chat_opener",
     "require_row_account",
     "require_row_purge",
@@ -132,6 +134,33 @@ async def resolve_asker(
             staff=get_staff(request),
         ),
     )
+
+
+def require_attributable(identity: AuthIdentity, account: str) -> None:
+    """Refuse attributing a row to a service account the caller is not.
+
+    A row's ``account`` is who filed it, which a page or a service may rely on, so
+    only that account, or an admin, may put its address on a row: at creation or by
+    moving a row to it.
+
+    Args:
+      identity: Authenticated caller.
+      account: The account the row would be held under.
+
+    Raises:
+      HTTPException: 403: ``account`` is a service address that is neither the
+        caller's nor the admin's to hand out.
+
+    """
+    if (
+        is_service_address(account)
+        and account.lower() != identity.email.lower()
+        and identity.role != "admin"
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="A row is attributed to a service account by that account or an admin",
+        )
 
 
 def require_session_write_access(identity: AuthIdentity, session: AgentSession) -> None:

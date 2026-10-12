@@ -17,6 +17,7 @@ type Renderer = { readonly version: number; readonly Component: ComponentType<Re
 const ContextGraph = lazyView(() => import("./ContextGraph"), (module) => module.ContextGraph);
 const Timeline = lazyView(() => import("./Timeline"), (module) => module.Timeline);
 const Artifact = lazyView(() => import("./Artifact"), (module) => module.Artifact);
+const Summary = lazyView(() => import("./Summary"), (module) => module.Summary);
 /**
  * Renderers for visuals an addon's deployment adds to the catalog. They stay out
  * of renderer-versions.json, which mirrors the default catalog every server has.
@@ -32,7 +33,7 @@ const ADDON_RENDERERS: Readonly<Record<string, Renderer>> = {
  * stay out of the first load.
  */
 export function preloadRenderers(): void {
-  for (const view of [ContextGraph, Timeline, Artifact, DetailView]) void view.preload().catch(() => {});
+  for (const view of [ContextGraph, Timeline, Artifact, Summary, DetailView]) void view.preload().catch(() => {});
 }
 
 /** Frontend counterparts of the backend's inert visual descriptions. */
@@ -42,6 +43,7 @@ export const RENDERERS: Readonly<Record<string, Renderer>> = {
   "trax.subgraph": { version: rendererVersions["trax.subgraph"], Component: ContextGraph },
   "trax.timeline": { version: rendererVersions["trax.timeline"], Component: Timeline },
   "trax.artifact": { version: rendererVersions["trax.artifact"], Component: Artifact },
+  "trax.summary": { version: rendererVersions["trax.summary"], Component: Summary },
 } satisfies Record<keyof typeof rendererVersions, Renderer>;
 
 /** A missing or newer renderer fails within its tile, never the entire canvas. */

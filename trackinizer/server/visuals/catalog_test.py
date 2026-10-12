@@ -25,7 +25,20 @@ def test_default_workspace_builds_the_default_catalog() -> None:
         "trax.subgraph",
         "trax.timeline",
         "trax.artifact",
+        "trax.summary",
     ]
+
+
+def test_a_type_that_is_not_registered_has_no_description() -> None:
+    """A show of an unknown type is refused by the lookup, not by an exception."""
+    workspace = default_workspace()
+    assert workspace.visual("x.unknown") is None
+    summary = workspace.visual("trax.summary")
+    assert summary is not None
+    assert (summary.requires, summary.record_kinds) == (
+        ["record"],
+        ["Issue", "AgentSession"],
+    )
 
 
 def test_static_visual_is_configured_by_data() -> None:
@@ -64,6 +77,7 @@ def test_record_visuals_name_the_kinds_they_accept() -> None:
         "trax.subgraph": None,
         "trax.timeline": None,
         "trax.artifact": ["Artifact"],
+        "trax.summary": ["Issue", "AgentSession"],
     }
 
 

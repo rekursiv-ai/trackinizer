@@ -103,6 +103,20 @@ class TestRoutes:
         )
         assert r.status_code == 200, r.text
 
+    def test_set_account_route_refuses_moving_a_row_to_a_service_account(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        set_field_row(engine.conn, {"account": TEST_USER_EMAIL, "kind": "Issue"})
+
+        r = client.put(
+            f"/api/inquiries/{new_uuid()}/account",
+            json={"value": "campaign@service.invalid", "actor": "alice"},
+        )
+
+        assert r.status_code == 403, r.text
+
     def test_set_account_route_refuses_a_writer_who_does_not_hold_the_row(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],

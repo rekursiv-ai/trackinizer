@@ -596,6 +596,27 @@ class TestSessionStartAccountValidation:
         # creator's email, not left for the Store to default to the handle.
         assert captured["account"] == TEST_USER_EMAIL
 
+    def test_start_refuses_another_accounts_service_address(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        start = AsyncMock(return_value=(uuid.uuid4(), "scientist", 0))
+        monkeypatch.setattr(store, "start_session", start)
+
+        r = client.post(
+            "/api/sessions/start",
+            json={
+                "cli": "claude",
+                "cli_session_id": "abc",
+                "account": "campaign@service.invalid",
+            },
+        )
+
+        assert r.status_code == 403, r.text
+        start.assert_not_called()
+
 
 class TestViewerOwnedSessionLifecycle:
     def test_viewer_starts_own_session(

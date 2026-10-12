@@ -143,6 +143,27 @@ that Issue becomes its nearest lead; with no such Issue it is shown alone.
 Leads are the anchor's `narrows` ancestors, at most three (`_LEAD_LEVELS` in
 `server/visuals/timeline.py`), one indexed lookup per level.
 
+## Campaign summary
+
+`trax.summary` shows what a campaign did to readers who may not read its
+transcripts. Open it on the campaign's brief Issue or on any of its AgentSessions
+(`record_kinds` is those two). It reads the Artifacts the summary service files:
+`GET /api/inquiries` for kind Artifact filtered by label, `summary:issue:<id>`
+from an Issue, or `summary:session:<id>` then `summary:lead:<id>` from a session.
+Each Artifact's description is a plain-JSON document that the service writes. The
+page keeps only rows filed by `summary_accounts` in `GET /api/me/profile`, the staff
+setting's service accounts, since any writer can put these labels on a row.
+Sessions lists the campaign's sessions by start, with no spawn tree or cost, which
+are how it was run. Session shows one with its steps, phases and beliefs, and
+Corpus groups the efforts and claims they share.
+A running campaign's summary is read again every minute.
+
+The documents carry no transcript text, only item numbers and where each item is
+stored. A reader whose profile lists the `staff` audience also gets the
+transcript beside the steps (`/api/sessions/<id>/records`) and the numbers open
+it; the page only chooses what to show, and the server refuses the transcript to
+anyone else (`session_audience`).
+
 ## Stations
 
 A canvas is a station: a named canvas that holds at most one science chat. The

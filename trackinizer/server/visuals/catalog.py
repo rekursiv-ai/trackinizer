@@ -276,6 +276,16 @@ class Workspace:
                     requires=["record"],
                     record_kinds=["Artifact"],
                 ),
+                StaticVisual.Config(
+                    type="trax.summary",
+                    title="Campaign summary",
+                    description=(
+                        "What a campaign did, for readers who may not read its "
+                        "transcripts: its sessions, steps, phases and beliefs."
+                    ),
+                    requires=["record"],
+                    record_kinds=["Issue", "AgentSession"],
+                ),
             ],
         )
         """Configured visual modules available to a workspace."""

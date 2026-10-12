@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from treekle import from_plain
 
-from trackinizer.server.api._deps import get_hub, get_store
+from trackinizer.server.api._deps import get_hub, get_staff, get_store
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
     engine_of,
@@ -49,6 +49,7 @@ from trackinizer.server.preferences import (
 from trackinizer.server.visuals.workspace_store import station_ids
 from trackinizer.wire.audience import AudienceName
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
+from trackinizer.wire.wire_service_accounts import is_service_address
 
 
 if TYPE_CHECKING:
@@ -189,6 +190,9 @@ async def profile_route(
         "read_audiences": _names(identity.read_audiences),
         "open_audiences": _names(identity.open_audiences),
         "pinned_audience": identity.pinned_audience,
+        # The service accounts the operator made staff: the accounts whose Artifacts a
+        # page may trust as the summary service's, since only an admin makes one.
+        "summary_accounts": [a for a in get_staff(request) if is_service_address(a)],
     }
 
 
