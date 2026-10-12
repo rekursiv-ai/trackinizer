@@ -11,6 +11,7 @@ no ``change_log`` audit, no cost, and no ``LISTEN/NOTIFY`` fanout (unlike
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime
 from math import isfinite
 from typing import TYPE_CHECKING, Final, Literal, cast
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from trackinizer.wire.filters import Filter
 
 from trackinizer.server.notify import tx
+from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.errors import ConflictError, NotFoundError
@@ -346,7 +348,15 @@ class _MetricsMixin(_StoreShared):
             )
         else:
             sql = vetted_sql(inner, page, " LIMIT $", str(limit_pos))
-        async with self.engine.acquire() as conn:
+        # A filter can carry a caller's ``re`` pattern, bounded as the list bounds
+        # it; ``SET LOCAL`` needs the ``tx``. Ids carry none, so they stay uncapped.
+        by_filter = bool(experiment_ids) and not isinstance(experiment_ids[0], UUID)
+        async with (
+            self.engine.acquire() as conn,
+            tx(conn) if by_filter else nullcontext(),
+        ):
+            if by_filter:
+                await apply_regex_statement_timeout(conn)
             fetched = await conn.fetch(sql, *params)
         result: list[tuple[UUID, MetricPoint]] = []
         for row in fetched:

@@ -977,6 +977,19 @@ class TestClientMethods:
         )
         assert captured["r"].url.params.get_list("seq_range") == ["222..260", "279.."]
 
+    def test_list_kind_names_the_fields_to_send_or_none_for_whole_rows(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json=[])
+
+        client = Client("http://server")
+        _install_mock_transport(client, handler)
+        client.list_kind("Issue", fields=("id", "labels"))
+        client.list_kind("Issue")
+        assert [r.url.params.get_list("fields") for r in seen] == [["id", "labels"], []]
+
     def test_list_kind_all_pages_past_the_cap(self) -> None:
         """``list_kind_all`` concatenates every page until a short one.
 
@@ -2741,6 +2754,54 @@ class TestMachineHostMethods:
             ("POST", "/api/machines/gpu-box/revoke"),
         ] * 2
         assert err.value.status_code == 404
+
+
+class TestMetricQueries:
+    def test_query_metrics_sends_offset(self) -> None:
+        """The query route pages by ``offset``; the client must carry it."""
+        sent: list[dict[str, object]] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            sent.append(json_loads(request.content, dict[str, object]))
+            return httpx2.Response(200, json={"points": []})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            client.query_metrics(
+                uuid.uuid4(),
+                masks=[],
+                sort="asc",
+                limit=1,
+                offset=1,
+            )
+        assert [(body["sort"], body["limit"], body["offset"]) for body in sent] == [
+            ("asc", 1, 1),
+        ]
+
+    @pytest.mark.parametrize(
+        "experiments",
+        [
+            [],
+            [uuid.uuid4(), Filter(field="labels", op="is", value="x")],
+        ],
+        ids=["empty", "ids-and-filters"],
+    )
+    def test_rank_metrics_refuses_a_bad_selection_as_a_client_error(
+        self,
+        experiments: list[uuid.UUID] | list[Filter],
+    ) -> None:
+        """Nothing to rank, or two selections at once, is refused before sending."""
+        sent: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            sent.append(request)
+            return httpx2.Response(200, json={"rows": []})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError, match="metric rank"):
+                client.rank_metrics(experiments, masks=[])
+        assert sent == []
 
 
 if __name__ == "__main__":

@@ -4530,10 +4530,16 @@
             "type": "string"
           },
           "value": {
-            "default": "",
-            "maxLength": 512,
-            "title": "Value",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
           }
         },
         "required": [

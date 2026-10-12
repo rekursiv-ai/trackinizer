@@ -360,6 +360,88 @@ async def test_rank_takes_ids_or_filters_and_refuses_filters_sql_cannot_run(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_rank_filter_regex_postgres_rejects_is_a_400_as_on_the_list(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``[a-b-c]`` compiles in Python and fails in Postgres, a caller error either way."""
+    client, store = pglite_route_client
+    await _experiment(store, [MetricPoint(key="score", step=0, value=1.0)])
+    clause = {"field": "title", "op": "re", "value": "[a-b-c]"}
+    listed = await client.get(
+        "/api/inquiries",
+        params=[("kind", "Experiment"), ("filter", json.dumps(clause))],
+    )
+    ranked = await client.post(
+        METRIC_RANK_PATH,
+        json={"filters": [clause], "query": {}},
+    )
+    assert (listed.status_code, ranked.status_code) == (400, 400), ranked.text
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_query_pages_by_offset(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``offset`` skips selected cells on the one-experiment query, as on rank."""
+    client, store = pglite_route_client
+    eid = await _experiment(
+        store,
+        [MetricPoint(key="loss", step=step, value=float(step)) for step in range(3)],
+    )
+    queried = await client.post(
+        experiment_metric_query_path(eid),
+        json={"masks": [], "sort": "asc", "limit": 1, "offset": 1},
+    )
+    assert queried.status_code == 200, queried.text
+    points = from_plain(
+        json_loads(queried.content, dict[str, object])["points"],
+        list[dict[str, object]],
+    )
+    assert [point["value"] for point in points] == [1.0]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_rank_filter_with_no_sql_form_is_a_bad_request(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``config is x`` names a real column but cannot select runs: 400, not 409."""
+    client, store = pglite_route_client
+    await _experiment(store, [MetricPoint(key="score", step=0, value=1.0)])
+    ranked = await client.post(
+        METRIC_RANK_PATH,
+        json={
+            "filters": [{"field": "config", "op": "is", "value": "x"}],
+            "query": {},
+        },
+    )
+    assert ranked.status_code == 400, ranked.text
+    assert "has no SQL form" in ranked.text
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_rank_filter_missing_its_value_is_refused_as_on_the_list(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``title is`` with no value matched every empty title on rank; the list 400s."""
+    client, store = pglite_route_client
+    await _experiment(store, [MetricPoint(key="score", step=0, value=1.0)])
+    clause = {"field": "title", "op": "is"}
+    listed = await client.get(
+        "/api/inquiries",
+        params=[("kind", "Experiment"), ("filter", json.dumps(clause))],
+    )
+    ranked = await client.post(
+        METRIC_RANK_PATH,
+        json={"filters": [clause], "query": {}},
+    )
+    assert (listed.status_code, ranked.status_code) == (400, 400), ranked.text
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_read_refuses_ids_that_are_not_experiments(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:

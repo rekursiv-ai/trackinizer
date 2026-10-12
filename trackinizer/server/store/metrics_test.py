@@ -21,7 +21,8 @@ from trackinizer.conftest import (
     make_store,
     set_field_row,
 )
-from trackinizer.types.errors import ConflictError, NotFoundError
+from trackinizer.types.errors import ConflictError, NotFoundError, ValidationError
+from trackinizer.wire.filters import Filter
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_metrics_query import (
@@ -451,6 +452,96 @@ class TestQueryMetrics:
         call_args = conn.fetch.call_args
         assert call_args is not None
         assert call_args.args[-1] == MAX_LIST_LIMIT
+
+
+class TestQueryMetricsSelection:
+    """The predicate naming the runs: their ids, or filters over Experiment rows."""
+
+    @classmethod
+    async def _selected(
+        cls,
+        experiments: list[uuid.UUID] | list[Filter],
+    ) -> tuple[str, tuple[object, ...]]:
+        """Return the rank SQL and its bound params for ``experiments``."""
+        conn = make_conn()
+        store, _engine = make_store(conn)
+        conn.fetch = AsyncMock(return_value=[])
+        await store.query_metrics(experiments, masks=[])
+        call_args = conn.fetch.call_args
+        assert call_args is not None
+        sql, *params = call_args.args
+        assert isinstance(sql, str)
+        return sql, tuple(params)
+
+    @pytest.mark.asyncio
+    async def test_no_ids_select_no_runs(self) -> None:
+        sql, params = await self._selected([])
+        assert "WHERE experiment_id = ANY($1::uuid[]) ORDER BY" in sql
+        assert params[0] == []
+
+    @pytest.mark.asyncio
+    async def test_a_filter_selects_experiment_rows_by_its_sql_form(self) -> None:
+        sql, params = await self._selected(
+            [Filter(field="labels", op="is", value="board")],
+        )
+        assert (
+            "WHERE experiment_id IN (SELECT id FROM inquiries WHERE "
+            "kind = 'Experiment' AND labels @> ARRAY[$1]::text[]) ORDER BY"
+        ) in sql
+        assert params[0] == "board"
+
+    @pytest.mark.asyncio
+    async def test_a_valueless_filter_binds_no_operand(self) -> None:
+        sql, params = await self._selected(
+            [Filter(field="labels", op="isnull", value="")],
+        )
+        assert (
+            "WHERE experiment_id IN (SELECT id FROM inquiries WHERE "
+            "kind = 'Experiment' AND labels IS NULL) ORDER BY"
+        ) in sql
+        # Only the page's offset and limit follow, as $1 and $2.
+        assert (params, "OFFSET $1 LIMIT $2" in sql) == ((0, MAX_LIST_LIMIT), True)
+
+    @pytest.mark.asyncio
+    async def test_filters_are_anded_each_on_its_own_operand(self) -> None:
+        sql, params = await self._selected(
+            [
+                Filter(field="labels", op="is", value="board"),
+                Filter(field="labels", op="notnull", value=""),
+                Filter(field="title", op="re", value="^run"),
+            ],
+        )
+        assert (
+            "WHERE experiment_id IN (SELECT id FROM inquiries WHERE "
+            "kind = 'Experiment' AND labels @> ARRAY[$1]::text[] "
+            "AND labels IS NOT NULL AND title ~ $2) ORDER BY"
+        ) in sql
+        assert params[:2] == ("board", "^run")
+
+    @pytest.mark.asyncio
+    async def test_a_filter_with_no_sql_form_is_refused(self) -> None:
+        conn = make_conn()
+        store, _engine = make_store(conn)
+        with pytest.raises(ConflictError) as caught:
+            await store.query_metrics(
+                [Filter(field="config", op="is", value="x")],
+                masks=[],
+            )
+        assert str(caught.value) == (
+            "filter config is has no SQL form; a metric query cannot select runs by it"
+        )
+        conn.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_inadmissible_filter_is_refused_as_on_the_list(self) -> None:
+        conn = make_conn()
+        store, _engine = make_store(conn)
+        with pytest.raises(ValidationError, match="unknown filter field 'bogus'"):
+            await store.query_metrics(
+                [Filter(field="bogus", op="is", value="x")],
+                masks=[],
+            )
+        conn.fetch.assert_not_awaited()
 
 
 class TestWriteMetricsMasked:

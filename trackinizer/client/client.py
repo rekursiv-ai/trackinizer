@@ -367,6 +367,7 @@ class Client:
         offset: int = 0,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
+        fields: Sequence[str] | None = None,
     ) -> list[dict[str, PlainTree]]:
         """Fetch one page of inquiries of a given kind.
 
@@ -377,6 +378,7 @@ class Client:
           offset: Rows to skip (not stable during concurrent writes).
           seq_ranges: Sequence intervals to include (disjoint union).
           filters: Field predicates applied before LIMIT on the server.
+          fields: Row keys to send; None sends every key.
 
         Returns:
           result: Page of matching inquiry rows as dicts.
@@ -409,6 +411,7 @@ class Client:
                             )
                             for filt in filters
                         ],
+                        "fields": None if fields is None else list(fields),
                     },
                 ),
                 "/api/inquiries",
@@ -1497,6 +1500,7 @@ class Client:
         masks: Sequence[MetricMaskClause],
         sort: Literal["asc", "desc"] | None = None,
         limit: int | None = None,
+        offset: int | None = None,
     ) -> list[MetricPoint]:
         """Read one experiment's masked metric cells (the mask-query surface).
 
@@ -1505,6 +1509,7 @@ class Client:
           masks: Field predicates selecting cells.
           sort: Asc/desc ordering by value.
           limit: Max rows, at most ``MAX_LIST_LIMIT`` (None = up to that cap).
+          offset: Selected rows to skip, to page past ``limit``.
 
         Returns:
           result: (key, step, value) points matching the masks.
@@ -1514,6 +1519,7 @@ class Client:
             masks=list(masks),
             sort=sort,
             limit=limit,
+            offset=offset,
         )
         where = wire_metrics_query.experiment_metric_query_path(experiment_id)
         response = self._request("POST", where, body=req.model_dump(mode="json"))
@@ -1580,18 +1586,16 @@ class Client:
             offset=offset,
         )
         ids = [item for item in experiment_ids if isinstance(item, uuid.UUID)]
-        req = wire_metrics_query.MetricRankRequest(
+        filters = [
+            {"field": item.field, "op": item.op, "value": item.value}
+            for item in experiment_ids
+            if not isinstance(item, uuid.UUID)
+        ]
+        req = _build_body(
+            wire_metrics_query.MetricRankRequest,
+            "metric rank",
             experiment_ids=ids or None,
-            filters=[
-                wire_metrics_query.RankFilter(
-                    field=item.field,
-                    op=item.op,
-                    value=item.value,
-                )
-                for item in experiment_ids
-                if not isinstance(item, uuid.UUID)
-            ]
-            or None,
+            filters=filters or None,
             query=query,
         )
         where = wire_metrics_query.METRIC_RANK_PATH
@@ -2313,8 +2317,11 @@ def _build_body[M: pydantic.BaseModel](
     try:
         return model.model_validate(fields)
     except pydantic.ValidationError as err:
-        # Not chained: only the field and the rule are shown, never the input.
-        problems = "; ".join(f"{e['loc'][0]}: {e['msg']}" for e in err.errors())
+        # Not chained: only the field and the rule are shown, never the input. A
+        # model validator's error names no field, so its ``loc`` is empty.
+        problems = "; ".join(
+            f"{e['loc'][0]}: {e['msg']}" if e["loc"] else e["msg"] for e in err.errors()
+        )
         raise ClientError(f"{what} {problems}") from None
 
 

@@ -196,7 +196,7 @@ class RankFilter(BaseModel):
 
     field: str = Field(min_length=1, max_length=MAX_FILTER_VALUE_CHARS)
     op: FilterOp
-    value: str = Field(default="", max_length=MAX_FILTER_VALUE_CHARS)
+    value: str | None = Field(default=None, max_length=MAX_FILTER_VALUE_CHARS)
 
 
 class MetricRankRow(BaseModel):

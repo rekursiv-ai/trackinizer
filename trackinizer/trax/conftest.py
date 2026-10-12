@@ -410,8 +410,9 @@ class FakeClient:
         offset: int = 0,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
+        fields: Sequence[str] | None = None,
     ) -> list[dict[str, PlainTree]]:
-        """List kind."""
+        """List kind; ``fields`` keeps only the named keys of each row."""
         self.calls.append(
             (
                 "list_kind",
@@ -465,6 +466,8 @@ class FakeClient:
             rows = [row for row in rows if row.get("status") == status]
         for filt in filters:
             rows = [row for row in rows if bool(match_filter(_storage_view(row), filt))]
+        if fields is not None:
+            rows = [{k: v for k, v in row.items() if k in fields} for row in rows]
         return cast(
             list[dict[str, PlainTree]],
             cast(
@@ -910,13 +913,14 @@ class FakeClient:
         masks: Sequence[MetricMaskClause],
         sort: str | None = None,
         limit: int | None = None,
+        offset: int | None = None,
     ) -> list[MetricPoint]:
         """Query metrics."""
         self.calls.append(
             (
                 "query_metrics",
                 (experiment_id,),
-                {"masks": tuple(masks), "sort": sort, "limit": limit},
+                {"masks": tuple(masks), "sort": sort, "limit": limit, "offset": offset},
             ),
         )
         return []
