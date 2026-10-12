@@ -10,7 +10,6 @@ import { KindIcon, kindLook } from "../ui/kinds";
 import { type Panel, type PanelSpec, PanelToggle } from "../ui/panel";
 import { useMeta, useProfile } from "./boot";
 import { useWorkbenchPresent, WorkbenchSlot } from "./workbenchSlot";
-
 /**
  * The sidebar as a panel, pinned open or collapsed by ⌘B (Ctrl+B), as VS
  * Code's primary side bar is: `[` and `]` are each view's own panels'. It

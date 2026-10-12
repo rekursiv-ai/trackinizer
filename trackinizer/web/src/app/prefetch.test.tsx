@@ -13,6 +13,8 @@ vi.mock("../graph/renderer", async () => ({ forceGraphRenderer: new (await impor
 
 const ID = "00000000-0000-4000-8000-000000000007";
 const BOOT = ["/api/me/profile", "/api/meta/edges", "/api/meta/enums", "/api/meta/fields"];
+/** Reads the shell sends once it renders, beside its view's: never started early. */
+const SHELL: string[] = [];
 const PROFILE = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED };
 
 const BODIES: { [path: string]: unknown } = {
@@ -112,7 +114,7 @@ test.each(["#/list/Issue", "#/list/issue", "#/list"])(
     const sent = await open(hash, [...BOOT, ACTIVE]);
     expect(await screen.findByText("Issue from the started read")).toBeTruthy();
     expect(location.hash).toBe("#/list/Issue");
-    expect(reads(sent)).toEqual([...BOOT, ACTIVE].sort());
+    await waitFor(() => expect(reads(sent)).toEqual([...BOOT, ...SHELL, ACTIVE].sort()));
   },
 );
 
@@ -127,7 +129,7 @@ test.each([
     const sent = await open(hash, [...BOOT, "/api/web/graph"]);
     expect(await screen.findByText("1 node")).toBeTruthy();
     expect(sent.find(({ path }) => path === "/api/web/graph")?.query).toBe("?limit=1000");
-    await waitFor(() => expect(reads(sent)).toEqual([...BOOT, "/api/web/graph", ...peeked].sort()));
+    await waitFor(() => expect(reads(sent)).toEqual([...BOOT, ...SHELL, "/api/web/graph", ...peeked].sort()));
   },
 );
 
@@ -142,7 +144,7 @@ test("a graph this tab has kept reads as kept: nothing is started for it", async
 test("a Paper list opens on All, so the read started for it asks for every status", async () => {
   const sent = await open("#/list/Paper", [...BOOT, "/api/inquiries"]);
   expect(await screen.findByText("Paper from the started read")).toBeTruthy();
-  expect(reads(sent)).toEqual([...BOOT, "/api/inquiries"].sort());
+  await waitFor(() => expect(reads(sent)).toEqual([...BOOT, ...SHELL, "/api/inquiries"].sort()));
 });
 
 test("a list this tab has kept reads as kept: nothing is started for it", async () => {
@@ -150,7 +152,7 @@ test("a list this tab has kept reads as kept: nothing is started for it", async 
   sessionStorage.setItem("trackinizer.v2.list.Issue", JSON.stringify(kept));
   const sent = await open("#/list/Issue", BOOT);
   expect(await screen.findByText("Issue from the started read")).toBeTruthy();
-  expect(reads(sent)).toEqual([...BOOT, '/api/inquiries {"field":"status","op":"ne","value":"active"}'].sort());
+  await waitFor(() => expect(reads(sent)).toEqual([...BOOT, ...SHELL, '/api/inquiries {"field":"status","op":"ne","value":"active"}'].sort()));
 });
 
 test("the started list read asks exactly what the list asks for itself", async () => {
@@ -172,7 +174,7 @@ test.each([
 ])("a link to a detail (%s) starts its reads before the app, which shows them: none goes out twice", async (hash, detail) => {
   const sent = await open(hash, [...BOOT, ...detail]);
   expect(await screen.findByRole("heading", { name: "Issue seven" })).toBeTruthy();
-  expect(reads(sent)).toEqual([...BOOT, ...detail].sort());
+  await waitFor(() => expect(reads(sent)).toEqual([...BOOT, ...SHELL, ...detail].sort()));
 });
 
 test("a 401 on a started read sends the browser to sign in, as any read's does", async () => {
@@ -249,7 +251,7 @@ function openStreams() {
 /** The list and detail reads among `sent`, after the live layer has had 1 s to catch up. */
 async function caughtUp(sent: readonly Sent[]): Promise<string[]> {
   await act(() => vi.advanceTimersByTimeAsync(1_000));
-  return sent.map(({ path }) => path).filter((path) => !BOOT.includes(path));
+  return sent.map(({ path }) => path).filter((path) => !BOOT.includes(path) && !SHELL.includes(path));
 }
 
 test("a view that reads once the stream is open needs no catching up when it opens", async () => {

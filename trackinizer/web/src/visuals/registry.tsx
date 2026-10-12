@@ -17,6 +17,12 @@ type Renderer = { readonly version: number; readonly Component: ComponentType<Re
 const ContextGraph = lazyView(() => import("./ContextGraph"), (module) => module.ContextGraph);
 const Timeline = lazyView(() => import("./Timeline"), (module) => module.Timeline);
 const Artifact = lazyView(() => import("./Artifact"), (module) => module.Artifact);
+/**
+ * Renderers for visuals an addon's deployment adds to the catalog. They stay out
+ * of renderer-versions.json, which mirrors the default catalog every server has.
+ */
+const ADDON_RENDERERS: Readonly<Record<string, Renderer>> = {
+};
 
 /**
  * Load every renderer's chunk, and the record view an agent's navigation opens.
@@ -31,6 +37,7 @@ export function preloadRenderers(): void {
 
 /** Frontend counterparts of the backend's inert visual descriptions. */
 export const RENDERERS: Readonly<Record<string, Renderer>> = {
+  ...ADDON_RENDERERS,
   "trax.browse": { version: rendererVersions["trax.browse"], Component: ({ children }) => <>{children}</> },
   "trax.subgraph": { version: rendererVersions["trax.subgraph"], Component: ContextGraph },
   "trax.timeline": { version: rendererVersions["trax.timeline"], Component: Timeline },

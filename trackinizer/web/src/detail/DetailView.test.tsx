@@ -113,7 +113,7 @@ test("a detail draws its page in a render after the one its inquiry lands in, wh
 });
 
 test("an Artifact lookup link shows its published content", async () => {
-  const artifact = row("Artifact", 7);
+  const artifact = { ...row("Artifact", 7), id: uuid(70) };
   stubFetch((request) => {
     const path = new URL(request.url).pathname;
     if (path === `/api/web/get/${artifact.id}`) return Response.json(detail(artifact));
