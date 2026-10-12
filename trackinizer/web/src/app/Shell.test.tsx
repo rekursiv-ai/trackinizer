@@ -237,6 +237,35 @@ test("a canvas puts its controls in the sidebar's Workbench section, and the rai
   await waitFor(() => expect(document.activeElement).toBe(within(section).getByRole("checkbox", { name: "Note" })), { interval: 1 });
 });
 
+test("the opened rail stays open while the pointer rests on the canvas's controls in it, and folds once the keyboard leaves them", async () => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  serve(true);
+  render(<App assign={vi.fn()} />);
+  await act(async () => loaded.release());
+  await screen.findByRole("region", { name: "Canvas" });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const app = document.querySelector(".app")!;
+  const dock = document.querySelector<HTMLElement>(".sidebar-dock")!;
+  const link = within(dock).getByRole("link", { name: "Console" });
+  const note = within(dock).getByRole("checkbox", { name: "Note" });
+  fireEvent.pointerEnter(dock);
+  act(() => { vi.advanceTimersByTime(OPEN_AFTER_MS); });
+  expect(app.classList).toContain("sidebar-peek");
+  // From a link onto the controls, which the canvas draws there by a portal: the pointer is still in the sidebar.
+  fireEvent.pointerOut(link, { relatedTarget: note });
+  fireEvent.pointerOver(note, { relatedTarget: link });
+  act(() => { vi.advanceTimersByTime(FOLD_AFTER_MS); });
+  expect(app.classList).toContain("sidebar-peek");
+  // The keyboard in the controls holds it open after the pointer left, and leaving them folds it.
+  act(() => note.focus());
+  fireEvent.pointerLeave(dock);
+  act(() => { vi.advanceTimersByTime(FOLD_AFTER_MS); });
+  expect(app.classList).toContain("sidebar-peek");
+  act(() => note.blur());
+  act(() => { vi.advanceTimersByTime(FOLD_AFTER_MS); });
+  expect(app.classList).not.toContain("sidebar-peek");
+});
+
 test("without a canvas the sidebar has no Workbench section", async () => {
   serve(false);
   render(<App assign={vi.fn()} />);

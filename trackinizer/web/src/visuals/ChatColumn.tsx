@@ -78,7 +78,7 @@ export function ChatColumn({ children }: { readonly children: ReactNode }) {
 
   // Hidden, Chat opens over the page while the pointer rests on its strip or the
   // keyboard is inside it, and folds a moment after both have left.
-  const peek = useHoverOpen(column);
+  const peek = useHoverOpen(column, { enabled: hidden });
   const peeking = hidden && !fullscreen && peek.open;
   useLayoutEffect(() => {
     if (hidden) peek.set(false);
@@ -141,7 +141,6 @@ export function ChatColumn({ children }: { readonly children: ReactNode }) {
   const shown = !hidden || fullscreen || peeking;
   const parts = [
     <div key="column" ref={column} className={`chat-column${peeking ? " chat-column-peek" : ""}`} hidden={!shown}
-      {...(hidden ? peek.handlers : {})}
       style={width ? { "--chat-width": `${width}px` } as CSSProperties : undefined}
       onKeyDown={(event) => { if (event.key === "Escape" && fullscreen && !event.defaultPrevented) setChatFullscreen(false); }}>
       <Chat workspace={workspace} />

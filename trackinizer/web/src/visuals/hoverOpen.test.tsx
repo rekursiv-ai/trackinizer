@@ -4,17 +4,17 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FOLD_AFTER_MS, OPEN_AFTER_MS, useHoverOpen } from "./hoverOpen";
 
 /** A tile that folds on its own: a fold button, a button beside it, and contents that take the keyboard. */
-function Tile() {
+function Tile({ enabled = true }: { readonly enabled?: boolean }) {
   const tile = useRef<HTMLDivElement>(null);
-  const hover = useHoverOpen(tile);
-  return <div ref={tile} data-testid="tile" data-open={hover.open} {...hover.handlers}>
+  const hover = useHoverOpen(tile, { enabled });
+  return <div ref={tile} data-testid="tile" data-open={hover.open}>
     <button type="button" onClick={() => hover.set(!hover.open)}>Fold</button>
     <textarea aria-label="Message" />
   </div>;
 }
 
-function mount() {
-  render(<><Tile /><button type="button">Page</button></>);
+function mount(enabled = true) {
+  render(<><Tile enabled={enabled} /><button type="button">Page</button></>);
   const tile = screen.getByTestId("tile");
   return { tile, open: () => tile.dataset.open === "true", wait: (ms: number) => act(() => { vi.advanceTimersByTime(ms); }) };
 }
@@ -92,4 +92,11 @@ test("a touch has no hover: it opens and folds nothing by coming and going", () 
   fireEvent.pointerLeave(tile, { pointerType: "touch" });
   wait(FOLD_AFTER_MS);
   expect(open()).toBe(true);
+});
+
+test("a tile not watched opens nothing under the pointer", () => {
+  const { tile, open, wait } = mount(false);
+  fireEvent.pointerEnter(tile);
+  wait(OPEN_AFTER_MS + FOLD_AFTER_MS);
+  expect(open()).toBe(false);
 });

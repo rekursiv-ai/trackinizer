@@ -182,6 +182,23 @@ test("the rail shows one Workbench icon that opens the sidebar on the visual tog
   await expect(sidebar.locator(".workbench-slot :focus")).toHaveCount(1);
 });
 
+test("the opened rail stays open while the pointer rests on the Workbench controls, and folds once it leaves them", async ({ page }) => {
+  const { sidebar, app } = await open(page);
+  await sidebar.hover();
+  await expect(app).toHaveClass(/sidebar-peek/);
+  await sidebar.locator(".nav-section-h", { hasText: "Workbench" }).click();
+  const browse = sidebar.getByRole("checkbox", { name: /Browse/ });
+  await expect(browse).toBeVisible();
+  // Only the pointer holds it now, as after a click that focuses nothing.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await sidebar.getByRole("textbox", { name: "Artifact link" }).hover();
+  await browse.hover();
+  await page.waitForTimeout(600);
+  await expect(app).toHaveClass(/sidebar-peek/);
+  await page.mouse.move(300, 400);
+  await expect(app).not.toHaveClass(/sidebar-peek/);
+});
+
 test("Settings opens over the canvas, so the Workbench section stays", async ({ page }) => {
   const { sidebar } = await open(page);
   await page.goto("/app/#/settings");

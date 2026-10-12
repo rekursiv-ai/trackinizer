@@ -130,7 +130,7 @@ export function Shell() {
     <PaletteContext value={palette}>
       <OpenDrawerContext value={openDrawer}>
         <div className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}${peeking ? " sidebar-peek" : ""}${sidebar.side === "right" ? " sidebar-right" : ""}`}>
-          <div ref={dock} className="sidebar-dock" {...peek.handlers}>
+          <div ref={dock} className="sidebar-dock">
             <Sidebar onNavigate={navigated} onWorkbench={openWorkbench} panel={sidebar} />
           </div>
           <div className="drawer-scrim" onClick={closeDrawer} />

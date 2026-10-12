@@ -8,17 +8,23 @@ export const FOLD_AFTER_MS = 300;
 
 /**
  * Whether something that folds on its own stands open: while the pointer is over
- * it (or over the strip that opens it, which shares the handlers) or the
+ * the tile (or over the strip that opens it, which takes `handlers`) or the
  * keyboard is in its contents, and until `FOLD_AFTER_MS` after both have left.
  * What holds it open is read when the wait ends, not when it starts, so a
  * pointer that left and came back, or a focus that moved within it, folds
  * nothing. A touch has no hover: it opens and folds by `set`.
+ *
+ * The tile is watched by the page's own pointer and focus events, not React's.
+ * React tells an element of these by the component tree, where what a portal
+ * draws into the tile (the canvas's controls, in the sidebar) is not in it, so
+ * the pointer resting on those would fold the tile. While `enabled` is false the
+ * tile is not watched: the pointer on it holds nothing open.
  */
-export function useHoverOpen(tile: RefObject<HTMLElement | null>): {
+export function useHoverOpen(tile: RefObject<HTMLElement | null>, { enabled = true }: { readonly enabled?: boolean } = {}): {
   readonly open: boolean;
   /** Open or fold at once. Folding takes the keyboard out of the tile; what was typed in it stays. */
   readonly set: (open: boolean) => void;
-  /** The handlers of everything the pointer may be on to hold it open. */
+  /** The handlers of the strip that opens the tile, which holds it open as the tile does. */
   readonly handlers: {
     readonly onPointerEnter: (event: PointerEvent) => void;
     readonly onPointerLeave: (event: PointerEvent) => void;
@@ -29,10 +35,33 @@ export function useHoverOpen(tile: RefObject<HTMLElement | null>): {
   const hovered = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
+  // These read only refs and `setOpen`, so the tile's listeners may keep the first render's.
   const settle = (afterMs: number) => {
     clearTimeout(timer.current);
     timer.current = setTimeout(() => setOpen(hovered.current || typing(tile.current)), afterMs);
   };
+  const hover = (on: boolean, pointerType: string) => {
+    if (pointerType === "touch") return;
+    hovered.current = on;
+    settle(on ? OPEN_AFTER_MS : FOLD_AFTER_MS);
+  };
+  useEffect(() => {
+    const element = tile.current;
+    if (!enabled || !element) return;
+    const enter = (event: globalThis.PointerEvent) => hover(true, event.pointerType);
+    const leave = (event: globalThis.PointerEvent) => hover(false, event.pointerType);
+    const blur = () => settle(FOLD_AFTER_MS);
+    element.addEventListener("pointerenter", enter);
+    element.addEventListener("pointerleave", leave);
+    element.addEventListener("focusout", blur);
+    return () => {
+      element.removeEventListener("pointerenter", enter);
+      element.removeEventListener("pointerleave", leave);
+      element.removeEventListener("focusout", blur);
+      // No leave comes once the tile is not watched, so a pointer on it now holds nothing.
+      hovered.current = false;
+    };
+  }, [enabled]);
   return {
     open,
     set: (next) => {
@@ -43,16 +72,8 @@ export function useHoverOpen(tile: RefObject<HTMLElement | null>): {
       setOpen(next);
     },
     handlers: {
-      onPointerEnter: (event) => {
-        if (event.pointerType === "touch") return;
-        hovered.current = true;
-        settle(OPEN_AFTER_MS);
-      },
-      onPointerLeave: (event) => {
-        if (event.pointerType === "touch") return;
-        hovered.current = false;
-        settle(FOLD_AFTER_MS);
-      },
+      onPointerEnter: (event) => hover(true, event.pointerType),
+      onPointerLeave: (event) => hover(false, event.pointerType),
       onBlur: () => settle(FOLD_AFTER_MS),
     },
   };
