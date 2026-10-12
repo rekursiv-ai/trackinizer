@@ -1,6 +1,6 @@
 import type { APIRequestContext, Page } from "@playwright/test";
 import { resetCanvas } from "./canvasState";
-import { expect, streamOpened, test } from "./fixtures";
+import { expect, setPreferences, streamOpened, test } from "./fixtures";
 
 // The console inside a station: a named one starts on the station's agents, an unnamed
 // one on every session, and one control switches it; a line sent to an agent is told to the station's chat
@@ -157,7 +157,7 @@ for (const style of ["default", "terminal"] as const) {
       conversation_id: conversation, session_id: session, title: "E2E", account: email, live: true, forks: 0, forked_from: null, forks_on_typing: false, shared_with: [], may_share: false, may_delete: false,
     } }));
     expect((await request.post(`/api/workspaces/for-chat/${conversation}`)).ok()).toBe(true);
-    await page.addInitScript((choice) => localStorage.setItem("trackinizer.chat.style", choice!), style);
+    await setPreferences(page.request, { chat_style: style });
     await page.setViewportSize({ width: 1400, height: 900 });
     const subscribed = streamOpened(page);
     await page.goto("/app/#/list/Issue");

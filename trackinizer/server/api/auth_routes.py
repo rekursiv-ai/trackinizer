@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from treekle import from_plain
 
 from trackinizer.server.api._deps import get_store
@@ -40,6 +40,7 @@ from trackinizer.server.auth import (
     revoke_api_key,
     set_api_key_role,
 )
+from trackinizer.server.preferences import Preferences, stored_preferences
 from trackinizer.wire.audience import AudienceName
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
@@ -136,6 +137,7 @@ async def profile_route(
 
     Returns:
       result: JSON with user_id, email, name, role, last_login, canvas opt-in, the
+        user's preferences (every key, defaults filled), the
         id of the API key the request used (``None`` for a browser session), when
         the caller agreed to the rules and to which version, and the current rules
         version with the id of the Issue that holds the rules (both ``None`` while
@@ -147,7 +149,7 @@ async def profile_route(
     async with engine.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT name, last_login, visual_workspace_enabled, acknowledged_at, "
-            "acknowledged_rules_version FROM users WHERE id = $1",
+            "acknowledged_rules_version, preferences FROM users WHERE id = $1",
             identity.user_id,
         )
         rules_issue_id, rules_version = await _rules(conn)
@@ -168,6 +170,11 @@ async def profile_route(
         "role": identity.role,
         "last_login": iso_format(last_login),
         "visual_workspace_enabled": workspace_enabled,
+        "preferences": stored_preferences(
+            None if row is None else row["preferences"],
+        ).model_dump(
+            mode="json",
+        ),
         "api_key_id": None if identity.api_key_id is None else str(identity.api_key_id),
         "acknowledged_at": None if row is None else iso_format(row["acknowledged_at"]),
         "acknowledged_rules_version": acknowledged_version,
@@ -271,6 +278,59 @@ async def set_visual_workspace_preference(
         raise HTTPException(status_code=404, detail="User not found")
     assert isinstance(enabled, bool)
     return VisualWorkspacePreference(enabled=enabled)
+
+
+@router.patch("/api/me/preferences", response_model=Preferences)
+async def set_preferences_route(
+    body: MutableJSON,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_user)],
+) -> Preferences:
+    """Set some of the caller's preferences, and put others back to their defaults.
+
+    The keys the body leaves out keep their values. The change is one statement, so
+    two tabs changing different keys at once both keep theirs.
+
+    Args:
+      body: The keys to change: a value sets the key, ``null`` puts it back to its
+        default.
+      request: FastAPI request with a database engine.
+      identity: The account whose preferences change.
+
+    Returns:
+      preferences: Every key after the change, defaults filled.
+
+    Raises:
+      HTTPException: 422 for a key no preference has or a value its key does not
+        take, and nothing is written; 404 when the caller's user is gone.
+
+    """
+    unknown = sorted(set(body) - set(Preferences.model_fields))
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"No such preference: {', '.join(unknown)}",
+        )
+    chosen = {key: value for key, value in body.items() if value is not None}
+    try:
+        checked = Preferences.model_validate(chosen)
+    except ValidationError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=error.errors(include_context=False),
+        ) from error
+    async with engine_of(request).acquire() as conn:
+        stored = await conn.fetchrow(
+            "UPDATE users SET preferences = "
+            "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
+            "WHERE id = $3 RETURNING preferences",
+            checked.model_dump(mode="json", include=set(chosen)),
+            sorted(key for key, value in body.items() if value is None),
+            identity.user_id,
+        )
+    if stored is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return stored_preferences(stored["preferences"])
 
 
 @router.post("/api/me/tokens")

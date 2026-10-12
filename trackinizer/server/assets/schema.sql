@@ -601,7 +601,10 @@ CREATE TABLE IF NOT EXISTS users (
     -- the next login after 040. A login with another ``sub`` is refused, so a second
     -- Google account on one address cannot reach this row's sessions and keys.
     google_sub TEXT
-        CHECK (char_length(google_sub) BETWEEN 1 AND 255)
+        CHECK (char_length(google_sub) BETWEEN 1 AND 255),
+    -- The user's preferences: an object of the keys they set, defaults left out
+    -- (``server/preferences.py``). NULL until they set one.
+    preferences JSONB CHECK (jsonb_typeof(preferences) = 'object')
 );
 
 -- Who set or cleared an inquiry's ``locked`` flag, and when (``api/locks.py``).

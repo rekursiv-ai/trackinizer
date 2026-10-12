@@ -33,11 +33,10 @@ async function box(locator: Locator) {
   return found!;
 }
 
-/** Forget the width and the side this spec set, so the next one starts from the defaults. */
+/** Forget the width this spec set, so the next one starts from the defaults (the side is a preference, which each test starts on). */
 async function forget(page: Page): Promise<void> {
   await page.evaluate((key) => {
     localStorage.removeItem(key);
-    localStorage.removeItem("trackinizer.chat.side");
   }, SIZES_KEY);
 }
 

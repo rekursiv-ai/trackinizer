@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, test, streamOpened } from "./fixtures";
+import { expect, setPreferences, streamOpened, test } from "./fixtures";
 import { post } from "./listViews";
 
 // The panels that collapse (src/ui/panel.tsx): the app's sidebar, Peek, the
@@ -180,13 +180,7 @@ test("on a phone, a collapsed sidebar is still the drawer, whole, with no collap
 
 for (const theme of ["dark", "light"] as const) {
   test(`axe finds nothing wrong with collapsed panels, ${theme} theme`, async ({ page, request }) => {
-    await page.addInitScript((choice) => {
-      try {
-        localStorage.setItem("trackinizer.theme", choice);
-      } catch {
-        // about:blank has no storage.
-      }
-    }, theme);
+    await setPreferences(page.request, { theme });
     await page.emulateMedia({ reducedMotion: "reduce" });
     const { root, child, tag } = await seed(request);
     await open(page, `#/graph?focus=Issue/${child}&hops=1`);

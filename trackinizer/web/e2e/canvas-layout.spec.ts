@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, setPreferences, test } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
 // The canvas, with Chat as a column beside it, lays the other visuals out
@@ -158,13 +158,7 @@ test("with Chat beside the page, an Issue's title stays readable beside its labe
 for (const theme of ["dark", "light"] as const) {
   test(`the context graph's zoom buttons take the app's colours, ${theme} theme`, async ({ page, request }) => {
     await arrange(request, (issue) => [{ kind: "show", visual_type: "trax.subgraph", placement: "side", record_id: issue }]);
-    await page.addInitScript((choice) => {
-      try {
-        localStorage.setItem("trackinizer.theme", choice);
-      } catch {
-        // about:blank has no storage.
-      }
-    }, theme);
+    await setPreferences(page.request, { theme });
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/app/#/list/Issue");
     await expect(page.getByRole("group", { name: "Zoom" })).toBeVisible();

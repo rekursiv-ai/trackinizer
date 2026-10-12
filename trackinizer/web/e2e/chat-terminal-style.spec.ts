@@ -1,6 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { resetCanvas } from "./canvasState";
-import { expect, streamOpened, test } from "./fixtures";
+import { expect, setPreferences, streamOpened, test } from "./fixtures";
 
 // The default path: the canvas is on, with Chat beside the page.
 test.use({ canvas: true });
@@ -40,7 +40,7 @@ async function openConversation(page: Page, style: "default" | "terminal"): Prom
   } }));
   // A new station for that chat, which is then the one changed last, so the tab opens on it.
   expect((await request.post(`/api/workspaces/for-chat/${conversation}`)).ok()).toBe(true);
-  await page.addInitScript((choice) => localStorage.setItem("trackinizer.chat.style", choice!), style);
+  await setPreferences(page.request, { chat_style: style });
   return email;
 }
 

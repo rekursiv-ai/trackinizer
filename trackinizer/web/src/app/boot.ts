@@ -2,6 +2,7 @@ import { queryOptions, type UseQueryResult, useQueries } from "@tanstack/react-q
 import { createContext, useContext } from "react";
 import { getEdgeTopology, getEnums, getFieldOwners, type EdgeTopology, type Enums, type FieldOwners } from "../api/meta";
 import { getProfile, type Profile } from "../api/me";
+import { adoptLegacyPreferences, receivePreferences } from "../preferences";
 import { useOnline } from "../ui/bars";
 import { prefetched } from "./prefetch";
 
@@ -34,10 +35,19 @@ export const bootQueries = {
     queryFn: ({ queryKey, signal }) => prefetched(queryKey, () => getEdgeTopology({ signal })),
     staleTime: Infinity,
   }),
-  /** Refetch it after a 403: the role may have changed. */
+  /**
+   * Refetch it after a 403: the role may have changed. It brings the user's
+   * preferences, shown before the app is (`src/preferences.ts`), and this
+   * browser's own from before they lived on the server are sent once.
+   */
   profile: queryOptions({
     queryKey: ["me", "profile"],
-    queryFn: ({ queryKey, signal }) => prefetched(queryKey, () => getProfile({ signal })),
+    queryFn: async ({ queryKey, signal }) => {
+      const profile = await prefetched(queryKey, () => getProfile({ signal }));
+      receivePreferences(profile.preferences);
+      void adoptLegacyPreferences(profile.email);
+      return profile;
+    },
   }),
 };
 

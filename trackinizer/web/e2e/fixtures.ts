@@ -4,6 +4,19 @@ import { type APIRequestContext, type Page, test as base, expect } from "@playwr
 
 export { expect };
 
+/**
+ * Set the suite's user's preferences (theme, Chat style and side, ...), as Settings
+ * or the agent does; `null` puts a key back to its default. They live on the server,
+ * so a page loaded after this shows them.
+ */
+export async function setPreferences(
+  request: APIRequestContext,
+  change: { readonly [key: string]: string | boolean | null },
+): Promise<void> {
+  const patched = await request.patch("/api/me/preferences", { data: change });
+  if (!patched.ok()) throw new Error(`Could not set preferences: ${patched.status()} ${await patched.text()}`);
+}
+
 /** Agree to the rules as they stand, as the page does: naming the version the profile shows. */
 export async function agreeToRules(request: APIRequestContext): Promise<void> {
   const profile = (await (await request.get("/api/me/profile")).json()) as { rules_version: string | null };
@@ -30,6 +43,7 @@ export const test = base.extend<{
   canvasPreference: undefined;
   welcome: boolean;
   welcomeAgreement: undefined;
+  preferencesReset: undefined;
 }>({
   // Whether the suite's one user has the agent canvas on for the test. It is on
   // by default for every user, and a spec of the default path (stream.spec,
@@ -54,6 +68,16 @@ export const test = base.extend<{
   welcomeAgreement: [
     async ({ request, welcome }, use) => {
       if (!welcome) await agreeToRules(request);
+      await use(undefined);
+    },
+    { auto: true },
+  ],
+  // The suite's one user's preferences live on the server and outlast a test, so
+  // each test starts on the defaults; a spec sets what it needs with `setPreferences`.
+  preferencesReset: [
+    async ({ request }, use) => {
+      const profile = (await (await request.get("/api/me/profile")).json()) as { preferences: { [key: string]: unknown } };
+      await setPreferences(request, Object.fromEntries(Object.keys(profile.preferences).map((key) => [key, null])));
       await use(undefined);
     },
     { auto: true },

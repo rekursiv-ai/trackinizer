@@ -1,5 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, setPreferences, test } from "./fixtures";
 import { exposeEventSources, pushChat, resetCanvas } from "./canvasState";
 
 // An agent hides Chat's column with a `chat` frame (the --no-auth server this
@@ -17,14 +17,7 @@ test.beforeEach(async ({ request }) => {
 
 async function open(page: Page, options: { theme?: "dark" | "light"; style?: "default" | "terminal" } = {}): Promise<{ column: Locator; stage: Locator; strip: Locator }> {
   await page.addInitScript(exposeEventSources);
-  await page.addInitScript(([theme, style]) => {
-    try {
-      localStorage.setItem("trackinizer.theme", theme!);
-      localStorage.setItem("trackinizer.chat.style", style!);
-    } catch {
-      // about:blank has no storage.
-    }
-  }, [options.theme ?? "dark", options.style ?? "default"]);
+  await setPreferences(page.request, { theme: options.theme ?? "dark", chat_style: options.style ?? "default" });
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/app/#/list/Issue");
   const column = page.locator(".chat-column");

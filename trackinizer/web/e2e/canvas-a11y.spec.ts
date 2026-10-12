@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import type { Page } from "@playwright/test";
 import { resetCanvas } from "./canvasState";
-import { expect, test } from "./fixtures";
+import { expect, setPreferences, test } from "./fixtures";
 
 // axe's WCAG 2.0 and 2.1 A and AA rules (the a11y spec's) on the default layout:
 // the canvas, with Chat beside a list and a detail, with a conversation open and
@@ -32,13 +32,7 @@ for (const theme of ["dark", "light"] as const) {
     test.describe(`${theme} theme, ${size.width} px`, () => {
       test.use({ viewport: size });
       test.beforeEach(async ({ page }) => {
-        await page.addInitScript((choice) => {
-          try {
-            localStorage.setItem("trackinizer.theme", choice);
-          } catch {
-            // about:blank has no storage.
-          }
-        }, theme);
+        await setPreferences(page.request, { theme });
         await page.emulateMedia({ reducedMotion: "reduce" });
       });
 

@@ -8,12 +8,14 @@ from unittest.mock import AsyncMock
 
 import uuid
 
+from fastapi import HTTPException
 from treekle import from_plain
 
 import asyncpg
 import pytest
 
 from trackinizer.conftest import executed_sql
+from trackinizer.server.api.admin_routes import _refuse_last_admin_loss
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
+    from trackinizer.lib.postgres import Conn
     from trackinizer.server.store.core import Store
 
 
@@ -818,6 +821,105 @@ class TestAdminRemoveUser:
         )
 
 
+class TestAdminResetPreferences:
+    """``DELETE /api/admin/users/{id}/preferences``: reset, never read."""
+
+    @pytest.mark.parametrize("role", ["viewer", "writer"])
+    def test_non_admin_403_and_nothing_written(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        role: str,
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role=cast(Role, role)))
+        r = client.delete(f"/api/admin/users/{uuid.uuid4()}/preferences")
+        assert r.status_code == 403
+        assert not _executed_sql(engine)
+
+    def test_admin_reset_clears_the_column_and_answers_nothing(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        user = uuid.uuid4()
+        r = client.delete(f"/api/admin/users/{user}/preferences")
+        assert r.status_code == 204, r.text
+        assert r.content == b""
+        assert engine.conn.execute.call_args.args == (
+            "UPDATE users SET preferences = NULL WHERE id = $1",
+            user,
+        )
+        assert not engine.conn.fetchrow.called
+        assert not engine.conn.fetchval.called
+
+    def test_404_when_user_missing(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        engine.conn.execute = AsyncMock(return_value="UPDATE 0")
+        r = client.delete(f"/api/admin/users/{uuid.uuid4()}/preferences")
+        assert r.status_code == 404
+
+
+_LAST_ADMIN_QUERY = (
+    "SELECT "
+    "(SELECT role = 'admin' AND status = 'active' FROM users WHERE id = $1) "
+    "  AS target_is_admin_active, "
+    "(SELECT COUNT(*) FROM users "
+    "  WHERE role = 'admin' AND status = 'active' AND id != $1) "
+    "  AS other_admins"
+)
+
+
+class TestRefuseLastAdminLoss:
+    """The guard every demote, disable and delete runs: never the last active admin."""
+
+    @pytest.mark.asyncio
+    async def test_reads_the_target_and_the_other_active_admins_in_one_query(
+        self,
+    ) -> None:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=None)
+        target = uuid.uuid4()
+        await _refuse_last_admin_loss(cast("Conn", conn), target)
+        conn.fetchrow.assert_awaited_once_with(_LAST_ADMIN_QUERY, target)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "row",
+        [
+            None,
+            {"target_is_admin_active": False, "other_admins": 0},
+            {"target_is_admin_active": None, "other_admins": 0},
+            {"target_is_admin_active": True, "other_admins": 1},
+        ],
+    )
+    async def test_a_change_that_leaves_an_active_admin_passes(
+        self,
+        row: dict[str, object] | None,
+    ) -> None:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=row)
+        await _refuse_last_admin_loss(cast("Conn", conn), uuid.uuid4())
+
+    @pytest.mark.asyncio
+    async def test_the_last_active_admin_is_refused_with_409(self) -> None:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(
+            return_value={"target_is_admin_active": True, "other_admins": 0},
+        )
+        with pytest.raises(HTTPException) as refused:
+            await _refuse_last_admin_loss(cast("Conn", conn), uuid.uuid4())
+        assert (refused.value.status_code, refused.value.detail) == (
+            409,
+            "last_admin: refusing to leave the org without an active admin.",
+        )
+
+
 class TestAdminAllowlist:
     def test_list_returns_rows(
         self,
@@ -1121,6 +1223,7 @@ class TestProfileRoute:
                     "visual_workspace_enabled": False,
                     "acknowledged_at": datetime(2026, 2, 1, tzinfo=UTC),
                     "acknowledged_rules_version": "v1",
+                    "preferences": None,
                 },
                 None,
             ],
@@ -1155,6 +1258,7 @@ class TestProfileRoute:
                     "visual_workspace_enabled": False,
                     "acknowledged_at": None,
                     "acknowledged_rules_version": None,
+                    "preferences": None,
                 },
                 None,
             ],
@@ -1198,6 +1302,7 @@ class TestProfileRoute:
                     "visual_workspace_enabled": False,
                     "acknowledged_at": None,
                     "acknowledged_rules_version": None,
+                    "preferences": None,
                 },
                 None,
             ],

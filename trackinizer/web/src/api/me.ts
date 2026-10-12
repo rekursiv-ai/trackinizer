@@ -21,6 +21,11 @@ export type Profile = {
   role: string;
   last_login: string | null;
   visual_workspace_enabled: boolean;
+  /**
+   * The user's preferences, every key, defaults filled (`src/preferences.ts`);
+   * absent from a server older than them, whose page shows the defaults.
+   */
+  preferences?: Required<components["schemas"]["Preferences"]>;
   /** When the caller agreed to the alpha rules; null before they have. */
   acknowledged_at: string | null;
   /** The rules version they agreed to; null before they have. */
@@ -75,6 +80,21 @@ export async function acknowledgeRules(rulesVersion: string): Promise<Acknowledg
   return send(TIMEOUT_MS.write, undefined, (signal) =>
     client.PUT("/api/me/acknowledge", { body: { rules_version: rulesVersion }, signal }),
   );
+}
+
+/**
+ * Change some of the caller's preferences: a value sets its key, and the keys left
+ * out keep theirs. Answers every key after the change; a key or value the server
+ * does not take is an `ApiError` (422) and changes nothing.
+ */
+export async function setPreferences(
+  change: Partial<Required<components["schemas"]["Preferences"]>>,
+): Promise<Required<components["schemas"]["Preferences"]>> {
+  const saved = await send(TIMEOUT_MS.write, undefined, (signal) =>
+    client.PATCH("/api/me/preferences", { body: change, signal }),
+  );
+  // The schema marks each key optional, as it has a default; the server fills every one.
+  return saved as Required<components["schemas"]["Preferences"]>;
 }
 
 /** Persist the account's opt-in for the agent-guided canvas. */

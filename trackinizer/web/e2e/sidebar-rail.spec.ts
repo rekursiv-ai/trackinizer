@@ -1,5 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, setPreferences, test } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
 // The navigation sidebar stands opposite Chat as a rail of icons. Hovering the
@@ -26,8 +26,9 @@ async function box(locator: Locator) {
   return found!;
 }
 
+/** Put Chat's side back to its default, kept in the user's preferences, so the rest of the test starts there. */
 async function forget(page: Page): Promise<void> {
-  await page.evaluate(() => localStorage.removeItem("trackinizer.chat.side"));
+  await setPreferences(page.request, { chat_side: null });
 }
 
 test("the sidebar starts as a rail at the right, opposite Chat, and the canvas has no toolbar row", async ({ page }) => {

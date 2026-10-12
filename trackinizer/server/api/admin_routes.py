@@ -255,6 +255,38 @@ async def admin_enable_user_route(
     return {"ok": True, "status": "active"}
 
 
+@router.delete("/api/admin/users/{user_id}/preferences", status_code=204)
+async def admin_reset_preferences_route(
+    user_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("admin"))],
+) -> Response:
+    """Put a user's preferences back to their defaults, without reading them.
+
+    A person's preferences are theirs: an admin may reset them, never read them.
+    So this answers nothing, and no admin route returns them (``USER_COLUMNS``
+    leaves the column out). It writes no change row, as no preference write does.
+
+    Args:
+      user_id: UUID of the user whose preferences are reset.
+      request: FastAPI Request object containing app state with db engine.
+      identity: Admin identity from authentication dependency.
+
+    Returns:
+      empty: 204 response with no content.
+
+    """
+    del identity
+    async with engine_of(request).acquire() as conn:
+        result = await conn.execute(
+            "UPDATE users SET preferences = NULL WHERE id = $1",
+            user_id,
+        )
+    if not result.endswith(" 1"):
+        raise HTTPException(status_code=404, detail="user not found")
+    return Response(status_code=204)
+
+
 @router.delete("/api/admin/users/{user_id}", status_code=204)
 async def admin_remove_user_route(
     user_id: uuid.UUID,

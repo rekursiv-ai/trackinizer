@@ -16,7 +16,7 @@ import type { LiveHub } from "../live/hub";
 import type { LiveQuery } from "../live/serial";
 import { startTrail } from "../router/trail";
 import { chooseChatStyle } from "../chatStyle";
-import { chooseHighlightMentions } from "../settings/highlightMentions";
+import { preferences, receivePreferences } from "../preferences";
 import { Chat } from "./Chat";
 import { setStation, currentStation } from "../stations/store";
 import { useStation } from "../stations/useStation";
@@ -88,7 +88,7 @@ afterEach(() => {
   sessions.clear();
   registered = [];
   localStorage.clear();
-  chooseHighlightMentions(ME, true);
+  receivePreferences({ ...preferences(), highlight_mentions: true });
   history.replaceState(null, "", "#/");
 });
 
@@ -1227,12 +1227,12 @@ test("answers already in a conversation when it opens light nothing: only a new 
 
 test("with the switch off an answer lights nothing, and turning it on lights only answers that come after", async () => {
   const { highlights, reply } = await conversation();
-  act(() => chooseHighlightMentions(ME, false));
+  act(() => receivePreferences({ ...preferences(), highlight_mentions: false }));
   await reply("Issue#1 and Issue#2");
   await screen.findByText(/Issue#1/);
   expect(marked(highlights)).toEqual([]);
   expect(findRef).not.toHaveBeenCalled();
-  act(() => chooseHighlightMentions(ME, true));
+  act(() => receivePreferences({ ...preferences(), highlight_mentions: true }));
   expect(marked(highlights)).toEqual([]);
   await reply("Issue#3");
   await waitFor(() => expect(marked(highlights)).toEqual([idOf("Issue", 3)]), { interval: 1 });
@@ -1244,7 +1244,7 @@ test("the switch is honoured while a lookup is under way", async () => {
   vi.mocked(findRef).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
   await reply("Issue#1");
   await waitFor(() => expect(findRef).toHaveBeenCalledTimes(1), { interval: 1 });
-  act(() => chooseHighlightMentions(ME, false));
+  act(() => receivePreferences({ ...preferences(), highlight_mentions: false }));
   await act(async () => release("row"));
   expect(marked(highlights)).toEqual([]);
 });

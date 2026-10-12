@@ -147,6 +147,40 @@ test("Settings opens as half a page over the page, from the sidebar's side, and 
   await expect(sheet(page)).toHaveCount(0);
 });
 
+/** The suite's user's preferences, as the server holds them. */
+async function storedPreferences(page: Page): Promise<{ [key: string]: unknown }> {
+  return ((await (await page.request.get("/api/me/profile")).json()) as { preferences: { [key: string]: unknown } }).preferences;
+}
+
+test("a theme and Chat style chosen in Settings follow the user to a fresh browser, which keeps neither", async ({ page, browser }) => {
+  await openSettings(page);
+  const appearance = page.getByRole("region", { name: "Appearance" });
+  await appearance.getByRole("combobox", { name: "Theme" }).selectOption("light");
+  await appearance.getByRole("combobox", { name: "Chat style" }).selectOption("terminal");
+  await expect.poll(() => storedPreferences(page)).toMatchObject({ theme: "light", chat_style: "terminal" });
+
+  const fresh = await browser.newContext();
+  const other = await fresh.newPage();
+  await other.goto("/app/#/graph");
+  await expect(other.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(other.locator("html")).toHaveAttribute("data-chat-style", "terminal");
+  expect(await other.evaluate(() => Object.keys(localStorage))).not.toContain("trackinizer.theme");
+  await fresh.close();
+});
+
+test("what a browser kept before preferences moved to the server is sent once, then forgotten", async ({ page }) => {
+  await page.goto("/app/#/graph");
+  await page.evaluate(() => {
+    localStorage.setItem("trackinizer.theme", "light");
+    localStorage.setItem("trackinizer.chat.side", "right");
+  });
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect.poll(() => storedPreferences(page)).toMatchObject({ theme: "light", chat_side: "right" });
+  await expect.poll(() => page.evaluate(() => [localStorage.getItem("trackinizer.theme"), localStorage.getItem("trackinizer.chat.side")]))
+    .toEqual([null, null]);
+});
+
 // Sign out itself is the unit tests' (src/settings/index.test.tsx): this server
 // signs nobody in.
 test("under --no-auth, where nobody signs in, settings offer no sign out", async ({ page }) => {

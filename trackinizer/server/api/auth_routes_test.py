@@ -539,11 +539,19 @@ class TestProfile:
                     "visual_workspace_enabled": True,
                     "acknowledged_at": _WHEN,
                     "acknowledged_rules_version": "old",
+                    "preferences": {"theme": "light", "retired": 1},
                 },
                 {"id": str(_RULES_ID), "version": _WHEN},
             ],
         )
         body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+        # The stored choice, the defaults for the rest; a key no longer known is dropped.
+        assert body["preferences"] == {
+            "theme": "light",
+            "chat_style": "default",
+            "chat_side": "left",
+            "highlight_mentions": True,
+        }
         assert body["acknowledged_at"] == _WHEN.isoformat()
         assert body["acknowledged_rules_version"] == "old"
         assert body["rules_issue_id"] == str(_RULES_ID)
@@ -569,6 +577,70 @@ class TestProfile:
         assert body["rules_issue_id"] is None
         assert body["acknowledged_at"] is None
         assert body["acknowledged_rules_version"] is None
+
+
+class TestPreferences:
+    def test_sets_and_resets_keys_in_one_statement(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        engine.conn.fetchrow = AsyncMock(
+            return_value={"preferences": {"theme": "light"}},
+        )
+        r = client.patch(
+            "/api/me/preferences",
+            json={"theme": "light", "chat_side": None},
+        )
+        assert r.status_code == 200, r.text
+        assert from_plain(r.json(), dict[str, object]) == {
+            "theme": "light",
+            "chat_style": "default",
+            "chat_side": "left",
+            "highlight_mentions": True,
+        }
+        call = engine.conn.fetchrow.call_args
+        assert _sql(call) == (
+            "UPDATE users SET preferences = "
+            "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
+            "WHERE id = $3 RETURNING preferences"
+        )
+        assert call.args[1:] == (
+            {"theme": "light"},
+            ["chat_side"],
+            uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        )
+
+    @pytest.mark.parametrize(
+        ("body", "named"),
+        [
+            ({"colour": "red", "theme": "light"}, "colour"),
+            ({"colour": None}, "colour"),
+            ({"theme": "blue"}, "theme"),
+            ({"highlight_mentions": "yes"}, "highlight_mentions"),
+        ],
+    )
+    def test_an_unknown_key_or_a_bad_value_is_refused_before_any_write(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        body: dict[str, object],
+        named: str,
+    ) -> None:
+        client, _store, engine = route_client
+        engine.conn.fetchrow = AsyncMock()
+        r = client.patch("/api/me/preferences", json=body)
+        assert r.status_code == 422
+        assert named in r.text
+        assert not engine.conn.fetchrow.called
+
+    def test_a_user_who_is_gone_is_404(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        engine.conn.fetchrow = AsyncMock(return_value=None)
+        r = client.patch("/api/me/preferences", json={"theme": "light"})
+        assert r.status_code == 404
 
 
 class TestAcknowledge:

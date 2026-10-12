@@ -16,6 +16,12 @@
         "staff"
       ],
       "pinned_audience": null,
+      "preferences": {
+        "chat_side": "left",
+        "chat_style": "default",
+        "highlight_mentions": true,
+        "theme": "dark"
+      },
       "read_audiences": [
         "open",
         "staff"

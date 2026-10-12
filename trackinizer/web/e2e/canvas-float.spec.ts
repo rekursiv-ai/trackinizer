@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, setPreferences, test } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
 // A floating tile (the context graph, floated) moves by its whole top bar and
@@ -41,13 +41,7 @@ async function floatGraph(request: APIRequestContext): Promise<{ readonly worksp
 }
 
 async function open(page: Page, theme: "dark" | "light" = "dark"): Promise<{ tile: Locator; bar: Locator }> {
-  await page.addInitScript((choice) => {
-    try {
-      localStorage.setItem("trackinizer.theme", choice);
-    } catch {
-      // about:blank has no storage.
-    }
-  }, theme);
+  await setPreferences(page.request, { theme });
   // Wide enough that the stage, beside the sidebar and the Chat column, is as wide as the specs assume.
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.goto("/app/#/list/Issue");

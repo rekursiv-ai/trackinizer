@@ -4411,6 +4411,51 @@
         ],
         "type": "string"
       },
+      "Preferences": {
+        "additionalProperties": false,
+        "description": "Every preference, the user's choice or its default.",
+        "properties": {
+          "chat_side": {
+            "default": "left",
+            "description": "The side of the workbench Chat stands on; the sidebar takes the other.",
+            "enum": [
+              "left",
+              "right"
+            ],
+            "title": "Chat Side",
+            "type": "string"
+          },
+          "chat_style": {
+            "default": "default",
+            "description": "How Chat is drawn: the app's own look, or as a terminal.",
+            "enum": [
+              "default",
+              "terminal"
+            ],
+            "title": "Chat Style",
+            "type": "string"
+          },
+          "highlight_mentions": {
+            "default": true,
+            "description": "Light up the rows the assistant's answers mention.",
+            "title": "Highlight Mentions",
+            "type": "boolean"
+          },
+          "theme": {
+            "default": "dark",
+            "description": "The app's colours: dark, light, or whichever the system uses.",
+            "enum": [
+              "dark",
+              "light",
+              "system"
+            ],
+            "title": "Theme",
+            "type": "string"
+          }
+        },
+        "title": "Preferences",
+        "type": "object"
+      },
       "Priority-Output": {
         "type": "integer"
       },
@@ -9028,6 +9073,40 @@
           }
         },
         "summary": "Admin Enable User Route"
+      }
+    },
+    "/api/admin/users/{user_id}/preferences": {
+      "delete": {
+        "description": "Put a user's preferences back to their defaults, without reading them.\n\nA person's preferences are theirs: an admin may reset them, never read them.\nSo this answers nothing, and no admin route returns them (``USER_COLUMNS``\nleaves the column out). It writes no change row, as no preference write does.\n\nArgs:\n  user_id: UUID of the user whose preferences are reset.\n  request: FastAPI Request object containing app state with db engine.\n  identity: Admin identity from authentication dependency.\n\nReturns:\n  empty: 204 response with no content.",
+        "operationId": "admin_reset_preferences_route_api_admin_users__user_id__preferences_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Reset Preferences Route"
       }
     },
     "/api/admin/users/{user_id}/role": {
@@ -14310,9 +14389,52 @@
         "summary": "Acknowledge Route"
       }
     },
+    "/api/me/preferences": {
+      "patch": {
+        "description": "Set some of the caller's preferences, and put others back to their defaults.\n\nThe keys the body leaves out keep their values. The change is one statement, so\ntwo tabs changing different keys at once both keep theirs.\n\nArgs:\n  body: The keys to change: a value sets the key, ``null`` puts it back to its\n    default.\n  request: FastAPI request with a database engine.\n  identity: The account whose preferences change.\n\nReturns:\n  preferences: Every key after the change, defaults filled.\n\nRaises:\n  HTTPException: 422 for a key no preference has or a value its key does not\n    take, and nothing is written; 404 when the caller's user is gone.",
+        "operationId": "set_preferences_route_api_me_preferences_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/MutableJSONValue-Input"
+                },
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Preferences"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Preferences Route"
+      }
+    },
     "/api/me/profile": {
       "get": {
-        "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, canvas opt-in, the\n    id of the API key the request used (``None`` for a browser session), when\n    the caller agreed to the rules and to which version, and the current rules\n    version with the id of the Issue that holds the rules (both ``None`` while\n    Issue#1 is missing or unlocked), and the audiences the credential reads and\n    opens into, with its pin if any.",
+        "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, canvas opt-in, the\n    user's preferences (every key, defaults filled), the\n    id of the API key the request used (``None`` for a browser session), when\n    the caller agreed to the rules and to which version, and the current rules\n    version with the id of the Issue that holds the rules (both ``None`` while\n    Issue#1 is missing or unlocked), and the audiences the credential reads and\n    opens into, with its pin if any.",
         "operationId": "profile_route_api_me_profile_get",
         "responses": {
           "200": {

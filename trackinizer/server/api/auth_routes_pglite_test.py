@@ -12,11 +12,22 @@ from treekle import from_plain
 
 import pytest
 
-from trackinizer.server.api.canvas_test_support import seed_accounts
-from trackinizer.server.api.conftest import install_identity, make_test_identity
+from trackinizer.server.api.canvas_test_support import (
+    OTHER_EMAIL,
+    OTHER_KEY_ID,
+    OTHER_USER_ID,
+    seed_accounts,
+)
+from trackinizer.server.api.conftest import (
+    TEST_USER_ID,
+    install_identity,
+    make_test_identity,
+)
 
 
 if TYPE_CHECKING:
+    import uuid
+
     import httpx2
 
     from trackinizer.server.auth import Role
@@ -244,6 +255,138 @@ async def _profile(client: httpx2.AsyncClient) -> dict[str, object]:
     response = await client.get("/api/me/profile")
     assert response.status_code == 200, response.text
     return from_plain(response.json(), dict[str, object])
+
+
+_DEFAULTS = {
+    "theme": "dark",
+    "chat_style": "default",
+    "chat_side": "left",
+    "highlight_mentions": True,
+}
+
+
+async def test_preferences_are_the_defaults_until_set(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+
+    assert (await _profile(client))["preferences"] == _DEFAULTS
+    assert await _stored_preferences(store, TEST_USER_ID) is None
+
+
+async def test_a_change_sets_its_keys_and_keeps_the_rest(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+
+    first = await client.patch("/api/me/preferences", json={"theme": "light"})
+    second = await client.patch("/api/me/preferences", json={"chat_style": "terminal"})
+
+    assert first.status_code == 200, first.text
+    assert second.json() == {**_DEFAULTS, "theme": "light", "chat_style": "terminal"}
+    assert (await _profile(client))["preferences"] == second.json()
+    # Only what the user set is stored; the defaults stay out.
+    assert await _stored_preferences(store, TEST_USER_ID) == {
+        "theme": "light",
+        "chat_style": "terminal",
+    }
+
+
+async def test_null_puts_a_key_back_to_its_default(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    await client.patch(
+        "/api/me/preferences",
+        json={"theme": "light", "chat_side": "right"},
+    )
+
+    reset = await client.patch("/api/me/preferences", json={"theme": None})
+
+    assert reset.json() == {**_DEFAULTS, "chat_side": "right"}
+    assert await _stored_preferences(store, TEST_USER_ID) == {"chat_side": "right"}
+
+
+async def test_an_unknown_key_or_a_bad_value_writes_nothing(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    await client.patch("/api/me/preferences", json={"theme": "light"})
+
+    unknown = await client.patch(
+        "/api/me/preferences",
+        json={"colour": "red", "chat_style": "terminal"},
+    )
+    bad = await client.patch(
+        "/api/me/preferences",
+        json={"theme": "blue", "chat_style": "terminal"},
+    )
+
+    assert unknown.status_code == 422
+    assert "colour" in unknown.text
+    assert bad.status_code == 422
+    assert "theme" in bad.text
+    assert await _stored_preferences(store, TEST_USER_ID) == {"theme": "light"}
+
+
+async def test_one_users_preferences_leave_anothers_alone(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    await client.patch("/api/me/preferences", json={"theme": "light"})
+
+    install_identity(
+        make_test_identity(
+            user_id=OTHER_USER_ID,
+            api_key_id=OTHER_KEY_ID,
+            email=OTHER_EMAIL,
+        ),
+    )
+
+    assert (await _profile(client))["preferences"] == _DEFAULTS
+    assert await _stored_preferences(store, OTHER_USER_ID) is None
+
+
+async def test_an_admin_resets_a_users_preferences_and_never_sees_them(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    await client.patch(
+        "/api/me/preferences",
+        json={"theme": "light", "chat_style": "terminal"},
+    )
+    install_identity(
+        make_test_identity(
+            user_id=OTHER_USER_ID,
+            api_key_id=None,
+            email=OTHER_EMAIL,
+            role="admin",
+        ),
+    )
+
+    listed = await client.get("/api/admin/users")
+    reset = await client.delete(f"/api/admin/users/{TEST_USER_ID}/preferences")
+
+    assert listed.status_code == 200, listed.text
+    # No admin route answers with them: the user list leaves the column out.
+    assert "preferences" not in listed.text
+    assert "terminal" not in listed.text
+    assert (reset.status_code, reset.content) == (204, b"")
+    assert await _stored_preferences(store, TEST_USER_ID) is None
+
+
+async def _stored_preferences(store: Store, user_id: uuid.UUID) -> object:
+    async with store.engine.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT preferences FROM users WHERE id = $1",
+            user_id,
+        )
 
 
 if __name__ == "__main__":

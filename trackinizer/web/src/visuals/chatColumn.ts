@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { choosePreferences, preferences, subscribePreferences } from "../preferences";
 
 /** The side of the workbench Chat stands on. */
 export type ChatSide = "left" | "right";
@@ -12,17 +13,15 @@ export type ChatColumnState = {
   readonly fullscreen: boolean;
 };
 
-const KEY = "trackinizer.chat.side";
-
 /** Whoever shows the column: told of every change. */
 const listeners = new Set<() => void>();
 
 /**
- * The column as this page has it. The side is kept in the browser and read back
- * once; whether Chat is hidden or full screen is never kept, so a reload shows it.
- * Held here too when storage refuses the side, so the page still changes.
+ * The column as this page has it. The side is one of the user's preferences, and
+ * follows them; whether Chat is hidden or full screen is this tab's alone and never
+ * kept, so a reload shows it.
  */
-let state: ChatColumnState = { side: readSide(), hidden: false, fullscreen: false };
+let state: ChatColumnState = { side: preferences().chat_side, hidden: false, fullscreen: false };
 
 /** Chat is hidden because the workbench stood three columns: fewer give it back. */
 let hiddenByColumns = false;
@@ -32,15 +31,6 @@ function subscribe(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
-/** A missing or unreadable choice puts Chat on the left. */
-function readSide(): ChatSide {
-  try {
-    return localStorage.getItem(KEY) === "right" ? "right" : "left";
-  } catch {
-    return "left";
-  }
-}
-
 function change(next: Partial<ChatColumnState>): void {
   const merged = { ...state, ...next };
   if (merged.side === state.side && merged.hidden === state.hidden && merged.fullscreen === state.fullscreen) return;
@@ -48,11 +38,14 @@ function change(next: Partial<ChatColumnState>): void {
   listeners.forEach((listener) => listener());
 }
 
-/** Stand Chat at `side` of the workbench, and keep the choice in this browser. */
+/** Stand Chat at `side` of the workbench, and keep the choice in the user's preferences. */
 export function setChatSide(side: ChatSide): void {
-  try { localStorage.setItem(KEY, side); } catch { /* Private storage can be unavailable. */ }
   change({ side });
+  void choosePreferences({ chat_side: side });
 }
+
+// The side follows the preference wherever it changes: here, the server, or the agent.
+subscribePreferences(() => change({ side: preferences().chat_side }));
 
 /** Stand Chat at the other side. */
 export function flipChatSide(): void {

@@ -790,8 +790,10 @@ async def test_migration_040_matches_the_baseline_audience_columns(
     """The columns 040 adds to ``users`` and ``api_keys`` equal the fresh-install ones.
 
     Bootstrap builds the baseline shape. This drops the three columns (as a pre-040
-    database lacks them), replays ``schema.040`` alone, and compares every column,
-    constraint and index of both tables against what the baseline produced.
+    database lacks them) and the one 044 adds to ``users`` after them, replays
+    ``schema.040`` then ``schema.044`` as a deployed database ran them, and compares
+    every column, constraint and index of both tables against what the baseline
+    produced.
     """
     await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
     async with scratch_engine.acquire() as conn:
@@ -802,12 +804,14 @@ async def test_migration_040_matches_the_baseline_audience_columns(
         assert "open_into" in {c["column_name"] for c in baseline["api_keys"][0]}
 
         await conn.execute(
-            "ALTER TABLE users DROP COLUMN hosted_domain, DROP COLUMN google_sub",
+            "ALTER TABLE users DROP COLUMN hosted_domain, DROP COLUMN google_sub, "
+            "DROP COLUMN preferences",
         )
         await conn.execute(
             "ALTER TABLE api_keys DROP COLUMN open_into",
         )
         await conn.execute(load_sql("schema.040"))
+        await conn.execute(load_sql("schema.044"))
         migrated = {t: await _table_shape(conn, t) for t in ("users", "api_keys")}
         # Replaying it over the existing columns is a no-op, not an error.
         await conn.execute(load_sql("schema.040"))
@@ -1171,6 +1175,38 @@ async def test_migration_043_matches_the_baseline_science_chat_tables(
                 "INSERT INTO science_chat_shares (conversation_id, email, shared_by) "
                 "VALUES ($1, 'Ada@Example.com', 'bob@example.com')",
                 uuid.uuid4(),
+            )
+
+    assert migrated == baseline
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_044_matches_the_baseline_users_table(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """The preferences column 044 adds equals the fresh-install one.
+
+    Bootstrap builds the baseline. This drops the column (as a pre-044 database
+    lacks it), replays ``schema.044`` alone, and compares every column, constraint
+    and index of ``users`` against what the baseline produced.
+    """
+    await reset_schema(pglite_engine)
+    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
+    async with pglite_engine.acquire() as conn:
+        baseline = await _table_shape(conn, "users")
+
+        await conn.execute("ALTER TABLE users DROP COLUMN preferences")
+        await conn.execute(load_sql("schema.044"))
+        migrated = await _table_shape(conn, "users")
+        # Replaying it over the existing column is a no-op, not an error.
+        await conn.execute(load_sql("schema.044"))
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute(
+                "INSERT INTO users (id, email, name, role, status, preferences) "
+                "VALUES ($1, 'ada@example.com', 'Ada', 'writer', 'active', $2::jsonb)",
+                uuid.uuid4(),
+                ["dark"],
             )
 
     assert migrated == baseline

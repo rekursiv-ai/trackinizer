@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { stubFetch } from "../api/testing";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -16,28 +17,20 @@ test("Chat starts on the left, shown, and not full screen", async () => {
   expect(column.currentChatColumn()).toEqual({ side: "left", hidden: false, fullscreen: false });
 });
 
-test("the side is kept in the browser and read back; hidden and full screen are not", async () => {
+test("the side is the user's preference: a flip shows at once and is sent; hidden and full screen are this tab's alone", async () => {
+  const sent = stubFetch(() => Response.json({ theme: "dark", chat_style: "default", chat_side: "right", highlight_mentions: true }));
   const first = await fresh();
   first.flipChatSide();
   first.setChatHidden(true);
   expect(first.currentChatColumn()).toEqual({ side: "right", hidden: true, fullscreen: false });
-  expect(localStorage.getItem("trackinizer.chat.side")).toBe("right");
+  await vi.waitFor(() => expect(sent.map(({ method, path, body }) => [method, path, body])).toEqual([["PATCH", "/api/me/preferences", { chat_side: "right" }]]));
 
+  // A page loaded anew takes the side from the profile; nothing this tab held comes back.
   const reloaded = await fresh();
+  const preferences = await import("../preferences");
+  preferences.receivePreferences({ ...preferences.preferences(), chat_side: "right" });
   expect(reloaded.currentChatColumn()).toEqual({ side: "right", hidden: false, fullscreen: false });
-  reloaded.flipChatSide();
-  expect(localStorage.getItem("trackinizer.chat.side")).toBe("left");
-});
-
-test("storage that is off or holds something else leaves Chat on the left, and the side still changes for the page", async () => {
-  localStorage.setItem("trackinizer.chat.side", "top");
-  expect((await fresh()).currentChatColumn().side).toBe("left");
-  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("denied"); });
-  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("denied"); });
-  const column = await fresh();
-  expect(column.currentChatColumn().side).toBe("left");
-  expect(() => column.flipChatSide()).not.toThrow();
-  expect(column.currentChatColumn().side).toBe("right");
+  expect(localStorage.length).toBe(0);
 });
 
 test("a folded Chat is not full screen, and a full screen Chat is shown", async () => {

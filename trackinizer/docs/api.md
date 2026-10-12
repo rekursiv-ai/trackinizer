@@ -248,6 +248,7 @@ and the page puts it back on `next`, so signing in returns to the same view.
 
 ```
 GET  /api/me/profile
+PATCH /api/me/preferences
 PUT  /api/me/visual-workspace
 PUT  /api/me/acknowledge
 GET  /api/me/tokens
@@ -307,6 +308,7 @@ PUT    /api/admin/users/<uuid>/role
 POST   /api/admin/users/<uuid>/disable
 POST   /api/admin/users/<uuid>/enable
 DELETE /api/admin/users/<uuid>
+DELETE /api/admin/users/<uuid>/preferences
 POST   /api/admin/service-accounts
 POST   /api/admin/service-accounts/<uuid>/tokens
 GET    /api/admin/service-accounts/<uuid>/tokens
@@ -709,6 +711,17 @@ the catalog descriptor; an out-of-range value returns 422, a missing record
 an interactive browser session. API keys cannot change that choice.
 `GET /api/me/profile` includes `visual_workspace_enabled`; it defaults to true. It
 also names `api_key_id`, the key the request used, or null for a browser session.
+
+`PATCH /api/me/preferences` changes the caller's preferences, kept on their user
+row so every browser and machine finds them: a body such as `{"theme": "light",
+"chat_side": null}` sets `theme` and puts `chat_side` back to its default, and the
+keys it leaves out keep their values. It answers every key, defaults filled; a key no
+preference has, or a value its key does not take, is a 422 and nothing is written.
+`GET /api/me/profile` includes the same object as `preferences`. The keys, their
+types, defaults and meanings are the `Preferences` model in `server/preferences.py`.
+A person's preferences are theirs: an admin may put them back to their defaults
+(`DELETE /api/admin/users/<uuid>/preferences`, 204 with no body) but no route lets
+anyone else read them, and no preference write makes a change row.
 
 `PUT /api/me/acknowledge` with `{"rules_version": "<version shown>"}` records that
 the signed-in user agreed to the alpha rules, from an interactive browser session;
