@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import cast, get_args
 
+from treekle import ReadError
+
 import pytest
 
 from trackinizer.conftest import new_uuid
@@ -59,6 +61,62 @@ class TestRowConverters:
         assert b.labels == ("auth",)
         assert b.narrows == ()
         assert b.narrowed_by == ()
+
+    @pytest.mark.parametrize(
+        ("stored", "read"),
+        [
+            (None, None),
+            ([], ()),
+            (["auth", "ui"], ("auth", "ui")),
+            # Not the list of str asyncpg sends: the codec decides, as before.
+            (("auth",), ("auth",)),
+        ],
+    )
+    def test_text_array_columns_read_as_tuples(
+        self,
+        stored: object,
+        read: tuple[str, ...] | None,
+    ) -> None:
+        now = datetime.now(UTC)
+        row = cast(
+            Row,
+            {
+                "id": new_uuid(),
+                "seq": 1,
+                "owner": None,
+                "account": "alice",
+                "status": "active",
+                "title": "t",
+                "description": None,
+                "labels": stored,
+                "subscribers": stored,
+                "created": now,
+                "modified": now,
+            },
+        )
+        issue = Issue.from_row(row)
+        assert (issue.labels, issue.subscribers) == (read, read)
+
+    def test_a_text_array_holding_a_non_string_is_refused(self) -> None:
+        now = datetime.now(UTC)
+        row = cast(
+            Row,
+            {
+                "id": new_uuid(),
+                "seq": 1,
+                "owner": None,
+                "account": "alice",
+                "status": "active",
+                "title": "t",
+                "description": None,
+                "labels": ["auth", 7],
+                "subscribers": None,
+                "created": now,
+                "modified": now,
+            },
+        )
+        with pytest.raises(ReadError):
+            Issue.from_row(row)
 
     def test_row_to_belief_no_citations(self) -> None:
         cid = new_uuid()

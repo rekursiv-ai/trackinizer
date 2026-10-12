@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from math import isfinite
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, cast
 from uuid import UUID
 
 
@@ -21,15 +21,19 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from trackinizer.lib.postgres import Conn
+    from trackinizer.wire.filters import Filter
 
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.errors import ConflictError, NotFoundError
+from trackinizer.wire.column_shapes import sql_template
+from trackinizer.wire.filters import VALUELESS_FILTER_OPS, canonical_filter_field
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
 )
+from trackinizer.wire.row_filter import reject_inadmissible
 from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_metrics_query import (
     METRIC_COMPARE_OPS,
@@ -237,11 +241,12 @@ class _MetricsMixin(_StoreShared):
 
     async def query_metrics(
         self,
-        experiment_ids: Sequence[UUID],
+        experiment_ids: Sequence[UUID] | Sequence[Filter],
         *,
         masks: Sequence[MetricMaskClause],
         sort: Literal["asc", "desc"] | None = None,
         limit: int | None = None,
+        offset: int = 0,
     ) -> list[tuple[UUID, MetricPoint]]:
         """Read the masked cells of one or more experiments' metric grids.
 
@@ -254,22 +259,29 @@ class _MetricsMixin(_StoreShared):
         ``(experiment_id, key, step)`` order. ``sort`` then orders the selection
         by ``value``, ties by cell, and ``limit`` windows it. Returning
         ``(experiment_id, MetricPoint)`` lets a cross-experiment (leaderboard)
-        caller attribute each cell to its run. ``experiment_ids`` filters: an id
-        with no metrics, or no row at all, contributes no cells.
+        caller attribute each cell to its run.
+
+        ``experiment_ids`` names the runs as ids, or as list filters ANDed over the
+        Experiment rows. An id with no metrics, or no row at all, contributes no
+        cells. Filters run in the same query, through the list's own SQL forms,
+        so a selection of any size is one read; a filter with no SQL form is
+        refused rather than evaluated row by row.
 
         The query always leads with ``experiment_id = ANY($1)`` so it stays an
         index scan on the ``(experiment_id, key, step)`` primary key. The store
         trusts the caller's id count and ``limit``; the wire bounds both by
-        ``MAX_LIST_LIMIT``.
+        ``MAX_LIST_LIMIT``. ``offset`` skips that many selected cells, so a
+        caller pages past ``limit``; with ``sort`` the pages are stable.
 
         Args:
-          experiment_ids: The runs to read across (one = single-experiment,
-            many = cross-experiment / rank).
+          experiment_ids: The runs to read across: their ids (one =
+            single-experiment, many = cross-experiment / rank), or filters.
           masks: ``at <axis> <op> <value>`` clauses, ANDed into one predicate.
           sort: Order the selected cells by value ascending / descending; when
             ``None`` the ``(experiment_id, key, step)`` order is kept.
           limit: Row ceiling applied after selection; ``None`` reads up to
             ``MAX_LIST_LIMIT``.
+          offset: Selected cells skipped before ``limit``.
 
         Returns:
           cells: ``(experiment_id, MetricPoint)`` per selected cell.
@@ -277,11 +289,12 @@ class _MetricsMixin(_StoreShared):
         Raises:
           ConflictError: An unsupported op on a metric axis, more than one
             ``max`` / ``min`` reduction, a reduction off the ``step`` axis or
-            with an operand, or an operand no stored cell could hold.
+            with an operand, an operand no stored cell could hold, or a filter
+            with no SQL form.
 
         """
-        params: list[object] = [list(experiment_ids)]
-        predicates: list[str] = []
+        params: list[object] = []
+        predicates = [_selection(experiment_ids, params)]
         reduce_order: str | None = None
         for mask in masks:
             if mask.op not in ("max", "min"):
@@ -290,7 +303,7 @@ class _MetricsMixin(_StoreShared):
                 reduce_order = self._reduction_order(mask)
             else:
                 raise ConflictError("a metric query takes at most one reduction")
-        where = " AND ".join(["experiment_id = ANY($1::uuid[])", *predicates])
+        where = " AND ".join(predicates)
         select = (
             "SELECT DISTINCT ON (experiment_id, key) "
             if reduce_order is not None
@@ -309,6 +322,8 @@ class _MetricsMixin(_StoreShared):
             where,
             inner_order,
         )
+        params.append(offset)
+        page = vetted_sql(" OFFSET $", str(len(params)))
         params.append(limit if limit is not None else MAX_LIST_LIMIT)
         limit_pos = len(params)
         # A reduction already carries a DISTINCT ON ordering; a value ``sort``
@@ -324,11 +339,13 @@ class _MetricsMixin(_StoreShared):
                 inner,
                 ") reduced ORDER BY value ",
                 direction,
-                ", experiment_id, key, step LIMIT $",
+                ", experiment_id, key, step",
+                page,
+                " LIMIT $",
                 str(limit_pos),
             )
         else:
-            sql = vetted_sql(inner, " LIMIT $", str(limit_pos))
+            sql = vetted_sql(inner, page, " LIMIT $", str(limit_pos))
         async with self.engine.acquire() as conn:
             fetched = await conn.fetch(sql, *params)
         result: list[tuple[UUID, MetricPoint]] = []
@@ -528,6 +545,37 @@ class _MetricsMixin(_StoreShared):
             where,
         )
         return await conn.execute(sql, *params)
+
+
+# A filter lowers through ``sql_template``, the table the list's SQL forms come from,
+# so it selects the rows the list would. One with no SQL form is refused, since this
+# query reads no row it could evaluate in Python.
+def _selection(
+    experiments: Sequence[UUID] | Sequence[Filter],
+    params: list[object],
+) -> str:
+    """Return the predicate naming the runs: their ids, or filters over Experiment rows."""
+    if not experiments or isinstance(experiments[0], UUID):
+        params.append(list(experiments))
+        return vetted_sql("experiment_id = ANY($", str(len(params)), "::uuid[])")
+    clauses = ["kind = 'Experiment'"]
+    for filt in cast("Sequence[Filter]", experiments):
+        reject_inadmissible(filt)
+        column = canonical_filter_field(filt.field)
+        template = sql_template(column, filt.op)
+        if template is None:
+            raise ConflictError(
+                f"filter {filt.field} {filt.op} has no SQL form; "
+                "a metric query cannot select runs by it",
+            )
+        if filt.op not in VALUELESS_FILTER_OPS:
+            params.append(filt.value)
+        clauses.append(template.format(col=column, p=f"${len(params)}"))
+    return vetted_sql(
+        "experiment_id IN (SELECT id FROM inquiries WHERE ",
+        " AND ".join(clauses),
+        ")",
+    )
 
 
 async def _require_experiment(

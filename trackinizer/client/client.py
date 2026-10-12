@@ -1552,19 +1552,22 @@ class Client:
 
     def rank_metrics(
         self,
-        experiment_ids: Sequence[uuid.UUID],
+        experiment_ids: Sequence[uuid.UUID] | Sequence[Filter],
         *,
         masks: Sequence[MetricMaskClause],
         sort: Literal["asc", "desc"] | None = None,
         limit: int | None = None,
+        offset: int | None = None,
     ) -> list[MetricRankRow]:
         """Cross-experiment masked read/rank over the given experiments.
 
         Args:
-          experiment_ids: Experiment IDs to rank across, at most ``MAX_LIST_LIMIT``.
+          experiment_ids: Experiment IDs to rank across, at most ``MAX_LIST_LIMIT``;
+            or list filters selecting the Experiments, any number of them.
           masks: Field predicates selecting cells.
           sort: Asc/desc ordering by value.
           limit: Max rows, at most ``MAX_LIST_LIMIT`` (None = up to that cap).
+          offset: Selected rows to skip, to page past ``limit``.
 
         Returns:
           result: Ranked rows with experiment ID and metric values.
@@ -1574,9 +1577,21 @@ class Client:
             masks=list(masks),
             sort=sort,
             limit=limit,
+            offset=offset,
         )
+        ids = [item for item in experiment_ids if isinstance(item, uuid.UUID)]
         req = wire_metrics_query.MetricRankRequest(
-            experiment_ids=list(experiment_ids),
+            experiment_ids=ids or None,
+            filters=[
+                wire_metrics_query.RankFilter(
+                    field=item.field,
+                    op=item.op,
+                    value=item.value,
+                )
+                for item in experiment_ids
+                if not isinstance(item, uuid.UUID)
+            ]
+            or None,
             query=query,
         )
         where = wire_metrics_query.METRIC_RANK_PATH

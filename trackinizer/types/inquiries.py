@@ -480,17 +480,9 @@ class Inquiry:
             "status": row["status"],
             "title": row["title"],
             "description": row["description"],
-            "labels": (
-                None
-                if row["labels"] is None
-                else tuple(from_plain(row["labels"], list[str]))
-            ),
+            "labels": _strings(row["labels"]),
             "marginal_cost": Cost.from_row(row),
-            "subscribers": (
-                None
-                if row["subscribers"] is None
-                else tuple(from_plain(row["subscribers"], list[str]))
-            ),
+            "subscribers": _strings(row["subscribers"]),
             "created": row["created"],
             "modified": row["modified"],
         }
@@ -512,6 +504,22 @@ class Inquiry:
                 value = tuple(from_plain(value, list[object]))
             kwargs[f.name] = value
         return cast(_InquiryConstructor[Self], cls)(**kwargs)
+
+
+# A ``text[]`` column arrives from asyncpg as a list of str, which needs only a
+# check; the codec's general decode walked each of a row's labels through its
+# type dispatch, most of a 1,000-row list's time (60 labels a row in production).
+def _strings(value: object) -> tuple[str, ...] | None:
+    """Return a ``text[]`` column as a tuple, or None for NULL; anything else is decoded."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        items = cast("list[object]", value)
+        strings = [item for item in items if isinstance(item, str)]
+        if len(strings) == len(items):
+            return tuple(strings)
+        return tuple(from_plain(items, list[str]))
+    return tuple(from_plain(value, list[str]))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

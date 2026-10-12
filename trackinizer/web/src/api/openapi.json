@@ -3941,6 +3941,18 @@
             "title": "Masks",
             "type": "array"
           },
+          "offset": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offset"
+          },
           "sort": {
             "anyOf": [
               {
@@ -3990,24 +4002,46 @@
       },
       "MetricRankRequest": {
         "additionalProperties": false,
-        "description": "A cross-experiment metric query: the same mask, over many experiments.\n\n``experiment_ids`` are the experiments the caller preselected (from an\ninquiry list query); the ``mask`` reads/ranks their grids together. This is\nthe leaderboard surface -- there is no stored ranking, only this query plus\nthe ``sort`` / ``limit`` on the inner :class:`MetricQueryRequest`.",
+        "description": "A cross-experiment metric query: the same mask, over many experiments.\n\nThe experiments are named one of two ways: ``experiment_ids`` the caller\npreselected, or ``filters`` -- the inquiry list's ``{field, op, value}``\nclauses, ANDed over the Experiment rows -- which the server runs in the\nsame query, so a selection of any size needs no id list. The ``mask``\nthen reads/ranks their grids together. This is the leaderboard surface --\nthere is no stored ranking, only this query plus the ``sort`` / ``limit``\n/ ``offset`` on the inner :class:`MetricQueryRequest`.",
         "properties": {
           "experiment_ids": {
-            "items": {
-              "format": "uuid",
-              "type": "string"
-            },
-            "maxItems": 1000,
-            "minItems": 1,
-            "title": "Experiment Ids",
-            "type": "array"
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 1000,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Experiment Ids"
+          },
+          "filters": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RankFilter"
+                },
+                "maxItems": 1000,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filters"
           },
           "query": {
             "$ref": "#/components/schemas/MetricQueryRequest"
           }
         },
         "required": [
-          "experiment_ids",
           "query"
         ],
         "title": "MetricRankRequest",
@@ -4449,6 +4483,46 @@
           "format"
         ],
         "title": "PublishArtifactContent",
+        "type": "object"
+      },
+      "RankFilter": {
+        "additionalProperties": false,
+        "description": "One ``{field, op, value}`` clause over the Experiment rows, as the list sends it.\n\nThe server checks it as the list route checks a ``filter`` param: the field\nmust be an Experiment column, and the clause must pass the list's rules.",
+        "properties": {
+          "field": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Field",
+            "type": "string"
+          },
+          "op": {
+            "enum": [
+              "is",
+              "ne",
+              "re",
+              "nre",
+              "lt",
+              "le",
+              "gt",
+              "ge",
+              "isnull",
+              "notnull"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "value": {
+            "default": "",
+            "maxLength": 512,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "op"
+        ],
+        "title": "RankFilter",
         "type": "object"
       },
       "ReadMetricsResponse": {
@@ -14402,7 +14476,7 @@
     },
     "/api/metrics/rank": {
       "post": {
-        "description": "Cross-experiment masked read/rank over the given experiments.\n\nArgs:\n  body: Request body with experiment_ids and query (masks, sort, limit).\n  request: FastAPI Request context (used to get the store).\n\nReturns:\n  result: MetricRankResponse with rows array (experiment_id, point pairs).\n\nRaises:\n  HTTPException: 400 if the query carries a write value.",
+        "description": "Cross-experiment masked read/rank over the given experiments.\n\nEach of ``filters`` is checked as the list route checks a ``filter``\nparam, on the Experiment's columns, so a bad clause is the same 400.\n\nArgs:\n  body: Request body with experiment_ids or filters, and query (masks, sort, limit, offset).\n  request: FastAPI Request context (used to get the store).\n\nReturns:\n  result: MetricRankResponse with rows array (experiment_id, point pairs).\n\nRaises:\n  HTTPException: 400 if the query carries a write value.",
         "operationId": "rank_metrics_route_api_metrics_rank_post",
         "requestBody": {
           "content": {

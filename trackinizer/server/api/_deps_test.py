@@ -249,6 +249,36 @@ class TestTagRow:
         expected["kind"] = "Issue"
         assert tag_row(issue) == expected
 
+    @pytest.mark.parametrize("subclass", _KINDS)
+    def test_named_fields_are_the_whole_rows_keys_in_order(
+        self,
+        subclass: type[Inquiry],
+    ) -> None:
+        instance = _populated(subclass)
+        whole = tag_row(instance)
+        for names in (
+            frozenset({"id", "title", "kind"}),
+            frozenset({"labels", "created", "judgement"}),
+            frozenset(whole),
+        ):
+            named = tag_row(instance, names)
+            assert named == {key: value for key, value in whole.items() if key in names}
+            assert list(named) == [key for key in whole if key in names]
+
+    def test_a_field_not_named_is_never_serialized(self) -> None:
+        # A list sends 50-1,000 rows; walking an Experiment's config and outcome
+        # only to drop them was most of a slim list's time.
+        experiment = dataclasses.replace(
+            _populated(Experiment),
+            config={"unserializable": {"a set"}},
+        )
+        assert tag_row(experiment, frozenset({"id", "kind"})) == {
+            "id": str(experiment.id),
+            "kind": "Experiment",
+        }
+        with pytest.raises(TypeError, match="set"):
+            tag_row(experiment, frozenset({"config"}))
+
 
 class TestTagKind:
     def test_none_passes_through(self) -> None:

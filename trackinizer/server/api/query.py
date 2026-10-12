@@ -69,6 +69,8 @@ from trackinizer.wire.session_record_fields import SESSION_RECORD_FIELDS
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from trackinizer.server.store.read import Ancestor
 
 
@@ -341,12 +343,7 @@ async def list_inquiries_route(
                 },
             )
         listed.extend(rows)
-    out = [
-        tag_row(r)
-        if names is None
-        else {k: v for k, v in tag_row(r).items() if k in names}
-        for r in listed
-    ]
+    out = [tag_row(r, names) for r in listed]
     if ancestors is not None:
         ancestry = await store.narrows_ancestors([r.id for r in listed])
         for row, payload in zip(listed, out, strict=True):
@@ -607,50 +604,20 @@ async def list_change_log_route(
     return JSONResponse([_brief_change(change) for change in changes])
 
 
-# Derived from ``flat_column_specs`` so the whitelist tracks the Inquiry hierarchy
-# automatically, including the flattened ``marginal_cost_*`` axes. Each flat column maps
-# through :func:`storage_name`, since ``canonical_filter_field`` resolves a filter to
-# its storage column (``priority`` -> ``issue_priority``) and the whitelist validates
-# the canonical name.
-def _filter_columns_for(kind: Inquiry.InquiryKind) -> frozenset[str]:
-    """Return the canonical SQL column names a ``Filter`` may target for ``kind``."""
-    cls = KIND_TO_CLASS[kind]
-    declared = {
-        storage_name(name, flat.spec)
-        for source in (Inquiry, cls)
-        for name, flat in flat_column_specs(source).items()
-    }
-    # IR record kinds are filterable on the one kind that HAS records. They
-    # carry no ColumnSpec (their values live in ``session_records``), so the
-    # spec walk cannot see them.
-    records = SESSION_RECORD_FIELDS if kind == "AgentSession" else ()
-    # Parents answered from ``edges`` (``narrows``), on the kinds whose rows have
-    # that relation. No ColumnSpec either.
-    own = {f.name for f in fields(cls)}
-    parents = {
-        column
-        for column, shape in COLUMN_SHAPES.items()
-        if shape is ColumnShape.PARENT and column in own
-    }
-    return IDENTITY_COLUMNS | frozenset(declared) | frozenset(records) | parents
+def parse_filter(obj: Mapping[str, object], kind: Inquiry.InquiryKind) -> Filter:
+    """Check one ``{field, op, value}`` clause on ``kind``'s rows, raising 400.
 
+    The one gate every filter a route takes passes: the list's ``filter``
+    params and the metric rank's ``filters`` body alike.
 
-# ``field`` may arrive as a CLI-friendly alias (``kind``, ``agent-cost``, ``result``,
-# ...) or the canonical SQL column name. Both resolve through
-# ``canonical_filter_field``, so the returned ``Filter`` always carries the canonical
-# column, which is what the whitelist validates against.
-def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
-    """Decode one ``filter=<json>`` query param, raising 400 on bad input."""
-    try:
-        payload = json_loads(raw)
-    except json.JSONDecodeError as err:
-        raise HTTPException(
-            status_code=400,
-            detail=f"filter is not valid JSON: {err}",
-        ) from err
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="filter must be a JSON object")
-    obj = from_plain(payload, dict[str, object])
+    Args:
+      obj: The clause's ``field``, ``op``, and ``value`` (absent for a presence op).
+      kind: The kind whose columns the field must name.
+
+    Returns:
+      filt: The clause, its field canonical.
+
+    """
     field = obj.get("field")
     op = obj.get("op")
     # The presence ops carry no operand; default a missing value to "". Gate on
@@ -743,3 +710,49 @@ def _require_found[T](value: T | None) -> T:
     if value is None:
         raise HTTPException(status_code=404, detail="not found")
     return value
+
+
+# Derived from ``flat_column_specs`` so the whitelist tracks the Inquiry hierarchy
+# automatically, including the flattened ``marginal_cost_*`` axes. Each flat column maps
+# through :func:`storage_name`, since ``canonical_filter_field`` resolves a filter to
+# its storage column (``priority`` -> ``issue_priority``) and the whitelist validates
+# the canonical name.
+def _filter_columns_for(kind: Inquiry.InquiryKind) -> frozenset[str]:
+    """Return the canonical SQL column names a ``Filter`` may target for ``kind``."""
+    cls = KIND_TO_CLASS[kind]
+    declared = {
+        storage_name(name, flat.spec)
+        for source in (Inquiry, cls)
+        for name, flat in flat_column_specs(source).items()
+    }
+    # IR record kinds are filterable on the one kind that HAS records. They
+    # carry no ColumnSpec (their values live in ``session_records``), so the
+    # spec walk cannot see them.
+    records = SESSION_RECORD_FIELDS if kind == "AgentSession" else ()
+    # Parents answered from ``edges`` (``narrows``), on the kinds whose rows have
+    # that relation. No ColumnSpec either.
+    own = {f.name for f in fields(cls)}
+    parents = {
+        column
+        for column, shape in COLUMN_SHAPES.items()
+        if shape is ColumnShape.PARENT and column in own
+    }
+    return IDENTITY_COLUMNS | frozenset(declared) | frozenset(records) | parents
+
+
+# ``field`` may arrive as a CLI-friendly alias (``kind``, ``agent-cost``, ``result``,
+# ...) or the canonical SQL column name. Both resolve through
+# ``canonical_filter_field``, so the returned ``Filter`` always carries the canonical
+# column, which is what the whitelist validates against.
+def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
+    """Decode one ``filter=<json>`` query param, raising 400 on bad input."""
+    try:
+        payload = json_loads(raw)
+    except json.JSONDecodeError as err:
+        raise HTTPException(
+            status_code=400,
+            detail=f"filter is not valid JSON: {err}",
+        ) from err
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="filter must be a JSON object")
+    return parse_filter(from_plain(payload, dict[str, object]), kind)

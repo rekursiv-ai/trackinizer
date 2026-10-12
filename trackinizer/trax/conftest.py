@@ -940,18 +940,19 @@ class FakeClient:
 
     def rank_metrics(
         self,
-        experiment_ids: Sequence[uuid.UUID],
+        experiment_ids: Sequence[uuid.UUID] | Sequence[Filter],
         *,
         masks: Sequence[MetricMaskClause],
         sort: str | None = None,
         limit: int | None = None,
+        offset: int | None = None,
     ) -> list[MetricRankRow]:
         """Rank metrics."""
         self.calls.append(
             (
                 "rank_metrics",
                 (tuple(experiment_ids),),
-                {"masks": tuple(masks), "sort": sort, "limit": limit},
+                {"masks": tuple(masks), "sort": sort, "limit": limit, "offset": offset},
             ),
         )
         return []

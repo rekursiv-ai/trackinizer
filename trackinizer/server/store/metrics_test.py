@@ -439,7 +439,7 @@ class TestQueryMetrics:
         assert call_args is not None
         sql = call_args.args[0]
         assert isinstance(sql, str)
-        assert "ORDER BY value ASC, experiment_id, key, step LIMIT" in sql
+        assert "ORDER BY value ASC, experiment_id, key, step OFFSET" in sql
 
     @pytest.mark.asyncio
     async def test_omitted_limit_is_the_list_cap(self) -> None:

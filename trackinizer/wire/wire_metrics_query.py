@@ -22,6 +22,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from trackinizer.wire.filters import MAX_FILTER_VALUE_CHARS, FilterOp
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.wire_metrics import MetricPoint
 
@@ -43,6 +44,7 @@ __all__ = [
     "MetricRankRow",
     "MetricReduce",
     "MetricWriteResponse",
+    "RankFilter",
     "experiment_metric_query_path",
     "experiment_metric_write_path",
 ]
@@ -119,14 +121,16 @@ class MetricQueryRequest(BaseModel):
     write: float | None = Field(default=None, allow_inf_nan=False)
     sort: Literal["asc", "desc"] | None = None
     limit: int | None = Field(default=None, ge=1, le=MAX_LIST_LIMIT)
+    offset: int | None = Field(default=None, ge=0)
 
     # Unset fields arrive as explicit ``null`` (clients send ``model_dump``), so the
     # check is on values, not on which keys are present.
     @model_validator(mode="after")
     def _write_takes_no_read_controls(self) -> Self:
-        """Reject ``sort`` / ``limit`` on a write, which would ignore them."""
-        if self.write is not None and (self.sort is not None or self.limit is not None):
-            raise ValueError("sort / limit apply to reads only, not a write")
+        """Reject ``sort`` / ``limit`` / ``offset`` on a write, which would ignore them."""
+        reads = (self.sort, self.limit, self.offset)
+        if self.write is not None and any(control is not None for control in reads):
+            raise ValueError("sort / limit / offset apply to reads only, not a write")
         return self
 
 
@@ -150,16 +154,49 @@ class MetricWriteResponse(BaseModel):
 class MetricRankRequest(BaseModel):
     """A cross-experiment metric query: the same mask, over many experiments.
 
-    ``experiment_ids`` are the experiments the caller preselected (from an
-    inquiry list query); the ``mask`` reads/ranks their grids together. This is
-    the leaderboard surface -- there is no stored ranking, only this query plus
-    the ``sort`` / ``limit`` on the inner :class:`MetricQueryRequest`.
+    The experiments are named one of two ways: ``experiment_ids`` the caller
+    preselected, or ``filters`` -- the inquiry list's ``{field, op, value}``
+    clauses, ANDed over the Experiment rows -- which the server runs in the
+    same query, so a selection of any size needs no id list. The ``mask``
+    then reads/ranks their grids together. This is the leaderboard surface --
+    there is no stored ranking, only this query plus the ``sort`` / ``limit``
+    / ``offset`` on the inner :class:`MetricQueryRequest`.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    experiment_ids: list[uuid.UUID] = Field(min_length=1, max_length=MAX_LIST_LIMIT)
+    experiment_ids: list[uuid.UUID] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_LIST_LIMIT,
+    )
+    filters: list[RankFilter] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_LIST_LIMIT,
+    )
     query: MetricQueryRequest
+
+    @model_validator(mode="after")
+    def _names_the_experiments_one_way(self) -> Self:
+        """Require exactly one of ``experiment_ids`` and ``filters``."""
+        if (self.experiment_ids is None) == (self.filters is None):
+            raise ValueError("name the experiments by experiment_ids or by filters")
+        return self
+
+
+class RankFilter(BaseModel):
+    """One ``{field, op, value}`` clause over the Experiment rows, as the list sends it.
+
+    The server checks it as the list route checks a ``filter`` param: the field
+    must be an Experiment column, and the clause must pass the list's rules.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: str = Field(min_length=1, max_length=MAX_FILTER_VALUE_CHARS)
+    op: FilterOp
+    value: str = Field(default="", max_length=MAX_FILTER_VALUE_CHARS)
 
 
 class MetricRankRow(BaseModel):

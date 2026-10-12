@@ -23,6 +23,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trackinizer.server.api._deps import get_store
+from trackinizer.server.api.query import parse_filter
 from trackinizer.server.auth import require_role
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
@@ -205,8 +206,11 @@ async def rank_metrics_route(
 ) -> MetricRankResponse:
     """Cross-experiment masked read/rank over the given experiments.
 
+    Each of ``filters`` is checked as the list route checks a ``filter``
+    param, on the Experiment's columns, so a bad clause is the same 400.
+
     Args:
-      body: Request body with experiment_ids and query (masks, sort, limit).
+      body: Request body with experiment_ids or filters, and query (masks, sort, limit, offset).
       request: FastAPI Request context (used to get the store).
 
     Returns:
@@ -219,10 +223,16 @@ async def rank_metrics_route(
     _reject_write(body.query)
     store = get_store(request)
     rows = await store.query_metrics(
-        body.experiment_ids,
+        body.experiment_ids
+        if body.experiment_ids is not None
+        else tuple(
+            parse_filter(clause.model_dump(), "Experiment")
+            for clause in body.filters or ()
+        ),
         masks=body.query.masks,
         sort=body.query.sort,
         limit=body.query.limit,
+        offset=body.query.offset or 0,
     )
     return MetricRankResponse(
         rows=[MetricRankRow(experiment_id=eid, point=point) for eid, point in rows],
