@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import asyncio
+import time
 import uuid
 
 from treekle import from_plain
@@ -56,9 +57,6 @@ pytestmark = [
 
 _INSTANCE = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
-# Long enough for a request on the main loop to reach the lock it waits on.
-_SETTLE_SEC = 0.3
-
 # Long enough for a request that never waits on a lock to answer on a loaded host.
 _ANSWER_SEC = 5
 
@@ -103,14 +101,14 @@ async def test_join_waits_for_a_route_holding_the_machine_row_instead_of_deadloc
     async with integ_store.engine.acquire() as holder, tx(holder):
         machine_id = await _lock_machine(holder, "dev-1")
         joining = asyncio.create_task(_join(served, "dev-1", token))
-        await asyncio.sleep(_SETTLE_SEC)
+        waited = await waited_on_locks(integ_store, count=1)
         # What revoke does next: close the open enrollment.
         await holder.execute(
             "UPDATE machine_enrollments SET used_at = now() WHERE machine_id = $1",
             machine_id,
         )
 
-    assert (await joining).status_code == 401
+    assert ((await joining).status_code, waited) == (401, True)
 
 
 async def test_join_with_a_junk_token_is_401_without_waiting_for_the_machine_row(
@@ -144,12 +142,16 @@ async def test_two_joins_with_one_token_that_both_passed_the_check_make_one_cred
         await _lock_machine(holder, "dev-1")
         joining = [asyncio.create_task(_join(served, "dev-1", token)) for _ in range(2)]
         # Both read the token as open, and now queue for the row.
-        await asyncio.sleep(_SETTLE_SEC)
+        waited = await waited_on_locks(integ_store, count=2)
     responses = await asyncio.gather(*joining)
 
     async with integ_store.engine.acquire() as conn:
         credentials = await conn.fetchval("SELECT count(*) FROM machine_credentials")
-    assert (sorted(r.status_code for r in responses), credentials) == ([201, 401], 1)
+    assert (sorted(r.status_code for r in responses), credentials, waited) == (
+        [201, 401],
+        1,
+        True,
+    )
 
 
 @pytest.mark.parametrize("other", ["enroll", "revoke", "delete"])
@@ -206,7 +208,7 @@ async def test_heartbeat_in_flight_during_a_revoke_is_410_and_writes_nothing(
             machine_id,
         )
         beating = asyncio.create_task(_heartbeat(served, joined))
-        await asyncio.sleep(_SETTLE_SEC)
+        waited = await waited_on_locks(integ_store, count=1)
 
     response = await beating
     async with integ_store.engine.acquire() as conn:
@@ -214,7 +216,7 @@ async def test_heartbeat_in_flight_during_a_revoke_is_410_and_writes_nothing(
             "SELECT host_instance FROM machines WHERE id = $1",
             machine_id,
         )
-    assert (response.status_code, host_instance) == (410, None)
+    assert (response.status_code, host_instance, waited) == (410, None, True)
 
 
 async def test_delete_racing_a_join_that_commits_first_is_409(
@@ -226,7 +228,7 @@ async def test_delete_racing_a_join_that_commits_first_is_409(
     async with integ_store.engine.acquire() as holder, tx(holder):
         machine_id = await _lock_machine(holder, "dev-1")
         deleting = asyncio.create_task(_delete(served, "dev-1"))
-        await asyncio.sleep(_SETTLE_SEC)
+        waited = await waited_on_locks(integ_store, count=1)
         # What a join commits: a live credential for the machine.
         await holder.execute(
             "INSERT INTO machine_credentials (machine_id, secret_sha256) "
@@ -235,10 +237,40 @@ async def test_delete_racing_a_join_that_commits_first_is_409(
             bytes(32),
         )
 
-    assert (await deleting).status_code == 409
+    assert ((await deleting).status_code, waited) == (409, True)
     async with integ_store.engine.acquire() as conn:
         kept = await conn.fetchval("SELECT id FROM machines WHERE id = $1", machine_id)
     assert kept == machine_id
+
+
+async def waited_on_locks(store: Store, *, count: int) -> bool:
+    """Return whether ``count`` other backends of the test database came to wait.
+
+    That is the moment a race is set: every racer has reached the row the test's
+    transaction holds and is queued on it. A fixed sleep only hoped it had, and a
+    racer still on its way would take another path and pass for the wrong reason.
+    It answers rather than raises, so the test still releases what it holds.
+
+    Args:
+      store: The store whose database the racers use.
+      count: How many backends must be waiting on a lock.
+
+    Returns:
+      waited: True once they are; False if ``_ANSWER_SEC`` passes first.
+
+    """
+    deadline = time.monotonic() + _ANSWER_SEC
+    async with store.engine.acquire() as conn:
+        while time.monotonic() < deadline:
+            waiting = await conn.fetchval(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() "
+                "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()",
+            )
+            if from_plain(waiting, int) >= count:
+                return True
+            await asyncio.sleep(0.005)
+    return False
 
 
 async def _lock_machine(conn: Conn, name: str) -> uuid.UUID:

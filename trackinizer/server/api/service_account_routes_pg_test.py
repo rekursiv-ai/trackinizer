@@ -27,6 +27,7 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
+from trackinizer.server.api.machine_host_routes_pg_test import waited_on_locks
 from trackinizer.server.auth import create_api_key
 from trackinizer.server.inbound import InboundQueue
 
@@ -46,9 +47,6 @@ pytestmark = [
 ]
 
 _ACCOUNTS = "/api/admin/service-accounts"
-
-# Long enough for a request on the main loop to reach the lock it waits on.
-_SETTLE_SEC = 0.5
 
 
 @pytest.fixture
@@ -127,8 +125,7 @@ async def test_a_disable_or_delete_in_flight_with_a_mint_leaves_no_live_key(
     racing = asyncio.create_task(
         served.delete(path) if other == "delete" else served.post(f"{path}/disable"),
     )
-    await asyncio.sleep(_SETTLE_SEC)
-    waited = not racing.done()
+    waited = await waited_on_locks(integ_store, count=1) and not racing.done()
     release.set()
     minted, raced = await asyncio.gather(minting, racing)
 

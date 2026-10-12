@@ -437,10 +437,33 @@ async def _staff_units_nearest(store: Store) -> tuple[Pair, list[float]]:
         pair.staff_id,
         texts=[f"{CANARY} staff line {i}" for i in range(offered + 20)],
     )
-    await index(store)
     nearest_staff = await StubEmbedder(dim=1024).embed(_STAFF_TEXT)
-    await _move_near(store, pair.staff_id, nearest_staff)
+    # PGlite keeps an HNSW index current at about 13 ms per 1024-dim unit written, and
+    # each staff unit is written twice here; one build afterwards takes about 50 ms.
+    async with _index_built_last(store):
+        await index(store)
+        await _move_near(store, pair.staff_id, nearest_staff)
     return pair, nearest_staff
+
+
+@asynccontextmanager
+async def _index_built_last(store: Store) -> AsyncGenerator[None]:
+    """Drop the stub model's HNSW index for the block, then build it from its definition."""
+    name = "idx_session_embeddings_hnsw_stub_1024"
+    async with store.engine.acquire() as conn:
+        definition = from_plain(
+            await conn.fetchval(
+                "SELECT indexdef FROM pg_indexes WHERE indexname = $1",
+                name,
+            ),
+            str,
+        )
+        await conn.execute(f"DROP INDEX {name}")
+    try:
+        yield
+    finally:
+        async with store.engine.acquire() as conn:
+            await conn.execute(definition)
 
 
 @asynccontextmanager
