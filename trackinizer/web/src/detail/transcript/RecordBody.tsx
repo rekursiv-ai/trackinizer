@@ -2,6 +2,7 @@ import { createContext, Fragment, type ReactNode, use, useLayoutEffect, useRef, 
 import type { SessionRecord } from "../../api/sessions";
 import { Markdown } from "../../markdown/Markdown";
 import { safeUrl } from "../../markdown/safeUrl";
+import { linkProps } from "../../router/appLink";
 import { formatRoute } from "../../router/route";
 import { Icon } from "../../ui/icons";
 import { Ansi, AnsiLines, Code, Diff, Output } from "./Code";
@@ -394,7 +395,7 @@ function SearchResults({ results }: { results: readonly SearchResult[] }) {
       {results.map((result, k) => (
         <li key={k}>
           {safeUrl(result.url) ? (
-            <a href={result.url} target="_blank" rel="noopener noreferrer">
+            <a {...linkProps(result.url)}>
               {result.title || result.url}
             </a>
           ) : (

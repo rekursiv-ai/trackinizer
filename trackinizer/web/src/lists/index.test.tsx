@@ -9,11 +9,10 @@ import { AGREED, type Sent, stubFetch } from "../api/testing";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { createQueryClient } from "../app/queryClient";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
+import { DEFAULT_PREFERENCES, receivePreferences } from "../preferences";
 import { RouterProvider } from "../router/router";
 import { DetailView } from "../router/views";
 import { meFilter, meNames } from "../state/me";
-import { storageKey } from "../state/store";
-import { EMPTY_STATE } from "../state/value";
 import { KindIcon } from "../ui/kinds";
 import { ToastProvider } from "../ui/toast";
 import { InquiryList, ListView } from ".";
@@ -432,7 +431,7 @@ test("S8: a priority filter on Issues and Beliefs asks for Issues only, and says
 
 test("Me in the owner filter matches the email and every alias ticked in Settings (the plan's Who me is)", async () => {
   const aliases = ["ada", "Agent Ada"];
-  localStorage.setItem(storageKey(PROFILE.email), JSON.stringify({ ...EMPTY_STATE, aliases }));
+  receivePreferences({ ...DEFAULT_PREFERENCES, aliases });
   const sent = serve([row({ owner: "ada" })]);
   show(<ListView kind="Issue" />);
   await titles();
@@ -442,7 +441,7 @@ test("Me in the owner filter matches the email and every alias ticked in Setting
   expect(screen.getByTitle("The same query from the CLI").textContent).toBe(
     `trax issue status is active owner re '${me.value}'`,
   );
-  localStorage.clear();
+  receivePreferences(DEFAULT_PREFERENCES);
 });
 
 test.each([

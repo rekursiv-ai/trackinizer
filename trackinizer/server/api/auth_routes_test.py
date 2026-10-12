@@ -551,6 +551,7 @@ class TestProfile:
             "chat_style": "default",
             "chat_side": "left",
             "highlight_mentions": True,
+            **_EMPTY_USER_DATA,
         }
         assert body["acknowledged_at"] == _WHEN.isoformat()
         assert body["acknowledged_rules_version"] == "old"
@@ -579,6 +580,19 @@ class TestProfile:
         assert body["acknowledged_rules_version"] is None
 
 
+_EMPTY_USER_DATA: dict[str, object] = {
+    "stars": [],
+    "views": [],
+    "aliases": [],
+    "people": {},
+    "read": {"boundary": None, "marks": []},
+    "collapsed": [],
+    "lens": None,
+    "drafts": {},
+    "create_draft": None,
+}
+
+
 class TestPreferences:
     def test_sets_and_resets_keys_in_one_statement(
         self,
@@ -598,6 +612,7 @@ class TestPreferences:
             "chat_style": "default",
             "chat_side": "left",
             "highlight_mentions": True,
+            **_EMPTY_USER_DATA,
         }
         call = engine.conn.fetchrow.call_args
         assert _sql(call) == (
@@ -611,9 +626,22 @@ class TestPreferences:
             uuid.UUID("11111111-1111-1111-1111-111111111111"),
         )
 
+    def test_a_nested_value_is_stored_as_the_json_it_validates_to(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        read = {"boundary": None, "marks": ["c1"]}
+        engine.conn.fetchrow = AsyncMock(return_value={"preferences": {"read": read}})
+        r = client.patch("/api/me/preferences", json={"read": read, "lens": None})
+        assert r.status_code == 200, r.text
+        assert engine.conn.fetchrow.call_args.args[1:3] == ({"read": read}, ["lens"])
+
     @pytest.mark.parametrize(
         ("body", "named"),
         [
+            ({"stars": ["s"] * 2_001}, "stars"),
+            ({"read": {"boundary": None}}, "marks"),
             ({"colour": "red", "theme": "light"}, "colour"),
             ({"colour": None}, "colour"),
             ({"theme": "blue"}, "theme"),

@@ -17,10 +17,22 @@
       ],
       "pinned_audience": null,
       "preferences": {
+        "aliases": [],
         "chat_side": "left",
         "chat_style": "default",
+        "collapsed": [],
+        "create_draft": null,
+        "drafts": {},
         "highlight_mentions": true,
-        "theme": "dark"
+        "lens": null,
+        "people": {},
+        "read": {
+          "boundary": null,
+          "marks": []
+        },
+        "stars": [],
+        "theme": "dark",
+        "views": []
       },
       "read_audiences": [
         "open",

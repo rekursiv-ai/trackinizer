@@ -1,45 +1,51 @@
 import { newUuid } from "../api/idempotency";
-import type { Filter, FilterOp, ListRequest } from "../query/query";
+import type { components } from "../api/generated/schema";
+import type { Preferences } from "../preferences";
+import type { Filter, FilterOp } from "../query/query";
 
 /**
- * This browser's own state for one signed-in user: what trackinizer does not
- * store. One versioned JSON value in `localStorage` (`store.ts`); Settings
- * exports it, and imports another browser's with `mergeImport`.
+ * The user's own state, as the page reads it (`store.ts`): the preferences the
+ * server keeps for the user (`server/preferences.py`), and `ui.tiles`, which this
+ * browser keeps in one versioned JSON value in `localStorage`. That value used to
+ * hold all of it; `parseState` still reads one, and `mergeImport` folds it into
+ * what the server holds, once (`adoptLegacyPreferences`).
  */
 export type BrowserState = {
   readonly version: typeof VERSION;
   /** Starred inquiries, by id: one person's bookmarks, never a label. */
-  readonly stars: readonly string[];
-  readonly views: readonly SavedView[];
+  readonly stars: string[];
+  readonly views: SavedView[];
   /**
    * The names besides the account email that mean me in owner and subscriber
    * filters. The user ticks them in Settings; none is added automatically.
    */
-  readonly aliases: readonly string[];
+  readonly aliases: string[];
   /** Names for people and agents added by hand, by the value that goes in owner or subscribers. */
-  readonly people: { readonly [actor: string]: Person };
+  readonly people: { [actor: string]: Person };
   readonly read: ReadState;
-  /** How this browser shows things; an import leaves it as it is. */
   readonly ui: UiState;
 };
 
-/** A saved view: its name, and exactly the `GET /api/inquiries` query it shows. */
-export type SavedView = { readonly id: string; readonly name: string; readonly request: ListRequest };
+/**
+ * A saved view: its name, and exactly the `GET /api/inquiries` query it shows
+ * (a `ListRequest`). The types of these four are the server's, which keeps the
+ * user's own data and checks each.
+ */
+export type SavedView = components["schemas"]["SavedView"];
 
 /** A person or an agent added by hand, under the name the pickers show. */
-export type Person = { readonly name: string; readonly type: "person" | "agent" };
+export type Person = components["schemas"]["Person"];
 
-/** Which notifications are read. */
-export type ReadState = {
-  /** Changes at or before this time (ISO 8601) count as read; null until Notifications first loads. */
-  readonly boundary: string | null;
-  /** Changes after the boundary marked read one at a time, by change id. */
-  readonly marks: readonly string[];
-};
+/**
+ * Which notifications are read: `boundary`, a time (ISO 8601) at or before which
+ * changes count as read, null until Notifications first loads; and `marks`, the
+ * changes after it marked read one at a time, by change id.
+ */
+export type ReadState = components["schemas"]["ReadState"];
 
 /** Collapsed sections, by key, the detail lens last used, and how each floating tile was left. */
 export type UiState = {
-  readonly collapsed: readonly string[];
+  readonly collapsed: string[];
   readonly lens: string | null;
   /** Floating canvas tiles, by visual type. */
   readonly tiles: { readonly [type: string]: TileMemory };
@@ -67,6 +73,15 @@ export const VERSION = 2;
 /** The oldest version `parseState` reads. */
 const OLDEST_READABLE = 1;
 
+/**
+ * The `localStorage` key of `email`'s local state. Each origin has its own storage
+ * already; the origin is in the key too, so a value read by hand says where it
+ * came from.
+ */
+export function storageKey(email: string): string {
+  return `trackinizer.v2.${location.origin}.${email}`;
+}
+
 /** The state of a browser that has stored nothing yet. */
 export const EMPTY_STATE: BrowserState = {
   version: VERSION,
@@ -78,10 +93,16 @@ export const EMPTY_STATE: BrowserState = {
   ui: { collapsed: [], lens: null, tiles: {} },
 };
 
+/** The state `kept` preferences and this browser's `tiles` make. */
+export function stateOf(kept: Preferences, tiles: UiState["tiles"]): BrowserState {
+  const { stars, views, aliases, people, read, collapsed, lens } = kept;
+  return { ...EMPTY_STATE, stars, views, aliases, people, read, ui: { collapsed, lens, tiles } };
+}
+
 /**
- * `value`, a parsed export or stored value, as a `BrowserState`.
+ * `value`, a parsed stored value, as a `BrowserState`.
  *
- * A category it lacks is empty, so a hand-written file of stars alone imports.
+ * A category it lacks is empty.
  * Anything of the wrong shape throws an `Error` whose message says what is wrong.
  */
 export function parseState(value: unknown): BrowserState {
@@ -110,22 +131,17 @@ export function parseState(value: unknown): BrowserState {
   };
 }
 
-/** `state` as the text of an export file. */
-export function exportState(state: BrowserState): string {
-  return `${JSON.stringify(state, null, 2)}\n`;
-}
-
 /**
- * Merge an imported state into this browser's. Nothing here is deleted:
+ * Merge a browser's old state into the user's. Nothing here is deleted:
  *
- * - stars, aliases and people are unions; a person already named here keeps
- *   this browser's name;
+ * - stars, aliases and people are unions; a person already named keeps the
+ *   name the user's state gives;
  * - views merge by id: an identical view is skipped, and one whose id is taken
  *   by different content is added as a copy with a new id (`newId`) and
- *   "(imported)" after its name, unless that copy is already here, so
- *   importing one file twice adds it once;
+ *   "(imported)" after its name, unless that copy is already there, so merging
+ *   the same state twice adds it once;
  * - read state takes the later of the two boundaries and the union of the marks;
- * - UI state stays this browser's.
+ * - UI state stays the user's.
  */
 export function mergeImport(
   current: BrowserState,
@@ -173,7 +189,7 @@ function later(a: string | null, b: string | null): string | null {
 }
 
 /** Whether two JSON values are equal, whatever order their keys are in. */
-function sameJson(a: unknown, b: unknown): boolean {
+export function sameJson(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (!isRecord(a) || !isRecord(b) || Array.isArray(a) !== Array.isArray(b)) return false;
   const keys = Object.keys(a);

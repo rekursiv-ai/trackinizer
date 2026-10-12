@@ -7,6 +7,8 @@ import {
   isInquiryKind,
 } from "../api/inquiries";
 import type { EdgeTopology, FieldOwners } from "../api/meta";
+import type { Preferences } from "../preferences";
+import { sameJson } from "../state/value";
 import { type Field, isUnset, kindFields } from "../detail/fields";
 import { inputKind, parseInput } from "../editors/values";
 import { type RelationChoice, relationChoices } from "../relations/topology";
@@ -66,6 +68,43 @@ export type Draft = {
   readonly chips: { readonly [field: string]: unknown };
   readonly relations: readonly Related[];
 };
+
+/** The draft the user's preferences keep (`create_draft`). */
+type KeptDraft = NonNullable<Preferences["create_draft"]>;
+
+/** `draft` as the preferences keep it: each relation names its option by key, which `reopenedDraft` looks up again. */
+export function keptDraft(draft: Draft): KeptDraft {
+  return {
+    ...draft,
+    relations: draft.relations.map(({ option, target }) => ({
+      option: option.key,
+      target: { id: target.id, kind: target.kind, seq: target.seq, ...(target.title === undefined ? {} : { title: target.title }) },
+    })),
+  };
+}
+
+/**
+ * The draft `kept` is, if it is of `kind`: the next form of that kind reopens it.
+ * A draft of another kind was for another form. A relation whose option or kind
+ * the server's topology no longer has is left out.
+ */
+export function reopenedDraft(kept: Preferences["create_draft"], kind: InquiryKind, edges: EdgeTopology): Draft | null {
+  if (!kept || kept.kind !== kind) return null;
+  const options = new Map(relationOptions(kind, edges).map((option) => [option.key, option]));
+  return {
+    ...kept,
+    kind,
+    relations: kept.relations.flatMap(({ option, target }) => {
+      const found = options.get(option);
+      return found && isInquiryKind(target.kind) ? [{ option: found, target: { ...target, kind: target.kind, title: target.title ?? undefined } }] : [];
+    }),
+  };
+}
+
+/** The change that keeps `draft` as the create form's, or none when it already is. */
+export function keepCreateDraft(now: Preferences, draft: KeptDraft | null): Partial<Preferences> {
+  return sameJson(now.create_draft, draft) ? {} : { create_draft: draft };
+}
 
 /** The fields the form sets through chips, as the mock's create dialog does, in its order. */
 export const CHIPS = ["judgement", "status", "priority", "issue_kind", "owner", "subscribers", "labels"] as const;

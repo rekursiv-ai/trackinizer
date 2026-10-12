@@ -1261,6 +1261,68 @@
         "title": "Cost",
         "type": "object"
       },
+      "CreateDraft": {
+        "additionalProperties": false,
+        "description": "The create form's unsent inquiry.",
+        "properties": {
+          "chips": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "maxProperties": 50,
+            "propertyNames": {
+              "maxLength": 100
+            },
+            "title": "Chips",
+            "type": "object"
+          },
+          "description": {
+            "maxLength": 100000,
+            "title": "Description",
+            "type": "string"
+          },
+          "fields": {
+            "additionalProperties": {
+              "maxLength": 100000,
+              "type": "string"
+            },
+            "maxProperties": 50,
+            "propertyNames": {
+              "maxLength": 100
+            },
+            "title": "Fields",
+            "type": "object"
+          },
+          "kind": {
+            "maxLength": 100,
+            "title": "Kind",
+            "type": "string"
+          },
+          "relations": {
+            "items": {
+              "$ref": "#/components/schemas/DraftRelation"
+            },
+            "maxItems": 100,
+            "title": "Relations",
+            "type": "array"
+          },
+          "title": {
+            "maxLength": 100000,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "description",
+          "fields",
+          "chips",
+          "relations"
+        ],
+        "title": "CreateDraft",
+        "type": "object"
+      },
       "CreateEdge": {
         "description": "Edge-create body: optional annotations.\n\nAll fields are optional; a bare ``{}`` creates an unannotated edge.",
         "properties": {
@@ -1468,6 +1530,26 @@
           "name"
         ],
         "title": "CreateTokenBody",
+        "type": "object"
+      },
+      "DraftRelation": {
+        "additionalProperties": false,
+        "description": "One relation picked on the create form: the option's key, and its target.",
+        "properties": {
+          "option": {
+            "maxLength": 100,
+            "title": "Option",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/RelationTarget"
+          }
+        },
+        "required": [
+          "option",
+          "target"
+        ],
+        "title": "DraftRelation",
         "type": "object"
       },
       "DrainInboundResponse": {
@@ -1993,6 +2075,26 @@
           "actors"
         ],
         "title": "FeedRoomFacet",
+        "type": "object"
+      },
+      "FieldDraft": {
+        "additionalProperties": false,
+        "description": "The unsent text of one field's editor, and the value editing began from.",
+        "properties": {
+          "base": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "text": {
+            "maxLength": 100000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "base"
+        ],
+        "title": "FieldDraft",
         "type": "object"
       },
       "FieldMutation": {
@@ -3527,6 +3629,7 @@
         "title": "JoinResponse",
         "type": "object"
       },
+      "JsonValue": {},
       "Judgement": {
         "enum": [
           "proven",
@@ -4376,6 +4479,31 @@
         ],
         "type": "string"
       },
+      "Person": {
+        "additionalProperties": false,
+        "description": "A person or an agent added by hand, under the name the pickers show.",
+        "properties": {
+          "name": {
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "person",
+              "agent"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "Person",
+        "type": "object"
+      },
       "PlaceVisual": {
         "additionalProperties": false,
         "description": "Move one instance between the primary and secondary pane.",
@@ -4415,6 +4543,17 @@
         "additionalProperties": false,
         "description": "Every preference, the user's choice or its default.",
         "properties": {
+          "aliases": {
+            "default": [],
+            "description": "The names besides your email that mean you in owner and subscriber filters.",
+            "items": {
+              "maxLength": 200,
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Aliases",
+            "type": "array"
+          },
           "chat_side": {
             "default": "left",
             "description": "The side of the workbench Chat stands on; the sidebar takes the other.",
@@ -4435,11 +4574,87 @@
             "title": "Chat Style",
             "type": "string"
           },
+          "collapsed": {
+            "default": [],
+            "description": "The sections you folded, by key.",
+            "items": {
+              "maxLength": 100,
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Collapsed",
+            "type": "array"
+          },
+          "create_draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CreateDraft"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The inquiry you started on the create form and have not created."
+          },
+          "drafts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FieldDraft"
+            },
+            "default": {},
+            "description": "Unsent edits of a field, by inquiry id and field name, until you send or discard them.",
+            "maxProperties": 200,
+            "propertyNames": {
+              "maxLength": 100
+            },
+            "title": "Drafts",
+            "type": "object"
+          },
           "highlight_mentions": {
             "default": true,
             "description": "Light up the rows the assistant's answers mention.",
             "title": "Highlight Mentions",
             "type": "boolean"
+          },
+          "lens": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The detail lens you used last; none until you pick one.",
+            "title": "Lens"
+          },
+          "people": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Person"
+            },
+            "default": {},
+            "description": "Names for people and agents you added by hand, by owner or subscriber value.",
+            "maxProperties": 1000,
+            "propertyNames": {
+              "maxLength": 200
+            },
+            "title": "People",
+            "type": "object"
+          },
+          "read": {
+            "$ref": "#/components/schemas/ReadState",
+            "description": "The notifications you have read: a boundary time, and changes marked one by one after it."
+          },
+          "stars": {
+            "default": [],
+            "description": "The inquiries you starred, by id: your bookmarks, never a label.",
+            "items": {
+              "maxLength": 100,
+              "type": "string"
+            },
+            "maxItems": 2000,
+            "title": "Stars",
+            "type": "array"
           },
           "theme": {
             "default": "dark",
@@ -4451,6 +4666,16 @@
             ],
             "title": "Theme",
             "type": "string"
+          },
+          "views": {
+            "default": [],
+            "description": "Your saved views: a name and the list query each one shows.",
+            "items": {
+              "$ref": "#/components/schemas/SavedView"
+            },
+            "maxItems": 200,
+            "title": "Views",
+            "type": "array"
           }
         },
         "title": "Preferences",
@@ -4660,6 +4885,39 @@
         "title": "ReadRecordsResponse",
         "type": "object"
       },
+      "ReadState": {
+        "additionalProperties": false,
+        "description": "Which notifications are read.",
+        "properties": {
+          "boundary": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary"
+          },
+          "marks": {
+            "items": {
+              "maxLength": 100,
+              "type": "string"
+            },
+            "maxItems": 5000,
+            "title": "Marks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "boundary",
+          "marks"
+        ],
+        "title": "ReadState",
+        "type": "object"
+      },
       "RecentTurnBody": {
         "description": "One visible user or assistant message in its capture order.",
         "properties": {
@@ -4840,6 +5098,45 @@
         "title": "RecordBody",
         "type": "object"
       },
+      "RelationTarget": {
+        "additionalProperties": false,
+        "description": "An inquiry a relation of a new inquiry points at.",
+        "properties": {
+          "id": {
+            "maxLength": 100,
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "maxLength": 100,
+            "title": "Kind",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "seq"
+        ],
+        "title": "RelationTarget",
+        "type": "object"
+      },
       "RenameWorkspace": {
         "additionalProperties": false,
         "description": "A station's new name, which must be free among its owner's.",
@@ -4873,6 +5170,32 @@
           "role"
         ],
         "title": "RoleChangeBody",
+        "type": "object"
+      },
+      "SavedView": {
+        "additionalProperties": false,
+        "description": "A named list query.",
+        "properties": {
+          "id": {
+            "maxLength": 100,
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          },
+          "request": {
+            "$ref": "#/components/schemas/ViewRequest"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "request"
+        ],
+        "title": "SavedView",
         "type": "object"
       },
       "SendMessage": {
@@ -7827,6 +8150,74 @@
           "value"
         ],
         "title": "VariablePut",
+        "type": "object"
+      },
+      "ViewFilter": {
+        "additionalProperties": false,
+        "description": "One filter of a saved view's list query.",
+        "properties": {
+          "field": {
+            "maxLength": 100,
+            "title": "Field",
+            "type": "string"
+          },
+          "op": {
+            "enum": [
+              "is",
+              "ne",
+              "re",
+              "nre",
+              "lt",
+              "le",
+              "gt",
+              "ge",
+              "isnull",
+              "notnull"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "value": {
+            "maxLength": 2000,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "op",
+          "value"
+        ],
+        "title": "ViewFilter",
+        "type": "object"
+      },
+      "ViewRequest": {
+        "additionalProperties": false,
+        "description": "The ``GET /api/inquiries`` query a saved view shows.",
+        "properties": {
+          "filters": {
+            "items": {
+              "$ref": "#/components/schemas/ViewFilter"
+            },
+            "maxItems": 50,
+            "title": "Filters",
+            "type": "array"
+          },
+          "kinds": {
+            "items": {
+              "maxLength": 100,
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Kinds",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kinds",
+          "filters"
+        ],
+        "title": "ViewRequest",
         "type": "object"
       },
       "VisualCatalogBody": {

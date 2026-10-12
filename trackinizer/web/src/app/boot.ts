@@ -3,6 +3,7 @@ import { createContext, useContext } from "react";
 import { getEdgeTopology, getEnums, getFieldOwners, type EdgeTopology, type Enums, type FieldOwners } from "../api/meta";
 import { getProfile, type Profile } from "../api/me";
 import { adoptLegacyPreferences, receivePreferences } from "../preferences";
+import { adoptLocalUserData } from "../state/local";
 import { useOnline } from "../ui/bars";
 import { prefetched } from "./prefetch";
 
@@ -38,7 +39,8 @@ export const bootQueries = {
   /**
    * Refetch it after a 403: the role may have changed. It brings the user's
    * preferences, shown before the app is (`src/preferences.ts`), and this
-   * browser's own from before they lived on the server are sent once.
+   * browser's own from before they lived on the server, or kept as a session
+   * ended, are sent once.
    */
   profile: queryOptions({
     queryKey: ["me", "profile"],
@@ -46,6 +48,7 @@ export const bootQueries = {
       const profile = await prefetched(queryKey, () => getProfile({ signal }));
       receivePreferences(profile.preferences);
       void adoptLegacyPreferences(profile.email);
+      void adoptLocalUserData(profile.email);
       return profile;
     },
   }),

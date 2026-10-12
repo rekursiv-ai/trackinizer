@@ -7,7 +7,9 @@ import { keyCaps } from "../commands/registry";
 import type { Field } from "../detail/fields";
 import { inputKind } from "../editors/values";
 import { Menu } from "../lists/Menu";
+import { choosePreferencesSoon, preferences } from "../preferences";
 import { useRouter } from "../router/router";
+import { keepCreateDraftHere } from "../state/local";
 import { capitalize } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
 import { KindIcon, kindLook } from "../ui/kinds";
@@ -21,9 +23,11 @@ import {
   type Draft,
   emptyDraft,
   formFields,
+  keepCreateDraft,
+  keptDraft,
   nextDraft,
-  type Related,
   relationOptions,
+  reopenedDraft,
   switchKind,
 } from "./draft";
 import { Relations } from "./Relations";
@@ -40,8 +44,9 @@ import "./create.css";
  * chips, and sends them as one request (`createEdit`). Create opens the new
  * inquiry; with Create more on, the form stays open for the next one, keeping
  * the kind and the chips. The kind menu switches kinds and keeps what both share.
- * ⌘↵ creates; Escape and Cancel call `onClose`, keeping a started draft for the
- * next open of the kind. A viewer is told creating needs a writer; offline,
+ * ⌘↵ creates; Escape and Cancel call `onClose`. A started draft is kept in the
+ * user's preferences once typing pauses, and reopens with the next form of its
+ * kind, in any browser, until it is created. A viewer is told creating needs a writer; offline,
  * Create is off, while the draft can still be written.
  * While the create is sent, the form takes no input; closed meanwhile, it
  * opens nothing once the create lands, whose toast still says so.
@@ -71,16 +76,20 @@ function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable
   const { navigate } = useRouter();
   const writer = useWrite();
   const writable = useWriteMode() === "enabled";
-  const [draft, setDraft] = useState(() => savedDraft(email, kind) ?? emptyDraft(kind));
-  // It is open now, and saved again if the session ends while it is.
-  useEffect(() => forgetSavedDraft(email), [email]);
+  const [draft, setDraft] = useState(() => reopenedDraft(preferences().create_draft, kind, edges) ?? emptyDraft(kind));
+  // The draft kept in the user's preferences follows the form, from its first change on:
+  // a form opened and left alone neither keeps an empty draft nor forgets another kind's.
+  useDraftSaver(() => keepCreateDraftHere(email, draft));
+  const [opened] = useState(draft);
+  useEffect(() => {
+    if (draft !== opened) choosePreferencesSoon(keepCreateDraft(preferences(), started(draft) ? keptDraft(draft) : null));
+  }, [draft, opened]);
   // The kind menu changes the route; the draft follows it.
   if (draft.kind !== kind) setDraft(switchKind(draft, kind, edges));
   const [more, setMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const titleInput = useRef<HTMLInputElement>(null);
   const opener = useRef<Element | null>(null);
-  useDraftSaver(() => saveDraft(email, draft));
   const fields = useMemo(() => formFields(kind, fieldOwners), [kind, fieldOwners]);
   const options = useMemo(() => relationOptions(kind, edges), [kind, edges]);
   const pending = unsettled(writer.state);
@@ -89,13 +98,6 @@ function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable
     setDraft({ ...draft, ...change });
     setError(null);
   };
-  // Closed with Escape, Cancel or a click outside, a started draft is kept for
-  // the next open of this kind, as the session's end keeps it. One whose create
-  // is being sent is not: it is about to land.
-  const close = () => {
-    if (!pending && started(draft)) saveDraft(email, draft);
-    onClose();
-  };
 
   const create = async () => {
     if (pending || !writable || !draft.title.trim()) return;
@@ -103,6 +105,7 @@ function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable
     if ("error" in made) return setError(made.error);
     const id = await writer.run(made.edit);
     if (id === null) return;
+    choosePreferencesSoon(keepCreateDraft(preferences(), null));
     if (!more) return navigate({ name: "lookup", id }, { replace: true });
     setDraft((current) => nextDraft(current));
     titleInput.current?.focus();
@@ -120,7 +123,7 @@ function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable
   };
 
   return (
-    <Dialog.Root open onOpenChange={(open) => open || close()}>
+    <Dialog.Root open onOpenChange={(open) => open || onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="modal-backdrop" />
         <Dialog.Content
@@ -334,18 +337,6 @@ function Refusal({ title, why, onClose }: { title: string; why: string; onClose:
   );
 }
 
-/**
- * Keep the open draft in this browser, for the form to reopen with: when the
- * session ends (after sign-in) or the form closes with a draft started.
- */
-function saveDraft(email: string, draft: Draft): void {
-  try {
-    localStorage.setItem(draftKey(email), JSON.stringify(draft));
-  } catch {
-    // Storage off: the draft cannot be kept.
-  }
-}
-
 /** Whether the user has started `draft`: any text, or a relation. Chips alone are its defaults. */
 function started(draft: Draft): boolean {
   return (
@@ -354,63 +345,6 @@ function started(draft: Draft): boolean {
     draft.relations.length > 0 ||
     Object.values(draft.fields).some((text) => text.trim() !== "")
   );
-}
-
-/**
- * The draft saved when the session ended or the form closed, if it was of
- * `kind`: the next open of that kind's form reopens it, once. A draft of another
- * kind was for another form, and one in another shape was saved by another
- * build, before a deploy: neither reopens.
- */
-function savedDraft(email: string, kind: InquiryKind): Draft | null {
-  let saved: unknown;
-  try {
-    saved = JSON.parse(localStorage.getItem(draftKey(email)) ?? "null");
-  } catch {
-    // Storage off, or text that is not JSON: there is nothing to reopen.
-    return null;
-  }
-  return isDraft(saved) && saved.kind === kind ? saved : null;
-}
-
-/** Whether `value` has the shape `saveDraft` writes, down to what the form reads of each relation. */
-function isDraft(value: unknown): value is Draft {
-  const draft = (value ?? {}) as { readonly [part in keyof Draft]?: unknown };
-  const relations = Array.isArray(draft.relations) ? (draft.relations as readonly Partial<Related>[]) : null;
-  return (
-    typeof draft.title === "string" &&
-    typeof draft.description === "string" &&
-    isRecord(draft.fields) &&
-    Object.values(draft.fields).every((text) => typeof text === "string") &&
-    isRecord(draft.chips) &&
-    relations !== null &&
-    relations.every(
-      ({ option, target }) =>
-        typeof option?.key === "string" &&
-        typeof option.label === "string" &&
-        Array.isArray(option.targetKinds) &&
-        typeof target?.id === "string" &&
-        typeof target.kind === "string" &&
-        typeof target.seq === "number",
-    )
-  );
-}
-
-function isRecord(value: unknown): value is { readonly [key: string]: unknown } {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function forgetSavedDraft(email: string): void {
-  try {
-    localStorage.removeItem(draftKey(email));
-  } catch {
-    // Storage off: nothing was kept to reopen twice.
-  }
-}
-
-/** One key per user, so a draft never opens for someone else signing in on this browser. */
-function draftKey(email: string): string {
-  return `trackinizer.v2.create.${email}`;
 }
 
 const INPUT_TYPES = { text: "text", integer: "number", number: "number", day: "date", datetime: "datetime-local", json: "text" } as const;

@@ -8,9 +8,12 @@ import { Session, SessionContext } from "../app/session";
 import { CommandRegistry, CommandRegistryContext } from "../commands/registry";
 import { detail, META, PROFILE, row, uuid } from "../detail/testing";
 import { stubLayout } from "../editors/testing";
+import { DEFAULT_PREFERENCES, preferences, receivePreferences } from "../preferences";
 import { cacheWith } from "../relations/testing";
 import { formatRoute } from "../router/route";
 import { RouterProvider, useRouter } from "../router/router";
+import { adoptLocalUserData } from "../state/local";
+import { resetPreferences } from "../state/testing";
 import { ToastProvider } from "../ui/toast";
 import { CreateView } from ".";
 
@@ -23,15 +26,17 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  await resetPreferences();
   vi.unstubAllGlobals();
 });
 
 /** A server that creates `NEW` for every create, or answers with `refuse`; returns the requests it got. */
 function serve(refuse?: () => Response) {
-  return stubFetch((request) => {
+  return stubFetch(async (request) => {
     const { pathname } = new URL(request.url);
+    if (pathname === "/api/me/preferences") return Response.json({ ...DEFAULT_PREFERENCES, ...(await request.clone().json()) });
     if (request.method === "GET") return Response.json({ detail: "not found" }, { status: 404 });
     if (refuse) return refuse();
     return Response.json(pathname.endsWith("/batch") ? { ids: [NEW] } : { id: NEW }, { status: 201 });
@@ -273,6 +278,61 @@ test.each([
   expect(title().value).toBe("");
 });
 
+/** What the preferences route was sent, in order. */
+function sentPreferences(sent: ReturnType<typeof serve>) {
+  return sent.filter((request) => request.path === "/api/me/preferences").map((request) => request.body);
+}
+
+test("the draft is written once typing pauses, reopens in another browser, and is gone once created", async () => {
+  const sent = serve();
+  open("#/new/Issue");
+  fireEvent.change(title(), { target: { value: "Half" } });
+  fireEvent.change(title(), { target: { value: "Half written" } });
+  expect(sentPreferences(sent)).toEqual([]);
+  dispatchEvent(new Event("pagehide"));
+  await waitFor(() => expect(sentPreferences(sent)).toHaveLength(1));
+  const [{ create_draft }] = sentPreferences(sent) as [{ create_draft: { title: string; kind: string } }];
+  expect(create_draft).toMatchObject({ kind: "Issue", title: "Half written" });
+  cleanup();
+
+  // Another browser: its page loads the profile, which brings the draft.
+  receivePreferences(DEFAULT_PREFERENCES);
+  receivePreferences({ ...DEFAULT_PREFERENCES, create_draft } as typeof DEFAULT_PREFERENCES);
+  open("#/new/Issue");
+  expect(title().value).toBe("Half written");
+  fireEvent.click(form().getByRole("button", { name: /^Create issue/ }));
+  await waitFor(() => expect(screen.getByTestId("route").textContent).toBe(`#/lookup/${NEW}`));
+  dispatchEvent(new Event("pagehide"));
+  await waitFor(() => expect(sentPreferences(sent).at(-1)).toEqual({ create_draft: null }));
+});
+
+test("a draft of another kind stays kept while its own form is not touched", () => {
+  serve();
+  open("#/new/Issue");
+  fireEvent.change(title(), { target: { value: "An issue" } });
+  cleanup();
+  open("#/new/Belief");
+  expect(title().value).toBe("");
+  cleanup();
+  open("#/new/Issue");
+  expect(title().value).toBe("An issue");
+});
+
+test("a relation picked is kept by its option and reopens with its label and target", async () => {
+  const sent = serve();
+  open("#/new/Issue");
+  fireEvent.change(title(), { target: { value: "With parent" } });
+  await pick(form().getByRole("button", { name: "Add relation" }), /^Narrows…/, /Parent plan/);
+  dispatchEvent(new Event("pagehide"));
+  await waitFor(() => expect(sentPreferences(sent)).toHaveLength(1));
+  expect(sentPreferences(sent)).toEqual([
+    { create_draft: expect.objectContaining({ relations: [{ option: "narrows:out", target: expect.objectContaining({ id: PARENT.id, kind: "Issue", seq: 1 }) }] }) },
+  ]);
+  cleanup();
+  open("#/new/Issue");
+  expect(within(form().getByRole("list", { name: "Relations" })).getByRole("listitem").textContent).toBe("NarrowsIssue#1Parent plan");
+});
+
 /** A server that creates `NEW` once the returned function lets its answer through. */
 function serveHeld() {
   let release = () => {};
@@ -298,6 +358,7 @@ test("a form closed while its create is sent opens nothing once it lands; the to
   expect(screen.getByTestId("route").textContent).toBe("#/list/Issue");
   expect(creates(server.sent)).toHaveLength(1);
   // Its draft is not kept: it landed, and reopening it would make it twice.
+  await waitFor(() => expect(preferences().create_draft).toBeNull());
   cleanup();
   open("#/new/Issue");
   expect(title().value).toBe("");
@@ -337,11 +398,15 @@ test("Enter or Backspace pressed while an input method composes picks nothing an
   expect(form().queryByRole("list", { name: "Relations" })).toBeNull();
 });
 
-test("a saved draft another build wrote in another shape is dropped, not opened (BR-10)", () => {
+test("a draft another build left in this browser in another shape is dropped, not sent or opened (BR-10)", async () => {
   localStorage.setItem(`trackinizer.v2.create.${PROFILE.email}`, JSON.stringify({ kind: "Issue", title: "Old shape" }));
+  const sent = serve();
+  await adoptLocalUserData(PROFILE.email);
   open("#/new/Issue");
   expect(title().value).toBe("");
   expect(form().queryByRole("list", { name: "Relations" })).toBeNull();
+  expect(sent).toEqual([]);
+  expect(localStorage.length).toBe(0);
 });
 
 test("a Kind#seq the app has not loaded is listed and picked with its title", async () => {

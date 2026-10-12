@@ -5,6 +5,9 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { Session } from "../app/session";
 import { detailQueries } from "../detail/queries";
 import { renderDetail, row } from "../detail/testing";
+import { DEFAULT_PREFERENCES, receivePreferences } from "../preferences";
+import { adoptLocalUserData } from "../state/local";
+import { resetPreferences } from "../state/testing";
 import { serveRow, stubLayout } from "./testing";
 
 beforeEach(() => {
@@ -13,9 +16,10 @@ beforeEach(() => {
   stubLayout();
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   vi.useRealTimers();
+  await resetPreferences();
   vi.unstubAllGlobals();
 });
 
@@ -134,7 +138,47 @@ test("E opens the description; Escape drops the draft without a write", async ()
   expect(server.writes()).toEqual([]);
 });
 
-test("a draft open when the session ends is kept, and reopens on the next load", async () => {
+/** What the preferences route was sent, in order. */
+function sentPreferences(server: ReturnType<typeof serveRow>) {
+  return server.sent.filter((request) => request.path === "/api/me/preferences").map((request) => request.body);
+}
+
+test("a draft is written once typing pauses and reopens on the next load, in any browser", async () => {
+  const server = serveRow(row("Issue", 1, { description: "First" }));
+  await open(server);
+  fireEvent.click(screen.getByText("First"));
+  fireEvent.change(description(), { target: { value: "Unsaved words" } });
+  expect(sentPreferences(server)).toEqual([]);
+  // The page closing sends what waits for a pause.
+  dispatchEvent(new Event("pagehide"));
+  const drafts = { [`${server.self.id}:description`]: { text: "Unsaved words", base: "First" } };
+  await waitFor(() => expect(sentPreferences(server)).toEqual([{ drafts }]));
+  cleanup();
+
+  // Another browser: its page loads the profile, which brings the drafts.
+  receivePreferences(DEFAULT_PREFERENCES);
+  receivePreferences({ ...DEFAULT_PREFERENCES, drafts });
+  await open(server);
+  expect(description().value).toBe("Unsaved words");
+  expect(localStorage.length).toBe(0);
+});
+
+test("an editor opened and not typed in keeps nothing; sending or discarding a draft forgets it", async () => {
+  const server = serveRow(row("Issue", 1, { description: "First" }));
+  await open(server);
+  fireEvent.click(screen.getByText("First"));
+  dispatchEvent(new Event("pagehide"));
+  expect(sentPreferences(server)).toEqual([]);
+
+  fireEvent.change(description(), { target: { value: "Words" } });
+  dispatchEvent(new Event("pagehide"));
+  await waitFor(() => expect(sentPreferences(server)).toHaveLength(1));
+  fireEvent.keyDown(description(), { key: "Escape" });
+  dispatchEvent(new Event("pagehide"));
+  await waitFor(() => expect(sentPreferences(server)).toEqual([expect.anything(), { drafts: {} }]));
+});
+
+test("a draft open when the session ends waits in this browser, and the next boot sends it", async () => {
   const server = serveRow(row("Issue", 1, { description: "First" }));
   const session = new Session(() => {});
   await open(server, session);
@@ -142,10 +186,13 @@ test("a draft open when the session ends is kept, and reopens on the next load",
   fireEvent.change(description(), { target: { value: "Unsaved words" } });
   session.leaveForLogin();
   cleanup();
+  receivePreferences(DEFAULT_PREFERENCES);
+  expect(localStorage.length).toBe(1);
 
+  await adoptLocalUserData("ada@example.com");
+  expect(localStorage.length).toBe(0);
   await open(server);
   expect(description().value).toBe("Unsaved words");
-  expect(localStorage.length).toBe(0);
 });
 
 test("text that is not JSON is refused before sending", async () => {

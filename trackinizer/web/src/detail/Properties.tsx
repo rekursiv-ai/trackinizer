@@ -4,6 +4,7 @@ import type { Detail } from "../api/detail";
 import { useMeta } from "../app/boot";
 import { PropertyEditor } from "../editors/PropertyEditor";
 import { safeUrl } from "../markdown/safeUrl";
+import { linkProps } from "../router/appLink";
 import { formatRoute } from "../router/route";
 import { ReadFailure } from "../ui/failure";
 import { Avatar, capitalize, JudgementGlyph, LabelChip, PriorityGlyph, priorityName, StatusGlyph } from "../ui/glyphs";
@@ -80,7 +81,7 @@ function Prop({ detail, field }: { detail: Detail; field: Field }) {
         <FieldValue field={field} />
       </PropertyEditor>
       {href ? (
-        <a className="icon-btn prop-open" href={href} target="_blank" rel="noopener noreferrer" aria-label={`Open ${field.look.label}`}>
+        <a className="icon-btn prop-open" {...linkProps(href)} aria-label={`Open ${field.look.label}`}>
           <Icon name="external" size={12} />
         </a>
       ) : null}

@@ -5,13 +5,13 @@ import { type APIRequestContext, type Page, test as base, expect } from "@playwr
 export { expect };
 
 /**
- * Set the suite's user's preferences (theme, Chat style and side, ...), as Settings
+ * Set the suite's user's preferences (theme, Chat style and side, stars, ...), as Settings
  * or the agent does; `null` puts a key back to its default. They live on the server,
  * so a page loaded after this shows them.
  */
 export async function setPreferences(
   request: APIRequestContext,
-  change: { readonly [key: string]: string | boolean | null },
+  change: { readonly [key: string]: unknown },
 ): Promise<void> {
   const patched = await request.patch("/api/me/preferences", { data: change });
   if (!patched.ok()) throw new Error(`Could not set preferences: ${patched.status()} ${await patched.text()}`);

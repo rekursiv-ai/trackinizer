@@ -257,11 +257,20 @@ async def _profile(client: httpx2.AsyncClient) -> dict[str, object]:
     return from_plain(response.json(), dict[str, object])
 
 
-_DEFAULTS = {
+_DEFAULTS: dict[str, object] = {
     "theme": "dark",
     "chat_style": "default",
     "chat_side": "left",
     "highlight_mentions": True,
+    "stars": [],
+    "views": [],
+    "aliases": [],
+    "people": {},
+    "read": {"boundary": None, "marks": []},
+    "collapsed": [],
+    "lens": None,
+    "drafts": {},
+    "create_draft": None,
 }
 
 
@@ -331,6 +340,80 @@ async def test_an_unknown_key_or_a_bad_value_writes_nothing(
     assert bad.status_code == 422
     assert "theme" in bad.text
     assert await _stored_preferences(store, TEST_USER_ID) == {"theme": "light"}
+
+
+async def test_the_users_own_data_is_kept_whole_per_key_and_follows_them(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    draft = {"text": "Words", "base": None}
+    created = {
+        "kind": "Issue",
+        "title": "Half",
+        "description": "",
+        "fields": {},
+        "chips": {"priority": 20},
+        "relations": [
+            {
+                "option": "narrows:out",
+                "target": {"id": "i1", "kind": "Issue", "seq": 1},
+            },
+        ],
+    }
+    await client.patch(
+        "/api/me/preferences",
+        json={
+            "stars": ["a", "b"],
+            "drafts": {"i1:title": draft},
+            "create_draft": created,
+        },
+    )
+
+    # A write replaces its key whole: the other draft goes with the map it was in.
+    replaced = await client.patch(
+        "/api/me/preferences",
+        json={"stars": ["c"], "drafts": {"i2:title": draft}},
+    )
+
+    assert replaced.json() == {
+        **_DEFAULTS,
+        "stars": ["c"],
+        "drafts": {"i2:title": draft},
+        "create_draft": {
+            **created,
+            "relations": [
+                {
+                    "option": "narrows:out",
+                    "target": {"id": "i1", "kind": "Issue", "seq": 1, "title": None},
+                },
+            ],
+        },
+    }
+    assert (await _profile(client))["preferences"] == replaced.json()
+    cleared = await client.patch(
+        "/api/me/preferences",
+        json={"drafts": None, "create_draft": None},
+    )
+    assert cleared.json() == {**_DEFAULTS, "stars": ["c"]}
+    assert await _stored_preferences(store, TEST_USER_ID) == {"stars": ["c"]}
+
+
+async def test_data_past_its_bound_writes_nothing(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    await client.patch("/api/me/preferences", json={"stars": ["kept"]})
+
+    refused = await client.patch(
+        "/api/me/preferences",
+        json={"lens": "graph", "stars": ["s"] * 2_001},
+    )
+
+    assert refused.status_code == 422
+    assert "stars" in refused.text
+    assert await _stored_preferences(store, TEST_USER_ID) == {"stars": ["kept"]}
 
 
 async def test_one_users_preferences_leave_anothers_alone(

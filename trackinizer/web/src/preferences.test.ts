@@ -1,8 +1,8 @@
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { stubFetch } from "./api/testing";
-import { adoptLegacyPreferences, choosePreferences, type Preferences, preferences, receivePreferences } from "./preferences";
+import { adoptLegacyPreferences, choosePreferences, choosePreferencesSoon, DEFAULT_PREFERENCES, PAUSE_MS, type Preferences, preferences, receivePreferences, sendWaiting, subscribePreferences } from "./preferences";
 
-const DEFAULTS: Preferences = { theme: "dark", chat_style: "default", chat_side: "left", highlight_mentions: true };
+const DEFAULTS = DEFAULT_PREFERENCES;
 
 afterEach(() => {
   receivePreferences(DEFAULTS);
@@ -69,7 +69,7 @@ test("what this browser kept before is sent once, then forgotten", async () => {
   expect(patches(sent)).toEqual([["PATCH", "/api/me/preferences", {
     theme: "light", chat_style: "terminal", chat_side: "right", highlight_mentions: false,
   }]]);
-  expect(preferences()).toEqual({ theme: "light", chat_style: "terminal", chat_side: "right", highlight_mentions: false });
+  expect(preferences()).toEqual({ ...DEFAULTS, theme: "light", chat_style: "terminal", chat_side: "right", highlight_mentions: false });
   // Another user's switch on this browser is theirs to send.
   expect(Object.keys(localStorage)).toEqual(["trackinizer.v2.highlight-mentions.grace@example.com"]);
   await adoptLegacyPreferences("ada@example.com");
@@ -87,4 +87,95 @@ test("nothing kept, or nothing a key takes, sends nothing; a send that fails kee
   stubFetch(() => Response.json({ detail: "offline" }, { status: 503 }));
   await adoptLegacyPreferences("ada@example.com");
   expect(localStorage.getItem("trackinizer.chat.side")).toBe("right");
+});
+
+test("a profile from a server older than a key leaves that key's default", () => {
+  const { stars: _, ...older } = { ...DEFAULTS, theme: "light" as const };
+  receivePreferences(older);
+  expect(preferences()).toEqual({ ...DEFAULTS, theme: "light" });
+});
+
+test("a value equal to the one shown keeps its object, so what reads only that key does not render again", () => {
+  receivePreferences({ ...DEFAULTS, stars: ["a"] });
+  const stars = preferences().stars;
+  const told = vi.fn();
+  const stop = subscribePreferences(told);
+  receivePreferences({ ...DEFAULTS, stars: ["a"] });
+  expect(preferences().stars).toBe(stars);
+  expect(told).not.toHaveBeenCalled();
+  stop();
+});
+
+test("changes sent one after another reach the server in the order they were chosen", async () => {
+  const answers: ((response: Response) => void)[] = [];
+  const sent = stubFetch(() => new Promise<Response>((resolve) => answers.push(resolve)));
+  const first = choosePreferences({ stars: ["a"] });
+  const second = choosePreferences({ stars: ["a", "b"] });
+  await vi.waitFor(() => expect(answers).toHaveLength(1), { interval: 1 });
+  // The second waits for the first's answer.
+  expect(sent).toHaveLength(1);
+  answers[0]!(Response.json({ ...DEFAULTS, stars: ["a"] }));
+  await vi.waitFor(() => expect(answers).toHaveLength(2), { interval: 1 });
+  answers[1]!(Response.json({ ...DEFAULTS, stars: ["a", "b"] }));
+  expect([await first, await second]).toEqual([true, true]);
+  expect(patches(sent)).toEqual([["PATCH", "/api/me/preferences", { stars: ["a"] }], ["PATCH", "/api/me/preferences", { stars: ["a", "b"] }]]);
+  expect(preferences().stars).toEqual(["a", "b"]);
+});
+
+describe("a change made as the user types", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    await sendWaiting();
+  });
+
+  test("shows at once and is sent once typing pauses, however many keys were typed", async () => {
+    const sent = server();
+    choosePreferencesSoon({ drafts: { a: { text: "h", base: null } } });
+    choosePreferencesSoon({ drafts: { a: { text: "hi", base: null } } });
+    choosePreferencesSoon({ create_draft: null, lens: "graph" });
+    expect(preferences().drafts).toEqual({ a: { text: "hi", base: null } });
+    await vi.advanceTimersByTimeAsync(PAUSE_MS - 1);
+    expect(sent).toEqual([]);
+    choosePreferencesSoon({ drafts: { a: { text: "hi!", base: null } } });
+    await vi.advanceTimersByTimeAsync(PAUSE_MS - 1);
+    expect(sent).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(patches(sent)).toEqual([["PATCH", "/api/me/preferences", { drafts: { a: { text: "hi!", base: null } }, lens: "graph" }]]);
+    expect(sent).toHaveLength(1);
+  });
+
+  test("a profile read while it waits does not undo it", async () => {
+    server();
+    choosePreferencesSoon({ lens: "graph" });
+    receivePreferences(DEFAULTS);
+    expect(preferences().lens).toBe("graph");
+    await vi.advanceTimersByTimeAsync(PAUSE_MS);
+    await sendWaiting();
+    expect(preferences().lens).toBe("graph");
+  });
+
+  test("a change that leaves things as they are sends nothing", async () => {
+    const sent = server();
+    choosePreferencesSoon({ lens: null, drafts: {} });
+    await vi.advanceTimersByTimeAsync(PAUSE_MS * 2);
+    expect(sent).toEqual([]);
+  });
+
+  test("the page closing sends what waits, asking the request to outlive the page", async () => {
+    const requests: Request[] = [];
+    stubFetch((request) => {
+      requests.push(request);
+      return Response.json({ ...DEFAULTS, lens: "graph" });
+    });
+    choosePreferencesSoon({ lens: "graph" });
+    dispatchEvent(new Event("pagehide"));
+    await vi.waitFor(() => expect(requests).toHaveLength(1), { interval: 1 });
+    expect(requests[0]!.keepalive).toBe(true);
+    await vi.advanceTimersByTimeAsync(PAUSE_MS);
+    expect(requests).toHaveLength(1);
+  });
 });

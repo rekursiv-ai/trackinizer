@@ -9,7 +9,6 @@ import { accountEdit, useAccountWriter } from "../settings/account";
 import { useBrowserState } from "../state/store";
 import { Avatar } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
-import { useToast } from "../ui/toast";
 import { WriteButton } from "../writes/WriteButton";
 import { unsettled, WriteStatus } from "../writes/WriteStatus";
 import { newActor, type PersonDraft, type People, type Who } from "./people";
@@ -46,7 +45,6 @@ export function PersonDialog({
   const admin = useProfile().role === "admin";
   const offline = useWriteMode() === "disabled";
   const [{ people }, update] = useBrowserState();
-  const toast = useToast();
   const writer = useAccountWriter(adminQueries.allowlist.queryKey);
   const [draft, setDraft] = useState(opened);
   const [invite, setInvite] = useState(false);
@@ -74,12 +72,7 @@ export function PersonDialog({
       const invitation = accountEdit(() => addAllowlistEntry({ email_or_pattern: email, role: "writer" }), `Invited ${email} to sign in as a writer`);
       if (!(await writer.run(invitation))) return;
     }
-    try {
-      update((state) => ({ ...state, people: { ...state.people, [made.actor]: made.person } }));
-    } catch (failure) {
-      // The value is still written; only its name is not kept here.
-      toast(`${made.person.name} is not kept in this browser: ${failure instanceof Error ? failure.message : String(failure)}`, { failed: true, error: failure });
-    }
+    update((state) => ({ ...state, people: { ...state.people, [made.actor]: made.person } }));
     onAdd(made.actor);
   };
   const onKeyDown = (event: KeyboardEvent) => {

@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, setPreferences, test } from "./fixtures";
 
 // Your settings against the e2e server, where --no-auth makes every request the
 // synthetic admin no-auth@localhost. Tokens and aliases made here are this
@@ -85,38 +84,34 @@ test("a create whose answer is lost is not sent again, and the list shows the to
   expect((await request.post(`/api/me/tokens/${made.id}/revoke`)).ok()).toBe(true);
 });
 
-test("export this browser's state, then import it into a fresh browser", async ({ page, browser }) => {
+test("the user's own data follows them to a fresh browser: names, stars, saved views and an unsent draft", async ({ page, browser, request }) => {
   const alias = `e2e-alias-${suffix()}`;
+  const made = await request.post("/api/inquiries/issue", { data: { title: "Data follows me", description: "First words.", idempotency_key: crypto.randomUUID() } });
+  expect(made.ok(), await made.text()).toBe(true);
+  const { id } = (await made.json()) as { id: string };
+  // Stars and views have no screens yet; one of each is set as the agent would.
+  const view = { id: "e2e-view", name: "E2E view", request: { kinds: ["Issue"], filters: [] } };
+  await setPreferences(request, { stars: [id], views: [view] });
+
   await openSettings(page);
-  // Stars and views have no screens yet; one of each is stored as they will be.
-  await page.evaluate(() => {
-    const key = `trackinizer.v2.${location.origin}.no-auth@localhost`;
-    const view = { id: "e2e-view", name: "E2E view", request: { kinds: ["Issue"], filters: [] } };
-    const state = JSON.parse(localStorage.getItem(key) ?? '{"version":1}');
-    localStorage.setItem(key, JSON.stringify({ ...state, version: 1, stars: ["e2e-star"], views: [view] }));
-  });
-  await page.reload();
   const names = page.getByRole("region", { name: "Names that mean you" });
   await names.getByRole("textbox", { name: "Name" }).fill(alias);
   await names.getByRole("button", { name: "Add" }).click();
   await expect(names.getByRole("list", { name: "Your names" })).toContainText(alias);
 
-  const downloading = page.waitForEvent("download");
-  await page.getByRole("region", { name: "This browser" }).getByRole("button", { name: "Download JSON" }).click();
-  const exported = await (await downloading).path();
-  // Seeded as version 1, it is exported in the version this build writes.
-  expect(JSON.parse(readFileSync(exported, "utf8"))).toMatchObject({ version: 2, stars: ["e2e-star"], aliases: [alias] });
+  const kept = page.waitForResponse((response) => response.request().method() === "PATCH" && response.url().endsWith("/api/me/preferences") && (response.request().postData() ?? "").includes("drafts"));
+  await page.goto(`/app/#/lookup/${id}`);
+  await page.getByText("First words.").click();
+  await page.getByRole("textbox", { name: "Description" }).pressSequentially(" My draft.");
+  expect((await kept).ok()).toBe(true);
 
   const fresh = await browser.newContext();
   const other = await fresh.newPage();
+  const preferences = ((await (await fresh.request.get("/api/me/profile")).json()) as { preferences: { stars: string[]; views: unknown[] } }).preferences;
+  expect([preferences.stars, preferences.views]).toEqual([[id], [view]]);
+  await other.goto(`/app/#/lookup/${id}`);
+  await expect(other.getByRole("textbox", { name: "Description" })).toHaveValue("First words. My draft.");
   await openSettings(other);
-  const here = other.getByRole("region", { name: "This browser" });
-  await expect(here.getByText("Stars").locator("xpath=..")).toContainText("0");
-  const choosing = other.waitForEvent("filechooser");
-  await here.getByRole("button", { name: "Import JSON…" }).click();
-  await (await choosing).setFiles(exported);
-  await expect(other.getByText("Imported 1 star, 1 saved view and 1 name.", { exact: true })).toBeVisible();
-  await expect(here.getByText("Stars").locator("xpath=..")).toContainText("1");
   await expect(other.getByRole("list", { name: "Your names" })).toContainText(alias);
   await fresh.close();
 });
@@ -179,6 +174,28 @@ test("what a browser kept before preferences moved to the server is sent once, t
   await expect.poll(() => storedPreferences(page)).toMatchObject({ theme: "light", chat_side: "right" });
   await expect.poll(() => page.evaluate(() => [localStorage.getItem("trackinizer.theme"), localStorage.getItem("trackinizer.chat.side")]))
     .toEqual([null, null]);
+});
+
+test("a browser's old stars, names and drafts are sent once, merged into the user's, and forgotten but for the tiles", async ({ page, request }) => {
+  await setPreferences(request, { stars: ["kept-on-server"] });
+  await page.goto("/app/#/graph");
+  await page.evaluate(() => {
+    const state = { version: 2, stars: ["old-star"], aliases: ["old-alias"], ui: { tiles: { chat: { collapsed: true, place: null } } } };
+    localStorage.setItem(`trackinizer.v2.${location.origin}.no-auth@localhost`, JSON.stringify(state));
+    localStorage.setItem("trackinizer.v2.drafts.no-auth@localhost", JSON.stringify({ "i1:title": { text: "Old words", base: "Title" } }));
+  });
+  await page.reload();
+  await expect.poll(() => storedPreferences(page)).toMatchObject({
+    stars: ["kept-on-server", "old-star"],
+    aliases: ["old-alias"],
+    drafts: { "i1:title": { text: "Old words", base: "Title" } },
+  });
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter((key) => key.includes("no-auth@localhost")))).toHaveLength(1);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem(`trackinizer.v2.${location.origin}.no-auth@localhost`)!))).toMatchObject({
+    stars: [],
+    aliases: [],
+    ui: { tiles: { chat: { collapsed: true, place: null } } },
+  });
 });
 
 // Sign out itself is the unit tests' (src/settings/index.test.tsx): this server

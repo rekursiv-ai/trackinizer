@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import type { APIRequestContext, Locator, Page, Request } from "@playwright/test";
 import { expect, test } from "./fixtures";
 
@@ -40,7 +39,8 @@ async function addThrough(page: Page, trigger: Locator, row: string, fields: { [
 function writesOf(page: Page): Request[] {
   const writes: Request[] = [];
   page.on("request", (sent) => {
-    if (sent.method() !== "GET" && sent.url().includes("/api/")) writes.push(sent);
+    // The names are kept in the user's preferences: that write is not one to an inquiry.
+    if (sent.method() !== "GET" && sent.url().includes("/api/") && !sent.url().endsWith("/api/me/preferences")) writes.push(sent);
   });
   return writes;
 }
@@ -156,11 +156,7 @@ test("an admin invites a new person to sign in as a writer; a writer is offered 
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
-test("people added by hand travel in the export; an import adds them, and one named here keeps this browser's name", async ({
-  page,
-  browser,
-  request,
-}) => {
+test("people added by hand follow the user to a fresh browser", async ({ page, browser, request }) => {
   const run = suffix();
   const email = `g3-export-${run}@example.com`;
   const id = await createIssue(request, { title: `G3 export ${run}` });
@@ -171,11 +167,8 @@ test("people added by hand travel in the export; an import adds them, and one na
   const agent = await addThrough(page, propButton(page, "subscribers"), "New agent…", { Handle: `g3-exported-${run}` });
   await agent.getByRole("button", { name: /^Add as subscriber/ }).click();
   await expect(propButton(page, "subscribers")).toContainText(`g3-exported-${run}`);
-  await page.goto("/app/#/settings");
-  const downloading = page.waitForEvent("download");
-  await page.getByRole("region", { name: "This browser" }).getByRole("button", { name: "Download JSON" }).click();
-  const exported = await (await downloading).path();
-  expect(JSON.parse(readFileSync(exported, "utf8")).people).toEqual({
+  const kept = async () => ((await (await request.get("/api/me/profile")).json()) as { preferences: { people: unknown } }).preferences.people;
+  await expect.poll(kept).toEqual({
     [email]: { name: `Exported ${run}`, type: "person" },
     [`g3-exported-${run}`]: { name: `g3-exported-${run}`, type: "agent" },
   });
@@ -183,19 +176,10 @@ test("people added by hand travel in the export; an import adds them, and one na
   const fresh = await browser.newContext();
   const other = await fresh.newPage();
   await openDetail(other, id);
-  const named = await addThrough(other, propButton(other, "owner"), "New person…", { Name: `Here ${run}`, "Email (optional)": email });
-  await named.getByRole("button", { name: /^Add as owner/ }).click();
-  await other.goto("/app/#/settings");
-  const here = other.getByRole("region", { name: "This browser" });
-  const choosing = other.waitForEvent("filechooser");
-  await here.getByRole("button", { name: "Import JSON…" }).click();
-  await (await choosing).setFiles(exported);
-  await expect(other.getByText("Imported 1 person.", { exact: true })).toBeVisible();
-
-  await openDetail(other, id);
   await propButton(other, "owner").click();
-  await expect(other.getByRole("option", { name: new RegExp(`^Here ${run}`) })).toBeVisible();
-  await expect(other.getByRole("option", { name: new RegExp(`^Exported ${run}`) })).toHaveCount(0);
+  const exported = other.getByRole("option", { name: new RegExp(`^Exported ${run}`) });
+  await expect(exported).toHaveAttribute("aria-selected", "true");
+  await expect(exported.locator(".hint")).toHaveText(email);
   await other.keyboard.press("Escape");
   await propButton(other, "subscribers").click();
   await expect(other.getByRole("option", { name: new RegExp(`^g3-exported-${run}`) }).locator(".hint")).toHaveText("agent");

@@ -53,6 +53,24 @@ test("a hub's detail renders every child, its Markdown and its activity", async 
   await expect(page.locator(".timeline")).toContainText(/librarian \d+ upstream changes/);
 });
 
+test("a link in a description to this server's route moves the tab in place, and Back returns", async ({ page, request, baseURL }) => {
+  const [target] = await create(request, [{ kind: "Issue", title: "Link target" }]);
+  const { self: targetSelf } = await (await request.get(`/api/web/get/${target}`)).json();
+  const [source] = await create(request, [
+    { kind: "Issue", title: "Link source", description: `[go](${baseURL}/app/#/ref/Issue/${targetSelf.seq})` },
+  ]);
+  const { self } = await (await request.get(`/api/web/get/${source}`)).json();
+  await page.goto(`/app/#/ref/Issue/${self.seq}`);
+  await expect(heading(page)).toHaveText("Link source");
+  let popup = false;
+  page.context().on("page", () => (popup = true));
+  await page.locator('[data-field="description"]').getByRole("link", { name: "go" }).click();
+  await expect(heading(page)).toHaveText("Link target");
+  await page.goBack();
+  await expect(heading(page)).toHaveText("Link source");
+  expect(popup).toBe(false);
+});
+
 test("a lookup link opens by id, with evidence confidence beside the author's", async ({ page }) => {
   await page.goto(`/app/#/lookup/${ids[CHILDREN + 2]}`);
   await expect(heading(page)).toHaveText("Detail belief");

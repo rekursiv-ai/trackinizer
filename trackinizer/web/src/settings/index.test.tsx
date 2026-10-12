@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import noAuth from "../../test/testdata/me/getProfile.json";
 import type { Profile } from "../api/me";
 import { LOGIN_URL } from "../app/session";
-import { chooseChatStyle } from "../chatStyle";
+import { DEFAULT_PREFERENCES, receivePreferences, sendWaiting } from "../preferences";
 import { startTrail } from "../router/trail";
 import { chooseTheme, installTheme } from "../theme";
 import { SettingsView } from ".";
@@ -15,13 +15,14 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  // The page's theme is the module's, which outlives a test: each starts on the
+  // default, once the test's own sends have been answered.
+  await sendWaiting();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  // The page's theme is the module's, which outlives a test: each starts on the default.
-  chooseTheme("dark");
-  chooseChatStyle("default");
+  receivePreferences(DEFAULT_PREFERENCES);
 });
 
 test("the page shows the profile, refetched on open, and every section", async () => {
@@ -40,7 +41,6 @@ test("the page shows the profile, refetched on open, and every section", async (
     "Agent workspace",
     "Chat partner",
     "API tokens",
-    "This browser",
     "Session",
   ]);
   await waitFor(() => expect(server.reads("/api/me/profile")).toBe(1), FAST);

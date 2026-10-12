@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { type BrowserState, EMPTY_STATE, exportState, mergeImport, parseState, type SavedView } from "./value";
+import { type BrowserState, EMPTY_STATE, mergeImport, parseState, type SavedView } from "./value";
 
 const ISSUES: SavedView = {
   id: "v1",
@@ -21,7 +21,7 @@ function ids(): () => string {
   return () => `new${++n}`;
 }
 
-describe("an import merges into this browser's state and deletes nothing", () => {
+describe("an old browser state merges into the user's and deletes nothing", () => {
   test("stars are a union: this browser's first, then the new ones, each once", () => {
     const merged = mergeImport(state({ stars: ["a", "b"] }), state({ stars: ["b", "c"] }));
     expect(merged.stars).toEqual(["a", "b", "c"]);
@@ -117,8 +117,8 @@ describe("an import merges into this browser's state and deletes nothing", () =>
   });
 });
 
-describe("parsing an export", () => {
-  test("an export parses back to the state it was made from", () => {
+describe("parsing a stored state", () => {
+  test("a stored state parses back to the state it was made from", () => {
     const full = state({
       stars: ["a"],
       views: [ISSUES],
@@ -127,7 +127,7 @@ describe("parsing an export", () => {
       read: { boundary: "2026-09-20T10:00:00+00:00", marks: ["c1"] },
       ui: { collapsed: ["browse"], lens: "lineage", tiles: { "trax.artifact": { collapsed: true, place: { left: 12, top: 40.5 } } } },
     });
-    expect(parseState(JSON.parse(exportState(full)))).toEqual(full);
+    expect(parseState(JSON.parse(JSON.stringify(full)))).toEqual(full);
   });
 
   test("a category the file lacks is empty", () => {

@@ -719,6 +719,14 @@ keys it leaves out keep their values. It answers every key, defaults filled; a k
 preference has, or a value its key does not take, is a 422 and nothing is written.
 `GET /api/me/profile` includes the same object as `preferences`. The keys, their
 types, defaults and meanings are the `Preferences` model in `server/preferences.py`.
+Besides the appearance keys it holds the user's own data, each key replaced whole
+by a write and bounded so the row cannot grow without limit: `stars` (inquiry ids,
+at most 2000), `views` (saved list queries, at most 200), `aliases` (names that mean
+the user, at most 50), `people` (names for owners and subscribers added by hand,
+at most 1000), `read` (`{boundary, marks}`, at most 5000 marks), `collapsed`
+(folded sections, at most 500), `lens`, `drafts` (unsent edits of a field by
+`<inquiry id>:<field>`, at most 200, each text at most 100000 characters) and
+`create_draft` (the create form's unsent inquiry).
 A person's preferences are theirs: an admin may put them back to their defaults
 (`DELETE /api/admin/users/<uuid>/preferences`, 204 with no body) but no route lets
 anyone else read them, and no preference write makes a change row.

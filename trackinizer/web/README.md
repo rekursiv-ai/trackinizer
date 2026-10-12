@@ -714,20 +714,31 @@ with one response shape, so the fixtures take one per verb.
   detail read ahead into the detail's own query (`src/lists/prefetch.ts`): at
   most 10 a minute, and none read in the last 30 s. A `Kind#seq` link to a row
   the app holds opens by that row's id, with no by-seq lookup.
-- A 401 from any read or write ends the session: open drafts are saved to
-  `localStorage` (`trackinizer.v2.drafts.<email>`), the current hash to
-  `sessionStorage` (`trackinizer.v2.return_hash`), and the browser goes to
-  `/auth/login_page?next=%2Fapp%2F`. The next boot restores both.
+- A 401 from any read or write ends the session: the drafts still open are saved
+  to `localStorage` (`trackinizer.v2.drafts.<email>`, and `trackinizer.v2.create.<email>`
+  for the create form), since the server can no longer take them, the current hash
+  to `sessionStorage` (`trackinizer.v2.return_hash`), and the browser goes to
+  `/auth/login_page?next=%2Fapp%2F`. The next boot sends the drafts to the user's
+  preferences (`adoptLocalUserData`) and restores the hash.
 - A write refused with 403 refetches the profile, since the role may have
   changed.
-- This browser's own state is one versioned JSON value in `localStorage`, keyed
-  `trackinizer.v2.<origin>.<email>` (`src/state/`): stars, saved views
-  (`{id, name, request}`, the exact list request), aliases, people added by hand,
-  notification read state (`{boundary, marks}`) and UI state
-  (`{collapsed, lens, tiles}`). Settings exports it and imports another browser's: an
-  import never deletes, views merge by id, and UI state stays this browser's.
-  Tabs see each other's changes through the `storage` event. The value is
-  version 2; a version 1 value reads as version 2 with no tiles.
+- The user's own data lives in their preferences on the server
+  (`server/preferences.py`, `src/preferences.ts`), so it follows them to any
+  browser: stars, saved views (`{id, name, request}`, the exact list request),
+  aliases, people added by hand, notification read state (`{boundary, marks}`),
+  folded sections (`collapsed`), the last lens, unsent drafts of a field
+  (`drafts`, by inquiry id and field) and the create form's (`create_draft`).
+  `src/state/store.ts` is a view of it: a change sends only the keys it changed,
+  each replaced whole. Only `ui.tiles` stays in `localStorage`, one versioned JSON
+  value keyed `trackinizer.v2.<origin>.<email>`, and tabs see each other's tiles
+  through the `storage` event.
+- A draft is written after typing pauses for 500 ms, one request however many
+  keys were typed, and again as the page closes (`choosePreferencesSoon`); sending
+  or discarding it removes it. It reopens on the next load of its field or form, in
+  any browser. A browser that kept this data before the move sends it once at the
+  first boot, merged into the user's (`adoptLocalUserData`: stars, names, people and
+  views are unions; a draft kept here replaces the server's of the same field),
+  then forgets it.
 - A tile's bar is how it is placed; there is no Focus button and no placement
   menu. A press on the bar focuses the tile. A drag floats it, or docks it at
   the edge of the stage it is dropped on: the left or right 48 px for the

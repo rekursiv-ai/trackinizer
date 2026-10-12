@@ -86,12 +86,14 @@ export async function acknowledgeRules(rulesVersion: string): Promise<Acknowledg
  * Change some of the caller's preferences: a value sets its key, and the keys left
  * out keep theirs. Answers every key after the change; a key or value the server
  * does not take is an `ApiError` (422) and changes nothing.
+ * `keepalive` lets the request finish after the page closes.
  */
 export async function setPreferences(
   change: Partial<Required<components["schemas"]["Preferences"]>>,
+  { keepalive = false } = {},
 ): Promise<Required<components["schemas"]["Preferences"]>> {
   const saved = await send(TIMEOUT_MS.write, undefined, (signal) =>
-    client.PATCH("/api/me/preferences", { body: change, signal }),
+    client.PATCH("/api/me/preferences", { body: change, keepalive, signal }),
   );
   // The schema marks each key optional, as it has a default; the server fills every one.
   return saved as Required<components["schemas"]["Preferences"]>;

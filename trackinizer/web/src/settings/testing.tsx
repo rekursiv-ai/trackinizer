@@ -8,7 +8,7 @@ import type { AllowlistEntry, User } from "../api/admin";
 import type { Profile, Role, Token } from "../api/me";
 import { AGREED, type Sent, stubFetch } from "../api/testing";
 import type { WorkspaceOperation, WorkspaceState } from "../api/workspaces";
-import type { Preferences } from "../preferences";
+import { DEFAULT_PREFERENCES, type Preferences } from "../preferences";
 import { setStation } from "../stations/store";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { Session, SessionContext } from "../app/session";
@@ -178,9 +178,6 @@ export function serveAccount(
 }
 
 const CANVAS = "/api/workspaces";
-
-/** The server's defaults (`server/preferences.py`). */
-const DEFAULT_PREFERENCES: Preferences = { theme: "dark", chat_style: "default", chat_side: "left", highlight_mentions: true };
 
 type Server = ReturnType<typeof serveAccount>;
 

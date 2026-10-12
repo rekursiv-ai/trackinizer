@@ -12,7 +12,6 @@ import { type ChatStyle, chooseChatStyle, useChatStyle } from "../chatStyle";
 import { chooseTheme, type ThemePreference, useTheme } from "../theme";
 import { KeyValue, ReadError, Section } from "./account";
 import { AliasesSection } from "./Aliases";
-import { BrowserDataSection } from "./BrowserData";
 import { CloseSheet } from "./CloseSheet";
 import { ChatPartnerSection } from "./ChatPartner";
 import { useHighlightMentions } from "./highlightMentions";
@@ -55,7 +54,6 @@ export function SettingsView({ assign = (url: string) => location.assign(url) }:
           <VisualWorkspaceSection />
           <ChatPartnerSection />
           <TokensSection />
-          <BrowserDataSection />
           {profile.email === NO_AUTH_EMAIL ? null : <SessionSection assign={assign} />}
         </div>
       </div>
