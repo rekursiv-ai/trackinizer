@@ -16,12 +16,14 @@ import { PROFILE } from "../detail/testing";
 import { createQueryClient } from "../app/queryClient";
 import { newerWorkspace } from "../stations/cache";
 import { setStation } from "../stations/store";
-import { EMPTY_STATE, parseState, storageKey } from "../state/value";
+import { setStationLayout } from "../api/stations";
 import { Canvas } from "./Canvas";
 import { currentChatColumn, setChatHidden } from "./chatColumn";
-import { CLICK_SLOP, rememberedTile, SNAP_SIDE, SNAP_TOP, TEAR_SLOP, withTile } from "./floatingTile";
+import { CLICK_SLOP, rememberedTile, SNAP_SIDE, SNAP_TOP, TEAR_SLOP } from "./floatingTile";
+import { flushLayouts, forgetLayouts, type Layout } from "./stationLayout";
 
 vi.mock("../api/visuals", () => ({ getVisualCatalog: vi.fn() }));
+vi.mock("../api/stations", () => ({ setStationLayout: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("../api/workspaces", () => ({
   createDefaultWorkspace: vi.fn(),
   getWorkspace: vi.fn(),
@@ -54,6 +56,7 @@ const workspace: WorkspaceState = {
 
 afterEach(() => {
   setStation(null);
+  forgetLayouts();
   cleanup();
   vi.clearAllMocks();
   vi.useRealTimers();
@@ -63,6 +66,12 @@ afterEach(() => {
   sessionStorage.clear();
   localStorage.clear();
 });
+
+/** The layout keys the canvas has written to its station so far, later writes over earlier ones. */
+function written(): Layout {
+  flushLayouts();
+  return Object.assign({}, ...vi.mocked(setStationLayout).mock.calls.map(([, patch]) => patch)) as Layout;
+}
 
 /** The Browse visual alone, as the server's catalog describes it. */
 function browseOnly() {
@@ -208,6 +217,7 @@ test("a single floating visual keeps its bar", async () => {
   Object.defineProperty(stage, "clientHeight", { configurable: true, value: 600 });
   Object.defineProperty(tile, "offsetWidth", { configurable: true, value: 300 });
   Object.defineProperty(tile, "offsetHeight", { configurable: true, value: 400 });
+  fireEvent(window, new Event("resize"));
   fireEvent.keyDown(dragHandle, { key: "ArrowRight" });
   expect(tile?.style.left).toBe("16px");
 });
@@ -234,6 +244,7 @@ test("a drag moves a floating visual without rendering the canvas, and it keeps 
   Object.defineProperty(stage, "clientHeight", { configurable: true, value: 600 });
   Object.defineProperty(tile, "offsetWidth", { configurable: true, value: 300 });
   Object.defineProperty(tile, "offsetHeight", { configurable: true, value: 400 });
+  fireEvent(window, new Event("resize"));
 
   fireEvent.pointerDown(dragHandle, { pointerId: 1, clientX: 100, clientY: 100 });
   const before = commits;
@@ -375,8 +386,6 @@ test("a dock button moves a tile to that side of the page at once; the page itse
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Dock Note at the left" }).disabled).toBe(true), { interval: 1 });
 });
 
-const SIZES_KEY = "trackinizer.v2.canvas.sizes";
-
 /** Tell jsdom, which lays nothing out, that the stage is 800 px wide and starts at the window's corner. */
 function sizeStage() {
   const stage = document.querySelector<HTMLElement>(".visual-stage")!;
@@ -384,6 +393,7 @@ function sizeStage() {
   Object.defineProperty(stage, "clientWidth", { configurable: true, value: 800 });
   Object.defineProperty(stage, "clientHeight", { configurable: true, value: 600 });
   vi.spyOn(stage, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 } as DOMRect);
+  fireEvent(window, new Event("resize"));
   return stage;
 }
 
@@ -446,7 +456,8 @@ test("a docked visual floats by its placement when dragged out", async () => {
   fireEvent.pointerUp(title, { pointerId: 1, clientX: 400, clientY: 300 });
   await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
     state.id, state.revision, { kind: "place", instance_id: "note-instance", placement: "floating" }, expect.any(String)), { interval: 1 });
-  expect(rememberedTile(parseState(JSON.parse(localStorage.getItem(STATE_KEY)!)), "test.note").place).toEqual({ left: 340, top: 284 });
+  // Kept as fractions of the 800 by 600 stage.
+  expect(written().tiles?.["test.note"]?.place).toEqual({ left: 0.425, top: 0.4733 });
   // The page stays the page: its bar focuses, and does not drag.
   expect(document.querySelector(BROWSE_TILE + " .visual-tile-toolbar-draggable")).toBeNull();
 });
@@ -467,7 +478,7 @@ test("the edge between a column and the page resizes the column, by the pointer 
   expect(column.style.getPropertyValue("--column-width")).toBe("560px");
   fireEvent.pointerMove(edge, { pointerId: 1, clientX: 400, clientY: 300 });
   fireEvent.pointerUp(edge, { pointerId: 1, clientX: 400, clientY: 300 });
-  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual({ side: 400, floating: {}, share: {} });
+  expect(written().columns).toEqual({ side: 0.5 });
   await waitFor(() => expect(edge.getAttribute("aria-valuenow")).toBe("400"), { interval: 1 });
 
   // The arrow points where the edge goes: left widens the right column.
@@ -475,7 +486,7 @@ test("the edge between a column and the page resizes the column, by the pointer 
   await waitFor(() => expect(column.style.getPropertyValue("--column-width")).toBe("416px"), { interval: 1 });
   fireEvent.keyDown(edge, { key: "ArrowRight", shiftKey: true });
   await waitFor(() => expect(column.style.getPropertyValue("--column-width")).toBe("368px"), { interval: 1 });
-  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual({ side: 368, floating: {}, share: {} });
+  expect(written().columns).toEqual({ side: 0.46 });
 });
 
 test("two tiles that share the main strip trade room by the divider between them, and their shares are kept", async () => {
@@ -512,7 +523,7 @@ test("two tiles that share the main strip trade room by the divider between them
   expect(page!.style.getPropertyValue("--tile-basis")).toBe("0px");
   fireEvent.pointerUp(divider, { pointerId: 1, clientX: 560, clientY: 300 });
   // Kept as shares of the strip, an even one being 1.
-  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual({ floating: {}, share: { "trax.browse": 1.4, "test.note": 0.6 } });
+  expect(written().share).toEqual({ "trax.browse": 1.4, "test.note": 0.6 });
   await waitFor(() => expect(shares()).toEqual(["1.4", "0.6"]), { interval: 1 });
 });
 
@@ -531,7 +542,7 @@ test("a floating window resizes by any edge or corner, inside the stage, and kee
   expect(tile.querySelectorAll(".visual-window-edge")).toHaveLength(8);
   // The tile is 300 by 400 at (100, 50) in a stage of 800 by 600.
   expect(drag("e", 1, 60, 99)).toEqual(["100px", "50px", "360px", "400px"]);
-  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!).floating).toEqual({ "trax.browse": { width: 360, height: 400 } });
+  expect(written().floating).toEqual({ "trax.browse": { width: 0.45, height: 0.6667 } });
   await waitFor(() => expect(tile.style.width).toBe("360px"), { interval: 1 });
   expect(storedTile().place).toEqual({ left: 100, top: 50 });
   // jsdom still measures 300 by 400: each drag starts from that box.
@@ -633,21 +644,20 @@ test("the Workbench section opens Artifact content from its canonical link", asy
 });
 
 const BROWSE_TILE = `[data-visual-instance="${workspace.visuals[0]!.id}"]`;
-const STATE_KEY = storageKey(PROFILE.email);
 
 function storedTile() {
-  return rememberedTile(parseState(JSON.parse(localStorage.getItem(STATE_KEY)!)), "trax.browse");
+  return rememberedTile(written(), "trax.browse", { width: 800, height: 600 });
 }
 
-/** The floating page, 800 x 600 stage and a 300 x 400 tile, with its top bar. */
-async function mountFloating() {
+/** The floating page of `state`, 800 x 600 stage and a 300 x 400 tile, with its top bar. */
+async function mountFloating(state: WorkspaceState = workspace) {
   vi.mocked(getVisualCatalog).mockResolvedValue({
     default_visual: "trax.browse",
     visuals: [{ type: "trax.browse", version: 1, title: "Browse", description: "Browse records",
       default_size: "wide", requires: [], parameter_schema: {} }],
   });
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
+  vi.mocked(getWorkspace).mockResolvedValue(state);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   const handle = await screen.findByRole("button", { name: "Move Browse" });
@@ -660,6 +670,7 @@ async function mountFloating() {
   Object.defineProperty(stage, "clientHeight", { configurable: true, value: 600 });
   Object.defineProperty(tile, "offsetWidth", { configurable: true, value: 300 });
   Object.defineProperty(tile, "offsetHeight", { configurable: true, value: 400 });
+  fireEvent(window, new Event("resize"));
   return { tile, bar, handle, title: within(bar).getByText("Browse") };
 }
 
@@ -709,7 +720,7 @@ test("a drag by the title bar follows every move with a transform alone: the can
   // The browser taking the pointer puts the tile back.
   expect(tile.style.transform).toBe("");
   expect(tile.style.left).toBe("");
-  expect(localStorage.getItem(STATE_KEY)).toBeNull();
+  expect(written()).toEqual({});
 });
 
 test("a press on the title bar that does not move focuses the tile, and neither moves nor collapses it", async () => {
@@ -722,7 +733,7 @@ test("a press on the title bar that does not move focuses the tile, and neither 
   expect(tile.style.transform).toBe("");
   expect(tile.style.left).toBe("");
   expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
-  expect(localStorage.getItem(STATE_KEY)).toBeNull();
+  expect(written()).toEqual({});
   await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
     workspace.id, workspace.revision, { kind: "focus", instance_id: workspace.visuals[0]!.id }, expect.any(String)), { interval: 1 });
   await waitFor(() => expect(tile.classList.contains("visual-tile-focused")).toBe(true), { interval: 1 });
@@ -775,7 +786,7 @@ test("the bar's buttons keep their own presses: pressing one starts no drag and 
   expect(tile.style.transform).toBe("");
   expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
   expect(applyWorkspaceOperation).not.toHaveBeenCalled();
-  expect(localStorage.getItem(STATE_KEY)).toBeNull();
+  expect(written()).toEqual({});
   fireEvent.click(fold);
   expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
 });
@@ -826,25 +837,25 @@ test("the collapse button does what a click on the bar does, for the keyboard", 
   expect(storedTile().collapsed).toBe(false);
 });
 
-test("a place and a collapse stored for this user show on the next load", async () => {
-  localStorage.setItem(STATE_KEY, JSON.stringify(withTile(EMPTY_STATE, "trax.browse", { collapsed: true, place: { left: 120, top: 70 } })));
-  const { tile } = await mountFloating();
+/** The floating page with `layout` as its station holds it. */
+function withLayout(layout: Layout): WorkspaceState {
+  return { ...workspace, layout };
+}
+
+test("a place and a collapse stored for the station show on the next load, on any browser", async () => {
+  const { tile } = await mountFloating(withLayout({ tiles: { "trax.browse": { collapsed: true, place: { left: 0.15, top: 0.1167 } } } }));
   expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
   expect([tile.style.left, tile.style.top]).toEqual(["120px", "70px"]);
 });
 
 test("a stored place the stage has since shrunk below is held inside it", async () => {
-  localStorage.setItem(STATE_KEY, JSON.stringify(withTile(EMPTY_STATE, "trax.browse", { place: { left: 700, top: 590 } })));
-  const { tile } = await mountFloating();
-  // The measure runs on the next layout, once jsdom has been told the sizes.
+  const { tile } = await mountFloating(withLayout({ tiles: { "trax.browse": { place: { left: 0.875, top: 0.9833 } } } }));
   fireEvent(window, new Event("resize"));
   expect([tile.style.left, tile.style.top]).toEqual(["500px", "200px"]);
 });
 
-test("storage that cannot hold the state still lets the tile move and collapse", async () => {
-  // A value of another shape: the canvas must not overwrite it, and must not fail.
-  const unreadable = JSON.stringify({ stars: [], notification: {} });
-  localStorage.setItem(STATE_KEY, unreadable);
+test("a station that refuses the layout still lets the tile move and collapse", async () => {
+  vi.mocked(setStationLayout).mockRejectedValue(new Error("offline"));
   const { tile, title } = await mountFloating();
   fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
   fireEvent.pointerMove(title, { pointerId: 1, clientX: 110, clientY: 120 });
@@ -852,7 +863,47 @@ test("storage that cannot hold the state still lets the tile move and collapse",
   expect([tile.style.left, tile.style.top]).toEqual(["10px", "20px"]);
   fireEvent.click(within(tile).getByRole("button", { name: "Collapse Browse" }));
   expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
-  expect(localStorage.getItem(STATE_KEY)).toBe(unreadable);
+  expect(written().tiles?.["trax.browse"]?.collapsed).toBe(true);
+});
+
+test("a stage narrower than the stored place shows the tile pulled inside and writes nothing", async () => {
+  const { tile } = await mountFloating(withLayout({ tiles: { "trax.browse": { place: { left: 0.875, top: 0.1667 } } }, columns: { side: 0.9 } }));
+  const stage = document.querySelector<HTMLElement>(".visual-stage")!;
+  Object.defineProperty(stage, "clientWidth", { configurable: true, value: 400 });
+  fireEvent(window, new Event("resize"));
+  expect(tile.style.left).toBe("100px");
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+  expect(setStationLayout).not.toHaveBeenCalled();
+});
+
+/** The browser state an older build left in this browser for the user. */
+function legacyBrowserState(tiles: object) {
+  const key = `trackinizer.v2.${location.origin}.${PROFILE.email}`;
+  localStorage.setItem(key, JSON.stringify({ version: 2, stars: [], views: [], aliases: [], people: {}, read: { boundary: null, marks: [] }, ui: { collapsed: [], lens: null, tiles } }));
+  return key;
+}
+
+test("the first station a browser opens takes the places and sizes it kept before, as fractions, and the browser forgets them", async () => {
+  const key = legacyBrowserState({ "trax.browse": { collapsed: true, place: { left: 160, top: 60 } } });
+  localStorage.setItem("trackinizer.v2.canvas.sizes", JSON.stringify({ side: 400, chat: 512, floating: { "trax.browse": { width: 400, height: 300 } }, share: {} }));
+  await mountFloating();
+  await waitFor(() => expect(written()).toEqual({
+    columns: { side: 0.5 },
+    floating: { "trax.browse": { width: 0.5, height: 0.5 } },
+    tiles: { "trax.browse": { collapsed: true, place: { left: 0.2, top: 0.1 } } },
+  }), { interval: 1 });
+  // Chat's width stays for Chat's own migration.
+  expect(JSON.parse(localStorage.getItem("trackinizer.v2.canvas.sizes")!)).toEqual({ chat: 512 });
+  expect(JSON.parse(localStorage.getItem(key)!).ui.tiles).toEqual({});
+});
+
+test("a station that already has a layout keeps it: what the browser kept is forgotten, not written over", async () => {
+  const key = legacyBrowserState({ "trax.browse": { collapsed: true, place: { left: 160, top: 60 } } });
+  localStorage.setItem("trackinizer.v2.canvas.sizes", JSON.stringify({ side: 400, floating: {}, share: {} }));
+  await mountFloating(withLayout({ columns: { side: 0.3 } }));
+  await waitFor(() => expect(localStorage.getItem("trackinizer.v2.canvas.sizes")).toBeNull(), { interval: 1 });
+  expect(JSON.parse(localStorage.getItem(key)!).ui.tiles).toEqual({});
+  expect(written()).toEqual({});
 });
 
 /** The stage and tile as the page draws them: jsdom lays nothing out. */
@@ -883,13 +934,14 @@ test("a drag starts from where the tile is drawn, not from the place it was last
   fireEvent.pointerMove(title, { pointerId: 1, clientX: 90, clientY: 100 });
   expect(tile.style.transform).toBe("translate(-10px, 0px)");
   fireEvent.pointerUp(title, { pointerId: 1, clientX: 90, clientY: 100 });
-  expect(storedTile().place).toEqual({ left: 290, top: 100 });
+  // Kept as fractions of the shrunk stage, 600 by 500.
+  expect(rememberedTile(written(), "trax.browse", { width: 600, height: 500 }).place).toEqual({ left: 290, top: 100 });
 });
 
 test("an arrow key moves the tile from where it is drawn, not from the place it was last dragged to", async () => {
   const { handle } = await dragThenShrink(500, 200, { left: 300, top: 100 });
   fireEvent.keyDown(handle, { key: "ArrowUp" });
-  expect(storedTile().place).toEqual({ left: 300, top: 84 });
+  expect(rememberedTile(written(), "trax.browse", { width: 600, height: 500 }).place).toEqual({ left: 300, top: 84 });
 });
 
 test("a drag whose pointer capture was lost is over: the next press drags", async () => {
@@ -916,8 +968,7 @@ test("the normal end of a drag is not undone by the capture release that follows
 });
 
 test("a tile held inside a smaller stage returns to its saved place when the stage grows back", async () => {
-  localStorage.setItem(STATE_KEY, JSON.stringify(withTile(EMPTY_STATE, "trax.browse", { place: { left: 500, top: 100 } })));
-  const { tile } = await mountFloating();
+  const { tile } = await mountFloating(withLayout({ tiles: { "trax.browse": { place: { left: 0.625, top: 0.1667 } } } }));
   const stage = document.querySelector<HTMLElement>(".visual-stage")!;
   const width = (value: number) => Object.defineProperty(stage, "clientWidth", { configurable: true, value });
   width(600);
@@ -930,8 +981,7 @@ test("a tile held inside a smaller stage returns to its saved place when the sta
 
 test("on a phone the saved place is left alone: the tile is a plain header there", async () => {
   window.innerWidth = 390;
-  localStorage.setItem(STATE_KEY, JSON.stringify(withTile(EMPTY_STATE, "trax.browse", { place: { left: 700, top: 100 } })));
-  const { tile } = await mountFloating();
+  const { tile } = await mountFloating(withLayout({ tiles: { "trax.browse": { place: { left: 0.875, top: 0.1667 } } } }));
   fireEvent(window, new Event("resize"));
   expect(tile.style.left).toBe("700px");
 });

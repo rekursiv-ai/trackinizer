@@ -60,17 +60,12 @@ for (const theme of ["dark", "light"] as const) {
           conversation_id: chat, session_id: session, title: "What changed", account: "ada@example.com", live: true,
           forks: 0, forked_from: null, forks_on_typing: false, shared_with: [], may_share: false, may_delete: false,
         } }));
-        // The user's station for that chat. Finding it again changes nothing, so the tab is
-        // told to open it, as "Continue in Chat" leaves the tab on it.
+        // The user's station for that chat. Finding it again changes nothing, so writing its page makes
+        // it the one changed last, which a tab with no station asks the server for.
         const found = await request.post(`/api/workspaces/for-chat/${chat}`);
         expect(found.ok()).toBe(true);
-        await page.addInitScript((id) => {
-          try {
-            localStorage.setItem("trackinizer.station.current", id);
-          } catch {
-            // about:blank has no storage.
-          }
-        }, (await found.json()).id as string);
+        const moved = await request.put(`/api/workspaces/${(await found.json()).id}/page`, { data: { route: "#/list/Issue" } });
+        expect(moved.ok()).toBe(true);
         return { issue: issue.id as string };
       }
 

@@ -15,8 +15,6 @@ test.beforeEach(async ({ request }) => {
   await resetCanvas(request);
 });
 
-const SIZES_KEY = "trackinizer.v2.canvas.sizes";
-
 async function open(page: Page, size = { width: 1280, height: 800 }): Promise<{ column: Locator; stage: Locator }> {
   await page.addInitScript(exposeEventSources);
   await page.setViewportSize(size);
@@ -31,13 +29,6 @@ async function box(locator: Locator) {
   const found = await locator.boundingBox();
   expect(found).not.toBeNull();
   return found!;
-}
-
-/** Forget the width this spec set, so the next one starts from the defaults (the side is a preference, which each test starts on). */
-async function forget(page: Page): Promise<void> {
-  await page.evaluate((key) => {
-    localStorage.removeItem(key);
-  }, SIZES_KEY);
 }
 
 test("Chat is a column beside the workbench, on the left, a third of the screen wide", async ({ page }) => {
@@ -73,10 +64,13 @@ test("the divider resizes Chat by pointer and by arrow keys, never under 280 px,
   const edge = page.getByRole("separator", { name: "Resize Chat" });
   const before = (await box(column)).width;
   const at = await box(edge);
+  // The width goes to the station a moment after the drag; a reload before that would lose it.
+  const kept = page.waitForResponse((response) => response.url().endsWith("/layout") && response.ok());
   await page.mouse.move(at.x + at.width / 2, at.y + 300);
   await page.mouse.down();
   await page.mouse.move(at.x + at.width / 2 + 100, at.y + 300, { steps: 6 });
   await page.mouse.up();
+  await kept;
   const wider = (await box(column)).width;
   expect(Math.abs(wider - before - 100)).toBeLessThan(3);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
@@ -97,7 +91,6 @@ test("the divider resizes Chat by pointer and by arrow keys, never under 280 px,
   await page.mouse.move(5, now.y + 300, { steps: 6 });
   await page.mouse.up();
   expect(Math.round((await box(column)).width)).toBe(280);
-  await forget(page);
 });
 
 test("a button in Chat's header moves it to the other side of the workbench, and the side is kept", async ({ page }) => {
@@ -114,7 +107,6 @@ test("a button in Chat's header moves it to the other side of the workbench, and
   expect((await box(column)).x).toBeGreaterThan(640);
   await column.getByRole("button", { name: "Move Chat to the left" }).click();
   expect((await box(column)).x).toBeLessThan(640);
-  await forget(page);
 });
 
 test("the shortcut hides Chat to a strip in the accent colour; the strip shows it, and a reload shows it again", async ({ page }) => {

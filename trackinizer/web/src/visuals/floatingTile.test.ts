@@ -1,5 +1,4 @@
 import { expect, test } from "vitest";
-import { EMPTY_STATE } from "../state/value";
 import { CLICK_SLOP, finishGesture, moveGesture, rememberedTile, resizeRect, slideDivider, SNAP_SIDE, SNAP_TOP, snapZone, startGesture, TEAR_SLOP, withTile } from "./floatingTile";
 
 const START = { x: 100, y: 100, left: 50, top: 60, maxLeft: 500, maxTop: 300 };
@@ -40,19 +39,29 @@ test("a stage smaller than the tile pins it to the corner", () => {
   expect(finishGesture(gesture)).toEqual({ kind: "drag", place: { left: 0, top: 0 } });
 });
 
+const STAGE_1600 = { width: 1600, height: 800 };
+const STAGE_1280 = { width: 1280, height: 640 };
+
 test("a tile never touched is expanded and unplaced", () => {
-  expect(rememberedTile(EMPTY_STATE, "trax.subgraph")).toEqual({ collapsed: false, place: null });
+  expect(rememberedTile({}, "trax.subgraph", STAGE_1600)).toEqual({ collapsed: false, place: null });
 });
 
-test("withTile changes one tile's memory and leaves the rest of the state alone", () => {
-  const first = withTile(EMPTY_STATE, "trax.subgraph", { collapsed: true });
-  expect(rememberedTile(first, "trax.subgraph")).toEqual({ collapsed: true, place: null });
-  const second = withTile(first, "trax.subgraph", { place: { left: 8, top: 9 } });
-  expect(rememberedTile(second, "trax.subgraph")).toEqual({ collapsed: true, place: { left: 8, top: 9 } });
-  expect(second.stars).toBe(EMPTY_STATE.stars);
-  expect(second.ui.collapsed).toBe(EMPTY_STATE.ui.collapsed);
-  const other = withTile(second, "trax.timeline", { collapsed: true });
-  expect(rememberedTile(other, "trax.subgraph")).toEqual(rememberedTile(second, "trax.subgraph"));
+test("withTile changes one tile's memory as fractions of the stage and leaves the other tiles alone", () => {
+  const first = withTile({}, "trax.subgraph", { collapsed: true }, STAGE_1600)!;
+  expect(first).toEqual({ tiles: { "trax.subgraph": { collapsed: true } } });
+  const second = withTile(first, "trax.subgraph", { place: { left: 400, top: 200 } }, STAGE_1600)!;
+  expect(second).toEqual({ tiles: { "trax.subgraph": { collapsed: true, place: { left: 0.25, top: 0.25 } } } });
+  const other = withTile(second, "trax.timeline", { collapsed: true }, STAGE_1600)!;
+  expect(other.tiles?.["trax.subgraph"]).toBe(second.tiles?.["trax.subgraph"]);
+  // A place needs a measured stage; nothing is stored for one that is not.
+  expect(withTile({}, "trax.subgraph", { place: { left: 8, top: 9 } }, { width: 0, height: 0 })).toBeNull();
+});
+
+test("a place kept at one stage size is the same fraction of another: it round-trips", () => {
+  const kept = withTile({}, "trax.subgraph", { place: { left: 400, top: 200 } }, STAGE_1600)!;
+  expect(rememberedTile(kept, "trax.subgraph", STAGE_1600).place).toEqual({ left: 400, top: 200 });
+  expect(rememberedTile(kept, "trax.subgraph", STAGE_1280).place).toEqual({ left: 320, top: 160 });
+  expect(rememberedTile(kept, "trax.subgraph", { width: 0, height: 0 }).place).toBeNull();
 });
 
 test("a docked tile's press is a click until it has gone the tear slop", () => {

@@ -33,6 +33,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "terminal_font_size": "13px",
     "stars": [],
     "views": [],
+    "console_views": [],
     "aliases": [],
     "people": {},
     "read": {"boundary": None, "marks": []},
@@ -48,6 +49,24 @@ _VIEW_REQUEST: dict[str, JsonValue] = {
 }
 
 _VIEW: dict[str, JsonValue] = {"id": "v1", "name": "Mine", "request": _VIEW_REQUEST}
+
+_CONSOLE_VIEW: dict[str, JsonValue] = {
+    "id": "c1",
+    "name": "Atlas live",
+    "pinned": False,
+    "created": "2026-10-01T09:00:00.000Z",
+    "agents": ["atlas-*"],
+    "rooms": [],
+    "clis": ["claude"],
+    "level": 2,
+    "range": {"live": True},
+}
+
+_WINDOW: dict[str, JsonValue] = {
+    "live": False,
+    "since": "2026-10-01T09:00:00.000Z",
+    "until": None,
+}
 
 _RELATION: dict[str, JsonValue] = {
     "option": "narrows:out",
@@ -172,6 +191,10 @@ def test_the_user_data_keys_round_trip_whole() -> None:
     kept: dict[str, JsonValue] = {
         "stars": ["a", "b"],
         "views": [_VIEW],
+        "console_views": [
+            _CONSOLE_VIEW,
+            {**_CONSOLE_VIEW, "id": "c2", "range": _WINDOW},
+        ],
         "aliases": ["ada"],
         "people": {"dan": {"name": "Dan", "type": "person"}},
         "read": {"boundary": "2026-10-01T00:00:00Z", "marks": ["c1"]},
@@ -200,6 +223,32 @@ def test_a_draft_names_its_base_even_when_unset() -> None:
     assert read.drafts["i1:title"].base is None
 
 
+@pytest.mark.parametrize(
+    "window",
+    [
+        {"live": False, "since": None, "until": None},
+        {"live": False, "since": None, "until": "2026-10-01T09:00:00Z"},
+        {
+            "live": False,
+            "since": "2026-10-01T09:00:00Z",
+            "until": "2026-10-01T09:00:00Z",
+        },
+        {
+            "live": False,
+            "since": "2026-10-01T10:00:00+02:00",
+            "until": "2026-10-01T09:00:00Z",
+        },
+    ],
+)
+def test_a_console_window_may_be_open_or_end_where_it_starts(
+    window: dict[str, JsonValue],
+) -> None:
+    kept = Preferences.model_validate(
+        {"console_views": [{**_CONSOLE_VIEW, "range": window}]},
+    )
+    assert kept.console_views[0].range.model_dump() == window
+
+
 def _key_of(change: dict[str, JsonValue]) -> str:
     return next(iter(change))
 
@@ -223,6 +272,28 @@ def _key_of(change: dict[str, JsonValue]) -> str:
             ],
         },
         {"views": [{**_VIEW, "extra": 1}]},
+        {"console_views": [_CONSOLE_VIEW] * 201},
+        {"console_views": [{**_CONSOLE_VIEW, "name": "n" * 201}]},
+        {"console_views": [{**_CONSOLE_VIEW, "agents": ["a"] * 101}]},
+        {"console_views": [{**_CONSOLE_VIEW, "rooms": ["r" * 201]}]},
+        {"console_views": [{**_CONSOLE_VIEW, "level": 5}]},
+        {"console_views": [{**_CONSOLE_VIEW, "created": "yesterday"}]},
+        {"console_views": [{**_CONSOLE_VIEW, "created": "2026-10-01T09:00:00"}]},
+        {"console_views": [{**_CONSOLE_VIEW, "extra": 1}]},
+        {"console_views": [{**_CONSOLE_VIEW, "range": {"live": True, "since": None}}]},
+        {"console_views": [{**_CONSOLE_VIEW, "range": {**_WINDOW, "since": "soon"}}]},
+        {
+            "console_views": [
+                {
+                    **_CONSOLE_VIEW,
+                    "range": {
+                        "live": False,
+                        "since": "2026-10-01T10:00:00Z",
+                        "until": "2026-10-01T09:00:00Z",
+                    },
+                },
+            ],
+        },
         {"aliases": ["a"] * 51},
         {"aliases": ["a" * 201]},
         {"people": {f"p{n}": {"name": "P", "type": "person"} for n in range(1_001)}},

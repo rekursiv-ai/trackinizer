@@ -682,6 +682,7 @@ POST /api/workspaces/for-chat/<conversation uuid>
 GET  /api/workspaces/<uuid>
 PATCH /api/workspaces/<uuid>
 PUT  /api/workspaces/<uuid>/page
+PUT  /api/workspaces/<uuid>/layout
 POST /api/workspaces/<uuid>/operations
 POST /api/workspaces/<uuid>/relay
 ```
@@ -721,7 +722,9 @@ preference has, or a value its key does not take, is a 422 and nothing is writte
 types, defaults and meanings are the `Preferences` model in `server/preferences.py`.
 Besides the appearance keys it holds the user's own data, each key replaced whole
 by a write and bounded so the row cannot grow without limit: `stars` (inquiry ids,
-at most 2000), `views` (saved list queries, at most 200), `aliases` (names that mean
+at most 2000), `views` (saved list queries, at most 200), `console_views`
+(the Console's views: name, pin, picks, level 1-4 and range, live or a window
+that does not end before it starts; at most 200), `aliases` (names that mean
 the user, at most 50), `people` (names for owners and subscribers added by hand,
 at most 1000), `read` (`{boundary, marks}`, at most 5000 marks), `collapsed`
 (folded sections, at most 500), `lens`, `drafts` (unsent edits of a field by
@@ -776,8 +779,8 @@ edit them.
 **Stations.** A canvas is a station: a user has many, each with a `name`
 (1 to 120 characters, unique among the user's; `unnamed-workstream#N`, the lowest
 free N of 1 or more, until renamed), at most one science chat
-(`conversation_id`), and the `#/...` `page` it was last on. The database keeps
-these three in one optional JSON column, `station`, beside the canvas's own. The
+(`conversation_id`), the `#/...` `page` it was last on, and its `layout`. The database keeps
+these in one optional JSON column, `station`, beside the canvas's own. The
 routes here other than `GET /api/workspaces/<uuid>` are the signed-in browser's
 own; an API key is 403.
 `POST /api/workspaces` returns the station the user changed last (an operation, a
@@ -786,7 +789,7 @@ race, when there is none. It starts
 with `trax.browse` in the main pane. Chat is not a visual: the browser draws it as a
 column beside the canvas, and `show trax.chat` is refused as an unknown type. A
 stored canvas that still holds a `trax.chat` visual reads without it. The response
-has `id`, `revision`, `name`, `conversation_id`, `page`, `visuals`,
+has `id`, `revision`, `name`, `conversation_id`, `page`, `layout`, `visuals`,
 `focused_instance`, `assistant`, and `partner`.
 `GET /api/workspaces` lists the stations, the one changed last first, as
 `{id, name, conversation_id, page, created_at}`.
@@ -797,6 +800,17 @@ and must then be 1 to 120 characters (else 422); a name the user already has is
 `PUT /api/workspaces/<uuid>/page` with `{"route"}`, a `#/...` address valid as a
 navigation's, remembers the page; it is 204, changes no revision and publishes
 no frame, and the browser sends it at most every 500 ms.
+`PUT /api/workspaces/<uuid>/layout` remembers how the station's columns and windows
+were left, in `station.layout` beside the page. The body names any of `columns`
+(`left`, `side`: fractions of the stage's width), `chat_ch` (Chat's width in `ch`,
+10 to 400), `floating` (window `width`/`height` as fractions, by visual type),
+`tiles` (`collapsed` and `place` `left`/`top` as fractions, by visual type), `share`
+(a docked tile's share of its strip, by visual type) and `console` (the open
+Console view's id); each key named replaces the stored key and the others stay.
+Pixels are refused (422). It is 204, owner only (another's station is 404), changes
+no revision and publishes no frame. `GET /api/workspaces/<uuid>` returns it as
+`layout`, null until one is written. The browser fits it to each screen and
+sends it at most every 500 ms.
 `POST /api/workspaces/for-chat/<conversation uuid>` returns the user's station that
 holds that chat, or makes one bound to it. A station that is not the user's is 404;
 a deleted chat is 410 `chat_deleted`.

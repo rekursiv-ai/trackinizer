@@ -11,9 +11,11 @@ row is read on every profile fetch, so no key may grow without limit.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Final, Literal
+from datetime import datetime
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -21,6 +23,7 @@ from pydantic import (
     StringConstraints,
     ValidationError,
     field_validator,
+    model_validator,
 )
 from pydantic_core import to_json
 from treekle import from_plain
@@ -51,6 +54,27 @@ preferences document, with its description as the comment above it."""
 _Id = Annotated[str, StringConstraints(max_length=100)]
 _Name = Annotated[str, StringConstraints(max_length=200)]
 _Text = Annotated[str, StringConstraints(max_length=100_000)]
+
+
+def _instant(text: str) -> datetime:
+    """Read ``text`` as an ISO time with an offset."""
+    time = datetime.fromisoformat(text)
+    if time.tzinfo is None:
+        raise ValueError("is a time with no offset")
+    return time
+
+
+def _time(text: str) -> str:
+    """Return ``text`` if it is an ISO time with an offset, as the browser writes."""
+    _instant(text)
+    return text
+
+
+_Time = Annotated[
+    str,
+    StringConstraints(max_length=40),
+    AfterValidator(_time),
+]
 
 
 def _json_within(value: JsonValue, *, max_bytes: int = 100_000) -> JsonValue:
@@ -88,6 +112,44 @@ class SavedView(_Strict):
     id: _Id
     name: _Name
     request: ViewRequest
+
+
+class ConsoleLive(_Strict):
+    """A Console view that follows the feed as it grows."""
+
+    live: Literal[True]
+
+
+class ConsoleWindow(_Strict):
+    """A Console view of a window of history, open at an end that is None."""
+
+    live: Literal[False]
+    since: _Time | None
+    until: _Time | None
+
+    @model_validator(mode="after")
+    def _ends_after_it_starts(self) -> Self:
+        if (
+            self.since is not None
+            and self.until is not None
+            and _instant(self.until) < _instant(self.since)
+        ):
+            raise ValueError("ends before it starts")
+        return self
+
+
+class ConsoleView(_Strict):
+    """A Console view: what it picks, its level and its place in time, under a name."""
+
+    id: _Id
+    name: _Name
+    pinned: bool
+    created: _Time
+    agents: Annotated[list[_Name], Field(max_length=100)]
+    rooms: Annotated[list[_Name], Field(max_length=100)]
+    clis: Annotated[list[_Name], Field(max_length=100)]
+    level: Literal[1, 2, 3, 4]
+    range: ConsoleLive | ConsoleWindow
 
 
 class Person(_Strict):
@@ -180,6 +242,10 @@ class Preferences(_Strict):
     views: Annotated[list[SavedView], Field(max_length=200)] = Field(
         default=[],
         description="Your saved views: a name and the list query each one shows.",
+    )
+    console_views: Annotated[list[ConsoleView], Field(max_length=200)] = Field(
+        default=[],
+        description="Your Console views: a name, what each picks, its level and its range.",
     )
     aliases: Annotated[list[_Name], Field(max_length=50)] = Field(
         default=[],

@@ -255,6 +255,84 @@ async def test_the_page_is_remembered_with_no_revision_and_no_frame(
 @pytest.mark.db_pglite
 @pytest.mark.usefixtures("served")
 @pytest.mark.asyncio(loop_scope="session")
+async def test_the_layout_merges_by_key_with_no_revision_and_no_frame(
+    pglite_route_client: _Client,
+    served: ChatHub,
+) -> None:
+    """A write replaces the keys it names, keeps the rest, and races no operation."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    other_station = await open_workspace(
+        client,
+        user_id=OTHER_USER_ID,
+        email=OTHER_EMAIL,
+    )
+    browser()
+    station = await _station(client, "POST", "/api/workspaces")
+    assert "layout" not in station or station["layout"] is None
+    workspace_id = uuid.UUID(from_plain(station["id"], str))
+    revision = await revision_of(client, workspace_id=workspace_id)
+    path = f"/api/workspaces/{workspace_id}/layout"
+    tile = {"collapsed": True, "place": {"left": 0.25, "top": 0.5}}
+
+    with served.subscribe(workspace_id) as stream:
+        first = await client.put(
+            path,
+            json={
+                "columns": {"side": 0.3},
+                "chat_ch": 80,
+                "tiles": {"trax.browse": tile},
+            },
+        )
+        second = await client.put(path, json={"columns": {"left": 0.2}})
+        assert stream.queue.empty()
+
+    assert (first.status_code, second.status_code) == (204, 204)
+    state = json_loads(
+        (await client.get(f"/api/workspaces/{workspace_id}")).content,
+        dict[str, object],
+    )
+    assert state["revision"] == revision
+    layout = from_plain(state["layout"], dict[str, object])
+    assert {k: v for k, v in layout.items() if v is not None} == {
+        "columns": {"left": 0.2, "side": None},
+        "chat_ch": 80.0,
+        "tiles": {"trax.browse": tile},
+    }
+    foreign = f"/api/workspaces/{other_station}/layout"
+    assert (await client.put(foreign, json={"chat_ch": 80})).status_code == 404
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_layout_of_pixels_or_unknown_keys_is_refused(
+    pglite_route_client: _Client,
+) -> None:
+    """Only fractions of the stage and Chat's width in ch are stored."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    browser()
+    station = await _station(client, "POST", "/api/workspaces")
+    path = f"/api/workspaces/{from_plain(station['id'], str)}/layout"
+
+    refused = [
+        {"columns": {"side": 420}},
+        {"columns": {"side": 0}},
+        {"chat_ch": 5},
+        {"tiles": {"trax.browse": {"place": {"left": 1.5, "top": 0}}}},
+        {"floating": {"trax.browse": {"width": 0, "height": 0.5}}},
+        {"floating": {f"t{n}": {"width": 0.5, "height": 0.5} for n in range(65)}},
+        {"pixels": 1},
+    ]
+
+    codes = [(await client.put(path, json=body)).status_code for body in refused]
+    assert codes == [422] * len(refused)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("served")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_for_chat_opens_the_station_that_holds_the_chat_or_makes_one(
     pglite_route_client: _Client,
 ) -> None:
@@ -380,9 +458,10 @@ async def test_station_routes_refuse_an_api_key(
         await client.post(f"/api/workspaces/for-chat/{uuid.uuid4()}"),
         await client.patch(base, json={"name": "mine"}),
         await client.put(f"{base}/page", json={"route": "#/x"}),
+        await client.put(f"{base}/layout", json={"chat_ch": 80}),
     ]
 
-    assert [a.status_code for a in answers] == [403] * 6
+    assert [a.status_code for a in answers] == [403] * 7
 
 
 def test_a_new_station_takes_the_lowest_free_number() -> None:

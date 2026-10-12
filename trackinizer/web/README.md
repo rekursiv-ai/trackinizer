@@ -328,10 +328,10 @@ with one response shape, so the fixtures take one per verb.
   full width. Nothing of Chat covers the canvas while an agent moves it.
 - A station is a named workstream: a canvas with at most one chat, a name and the
   page it last showed (`src/stations/`). The tab shows one at a time. Its id is the
-  one `stations/store.ts` holds, kept in `localStorage` under
-  `trackinizer.station.current` as the last opened; a tab with none asks the server
-  (`POST /api/workspaces`, the station opened last, or the first), and a kept
-  station that is gone is replaced the same way. `useStation` reads it from the
+  one `stations/store.ts` holds, kept in the tab's `sessionStorage` so a reload
+  keeps it; a tab with none (a new tab) asks the server (`POST /api/workspaces`,
+  the station changed last, or the first), and a station that is gone is
+  replaced the same way. `useStation` reads it from the
   cache the stream keeps (`["workspace", id]`), and `CanvasStream`, the canvas,
   Chat and the Settings partner choice all read that one entry. Switching
   (`showStation`) seeds the cache, reopens the stream for the new id and moves the
@@ -727,7 +727,8 @@ with one response shape, so the fixtures take one per verb.
   browser: stars, saved views (`{id, name, request}`, the exact list request),
   aliases, people added by hand, notification read state (`{boundary, marks}`),
   folded sections (`collapsed`), the last lens, unsent drafts of a field
-  (`drafts`, by inquiry id and field) and the create form's (`create_draft`).
+  (`drafts`, by inquiry id and field), the create form's (`create_draft`) and the
+  console's views (`console_views`).
   `src/state/store.ts` is a view of it: a change sends only the keys it changed,
   each replaced whole. Only `ui.tiles` stays in `localStorage`, one versioned JSON
   value keyed `trackinizer.v2.<origin>.<email>`, and tabs see each other's tiles
@@ -782,17 +783,17 @@ with one response shape, so the fixtures take one per verb.
   Outline on Issues; Columns lives in the hash), pages loaded and focused row
   in `sessionStorage` (`trackinizer.v2.list.<id>`), so Back returns to it as it
   was.
-- The console's views are one JSON list in `localStorage` per signed-in email
-  (`trackinizer.v2.console.<email>`), as drafts are: each view's id, name, pin,
-  start time, agents, rooms, CLIs, level and range. A view saves itself on every
-  change; a new "Untitled view" is stored on its first. Pinned views list first,
-  then the rest, each newest first. The tab's open view is the stored one with
-  the id in `sessionStorage` (`trackinizer.v2.console.open`), so a reload opens
-  it again, another tab's edit shows, and another tab's delete opens the first
-  view left; a tab with none opens the first view. A stored view of another
-  shape, with a time that is not one, or with a range that ends before it
-  starts, is left out. When the browser refuses to store, or denies storage
-  altogether, the open view still changes, unsaved. The console's feed pages and
+- The console's views are the user's `console_views` preference, kept on the
+  server so any browser finds them: each view's id, name, pin, start time, agents,
+  rooms, CLIs, level and range. A view saves itself on every change; a new
+  "Untitled view" is stored on its first. Pinned views list first, then the rest,
+  each newest first. The open view's id lives in the station's layout, so a reload
+  opens it again, another tab's edit shows, and another tab's delete opens the
+  first view left; a station with none opens the first view. When the server
+  refuses a change, the open view still shows it, unsaved. A browser that kept
+  views under `trackinizer.v2.console.<email>` has them merged into the user's
+  once, by id with the server's copy winning, and the key removed
+  (`adoptLocalUserData`). The console's feed pages and
   facets are read through the query cache under `["console", "feed", read]` and
   `["console", "facets", window]`; live, the facets are read again on a stream
   batch at most every 10 s, and every minute. After a

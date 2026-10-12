@@ -33,6 +33,17 @@ export async function setStationPage(id: string, route: string): Promise<void> {
   }));
 }
 
+/**
+ * Remember how a station's columns and windows were left, as fractions of the
+ * stage (Chat's width in `ch`). Each key given replaces the stored one; the rest
+ * stay. It changes no revision and publishes nothing.
+ */
+export async function setStationLayout(id: string, layout: components["schemas"]["StationLayout"]): Promise<void> {
+  await send(TIMEOUT_MS.write, undefined, (signal) => client.PUT("/api/workspaces/{workspace_id}/layout", {
+    params: { path: { workspace_id: id } }, body: layout, signal,
+  }));
+}
+
 /** Open the user's station that holds a chat, or make one bound to it. */
 export async function stationForChat(conversationId: string): Promise<WorkspaceState> {
   return valid(await send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/workspaces/for-chat/{conversation_id}", {

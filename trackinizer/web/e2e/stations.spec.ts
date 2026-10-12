@@ -103,10 +103,17 @@ test("two stations keep their own pages and visuals, and the tab cycles, searche
   await expect(page.locator(".station-name")).toHaveText("alpha");
   await expect(timeline).toBeVisible();
 
-  // A reload shows the station the tab kept, on its page.
+  // A reload keeps the tab's station, on its page; a new tab has none and opens the one changed last.
   await page.reload();
   await expect(page.locator(".station-name")).toHaveText("alpha");
   await expect(timeline).toBeVisible();
+  // Writing beta's page makes it the station changed last.
+  const beta = ((await (await request.get("/api/workspaces")).json()) as { id: string; name: string }[]).find((each) => each.name === "beta")!;
+  expect((await request.put(`/api/workspaces/${beta.id}/page`, { data: { route: "#/list/Issue" } })).ok()).toBe(true);
+  const another = await page.context().newPage();
+  await another.goto("/app/");
+  await expect(another.locator(".station-name")).toHaveText("beta");
+  await another.close();
 });
 
 test("a name the user already has is refused, and the menu says so", async ({ page, allowErrors }) => {

@@ -8,13 +8,20 @@ import { MetaContext, ProfileContext } from "../app/boot";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { META, PROFILE } from "../detail/testing";
 import type { WorkspaceState } from "../api/workspaces";
+import { DEFAULT_PREFERENCES, type Preferences, preferences, receivePreferences } from "../preferences";
 import { setStation } from "../stations/store";
 import { ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
+import { forgetLayouts } from "../visuals/stationLayout";
 import { clock, ConsoleView } from ".";
+import type { KeptView } from "./legacyViews";
 import { type Level, levelOf } from "./levels";
 
-afterEach(() => {
+afterEach(async () => {
+  // A view's own send answers first, or its answer would put the views back for the next test.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  receivePreferences(DEFAULT_PREFERENCES);
   setStation(null);
+  forgetLayouts();
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -132,6 +139,9 @@ function serve(
   const now = Date.now();
   return stubFetch(async (request) => {
     const url = new URL(request.url);
+    if (url.pathname === "/api/me/preferences" && request.method === "PATCH") {
+      return Response.json({ ...preferences(), ...(await request.json() as Partial<Preferences>) });
+    }
     if (url.pathname === "/api/web/feed") {
       const last = events.at(-1)!;
       return Response.json({
@@ -370,8 +380,13 @@ test("rooms and CLIs filter the feed, AND with each other", async () => {
 const viewNames = () => rail("Views").queryAllByRole("listitem").map((item) => item.querySelector("button")!.textContent);
 
 /** Store `views` as views kept from before, oldest first, each live and picking no agent, room or CLI. */
+/** The views the server holds for the user, as the profile brought them. */
+function keepOnServer(console_views: Preferences["console_views"]) {
+  receivePreferences({ ...DEFAULT_PREFERENCES, console_views });
+}
+
 function keepViews(...views: { name: string; level: Level; rooms?: string[]; pinned?: boolean }[]) {
-  const kept = views.map(({ name, level, rooms = [], pinned = false }, index) => ({
+  const kept = views.map(({ name, level, rooms = [], pinned = false }, index): KeptView => ({
     id: `v${index}`,
     name,
     pinned,
@@ -382,7 +397,7 @@ function keepViews(...views: { name: string; level: Level; rooms?: string[]; pin
     level,
     range: { live: true },
   }));
-  localStorage.setItem(`trackinizer.v2.console.${PROFILE.email}`, JSON.stringify(kept));
+  keepOnServer(kept);
 }
 
 test("a change saves the view: the rail lists it, Untitled, as the open one", async () => {
@@ -569,8 +584,8 @@ test("a history range's facets count at most the 7 days before its end, now for 
     sent.filter((request) => request.path === "/api/web/feed/facets").map((request) => new URLSearchParams(request.query)).map((query) => [query.get("since"), query.get("until")]);
   const until = "2026-10-01T10:00:00.000Z";
   // With no start, as Apply with only To sets: the 7 days before its end, not the whole history.
-  const open = (since: string | null, end: string | null) => ({ id: "v", name: "Old", pinned: false, created: "2026-09-01T00:00:00.000Z", agents: [], rooms: [], clis: [], level: 1, range: { live: false, since, until: end } });
-  localStorage.setItem(`trackinizer.v2.console.${PROFILE.email}`, JSON.stringify([open(null, until)]));
+  const open = (since: string | null, end: string | null): KeptView => ({ id: "v", name: "Old", pinned: false, created: "2026-09-01T00:00:00.000Z", agents: [], rooms: [], clis: [], level: 1, range: { live: false, since, until: end } });
+  keepOnServer([open(null, until)]);
   const { unmount } = renderConsole();
   await lines(3);
   expect(feedReads(sent)).toEqual([{ until, limit: "300", ...CONVERSATION }]);
@@ -578,7 +593,7 @@ test("a history range's facets count at most the 7 days before its end, now for 
   unmount();
   // A start a month back with no end: the 7 days before now.
   sent.length = 0;
-  localStorage.setItem(`trackinizer.v2.console.${PROFILE.email}`, JSON.stringify([open("2026-09-01T00:00:00.000Z", null)]));
+  keepOnServer([open("2026-09-01T00:00:00.000Z", null)]);
   renderConsole();
   await lines(3);
   expect(feedReads(sent)).toEqual([{ since: "2026-09-01T00:00:00.000Z", limit: "300", ...CONVERSATION }]);
@@ -588,8 +603,8 @@ test("a history range's facets count at most the 7 days before its end, now for 
 test("a view kept as a window of history opens on that window, its times in the range's boxes", async () => {
   const sent = serve();
   const since = "2026-10-01T09:30:00.000Z";
-  const view = { id: "v", name: "Morning", pinned: false, created: since, agents: [], rooms: [], clis: [], level: 1, range: { live: false, since, until: null } };
-  localStorage.setItem(`trackinizer.v2.console.${PROFILE.email}`, JSON.stringify([view]));
+  const view: KeptView = { id: "v", name: "Morning", pinned: false, created: since, agents: [], rooms: [], clis: [], level: 1, range: { live: false, since, until: null } };
+  keepOnServer([view]);
   renderConsole();
   await lines(3);
   expect(feedReads(sent)).toEqual([{ since, limit: "300", ...CONVERSATION }]);
@@ -718,8 +733,8 @@ test("a click on a line's agent addresses the box to it, focused with the caret 
 
 test("a picked agent the facets do not count stays picked, so it can be cleared (CR-04)", async () => {
   const sent = serve();
-  const view = { id: "v", name: "Gone", pinned: false, created: "2026-10-01T00:00:00Z", agents: ["gone-agent"], rooms: [], clis: [], level: 4, range: { live: true } };
-  localStorage.setItem(`trackinizer.v2.console.${PROFILE.email}`, JSON.stringify([view]));
+  const view: KeptView = { id: "v", name: "Gone", pinned: false, created: "2026-10-01T00:00:00Z", agents: ["gone-agent"], rooms: [], clis: [], level: 4, range: { live: true } };
+  keepOnServer([view]);
   renderConsole();
   expect(await screen.findByText("No records match this view.")).toBeTruthy();
   expect(feedReads(sent)).toEqual([{ tail: "true", limit: "300", actor: "gone-agent" }]);

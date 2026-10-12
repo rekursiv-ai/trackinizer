@@ -5,9 +5,10 @@ import { usePageSync } from "../stations/usePageSync";
 import { useStation } from "../stations/useStation";
 import { useCommands } from "../commands/registry";
 import { Chat } from "./Chat";
-import { heldWidth, MIN_CHAT, readCanvasSizes, writeChatWidth } from "./canvasSizes";
+import { dropLegacySizes, fitWidth, heldWidth, MIN_CHAT, readLegacySizes } from "./canvasSizes";
 import { flipChatSide, setChatFullscreen, setChatHidden, toggleChatFullscreen, toggleChatHidden, useChatColumn } from "./chatColumn";
 import { useHoverOpen } from "./hoverOpen";
+import { useLayout } from "./stationLayout";
 import "./chatColumn.css";
 
 /** A press on the divider: the column it resizes, where the row stood then, and the width it has now. */
@@ -42,7 +43,35 @@ export function ChatColumn({ children }: { readonly children: ReactNode }) {
   const row = useRef<HTMLDivElement>(null);
   const column = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
-  const [width, setWidth] = useState(() => readCanvasSizes().chat);
+  // Chat's width is kept in `ch`, the width of a character of its own font (a
+  // terminal Chat is 80 columns), and fitted to this row: never under the least
+  // Chat needs, never over seven tenths of the row.
+  const [layout, changeLayout] = useLayout();
+  const [unit, setUnit] = useState({ ch: 0, row: 0 });
+  const width = layout.chat_ch && unit.ch ? fitWidth(layout.chat_ch * unit.ch, unit.row, MIN_CHAT) : undefined;
+  useLayoutEffect(() => {
+    const measure = () => {
+      const ch = chWidth(row.current, column.current);
+      const rowWidth = row.current?.clientWidth ?? 0;
+      setUnit((previous) => (previous.ch === ch && previous.row === rowWidth ? previous : { ch, row: rowWidth }));
+    };
+    measure();
+    addEventListener("resize", measure);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    if (row.current) observer?.observe(row.current);
+    return () => {
+      removeEventListener("resize", measure);
+      observer?.disconnect();
+    };
+  }, []);
+  // A browser that kept Chat's width in pixels before the station did: the first
+  // station it shows takes it, unless it already holds one, and the browser forgets it.
+  useEffect(() => {
+    if (!workspace || !unit.ch) return;
+    const { chat } = readLegacySizes();
+    if (chat && layout.chat_ch === undefined) changeLayout({ chat_ch: Math.round((chat / unit.ch) * 100) / 100 }, { now: true });
+    dropLegacySizes("chat");
+  }, [workspace?.id, unit.ch > 0]);
   // The width the stylesheet gave the column while the user has set none, for the divider to tell.
   const [drawn, setDrawn] = useState(0);
   useLayoutEffect(() => setDrawn(column.current?.offsetWidth ?? 0), [width, side, hidden, fullscreen]);
@@ -69,8 +98,7 @@ export function ChatColumn({ children }: { readonly children: ReactNode }) {
   ]);
 
   function keep(next: number) {
-    setWidth(next);
-    writeChatWidth(next);
+    if (unit.ch) changeLayout({ chat_ch: Math.round((next / unit.ch) * 100) / 100 });
   }
 
   function startResize(event: PointerEvent<HTMLElement>) {
@@ -134,4 +162,22 @@ export function ChatColumn({ children }: { readonly children: ReactNode }) {
       {side === "right" ? [...parts].reverse() : null}
     </div>
   );
+}
+
+/** The width of one character in Chat's font, in pixels; a stand-in where nothing is laid out, as in a test. */
+const FALLBACK_CH = 8;
+
+/**
+ * The width of one `0` in the column's font. The probe stands in the row, which
+ * is always shown, with the column's font size: a hidden column has no width,
+ * but its font size is still computed.
+ */
+function chWidth(row: HTMLElement | null, column: HTMLElement | null): number {
+  if (!row || !column) return 0;
+  const probe = document.createElement("div");
+  probe.style.cssText = `position:absolute;visibility:hidden;width:100ch;height:0;padding:0;border:0;font-size:${getComputedStyle(column).fontSize}`;
+  row.append(probe);
+  const ch = probe.offsetWidth / 100;
+  probe.remove();
+  return ch || FALLBACK_CH;
 }

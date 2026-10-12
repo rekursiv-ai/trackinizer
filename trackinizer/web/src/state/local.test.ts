@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
+import { legacyViewsKey } from "../console/legacyViews";
 import type { Draft } from "../create/draft";
 import { DEFAULT_PREFERENCES, type Preferences, preferences, receivePreferences } from "../preferences";
 import { adoptLocalUserData, keepCreateDraftHere, keepFieldDraftHere } from "./local";
@@ -7,6 +8,7 @@ import { EMPTY_STATE, storageKey } from "./value";
 
 const EMAIL = "ada@example.com";
 const VIEW = { id: "v1", name: "Mine", request: { kinds: ["Issue"], filters: [{ field: "owner", op: "is" as const, value: "ada" }] } };
+const KEY = legacyViewsKey(EMAIL);
 const TILES = { chat: { collapsed: true, place: null } };
 
 beforeEach(() => {
@@ -16,6 +18,12 @@ beforeEach(() => {
 afterEach(() => {
   receivePreferences(DEFAULT_PREFERENCES);
 });
+
+type Kept = Preferences["console_views"][number];
+
+function view(id: string, name = id): Kept {
+  return { id, name, pinned: false, created: "2026-10-01T09:00:00.000Z", agents: [], rooms: [], clis: [], level: 1, range: { live: true } };
+}
 
 /** A server that merges what it is sent over the preferences, as `PATCH /api/me/preferences` does. */
 function server() {
@@ -176,4 +184,70 @@ test("a draft kept as the session ends joins the ones already kept, and storage 
   expect(() => keepFieldDraftHere(EMAIL, "i3:title", { text: "C", base: null })).not.toThrow();
   expect(() => keepCreateDraftHere(EMAIL, CREATE)).not.toThrow();
   vi.restoreAllMocks();
+});
+
+test("console views an old browser held merge into the server's by id, the server's winning, and the key is forgotten", async () => {
+  receivePreferences({ ...DEFAULT_PREFERENCES, console_views: [view("a", "server")] });
+  const sent = server();
+  localStorage.setItem(KEY, JSON.stringify([view("a", "browser"), view("b")]));
+  await adoptLocalUserData(EMAIL);
+  expect(bodies(sent)).toEqual([{ console_views: [view("a", "server"), view("b")] }]);
+  expect(preferences().console_views.map(({ id, name }) => [id, name])).toEqual([["a", "server"], ["b", "b"]]);
+  expect(localStorage.getItem(KEY)).toBeNull();
+});
+
+test("a send the server refuses keeps the old key for the next boot", async () => {
+  stubFetch(() => Response.json({ detail: "refused" }, { status: 422 }));
+  localStorage.setItem(KEY, JSON.stringify([view("b")]));
+  await adoptLocalUserData(EMAIL);
+  expect(preferences().console_views).toEqual([]);
+  expect(localStorage.getItem(KEY)).toBe(JSON.stringify([view("b")]));
+});
+
+test("views the server already holds send nothing, and the key is still forgotten", async () => {
+  receivePreferences({ ...DEFAULT_PREFERENCES, console_views: [view("a")] });
+  const sent = server();
+  localStorage.setItem(KEY, JSON.stringify([view("a")]));
+  await adoptLocalUserData(EMAIL);
+  expect(sent).toEqual([]);
+  expect(localStorage.getItem(KEY)).toBeNull();
+});
+
+test("a held view the server would refuse is left out, so it cannot block the rest", async () => {
+  const sent = server();
+  const window = (since: string | null, until: string | null) => ({ ...view("w"), range: { live: false as const, since, until } });
+  localStorage.setItem(
+    KEY,
+    JSON.stringify([
+      view("good"),
+      { id: "x", name: 3 },
+      "junk",
+      view("long", "n".repeat(201)),
+      { ...view("many"), agents: Array.from({ length: 101 }, () => "a") },
+      { ...view("garbage-created"), created: "yesterday" },
+      window("garbage", null),
+      window("2026-10-01T10:00:00.000Z", "2026-10-01T09:00:00.000Z"),
+    ]),
+  );
+  await adoptLocalUserData(EMAIL);
+  expect(bodies(sent)).toEqual([{ console_views: [view("good")] }]);
+  expect(localStorage.getItem(KEY)).toBeNull();
+});
+
+test("text that is not JSON is forgotten without a send", async () => {
+  const sent = server();
+  localStorage.setItem(KEY, "not json");
+  await adoptLocalUserData(EMAIL);
+  expect(sent).toEqual([]);
+  expect(localStorage.getItem(KEY)).toBeNull();
+});
+
+test("the server keeps at most 200 views, its own first", async () => {
+  receivePreferences({ ...DEFAULT_PREFERENCES, console_views: [view("server")] });
+  const sent = server();
+  localStorage.setItem(KEY, JSON.stringify(Array.from({ length: 250 }, (_, n) => view(`v${n}`))));
+  await adoptLocalUserData(EMAIL);
+  expect(sent).toHaveLength(1);
+  expect(preferences().console_views).toHaveLength(200);
+  expect(preferences().console_views[0]?.id).toBe("server");
 });

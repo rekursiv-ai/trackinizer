@@ -9,9 +9,9 @@ const HOME = "#/graph";
 
 /**
  * The station this tab shows, read from the query cache the live stream keeps.
- * Before this tab has one it asks the server: for the one it kept as the last
- * opened, else for the one the user changed last (made, if they have none). A
- * kept station that is gone, or is not the user's, is replaced the same way.
+ * A reload keeps the tab's station; a tab with none (a new one) asks the server
+ * for the one the user changed last (made, if they have none). A station that is
+ * gone, or is not the user's, is replaced the same way.
  */
 export function useStation({ enabled = true }: { readonly enabled?: boolean } = {}) {
   const { id } = useCurrentStation();

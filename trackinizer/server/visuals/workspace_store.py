@@ -54,6 +54,7 @@ from trackinizer.server.visuals.workspaces import (
     SetPreferences,
     ShowVisual,
     StationData,
+    StationLayout,
     WorkspaceData,
     WorkspaceState,
     WorkspaceSummary,
@@ -645,6 +646,45 @@ async def set_workspace_page(
         )
 
 
+async def set_workspace_layout(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    layout: StationLayout,
+) -> bool:
+    """Remember how a station's columns and windows were left.
+
+    Each key the layout names replaces the stored one and the rest stay. No
+    revision changes and nothing is published: a layout write never races an
+    operation.
+
+    Args:
+      engine: Database connection source.
+      user_id: Owner of the station.
+      workspace_id: The station.
+      layout: The keys to store, already validated.
+
+    Returns:
+      found: Whether the user has such a station.
+
+    """
+    async with engine.acquire() as conn:
+        return (
+            await conn.fetchval(
+                "UPDATE visual_workspaces SET station = jsonb_set("
+                "coalesce(station, '{}'), '{layout}', "
+                "coalesce(station->'layout', '{}') || $3::jsonb), "
+                "modified_at = clock_timestamp() "
+                "WHERE id = $1 AND user_id = $2 RETURNING 1",
+                workspace_id,
+                user_id,
+                layout.model_dump(mode="json", exclude_none=True),
+            )
+            is not None
+        )
+
+
 def next_station_name(names: Iterable[str]) -> str:
     """Name a station with the lowest ``unnamed-workstream#N`` not in ``names``.
 
@@ -939,6 +979,7 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
         name=station.name,
         conversation_id=station.conversation_id,
         page=station.page,
+        layout=station.layout,
         visuals=data.visuals,
         focused_instance=data.focused_instance,
         agent_instructions=data.agent_instructions,

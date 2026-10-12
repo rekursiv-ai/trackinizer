@@ -1178,6 +1178,22 @@
         "title": "ClaimNextIssue",
         "type": "object"
       },
+      "ConsoleLive": {
+        "additionalProperties": false,
+        "description": "A Console view that follows the feed as it grows.",
+        "properties": {
+          "live": {
+            "const": true,
+            "title": "Live",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "live"
+        ],
+        "title": "ConsoleLive",
+        "type": "object"
+      },
       "ConsoleRelay": {
         "description": "What a person sent agents directly from the Console, told to their station's chat.\n\nPosted by the browser after the per-agent sends, and carried in the context of\nthe message the chat's partner then receives. The partner records it in the\nchat as :meth:`line` and answers nothing, but reads it in its next prompt, so it\nnever contradicts what the person told the agents.",
         "properties": {
@@ -1242,6 +1258,134 @@
           "actor"
         ],
         "title": "ConsoleTarget",
+        "type": "object"
+      },
+      "ConsoleView": {
+        "additionalProperties": false,
+        "description": "A Console view: what it picks, its level and its place in time, under a name.",
+        "properties": {
+          "agents": {
+            "items": {
+              "maxLength": 200,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Agents",
+            "type": "array"
+          },
+          "clis": {
+            "items": {
+              "maxLength": 200,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Clis",
+            "type": "array"
+          },
+          "created": {
+            "maxLength": 40,
+            "title": "Created",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 100,
+            "title": "Id",
+            "type": "string"
+          },
+          "level": {
+            "enum": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "title": "Level",
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          },
+          "pinned": {
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConsoleLive"
+              },
+              {
+                "$ref": "#/components/schemas/ConsoleWindow"
+              }
+            ],
+            "title": "Range"
+          },
+          "rooms": {
+            "items": {
+              "maxLength": 200,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Rooms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "pinned",
+          "created",
+          "agents",
+          "rooms",
+          "clis",
+          "level",
+          "range"
+        ],
+        "title": "ConsoleView",
+        "type": "object"
+      },
+      "ConsoleWindow": {
+        "additionalProperties": false,
+        "description": "A Console view of a window of history, open at an end that is None.",
+        "properties": {
+          "live": {
+            "const": false,
+            "title": "Live",
+            "type": "boolean"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "required": [
+          "live",
+          "since",
+          "until"
+        ],
+        "title": "ConsoleWindow",
         "type": "object"
       },
       "Cost": {
@@ -4591,6 +4735,16 @@
             "title": "Collapsed",
             "type": "array"
           },
+          "console_views": {
+            "default": [],
+            "description": "Your Console views: a name, what each picks, its level and its range.",
+            "items": {
+              "$ref": "#/components/schemas/ConsoleView"
+            },
+            "maxItems": 200,
+            "title": "Console Views",
+            "type": "array"
+          },
           "create_draft": {
             "anyOf": [
               {
@@ -6376,6 +6530,103 @@
           }
         },
         "title": "Snapshot",
+        "type": "object"
+      },
+      "StationLayout": {
+        "additionalProperties": false,
+        "description": "A station's layout: resolution-free, fitted to each screen by the browser.\n\nEvery key is optional, and a write replaces only the keys it names. Widths,\nsizes and places are fractions of the stage, never pixels; Chat's width is in\n``ch`` (a Terminal Chat is 80 columns).",
+        "properties": {
+          "chat_ch": {
+            "anyOf": [
+              {
+                "maximum": 400.0,
+                "minimum": 10.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chat Ch"
+          },
+          "columns": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/_Columns"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "console": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Console"
+          },
+          "floating": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/_TileSize"
+                },
+                "propertyNames": {
+                  "$ref": "#/components/schemas/_TypeKey"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Floating"
+          },
+          "share": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "exclusiveMinimum": 0.0,
+                  "maximum": 100.0,
+                  "type": "number"
+                },
+                "propertyNames": {
+                  "$ref": "#/components/schemas/_TypeKey"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share"
+          },
+          "tiles": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/_TileMemory"
+                },
+                "propertyNames": {
+                  "$ref": "#/components/schemas/_TypeKey"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tiles"
+          }
+        },
+        "title": "StationLayout",
         "type": "object"
       },
       "Status": {
@@ -8738,6 +8989,16 @@
             "title": "Id",
             "type": "string"
           },
+          "layout": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StationLayout"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -8885,6 +9146,115 @@
         ],
         "title": "WorkspaceVisibleVisual",
         "type": "object"
+      },
+      "_Columns": {
+        "additionalProperties": false,
+        "description": "How wide the columns left and right of the page are, as fractions of the stage.",
+        "properties": {
+          "left": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Left"
+          },
+          "side": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Side"
+          }
+        },
+        "title": "_Columns",
+        "type": "object"
+      },
+      "_Fraction": {
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "type": "number"
+      },
+      "_TileMemory": {
+        "additionalProperties": false,
+        "description": "How a floating window of one visual type was left.",
+        "properties": {
+          "collapsed": {
+            "default": false,
+            "title": "Collapsed",
+            "type": "boolean"
+          },
+          "place": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/_TilePlace"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "_TileMemory",
+        "type": "object"
+      },
+      "_TilePlace": {
+        "additionalProperties": false,
+        "description": "Where a floating window stands.\n\nIts top left corner is ``left`` of the stage's width and ``top`` of its height\nfrom the stage's own.",
+        "properties": {
+          "left": {
+            "$ref": "#/components/schemas/_Fraction"
+          },
+          "top": {
+            "$ref": "#/components/schemas/_Fraction"
+          }
+        },
+        "required": [
+          "left",
+          "top"
+        ],
+        "title": "_TilePlace",
+        "type": "object"
+      },
+      "_TileSize": {
+        "additionalProperties": false,
+        "description": "How large a floating window is, as fractions of the stage's width and height.",
+        "properties": {
+          "height": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Height",
+            "type": "number"
+          },
+          "width": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Width",
+            "type": "number"
+          }
+        },
+        "required": [
+          "width",
+          "height"
+        ],
+        "title": "_TileSize",
+        "type": "object"
+      },
+      "_TypeKey": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string"
       },
       "trackinizer__types__change_log__Kind": {
         "enum": [
@@ -18379,6 +18749,50 @@
           }
         },
         "summary": "Workspace Events Route"
+      }
+    },
+    "/api/workspaces/{workspace_id}/layout": {
+      "put": {
+        "description": "Remember how a station's columns and windows were left.\n\nEach key in the body replaces the stored key; the rest stay. No revision\nchanges and nothing is published.\n\nArgs:\n  workspace_id: The station.\n  body: The layout keys to store, as fractions of the stage.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n\nReturns:\n  response: Empty.",
+        "operationId": "set_workspace_layout_route_api_workspaces__workspace_id__layout_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StationLayout"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Workspace Layout Route"
       }
     },
     "/api/workspaces/{workspace_id}/operations": {

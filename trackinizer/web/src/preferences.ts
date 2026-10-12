@@ -23,6 +23,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   terminal_font_size: "13px",
   stars: [],
   views: [],
+  console_views: [],
   aliases: [],
   people: {},
   read: { boundary: null, marks: [] },

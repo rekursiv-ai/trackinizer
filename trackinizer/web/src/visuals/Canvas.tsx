@@ -16,11 +16,11 @@ import { CrashBoundary } from "../app/CrashBoundary";
 import { useWorkbenchMounted, useWorkbenchSlot } from "../app/workbenchSlot";
 import { parseHash } from "../router/route";
 import { useBrowserState } from "../state/store";
-import type { TileMemory } from "../state/value";
-import { type CanvasSizes, heldWidth, MIN_COLUMN, MIN_FLOAT, readCanvasSizes, writeCanvasSizes } from "./canvasSizes";
+import { type Size, dropLegacySizes, fitSizes, heldWidth, legacyLayout, MIN_COLUMN, MIN_FLOAT, readLegacySizes, toFraction } from "./canvasSizes";
 import { followColumns } from "./chatColumn";
-import { CLICK_SLOP, EDGES, finishGesture, moveGesture, rememberedTile, resizeRect, slideDivider, snapZone, startGesture, TEAR_SLOP, withTile, type Edge, type Gesture, type Rect, type Zone } from "./floatingTile";
+import { CLICK_SLOP, EDGES, finishGesture, moveGesture, rememberedTile, resizeRect, slideDivider, snapZone, startGesture, TEAR_SLOP, withTile, type Edge, type TileMemory, type Gesture, type Rect, type Zone } from "./floatingTile";
 import { orderVisuals, SIDES } from "./layout";
+import { holds, useLayout, type Layout } from "./stationLayout";
 import { preloadRenderers, RENDERERS, VisualPane } from "./registry";
 import { WorkspaceActionsProvider } from "./workspaceActions";
 import "./canvas.css";
@@ -49,24 +49,24 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const [artifactLink, setArtifactLink] = useState("");
   const [artifactLinkError, setArtifactLinkError] = useState<string | null>(null);
   const [expandedMobileFloat, setExpandedMobileFloat] = useState<string | null>(null);
-  // Where floating tiles stand and whether they are folded, as this session left
-  // them: a tile by its instance id, a fold by its visual type. The browser's
-  // state remembers both across loads; these hold when it cannot store.
-  const [floatingPositions, setFloatingPositions] = useState<Record<string, { readonly left: number; readonly top: number }>>({});
-  const [foldedTypes, setFoldedTypes] = useState<Record<string, boolean>>({});
+  // How the station's tiles and columns were left, as fractions of the stage,
+  // and the stage they are fitted to. The station keeps the layout; the stage is
+  // measured as it resizes, and nothing is written for a fit.
+  const [layout, changeLayout] = useLayout();
   const [browser, updateBrowser] = useBrowserState();
+  const [stage, setStage] = useState<Size>({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<TileDrag | null>(null);
   // What a drag draws over the stage: where the tile would dock, and, for a
   // docked tile, a card that follows the pointer in its place.
   const snapRef = useRef<HTMLDivElement>(null);
   const ghostRef = useRef<HTMLDivElement>(null);
-  // The sizes dragged in this browser, and the drags that set them: a column's
-  // edge, a floating window's edge or corner, the divider between two docked tiles.
+  // The drags that set the layout's sizes: a column's edge, a floating window's
+  // edge or corner, the divider between two docked tiles.
   const resizeRef = useRef<ColumnResize | null>(null);
   const windowRef = useRef<WindowResize | null>(null);
   const dividerRef = useRef<DividerDrag | null>(null);
-  const [sizes, setSizes] = useState<CanvasSizes>(readCanvasSizes);
+  const sizes = fitSizes(layout, stage);
   const [writeError, setWriteError] = useState<string | null>(null);
   const active = workspace?.visuals.map((visual) => visual.type)
     ?? previewSelected ?? [catalog.data?.default_visual ?? "trax.browse"];
@@ -89,7 +89,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     && panes.some((pane) => (pane.placement ?? "main") === "main");
   useEffect(() => followColumns(threeColumns), [threeColumns]);
   /** Whether floating `pane` is folded to its bar, as it was left. */
-  const folded = (pane: (typeof panes)[number]) => foldedTypes[pane.type] ?? rememberedTile(browser, pane.type).collapsed;
+  const folded = (pane: (typeof panes)[number]) => rememberedTile(layout, pane.type, stage).collapsed;
   const route = parseHash(window.location.hash, []);
   const refRoute = /^#\/ref\/([^/?]+)\/(\d+)$/.exec(window.location.hash);
   const refKind = refRoute?.[1] ?? null;
@@ -104,15 +104,50 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   // The record the page shows, from the address alone: the page is the route.
   const currentRecordId = route.name === "lookup" ? route.id : refKind ? refId.data ?? null : null;
 
+  // The stage's size, which the layout's fractions are fitted to.
+  useLayoutEffect(() => {
+    const element = stageRef.current;
+    if (!element) return;
+    const measure = () => setStage((previous) => previous.width === element.clientWidth && previous.height === element.clientHeight
+      ? previous : { width: element.clientWidth, height: element.clientHeight });
+    measure();
+    addEventListener("resize", measure);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(element);
+    return () => {
+      removeEventListener("resize", measure);
+      observer?.disconnect();
+    };
+  }, []);
+
+  // A browser that kept column widths, window sizes and places before the station
+  // did: the first station it shows takes them, as fractions of its stage, unless
+  // it already holds a layout of its own, and the browser forgets them either way.
+  useEffect(() => {
+    if (!workspaceId || stage.width === 0 || stage.height === 0) return;
+    if (!holds(layout, "columns", "floating", "tiles", "share")) {
+      const patch = legacyLayout(readLegacySizes(), browser.ui.tiles, stage);
+      if (Object.keys(patch).length) changeLayout(patch, { now: true });
+    }
+    dropLegacySizes("canvas");
+    if (Object.keys(browser.ui.tiles).length) {
+      try {
+        updateBrowser((state) => ({ ...state, ui: { ...state.ui, tiles: {} } }));
+      } catch {
+        // Storage is off, full or holds a value this build cannot read.
+      }
+    }
+  }, [workspaceId, stage.width > 0 && stage.height > 0]);
+
   // What decides a floating tile's size and place; the tiles are held inside the
   // stage again when it changes, or when the stage itself does. Each is held from
-  // the place it is meant to stand at, never from where an earlier hold left it, so
-  // a tile a narrow stage pushed in returns when the stage grows back.
-  const intendedPlaces: Record<string, { readonly left: number; readonly top: number } | null> = {};
+  // the place the layout means it to stand at, never from where an earlier hold
+  // left it, so a tile a narrow stage pushed in returns when the stage grows back.
+  const latestLayout = useRef<{ layout: Layout; rects: Record<string, { readonly left: number; readonly top: number } | null> }>({ layout, rects: {} });
+  latestLayout.current = { layout, rects: {} };
   const floatingLayout = panes.filter(floats).map((pane) => {
-    const place = floatingPositions[pane.id] ?? rememberedTile(browser, pane.type).place ?? pane.floating_rect ?? null;
-    intendedPlaces[pane.id] = place && { left: place.left, top: place.top };
-    return [pane.id, intendedPlaces[pane.id], folded(pane)];
+    latestLayout.current.rects[pane.id] = pane.floating_rect ?? null;
+    return [pane.id, layout.tiles?.[pane.type]?.place ?? null, pane.floating_rect ?? null, folded(pane)];
   });
   const floatingLayoutKey = JSON.stringify(floatingLayout);
   useLayoutEffect(() => {
@@ -124,7 +159,9 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       // On a phone the tile is a header in the flow, where a left or top only shifts it.
       if (window.innerWidth <= NARROW_VIEWPORT) return;
       for (const tile of stage.querySelectorAll<HTMLElement>(".visual-tile-floating")) {
-        const place = intendedPlaces[tile.dataset.visualInstance ?? ""];
+        const { layout: now, rects } = latestLayout.current;
+        const place = rememberedTile(now, tile.dataset.visualType ?? "", { width: stage.clientWidth, height: stage.clientHeight }).place
+          ?? rects[tile.dataset.visualInstance ?? ""];
         if (!place) continue;
         tile.style.left = `${Math.min(Math.max(0, stage.clientWidth - tile.offsetWidth), Math.max(0, place.left))}px`;
         tile.style.top = `${Math.min(Math.max(0, stage.clientHeight - tile.offsetHeight), Math.max(0, place.top))}px`;
@@ -138,7 +175,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       removeEventListener("resize", hold);
       observer?.disconnect();
     };
-  }, [floatingLayoutKey]);
+  }, [floatingLayoutKey, stage.width, stage.height]);
 
   function acceptWorkspace(state: WorkspaceState) {
     latestWorkspace.current = newerWorkspace(latestWorkspace.current, state);
@@ -193,13 +230,10 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     void write({ kind: "show", visual_type: "trax.artifact", placement: "main", record_id: parsed.id });
   }
 
-  /** Remember how the floating tile of visual type `type` was left; a browser that cannot store keeps it for the session only. */
+  /** Remember how the floating tile of visual type `type` was left, in the station's layout. */
   function rememberTile(type: string, change: Partial<TileMemory>) {
-    try {
-      updateBrowser((state) => withTile(state, type, change));
-    } catch {
-      // Storage is off, full or holds a value this build cannot read.
-    }
+    const measured = { width: stageRef.current?.clientWidth ?? 0, height: stageRef.current?.clientHeight ?? 0 };
+    changeLayout((now) => withTile(now, type, change, measured) ?? {});
   }
 
   /** Where `tile` is drawn in the stage, which the stage's hold may have moved from the place last saved. */
@@ -207,11 +241,6 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     const stageRect = stage.getBoundingClientRect();
     const tileRect = tile.getBoundingClientRect();
     return { left: tileRect.left - stageRect.left, top: tileRect.top - stageRect.top };
-  }
-
-  function placeFloatingPane(paneId: string, type: string, place: { readonly left: number; readonly top: number }) {
-    setFloatingPositions((previous) => ({ ...previous, [paneId]: place }));
-    rememberTile(type, { place });
   }
 
   /**
@@ -224,7 +253,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
 
   /** Float docked `pane` over the stage at `place`. */
   function floatTile(pane: Pane, place: { readonly left: number; readonly top: number }) {
-    placeFloatingPane(pane.id, pane.type, place);
+    rememberTile(pane.type, { place });
     operate({ kind: "place", instance_id: pane.id, placement: "floating" });
   }
 
@@ -233,7 +262,6 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }
 
   function foldFloatingPane(type: string, collapsed: boolean) {
-    setFoldedTypes((previous) => ({ ...previous, [type]: collapsed }));
     rememberTile(type, { collapsed });
   }
 
@@ -243,9 +271,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     if (!stage || !tile) return;
     const maxLeft = Math.max(0, stage.clientWidth - tile.offsetWidth);
     const maxTop = Math.max(0, stage.clientHeight - tile.offsetHeight);
-    placeFloatingPane(paneId, type, {
-      left: Math.min(maxLeft, Math.max(0, left)),
-      top: Math.min(maxTop, Math.max(0, top)),
+    rememberTile(type, {
+      place: { left: Math.min(maxLeft, Math.max(0, left)), top: Math.min(maxTop, Math.max(0, top)) },
     });
   }
 
@@ -335,7 +362,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     } else if (drag.floating) {
       // Placed before the transform goes, so no frame shows the tile back where it started.
       Object.assign(drag.tile.style, { left: `${outcome.place.left}px`, top: `${outcome.place.top}px`, right: "auto", transform: "" });
-      placeFloatingPane(drag.pane.id, drag.pane.type, outcome.place);
+      rememberTile(drag.pane.type, { place: outcome.place });
     } else {
       // Under the pointer as the card was; the stage's hold keeps the tile inside it.
       floatTile(drag.pane, {
@@ -359,17 +386,10 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     return stageRef.current?.querySelector<HTMLElement>(side === "left" ? ".visual-side-column-left" : ".visual-side-column:not(.visual-side-column-left)") ?? null;
   }
 
-  /** Keep a size the user dragged, for this page and in this browser. */
-  function keepSizes(change: (previous: CanvasSizes) => CanvasSizes) {
-    setSizes((previous) => {
-      const next = change(previous);
-      writeCanvasSizes(next);
-      return next;
-    });
-  }
-
+  /** Keep a column's width as a fraction of the stage, in the station's layout. */
   function keepColumnWidth(side: Side, width: number) {
-    keepSizes((previous) => ({ ...previous, [side]: width }));
+    const fraction = toFraction(width, stageRef.current?.clientWidth ?? 0);
+    if (fraction !== null) changeLayout((now) => ({ columns: { ...now.columns, [side]: fraction } }));
   }
 
   /** A press on an edge or a corner of a floating window: the sides it names follow the pointer, inside the stage. */
@@ -401,8 +421,11 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     if (resize?.pointerId !== event.pointerId) return;
     windowRef.current = null;
     const { left, top, width, height } = resize.rect;
-    placeFloatingPane(resize.pane.id, resize.pane.type, { left, top });
-    keepSizes((previous) => ({ ...previous, floating: { ...previous.floating, [resize.pane.type]: { width, height } } }));
+    rememberTile(resize.pane.type, { place: { left, top } });
+    const stageWidth = stageRef.current?.clientWidth ?? 0;
+    const stageHeight = stageRef.current?.clientHeight ?? 0;
+    const [wide, high] = [toFraction(width, stageWidth), toFraction(height, stageHeight)];
+    if (wide !== null && high !== null) changeLayout((now) => ({ floating: { ...now.floating, [resize.pane.type]: { width: wide, height: high } } }));
   }
 
   /**
@@ -455,7 +478,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     const room = drag.now.map((size, index) => size - drag.ruled[index]!);
     const even = room.reduce((sum, size) => sum + size, 0) / room.length || 1;
     const shares = Object.fromEntries(drag.tiles.map((tile, index) => [tile.dataset.visualType ?? "", Math.round((room[index]! / even) * 10_000) / 10_000]));
-    keepSizes((previous) => ({ ...previous, share: { ...previous.share, ...shares } }));
+    changeLayout((now) => ({ share: { ...now.share, ...shares } }));
   }
 
   /** A press on the edge between a column and the page: the column takes the width the pointer drags that edge to. */
@@ -537,7 +560,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     const isPage = pane.type === "trax.browse";
     const title = catalog.data?.visuals.find((visual) => visual.type === pane.type)?.title ?? pane.type;
     const collapsed = floating && folded(pane);
-    const at = floatingPositions[pane.id] ?? rememberedTile(browser, pane.type).place ?? pane.floating_rect ?? null;
+    const at = rememberedTile(layout, pane.type, stage).place ?? pane.floating_rect ?? null;
     const size = sizes.floating[pane.type] ?? pane.floating_rect;
     const share = sizes.share[pane.type];
     return (

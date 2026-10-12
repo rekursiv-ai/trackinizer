@@ -34,6 +34,7 @@ from trackinizer.server.visuals.workspace_store import (
     open_latest_workspace,
     read_workspace,
     rename_workspace,
+    set_workspace_layout,
     set_workspace_page,
     workspace_for_chat,
 )
@@ -45,6 +46,7 @@ from trackinizer.server.visuals.workspaces import (
     RenameWorkspace,
     SetPage,
     SetPreferences,
+    StationLayout,
     WorkspaceConflict,
     WorkspaceState,
     WorkspaceSummary,
@@ -275,6 +277,39 @@ async def set_workspace_page_route(
         user_id=identity.user_id,
         workspace_id=workspace_id,
         route=body.route,
+    ):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return Response(status_code=204)
+
+
+@router.put("/api/workspaces/{workspace_id}/layout", status_code=204)
+async def set_workspace_layout_route(
+    workspace_id: uuid.UUID,
+    body: StationLayout,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> Response:
+    """Remember how a station's columns and windows were left.
+
+    Each key in the body replaces the stored key; the rest stay. No revision
+    changes and nothing is published.
+
+    Args:
+      workspace_id: The station.
+      body: The layout keys to store, as fractions of the stage.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account, which must own the station.
+
+    Returns:
+      response: Empty.
+
+    """
+    require_browser(identity)
+    if not await set_workspace_layout(
+        engine_of(request),
+        user_id=identity.user_id,
+        workspace_id=workspace_id,
+        layout=body,
     ):
         raise HTTPException(status_code=404, detail="Workspace not found")
     return Response(status_code=204)

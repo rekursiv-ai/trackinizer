@@ -1,4 +1,5 @@
-import type { BrowserState, TileMemory } from "../state/value";
+import { type Size, toFraction, toPixels } from "./canvasSizes";
+import type { Layout } from "./stationLayout";
 
 /**
  * A press on a floating tile's top bar that never goes farther than this many
@@ -111,14 +112,38 @@ export function finishGesture(gesture: Gesture, slop = CLICK_SLOP): Outcome {
   return { kind: "drag", place: { left: gesture.left + gesture.dx, top: gesture.top + gesture.dy } };
 }
 
+/**
+ * How a floating tile was left: folded to its top bar or not, and where the
+ * user dragged it, in pixels from the stage's top left (null until it was
+ * dragged).
+ */
+export type TileMemory = {
+  readonly collapsed: boolean;
+  readonly place: { readonly left: number; readonly top: number } | null;
+};
+
 const UNTOUCHED: TileMemory = { collapsed: false, place: null };
 
-/** How the floating tile of visual type `type` was left in this browser. */
-export function rememberedTile(state: BrowserState, type: string): TileMemory {
-  return state.ui.tiles[type] ?? UNTOUCHED;
+/** How the floating tile of visual type `type` was left, with its place fitted to a stage `stage` large (a stage not yet measured gives no place). */
+export function rememberedTile(layout: Layout, type: string, stage: Size): TileMemory {
+  const kept = layout.tiles?.[type];
+  if (!kept) return UNTOUCHED;
+  const place = kept.place && stage.width > 0 && stage.height > 0
+    ? { left: toPixels(kept.place.left, stage.width), top: toPixels(kept.place.top, stage.height) }
+    : null;
+  return { collapsed: kept.collapsed ?? false, place };
 }
 
-/** `state` with `change` applied to the memory of the tile of visual type `type`. */
-export function withTile(state: BrowserState, type: string, change: Partial<TileMemory>): BrowserState {
-  return { ...state, ui: { ...state.ui, tiles: { ...state.ui.tiles, [type]: { ...rememberedTile(state, type), ...change } } } };
+/**
+ * The layout key `tiles` once `change` is applied to the memory of the tile of
+ * visual type `type`, a place given in pixels of a stage `stage` large; null
+ * where that stage is not measured, so no place can be stored.
+ */
+export function withTile(layout: Layout, type: string, change: Partial<TileMemory>, stage: Size): Layout | null {
+  const before = layout.tiles?.[type];
+  const left = change.place ? toFraction(change.place.left, stage.width) : null;
+  const top = change.place ? toFraction(change.place.top, stage.height) : null;
+  if (change.place && (left === null || top === null)) return null;
+  const place = change.place && left !== null && top !== null ? { place: { left, top } } : {};
+  return { tiles: { ...layout.tiles, [type]: { ...before, ...(change.collapsed === undefined ? {} : { collapsed: change.collapsed }), ...place } } };
 }

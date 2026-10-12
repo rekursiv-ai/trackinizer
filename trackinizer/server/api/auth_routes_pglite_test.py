@@ -265,6 +265,7 @@ _DEFAULTS: dict[str, object] = {
     "terminal_font_size": "13px",
     "stars": [],
     "views": [],
+    "console_views": [],
     "aliases": [],
     "people": {},
     "read": {"boundary": None, "marks": []},

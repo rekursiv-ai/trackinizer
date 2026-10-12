@@ -1,7 +1,5 @@
 import { useSyncExternalStore } from "react";
 
-const KEY = "trackinizer.station.current";
-
 /** The station this tab shows, and the page it was sent to when the tab switched to it. */
 export type CurrentStation = {
   /** Null before the first station is known: the tab asks the server for the one changed last. */
@@ -12,24 +10,33 @@ export type CurrentStation = {
 
 const listeners = new Set<() => void>();
 
+/** The tab's `sessionStorage` key for its station: a reload finds it, a new tab does not. */
+const KEY = "trackinizer.station.tab";
+
 /**
- * The station as this page has it. Its id is kept in the browser as the last one
- * opened, and read back once; held here too when storage refuses it, so the tab
- * still switches.
+ * The station as this page has it. Its id is kept in the tab's `sessionStorage`,
+ * so a reload keeps the station; a new tab has none and asks the server for the
+ * one changed last. Held here too when storage refuses it, so the tab still
+ * switches.
  */
-let current: CurrentStation = { id: readStored(), landing: null };
+let current: CurrentStation = { id: readTab(), landing: null };
+
+// The browser no longer keeps the last station opened for every tab: forget what an older build left.
+try {
+  localStorage.removeItem("trackinizer.station.current");
+} catch { /* Storage can be unavailable; then nothing was kept. */ }
+
+function readTab(): string | null {
+  try {
+    return sessionStorage.getItem(KEY);
+  } catch {
+    return null;
+  }
+}
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
-}
-
-function readStored(): string | null {
-  try {
-    return localStorage.getItem(KEY);
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -39,8 +46,8 @@ function readStored(): string | null {
  */
 export function setStation(id: string | null, landing: string | null = null): void {
   try {
-    if (id) localStorage.setItem(KEY, id);
-    else localStorage.removeItem(KEY);
+    if (id) sessionStorage.setItem(KEY, id);
+    else sessionStorage.removeItem(KEY);
   } catch { /* Private storage can be unavailable. */ }
   if (id === current.id && landing === current.landing) return;
   current = { id, landing };

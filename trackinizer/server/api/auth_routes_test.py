@@ -584,6 +584,7 @@ class TestProfile:
 _EMPTY_USER_DATA: dict[str, object] = {
     "stars": [],
     "views": [],
+    "console_views": [],
     "aliases": [],
     "people": {},
     "read": {"boundary": None, "marks": []},

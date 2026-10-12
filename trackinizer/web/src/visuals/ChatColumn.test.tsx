@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { listStations, setStationPage, type StationSummary } from "../api/stations";
+import { listStations, setStationLayout, setStationPage, type StationSummary } from "../api/stations";
 import { createDefaultWorkspace, getWorkspace, type WorkspaceState } from "../api/workspaces";
 import { CommandRegistry, CommandRegistryContext, Shortcuts, useCommandList } from "../commands/registry";
 import { setStationMenu, useStationMenu } from "../stations/actions";
@@ -10,9 +10,10 @@ import { currentStation, setStation } from "../stations/store";
 import { ChatColumn } from "./ChatColumn";
 import { currentChatColumn, setChatFullscreen, setChatHidden, setChatSide } from "./chatColumn";
 import { FOLD_AFTER_MS, OPEN_AFTER_MS } from "./hoverOpen";
+import { flushLayouts, forgetLayouts, type Layout } from "./stationLayout";
 
 vi.mock("../api/workspaces", () => ({ createDefaultWorkspace: vi.fn(), getWorkspace: vi.fn() }));
-vi.mock("../api/stations", () => ({ listStations: vi.fn(), setStationPage: vi.fn(), createStation: vi.fn() }));
+vi.mock("../api/stations", () => ({ listStations: vi.fn(), setStationPage: vi.fn(), setStationLayout: vi.fn(), createStation: vi.fn() }));
 // Chat itself is tested in Chat.test.tsx; here it is a panel with a box.
 vi.mock("./Chat", () => ({
   Chat: ({ workspace }: { workspace: WorkspaceState | null }) => (
@@ -23,15 +24,23 @@ vi.mock("./Chat", () => ({
 const SIZES_KEY = "trackinizer.v2.canvas.sizes";
 const workspace: WorkspaceState = { id: "w1", name: "unnamed-workstream#1", conversation_id: null, page: null, revision: 1, focused_instance: null, visuals: [] };
 
+/** The layout keys Chat has written to its station so far, later writes over earlier ones. */
+function written(): Layout {
+  flushLayouts();
+  return Object.assign({}, ...vi.mocked(setStationLayout).mock.calls.map(([, patch]) => patch)) as Layout;
+}
+
 beforeEach(() => {
   vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
   vi.mocked(listStations).mockResolvedValue([]);
   vi.mocked(setStationPage).mockResolvedValue(undefined);
+  vi.mocked(setStationLayout).mockResolvedValue(undefined);
   Element.prototype.setPointerCapture = vi.fn();
 });
 
 afterEach(() => {
   setStation(null);
+  forgetLayouts();
   setStationMenu(false);
   history.replaceState(null, "", "#/");
   cleanup();
@@ -47,7 +56,8 @@ function Palette() {
   return <output aria-label="Palette">{useCommandList().filter((command) => command.section === "Chat").map((command) => command.title).join("|")}</output>;
 }
 
-async function show() {
+async function show(state: WorkspaceState = workspace) {
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><CommandRegistryContext value={new CommandRegistry()}>
     <Shortcuts />
@@ -95,7 +105,8 @@ test("the divider resizes by pointer, never under 280 px or over seven tenths of
   expect(column.style.getPropertyValue("--chat-width")).toBe("700px");
   fireEvent.pointerMove(edge, { pointerId: 1, clientX: 540, clientY: 300 });
   fireEvent.pointerUp(edge, { pointerId: 1, clientX: 540, clientY: 300 });
-  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toMatchObject({ chat: 440 });
+  // Kept in `ch`, here 8 px each: 55 of them.
+  expect(written().chat_ch).toBe(55);
   expect(edge.getAttribute("aria-valuenow")).toBe("440");
 });
 
@@ -108,7 +119,7 @@ test("on the right a drag toward the workbench widens Chat", async () => {
   fireEvent.pointerMove(edge, { pointerId: 1, clientX: 650, clientY: 300 });
   expect(column.style.getPropertyValue("--chat-width")).toBe("350px");
   fireEvent.pointerUp(edge, { pointerId: 1, clientX: 650, clientY: 300 });
-  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toMatchObject({ chat: 350 });
+  expect(written().chat_ch).toBe(43.75);
 });
 
 test("the arrow keys move the divider 16 px, 48 with Shift, toward the side the arrow points", async () => {
@@ -122,13 +133,40 @@ test("the arrow keys move the divider 16 px, 48 with Shift, toward the side the 
   expect(column.style.getPropertyValue("--chat-width")).toBe("368px");
   for (let press = 0; press < 5; press += 1) fireEvent.keyDown(edge, { key: "ArrowLeft", shiftKey: true });
   expect(column.style.getPropertyValue("--chat-width")).toBe("280px");
-  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toMatchObject({ chat: 280 });
+  expect(written().chat_ch).toBe(35);
 });
 
-test("the width kept is the width Chat opens at, and the canvas's own sizes leave it alone", async () => {
-  localStorage.setItem(SIZES_KEY, JSON.stringify({ chat: 512, floating: {}, share: {} }));
+test("the width the station keeps, in ch, is the width Chat opens at", async () => {
+  const { column } = await show({ ...workspace, layout: { chat_ch: 64 } });
+  expect(column.style.getPropertyValue("--chat-width")).toBe("512px");
+  expect(written()).toEqual({});
+});
+
+test("a row too narrow for the stored width shows Chat fitted to seven tenths of it, and writes nothing", async () => {
+  const { column, row } = await show({ ...workspace, layout: { chat_ch: 200 } });
+  Object.defineProperty(row, "clientWidth", { configurable: true, value: 400 });
+  fireEvent(window, new Event("resize"));
+  expect(column.style.getPropertyValue("--chat-width")).toBe("280px");
+  Object.defineProperty(row, "clientWidth", { configurable: true, value: 1000 });
+  fireEvent(window, new Event("resize"));
+  expect(column.style.getPropertyValue("--chat-width")).toBe("700px");
+  expect(written()).toEqual({});
+});
+
+test("a browser that kept Chat's width in pixels hands it to the first station it opens, in ch, and forgets it", async () => {
+  localStorage.setItem(SIZES_KEY, JSON.stringify({ chat: 512, side: 400, floating: {}, share: {} }));
   const { column } = await show();
   expect(column.style.getPropertyValue("--chat-width")).toBe("512px");
+  expect(written()).toEqual({ chat_ch: 64 });
+  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual({ side: 400, floating: {}, share: {} });
+});
+
+test("a station that already holds Chat's width keeps it over the pixels the browser kept", async () => {
+  localStorage.setItem(SIZES_KEY, JSON.stringify({ chat: 512 }));
+  const { column } = await show({ ...workspace, layout: { chat_ch: 50 } });
+  expect(column.style.getPropertyValue("--chat-width")).toBe("400px");
+  expect(written()).toEqual({});
+  expect(localStorage.getItem(SIZES_KEY)).toBeNull();
 });
 
 test("the shortcut hides Chat to a strip at its edge, even from the box, and the strip shows it again", async () => {

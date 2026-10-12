@@ -1,8 +1,10 @@
-import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { newUuid } from "../api/idempotency";
-import { useProfile } from "../app/boot";
+import { choosePreferences, preferences, receivePreferences, usePreferences } from "../preferences";
+import type { KeptView } from "./legacyViews";
 import type { Selection } from "./facets";
 import type { Range } from "./feed";
+import { useLayout } from "../visuals/stationLayout";
 import type { Level } from "./levels";
 
 /**
@@ -26,18 +28,19 @@ export function orderViews(views: readonly View[]): View[] {
 }
 
 /**
- * The signed-in user's console views in this browser, in the rail's order, and
- * the one open in this tab.
+ * The signed-in user's console views, in the rail's order, and the one open in
+ * this tab.
  *
- * The views live in `localStorage` under the user's email, as drafts do, and
- * every hook showing them follows a change made in any tab. The open view is
- * the stored one with this tab's id, so another tab's edit shows here and its
- * delete opens the first view left. That id lives in this tab's
- * `sessionStorage`, so a reload opens it again; a tab with none opens the first
- * view, or a fresh one. A fresh view ("Untitled view", every agent's messages,
- * live) is stored on its first change, as a new conversation is. When the
- * browser refuses to store, or denies storage altogether, the open view still
- * changes, unsaved.
+ * The views are the user's `console_views` preference, kept on the server
+ * (`src/preferences.ts`) so any browser finds them, and every hook showing them
+ * follows a change made in any tab. The open view is the stored one with this
+ * tab's id, so another tab's edit shows here and its delete opens the first view
+ * left. That id lives in the station's layout, so a reload, or another browser,
+ * opens it again; a station with none opens the first view, or a fresh one. A tab
+ * that kept the id in its `sessionStorage`, as an older build did, hands it to the
+ * station once and forgets it. A fresh view ("Untitled view", every agent's
+ * messages, live) is stored on its first change, as a new conversation is. When
+ * the server refuses a change, the open view still shows it, unsaved.
  */
 export function useViews(): {
   views: readonly View[];
@@ -50,35 +53,35 @@ export function useViews(): {
   edit: (id: string, change: (view: View) => View) => void;
   remove: (id: string) => void;
 } {
-  const { email } = useProfile();
-  const key = `trackinizer.v2.console.${email}`;
-  const stored = useSyncExternalStore(subscribe, () => read("localStorage", key));
-  const views = useMemo(() => orderViews(parseViews(stored)), [stored]);
-  const [openId, setOpenId] = useState(() => read("sessionStorage", OPEN_KEY));
-  // The view this tab holds unstored: a fresh one, or a change the browser refused.
+  const { console_views: stored } = usePreferences();
+  const views = useMemo(() => orderViews(stored), [stored]);
+  const [layout, changeLayout] = useLayout();
+  const openId = layout.console ?? null;
+  useEffect(() => {
+    const legacy = readOpenId();
+    if (legacy === null) return;
+    if (layout.console === undefined) changeLayout({ console: legacy }, { now: true });
+    try {
+      sessionStorage.removeItem(OPEN_KEY);
+    } catch {
+      // Storage is off: there is nothing to forget.
+    }
+  }, []);
+  // The view this tab holds unstored: a fresh one, or a change the server refused.
   const [unsaved, setUnsaved] = useState(freshView);
   const open = views.find(({ id }) => id === openId) ?? (unsaved.id === openId ? unsaved : (views[0] ?? unsaved));
   const show = useCallback((id: string) => {
-    setOpenId(id);
-    write("sessionStorage", OPEN_KEY, id);
-  }, []);
-  /** Store `change` of the stored views; whether the browser stored it. */
-  const store = useCallback(
-    (change: (views: readonly View[]) => readonly View[]): boolean => {
-      const saved = write("localStorage", key, JSON.stringify(change(parseViews(read("localStorage", key)))));
-      // A `storage` event reaches other tabs only; this tells this one's hooks.
-      dispatchEvent(new Event(CHANGED));
-      return saved;
-    },
-    [key],
-  );
+    changeLayout({ console: id });
+  }, [changeLayout]);
   return {
     views,
     open,
     change: (view) => {
-      const saved = store((all) => [...all.filter(({ id }) => id !== view.id), view]);
-      // Saved, the view is the stored one; a later delete in any tab must not leave a copy here.
-      setUnsaved(saved ? freshView() : view);
+      // Shown as the stored one now; a later delete in any tab must not leave a copy here.
+      setUnsaved(freshView());
+      void store((all) => [...all.filter(({ id }) => id !== view.id), kept(view)]).then((saved) => {
+        if (!saved) setUnsaved(view);
+      });
       show(view.id);
     },
     openView: (id) => {
@@ -87,19 +90,41 @@ export function useViews(): {
       show(id ?? fresh.id);
     },
     edit: (id, change) => {
-      store((all) => all.map((one) => (one.id === id ? change(one) : one)));
+      void store((all) => all.map((one) => (one.id === id ? kept(change(one)) : one)));
     },
     remove: (id) => {
-      store((all) => all.filter((one) => one.id !== id));
+      void store((all) => all.filter((one) => one.id !== id));
     },
   };
 }
 
-/** The tab's open view, by id. */
-const OPEN_KEY = "trackinizer.v2.console.open";
+/**
+ * Show and send `change` of the views the preferences hold now; whether the
+ * server kept it. One it refused is taken back, so the rail lists what is kept.
+ */
+async function store(change: (views: readonly KeptView[]) => KeptView[]): Promise<boolean> {
+  const before = preferences().console_views;
+  if (await choosePreferences({ console_views: change(before) })) return true;
+  receivePreferences({ ...preferences(), console_views: before });
+  return false;
+}
 
-/** Fired on `window` when this tab stores views. */
-const CHANGED = "trackinizer-console-views";
+/** `view` as the preferences keep it: lists the page may not change are copied. */
+function kept(view: View): KeptView {
+  return { ...view, agents: [...view.agents], rooms: [...view.rooms], clis: [...view.clis] };
+}
+
+/** The id this tab kept in its `sessionStorage`, or null when there is none or storage is off. */
+function readOpenId(): string | null {
+  try {
+    return sessionStorage.getItem(OPEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** The id the open view was kept under in a tab's `sessionStorage` before the station held it. */
+const OPEN_KEY = "trackinizer.v2.console.open";
 
 function freshView(): View {
   return {
@@ -113,78 +138,4 @@ function freshView(): View {
     level: 1,
     range: { live: true },
   };
-}
-
-function subscribe(onChange: () => void): () => void {
-  addEventListener("storage", onChange);
-  addEventListener(CHANGED, onChange);
-  return () => {
-    removeEventListener("storage", onChange);
-    removeEventListener(CHANGED, onChange);
-  };
-}
-
-/** Which of the browser's storage areas; named, since a denied area throws as soon as it is reached. */
-type Area = "localStorage" | "sessionStorage";
-
-/** The stored text, or null when there is none or storage is off. */
-function read(area: Area, key: string): string | null {
-  try {
-    return window[area].getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-/** Store `text`; whether the browser stored it. */
-function write(area: Area, key: string, text: string): boolean {
-  try {
-    window[area].setItem(key, text);
-    return true;
-  } catch {
-    // Storage off or full: the open view still shows the change, unsaved.
-    return false;
-  }
-}
-
-/**
- * The stored views. Text that is not JSON, and a view of another shape (written
- * by another build, or by hand), its times not times or its range ending before
- * it starts, are left out rather than stopping the console.
- */
-function parseViews(text: string | null): View[] {
-  let value: unknown;
-  try {
-    value = JSON.parse(text ?? "[]");
-  } catch {
-    return [];
-  }
-  return Array.isArray(value) ? value.filter(isView) : [];
-}
-
-function isView(value: unknown): value is View {
-  if (typeof value !== "object" || value === null) return false;
-  const view = value as { readonly [field: string]: unknown };
-  const range = view.range as { readonly [field: string]: unknown } | null | undefined;
-  return (
-    ["id", "name"].every((field) => typeof view[field] === "string") &&
-    isTime(view.created) &&
-    typeof view.pinned === "boolean" &&
-    ["agents", "rooms", "clis"].every((field) => Array.isArray(view[field]) && view[field].every((name) => typeof name === "string")) &&
-    [1, 2, 3, 4].includes(view.level as number) &&
-    typeof range === "object" &&
-    range !== null &&
-    (range.live === true || (range.live === false && isWindow(range.since, range.until)))
-  );
-}
-
-/** Whether `since` and `until` bound a window: each a time or open (null), and the window not ending before it starts. */
-function isWindow(since: unknown, until: unknown): boolean {
-  if ((since !== null && !isTime(since)) || (until !== null && !isTime(until))) return false;
-  return !isTime(since) || !isTime(until) || Date.parse(since) <= Date.parse(until);
-}
-
-/** Whether `value` is a time `Date` reads. */
-function isTime(value: unknown): value is string {
-  return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }

@@ -1,3 +1,4 @@
+import { legacyViewsKey, parseLegacyViews } from "../console/legacyViews";
 import { type Draft as CreateDraft, keptDraft, type Related } from "../create/draft";
 import type { Draft } from "../editors/drafts";
 import { choosePreferences, type Preferences, preferences, receivePreferences } from "../preferences";
@@ -36,6 +37,7 @@ export function keepCreateDraftHere(email: string, draft: CreateDraft): void {
  *
  * - stars, names, people, saved views and read state merge into the user's
  *   (`mergeImport`: nothing the server holds is dropped);
+ * - console views merge by id, the server's copy winning a clash;
  * - folded sections and the lens come over unless the server holds some;
  * - drafts come over and replace a draft of the same field, and the create
  *   form's replaces the server's: a copy here was kept when its session ended,
@@ -45,9 +47,14 @@ export function keepCreateDraftHere(email: string, draft: CreateDraft): void {
  * and a send that fails keeps everything for the next boot.
  */
 export async function adoptLocalUserData(email: string): Promise<void> {
-  let held: { state: string | null; drafts: string | null; create: string | null };
+  let held: { state: string | null; drafts: string | null; create: string | null; console: string | null };
   try {
-    held = { state: localStorage.getItem(storageKey(email)), drafts: localStorage.getItem(draftsKey(email)), create: localStorage.getItem(createKey(email)) };
+    held = {
+      state: localStorage.getItem(storageKey(email)),
+      drafts: localStorage.getItem(draftsKey(email)),
+      create: localStorage.getItem(createKey(email)),
+      console: localStorage.getItem(legacyViewsKey(email)),
+    };
   } catch {
     return;
   }
@@ -56,6 +63,7 @@ export async function adoptLocalUserData(email: string): Promise<void> {
     ...(state ? stateChange(state) : {}),
     ...(held.drafts === null ? {} : draftsChange(held.drafts)),
     ...(held.create === null ? {} : createChange(held.create)),
+    ...(held.console === null ? {} : consoleChange(held.console)),
   };
   const shown = preferences();
   if (Object.keys(change).length > 0 && !(await choosePreferences(change))) {
@@ -67,6 +75,7 @@ export async function adoptLocalUserData(email: string): Promise<void> {
   try {
     localStorage.removeItem(draftsKey(email));
     localStorage.removeItem(createKey(email));
+    localStorage.removeItem(legacyViewsKey(email));
     if (state && movedOut(state)) {
       const tiles = state.ui.tiles;
       if (Object.keys(tiles).length === 0) localStorage.removeItem(storageKey(email));
@@ -76,6 +85,9 @@ export async function adoptLocalUserData(email: string): Promise<void> {
     /* Storage can be unavailable; then there is nothing to forget either. */
   }
 }
+
+/** The most console views the server keeps (`Preferences.console_views`). */
+const MAX_CONSOLE_VIEWS = 200;
 
 /** The state held here, or null when this build cannot read it. */
 function readableState(text: string): BrowserState | null {
@@ -110,6 +122,14 @@ function stateChange(state: BrowserState): Partial<Preferences> {
 function draftsChange(text: string): Partial<Preferences> {
   const drafts = { ...preferences().drafts, ...heldDraftsIn(text) };
   return sameJson(drafts, preferences().drafts) ? {} : { drafts };
+}
+
+/** The server's console views, then those held here it has no view of the same id for, up to its bound. */
+function consoleChange(text: string): Partial<Preferences> {
+  const now = preferences().console_views;
+  const known = new Set(now.map(({ id }) => id));
+  const merged = [...now, ...parseLegacyViews(text).filter(({ id }) => !known.has(id))].slice(0, MAX_CONSOLE_VIEWS);
+  return merged.length === now.length ? {} : { console_views: merged };
 }
 
 function createChange(text: string): Partial<Preferences> {

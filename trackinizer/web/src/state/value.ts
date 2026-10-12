@@ -43,11 +43,15 @@ export type Person = components["schemas"]["Person"];
  */
 export type ReadState = components["schemas"]["ReadState"];
 
-/** Collapsed sections, by key, the detail lens last used, and how each floating tile was left. */
+/**
+ * Collapsed sections, by key, the detail lens last used, and the floating tiles
+ * an older build left here. A station holds its tiles in its own layout now: the
+ * canvas moves these there once and empties them.
+ */
 export type UiState = {
   readonly collapsed: string[];
   readonly lens: string | null;
-  /** Floating canvas tiles, by visual type. */
+  /** Floating canvas tiles, by visual type; only what an older build stored. */
   readonly tiles: { readonly [type: string]: TileMemory };
 };
 

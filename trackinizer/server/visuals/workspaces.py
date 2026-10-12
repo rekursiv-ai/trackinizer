@@ -85,6 +85,91 @@ class WorkspaceData(BaseModel):
         return self
 
 
+type _Fraction = Annotated[float, Field(ge=0, le=1)]
+"""A share of the stage, so the layout fits any screen."""
+
+
+class _TilePlace(BaseModel):
+    """Where a floating window stands.
+
+    Its top left corner is ``left`` of the stage's width and ``top`` of its height
+    from the stage's own.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    left: _Fraction
+    top: _Fraction
+
+
+class _TileSize(BaseModel):
+    """How large a floating window is, as fractions of the stage's width and height."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    width: Annotated[float, Field(gt=0, le=1)]
+    height: Annotated[float, Field(gt=0, le=1)]
+
+
+class _TileMemory(BaseModel):
+    """How a floating window of one visual type was left."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    collapsed: bool = False
+    place: _TilePlace | None = None
+
+
+type _TypeKey = Annotated[str, Field(min_length=1, max_length=64)]
+"""A visual type's name."""
+
+
+_MAX_TYPES: Final = 64
+"""Most visual types a by-type map holds."""
+
+
+class _Columns(BaseModel):
+    """How wide the columns left and right of the page are, as fractions of the stage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    left: Annotated[float, Field(gt=0, le=1)] | None = None
+    side: Annotated[float, Field(gt=0, le=1)] | None = None
+
+
+class StationLayout(BaseModel):
+    """A station's layout: resolution-free, fitted to each screen by the browser.
+
+    Every key is optional, and a write replaces only the keys it names. Widths,
+    sizes and places are fractions of the stage, never pixels; Chat's width is in
+    ``ch`` (a Terminal Chat is 80 columns).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    columns: _Columns | None = None
+    chat_ch: Annotated[float, Field(ge=10, le=400)] | None = None
+    floating: dict[_TypeKey, _TileSize] | None = None
+    """Floating window sizes, by visual type."""
+
+    tiles: dict[_TypeKey, _TileMemory] | None = None
+    """Floating windows' places and folds, by visual type."""
+
+    share: dict[_TypeKey, Annotated[float, Field(gt=0, le=100)]] | None = None
+    """Each docked tile's share of its strip, by visual type (1 is an even share)."""
+
+    console: Annotated[str, Field(min_length=1, max_length=64)] | None = None
+    """The id of the Console view that is open."""
+
+    @field_validator("floating", "tiles", "share")
+    @classmethod
+    def _bounded(cls, value: dict[str, object] | None) -> dict[str, object] | None:
+        """Hold a by-type map to a count no canvas reaches."""
+        if value is not None and len(value) > _MAX_TYPES:
+            raise ValueError(f"At most {_MAX_TYPES} visual types.")
+        return value
+
+
 class StationData(BaseModel):
     """A canvas's station fields: the optional ``station`` JSON only the workbench reads.
 
@@ -98,6 +183,7 @@ class StationData(BaseModel):
 
     conversation_id: uuid.UUID | None = None
     page: str | None = None
+    layout: StationLayout | None = None
 
 
 class WorkspacePartner(BaseModel):
@@ -132,6 +218,9 @@ class WorkspaceState(WorkspaceData):
 
     page: str | None
     """The `#/...` page the station was last on, for coming back to it."""
+
+    layout: StationLayout | None = None
+    """How the station's columns and windows were left, once they were."""
 
     assistant: str | None = None
     """The configured assistant's actor, or None when the server has none."""
