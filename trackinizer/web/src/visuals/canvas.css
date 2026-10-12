@@ -31,7 +31,10 @@
 .chat-partner-note { color: var(--muted); font-size: 12px; }
 .chat-head-actions { display: flex; align-items: center; gap: 4px; }
 .chat-head-actions .btn:disabled { opacity: .5; }
+/* A header pop-over opens away from the screen's edge Chat stands at: leftwards from Chat at the
+   right, rightwards, over the workbench, from Chat at the left, where leftwards would run off the page. */
 .chat-head-pop .station-menu { left: auto; right: 0; }
+.chat-row-left .chat-head-pop .station-menu { left: 0; right: auto; }
 .chat-share-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 0 0 8px; font-size: 12px; overflow-wrap: anywhere; }
 .chat-head-pop .chat-note { margin: 0; }
 .chat-error { margin: 8px 12px 0; color: var(--error-text); font-size: 12px; }

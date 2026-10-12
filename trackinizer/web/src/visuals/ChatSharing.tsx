@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import { type ChatHead, deleteChat, shareChat, unshareChat } from "../api/chats";
 import { useToast } from "../ui/toast";
@@ -19,6 +19,21 @@ function reason(error: unknown, fallback: string): string {
 }
 
 /**
+ * Close an open pop-over when a press lands outside `root`: anywhere else on the
+ * page, the other header control included, so one pop-over shows at a time.
+ */
+function useCloseOutside(open: boolean, root: RefObject<HTMLElement | null>, setOpen: (open: boolean) => void): void {
+  useEffect(() => {
+    if (!open) return;
+    const press = (event: PointerEvent) => {
+      if (!(event.target instanceof Node) || !root.current?.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", press, true);
+    return () => document.removeEventListener("pointerdown", press, true);
+  }, [open, root, setOpen]);
+}
+
+/**
  * Chat's Share control: a panel with the people the chat is shared with, each
  * with Remove, and a field to add an address. Only the head's `may_share` shows it.
  */
@@ -28,6 +43,8 @@ export function ShareChat({ head }: { readonly head: ChatHead }) {
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useCloseOutside(open, root, setOpen);
 
   /** Make one change, then read the head again: it is the list. */
   async function change(act: () => Promise<void>, failure: string): Promise<boolean> {
@@ -45,7 +62,7 @@ export function ShareChat({ head }: { readonly head: ChatHead }) {
   }
 
   return (
-    <div className="station chat-head-pop">
+    <div className="station chat-head-pop" ref={root}>
       <button className="btn ghost" type="button" aria-haspopup="dialog" aria-expanded={open}
         title="Share this chat" onClick={() => setOpen(!open)}>Share</button>
       {open && <div className="station-menu" role="dialog" aria-label="Share chat"
@@ -80,6 +97,8 @@ export function DeleteChat({ head, onDeleted }: { readonly head: ChatHead; reado
   const toast = useToast();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useCloseOutside(confirming, root, setConfirming);
 
   async function remove() {
     setBusy(true);
@@ -95,7 +114,7 @@ export function DeleteChat({ head, onDeleted }: { readonly head: ChatHead; reado
   }
 
   return (
-    <div className="station chat-head-pop">
+    <div className="station chat-head-pop" ref={root}>
       <button className="btn ghost" type="button" aria-haspopup="dialog" aria-expanded={confirming}
         title="Delete this chat" onClick={() => setConfirming(!confirming)}>Delete</button>
       {confirming && <div className="station-menu" role="alertdialog" aria-label="Delete this chat"

@@ -277,6 +277,25 @@ test("Share lists who has the chat, adds an address, removes one, and reads the 
   expect(unshareChat).toHaveBeenCalledWith("c1", GRACE);
 });
 
+test("a header pop-over closes on a press anywhere else, so Share and Delete never show together", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_share: true, may_delete: true }));
+  shell();
+  await screen.findByText("a2");
+  fireEvent.click(await screen.findByRole("button", { name: "Share" }));
+  // A press inside it keeps it.
+  fireEvent.pointerDown(screen.getByRole("textbox", { name: "Email to share with" }));
+  expect(screen.getByRole("dialog", { name: "Share chat" })).toBeTruthy();
+  const remove = screen.getByRole("button", { name: "Delete" });
+  fireEvent.pointerDown(remove);
+  fireEvent.click(remove);
+  expect(screen.queryByRole("dialog", { name: "Share chat" })).toBeNull();
+  expect(screen.getByRole("alertdialog", { name: "Delete this chat" })).toBeTruthy();
+  fireEvent.pointerDown(document.body);
+  expect(screen.queryByRole("alertdialog", { name: "Delete this chat" })).toBeNull();
+});
+
 test("a refused share says why in one toast line and keeps the address in the field", async () => {
   open("c1");
   hold("c1", ...TALK);
