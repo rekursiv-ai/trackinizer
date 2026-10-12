@@ -1075,3 +1075,26 @@ CREATE TABLE IF NOT EXISTS science_chat_tombstones (
     deleted_by      TEXT NOT NULL,
     deleted_at      TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
+
+-- What each person has been given, has bought and has spent: one row per entry, each
+-- applied once by ``idem`` (Stripe's event id, or a charge's own key), and one
+-- purchase per payment. A refund or dispute that names no purchase has no email.
+-- Entries are kept under the lowercase email, with no FK to ``users``: a deleted
+-- account that signs in again keeps its debt and gets no second grant. Added in 045.
+CREATE TABLE IF NOT EXISTS credit_entries (
+    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    email      TEXT CHECK (email = lower(email)),
+    kind       TEXT NOT NULL
+               CHECK (kind IN ('grant', 'purchase', 'chat', 'campaign', 'release', 'refund', 'dispute')),
+    usd        NUMERIC(14, 6) NOT NULL CHECK (usd >= 0),
+    ref        TEXT NOT NULL,
+    idem       TEXT NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    CHECK (email IS NOT NULL OR kind IN ('refund', 'dispute'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS credit_entries_one_purchase_per_payment
+    ON credit_entries (ref) WHERE kind = 'purchase';
+
+CREATE INDEX IF NOT EXISTS credit_entries_user_created
+    ON credit_entries (email, created_at);

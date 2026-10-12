@@ -10,6 +10,9 @@ contributes, and each part says where it runs:
   holds third-party credentials or spawns agents belongs here.
 - A **router** adds HTTP routes, mounted under ``/api/addons/<name>``. Routers
   are HTTP-only: a WebSocket route is refused when the deployment is built.
+- An **open router** is a router whose routes check their own caller, such as a
+  vendor's signed webhook, which cannot sign in. The server mounts it with no
+  sign-in requirement.
 
 A deployment (:mod:`trackinizer.addons.deployment`) names the addons it
 runs; leaving an addon out switches it off everywhere at once.
@@ -109,7 +112,9 @@ class AddonManifest:
       description: One sentence on what the addon does.
       server_services: Tasks run inside the trackinizer server.
       standalone_services: Tasks run by ``python -m trackinizer.addons run``.
-      routers: HTTP routes mounted under ``/api/addons/<name>``.
+      routers: HTTP routes mounted under ``/api/addons/<name>``, for viewers.
+      open_routers: HTTP routes mounted there with no sign-in; each route must
+        authenticate its own caller, as a webhook does by its signature.
 
     """
 
@@ -118,6 +123,7 @@ class AddonManifest:
     server_services: Sequence[ServerService] = ()
     standalone_services: Sequence[StandaloneService] = ()
     routers: Sequence[APIRouter] = ()
+    open_routers: Sequence[APIRouter] = ()
 
     def describe(self, name: str) -> AddonDescription:
         """Project the manifest to its inert wire description.
@@ -157,7 +163,7 @@ class AddonManifest:
             ],
             routes=sorted(
                 f"/api/addons/{name}{path}"
-                for router in self.routers
+                for router in (*self.routers, *self.open_routers)
                 for path in _http_paths(router)
             ),
         )

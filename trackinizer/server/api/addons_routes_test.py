@@ -55,6 +55,35 @@ class Probe:
         )
 
 
+class Hooked:
+    """A test addon with one open route, which authenticates its caller itself."""
+
+    class Config(Fig["Hooked"]):
+        pass
+
+    def __init__(self, config: Hooked.Config) -> None:
+        del config
+
+    def manifest(self) -> AddonManifest:
+        hook = APIRouter()
+        hook.add_api_route("/hook", _ping, methods=["POST"])
+        ping = APIRouter()
+        ping.add_api_route("/ping", _ping)
+        return AddonManifest(
+            title="Hooked",
+            description="Takes a vendor's call.",
+            routers=[ping],
+            open_routers=[hook],
+        )
+
+
+class HookedSite(Makes["Deployment"], Deployment.Config):
+    """A deployment running the hooked addon."""
+
+    hooked: Hooked.Config = field(default_factory=Hooked.Config)
+    """The hooked addon."""
+
+
 class ProbeSite(Makes["Deployment"], Deployment.Config):
     """A deployment running the probe addon."""
 
@@ -99,6 +128,16 @@ def test_mounted_routes_are_prefixed_listed_and_need_a_viewer() -> None:
             "routes": ["/api/addons/probe/ping"],
         },
     ]
+
+
+def test_an_open_router_mounts_without_a_sign_in_and_a_viewer_router_still_needs_one() -> (
+    None
+):
+    app = _app_with(_hooked_deployment())
+    app.state.store, _ = make_store()
+    client = TestClient(app)
+    assert client.post("/api/addons/hooked/hook").json() == {"pong": True}
+    assert client.get("/api/addons/hooked/ping").status_code == 401
 
 
 def _notes_visuals() -> Workspace.Config:
@@ -199,6 +238,10 @@ def _visual_catalog(app: FastAPI) -> Workspace:
 
 def _probe_deployment() -> Deployment:
     return ProbeSite().make()
+
+
+def _hooked_deployment() -> Deployment:
+    return HookedSite().make()
 
 
 def _app_with(deployment: Deployment) -> FastAPI:

@@ -29,6 +29,40 @@ def test_describe_lists_routes_of_included_sub_routers() -> None:
     ]
 
 
+def test_describe_names_each_service_with_where_it_runs() -> None:
+    manifest = AddonManifest(
+        title="T",
+        description="D.",
+        server_services=[_Service("sweep", "Sweeps.")],
+        standalone_services=[_Service("chat", "Chats.")],
+    )
+
+    assert [
+        (each.name, each.description, each.placement)
+        for each in manifest.describe("demo").services
+    ] == [
+        ("sweep", "Sweeps.", "server"),
+        ("chat", "Chats.", "standalone"),
+    ]
+
+
+def test_describe_lists_open_routes_beside_the_viewer_ones() -> None:
+    open_router = APIRouter()
+    open_router.add_api_route("/hook", _ping)
+    viewer_router = APIRouter()
+    viewer_router.add_api_route("/ping", _ping)
+    manifest = AddonManifest(
+        title="T",
+        description="D.",
+        routers=[viewer_router],
+        open_routers=[open_router],
+    )
+    assert manifest.describe("demo").routes == [
+        "/api/addons/demo/hook",
+        "/api/addons/demo/ping",
+    ]
+
+
 def test_describe_refuses_a_websocket_route_even_when_nested() -> None:
     inner = APIRouter()
     inner.add_api_websocket_route("/live", _socket)
@@ -37,6 +71,25 @@ def test_describe_refuses_a_websocket_route_even_when_nested() -> None:
     manifest = AddonManifest(title="T", description="D.", routers=[top])
     with pytest.raises(TypeError, match=r"WebSocket route '/sub/live'"):
         manifest.describe("demo")
+
+
+def test_describe_refuses_a_websocket_route_in_an_open_router() -> None:
+    open_router = APIRouter()
+    open_router.add_api_websocket_route("/live", _socket)
+    manifest = AddonManifest(title="T", description="D.", open_routers=[open_router])
+    with pytest.raises(TypeError, match=r"WebSocket route '/live'"):
+        manifest.describe("demo")
+
+
+class _Service:
+    """A service that is only described."""
+
+    def __init__(self, name: str, description: str) -> None:
+        self.name = name
+        self.description = description
+
+    async def run(self, context: object) -> None:
+        del context
 
 
 async def _ping() -> dict[str, bool]:

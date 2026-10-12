@@ -1212,6 +1212,37 @@ async def test_migration_044_matches_the_baseline_users_table(
     assert migrated == baseline
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_045_matches_the_baseline_credit_entries_table(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """The credit table 045 builds equals the fresh-install one.
+
+    Bootstrap builds the baseline shape. This drops the table (as a pre-045 database
+    lacks it), replays ``schema.045`` alone, and compares every column, constraint and
+    index against what the baseline produced.
+    """
+    await reset_schema(pglite_engine)
+    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
+    async with pglite_engine.acquire() as conn:
+        baseline = await _table_shape(conn, "credit_entries")
+        assert baseline[0], "the baseline lacks the table"
+
+        await conn.execute("DROP TABLE credit_entries")
+        await conn.execute(load_sql("schema.045"))
+        migrated = await _table_shape(conn, "credit_entries")
+        # Replaying it over the existing table is a no-op, not an error.
+        await conn.execute(load_sql("schema.045"))
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute(
+                "INSERT INTO credit_entries (kind, usd, ref, idem) "
+                "VALUES ('purchase', 1, 'pi_1', 'evt_1')",
+            )
+
+    assert migrated == baseline
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 

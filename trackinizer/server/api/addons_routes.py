@@ -37,7 +37,8 @@ def attach_deployment(app: FastAPI, deployment: Deployment) -> None:
     Each addon's routers mount under ``/api/addons/<name>``, viewers only. The
     prefix keeps an addon from shadowing a core route, and the viewer dependency
     keeps a router that forgot its own auth from serving anyone who can reach the
-    port. A route that writes adds its own stricter role.
+    port. A route that writes adds its own stricter role. An open router mounts with
+    no dependency, so its routes must check their own caller.
 
     Idempotent: a second call is a no-op, so the first deployment wins.
     ``server._configure_app`` attaches the module-global app, and a test that
@@ -61,3 +62,5 @@ def attach_deployment(app: FastAPI, deployment: Deployment) -> None:
                 prefix=f"/api/addons/{name}",
                 dependencies=[Depends(require_role("viewer"))],
             )
+        for open_router in manifest.open_routers:
+            app.include_router(open_router, prefix=f"/api/addons/{name}")

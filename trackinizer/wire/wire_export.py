@@ -87,6 +87,9 @@ Left out on purpose, and why:
   AgentSession, so its lines export with the sessions.
 * ``science_chat_shares``, ``science_chat_tombstones`` -- who may post into which
   science chat, and which chats were deleted: access control, like ``allowlist``.
+* ``credit_entries`` -- what each person was given, bought and spent: money,
+  which the database's own backups keep and a graph export would show to everyone
+  who can read it.
 * ``visual_reports``, ``visual_report_revisions`` -- shared report presentation
   and author identity; the linked Artifact and graph citations export above.
 * ``session_liveness`` -- when each live session was last heard from, which
