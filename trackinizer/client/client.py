@@ -1831,6 +1831,32 @@ class Client:
         )
         return dict(_require_mapping(marked, where))
 
+    def set_preferences(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        change: Mapping[str, object],
+    ) -> dict[str, PlainTree]:
+        """Change the station owner's preferences, as its agent; an event, so no revision is read.
+
+        Args:
+          workspace_id: The station, whose owner's preferences change.
+          change: The keys to change; ``None`` puts a key back to its default.
+
+        Returns:
+          state: The station's state, carrying the owner's preferences after the change.
+
+        """
+        where = f"/api/workspaces/{workspace_id}/operations"
+        changed = self.post(
+            where,
+            body={
+                "revision": 0,
+                "operation": {"kind": "preferences", "change": dict(change)},
+            },
+        )
+        return dict(_require_mapping(changed, where))
+
     def chat_window(
         self,
         workspace_id: uuid.UUID,

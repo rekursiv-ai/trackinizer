@@ -35,6 +35,14 @@ test("terminal marks the page, shows wherever it is read, and is sent to the use
   expect(localStorage.length).toBe(0);
 });
 
+test("the Terminal style's text takes the user's font size, wherever it is set", () => {
+  installChatStyle();
+  expect(document.documentElement.style.getPropertyValue("--t-font-size")).toBe("13px");
+  act(() => receivePreferences({ ...preferences(), terminal_font_size: "16pt" }));
+  expect(document.documentElement.style.getPropertyValue("--t-font-size")).toBe("16pt");
+  act(() => receivePreferences({ ...preferences(), terminal_font_size: "13px" }));
+});
+
 test("a style the server brings, as from another surface or the agent, marks the page", () => {
   installChatStyle();
   act(() => receivePreferences({ ...preferences(), chat_style: "terminal" }));

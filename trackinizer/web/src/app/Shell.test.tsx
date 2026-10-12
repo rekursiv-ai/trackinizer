@@ -39,7 +39,7 @@ vi.mock("../visuals/ChatColumn", () => {
 
 /** Serve boot for a user whose canvas is `enabled`, and an empty list. */
 function serve(enabled: boolean) {
-  const DEFAULTS = { theme: "dark", chat_style: "default", chat_side: "left", highlight_mentions: true };
+  const DEFAULTS = { theme: "dark", chat_style: "default", chat_side: "left", highlight_mentions: true, terminal_font_size: "13px" };
   const bodies: { [path: string]: unknown } = {
     "/api/meta/enums": { inquiry_kind_all: ["Issue"], status: ["active"] },
     "/api/meta/fields": {},

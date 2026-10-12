@@ -176,6 +176,17 @@ test("what a browser kept before preferences moved to the server is sent once, t
     .toEqual([null, null]);
 });
 
+test("the preferences document saves an edited setting, and the page takes it at once", async ({ page }) => {
+  await openSettings(page);
+  const doc = page.getByRole("textbox", { name: "Preferences document" });
+  await expect(doc).toHaveValue(/"theme": "dark"/);
+  await expect(doc).toHaveValue(/\/\/ The app's colours/);
+  await doc.fill((await doc.inputValue()).replace('"theme": "dark"', '"theme": "light"'));
+  await page.getByRole("region", { name: "Preferences document" }).getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect.poll(() => storedPreferences(page)).toMatchObject({ theme: "light" });
+});
+
 test("a browser's old stars, names and drafts are sent once, merged into the user's, and forgotten but for the tiles", async ({ page, request }) => {
   await setPreferences(request, { stars: ["kept-on-server"] });
   await page.goto("/app/#/graph");

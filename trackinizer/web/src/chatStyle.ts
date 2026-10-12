@@ -24,8 +24,17 @@ export function useChatStyle(): ChatStyle {
   return usePreferences().chat_style;
 }
 
-/** Show the style, and every change to it, chosen here or read from the server. */
+/** Size the Terminal style's text (`--t-font-size`, read by chatTerminal.css). */
+export function applyTerminalFontSize(size: string): void {
+  document.documentElement.style.setProperty("--t-font-size", size);
+}
+
+/** Show the style and the Terminal font size, and every change to them, chosen here or read from the server. */
 export function installChatStyle(): void {
-  applyChatStyle(readChatStyle());
-  subscribePreferences(() => applyChatStyle(readChatStyle()));
+  const show = () => {
+    applyChatStyle(readChatStyle());
+    applyTerminalFontSize(preferences().terminal_font_size);
+  };
+  show();
+  subscribePreferences(show);
 }

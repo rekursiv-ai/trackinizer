@@ -351,6 +351,8 @@ trax workspace WORKSPACE_UUID hide INSTANCE_UUID
 trax workspace WORKSPACE_UUID highlight RECORD_UUID,RECORD_UUID
 trax workspace WORKSPACE_UUID hide chat
 trax workspace WORKSPACE_UUID show chat
+trax workspace WORKSPACE_UUID theme to light
+trax workspace WORKSPACE_UUID chat_style to null
 ```
 
 The catalog registers `trax.browse`, `trax.subgraph`, and
@@ -373,6 +375,12 @@ it is not replayed to a tab that was not listening.
 so they can look at what you showed; hide it when they should look at the page
 and show it when you want them to read your answer. It is an event too: no revision
 is read or changed, only an agent key may send it, and a reloaded tab shows Chat.
+`KEY to VALUE` changes one of the user's preferences (`theme`, `chat_style`,
+`chat_side`, `highlight_mentions`): theirs, not your account's, and every tab of
+theirs shows it at once. VALUE reads as JSON when it parses (`false`, `null`), else
+as text; `null` puts the key back to its default. `trax workspace WORKSPACE_UUID`
+prints the preferences as they stand. Only the station's assistant may do it, and
+only for these UI keys; the user's own data is not yours to read or set.
 Pairing and disconnecting remain browser actions.
 
 ## Decomposing a large task

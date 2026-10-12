@@ -7,7 +7,14 @@ from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 
 if TYPE_CHECKING:
@@ -131,6 +138,10 @@ class WorkspaceState(WorkspaceData):
 
     partner: WorkspacePartner | None = None
 
+    preferences: dict[str, JsonValue] | None = None
+    """The owner's preferences a station's assistant may see (``ASSISTANT_KEYS``), so
+    it can say what is set; computed on each read, never stored with the canvas."""
+
 
 class WorkspaceSummary(BaseModel):
     """One of a user's stations, as the station list shows it."""
@@ -230,6 +241,18 @@ class ChatWindow(OperationModel):
     """True to hide Chat, false to show it again; the tab keeps no memory of it."""
 
 
+class SetPreferences(OperationModel):
+    """Change the station owner's preferences, as the station's agent. An event.
+
+    It moves no visual and no revision. The keys and values are the owner's
+    preferences' (``server/preferences.py``); ``None`` puts a key back to its default.
+    """
+
+    kind: Literal["preferences"]
+    change: dict[str, JsonValue] = Field(min_length=1, max_length=64)
+    """Keys of ``ASSISTANT_KEYS`` only: the UI's, never the user's own data."""
+
+
 class ChoosePartner(OperationModel):
     """Choose whose session the canvas's Chat talks to."""
 
@@ -245,6 +268,7 @@ type Operation = Annotated[
     | Navigate
     | Highlight
     | ChatWindow
+    | SetPreferences
     | ChoosePartner,
     Field(discriminator="kind"),
 ]
@@ -408,7 +432,7 @@ def apply_operation(
         )
         updated.visuals.append(instance)
         updated.focused_instance = instance.id
-    elif isinstance(operation, Navigate | Highlight | ChatWindow):
+    elif isinstance(operation, Navigate | Highlight | ChatWindow | SetPreferences):
         pass
     elif isinstance(operation, ChoosePartner):
         updated.partner_choice = operation.choice

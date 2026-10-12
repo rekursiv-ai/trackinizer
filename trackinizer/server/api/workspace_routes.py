@@ -18,6 +18,7 @@ from trackinizer.server.chat_hub import (
     ChatFrame,
     HighlightFrame,
     NavigateFrame,
+    PreferencesFrame,
     WorkspaceFrame,
     iter_workspace_events,
 )
@@ -43,6 +44,7 @@ from trackinizer.server.visuals.workspaces import (
     Navigate,
     RenameWorkspace,
     SetPage,
+    SetPreferences,
     WorkspaceConflict,
     WorkspaceState,
     WorkspaceSummary,
@@ -325,9 +327,11 @@ async def workspace_operation_route(
 ) -> WorkspaceState | JSONResponse:
     """Apply one revisioned operation and return the updated canvas.
 
-    A ``navigate``, ``highlight`` or ``chat`` operation, which only an agent key may
-    send, changes neither a visual nor the revision: it pushes a ``navigate``,
-    ``highlight`` or ``chat`` frame. A replay of an applied key returns the original state and
+    A ``navigate``, ``highlight``, ``chat`` or ``preferences`` operation, which only an
+    agent key may send, changes neither a visual nor the revision: it pushes a
+    ``navigate``, ``highlight`` or ``chat`` frame to this station, or, for
+    ``preferences``, which changes the owner's preferences, a ``preferences`` frame
+    to every station of the owner. A replay of an applied key returns the original state and
     publishes nothing.
 
     Args:
@@ -383,6 +387,14 @@ async def workspace_operation_route(
             hub.publish(workspace_id, frame=HighlightFrame(ids=body.operation.ids))
         elif isinstance(body.operation, ChatWindow):
             hub.publish(workspace_id, frame=ChatFrame(hidden=body.operation.hidden))
+        elif isinstance(body.operation, SetPreferences):
+            # The stream is the owner's browser alone, so their tabs get every key.
+            if applied.preferences is not None:
+                for station in applied.stations:
+                    hub.publish(
+                        station,
+                        frame=PreferencesFrame(preferences=applied.preferences),
+                    )
         else:
             hub.publish(workspace_id, frame=WorkspaceFrame(state=applied.state))
     return applied.state

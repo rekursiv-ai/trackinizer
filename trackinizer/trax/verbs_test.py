@@ -3605,6 +3605,7 @@ class _CanvasClient:
         self.navigations: list[str] = []
         self.highlights: list[list[uuid.UUID]] = []
         self.chat_windows: list[bool] = []
+        self.preferences: list[dict[str, object]] = []
         self.reads: list[str] = []
         self.workspace = uuid.uuid4()
 
@@ -3655,6 +3656,19 @@ class _CanvasClient:
         del workspace_id
         self.chat_windows.append(hidden)
         return self._state(8, visuals=[])
+
+    def set_preferences(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        change: dict[str, object],
+    ) -> dict[str, object]:
+        del workspace_id
+        self.preferences.append(dict(change))
+        return {
+            **self._state(8, visuals=[]),
+            "preferences": {"theme": "light", "highlight_mentions": False},
+        }
 
     def _state(self, revision: int, *, visuals: list[object]) -> dict[str, object]:
         return {"id": str(self.workspace), "revision": revision, "visuals": visuals}
@@ -3838,10 +3852,51 @@ def test_workspace_chat_takes_no_other_argument(arguments: list[str]) -> None:
 def test_workspace_chat_is_not_a_verb_of_its_own() -> None:
     client = _CanvasClient()
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(ClientError, match="unknown workspace action 'chat'"):
         _workspace(client, "chat", "hide")
 
     assert client.chat_windows == []
+
+
+def test_workspace_key_to_value_sets_the_owners_preference_as_json_or_text(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+
+    _workspace(client, "theme", "to", "light")
+    _workspace(client, "highlight_mentions", "to", "false")
+    _workspace(client, "theme", "to", "null")
+
+    assert client.preferences == [
+        {"theme": "light"},
+        {"highlight_mentions": False},
+        {"theme": None},
+    ]
+    assert client.operations == []
+    assert client.reads == []
+    assert (
+        '  preferences highlight_mentions=false theme="light"'
+        in capsys.readouterr().out.splitlines()
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["theme", "to"],
+        ["theme", "to", "light", "dark"],
+        ["theme", "to", "light", "--record", str(uuid.uuid4())],
+    ],
+)
+def test_workspace_key_to_takes_one_value_and_nothing_else(
+    arguments: list[str],
+) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match="theme to takes one VALUE"):
+        _workspace(client, *arguments)
+
+    assert client.preferences == []
 
 
 def test_workspace_highlight_sends_the_ids_without_an_operation() -> None:

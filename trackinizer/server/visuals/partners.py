@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 
 import uuid
 
+from trackinizer.server.preferences import ASSISTANT_KEYS, stored_preferences
 from trackinizer.server.visuals.workspaces import WorkspacePartner
 from trackinizer.wire.wire_science_chat import (
     CHAT_HELPER_CLI,
@@ -163,10 +164,10 @@ async def attach_partner(
     inbound: InboundQueue,
     assistant: Assistant | None,
 ) -> WorkspaceState:
-    """Return ``state`` with its assistant and partner.
+    """Return ``state`` with its assistant, partner and owner's preferences.
 
-    Both are computed, never stored: the canvas JSONB and its replay receipts
-    carry neither. Only the choice between them, ``state.partner_choice``, is.
+    All are computed, never stored: the canvas JSONB and its replay receipts
+    carry none. Only the choice between the partners, ``state.partner_choice``, is.
 
     Args:
       conn: Connection the answer must be consistent with.
@@ -186,10 +187,18 @@ async def attach_partner(
         choice=state.partner_choice,
         owner_id=owner_id,
     )
+    preferences = await conn.fetchval(
+        "SELECT preferences FROM users WHERE id = $1",
+        owner_id,
+    )
     return state.model_copy(
         update={
             "partner": partner,
             "assistant": None if assistant is None else assistant.actor,
+            "preferences": stored_preferences(preferences).model_dump(
+                mode="json",
+                include=set(ASSISTANT_KEYS),
+            ),
         },
     )
 

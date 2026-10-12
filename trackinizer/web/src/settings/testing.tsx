@@ -167,8 +167,11 @@ export function serveAccount(
     }
     const text = await request.clone().text();
     if (`${request.method} ${path}` === "PATCH /api/me/preferences") {
-      // The server's merge: the keys sent change, the rest keep theirs.
-      caller.preferences = { ...(caller.preferences ?? DEFAULT_PREFERENCES), ...(JSON.parse(text) as Partial<Preferences>) };
+      // The server's merge: the keys sent change, a null one goes back to its default, the rest keep theirs.
+      const change = JSON.parse(text) as { [key: string]: unknown };
+      const merged: { [key: string]: unknown } = { ...(caller.preferences ?? DEFAULT_PREFERENCES) };
+      for (const [key, value] of Object.entries(change)) merged[key] = value ?? DEFAULT_PREFERENCES[key as keyof Preferences];
+      caller.preferences = merged as Preferences;
       return Response.json(caller.preferences);
     }
     const body = (text ? JSON.parse(text) : {}) as AccountBody;

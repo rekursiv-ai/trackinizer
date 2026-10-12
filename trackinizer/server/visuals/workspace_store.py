@@ -16,6 +16,11 @@ from treekle import from_plain
 
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import tx
+from trackinizer.server.preferences import (
+    ASSISTANT_KEYS,
+    Preferences,
+    write_preferences,
+)
 from trackinizer.server.store.deleted_chats import (
     refuse_a_deleted_chat,
     session_was_purged,
@@ -46,6 +51,7 @@ from trackinizer.server.visuals.workspaces import (
     ChoosePartner,
     Highlight,
     Navigate,
+    SetPreferences,
     ShowVisual,
     StationData,
     WorkspaceData,
@@ -134,6 +140,13 @@ class AppliedOperation:
     state: WorkspaceState
     replayed: bool
     """The key had already been applied: nothing changed, so nothing is published."""
+
+    stations: tuple[uuid.UUID, ...] = ()
+    """For a ``preferences`` change, every station of the owner, each to be told."""
+
+    preferences: Preferences | None = None
+    """For a ``preferences`` change, all of the owner's preferences after it, for
+    their own tabs; the state carries only those its agent may see."""
 
 
 async def send_chat_line(
@@ -691,6 +704,24 @@ async def read_workspace(
         )
 
 
+async def station_ids(conn: Conn, *, user_id: uuid.UUID) -> list[uuid.UUID]:
+    """Return every station of ``user_id``: where a change of theirs is published.
+
+    Args:
+      conn: The connection to read on.
+      user_id: Whose stations.
+
+    Returns:
+      ids: Their stations' ids, in no order.
+
+    """
+    rows = await conn.fetch(
+        "SELECT id FROM visual_workspaces WHERE user_id = $1",
+        user_id,
+    )
+    return [cast(uuid.UUID, row["id"]) for row in rows]
+
+
 async def apply_workspace_operation(
     engine: DatabaseEngine,
     *,
@@ -705,8 +736,9 @@ async def apply_workspace_operation(
 ) -> AppliedOperation | None:
     """Apply one compare-and-swap operation and persist its replay receipt.
 
-    A ``navigate``, ``highlight`` or ``chat`` operation moves no visual and no revision: it
-    is only recorded, for replay, and an agent key alone may send it. A show names
+    A ``navigate``, ``highlight``, ``chat`` or ``preferences`` operation moves no visual
+    and no revision: it is only recorded, for replay, and an agent key alone may send
+    it. ``preferences`` changes the station owner's preferences. A show names
     a record the visual accepts: its catalog lists the kinds, and one that takes no
     record refuses any.
 
@@ -766,7 +798,10 @@ async def apply_workspace_operation(
             # computed from the choice now.
             replay = (
                 current
-                if isinstance(body.operation, Navigate | Highlight | ChatWindow)
+                if isinstance(
+                    body.operation,
+                    Navigate | Highlight | ChatWindow | SetPreferences,
+                )
                 else WorkspaceState.model_validate(
                     from_plain(receipt["response"], dict[str, object])
                     | {
@@ -780,10 +815,31 @@ async def apply_workspace_operation(
                 state=await with_partner(state=replay),
                 replayed=True,
             )
-        if isinstance(body.operation, Navigate | Highlight | ChatWindow):
-            # Nothing changes, so only the key is kept: a retry publishes nothing.
+        if isinstance(
+            body.operation,
+            Navigate | Highlight | ChatWindow | SetPreferences,
+        ):
+            # No visual changes, so only the key is kept: a retry publishes nothing.
             if agent_api_key_id is None:
-                raise ValueError("Only an agent navigates, highlights or hides Chat.")
+                raise ValueError(
+                    "Only an agent navigates, highlights, hides Chat or sets preferences here.",
+                )
+            stations: tuple[uuid.UUID, ...] = ()
+            preferences: Preferences | None = None
+            if isinstance(body.operation, SetPreferences):
+                # The owner's, not the agent's: the station's agent works for them,
+                # and on the UI's preferences alone.
+                beyond = sorted(set(body.operation.change) - ASSISTANT_KEYS)
+                if beyond:
+                    raise ValueError(
+                        f"A station's agent may not set: {', '.join(beyond)}",
+                    )
+                preferences = await write_preferences(
+                    conn,
+                    user_id=owner_id,
+                    change=body.operation.change,
+                )
+                stations = tuple(await station_ids(conn, user_id=owner_id))
             await _remember(
                 conn,
                 workspace_id=workspace_id,
@@ -795,6 +851,8 @@ async def apply_workspace_operation(
             return AppliedOperation(
                 state=await with_partner(state=current),
                 replayed=False,
+                stations=stations,
+                preferences=preferences,
             )
         if isinstance(body.operation, ChoosePartner) and agent_api_key_id is not None:
             raise ValueError("Only the canvas's owner chooses its Chat partner.")

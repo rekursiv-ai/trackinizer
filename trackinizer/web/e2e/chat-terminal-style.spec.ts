@@ -58,6 +58,14 @@ async function open(page: Page, style: "default" | "terminal"): Promise<Locator>
 
 const colour = (locator: Locator, property = "color") => locator.evaluate((element, p) => getComputedStyle(element).getPropertyValue(p), property);
 
+test("the Terminal style draws Chat at the user's font size, 16pt as in the profile, in the panel and its column", async ({ page }) => {
+  await setPreferences(page.request, { terminal_font_size: "16pt" });
+  const panel = await open(page, "terminal");
+  // 16pt is 21.333px. The column takes it too, since its 80ch width is measured in its own font.
+  expect(await colour(panel, "font-size")).toBe("21.3333px");
+  expect(await colour(page.locator(".chat-column"), "font-size")).toBe("21.3333px");
+});
+
 test("the Terminal style draws Chat as the GNOME terminal profile, from the palette", async ({ page }) => {
   // A second station, older than the chat's, for the menu's highlight to move to.
   expect((await page.request.post("/api/workspaces/new")).ok()).toBe(true);

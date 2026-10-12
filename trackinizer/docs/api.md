@@ -730,6 +730,20 @@ at most 1000), `read` (`{boundary, marks}`, at most 5000 marks), `collapsed`
 A person's preferences are theirs: an admin may put them back to their defaults
 (`DELETE /api/admin/users/<uuid>/preferences`, 204 with no body) but no route lets
 anyone else read them, and no preference write makes a change row.
+The UI's settings are marked `x-setting` in the schema: Settings shows them as one
+document, each value under its description, and they are the keys a station's
+assistant may read and change (`ASSISTANT_KEYS`, which a test keeps equal to them).
+Every station of the user is sent a `preferences` frame with the result, so each of
+their tabs shows the change.
+
+A station's assistant changes its owner's preferences with the workspace operation
+`{"kind": "preferences", "change": {"theme": "light"}}` (same keys, `null` resets):
+the owner's, not the assistant account's, and only the UI's keys (`ASSISTANT_KEYS`
+in `server/preferences.py`); any other key is a 422. Only an agent key the station
+accepts may send it; like `navigate` it changes no visual and no revision, and every
+station of the owner gets a `preferences` frame (the station stream is the owner's
+browser alone). A station's state carries those UI keys of its owner's
+`preferences`, so the assistant can read what is set, and nothing more.
 
 `PUT /api/me/acknowledge` with `{"rules_version": "<version shown>"}` records that
 the signed-in user agreed to the alpha rules, from an interactive browser session;

@@ -551,6 +551,7 @@ class TestProfile:
             "chat_style": "default",
             "chat_side": "left",
             "highlight_mentions": True,
+            "terminal_font_size": "13px",
             **_EMPTY_USER_DATA,
         }
         assert body["acknowledged_at"] == _WHEN.isoformat()
@@ -612,6 +613,7 @@ class TestPreferences:
             "chat_style": "default",
             "chat_side": "left",
             "highlight_mentions": True,
+            "terminal_font_size": "13px",
             **_EMPTY_USER_DATA,
         }
         call = engine.conn.fetchrow.call_args

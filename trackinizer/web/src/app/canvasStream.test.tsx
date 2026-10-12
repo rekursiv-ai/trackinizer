@@ -7,6 +7,7 @@ import { recentTimings, resetTimings } from "../debug/timings";
 import { META } from "../detail/testing";
 import { LiveContext } from "../live";
 import { LiveHub as LiveHubClass, type LiveHub } from "../live/hub";
+import { preferences, receivePreferences } from "../preferences";
 import { currentChatColumn, setChatFullscreen, setChatSide } from "../visuals/chatColumn";
 import { ChatFeedContext, useChatFeed } from "../visuals/chatFeed";
 import { MetaContext } from "./boot";
@@ -159,6 +160,15 @@ test("a chat frame hides or shows Chat's column in this tab; a hide leaves full 
   setChatSide("left");
 });
 
+test("a preferences frame, from the user's other tab or the station's agent, is what the page shows", async () => {
+  show(true);
+  const stream = await listener();
+  act(() => stream.preferences({ ...preferences(), theme: "light", chat_side: "right" }, 1));
+  expect(preferences()).toMatchObject({ theme: "light", chat_side: "right" });
+  expect(currentChatColumn().side).toBe("right");
+  act(() => receivePreferences({ ...preferences(), theme: "dark", chat_side: "left" }));
+});
+
 function Feed() {
   return <output data-testid="feed">{useContext(ChatFeedContext) ? "feed" : "none"}</output>;
 }
@@ -220,7 +230,7 @@ test("a chat has no frames of its own: its session's change reaches the live lay
   expect(hub.change).toHaveBeenCalledTimes(2);
   expect(hub.change).toHaveBeenCalledWith("session-1");
   expect(invalidate).not.toHaveBeenCalled();
-  expect(Object.keys(stream).toSorted()).toEqual(["changed", "chat", "drop", "highlight", "navigate", "open", "refuse", "workspace"]);
+  expect(Object.keys(stream).toSorted()).toEqual(["changed", "chat", "drop", "highlight", "navigate", "open", "preferences", "refuse", "workspace"]);
 });
 
 test("the stream's state drives the live layer's paused bar: down for 10 s pauses it, an open clears it", async () => {

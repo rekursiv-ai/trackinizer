@@ -1047,6 +1047,18 @@ class FakeClient:
         self.calls.append(("chat_window", (workspace_id,), {"hidden": hidden}))
         return {"id": str(workspace_id), "revision": 0, "visuals": []}
 
+    def set_preferences(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        change: Mapping[str, object],
+    ) -> dict[str, PlainTree]:
+        """Change the station owner's preferences."""
+        self.calls.append(
+            ("set_preferences", (workspace_id,), {"change": dict(change)}),
+        )
+        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+
     def add_subscriber(
         self,
         target_id: uuid.UUID,

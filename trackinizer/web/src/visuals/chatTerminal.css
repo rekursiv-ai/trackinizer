@@ -1,8 +1,9 @@
 /* The Terminal chat style (Settings, Appearance): the Chat panel drawn as Josh's
    GNOME Terminal profile (docs/retro_ui.md): DejaVu Sans Mono, green on black,
-   at Chat's own 13 px rather than the profile's 16pt, the 16-colour palette of
-   GNOME Terminal 3.58 and nothing outside it, no rounded corners, shadows,
-   gradients, transparency, blur, transitions, animations or hover effects.
+   at the user's terminal_font_size (13px unless they set it; the profile has
+   16pt), the 16-colour palette of GNOME Terminal 3.58 and nothing outside it,
+   no rounded corners, shadows, gradients, transparency, blur, transitions,
+   animations or hover effects.
    Bold is drawn in the bright colour. Everything is scoped to the panel and to
    the page's data-chat-style attribute, so the Default style is untouched. */
 :root[data-chat-style="terminal"] .chat-panel {
@@ -14,10 +15,10 @@
   /* Code tokens, monokai's roles on the palette. */
   --code-keyword: var(--t-bright-red); --code-literal: var(--t-bright-green); --code-key: var(--t-bright-cyan);
   --code-string: var(--t-bright-yellow); --code-number: var(--t-bright-magenta);
-  background: var(--t-bg); color: var(--t-fg); font: 13px/1.25 "DejaVu Sans Mono", monospace;
+  background: var(--t-bg); color: var(--t-fg); font: var(--t-font-size, 13px)/1.25 "DejaVu Sans Mono", monospace;
 }
 /* The column takes the terminal's font too: its width is 80 characters, and `ch` is measured in the font of the element that sets the width. */
-:root[data-chat-style="terminal"] .chat-column { font: 13px/1.25 "DejaVu Sans Mono", monospace; }
+:root[data-chat-style="terminal"] .chat-column { font: var(--t-font-size, 13px)/1.25 "DejaVu Sans Mono", monospace; }
 :root[data-chat-style="terminal"] .chat-panel * {
   font: inherit; color: inherit; background: transparent; border-color: var(--t-fg);
   border-radius: 0; box-shadow: none; text-shadow: none; filter: none; backdrop-filter: none;

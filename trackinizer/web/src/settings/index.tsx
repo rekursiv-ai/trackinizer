@@ -14,6 +14,7 @@ import { KeyValue, ReadError, Section } from "./account";
 import { AliasesSection } from "./Aliases";
 import { CloseSheet } from "./CloseSheet";
 import { ChatPartnerSection } from "./ChatPartner";
+import { PreferencesDocument } from "./PreferencesDocument";
 import { useHighlightMentions } from "./highlightMentions";
 import { TokensSection } from "./Tokens";
 import "../editors/editors.css";
@@ -51,6 +52,7 @@ export function SettingsView({ assign = (url: string) => location.assign(url) }:
           </Section>
           <AliasesSection />
           <ThemeSection />
+          <PreferencesDocument />
           <VisualWorkspaceSection />
           <ChatPartnerSection />
           <TokensSection />
@@ -110,7 +112,7 @@ function ThemeSection() {
           <option value="system">System</option>
         </select>
       </div>
-      {/* This browser's, like the theme: how the Chat panel looks, not what it holds. */}
+      {/* One of the user's preferences, like the theme: how the Chat panel looks, not what it holds. */}
       <div className="st-row">
         <label htmlFor="appearance-chat-style">Chat style</label>
         <select id="appearance-chat-style" className="st-theme" value={chatStyle} onChange={(event) => {

@@ -1647,6 +1647,43 @@ def test_a_chat_window_reads_no_revision_and_names_the_flag() -> None:
     ]
 
 
+def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:
+    workspace = uuid.uuid4()
+    seen: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(
+            (
+                request.method,
+                request.url.path,
+                json_loads(request.content, dict[str, object]),
+            ),
+        )
+        return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        state = client.set_preferences(
+            workspace,
+            change={"theme": "light", "chat_side": None},
+        )
+
+    assert state["revision"] == 4
+    assert seen == [
+        (
+            "POST",
+            f"/api/workspaces/{workspace}/operations",
+            {
+                "revision": 0,
+                "operation": {
+                    "kind": "preferences",
+                    "change": {"theme": "light", "chat_side": None},
+                },
+            },
+        ),
+    ]
+
+
 def _answering(payload: PlainTree) -> Client:
     """Return a client whose server answers every request with ``payload``."""
 

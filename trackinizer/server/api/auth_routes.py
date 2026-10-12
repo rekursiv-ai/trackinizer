@@ -17,10 +17,10 @@ from typing import TYPE_CHECKING, Annotated, cast
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 from treekle import from_plain
 
-from trackinizer.server.api._deps import get_store
+from trackinizer.server.api._deps import get_hub, get_store
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
     engine_of,
@@ -40,7 +40,13 @@ from trackinizer.server.auth import (
     revoke_api_key,
     set_api_key_role,
 )
-from trackinizer.server.preferences import Preferences, stored_preferences
+from trackinizer.server.chat_hub import PreferencesFrame
+from trackinizer.server.preferences import (
+    Preferences,
+    stored_preferences,
+    write_preferences,
+)
+from trackinizer.server.visuals.workspace_store import station_ids
 from trackinizer.wire.audience import AudienceName
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
@@ -289,7 +295,8 @@ async def set_preferences_route(
     """Set some of the caller's preferences, and put others back to their defaults.
 
     The keys the body leaves out keep their values. The change is one statement, so
-    two tabs changing different keys at once both keep theirs.
+    two tabs changing different keys at once both keep theirs. Every station of
+    the caller is sent the result, so each of their tabs shows it.
 
     Args:
       body: The keys to change: a value sets the key, ``null`` puts it back to its
@@ -305,32 +312,23 @@ async def set_preferences_route(
         take, and nothing is written; 404 when the caller's user is gone.
 
     """
-    unknown = sorted(set(body) - set(Preferences.model_fields))
-    if unknown:
-        raise HTTPException(
-            status_code=422,
-            detail=f"No such preference: {', '.join(unknown)}",
-        )
-    chosen = {key: value for key, value in body.items() if value is not None}
-    try:
-        checked = Preferences.model_validate(chosen)
-    except ValidationError as error:
-        raise HTTPException(
-            status_code=422,
-            detail=error.errors(include_context=False),
-        ) from error
     async with engine_of(request).acquire() as conn:
-        stored = await conn.fetchrow(
-            "UPDATE users SET preferences = "
-            "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
-            "WHERE id = $3 RETURNING preferences",
-            checked.model_dump(mode="json", include=set(chosen)),
-            sorted(key for key, value in body.items() if value is None),
-            identity.user_id,
-        )
-    if stored is None:
+        try:
+            preferences = await write_preferences(
+                conn,
+                user_id=identity.user_id,
+                change=body,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        stations = await station_ids(conn, user_id=identity.user_id)
+    if preferences is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return stored_preferences(stored["preferences"])
+    # Every tab of the user, whichever station it shows, takes the change at once.
+    hub = get_hub(request)
+    for station in stations:
+        hub.publish(station, frame=PreferencesFrame(preferences=preferences))
+    return preferences
 
 
 @router.post("/api/me/tokens")

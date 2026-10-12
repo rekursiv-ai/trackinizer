@@ -23,6 +23,7 @@ import time
 
 from pydantic import BaseModel, Field
 
+from trackinizer.server.preferences import Preferences
 from trackinizer.server.visuals.workspaces import WorkspaceState
 
 
@@ -37,6 +38,7 @@ __all__ = [
     "Frame",
     "HighlightFrame",
     "NavigateFrame",
+    "PreferencesFrame",
     "Subscription",
     "WorkspaceFrame",
     "iter_workspace_events",
@@ -81,6 +83,17 @@ class ChatFrame(_Stamped):
     hidden: bool
 
 
+class PreferencesFrame(_Stamped):
+    """The station owner's preferences changed: by them, or by the station's agent.
+
+    Sent to every station of theirs, so each of their tabs shows the change. Not
+    replayed: a tab that opens reads them from the profile.
+    """
+
+    type: Literal["preferences"] = "preferences"
+    preferences: Preferences
+
+
 class ChangedFrame(_Stamped):
     """An inquiry changed, as ``/api/web/subscribe`` reports it."""
 
@@ -88,7 +101,14 @@ class ChangedFrame(_Stamped):
     id: str
 
 
-type Frame = WorkspaceFrame | NavigateFrame | HighlightFrame | ChatFrame | ChangedFrame
+type Frame = (
+    WorkspaceFrame
+    | NavigateFrame
+    | HighlightFrame
+    | ChatFrame
+    | PreferencesFrame
+    | ChangedFrame
+)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True, eq=False)

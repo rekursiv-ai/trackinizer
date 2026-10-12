@@ -20,6 +20,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   chat_style: "default",
   chat_side: "left",
   highlight_mentions: true,
+  terminal_font_size: "13px",
   stars: [],
   views: [],
   aliases: [],

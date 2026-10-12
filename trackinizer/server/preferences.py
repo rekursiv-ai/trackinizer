@@ -11,7 +11,7 @@ row is read on every profile fetch, so no key may grow without limit.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 from pydantic import (
     BaseModel,
@@ -19,10 +19,33 @@ from pydantic import (
     Field,
     JsonValue,
     StringConstraints,
+    ValidationError,
     field_validator,
 )
 from pydantic_core import to_json
 from treekle import from_plain
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    import uuid
+
+    from pydantic.config import JsonDict
+
+    from trackinizer.lib.postgres import Conn
+
+
+ASSISTANT_KEYS: Final = frozenset(
+    {"theme", "chat_style", "chat_side", "highlight_mentions", "terminal_font_size"},
+)
+"""The preferences a station's assistant may read and change for its owner: the
+UI's, each marked ``SETTING`` below. Every other key (the user's own data) stays
+the user's alone."""
+
+SETTING: Final[JsonDict] = {"x-setting": True}
+"""Marks a field as one of the UI's settings: Settings shows it in the
+preferences document, with its description as the comment above it."""
 
 
 _Id = Annotated[str, StringConstraints(max_length=100)]
@@ -125,18 +148,30 @@ class Preferences(_Strict):
     theme: Literal["dark", "light", "system"] = Field(
         default="dark",
         description="The app's colours: dark, light, or whichever the system uses.",
+        json_schema_extra=SETTING,
     )
     chat_style: Literal["default", "terminal"] = Field(
         default="default",
         description="How Chat is drawn: the app's own look, or as a terminal.",
+        json_schema_extra=SETTING,
     )
     chat_side: Literal["left", "right"] = Field(
         default="left",
         description="The side of the workbench Chat stands on; the sidebar takes the other.",
+        json_schema_extra=SETTING,
     )
     highlight_mentions: bool = Field(
         default=True,
         description="Light up the rows the assistant's answers mention.",
+        json_schema_extra=SETTING,
+    )
+    terminal_font_size: str = Field(
+        default="13px",
+        pattern=r"^[1-9][0-9]?(\.[0-9])?(px|pt)$",
+        description=(
+            "Chat's font size in the Terminal style, in px or pt: 13px, or 16pt."
+        ),
+        json_schema_extra=SETTING,
     )
     stars: Annotated[list[_Id], Field(max_length=2_000)] = Field(
         default=[],
@@ -193,3 +228,51 @@ def stored_preferences(stored: object) -> Preferences:
         if key in Preferences.model_fields
     }
     return Preferences.model_validate(known)
+
+
+async def write_preferences(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    change: Mapping[str, object],
+) -> Preferences | None:
+    """Change some of a user's preferences, and put others back to their defaults.
+
+    The keys ``change`` leaves out keep their values. It is one statement, so two
+    changes to different keys at once both keep theirs.
+
+    Args:
+      conn: The connection to write on.
+      user_id: Whose preferences change.
+      change: The keys to change: a value sets the key, ``None`` puts it back to
+        its default.
+
+    Returns:
+      preferences: Every key after the change, or None when the user is gone.
+
+    Raises:
+      ValueError: Naming a key no preference has or a value its key does not take;
+        nothing is written.
+
+    """
+    unknown = sorted(set(change) - set(Preferences.model_fields))
+    if unknown:
+        raise ValueError(f"No such preference: {', '.join(unknown)}")
+    chosen = {key: value for key, value in change.items() if value is not None}
+    try:
+        checked = Preferences.model_validate(chosen)
+    except ValidationError as error:
+        problems = (
+            f"{'.'.join(map(str, problem['loc']))}: {problem['msg']}"
+            for problem in error.errors()
+        )
+        raise ValueError("; ".join(problems)) from error
+    stored = await conn.fetchrow(
+        "UPDATE users SET preferences = "
+        "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
+        "WHERE id = $3 RETURNING preferences",
+        checked.model_dump(mode="json", include=set(chosen)),
+        sorted(key for key, value in change.items() if value is None),
+        user_id,
+    )
+    return None if stored is None else stored_preferences(stored["preferences"])

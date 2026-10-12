@@ -11,11 +11,12 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast, get_args, override
 
 import argparse
+import json
 import math
 import sys
 import uuid
 
-from treekle import from_plain
+from treekle import MutablePlainTree, from_plain, json_loads
 
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import render
@@ -2776,8 +2777,17 @@ class Workspace(Command):
             "trax workspace UUID highlight RECORD_UUID,RECORD_UUID",
             "trax workspace UUID hide chat",
             "trax workspace UUID hide INSTANCE_UUID",
+            "trax workspace UUID theme to light",
+            "trax workspace UUID chat_style to terminal",
+            "trax workspace UUID theme to null",
         ),
-        notes=("Mutations fetch the current revision before applying one operation.",),
+        notes=(
+            "Mutations fetch the current revision before applying one operation.",
+            (
+                "KEY to VALUE sets the station owner's preference KEY (VALUE read as JSON "
+                "when it parses, else as text; null puts it back to its default)."
+            ),
+        ),
     )
 
     @classmethod
@@ -2788,7 +2798,8 @@ class Workspace(Command):
         parser.add_argument(
             "action",
             nargs="?",
-            choices=("show", "navigate", "highlight", "hide", "focus", "place"),
+            metavar="|".join((*_WORKSPACE_ACTIONS, "KEY")),
+            help=f"one of {', '.join(_WORKSPACE_ACTIONS)}, or a preference KEY followed by: to VALUE",
         )
         parser.add_argument("subject", nargs="*")
         parser.add_argument("--record")
@@ -2817,6 +2828,18 @@ class Workspace(Command):
                 raise ClientError("workspace read does not accept operation arguments")
             _print_workspace(client.read_workspace(workspace_id))
             return
+        if _is_preference(flags):
+            updated = client.set_preferences(
+                workspace_id,
+                change={flags.action or "": _preference_value(flags.subject[1])},
+            )
+            _print_workspace(updated)
+            return
+        if flags.action not in _WORKSPACE_ACTIONS:
+            raise ClientError(
+                f"unknown workspace action {flags.action!r}: use one of "
+                f"{', '.join(_WORKSPACE_ACTIONS)}, or KEY to VALUE",
+            )
         if flags.action == "highlight":
             updated = client.highlight(workspace_id, ids=_highlight_ids(flags))
             _print_workspace(updated)
@@ -2886,6 +2909,28 @@ def _workspace_operation(
             "placement": subject[1],
         }
     return operation
+
+
+def _is_preference(args: _WorkspaceArgs) -> bool:
+    """Whether the words are ``KEY to VALUE``: set the station owner's preference KEY."""
+    if args.action in _WORKSPACE_ACTIONS or args.subject[:1] != ["to"]:
+        return False
+    if (
+        len(args.subject) != 2
+        or args.record is not None
+        or args.placement is not None
+        or args.param
+    ):
+        raise ClientError(f"{args.action} to takes one VALUE and no other argument")
+    return True
+
+
+def _preference_value(text: str) -> MutablePlainTree:
+    """Read a preference's value: as JSON when it parses (``true``, ``null``), else as text."""
+    try:
+        return json_loads(text)
+    except json.JSONDecodeError:
+        return text
 
 
 def _is_chat(args: _WorkspaceArgs) -> bool:
@@ -2968,6 +3013,15 @@ def _print_workspace(payload: object) -> None:
     revision = from_plain(state.get("revision"), int, default=0)
     focused = from_plain(state.get("focused_instance"), str, default="none")
     echo(f"workspace {workspace_id} revision {revision} focused {focused}")
+    preferences = from_plain(state.get("preferences"), dict[str, object], default={})
+    if preferences:
+        echo(
+            "  preferences "
+            + " ".join(
+                f"{key}={json.dumps(value)}"
+                for key, value in sorted(preferences.items())
+            ),
+        )
     visuals = from_plain(state.get("visuals"), list[dict[str, object]], default=[])
     if not visuals:
         echo("  (no visuals)")
@@ -2987,6 +3041,10 @@ def _workspace_uuid(value: str, label: str) -> uuid.UUID:
         return uuid.UUID(value)
     except ValueError as error:
         raise ClientError(f"{label} is not a valid UUID: {value!r}") from error
+
+
+_WORKSPACE_ACTIONS: Final = ("show", "navigate", "highlight", "hide", "focus", "place")
+"""The operations a workspace takes by name; any other word starts ``KEY to VALUE``."""
 
 
 class _WorkspaceArgs(Protocol):

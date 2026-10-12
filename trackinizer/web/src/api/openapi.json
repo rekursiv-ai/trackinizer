@@ -4326,6 +4326,7 @@
             "navigate": "#/components/schemas/Navigate",
             "partner": "#/components/schemas/ChoosePartner",
             "place": "#/components/schemas/PlaceVisual",
+            "preferences": "#/components/schemas/SetPreferences",
             "show": "#/components/schemas/ShowVisual"
           },
           "propertyName": "kind"
@@ -4351,6 +4352,9 @@
           },
           {
             "$ref": "#/components/schemas/ChatWindow"
+          },
+          {
+            "$ref": "#/components/schemas/SetPreferences"
           },
           {
             "$ref": "#/components/schemas/ChoosePartner"
@@ -4562,7 +4566,8 @@
               "right"
             ],
             "title": "Chat Side",
-            "type": "string"
+            "type": "string",
+            "x-setting": true
           },
           "chat_style": {
             "default": "default",
@@ -4572,7 +4577,8 @@
               "terminal"
             ],
             "title": "Chat Style",
-            "type": "string"
+            "type": "string",
+            "x-setting": true
           },
           "collapsed": {
             "default": [],
@@ -4613,7 +4619,8 @@
             "default": true,
             "description": "Light up the rows the assistant's answers mention.",
             "title": "Highlight Mentions",
-            "type": "boolean"
+            "type": "boolean",
+            "x-setting": true
           },
           "lens": {
             "anyOf": [
@@ -4656,6 +4663,14 @@
             "title": "Stars",
             "type": "array"
           },
+          "terminal_font_size": {
+            "default": "13px",
+            "description": "Chat's font size in the Terminal style, in px or pt: 13px, or 16pt.",
+            "pattern": "^[1-9][0-9]?(\\.[0-9])?(px|pt)$",
+            "title": "Terminal Font Size",
+            "type": "string",
+            "x-setting": true
+          },
           "theme": {
             "default": "dark",
             "description": "The app's colours: dark, light, or whichever the system uses.",
@@ -4665,7 +4680,8 @@
               "system"
             ],
             "title": "Theme",
-            "type": "string"
+            "type": "string",
+            "x-setting": true
           },
           "views": {
             "default": [],
@@ -5773,6 +5789,32 @@
           "route"
         ],
         "title": "SetPage",
+        "type": "object"
+      },
+      "SetPreferences": {
+        "additionalProperties": false,
+        "description": "Change the station owner's preferences, as the station's agent. An event.\n\nIt moves no visual and no revision. The keys and values are the owner's\npreferences' (``server/preferences.py``); ``None`` puts a key back to its default.",
+        "properties": {
+          "change": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            },
+            "maxProperties": 64,
+            "minProperties": 1,
+            "title": "Change",
+            "type": "object"
+          },
+          "kind": {
+            "const": "preferences",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "change"
+        ],
+        "title": "SetPreferences",
         "type": "object"
       },
       "ShowVisual": {
@@ -8724,6 +8766,20 @@
           "partner_choice": {
             "$ref": "#/components/schemas/PartnerChoice",
             "default": "shared"
+          },
+          "preferences": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferences"
           },
           "revision": {
             "minimum": 0.0,
@@ -14782,7 +14838,7 @@
     },
     "/api/me/preferences": {
       "patch": {
-        "description": "Set some of the caller's preferences, and put others back to their defaults.\n\nThe keys the body leaves out keep their values. The change is one statement, so\ntwo tabs changing different keys at once both keep theirs.\n\nArgs:\n  body: The keys to change: a value sets the key, ``null`` puts it back to its\n    default.\n  request: FastAPI request with a database engine.\n  identity: The account whose preferences change.\n\nReturns:\n  preferences: Every key after the change, defaults filled.\n\nRaises:\n  HTTPException: 422 for a key no preference has or a value its key does not\n    take, and nothing is written; 404 when the caller's user is gone.",
+        "description": "Set some of the caller's preferences, and put others back to their defaults.\n\nThe keys the body leaves out keep their values. The change is one statement, so\ntwo tabs changing different keys at once both keep theirs. Every station of\nthe caller is sent the result, so each of their tabs shows it.\n\nArgs:\n  body: The keys to change: a value sets the key, ``null`` puts it back to its\n    default.\n  request: FastAPI request with a database engine.\n  identity: The account whose preferences change.\n\nReturns:\n  preferences: Every key after the change, defaults filled.\n\nRaises:\n  HTTPException: 422 for a key no preference has or a value its key does not\n    take, and nothing is written; 404 when the caller's user is gone.",
         "operationId": "set_preferences_route_api_me_preferences_patch",
         "requestBody": {
           "content": {
@@ -18327,7 +18383,7 @@
     },
     "/api/workspaces/{workspace_id}/operations": {
       "post": {
-        "description": "Apply one revisioned operation and return the updated canvas.\n\nA ``navigate``, ``highlight`` or ``chat`` operation, which only an agent key may\nsend, changes neither a visual nor the revision: it pushes a ``navigate``,\n``highlight`` or ``chat`` frame. A replay of an applied key returns the original state and\npublishes nothing.\n\nArgs:\n  workspace_id: Canvas to change.\n  body: Expected revision and visual operation.\n  request: Request carrying the database engine.\n  identity: Authenticated workspace owner.\n  key: Retry-safe idempotency key.\n\nReturns:\n  state: Updated canvas, or a conflict with the current revision.",
+        "description": "Apply one revisioned operation and return the updated canvas.\n\nA ``navigate``, ``highlight``, ``chat`` or ``preferences`` operation, which only an\nagent key may send, changes neither a visual nor the revision: it pushes a\n``navigate``, ``highlight`` or ``chat`` frame to this station, or, for\n``preferences``, which changes the owner's preferences, a ``preferences`` frame\nto every station of the owner. A replay of an applied key returns the original state and\npublishes nothing.\n\nArgs:\n  workspace_id: Canvas to change.\n  body: Expected revision and visual operation.\n  request: Request carrying the database engine.\n  identity: Authenticated workspace owner.\n  key: Retry-safe idempotency key.\n\nReturns:\n  state: Updated canvas, or a conflict with the current revision.",
         "operationId": "workspace_operation_route_api_workspaces__workspace_id__operations_post",
         "parameters": [
           {

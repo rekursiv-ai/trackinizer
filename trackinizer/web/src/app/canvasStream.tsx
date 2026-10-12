@@ -3,6 +3,7 @@ import { type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { openWorkspaceEvents } from "../api/workspaces";
 import { recordFrame, recordNavigation } from "../debug/timings";
 import { LiveContext } from "../live";
+import { receivePreferences } from "../preferences";
 import { parseHash } from "../router/route";
 import { setChatHidden } from "../visuals/chatColumn";
 import { ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
@@ -48,6 +49,7 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
       },
       highlight: (ids) => highlights.set(ids),
       chat: (hidden) => setChatHidden(hidden),
+      preferences: (preferences) => receivePreferences(preferences),
       changed: (id) => hub?.change(id),
       open: () => hub?.open(),
       drop: () => hub?.drop(),

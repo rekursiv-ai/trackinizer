@@ -2,6 +2,9 @@ import { type CallOptions, client, send, TIMEOUT_MS } from "./client";
 import type { components } from "./generated/schema";
 import { type EventSourceLike, openEvents } from "./stream";
 
+/** The user's preferences as a frame carries them: every key, defaults filled (`src/preferences.ts`). */
+type Preferences = Required<components["schemas"]["Preferences"]>;
+
 export type WorkspaceState = components["schemas"]["WorkspaceState"];
 /** Who a canvas talks to: the assistant's newest live session. */
 export type WorkspacePartner = NonNullable<WorkspaceState["partner"]>;
@@ -51,6 +54,8 @@ export type WorkspaceEventListener = {
   readonly highlight: (ids: readonly string[], t: number) => void;
   /** An agent hid Chat's column (`true`) or showed it again (`false`); this tab's state, not the canvas's. */
   readonly chat: (hidden: boolean, t: number) => void;
+  /** The user's preferences changed, by them on another tab or by the station's agent: every key. */
+  readonly preferences: (preferences: Preferences, t: number) => void;
   /** An inquiry changed, as `/api/web/subscribe` says it; a chat's new line is its session's change. */
   readonly changed: (id: string, t: number) => void;
   /** The stream is connected: the first time, and after every reconnect. */
@@ -87,6 +92,7 @@ export function openWorkspaceEvents(
         case "navigate": return listener.navigate(frame.route, frame.t);
         case "highlight": return listener.highlight(frame.ids, frame.t);
         case "chat": return listener.chat(frame.hidden, frame.t);
+        case "preferences": return listener.preferences(frame.preferences, frame.t);
         case "changed": return listener.changed(frame.id, frame.t);
       }
     },
@@ -98,6 +104,7 @@ type Frame =
   | { readonly type: "navigate"; readonly route: string; readonly t: number }
   | { readonly type: "highlight"; readonly ids: readonly string[]; readonly t: number }
   | { readonly type: "chat"; readonly hidden: boolean; readonly t: number }
+  | { readonly type: "preferences"; readonly preferences: Preferences; readonly t: number }
   | { readonly type: "changed"; readonly id: string; readonly t: number };
 
 /** One frame's data as a checked `Frame`, or null. */
@@ -110,7 +117,7 @@ function parseFrame(data: unknown): Frame | null {
     return null;
   }
   if (typeof frame !== "object" || frame === null) return null;
-  const { type, t, state, route, id, ids, hidden } = frame as { [name: string]: unknown };
+  const { type, t, state, route, id, ids, hidden, preferences } = frame as { [name: string]: unknown };
   if (typeof t !== "number") return null;
   if (type === "workspace") {
     try {
@@ -122,6 +129,8 @@ function parseFrame(data: unknown): Frame | null {
   if (type === "navigate") return typeof route === "string" ? { type, route, t } : null;
   if (type === "highlight") return Array.isArray(ids) && ids.every((each) => typeof each === "string") ? { type, ids, t } : null;
   if (type === "chat") return typeof hidden === "boolean" ? { type, hidden, t } : null;
+  // The server sends every key; the store takes them as they come.
+  if (type === "preferences") return typeof preferences === "object" && preferences !== null ? { type, preferences: preferences as Preferences, t } : null;
   if (type === "changed") return typeof id === "string" ? { type, id, t } : null;
   return null;
 }

@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+from unittest.mock import AsyncMock
+
+import uuid
+
 from pydantic import JsonValue
 
 import pydantic
 import pytest
 
-from trackinizer.server.preferences import Preferences, stored_preferences
+from trackinizer.server.preferences import (
+    ASSISTANT_KEYS,
+    SETTING,
+    Preferences,
+    stored_preferences,
+    write_preferences,
+)
+
+
+if TYPE_CHECKING:
+    from trackinizer.lib.postgres import Conn
 
 
 _DEFAULTS: dict[str, JsonValue] = {
@@ -15,6 +30,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "chat_style": "default",
     "chat_side": "left",
     "highlight_mentions": True,
+    "terminal_font_size": "13px",
     "stars": [],
     "views": [],
     "aliases": [],
@@ -66,6 +82,90 @@ def test_the_keys_set_override_their_defaults_and_unknown_ones_are_dropped() -> 
 def test_a_value_its_key_does_not_take_is_refused() -> None:
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"chat_side": "middle"})
+
+
+def test_the_assistants_keys_are_exactly_the_settings_the_document_shows() -> None:
+    marked = {
+        name
+        for name, field in Preferences.model_fields.items()
+        if field.json_schema_extra == SETTING
+    }
+    assert marked == ASSISTANT_KEYS
+
+
+@pytest.mark.parametrize("size", ["13px", "16pt", "9.5px", "99pt"])
+def test_a_terminal_font_size_is_px_or_pt(size: str) -> None:
+    assert (
+        Preferences.model_validate({"terminal_font_size": size}).terminal_font_size
+        == size
+    )
+
+
+@pytest.mark.parametrize("size", ["0px", "100px", "16em", "16", "1.25px", "16 pt"])
+def test_any_other_terminal_font_size_is_refused(size: str) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"terminal_font_size": size})
+
+
+_USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
+
+
+@pytest.mark.asyncio
+async def test_a_write_sets_and_resets_keys_in_one_statement() -> None:
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value={"preferences": {"theme": "light"}})
+
+    written = await write_preferences(
+        cast("Conn", conn),
+        user_id=_USER,
+        change={"theme": "light", "chat_side": None},
+    )
+
+    assert written == Preferences(theme="light")
+    conn.fetchrow.assert_awaited_once_with(
+        "UPDATE users SET preferences = "
+        "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
+        "WHERE id = $3 RETURNING preferences",
+        {"theme": "light"},
+        ["chat_side"],
+        _USER,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_write_for_a_user_who_is_gone_is_none() -> None:
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value=None)
+    assert (
+        await write_preferences(
+            cast("Conn", conn),
+            user_id=_USER,
+            change={"theme": "light"},
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"colour": "red", "theme": None}, "No such preference: colour"),
+        ({"theme": "blue"}, "theme: "),
+        (
+            {"chat_style": "terminal", "highlight_mentions": "yes"},
+            "highlight_mentions: ",
+        ),
+    ],
+)
+async def test_a_key_or_value_the_preferences_do_not_take_writes_nothing(
+    change: dict[str, object],
+    message: str,
+) -> None:
+    conn = AsyncMock()
+    with pytest.raises(ValueError, match=message):
+        await write_preferences(cast("Conn", conn), user_id=_USER, change=change)
+    assert not conn.fetchrow.called
 
 
 def test_the_user_data_keys_round_trip_whole() -> None:
