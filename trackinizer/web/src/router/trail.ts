@@ -9,6 +9,9 @@ const MAX_HASH = 512;
 /** A hash the server takes as a page: `#/`, then no whitespace or control character. */
 const PAGE = /^#\/[^\s\u0000-\u001f\u007f]*$/;
 
+/** A hash that opens a sheet over the page, Settings or Admin, rather than a page. */
+export const SHEET = /^#\/(settings|admin)(?:[/?]|$)/;
+
 let trail: readonly string[] = [];
 
 /** Whether the server takes `hash` as a page. */

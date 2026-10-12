@@ -1,9 +1,14 @@
 /* Your settings and Admin, from the design mock ("settings: yours and
    admin", ".st"). The names list, the suggestions and the notes are ours. */
-.st { max-width: 880px; padding: 8px 24px 80px; display: flex; flex-direction: column; gap: 18px; }
-/* Your settings is as wide as its sections, so Close stands at their right edge. */
-.settings-view { max-width: 880px; }
-.settings-view .view-h { padding-right: 24px; }
+.st { padding: 8px 24px 80px; display: flex; flex-direction: column; gap: 18px; }
+/* Settings and Admin open as a sheet over the page (Shell), half its width, from the sidebar's side: the
+   page stays in view beside it, and the sections take the sheet's width. Close stands at their edge. */
+.sheet {
+  position: absolute; z-index: 25; top: 0; bottom: 0; left: 0; display: flex; flex-direction: column;
+  width: min(100%, max(50%, 560px)); background: var(--bg); border-right: 1px solid var(--line); box-shadow: 0 8px 32px #0006;
+}
+.app.sidebar-right .sheet { left: auto; right: 0; border-right: 0; border-left: 1px solid var(--line); }
+.sheet .view-h { padding-right: 24px; }
 .st-sec { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--surface); overflow-x: auto; }
 .st-h { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
 .st-h > div { flex: 1; min-width: 0; }

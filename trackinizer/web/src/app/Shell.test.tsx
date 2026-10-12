@@ -96,14 +96,19 @@ test("a user with the canvas on sees the list inside the canvas", async () => {
   expect(loaded.canvas).toBe(1);
 });
 
-test("the canvas wraps a list, not Settings, and wraps it again on the way back", async () => {
+test("Settings opens as a sheet over the page, which stays in its canvas under it, and goes on the way back", async () => {
   serve(true);
   render(<App assign={vi.fn()} />);
-  await screen.findByRole("region", { name: "Canvas" });
+  const canvas = await screen.findByRole("region", { name: "Canvas" });
   act(() => { window.location.hash = "#/settings"; });
-  await waitFor(() => expect(screen.queryByRole("region", { name: "Canvas" })).toBeNull(), { interval: 1 });
+  const sheet = await screen.findByRole("complementary", { name: "Your settings" });
+  expect((await within(sheet).findByRole("heading", { level: 1 })).textContent).toBe("Your settings");
+  // The list is the same one, mounted once, in the same canvas.
+  expect(screen.getByRole("region", { name: "Canvas" })).toBe(canvas);
+  expect(canvas.querySelector("h1")?.textContent).toBe("Issues");
   act(() => { window.location.hash = "#/list/Issue"; });
-  await screen.findByRole("region", { name: "Canvas" });
+  await waitFor(() => expect(screen.queryByRole("complementary", { name: "Your settings" })).toBeNull(), { interval: 1 });
+  expect(screen.getByRole("region", { name: "Canvas" })).toBe(canvas);
 });
 
 test("the sidebar starts as a rail of its entries, named, titled and in order; its button, or ⌘B / Ctrl+B, pins it open, and again folds it", async () => {

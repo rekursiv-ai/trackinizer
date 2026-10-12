@@ -10,7 +10,7 @@ const OTHER = "e2e-admin@example.com";
 
 async function openAdmin(page: Page): Promise<void> {
   await page.goto("/app/#/admin");
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Admin");
+  await expect(page.getByRole("complementary", { name: "Admin" }).getByRole("heading", { level: 1 })).toHaveText("Admin");
 }
 
 test("an admin changes a user's role and edits the allowlist", async ({ page, request, allowErrors }) => {

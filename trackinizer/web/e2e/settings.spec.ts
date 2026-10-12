@@ -8,9 +8,12 @@ import { expect, failedResource, test } from "./fixtures";
 
 const suffix = () => crypto.randomUUID().slice(0, 8);
 
+/** Settings, the sheet over the page. */
+const sheet = (page: Page) => page.getByRole("complementary", { name: "Your settings" });
+
 async function openSettings(page: Page): Promise<void> {
   await page.goto("/app/#/settings");
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Your settings");
+  await expect(sheet(page).getByRole("heading", { level: 1 })).toHaveText("Your settings");
 }
 
 type Listed = { name: string; prefix: string; role: string; revoked_at: string | null };
@@ -118,17 +121,30 @@ test("export this browser's state, then import it into a fresh browser", async (
   await fresh.close();
 });
 
-test("Close takes the tab back to the page it was on before Settings", async ({ page }) => {
+test("Settings opens as half a page over the page, from the sidebar's side, and Close takes the tab back", async ({ page }) => {
   await page.goto("/app/#/list/Issue");
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  const list = page.getByRole("heading", { level: 1, name: "Issues" });
+  await expect(list).toBeVisible();
   await page.getByRole("navigation", { name: "Sidebar" }).getByRole("link", { name: "Your settings" }).click();
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Your settings");
-  // The page is as wide as its content, so Close stands at the content's right edge.
+  await expect(sheet(page).getByRole("heading", { level: 1 })).toHaveText("Your settings");
+  // The list stays under it, mounted, its other half in view.
+  await expect(list).toBeAttached();
+  const main = (await page.locator("main.main").boundingBox())!;
+  const half = (await sheet(page).boundingBox())!;
+  const sidebar = (await page.getByRole("navigation", { name: "Sidebar" }).boundingBox())!;
+  // Half the main area inside its 1 px border, and no narrower than 560 px.
+  const inner = main.width - 2;
+  expect(Math.round(half.width)).toBe(Math.round(Math.min(inner, Math.max(inner / 2, 560))));
+  // Against the main area's edge on the sidebar's side, whichever side that is.
+  if (sidebar.x < main.x) expect(Math.round(half.x)).toBe(Math.round(main.x + 1));
+  else expect(Math.round(half.x + half.width)).toBe(Math.round(main.x + main.width - 1));
+  // The sections take the sheet's width, so Close stands at their right edge.
   const close = (await page.getByRole("link", { name: "Close settings" }).boundingBox())!;
   const profile = (await page.getByRole("region", { name: "Profile" }).boundingBox())!;
   expect(Math.round(close.x + close.width)).toBe(Math.round(profile.x + profile.width));
   await page.getByRole("link", { name: "Close settings" }).click();
   await expect(page).toHaveURL(/#\/list\/Issue$/);
+  await expect(sheet(page)).toHaveCount(0);
 });
 
 // Sign out itself is the unit tests' (src/settings/index.test.tsx): this server

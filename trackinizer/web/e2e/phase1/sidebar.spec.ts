@@ -20,9 +20,10 @@ test("every sidebar entry opens its view, and each kind's list has its tabs and 
     const entry = entries.nth(n);
     const name = (await entry.textContent())!.trim();
     await entry.click();
-    // The console adds its open view's name: "Console · Untitled view".
+    // The console adds its open view's name: "Console · Untitled view". Settings and Admin open as a sheet over the page.
     const named = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText(new RegExp(`^${named}( · .+)?$`));
+    const shown = hash === "#/settings" || hash === "#/admin" ? page.getByRole("complementary", { name }) : page;
+    await expect(shown.getByRole("heading", { level: 1 })).toHaveText(new RegExp(`^${named}( · .+)?$`));
     await expect(entry).toHaveAttribute("aria-current", "page");
     expect(new URL(page.url()).hash).toBe(hash);
     if (!hash.startsWith("#/list/")) continue;

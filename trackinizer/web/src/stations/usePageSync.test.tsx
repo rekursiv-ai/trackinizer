@@ -52,6 +52,16 @@ test("a page that follows within 500 ms waits for the time to be up, and then on
   expect(sent()).toHaveLength(2);
 });
 
+test("a sheet over the page, Settings or Admin, is not written: the station keeps the page under it", () => {
+  render(<Sync />);
+  wait(PAGE_EVERY_MS);
+  go("#/settings");
+  wait(PAGE_EVERY_MS);
+  go("#/admin");
+  wait(PAGE_EVERY_MS);
+  expect(sent()).toEqual([["w1", "#/graph"]]);
+});
+
 test("a page after a quiet half second is written at once", () => {
   render(<Sync />);
   wait(PAGE_EVERY_MS);

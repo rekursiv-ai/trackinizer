@@ -181,10 +181,9 @@ test("the rail shows one Workbench icon that opens the sidebar on the visual tog
   await expect(sidebar.locator(".workbench-slot :focus")).toHaveCount(1);
 });
 
-test("Settings has no canvas, so no Workbench section", async ({ page }) => {
+test("Settings opens over the canvas, so the Workbench section stays", async ({ page }) => {
   const { sidebar } = await open(page);
   await page.goto("/app/#/settings");
-  await expect(page.getByRole("heading", { name: "Your settings" })).toBeVisible();
-  await expect(sidebar.locator(".workbench-rail")).toBeHidden();
-  await expect(sidebar.getByRole("button", { name: "Workbench" })).toHaveCount(0);
+  await expect(page.getByRole("complementary", { name: "Your settings" })).toBeVisible();
+  await expect(sidebar.locator(".workbench-rail")).toBeVisible();
 });

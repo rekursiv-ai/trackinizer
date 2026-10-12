@@ -5,7 +5,6 @@ import { bootQueries, useProfile } from "../app/boot";
 import { LOGIN_URL } from "../app/session";
 import { CopyDetails } from "../debug/CopyDetails";
 import { dateTime, relativeTime, useMinuteClock } from "../detail/time";
-import { visited } from "../router/trail";
 import { useOnline } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { ViewHeader } from "../ui/view";
@@ -14,6 +13,7 @@ import { chooseTheme, type ThemePreference, useTheme } from "../theme";
 import { KeyValue, ReadError, Section } from "./account";
 import { AliasesSection } from "./Aliases";
 import { BrowserDataSection } from "./BrowserData";
+import { CloseSheet } from "./CloseSheet";
 import { ChatPartnerSection } from "./ChatPartner";
 import { useHighlightMentions } from "./highlightMentions";
 import { TokensSection } from "./Tokens";
@@ -35,9 +35,9 @@ export function SettingsView({ assign = (url: string) => location.assign(url) }:
   const profile = useProfile();
   const now = useMinuteClock();
   return (
-    <div className="view settings-view">
+    <div className="view">
       <ViewHeader icon={<Icon name="gear" />} title="Your settings">
-        <CloseSettings />
+        <CloseSheet label="Close settings" />
       </ViewHeader>
       <div className="scroll">
         <div className="st">
@@ -62,19 +62,6 @@ export function SettingsView({ assign = (url: string) => location.assign(url) }:
     </div>
   );
 }
-
-/** Back to the last page before Settings, or Admin, or to the graph when the tab opened here. */
-function CloseSettings() {
-  const back = visited().findLast((hash) => !OUTSIDE.test(hash)) ?? "#/graph";
-  return (
-    <a className="icon-btn" href={back} aria-label="Close settings" title="Close settings">
-      <Icon name="x" />
-    </a>
-  );
-}
-
-/** The pages Close leaves: Settings and Admin, which stand outside the workbench. */
-const OUTSIDE = /^#\/(settings|admin)(?:[/?]|$)/;
 
 function VisualWorkspaceSection() {
   const profile = useProfile();

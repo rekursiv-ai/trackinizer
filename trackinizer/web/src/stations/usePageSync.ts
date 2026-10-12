@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { setStationPage } from "../api/stations";
-import { useHash, validHash } from "../router/trail";
+import { SHEET, useHash, validHash } from "../router/trail";
 import { setStation, useCurrentStation } from "./store";
 
 /** The least time between two writes of a station's page. */
@@ -11,7 +11,7 @@ export const PAGE_EVERY_MS = 500;
  * write goes at once if none went in the last `PAGE_EVERY_MS`, else when that
  * time is up, with the page the tab is on then. A switch that moved the page
  * writes nothing until the address is where the switch sent it, and a page the
- * server would refuse is not written.
+ * server would refuse, or a sheet over the page, is not written.
  */
 export function usePageSync(): void {
   const { id, landing } = useCurrentStation();
@@ -21,7 +21,8 @@ export function usePageSync(): void {
   useEffect(() => () => clearTimeout(timer.current), []);
   useEffect(() => {
     clearTimeout(timer.current);
-    if (!id || !validHash(hash)) return;
+    // A sheet (Settings, Admin) lies over the page: the station keeps the page under it.
+    if (!id || !validHash(hash) || SHEET.test(hash)) return;
     if (landing !== null) {
       // Not there yet, or there: the station already holds this page, so nothing is written for it.
       if (hash === landing) {

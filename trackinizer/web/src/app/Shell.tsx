@@ -39,8 +39,11 @@ const Canvas = lazyView(
 /** Chat, a column beside the canvas rather than a visual in it. */
 const ChatColumn = lazyView(() => import("../visuals/ChatColumn"), (module) => module.ChatColumn);
 
-/** A route that shows a view; a new inquiry shows its form over one. */
-type ViewRoute = Exclude<Route, { name: "new" }>;
+/** A route that shows a page; a new inquiry's form, Settings and Admin show over one. */
+type ViewRoute = Exclude<Route, { name: "new" | "settings" | "admin" }>;
+
+/** Settings and Admin: a sheet over the page, half its width, from the sidebar's side. */
+type SheetRoute = Extract<Route, { name: "settings" | "admin" }>;
 
 /**
  * The signed-in app: the sidebar, the bars, the current route's view, and the
@@ -54,9 +57,10 @@ export function Shell() {
   const { role, visual_workspace_enabled: visualWorkspaceEnabled } = useProfile();
   const writable = useWriteMode() === "enabled";
   const creatable = creatableKinds(kinds);
-  // The view under a `#/new/<Kind>` route: the one before it, or home, the graph,
-  // when the app opened on that link.
-  const view = route.name === "new" ? null : route;
+  // The page under a `#/new/<Kind>` route or a sheet: the one before it, or home,
+  // the graph, when the app opened on that link.
+  const sheet = isSheet(route) ? route : null;
+  const view = route.name === "new" || isSheet(route) ? null : route;
   const [background, setBackground] = useState<ViewRoute>(view ?? HOME);
   if (view && view !== background) setBackground(view);
   // No route opens the palette: a search link opens the search page.
@@ -136,8 +140,8 @@ export function Shell() {
               <PausedBar />
               {/* A view whose chunk is still loading (src/router/views.ts) holds an empty, busy frame. */}
               <Suspense fallback={<div className="view" aria-busy="true" />}>
-                {/* A canvas route holds the shell's busy frame until the canvas's chunk is in, then mounts its view once, inside it. */}
-                {isCanvasRoute(view ?? background) && visualWorkspaceEnabled ? (
+                {/* The canvas holds the shell's busy frame until its chunk is in, then mounts the page once, inside it. */}
+                {visualWorkspaceEnabled ? (
                   canvasLoaded ? (
                     <ChatColumn><Canvas><RouteView route={view ?? background} /></Canvas></ChatColumn>
                   ) : (
@@ -147,6 +151,13 @@ export function Shell() {
                   <RouteView route={view ?? background} />
                 )}
               </Suspense>
+              {sheet ? (
+                <aside className="sheet" aria-label={sheet.name === "settings" ? "Your settings" : "Admin"}>
+                  <Suspense fallback={<div className="view" aria-busy="true" />}>
+                    {sheet.name === "settings" ? <SettingsView /> : <AdminView />}
+                  </Suspense>
+                </aside>
+              ) : null}
             </BarStack>
           </main>
         </div>
@@ -161,9 +172,9 @@ export function Shell() {
   );
 }
 
-/** The canvas and Chat's column wrap every route but Settings and Admin, so Chat stays while an agent moves the page. */
-function isCanvasRoute(route: ViewRoute): boolean {
-  return route.name !== "settings" && route.name !== "admin";
+/** Whether `route` opens a sheet over the page rather than a page. */
+function isSheet(route: Route): route is SheetRoute {
+  return route.name === "settings" || route.name === "admin";
 }
 
 function RouteView({ route }: { route: ViewRoute }) {
@@ -178,10 +189,6 @@ function RouteView({ route }: { route: ViewRoute }) {
       return <ActivityView />;
     case "console":
       return <ConsoleView />;
-    case "settings":
-      return <SettingsView />;
-    case "admin":
-      return <AdminView />;
     case "search":
       return <SearchView q={route.q} />;
     case "graph":
