@@ -71,6 +71,7 @@ from trackinizer.server.store.core import Store
 from trackinizer.server.subscriber import push_changes_to_live_subscribers
 from trackinizer.server.visuals.catalog import default_workspace
 from trackinizer.types.errors import (
+    ChatDeletedError,
     ConflictError,
     NotFoundError,
     ValidationError,
@@ -473,6 +474,25 @@ async def conflict_handler(request: Request, exc: ConflictError) -> JSONResponse
     return JSONResponse(
         status_code=409,
         content={"detail": str(exc), "code": exc.code},
+    )
+
+
+@app.exception_handler(ChatDeletedError)
+async def chat_deleted_handler(request: Request, exc: ChatDeletedError) -> JSONResponse:
+    """Translate a ``ChatDeletedError`` into HTTP 410 ``chat_deleted``.
+
+    Args:
+      request: FastAPI Request object (unused).
+      exc: The refusal, whose text is the readable message.
+
+    Returns:
+      response: JSON response with 410 status and the code and message.
+
+    """
+    del request
+    return JSONResponse(
+        status_code=410,
+        content={"detail": {"code": exc.code, "message": str(exc)}},
     )
 
 

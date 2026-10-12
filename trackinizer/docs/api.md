@@ -64,6 +64,17 @@ POST /api/inquiries/batch
 DELETE /api/inquiries/<uuid>
 ```
 
+A purge deletes the row and its edges, auditing each. One rule holds for every row:
+you delete what you made, admins delete anything, so a row is purged by its `account`
+or an admin, and any other writer is 403. For the same reason only a row's account
+or an admin moves it to another account (`PUT .../account`), anyone else is 403, so
+no writer takes a row and then purges it. A claimed row first releases its owner
+(`DELETE .../owner`), a locked row or a
+row linked to one needs an admin (section 1.24), and a session needs its audience
+(section 1.21). A science chat's session is purged by the key that opened it or an
+admin, and is never unowned while it holds its routing name; `DELETE /api/chats/<uuid>`
+deletes a whole chat (section 1.25).
+
 ### 1.5 Inquiry set fields
 
 ```
@@ -752,7 +763,8 @@ and must then be 1 to 120 characters (else 422); a name the user already has is
 navigation's, remembers the page; it is 204, changes no revision and publishes
 no frame, and the browser sends it at most every 500 ms.
 `POST /api/workspaces/for-chat/<conversation uuid>` returns the user's station that
-holds that chat, or makes one bound to it. A station that is not the user's is 404.
+holds that chat, or makes one bound to it. A station that is not the user's is 404;
+a deleted chat is 410 `chat_deleted`.
 `GET /api/workspaces/<uuid>` returns that state to its owner, and to an
 assistant's key (below).
 
@@ -769,9 +781,13 @@ the chat as a line of the poster's that starts with `→ ` (an arrow and a
 space), then `actor` or `actor:room` for each target joined by `, `, then `: `
 and the text; it runs no turn, so there is no answer and no cost, and it reads
 the line with its next prompt. A `trax helper` reads it as a note. The response is
-`{"delivered": bool}`: false when the station has no chat, its partner is not
-running or its queue is full, which is never an error. A retry under the same
-key queues nothing again.
+`{"delivered": bool}`: false when the station has no chat, its chat was deleted,
+its owner may not post into its chat (a station may be bound to a chat to read it,
+section 1.25 says who posts), a Chat line of the station would be refused there
+(the 409s of a local helper in the assistant's chat and of the assistant in a
+helper's), its partner is not running or its queue is full, which is never an
+error.
+A retry under the same key queues nothing again.
 
 **The assistant and the partner.** The server's `--assistant ACTOR=EMAIL`, or
 `$TRACKINIZER_ASSISTANT`, names one assistant. A live AgentSession is the
@@ -848,6 +864,9 @@ not edit trax records or add entries to `change_log`.
 ```
 POST   /api/chats
 GET    /api/chats/<uuid>
+DELETE /api/chats/<uuid>
+PUT    /api/chats/<uuid>/shares/<email>
+DELETE /api/chats/<uuid>/shares/<email>
 GET    /api/workspaces/<uuid>/events
 ```
 
@@ -856,8 +875,10 @@ A canvas Chat conversation is one AgentSession the assistant opens: label
 `chat-<12 hex>`, account the person who started it. Its records are the
 conversation (a person's line is an agent message from its poster, then the
 assistant's tool calls, results and answers), read with the ordinary session
-routes. There is no separate chat store and no delete: chats are public to
-every user.
+routes. There is no separate chat store: chats are public to every user to read.
+Its starter posts into a chat, as do the people they share it with and whoever
+`TRACKINIZER_CHAT_ORGS` lets in (Forking below); anyone else forks it. Its starter
+deletes it while every person's line in it is theirs (Deleting below).
 
 `POST /api/chats` (browser only, writer role, with an `Idempotency-Key`) posts a
 line. The body is `{kind: "science", workspace_id, text, conversation_id, page,
@@ -869,8 +890,8 @@ conversation is 409, as is one for a conversation another station of the poster
 holds, and a line that names none continues the station's chat. `page` is the `#/...` address the sender is on and `trail` the addresses
 they came through before it, oldest first, at most 8; a malformed address or a
 longer trail is 422. The server resolves them to records in the context. A
-`conversation_id` continues a chat, and any signed-in writer in the starter's
-organisation may post into it (see Forking below). None starts one, and the key
+`conversation_id` continues a chat, for a writer who may post into it (see Forking
+below). None starts one, and the key
 names it, so a retry names the same conversation. `fork: {session_id, part, idx}`
 instead starts a new conversation from that line of another chat, in a new station
 copied from the one the line was sent from (the receipt's `workspace_id`); it and
@@ -888,10 +909,16 @@ a server restart queues the line again. No live assistant is 409; a full queue i
 409 `partner busy`, and nothing is queued.
 
 `GET /api/chats/<uuid>` returns `{conversation_id, session_id, title, account, live,
-forks, forked_from, forks_on_typing}` and is 404 until the assistant has opened the session; any signed-in user may
+forks, forked_from, forks_on_typing, shared_with, may_share, may_delete}` and is 404
+until the assistant has opened the session, and 410 `chat_deleted` once it was
+deleted (Deleting below); any signed-in user may
 read it, which is how a chat opens by link. It is browser only. A chat that
-the caller's own `trax helper` opened (the local choice) is found for the caller
-only.
+the caller's own `trax helper` opened (the local choice) is found for its starter
+only. Its `session_id` is the assistant's session under the id whenever one exists,
+and `account` is the chat's starter (Forking below). `shared_with` lists the emails
+the chat is shared with, oldest share first,
+and is empty for anyone but its starter and an admin; `may_share` and `may_delete`
+say whether the caller may share it and delete it (Sharing and Deleting below).
 
 Forking. A fork is a new science chat that starts from a line of another: its
 `account` is the forker, it has its own conversation id (the key), and the
@@ -904,22 +931,70 @@ campaigns and the new station belong to the forker. `forks` on the original's he
 the conversations with such an edge to it, counting only an edge that the key that
 opened the fork's session added with the fork label; `forked_from` on a fork's
 head is the original's conversation (the earliest such edge). A helper's forks
-count for the forker alone, since the head counts what the viewer may find. Who
-may join a chat or must fork it is the server's `TRACKINIZER_CHAT_ORGS`:
+count for the forker alone, since the head counts what the viewer may find. A
+person always joins their own chat, and so does each person it is shared with.
+Who else may join a chat or must fork it is the server's `TRACKINIZER_CHAT_ORGS`:
 `domain` (the default, also when unset) makes each verified email domain one
 organisation, except the consumer domains (`gmail.com`, `googlemail.com`, `outlook.com`, `hotmail.com`,
 `live.com`, `yahoo.com`, `icloud.com`, `me.com`, `proton.me`, `protonmail.com`),
-which are none; `single` makes every user one organisation, and only a server
-whose users are all one organisation sets it. A person always joins their own
-chat. Anyone else's post into a chat of another organisation is 403 and queues
+which are none, and the starter's organisation joins; `single` makes every user
+one organisation, and only a server whose users are all one organisation sets it;
+`individual` lets nobody else join. Anyone else's post is 403
+`{"detail": {"code": "chat_not_shared", "message": ...}}` and queues
 nothing, whether the conversation is named by `conversation_id` or by the
-`Idempotency-Key` of a post that names none; the chat's starter is the account of
-its oldest session (the assistant's first), or, before any session carries the
-id, the sender of the post that began it. A `fork` whose key names a conversation
-someone else began is 409. The head's `forks_on_typing` says a post is refused,
-and the browser then forks at the latest line instead (or on the 403, if it
-posted before the head was read). A `fork` is allowed to anyone, in a chat of their
-organisation too.
+`Idempotency-Key` of a post that names none. The chat's starter is the account of
+its oldest session that the assistant opened or that its own account's key opened
+(as a person's `trax helper` does), or, before any session carries the id, the
+sender of the post that began it. That one rule names the starter for a post, the
+head's `account`, sharing and deleting: any writer's key may open a session under a
+`chat:` id, and the assistant opens one for a poster a helper's chat is shared
+with, and neither makes anyone else the starter. Only a session start names a
+session's `chat:` id: an edit of `cli_session_id` (by its opening key or an admin
+alone) never moves a session into or out of one, and is 403 if it would. A post the
+assistant would answer
+in a chat a person's own helper began is 409, since only that helper reads it. A
+`fork` whose key names a conversation someone else began is 409. The head's
+`forks_on_typing` says a post
+is refused, and the browser then forks at the latest line instead (or on the 403,
+if it posted before the head was read). A `fork` is allowed to anyone, in a chat they
+may join too. A fork of a chat that was since deleted keeps its lines, and its
+`forked_from` is null.
+
+Sharing. `PUT /api/chats/<uuid>/shares/<email>` (writer role, browser only) shares a
+chat with one person, who then posts into it as its starter does; `DELETE` of the
+same path stops sharing it, so their next line, by Chat or by a Console relay, is
+refused while their earlier lines stay. The email is stored lowercase; a malformed
+one is 422. A share follows the conversation, whatever sessions it holds. Only the
+chat's starter (Forking above says who that is) or an admin shares and unshares, an
+API key is 403, and anyone else is 403 `{"detail": {"code": "chat_not_starter"}}`;
+a chat the caller cannot find is 404. Either again changes nothing. The answer is
+the chat's shares, a JSON array of emails, oldest share first.
+
+Deleting. `DELETE /api/chats/<uuid>` (writer role) deletes a whole chat: every
+session under its id, whoever's key opened it, with its records (each purged as
+`DELETE /api/inquiries/<uuid>` purges a row, audited), its shares, and its binding
+to any station, whose next line then starts a new chat; each such station moves to
+its next `revision`, and its open tabs get a `workspace` frame without the chat at
+that revision. A tombstone keeps the id, and nothing starts the chat again: its
+head, a later post naming it, a `fork` keyed by it or from one of its lines,
+`POST /api/workspaces/for-chat/<uuid>` and `POST /api/sessions/start` with its
+`chat:<uuid>` id are each 410 `{"detail": {"code": "chat_deleted", "message":
+...}}`, and an append to one of its sessions is 404, as the session is gone. Lines
+still queued for it go with it. It answers 204, or 404 for a chat the
+caller cannot find. An admin deletes any chat, and so does the key that opened
+every session under its id; any other API key is 403, so a person's browser deletes
+it otherwise. Its starter deletes it while every person's line in it is theirs,
+counting only the sessions the assistant or the starter's own key opened (a line a
+fork copied from its original counts as its original poster's, a line on its way
+in as posted, whether still queued or taken by the assistant in the last 10 minutes
+and not yet recorded in one of those sessions, and a session whose audience they do
+not read as someone else's); once someone else has posted, the starter is 403
+`{"detail": {"code": "chat_has_other_posters"}}`. Anyone else is 403
+`{"detail": {"code": "chat_not_starter"}}`. A session that is locked, or linked to a
+locked row, needs an admin, as a purge does. The chat's forks stay. Its sessions'
+`change_log` rows stay, but each title and description they held is blanked (a
+title to `""`, a description to null): the log is append-only by convention, not
+by any constraint, and a deleted chat's words do not outlive it there.
 
 When a session ends with Chat lines it never drained, the unread lines of a
 science chat are queued again for the assistant's service session, which
@@ -933,8 +1008,9 @@ whether or not an assistant is configured (a session under a `chat:` id is one, 
 user's own `trax helper` chats included; a `trax-helper` session is drained by its
 key alone): appending records, ending it,
 editing any of its fields (its labels and account decide who may use it from a station
-and which stations the assistant may use) and purging it are 403 from any other
-key, a writer's included, and `POST /api/sessions/<uuid>/inbound` and
+and which stations the assistant may use) and purging it by id are 403 from any
+other key, a writer's included (an admin may purge it), and
+`POST /api/sessions/<uuid>/inbound` and
 `/api/messages` refuse it with 409 because a line sent that way names no
 conversation. A browser's `/api/messages` send to a science chat, live or idle, is
 refused with the same 409 and the detail "Open its station to talk to this
@@ -1108,7 +1184,7 @@ url                         yes  no     yes
 query                       yes  no     yes
 provider                    yes  no     yes
 cli                         yes  no     yes
-cli_session_id              yes  no     yes
+cli_session_id              yes  no     yes     opening key or admin; never chat:
 started                     yes  no     yes
 rooms                       yes  yes    yes
 codechanges                 yes  yes    yes
@@ -1626,10 +1702,10 @@ later one.
 302  auth redirect
 400  invalid body, invalid field for kind, invalid projected edge mutation
 401  missing or invalid auth; an unusable enrollment token or machine credential
-403  role too low; a service account's key on a route that manages keys; a grant beyond the caller's role or audiences
+403  role too low; a service account's key on a route that manages keys; a grant beyond the caller's role or audiences; a chat's share or delete the caller may not make
 404  row not found
 409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, machine in service, another host connected, service account name taken or account disabled
-410  machine credential revoked
+410  machine credential revoked; a deleted science chat (`chat_deleted`)
 422  well-formed body rejected by domain validation (e.g. self-loop edge, priority on a non-priority edge kind)
 500  server fault
 503  secret variable requested and no secret backend is configured
@@ -1640,7 +1716,8 @@ with no body.
 
 Inquiry and edge mutations -- including `DELETE` (field unset, inquiry
 purge, edge remove) -- return `200` with a body carrying the `change_id`
-they produced (section 3.13). Admin user-DELETE returns `204` with no body.
+they produced (section 3.13). Admin user-DELETE and chat `DELETE` return `204` with
+no body.
 Workspace mutations return canvas state; they do not produce a graph change.
 
 ### 4.2 Roles

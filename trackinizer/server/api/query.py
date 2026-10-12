@@ -32,7 +32,7 @@ from trackinizer.server.api._routes_shared import (
     parse_seq_ranges,
 )
 from trackinizer.server.api.locks import require_unlocked
-from trackinizer.server.api.session_access import require_session_row_write
+from trackinizer.server.api.session_access import require_row_purge
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import iter_sse_events
 from trackinizer.server.primitives import lookup_kinds
@@ -460,11 +460,12 @@ async def delete_inquiry_route(
 ) -> MutableJSON:
     """Purge an inquiry row and its edges.
 
-    Writer-gated like every other mutation; inquiries (including AgentSessions)
-    are a shared workspace, so any writer may purge an unowned row. A claimed
-    row must first release its owner through the compare-and-set owner route. A
-    science chat is the exception: it is public and permanent, so only the key that
-    opened it may purge it.
+    Writer-gated like every other mutation, and one rule for every row: you delete
+    what you made, admins delete anything, so a row is purged by its ``account`` or
+    an admin. A claimed row must first release its owner through the
+    compare-and-set owner route. A science chat's session is the exception: its
+    lines are its posters', so only the key that opened it, or an admin, purges it;
+    ``DELETE /api/chats/<id>`` deletes a whole chat.
 
     Args:
       target_id: UUID of the inquiry to delete.
@@ -477,7 +478,7 @@ async def delete_inquiry_route(
 
     """
     await require_unlocked(request, identity, [target_id], include_peers=True)
-    await require_session_row_write(request, identity, target_id)
+    await require_row_purge(request, identity, target_id)
     store = get_store(request)
     change_id = await store.purge(
         target_id,

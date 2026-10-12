@@ -224,13 +224,17 @@ function sinceMs(started: number): number {
  */
 function apiError(response: Response, body: unknown): ApiError {
   const { detail, code } = fieldsOf(body);
+  // A route may answer `detail: {code, message}` instead of a string and a top-level `code`.
+  const { code: nested, message } = fieldsOf(detail);
   const text =
     typeof detail === "string"
       ? detail
       : Array.isArray(detail)
         ? detail.map(fieldError).join("\n")
-        : `${response.status} ${response.statusText}`.trim();
-  return new ApiError(response.status, text, typeof code === "string" ? code : null);
+        : typeof message === "string" && message
+          ? message
+          : `${response.status} ${response.statusText}`.trim();
+  return new ApiError(response.status, text, typeof code === "string" ? code : typeof nested === "string" ? nested : null);
 }
 
 /** One FastAPI validation error as `field: message`; the `body` prefix is dropped. */

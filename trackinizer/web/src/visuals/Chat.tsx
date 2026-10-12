@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import { newUuid } from "../api/idempotency";
-import { type ChatFork, conversationOf, getChatHead, SCIENCE_CHAT_LABEL, sendChatLine } from "../api/chats";
+import { CHAT_DELETED, CHAT_NOT_SHARED, type ChatFork, conversationOf, getChatHead, SCIENCE_CHAT_LABEL, sendChatLine } from "../api/chats";
 import { getWorkspace } from "../api/workspaces";
 import type { WorkspacePartner, WorkspaceState } from "../api/workspaces";
 import { MetaContext, useProfile, useWriteMode } from "../app/boot";
@@ -24,6 +24,7 @@ import { useChatFeed } from "./chatFeed";
 import { flipChatSide, setChatHidden, useChatColumn } from "./chatColumn";
 import { useAnswerHighlights } from "./chatHighlights";
 import { ChatPrompt } from "./ChatPrompt";
+import { DeleteChat, ShareChat } from "./ChatSharing";
 
 /** The most characters one message may have, as the server holds it. */
 const MAX_TEXT = 16_384;
@@ -34,8 +35,10 @@ const MAX_TRAIL = 8;
 /** The most characters of a line the fork banner quotes. */
 const QUOTED = 80;
 
-/** What the composer says about a chat's reach; it is public and permanent. */
-export const PUBLIC_NOTICE = "Chats are public to every user and cannot be deleted. Do not type secrets here.";
+/** What the composer says about a chat's reach, which is the same in every mode: public to read, and who posts. */
+export function publicNotice(): string {
+  return "Public to read. Whoever may not post here forks it instead. Do not type secrets here.";
+}
 
 /**
  * Talk with the workspace's partner in a science chat: a session the assistant
@@ -153,8 +156,8 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   async function openConversation(conversation: string) {
     try {
       showStation(queryClient, await stationForChat(conversation));
-    } catch {
-      if (mounted.current) setNotice("Could not open that chat.");
+    } catch (error) {
+      if (mounted.current) setNotice(error instanceof ApiError && error.code === CHAT_DELETED ? error.detail : "Could not open that chat.");
     }
   }
 
@@ -179,21 +182,56 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
     // `openConversation` is the same function every render, but for what it closes over.
   }, [state.request, workspaceId]);
 
-  /** The server refuses a post into a chat started outside my organisation; what I typed then forks it at its latest line. */
+  /** The chat is gone: the station holds no conversation, and the stream says so to every tab. */
+  function chatDeleted(conversation: string) {
+    queryClient.setQueryData<WorkspaceState>(["workspace", workspaceId], (held) => held && { ...held, conversation_id: null });
+    queryClient.removeQueries({ queryKey: ["chat", "head", conversation] });
+    void queryClient.invalidateQueries({ queryKey: ["stations"] });
+  }
+
+  // A station that loses its conversation (deleted here or, by the stream, in another tab) shows an
+  // empty chat: what belonged to the conversation goes with it.
+  const heldConversation = useRef(conversationId);
+  useEffect(() => {
+    const lost = heldConversation.current;
+    heldConversation.current = conversationId;
+    if (lost === null || conversationId !== null) return;
+    setPending((held) => held.filter((line) => line.conversationId !== lost));
+    setForkAt(null);
+    setSentAt(null);
+  }, [conversationId]);
+
+  // A chat deleted under this tab is let go, wherever the tab learns of it: its head read says 410.
+  const goneHead = head.error instanceof ApiError && head.error.code === CHAT_DELETED;
+  useEffect(() => {
+    if (goneHead && conversationId) chatDeleted(conversationId);
+    // `chatDeleted` is the same function every render, but for what it closes over.
+  }, [goneHead, conversationId]);
+
+  /**
+   * The server refuses a post into a chat that does not take me; what I typed then forks it at its
+   * latest line. A post into a deleted chat (410) lets it go and starts a new chat with the line. Any
+   * other refusal is shown.
+   */
   async function send(text: string, key: string): Promise<string> {
     try {
       return await post(text, key, forkPoint);
     } catch (error) {
-      if (!(error instanceof ApiError && error.status === 403) || fork || latest === null) throw error;
+      if (error instanceof ApiError && error.code === CHAT_DELETED && conversationId) {
+        chatDeleted(conversationId);
+        return post(text, newUuid(), null, true);
+      }
+      if (!(error instanceof ApiError && error.status === 403 && error.code === CHAT_NOT_SHARED) || fork || latest === null) throw error;
       return post(text, newUuid(), latest);
     }
   }
 
-  async function post(text: string, key: string, after: LineAt | null): Promise<string> {
+  async function post(text: string, key: string, after: LineAt | null, fresh = false): Promise<string> {
     // A fork is a new conversation, which the key names; it opens with my own lines up to the fork point.
     const forkOf: ChatFork | null = session && after ? { sessionId: session, part: after.part, idx: after.idx } : null;
-    const sentTo = forkOf ? key : conversationId;
-    const baseline = sentBefore(after && forkOf ? linesThrough(lines, after) : lines, { me });
+    const joined = fresh ? null : conversationId;
+    const sentTo = forkOf ? key : joined;
+    const baseline = sentBefore(fresh ? [] : after && forkOf ? linesThrough(lines, after) : lines, { me });
     setPending((held) => [...held.filter((line) => line.key !== key), { key, text, conversationId: sentTo, baseline }]);
     setSending((held) => new Set(held).add(key));
     try {
@@ -237,6 +275,8 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
           </>}
         </div>
         <div className="chat-head-actions" role="toolbar" aria-label="Chat controls">
+          {head.data?.may_share && <ShareChat head={head.data} />}
+          {head.data?.may_delete && <DeleteChat head={head.data} onDeleted={() => chatDeleted(head.data!.conversation_id)} />}
           {/* Hidden, Chat is open over the page by hovering its strip; pinning stands it beside the page again. */}
           {hidden
             ? <button className="btn ghost" type="button" title="Pin Chat beside the page"
@@ -258,7 +298,7 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
         }}>
         {notice && <p className="chat-note" role="status">{notice}</p>}
         {loading && <p className="chat-note">Loading the conversation…</p>}
-        {(head.isError || records.isError) && <p role="alert" className="chat-error">Could not load the conversation.{" "}
+        {((head.isError && !goneHead) || records.isError) && <p role="alert" className="chat-error">Could not load the conversation.{" "}
           <button className="btn ghost" type="button" onClick={() => void (head.isError ? head.refetch() : records.refetch())}>Retry</button></p>}
         {unopened && !stale && sentAt === null && <p className="chat-note" role="status">
           This conversation has no session on this server yet. It starts when the assistant hears its first line.</p>}
@@ -270,7 +310,7 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
         {head.data?.forked_from && <p className="chat-note">Forked from{" "}
           <button className="btn ghost" type="button" onClick={() => void openConversation(head.data!.forked_from!)}>another chat</button>.</p>}
         {head.data && head.data.forks > 0 && <p className="chat-note">{forkedTimes(head.data.forks)}</p>}
-        {forks && <p className="chat-note" role="status">This chat was started outside your organisation, so what you type
+        {forks && <p className="chat-note" role="status">You cannot post in this chat, so what you type
           starts a fork of your own from its latest line.</p>}
         {lines.map((line) => <ChatLine key={line.key} line={line} me={me} station={workspace?.name ?? ""} kinds={kinds} onFork={live && head.data ? pickFork : undefined} />)}
         {/* One working line, the last tool call's name, in place of a status the partner no longer sends. */}
@@ -281,8 +321,8 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
         Your next message starts a fork of this chat after “{forkAt.quote}”.{" "}
         <button className="btn ghost" type="button" onClick={() => setForkAt(null)}>Cancel fork</button>
       </p>}
-      <p className="chat-notice">{PUBLIC_NOTICE}</p>
-      <Composer send={send} target={target} enabled={live && !reading} editable
+      <p className="chat-notice">{publicNotice()}</p>
+      <Composer send={send} target={target} enabled={live && !reading && !loading} editable
         placeholder={reading ? "Loading the conversation…" : live ? `Ask ${partner?.actor ?? "your partner"}…` : readOnly(partner?.status, writing)}
         check={checkText} retryable={resendable}
         failure={(error) => error instanceof ApiError && error.status >= 400 && error.status < 500 && error.detail

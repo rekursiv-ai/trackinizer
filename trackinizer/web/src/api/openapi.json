@@ -931,10 +931,25 @@
             "title": "Live",
             "type": "boolean"
           },
+          "may_delete": {
+            "title": "May Delete",
+            "type": "boolean"
+          },
+          "may_share": {
+            "title": "May Share",
+            "type": "boolean"
+          },
           "session_id": {
             "format": "uuid",
             "title": "Session Id",
             "type": "string"
+          },
+          "shared_with": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Shared With",
+            "type": "array"
           },
           "title": {
             "title": "Title",
@@ -949,7 +964,10 @@
           "live",
           "forks",
           "forked_from",
-          "forks_on_typing"
+          "forks_on_typing",
+          "shared_with",
+          "may_share",
+          "may_delete"
         ],
         "title": "ChatHead",
         "type": "object"
@@ -10047,7 +10065,7 @@
     },
     "/api/chats": {
       "post": {
-        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nAny signed-in writer in a chat's organisation may post into it; a viewer may not,\nand a writer outside it is refused with 403 and forks it instead (``fork`` names the\nline to start from), whether the chat is named by ``conversation_id`` or by the\n``Idempotency-Key`` of a post that names none; a fork whose key names a\nconversation someone else began is refused with 409. A station holds one chat: its\nfirst line binds the station to the line's conversation, and a line naming another\nconversation is refused with 409, as is one for a conversation another station of\nthe poster holds. A fork goes to a new station, copied from the one it was sent\nfrom and named in the answer's ``workspace_id``. The line's poster is the\nattested identity, never anything in the body. The answer is\nthe conversation id at once: the conversation's session appears when the\nassistant opens it, and ``GET /api/chats/{id}`` finds it. A retry under the same\nkey queues nothing again.\n\nArgs:\n  body: The line, the poster's station, and the conversation to post into or the\n    line to fork; neither continues the station's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the station it went to, and its session when the\n    assistant has it open.",
+        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nA chat's starter posts into it, as does each person it is shared with and anyone\nthe server's ``TRACKINIZER_CHAT_ORGS`` lets in; a viewer may not, and any other\nwriter is refused with 403 ``chat_not_shared`` and forks it instead (``fork``\nnames the line to start from), whether the chat is named by ``conversation_id``\nor by the ``Idempotency-Key`` of a post that names none; a fork whose key names a\nconversation someone else began is refused with 409. A line under the id of a\ndeleted chat, named or as a fork's key, or a fork from a line of one, is refused\nwith 410 ``chat_deleted``: no chat starts under that id again. A station holds one\nchat: its first line binds the station to the line's conversation, and a line\nnaming another conversation is refused with 409, as is one for a conversation\nanother station of the poster holds. A fork goes to a new station, copied from\nthe one it was sent from and named in the answer's ``workspace_id``. The line's\nposter is the attested identity, never anything in the body. The answer is the\nconversation id at once: the conversation's session appears when the assistant\nopens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key\nqueues nothing again.\n\nArgs:\n  body: The line, the poster's station, and the conversation to post into or the\n    line to fork; neither continues the station's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the station it went to, and its session when the\n    assistant has it open.",
         "operationId": "post_chat_line_route_api_chats_post",
         "parameters": [
           {
@@ -10097,8 +10115,40 @@
       }
     },
     "/api/chats/{conversation_id}": {
+      "delete": {
+        "description": "Delete a chat: every session of it with its records, its shares, its stations.\n\nAn admin deletes any chat, and so does the key that opened every session of it;\nany other API key is 403, as only a person's browser deletes a chat otherwise.\nIts starter deletes it while every person's line in it is theirs, a line a fork\ncopied counting as its original poster's and a line on its way in, queued or\ntaken by the assistant and not yet recorded, as posted; once someone else has\nposted they are 403 ``chat_has_other_posters``, and anyone else is 403\n``chat_not_starter``. A session that is locked, or linked to a locked row, needs\nan admin. Each station that held the chat holds none after, at its next\nrevision, and its open tabs get a ``workspace`` frame saying so. The chat's\nforks stay, and so do its sessions' change log rows, without the titles and\ndescriptions they held. Its queued lines go, and its id starts no chat again: a\nsession, a line or a station under it is 410 ``chat_deleted``.\n\nArgs:\n  conversation_id: The chat.\n  request: Request carrying the store, the inbound queue and the event hub.\n  identity: The signed-in writer, or an API key.\n\nReturns:\n  response: 204; 404 when the caller finds no such chat.",
+        "operationId": "delete_chat_route_api_chats__conversation_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Chat Route"
+      },
       "get": {
-        "description": "Find a conversation's session; 404 until the assistant has opened it.\n\nArgs:\n  conversation_id: The conversation.\n  request: Request carrying the database engine.\n  identity: The signed-in user; every chat of the assistant is open to every\n    user, and a chat of a user's own helper to that user.\n\nReturns:\n  head: The session, its starter, whether the assistant still has it open, how\n    often it was forked, what it was forked from, and whether the caller's typing\n    forks it.",
+        "description": "Find a conversation's session; 404 until the assistant has opened it.\n\nA chat that was deleted is 410 ``chat_deleted``.\n\nArgs:\n  conversation_id: The conversation.\n  request: Request carrying the database engine.\n  identity: The signed-in user; every chat of the assistant is open to every\n    user, and a chat of a user's own helper to that user.\n\nReturns:\n  head: The session, its starter, whether the assistant still has it open, how\n    often it was forked, what it was forked from, whether the caller's typing\n    forks it, who it is shared with, and whether the caller may share or delete\n    it.",
         "operationId": "read_chat_route_api_chats__conversation_id__get",
         "parameters": [
           {
@@ -10135,6 +10185,116 @@
           }
         },
         "summary": "Read Chat Route"
+      }
+    },
+    "/api/chats/{conversation_id}/shares/{email}": {
+      "delete": {
+        "description": "Stop sharing a chat with one person: their next line forks it, their past stay.\n\nOnly the chat's starter or an admin unshares it, from a browser: an API key is\n403, and anyone else is 403 ``chat_not_starter``. Unsharing a person it is not\nshared with changes nothing.\n\nArgs:\n  conversation_id: The chat.\n  email: The person's email.\n  request: Request carrying the database engine.\n  identity: The signed-in writer.\n\nReturns:\n  shared_with: The chat's shares, oldest first.",
+        "operationId": "unshare_chat_route_api_chats__conversation_id__shares__email__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "email",
+            "required": true,
+            "schema": {
+              "maxLength": 320,
+              "pattern": "^[^@\\s]+@[^@\\s]+$",
+              "title": "Email",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Response Unshare Chat Route Api Chats  Conversation Id  Shares  Email  Delete",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unshare Chat Route"
+      },
+      "put": {
+        "description": "Share a chat with one person, who then posts into it as its starter does.\n\nOnly the chat's starter or an admin shares it, from a browser: an API key is\n403, and anyone else is 403 ``chat_not_starter``. Sharing again changes nothing.\n\nArgs:\n  conversation_id: The chat.\n  email: The person's email; stored lowercase.\n  request: Request carrying the database engine.\n  identity: The signed-in writer.\n\nReturns:\n  shared_with: The chat's shares, oldest first.",
+        "operationId": "share_chat_route_api_chats__conversation_id__shares__email__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "email",
+            "required": true,
+            "schema": {
+              "maxLength": 320,
+              "pattern": "^[^@\\s]+@[^@\\s]+$",
+              "title": "Email",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Response Share Chat Route Api Chats  Conversation Id  Shares  Email  Put",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Share Chat Route"
       }
     },
     "/api/codechange/{target_id}/sha": {
@@ -12218,7 +12378,7 @@
     },
     "/api/inquiries/{target_id}": {
       "delete": {
-        "description": "Purge an inquiry row and its edges.\n\nWriter-gated like every other mutation; inquiries (including AgentSessions)\nare a shared workspace, so any writer may purge an unowned row. A claimed\nrow must first release its owner through the compare-and-set owner route. A\nscience chat is the exception: it is public and permanent, so only the key that\nopened it may purge it.\n\nArgs:\n  target_id: UUID of the inquiry to delete.\n  req: Mutation body (actor, reason).\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, writer-role-gated.\n\nReturns:\n  result: Mapping with \"id\" (inquiry UUID) and \"change_id\" (purge operation).",
+        "description": "Purge an inquiry row and its edges.\n\nWriter-gated like every other mutation, and one rule for every row: you delete\nwhat you made, admins delete anything, so a row is purged by its ``account`` or\nan admin. A claimed row must first release its owner through the\ncompare-and-set owner route. A science chat's session is the exception: its\nlines are its posters', so only the key that opened it, or an admin, purges it;\n``DELETE /api/chats/<id>`` deletes a whole chat.\n\nArgs:\n  target_id: UUID of the inquiry to delete.\n  req: Mutation body (actor, reason).\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, writer-role-gated.\n\nReturns:\n  result: Mapping with \"id\" (inquiry UUID) and \"change_id\" (purge operation).",
         "operationId": "delete_inquiry_route_api_inquiries__target_id__delete",
         "parameters": [
           {
@@ -15445,7 +15605,7 @@
     },
     "/api/sessions/start": {
       "post": {
-        "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so ``trax run``\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``. A pin the caller no longer holds is 403 ``audience_not_held``.\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, started, rooms,\n    account, idempotency_key).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, and granted actor\n    name.",
+        "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so ``trax run``\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``. A pin the caller no longer holds is 403 ``audience_not_held``. A\n``cli_session_id`` of a deleted science chat (``chat:<id>``) is 410\n``chat_deleted``.\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, started, rooms,\n    account, idempotency_key).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, and granted actor\n    name.",
         "operationId": "session_start_route_api_sessions_start_post",
         "requestBody": {
           "content": {
@@ -17456,7 +17616,7 @@
     },
     "/api/workspaces/for-chat/{conversation_id}": {
       "post": {
-        "description": "Find the principal's station that holds a chat, or make one bound to it.\n\nArgs:\n  conversation_id: The science chat to continue.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: The station that holds the chat.",
+        "description": "Find the principal's station that holds a chat, or make one bound to it.\n\nA chat that was deleted is 410 ``chat_deleted``, and no station is bound to it.\n\nArgs:\n  conversation_id: The science chat to continue.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: The station that holds the chat.",
         "operationId": "workspace_for_chat_route_api_workspaces_for_chat__conversation_id__post",
         "parameters": [
           {
@@ -17763,7 +17923,7 @@
     },
     "/api/workspaces/{workspace_id}/relay": {
       "post": {
-        "description": "Tell the station's chat partner what the owner sent agents from the Console.\n\nThe agents already have the message, sent to each by ``POST /api/messages``; this\nis the one request per Console line that follows them, naming the targets that\naccepted it. The partner records it in the station's chat as a line of the\nowner's that starts with ``\u2192 `` and answers nothing, and reads it in its next\nprompt. A retry under the same key queues nothing again. A station without a\nchat, or whose partner is not running or has too many unread lines, answers\n``delivered: false``: the agents are not told otherwise, so it is no error.\n\nArgs:\n  workspace_id: The station the Console is in, which the caller must own.\n  body: The agents the line went to, and its text.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in browser writer.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  receipt: Whether the partner took the relay.",
+        "description": "Tell the station's chat partner what the owner sent agents from the Console.\n\nThe agents already have the message, sent to each by ``POST /api/messages``; this\nis the one request per Console line that follows them, naming the targets that\naccepted it. The partner records it in the station's chat as a line of the\nowner's that starts with ``\u2192 `` and answers nothing, and reads it in its next\nprompt. A retry under the same key queues nothing again. A station without a\nchat, one whose chat the owner may not post into (bound to read it, not shared\nwith them), or whose partner is not running or has too many unread lines, answers\n``delivered: false``: the agents are not told otherwise, so it is no error.\n\nArgs:\n  workspace_id: The station the Console is in, which the caller must own.\n  body: The agents the line went to, and its text.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in browser writer.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  receipt: Whether the partner took the relay.",
         "operationId": "console_relay_route_api_workspaces__workspace_id__relay_post",
         "parameters": [
           {

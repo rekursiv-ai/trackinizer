@@ -1,8 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog } from "radix-ui";
 import { useState } from "react";
+import { SCIENCE_CHAT_LABEL } from "../api/chats";
 import type { Detail } from "../api/detail";
-import { useWriteMode } from "../app/boot";
+import { useProfile, useWriteMode } from "../app/boot";
 import { keyCaps } from "../commands/registry";
 import { isUnset } from "../detail/fields";
 import { detailQueries } from "../detail/queries";
@@ -11,6 +12,16 @@ import { WriteButton } from "../writes/WriteButton";
 import { unsettled, WriteStatus } from "../writes/WriteStatus";
 import { clearOwnerEdit, purgeEdit } from "./edits";
 import "./bulk.css";
+
+/**
+ * Whether the server lets this viewer purge `row`: its account, or an admin, compared without case.
+ * A science chat's session is an admin's alone; its starter deletes the chat from Chat's header.
+ */
+export function mayPurge(row: Detail["self"], viewer: { readonly email: string; readonly role: string }): boolean {
+  if (viewer.role === "admin") return true;
+  const chat = row.kind === "AgentSession" && Array.isArray(row.labels) && row.labels.includes(SCIENCE_CHAT_LABEL);
+  return !chat && typeof row.account === "string" && row.account.toLowerCase() === viewer.email.toLowerCase();
+}
 
 /**
  * Purge `detail`'s inquiry, as the mock's ⋯ menu does: ask once, with a reason
@@ -34,6 +45,8 @@ export function PurgeDialog({
   const queryClient = useQueryClient();
   const writer = useWrite();
   const writable = useWriteMode() === "enabled";
+  // The owner is cleared only before a purge that would pass: a refused purge must not leave a claim released.
+  const allowed = mayPurge(detail.self, useProfile());
   const [reason, setReason] = useState("");
   const [missing, setMissing] = useState(false);
   const self = detail.self;
@@ -41,7 +54,7 @@ export function PurgeDialog({
   const owner = isUnset(self.owner) ? null : String(self.owner);
   const pending = unsettled(writer.state);
   const purge = async () => {
-    if (pending || !writable) return;
+    if (pending || !writable || !allowed) return;
     const why = reason.trim();
     if (!why) {
       setMissing(true);
@@ -104,6 +117,7 @@ export function PurgeDialog({
                   setMissing(false);
                 }}
               />
+              {allowed ? null : <p className="form-err" role="alert">Only the row's account or an admin can purge it.</p>}
               {missing ? (
                 <span className="form-err" role="alert">
                   Add a reason first.
@@ -114,7 +128,7 @@ export function PurgeDialog({
             <div className="modal-f">
               <div className="spacer" />
               <Dialog.Close className="btn ghost">Cancel</Dialog.Close>
-              <WriteButton type="submit" className="btn danger" pending={pending} disabled={!writable}>
+              <WriteButton type="submit" className="btn danger" pending={pending} disabled={!writable || !allowed}>
                 {owner !== null ? "Clear owner and purge" : "Purge permanently"} <kbd>{keyCaps("$mod+Enter")[0]}</kbd>
               </WriteButton>
             </div>

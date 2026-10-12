@@ -71,6 +71,8 @@ export class ConsoleFeed {
   #state: FeedState = { held: [], loading: true, error: null, more: false };
   #cursor: FeedCursor | null = null;
   readonly #listeners = new Set<() => void>();
+  /** The keys of the reads under way, which `dispose` cancels. */
+  readonly #reading = new Set<readonly unknown[]>();
 
   constructor(client: QueryClient, range: Range, filter: FeedFilters, level: Level) {
     this.#client = client;
@@ -87,6 +89,15 @@ export class ConsoleFeed {
   };
 
   readonly getSnapshot = (): FeedState => this.#state;
+
+  /**
+   * Stop the reads under way: a read the query cache retries goes on after the
+   * view that wanted it has gone, and a load or update waiting on it reads its
+   * next page. Cancelled, they end with an error nobody is left to show.
+   */
+  dispose(): void {
+    for (const queryKey of this.#reading) void this.#client.cancelQueries({ queryKey, exact: true });
+  }
 
   /** Read the first page: the newest, live (`#tail`); the window's oldest, history. A failure is kept for the view to show. */
   async load(): Promise<void> {
@@ -173,13 +184,17 @@ export class ConsoleFeed {
    */
   #read(read: FeedRead, retry: boolean): Promise<FeedPage> {
     const filtered = { ...read, ...this.#filter, ...(this.#level === 1 ? { kind: [], conversation: true } : {}) };
-    return this.#client.fetchQuery({
-      queryKey: ["console", "feed", filtered],
-      queryFn: ({ signal }) => readFeed(filtered, { signal }),
-      staleTime: 0,
-      gcTime: 0,
-      ...(retry ? {} : { retry: false }),
-    });
+    const queryKey = ["console", "feed", filtered] as const;
+    this.#reading.add(queryKey);
+    return this.#client
+      .fetchQuery({
+        queryKey,
+        queryFn: ({ signal }) => readFeed(filtered, { signal }),
+        staleTime: 0,
+        gcTime: 0,
+        ...(retry ? {} : { retry: false }),
+      })
+      .finally(() => this.#reading.delete(queryKey));
   }
 
   #take(page: FeedPage): void {

@@ -11,7 +11,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { chatHandleOf, isChatHandle } from "../api/chats";
+import { chatHandleOf, getChatHead, isChatHandle } from "../api/chats";
 import { newUuid } from "../api/idempotency";
 import { relayToStation } from "../api/stations";
 import {
@@ -103,11 +103,12 @@ export function ConsoleView() {
   useEffect(() => {
     if (!feed) return;
     void feed.load();
-    if (!hub || !view.range.live) return;
+    if (!hub || !view.range.live) return () => feed.dispose();
     // A captured record wakes the stream with its session's id; any batch may be one.
     const registration = hub.register({ update: (batch) => feed.update(batch), failing: setFailure });
     return () => {
       registration.dispose();
+      feed.dispose();
       setFailure(null);
     };
   }, [feed, hub, view.range.live]);
@@ -157,7 +158,9 @@ export function ConsoleView() {
       return result?.status === "fulfilled" && result.value.delivered.length > 0;
     }).map(({ target }) => target);
     if (!station || !accepted.length) return sent;
-    const told = await relayToStation(station.id, accepted, route.text, route.relayKey).catch(() => false);
+    // Only a chat the person posts into is told: the station may hold one it forks by typing, which is not theirs to speak into.
+    const told = await ownsChat(station.conversation_id)
+      && await relayToStation(station.id, accepted, route.text, route.relayKey).catch(() => false);
     return told ? sent : `${sent}; Chat not told`;
   }
 
@@ -591,3 +594,13 @@ function emptyFeed(): FeedState {
 }
 
 const CLOCK = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+
+/** Whether the person's typing joins this conversation: its head says it does not fork. */
+async function ownsChat(conversation: string | null): Promise<boolean> {
+  if (conversation === null) return false;
+  try {
+    return (await getChatHead(conversation))?.forks_on_typing === false;
+  } catch {
+    return false;
+  }
+}

@@ -112,7 +112,7 @@ def get_chat_orgs(request: Request) -> ChatOrgs:
       request: Request.
 
     Returns:
-      result: ``single`` or ``domain``.
+      result: ``single``, ``domain`` or ``individual``.
 
     """
     config: object = getattr(cast("FastAPI", request.app).state, "config", None)

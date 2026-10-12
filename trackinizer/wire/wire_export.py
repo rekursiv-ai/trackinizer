@@ -85,6 +85,8 @@ Left out on purpose, and why:
 * ``visual_workspaces``, ``visual_workspace_operations`` -- per-user stations
   (named canvases) and operation receipts, not account-agnostic graph records. A Chat conversation is an
   AgentSession, so its lines export with the sessions.
+* ``science_chat_shares``, ``science_chat_tombstones`` -- who may post into which
+  science chat, and which chats were deleted: access control, like ``allowlist``.
 * ``visual_reports``, ``visual_report_revisions`` -- shared report presentation
   and author identity; the linked Artifact and graph citations export above.
 * ``session_liveness`` -- when each live session was last heard from, which

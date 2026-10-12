@@ -38,6 +38,8 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.store.deleted_chats import refuse_a_deleted_chat
+from trackinizer.server.visuals import workspace_store
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_science_chat import (
     FORK_EDGE_LABEL,
@@ -51,6 +53,7 @@ if TYPE_CHECKING:
 
     import httpx2
 
+    from trackinizer.lib.postgres import Conn
     from trackinizer.server.store.core import Store
 
 
@@ -265,6 +268,45 @@ async def test_fork_from_here_in_my_organisation_starts_a_new_chat_at_that_line(
     assert context["conversation_id"] == str(key)
     assert context["fork"] == chat.at(1)
     assert (await _heard(client, session_id=chat.session)) == []
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_fork_holds_the_id_of_the_chat_it_forks_as_well_as_its_own(
+    pglite_route_client: _Client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """So the original's delete lands before the fork is checked or after it is queued."""
+    client, store = pglite_route_client
+    chat = await _original(store, starter=TEST_USER_EMAIL)
+    workspace_id = await _canvas(client, email=OTHER_EMAIL)
+    key = uuid.uuid4()
+    held: list[tuple[uuid.UUID, uuid.UUID | None]] = []
+
+    async def refuse(
+        conn: Conn,
+        *,
+        conversation_id: uuid.UUID,
+        forked_from: uuid.UUID | None = None,
+    ) -> None:
+        held.append((conversation_id, forked_from))
+        await refuse_a_deleted_chat(
+            conn,
+            conversation_id=conversation_id,
+            forked_from=forked_from,
+        )
+
+    monkeypatch.setattr(workspace_store, "refuse_a_deleted_chat", refuse)
+    forked = await send_chat(
+        client,
+        workspace_id=workspace_id,
+        text="what if a1 were wrong?",
+        key=key,
+        fork=chat.at(1),
+    )
+
+    assert forked.status_code == 200
+    assert held == [(key, chat.conversation)]
 
 
 @pytest.mark.db_pglite

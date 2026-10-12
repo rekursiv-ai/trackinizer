@@ -1052,3 +1052,23 @@ CREATE TABLE IF NOT EXISTS visual_report_revisions (
     PRIMARY KEY (report_id, revision),
     UNIQUE (author_id, publish_key)
 );
+
+-- Who a science chat is shared with: each person posts into it as its starter does.
+-- A share follows the conversation (the ``chat:<id>`` its sessions carry), not one
+-- session, so it outlives a session the assistant reopens. No FK: a conversation is
+-- no row, and a person may be shared with before they first sign in. Added in 043.
+CREATE TABLE IF NOT EXISTS science_chat_shares (
+    conversation_id UUID NOT NULL,
+    email           TEXT NOT NULL CHECK (email = lower(email)),
+    shared_by       TEXT NOT NULL,
+    shared_at       TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (conversation_id, email)
+);
+
+-- A science chat that was deleted: no line starts a chat under its id again, so a
+-- line naming it is refused rather than reopening it as someone else's. Added in 043.
+CREATE TABLE IF NOT EXISTS science_chat_tombstones (
+    conversation_id UUID PRIMARY KEY,
+    deleted_by      TEXT NOT NULL,
+    deleted_at      TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);

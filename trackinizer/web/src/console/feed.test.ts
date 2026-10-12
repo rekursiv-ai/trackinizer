@@ -190,3 +190,14 @@ test("a first page that fails says so, and a load reads it again", async () => {
   expect(feed.getSnapshot()).toMatchObject({ loading: false, error: null });
   expect(feed.getSnapshot().held).toHaveLength(1);
 });
+
+test("a disposed feed's failed read is not tried again by the query cache", async () => {
+  const sent = stubFetch(() => Response.json({ detail: "statement timeout" }, { status: 500 }));
+  const feed = new ConsoleFeed(new QueryClient({ defaultOptions: { queries: { retry: 1, retryDelay: 150 } } }), { live: true }, EVERYTHING, 4);
+  const loading = feed.load();
+  await vi.waitFor(() => expect(sent).toHaveLength(1));
+  feed.dispose();
+  await loading;
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(sent).toHaveLength(1);
+});

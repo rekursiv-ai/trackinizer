@@ -64,7 +64,7 @@ for (const theme of ["dark", "light"] as const) {
         await page.route(`**/api/sessions/${session}/records**`, (route) => route.fulfill({ json: { records } }));
         await page.route(`**/api/chats/${chat}`, (route) => route.fulfill({ json: {
           conversation_id: chat, session_id: session, title: "What changed", account: "ada@example.com", live: true,
-          forks: 0, forked_from: null, forks_on_typing: false,
+          forks: 0, forked_from: null, forks_on_typing: false, shared_with: [], may_share: false, may_delete: false,
         } }));
         // The user's station for that chat. Finding it again changes nothing, so the tab is
         // told to open it, as "Continue in Chat" leaves the tab on it.

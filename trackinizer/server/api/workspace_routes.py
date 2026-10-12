@@ -184,6 +184,8 @@ async def workspace_for_chat_route(
 ) -> WorkspaceState:
     """Find the principal's station that holds a chat, or make one bound to it.
 
+    A chat that was deleted is 410 ``chat_deleted``, and no station is bound to it.
+
     Args:
       conversation_id: The science chat to continue.
       request: Request carrying the database engine.

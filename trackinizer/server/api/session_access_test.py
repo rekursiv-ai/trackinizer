@@ -7,6 +7,7 @@ write there.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, cast
@@ -39,6 +40,8 @@ from trackinizer.server.api.session_access import (
     Asker,
     SessionAccess,
     granted_audience,
+    require_row_account,
+    require_row_purge,
     require_session_access,
     resolve_asker,
 )
@@ -686,6 +689,49 @@ class TestResolveAsker:
 
         assert asker is None
         conn.fetchrow.assert_not_awaited()
+
+
+class TestRowHolder:
+    """A row is purged, and moved to another account, by its account or an admin."""
+
+    @classmethod
+    def _serving(cls, row: dict[str, object] | None) -> Request:
+        """Return a request whose store reads ``row`` for any id."""
+        conn = make_conn()
+        set_field_row(conn, row)
+        store, _engine = make_store(conn)
+        state = SimpleNamespace(store=store, config=Config())
+        return cast("Request", SimpleNamespace(app=SimpleNamespace(state=state)))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("email", "role"),
+        [("Ada@Example.com", "writer"), ("root@example.com", "admin")],
+    )
+    async def test_its_account_and_an_admin_pass(self, email: str, role: Role) -> None:
+        request = self._serving({"kind": "Issue", "account": "ada@example.com"})
+        caller = replace(_caller("open", email=email), role=role)
+
+        await require_row_account(request, caller, uuid.uuid4())
+        await require_row_purge(request, caller, uuid.uuid4())
+
+    @pytest.mark.asyncio
+    async def test_another_writer_neither_moves_nor_purges_it(self) -> None:
+        request = self._serving({"kind": "Issue", "account": "ada@example.com"})
+        caller = _caller("open", email="bob@example.com")
+
+        with pytest.raises(HTTPException) as moved:
+            await require_row_account(request, caller, uuid.uuid4())
+        with pytest.raises(HTTPException) as purged:
+            await require_row_purge(request, caller, uuid.uuid4())
+
+        assert [moved.value.status_code, purged.value.status_code] == [403, 403]
+
+    @pytest.mark.asyncio
+    async def test_a_row_that_is_gone_is_left_to_the_route(self) -> None:
+        caller = _caller("open", email="bob@example.com")
+
+        await require_row_account(self._serving(None), caller, uuid.uuid4())
 
 
 def _opener(pin: str | None, *opens: str) -> AuthIdentity:

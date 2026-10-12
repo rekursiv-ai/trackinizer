@@ -438,6 +438,23 @@ class TestRequests:
         assert exc_info.value.status_code == 409
         assert exc_info.value.code == "conflict"
 
+    def test_http_error_carries_the_code_a_detail_nests(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(
+                410,
+                json={"detail": {"code": "chat_deleted", "message": "gone"}},
+            )
+
+        with Client("http://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError) as exc_info:
+                client.get("/api/chats/x")
+        assert (exc_info.value.status_code, exc_info.value.code) == (
+            410,
+            "chat_deleted",
+        )
+
     def test_wraps_connection_errors(self) -> None:
         def connect_error(request: httpx2.Request) -> httpx2.Response:
             del request

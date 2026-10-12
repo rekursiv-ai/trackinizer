@@ -134,6 +134,8 @@ how it reads a frame.
 | `chats` | `listChats` | `GET /api/chats` |
 | | `getChatHead` | `GET /api/chats/{id}` (404 until the assistant opens the session: `null`) |
 | | `sendChatLine` | `POST /api/chats` (header `Idempotency-Key`; `conversationId` null starts a conversation; `fork` starts one from a line of another) |
+| | `shareChat`, `unshareChat` | `PUT`, `DELETE /api/chats/{id}/shares/{email}` |
+| | `deleteChat` | `DELETE /api/chats/{id}` |
 
 Edges are stored child to parent: `from` is the child, which `narrows` its
 parent or `proves` its Belief. `/api/web/get` returns `edges` (this row is the
@@ -349,7 +351,8 @@ with one response shape, so the fixtures take one per verb.
   a science chat: an AgentSession (label `science-chat`, `cli_session_id`
   `chat:<conversation id>`) that the assistant opens. Chat reads the session's
   records; there is no chat store. Its header names the partner
-  (`workspace.partner`) and has the side button. Which conversation Chat shows is
+  (`workspace.partner`) and has the side button, plus Share and Delete when the
+  head allows them (below). Which conversation Chat shows is
   the station's `conversation_id`, which the first line binds (the receipt's
   `workspace_id` names the station it went to; a fork is a station of its own, which
   the tab then shows on the page it is on). Any other science chat opens by link: a
@@ -368,7 +371,9 @@ with one response shape, so the fixtures take one per verb.
   station's chat line offers Open station, which goes through Chat's for-chat
   switch. The box names its targets ("Message lead-2"). When a line's per-target
   sends have all settled, one `POST /api/workspaces/<id>/relay` tells the station's
-  chat, with the targets that took it, under a key made with the line's route (a
+  chat (only when its head says `forks_on_typing` is false; a chat the person forks
+  by typing is not theirs to speak into), with the targets that took it, under a
+  key made with the line's route (a
   Retry reuses it); `{delivered: false}`, or a failed relay, adds "Chat not told" to
   the receipt. The chat records that as a line starting `→ ` (`RELAY_MARK`), which
   Chat draws as "you → lead-2: text" in its own style (a dim comment line in the
@@ -387,16 +392,35 @@ with one response shape, so the fixtures take one per verb.
   line, a banner says so with a Cancel, and the next message is sent with
   `fork: {sessionId, part, idx}` instead of a `conversationId`. The server makes the
   fork a new conversation, named by the idempotency key, and Chat opens it. A chat
-  whose head says `forks_on_typing` (the server's call, from the verified email
-  domains; see `chat_orgs` in `server/config.py`) forks the same way at its latest
+  whose head says `forks_on_typing` (the server's call, from the starter, the chat's
+  shares and the verified email domains; see `chat_orgs` in `server/config.py`)
+  forks the same way at its latest
   line whatever the user types, since the server refuses a post into it; the
-  composer is off until the head is read, and a post the server still refuses
-  (403) is sent again as a fork at the latest stored line. A fork
+  composer is off until the head and the lines are read, and a post the server
+  still refuses with 403 `chat_not_shared` is sent again as a fork at the latest
+  stored line (any other 403 is shown). A post that names a deleted chat (410
+  `chat_deleted`), or a head read that does, lets that chat go: the station
+  holds no conversation, and a post starts a new chat with the same line. A fork
   opens with the original's lines up to the one picked, so mine among them are
   not waited for as a new line (`linesThrough`). The head also says how often a chat
   was forked and which chat a fork came from.
-- The composer says chats are public to every user and cannot be deleted. Chat has
-  no delete.
+- The head says what the caller may do (`may_share`, `may_delete`,
+  `shared_with`), and Chat's header shows only that. Share (`ShareChat`,
+  `src/visuals/ChatSharing.tsx`) opens a panel listing `shared_with`, each with
+  Remove, and a field to add an address; each change is `PUT`/`DELETE
+  /api/chats/<id>/shares/<email>`, after which the head is read again, since it
+  is the list. Delete (`DeleteChat`) asks "Delete this chat? Its forks keep
+  their copies." first; once the server has deleted it the station holds no
+  conversation (its cached `conversation_id` is null) and shows an empty chat,
+  whose next line starts a new one. A refused share or delete is one toast
+  line:
+  `chat_not_starter` and `chat_has_other_posters` (a 403's `detail.code`, which
+  `ApiError.code` reads) have their own sentences, any other refusal shows the
+  server's reason. A shared person's lines land in the chat; the
+  server refuses everyone else's, and Chat forks them (`forks_on_typing`).
+- The composer says what is true in every mode: public to read, and whoever may
+  not post forks it instead. The starter may delete a chat while they are its
+  only poster, and an admin always; the server decides, and the head says so.
 - An answer that arrives lights up the rows it cites at once, through the tab's
   highlight store, as the agent's Highlight does, with no server round trip beyond
   `GET /api/inquiries/{Kind}/{seq}` for a ref not seen before (`useAnswerHighlights`,

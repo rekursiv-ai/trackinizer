@@ -40,6 +40,7 @@ from trackinizer.server import web
 from trackinizer.server.api import query
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
+    TEST_USER_EMAIL,
     answer_account_active,
     clear_identity_override,
     install_identity,
@@ -80,7 +81,7 @@ class TestRoutes:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        set_field_row(engine.conn, {"kind": "Issue"})
+        set_field_row(engine.conn, {"kind": "Issue", "account": TEST_USER_EMAIL})
         engine.conn.fetch.return_value = []
         r = client.request(
             "DELETE",
@@ -94,7 +95,10 @@ class TestRoutes:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        set_field_row(engine.conn, {"kind": "Issue", "owner": "worker-1"})
+        set_field_row(
+            engine.conn,
+            {"kind": "Issue", "owner": "worker-1", "account": TEST_USER_EMAIL},
+        )
 
         response = client.request(
             "DELETE",
@@ -1157,6 +1161,68 @@ async def test_fields_keep_the_named_values_on_a_real_engine(
     # The relations are real when named: the edges were read.
     assert any(row.get("narrows") for row in rows)
     assert any(row.get("proved_by") for row in rows)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_row_is_purged_by_its_account_or_an_admin_and_no_other_writer(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    http, store = pglite_route_client
+    ada = "ada@example.com"
+    mine, by_admin, kept = await store.submit_batch(
+        [SubmitIssue(account=ada, title=title) for title in ("mine", "admin", "kept")],
+    )
+
+    install_identity(make_test_identity(api_key_id=None, email="bob@example.com"))
+    other = await http.request("DELETE", f"/api/inquiries/{kept}", json={})
+    install_identity(make_test_identity(api_key_id=None, email="Ada@Example.com"))
+    own = await http.request("DELETE", f"/api/inquiries/{mine}", json={})
+    install_identity(
+        make_test_identity(api_key_id=None, email="root@example.com", role="admin"),
+    )
+    admin = await http.request("DELETE", f"/api/inquiries/{by_admin}", json={})
+
+    assert (other.status_code, own.status_code, admin.status_code) == (403, 200, 200)
+    assert json_loads(other.content, dict[str, object])["detail"] == (
+        "A row is purged by its account or an admin"
+    )
+    assert await store.get_inquiry(kept) is not None
+    assert await store.get_inquiry(mine) is None
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_writer_cannot_take_a_row_by_its_account_and_then_purge_it(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    http, store = pglite_route_client
+    ada, bob = "ada@example.com", "bob@example.com"
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "SELECT gen_random_uuid(), email, 'Test', 'writer', 'active' "
+            "FROM unnest($1::text[]) AS email",
+            [ada, bob],
+        )
+    taken, given = await store.submit_batch(
+        [SubmitIssue(account=ada, title=title) for title in ("taken", "given")],
+    )
+
+    install_identity(make_test_identity(api_key_id=None, email=bob))
+    take = await http.put(f"/api/inquiries/{taken}/account", json={"value": bob})
+    purge = await http.request("DELETE", f"/api/inquiries/{taken}", json={})
+    install_identity(make_test_identity(api_key_id=None, email=ada))
+    give = await http.put(f"/api/inquiries/{given}/account", json={"value": bob})
+    install_identity(
+        make_test_identity(api_key_id=None, email="root@example.com", role="admin"),
+    )
+    moved = await http.put(f"/api/inquiries/{taken}/account", json={"value": bob})
+
+    assert (take.status_code, purge.status_code) == (403, 403)
+    assert (give.status_code, moved.status_code) == (200, 200)
+    held = [await store.get_inquiry(row) for row in (taken, given)]
+    assert [row.account for row in held if row is not None] == [bob, bob]
 
 
 @pytest.mark.db_pglite

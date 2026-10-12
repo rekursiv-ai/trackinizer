@@ -127,6 +127,7 @@ function serve(
   events: readonly FeedEvent[] = EVENTS,
   station: WorkspaceState | null = null,
   relay: (body: unknown) => Response = () => Response.json({ delivered: true }),
+  forksOnTyping = false,
 ): Sent[] {
   const now = Date.now();
   return stubFetch(async (request) => {
@@ -147,6 +148,10 @@ function serve(
     if (url.pathname === "/api/messages") return message(await request.json());
     if (station && url.pathname === "/api/workspaces" && request.method === "POST") return Response.json(station);
     if (station && url.pathname === `/api/workspaces/${station.id}` && request.method === "GET") return Response.json(station);
+    if (station?.conversation_id && url.pathname === `/api/chats/${station.conversation_id}`) {
+      return Response.json({ conversation_id: station.conversation_id, session_id: CHAT_A, title: "t", account: "ada@example.com", live: true,
+        forks: 0, forked_from: null, forks_on_typing: forksOnTyping, shared_with: [], may_share: false, may_delete: false });
+    }
     if (station && url.pathname === `/api/workspaces/${station.id}/relay`) return relay(await request.json());
     return Response.json({ detail: "not found" }, { status: 404 });
   });
@@ -886,6 +891,17 @@ test("a chat that was not told is said quietly, whether the server says so or th
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session; Chat not told"));
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("a station whose chat forks what the person types is not told, and says so", async () => {
+  setStation("w1");
+  const sent = serve(undefined, EVENTS, STATION, undefined, true);
+  renderConsole(CANVAS_USER);
+  await lines(3);
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@claude go" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session; Chat not told"));
+  expect(sent.filter((request) => request.path.endsWith("/relay"))).toHaveLength(0);
 });
 
 test("no relay goes when no agent took the line, or when there is no station", async () => {

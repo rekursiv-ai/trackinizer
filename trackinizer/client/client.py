@@ -2172,7 +2172,13 @@ class Client:
                 payload = None
             if isinstance(payload, dict):
                 payload_map = cast(Mapping[object, object], payload)
-                code = payload_map.get("code")
+                # A route that answers with a coded detail nests the code there.
+                detail = payload_map.get("detail")
+                code = payload_map.get("code") or (
+                    cast(Mapping[object, object], detail).get("code")
+                    if isinstance(detail, dict)
+                    else None
+                )
                 if isinstance(code, str):
                     error_code = code
             raise ClientError(

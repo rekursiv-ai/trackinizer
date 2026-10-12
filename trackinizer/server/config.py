@@ -54,9 +54,10 @@ _DEFAULT_SESSION_MAX_AGE_SECONDS: int = (
 )  # house-ignore[globals] -- Shared default; threading would duplicate across the Config field default and the env-parse fallback.
 
 
-type ChatOrgs = Literal["single", "domain"]
-"""Who a science chat's starter shares an organisation with: everyone (``single``), or
-only those whose verified email has the starter's domain (``domain``)."""
+type ChatOrgs = Literal["single", "domain", "individual"]
+"""Who types into a science chat besides its starter and the people it is shared with:
+everyone (``single``), those whose verified email has the starter's domain
+(``domain``), or nobody (``individual``)."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -123,11 +124,14 @@ class Config:
         ``*@domain``, lowercase. A domain pattern also needs Google's ``hd`` claim
         to name the domain. Empty means nobody is staff and no staff session can
         be opened. Deployment property: ``--staff`` or ``TRACKINIZER_STAFF``.
-      chat_orgs: ``domain`` (the default) gives each verified email domain its own
-        organisation, consumer domains none: a user outside the starter's forks the
-        chat instead. ``single`` makes every user one organisation, so a science chat
-        is always continued by typing in it; only a server whose users are all one
-        organisation sets it. Environment only (``TRACKINIZER_CHAT_ORGS``).
+      chat_orgs: Who continues a science chat by typing in it besides its starter and
+        the people they shared it with; anyone else forks it instead. ``domain`` (the
+        default) gives each verified email domain its own organisation, consumer
+        domains none, and the starter's organisation continues it. ``single`` makes
+        every user one organisation, so a science chat is always continued by
+        typing in it; only a server whose users are all one organisation sets it.
+        ``individual`` lets nobody else continue it. Environment only
+        (``TRACKINIZER_CHAT_ORGS``).
 
     """
 
@@ -346,10 +350,10 @@ def parse_staff(value: str) -> tuple[str, ...]:
 
 
 def parse_chat_orgs(value: str) -> ChatOrgs:
-    """Parse ``$TRACKINIZER_CHAT_ORGS``: ``single`` or ``domain``; blank is ``domain``.
+    """Parse ``$TRACKINIZER_CHAT_ORGS``: ``single``, ``domain`` or ``individual``.
 
-    Blank is the safe value: a server that never set the variable must not let a
-    person from another organisation type into a chat that is not theirs.
+    Blank is ``domain``: a server that never set the variable keeps what it did, and
+    never lets a person from another organisation type into a chat that is not theirs.
 
     Args:
       value: The variable.
@@ -366,9 +370,12 @@ def parse_chat_orgs(value: str) -> ChatOrgs:
             return "domain"
         case "single":
             return "single"
+        case "individual":
+            return "individual"
         case other:
             raise ConfigError(
-                f"TRACKINIZER_CHAT_ORGS must be single or domain, got {other!r}",
+                "TRACKINIZER_CHAT_ORGS must be single, domain or individual, "
+                f"got {other!r}",
             )
 
 

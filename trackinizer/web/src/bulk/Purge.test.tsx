@@ -1,9 +1,14 @@
-import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { DetailRow } from "../api/detail";
 import { stubFetch } from "../api/testing";
-import { detail, renderDetail, row } from "../detail/testing";
+import { ProfileContext } from "../app/boot";
+import { Session, SessionContext } from "../app/session";
+import { detail, PROFILE, renderDetail, row } from "../detail/testing";
 import { stubLayout } from "../editors/testing";
+import { ToastProvider } from "../ui/toast";
+import { mayPurge, PurgeDialog } from "./Purge";
 
 beforeEach(() => {
   history.replaceState(null, "", "#/ref/Issue/7");
@@ -53,6 +58,41 @@ function serve(self: DetailRow) {
   });
   return server;
 }
+
+test("the server lets a row's account purge it, without case, and an admin, and nobody else", () => {
+  const owned = row("Issue", 7, { account: "Ada@Example.com" });
+  expect(mayPurge(owned, { email: "ada@example.com", role: "writer" })).toBe(true);
+  expect(mayPurge(owned, { email: "bob@example.com", role: "writer" })).toBe(false);
+  expect(mayPurge(owned, { email: "bob@example.com", role: "admin" })).toBe(true);
+});
+
+test("a science chat's session is purged by an admin alone, not by its starter", () => {
+  const chat = row("AgentSession", 3, { account: "ada@example.com", labels: ["science-chat"] });
+  expect(mayPurge(chat, { email: "ada@example.com", role: "writer" })).toBe(false);
+  expect(mayPurge(chat, { email: "bob@example.com", role: "admin" })).toBe(true);
+  const other = row("AgentSession", 4, { account: "ada@example.com", labels: ["other"] });
+  expect(mayPurge(other, { email: "ada@example.com", role: "writer" })).toBe(true);
+});
+
+test("the dialog of a viewer who may not purge clears no owner and sends no purge", async () => {
+  const sent = stubFetch(async () => Response.json({ id: "x", change_id: "c" }));
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <SessionContext value={new Session(() => {})}>
+        <ProfileContext value={PROFILE}><ToastProvider>
+          <PurgeDialog detail={detail(row("Issue", 7, { account: "bob@example.com", owner: "worker-1" }))} returnTo={null} onClose={() => {}} />
+        </ToastProvider></ProfileContext>
+      </SessionContext>
+    </QueryClientProvider>,
+  );
+  const dialog = screen.getByRole("dialog", { name: "Purge Issue#7" });
+  expect(within(dialog).getByText("Only the row's account or an admin can purge it.")).toBeTruthy();
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), { target: { value: "tidy" } });
+  const confirm = within(dialog).getByRole("button", { name: /^Clear owner and purge/ }) as HTMLButtonElement;
+  expect(confirm.disabled).toBe(true);
+  await act(async () => { fireEvent.submit(dialog.querySelector("form")!); });
+  expect(sent).toEqual([]);
+});
 
 async function openPurge() {
   renderDetail({ id: row("Issue", 7).id });

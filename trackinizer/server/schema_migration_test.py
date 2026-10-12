@@ -1143,6 +1143,39 @@ async def test_migration_042_makes_stations_of_canvases_and_presets_on_postgres(
     await _check_stations_migrated(scratch_engine)
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_043_matches_the_baseline_science_chat_tables(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """The science chat tables 043 builds equal the fresh-install ones.
+
+    Bootstrap builds the baseline shapes. This drops both tables (as a pre-043
+    database lacks them), replays ``schema.043`` alone, and compares every column,
+    constraint and index against what the baseline produced.
+    """
+    tables = ("science_chat_shares", "science_chat_tombstones")
+    await reset_schema(pglite_engine)
+    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
+    async with pglite_engine.acquire() as conn:
+        baseline = [await _table_shape(conn, table) for table in tables]
+        assert all(shape[0] for shape in baseline), "the baseline lacks a table"
+
+        await conn.execute("DROP TABLE science_chat_shares, science_chat_tombstones")
+        await conn.execute(load_sql("schema.043"))
+        migrated = [await _table_shape(conn, table) for table in tables]
+        # Replaying it over the existing table is a no-op, not an error.
+        await conn.execute(load_sql("schema.043"))
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute(
+                "INSERT INTO science_chat_shares (conversation_id, email, shared_by) "
+                "VALUES ($1, 'Ada@Example.com', 'bob@example.com')",
+                uuid.uuid4(),
+            )
+
+    assert migrated == baseline
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 

@@ -16,11 +16,14 @@ from treekle import from_plain
 
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import tx
+from trackinizer.server.store.deleted_chats import (
+    refuse_a_deleted_chat,
+    session_was_purged,
+)
 from trackinizer.server.values import vetted_sql
 from trackinizer.server.visuals.chat_forks import (
     ConversationTakenError,
     ForeignChatError,
-    may_continue,
 )
 from trackinizer.server.visuals.partners import (
     assistant_holds_chat,
@@ -30,7 +33,10 @@ from trackinizer.server.visuals.partners import (
     resolve_partner,
 )
 from trackinizer.server.visuals.science_chats import (
-    read_starter,
+    conversation_of_session,
+    helper_began_chat,
+    may_post,
+    read_line_starter,
     science_chat_exists_at,
 )
 from trackinizer.server.visuals.screens import read_screen
@@ -49,6 +55,7 @@ from trackinizer.server.visuals.workspaces import (
     initial_data,
     refuse_record,
 )
+from trackinizer.types.errors import ChatDeletedError
 from trackinizer.wire.wire_science_chat import ChatSend, ChatSent
 from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
@@ -62,6 +69,7 @@ if TYPE_CHECKING:
     from trackinizer.server.auth import Role
     from trackinizer.server.config import Assistant, ChatOrgs
     from trackinizer.server.visuals.catalog import VisualCatalogBody
+    from trackinizer.server.visuals.workspaces import PartnerChoice
 
 
 UNNAMED_PREFIX: Final = "unnamed-workstream#"
@@ -165,7 +173,8 @@ async def send_chat_line(
       source_role: That principal's role.
       inbound: Session message queue.
       assistant: The configured assistant, if any.
-      orgs: How the server groups its users into organisations.
+      orgs: Who besides a chat's starter and the people it is shared with continues
+        it.
       audiences: What the poster reads; a fork point in a session outside them is
         no line, as one past the end of a session is none.
 
@@ -174,14 +183,18 @@ async def send_chat_line(
         assistant has it open; None for a foreign station.
 
     Raises:
-      WorkspaceSessionUnavailableError: The station has no live partner, or its local
-        helper was asked into a conversation the shared assistant holds.
+      WorkspaceSessionUnavailableError: The station has no live partner, its local
+        helper was asked into a conversation the shared assistant holds, or the
+        assistant into one a person's own helper began.
       PartnerBusyError: The queue the line would join is full.
       StationChatError: The station's chat is another conversation, or another
         station of the poster holds the one named.
       IdempotencyReuseError: ``key`` already posted another line.
-      ForeignChatError: The conversation was started outside the poster's organisation.
+      ForeignChatError: The poster may not continue the conversation: it is neither
+        theirs nor shared with them, nor open to them by ``orgs``.
       ConversationTakenError: The fork's key names a conversation someone else began.
+      ChatDeletedError: The line's conversation, or the fork's key, names a chat that
+        was deleted, or the fork point is a line of one.
       ValueError: The fork names no line of a science chat.
 
     """
@@ -225,27 +238,13 @@ async def send_chat_line(
                 if state.partner_choice == "local"
                 else "The assistant is not running",
             )
-        # Only the assistant drains a chat's own session. A local helper opens its
-        # chats but drains its service session alone, so a line sent to one of its
-        # chats would be read by nobody.
-        chat = None
-        if state.partner_choice == "local":
-            if await assistant_holds_chat(
-                conn,
-                assistant=assistant,
-                conversation_id=conversation_id,
-            ):
-                raise WorkspaceSessionUnavailableError(
-                    "The shared assistant holds this conversation; start a new one "
-                    "to use your local helper",
-                )
-        elif assistant is not None:
-            chat = await live_chat_session(
-                conn,
-                inbound=inbound,
-                opener=assistant.email,
-                conversation_id=conversation_id,
-            )
+        chat = await chat_line_target(
+            conn,
+            inbound=inbound,
+            assistant=assistant,
+            choice=state.partner_choice,
+            conversation_id=conversation_id,
+        )
         target = chat or partner.session_id
         if inbound.is_full(target):
             raise PartnerBusyError("Partner busy: too many unread messages; try again.")
@@ -308,6 +307,66 @@ async def send_chat_line(
         conversation_id=conversation_id,
         session_id=chat,
         workspace_id=station_id,
+    )
+
+
+async def chat_line_target(
+    conn: Conn,
+    *,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+    choice: PartnerChoice,
+    conversation_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """Say where a station's line for a chat goes, refusing one nobody would read.
+
+    A Chat post and a Console relay both ask this. Only the assistant drains a
+    chat's own session. A local helper opens its chats but drains its service session
+    alone, so it is sent no line of a chat the shared assistant holds; and only that
+    helper reads a chat a person's own helper began, so the assistant is sent none
+    of those.
+
+    Args:
+      conn: A database connection.
+      inbound: Session message queue, which knows who polls each session.
+      assistant: The configured assistant, if any.
+      choice: The station's partner: the shared assistant or the owner's helper.
+      conversation_id: The chat.
+
+    Returns:
+      session: The chat's own session the assistant has open; None sends the line to
+        the partner's service session.
+
+    Raises:
+      WorkspaceSessionUnavailableError: The line would go where no one reads it.
+
+    """
+    if choice == "local":
+        if await assistant_holds_chat(
+            conn,
+            assistant=assistant,
+            conversation_id=conversation_id,
+        ):
+            raise WorkspaceSessionUnavailableError(
+                "The shared assistant holds this conversation; start a new one "
+                "to use your local helper",
+            )
+        return None
+    if assistant is None:
+        return None
+    if await helper_began_chat(
+        conn,
+        assistant=assistant,
+        conversation_id=conversation_id,
+    ):
+        raise WorkspaceSessionUnavailableError(
+            "A local helper holds this conversation; only it can answer here",
+        )
+    return await live_chat_session(
+        conn,
+        inbound=inbound,
+        opener=assistant.email,
+        conversation_id=conversation_id,
     )
 
 
@@ -416,8 +475,12 @@ async def workspace_for_chat(
     Returns:
       state: The station that holds the conversation, with its partner.
 
+    Raises:
+      ChatDeletedError: The conversation was deleted.
+
     """
-    async with engine.acquire() as conn:
+    async with engine.acquire() as conn, tx(conn):
+        await refuse_a_deleted_chat(conn, conversation_id=conversation_id)
         row = await _chat_station_row(
             conn,
             user_id=user_id,
@@ -1116,9 +1179,7 @@ async def _workspace_for_principal(
 
 
 # The starter asked about is the conversation the line will be queued for, which the
-# idempotency key can name as well as the body can. The first line of a conversation is
-# queued before any session carries its id, so the sender of the send that used the id
-# as its key is its starter until a session says otherwise.
+# idempotency key can name as well as the body can.
 async def _check_fork_or_membership(
     conn: Conn,
     *,
@@ -1130,7 +1191,14 @@ async def _check_fork_or_membership(
     inbound: InboundQueue,
     audiences: frozenset[str],
 ) -> None:
-    """Refuse a fork of what is no chat's line, and a post into another's chat."""
+    """Refuse a deleted chat, a fork of no chat's line, a post into another's chat."""
+    await refuse_a_deleted_chat(
+        conn,
+        conversation_id=conversation_id,
+        forked_from=None
+        if body.fork is None
+        else await conversation_of_session(conn, session_id=body.fork.session_id),
+    )
     if body.fork is not None and not await science_chat_exists_at(
         conn,
         assistant=assistant,
@@ -1138,20 +1206,29 @@ async def _check_fork_or_membership(
         fork=body.fork,
         audiences=audiences,
     ):
+        if await session_was_purged(conn, session_id=body.fork.session_id):
+            raise ChatDeletedError("The chat this line was in was deleted")
         raise ValueError("The fork point is not a line of a science chat")
-    starter = inbound.sender_of(conversation_id) or await read_starter(
+    if body.fork is None:
+        if not await may_post(
+            conn,
+            poster=email,
+            conversation_id=conversation_id,
+            assistant=assistant,
+            orgs=orgs,
+            inbound=inbound,
+        ):
+            raise ForeignChatError(
+                "This chat is not shared with you; fork it to continue",
+            )
+        return
+    starter = await read_line_starter(
         conn,
         assistant=assistant,
         conversation_id=conversation_id,
+        inbound=inbound,
     )
-    if starter is None:
-        return
-    if body.fork is not None:
-        if starter.lower() != email.lower():
-            raise ConversationTakenError(
-                "This conversation already exists; fork under a new key",
-            )
-    elif not may_continue(email, starter=starter, orgs=orgs):
-        raise ForeignChatError(
-            "This chat was started outside your organisation; fork it to continue",
+    if starter is not None and starter.lower() != email.lower():
+        raise ConversationTakenError(
+            "This conversation already exists; fork under a new key",
         )

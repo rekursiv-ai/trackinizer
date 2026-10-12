@@ -13,6 +13,7 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import make_store, new_uuid, set_field_row
+from trackinizer.server.api.conftest import TEST_USER_EMAIL
 from trackinizer.server.api.edit import _run_compare_and_set
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.wire.bodies import FieldSet
@@ -95,19 +96,37 @@ class TestRoutes:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        set_field_row(engine.conn, {"account": "old@example.com", "kind": "Issue"})
+        set_field_row(engine.conn, {"account": TEST_USER_EMAIL, "kind": "Issue"})
         r = client.put(
             f"/api/inquiries/{new_uuid()}/account",
             json={"value": "new@example.com", "actor": "alice"},
         )
         assert r.status_code == 200, r.text
 
-    def test_set_account_route_rejects_inactive_user(
+    def test_set_account_route_refuses_a_writer_who_does_not_hold_the_row(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
         set_field_row(engine.conn, {"account": "old@example.com", "kind": "Issue"})
+
+        r = client.put(
+            f"/api/inquiries/{new_uuid()}/account",
+            json={"value": TEST_USER_EMAIL, "actor": "alice"},
+        )
+
+        assert r.status_code == 403, r.text
+        assert not any(
+            isinstance(call.args[0], str) and "change_log" in call.args[0]
+            for call in engine.conn.execute.call_args_list
+        )
+
+    def test_set_account_route_rejects_inactive_user(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        set_field_row(engine.conn, {"account": TEST_USER_EMAIL, "kind": "Issue"})
 
         # Make the account-active probe answer "no active row"; the route's
         # gate must 422 before any field write.

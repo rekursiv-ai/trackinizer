@@ -16,11 +16,13 @@ longer holds instead of lowering the session to ``open``.
 
 A viewer key mutates only the session it opened. A science chat is stricter: it is
 public to every signed-in user, so any writer may read it, but only the key that
-opened it writes it. Its lines name their poster, and its labels and account say who
-started it and who posted, so a second writer's write would forge a poster or hide the
-chat from History. A chat is known by its ``chat:`` id alone, whoever opened it and
-whether or not an assistant is configured: a user's own ``trax helper`` opens chats
-under that user's key, and answers the last line of one with that user's local CLI.
+opened it writes it, and only that key or an admin purges it by id, where any other
+row is purged, and moved to another account, by its account or an admin. Its lines
+name their poster, and its labels and account say who started it and who posted, so
+a second writer's write would forge a poster or hide the chat from History. A chat
+is known by its ``chat:`` id alone, whoever opened it and whether or not an
+assistant is configured: a user's own ``trax helper`` opens chats under that user's
+key, and answers the last line of one with that user's local CLI.
 """
 
 from __future__ import annotations
@@ -56,8 +58,11 @@ __all__ = [
     "hidden_session",
     "is_a_science_chat",
     "require_chat_opener",
+    "require_row_account",
+    "require_row_purge",
     "require_session",
     "require_session_access",
+    "require_session_id_change",
     "require_session_row_write",
     "require_session_write_access",
     "resolve_asker",
@@ -309,24 +314,168 @@ async def require_session_row_write(
       HTTPException: ``target_id`` is a session the caller may not write.
 
     """
+    row = await _read_row(request, target_id=target_id)
+    if row is None or row.kind != "AgentSession":
+        return
+    _require_audience(identity, row=row)
+    _refuse_a_stranger(identity, cli_session_id=row.cli_session_id, opener=row.opener)
+
+
+async def require_row_purge(
+    request: Request,
+    identity: AuthIdentity,
+    target_id: uuid.UUID,
+) -> None:
+    """Refuse a purge by id from a caller who may not delete the row.
+
+    One rule for every row: its account deletes it, and so does an admin. A session
+    also needs its audience, as any write by id does. A science chat's session is the
+    exception: its account is its starter and its lines are its posters', so the key
+    that opened it, or an admin, purges it; ``DELETE /api/chats/<id>`` deletes a whole
+    chat by its starter's rule instead.
+
+    Args:
+      request: The request, which carries the store.
+      identity: Authenticated caller, its role and its API key.
+      target_id: The row a route is about to purge.
+
+    Raises:
+      HTTPException: 403: the caller may not purge ``target_id``.
+
+    """
+    row = await _read_row(request, target_id=target_id)
+    if row is None:
+        return
+    if row.kind == "AgentSession":
+        _require_audience(identity, row=row)
+    if identity.role == "admin":
+        return
+    if row.cli_session_id.startswith(CHAT_SESSION_PREFIX):
+        _refuse_a_stranger(
+            identity,
+            cli_session_id=row.cli_session_id,
+            opener=row.opener,
+        )
+    elif not _holds(identity, row=row):
+        raise HTTPException(
+            status_code=403,
+            detail="A row is purged by its account or an admin",
+        )
+
+
+async def require_row_account(
+    request: Request,
+    identity: AuthIdentity,
+    target_id: uuid.UUID,
+) -> None:
+    """Refuse moving a row to another account by anyone but its account or an admin.
+
+    A writer who could name themselves a row's account could then purge it, so the
+    purge rule holds only while this one does.
+
+    Args:
+      request: The request, which carries the store.
+      identity: Authenticated caller and its role.
+      target_id: The row whose ``account`` a route is about to change.
+
+    Raises:
+      HTTPException: 403: the caller is neither the row's account nor an admin.
+
+    """
+    row = await _read_row(request, target_id=target_id)
+    if row is not None and identity.role != "admin" and not _holds(identity, row=row):
+        raise HTTPException(
+            status_code=403,
+            detail="A row's account is changed by that account or an admin",
+        )
+
+
+async def require_session_id_change(
+    request: Request,
+    identity: AuthIdentity,
+    target_id: uuid.UUID,
+    *,
+    value: str | None,
+) -> None:
+    """Refuse a change of a session's ``cli_session_id`` that could move a chat.
+
+    Only the session's opening key or an admin changes it. And no one moves a session
+    into or out of a science chat's ``chat:<id>``: a chat is named when its session
+    starts, and a session moved under one would be taken by that chat's delete, or
+    could name its starter.
+
+    Args:
+      request: The request, which carries the store.
+      identity: Authenticated caller, its role and its API key.
+      target_id: The row whose ``cli_session_id`` a route is about to set or clear.
+      value: The id it would take; None clears it.
+
+    Raises:
+      HTTPException: 403: either rule refuses the change.
+
+    """
+    row = await _read_row(request, target_id=target_id)
+    if row is None or row.kind != "AgentSession":
+        return
+    if any(
+        (named or "").startswith(CHAT_SESSION_PREFIX)
+        for named in (value, row.cli_session_id)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="A science chat's id is named only when its session starts",
+        )
+    if identity.role != "admin" and (
+        identity.api_key_id is None or identity.api_key_id != row.opener
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="A session's cli_session_id is changed by the key that opened it",
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Row:
+    """What a write by id needs to know of the row: who holds it, a session's access."""
+
+    kind: str
+    account: str
+    cli_session_id: str
+    opener: uuid.UUID | None
+    audience: str | None
+
+
+async def _read_row(request: Request, target_id: uuid.UUID) -> _Row | None:
+    """Read the row a write by id names; None when there is none."""
     async with get_store(request).engine.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT kind, agentsession_cli_session_id AS cli_session_id, "
+            "SELECT kind, account, agentsession_cli_session_id AS cli_session_id, "
             "agentsession_opened_by_api_key_id AS opener, "
             "agentsession_audience AS audience FROM inquiries WHERE id = $1",
             target_id,
         )
-    if row is None or row.get("kind") != "AgentSession":
-        return
-    opener = from_plain(row.get("opener"), uuid.UUID, default=None)
-    audience = from_plain(row.get("audience"), str, default=None)
-    if not _opened_by(identity, opener) and audience not in identity.read_audiences:
-        raise hidden_session(audience)
-    _refuse_a_stranger(
-        identity,
+    if row is None:
+        return None
+    return _Row(
+        kind=from_plain(row.get("kind"), str),
+        account=from_plain(row.get("account"), str, default=""),
         cli_session_id=from_plain(row.get("cli_session_id"), str, default=""),
-        opener=opener,
+        opener=from_plain(row.get("opener"), uuid.UUID, default=None),
+        audience=from_plain(row.get("audience"), str, default=None),
     )
+
+
+def _require_audience(identity: AuthIdentity, *, row: _Row) -> None:
+    """Refuse a write to a session the caller neither opened nor reads."""
+    if not _opened_by(identity, row.opener) and row.audience not in (
+        identity.read_audiences
+    ):
+        raise hidden_session(row.audience)
+
+
+def _holds(identity: AuthIdentity, *, row: _Row) -> bool:
+    """Say whether ``identity`` is the account a row is held under."""
+    return row.account.lower() == identity.email.lower()
 
 
 def _opened_by(identity: AuthIdentity, opener: uuid.UUID | None) -> bool:

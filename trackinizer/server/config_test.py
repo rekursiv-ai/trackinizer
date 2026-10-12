@@ -334,14 +334,15 @@ class TestParsers:
 
 
 class TestChatOrgs:
-    """``$TRACKINIZER_CHAT_ORGS`` says whether science chats group users by domain."""
+    """``$TRACKINIZER_CHAT_ORGS`` says who else continues a science chat."""
 
-    def test_a_server_groups_by_domain_unless_it_says_it_is_one_organisation(
+    def test_a_server_groups_by_domain_unless_it_says_otherwise(
         self,
     ) -> None:
         assert parse_chat_orgs("") == "domain"
         assert parse_chat_orgs(" single ") == "single"
         assert parse_chat_orgs("domain") == "domain"
+        assert parse_chat_orgs("individual ") == "individual"
         assert Config().chat_orgs == "domain"
 
     def test_a_server_without_the_variable_set_reads_domain(
@@ -353,7 +354,7 @@ class TestChatOrgs:
         assert Config.from_args(_server_args(assistant="")).chat_orgs == "domain"
 
     def test_anything_else_is_a_config_error(self) -> None:
-        with pytest.raises(ConfigError, match="single or domain"):
+        with pytest.raises(ConfigError, match="single, domain or individual"):
             parse_chat_orgs("company")
 
     def test_both_ways_to_build_a_config_read_the_environment(

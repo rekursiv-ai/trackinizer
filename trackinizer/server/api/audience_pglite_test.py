@@ -156,6 +156,7 @@ async def _staff_session(
     opener: _Principal,
     *,
     actor: str | None,
+    account: str = "tester@example.com",
 ) -> uuid.UUID:
     """Insert a live ``staff`` session opened by ``opener`` that holds the canary."""
     session_id = uuid.uuid4()
@@ -165,11 +166,11 @@ async def _staff_session(
             "agentsession_cli, agentsession_rooms, agentsession_opened_by_api_key_id, "
             "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', coalesce($2, 'unowned'), $2, 'codex', ARRAY['ops'], "
-            "$3, 'staff')",
+            "$4, coalesce($2, 'unowned'), $2, 'codex', ARRAY['ops'], $3, 'staff')",
             session_id,
             actor,
             opener.key_id,
+            account,
         )
     _ = await store.upsert_session_manifest(
         session_id,
@@ -355,7 +356,13 @@ async def test_staff_edits_and_purges_a_staff_session_by_id(
     hidden: _Hidden,
 ) -> None:
     client, store = pglite_route_client
-    unowned = await _staff_session(store, STAFF_USER, actor=None)
+    # A row is purged by its account, so the session is the staff user's own.
+    unowned = await _staff_session(
+        store,
+        STAFF_USER,
+        actor=None,
+        account=STAFF_USER.email,
+    )
     _as(STAFF_USER)
 
     edited = await client.put(

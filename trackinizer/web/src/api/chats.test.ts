@@ -1,13 +1,13 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { ApiError } from "./client";
-import { conversationOf, getChatHead, isChatHandle, sendChatLine } from "./chats";
+import { conversationOf, deleteChat, getChatHead, isChatHandle, sendChatLine, shareChat, unshareChat } from "./chats";
 import { stubFetch } from "./testing";
 
 afterEach(() => vi.unstubAllGlobals());
 
 const head = {
   conversation_id: "c1", session_id: "s1", title: "Hello", account: "ada@example.com", live: true,
-  forks: 2, forked_from: null, forks_on_typing: false,
+  forks: 2, forked_from: null, forks_on_typing: false, shared_with: [], may_share: true, may_delete: false,
 };
 
 test("finds a conversation's session, and says nothing until the assistant has opened it", async () => {
@@ -62,4 +62,18 @@ test("a session whose routing name is chat- and twelve hex digits is a chat's", 
   for (const other of ["chat-3d0e9f1a1b2", "chat-3d0e9f1a1b2cc", "chat-3D0E9F1A1B2C", "scout", "chat-xyz", "my-chat-3d0e9f1a1b2c"]) {
     expect(isChatHandle(other)).toBe(false);
   }
+});
+
+test("a share and an unshare name the conversation and the address, which is encoded; a delete names the conversation", async () => {
+  const sent = stubFetch(() => Response.json({}));
+  await shareChat("c1", "a+b@example.com");
+  await unshareChat("c1", "a+b@example.com");
+  await deleteChat("c1");
+  expect(sent).toMatchObject([
+    { method: "PUT", path: "/api/chats/c1/shares/a%2Bb%40example.com" },
+    { method: "DELETE", path: "/api/chats/c1/shares/a%2Bb%40example.com" },
+    { method: "DELETE", path: "/api/chats/c1" },
+  ]);
+  stubFetch(() => Response.json({ detail: "Only the starter shares" }, { status: 403 }));
+  await expect(shareChat("c1", "x@example.com")).rejects.toMatchObject({ status: 403 });
 });

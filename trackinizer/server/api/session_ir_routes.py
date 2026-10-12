@@ -17,13 +17,14 @@ derived by joining to ``inquiries``, as every session route does.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from treekle import from_plain, immutable
 
-from trackinizer.server.api._deps import get_store
+from trackinizer.server.api._deps import get_assistant, get_inbound, get_store
+from trackinizer.server.api._routes_shared import engine_of
 from trackinizer.server.api.session_access import (
     require_chat_opener,
     require_session,
@@ -33,7 +34,9 @@ from trackinizer.server.api.session_access import (
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.store.session_ir import SlashCommandRow
+from trackinizer.server.visuals.science_chats import counts_in_chat
 from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
+from trackinizer.wire.wire_science_chat import chat_conversation_id
 from trackinizer.wire.wire_session_ir import (
     AppendRecordsRequest,
     AppendRecordsResponse,
@@ -44,6 +47,10 @@ from trackinizer.wire.wire_session_ir import (
     RecentTurnBody,
     RecordBody,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 router = APIRouter()
@@ -119,6 +126,20 @@ async def append_session_records_route(
         at=datetime.now(UTC),
         polled=False,
     )
+    # A chat's line its assistant took from the queue is counted as posted until here,
+    # where only a session whose lines the chat counts records it.
+    conversation = chat_conversation_id(session.cli_session_id)
+    senders = _posters(body.records)
+    if conversation is not None and senders:
+        async with engine_of(request).acquire() as conn:
+            counted = await counts_in_chat(
+                conn,
+                assistant=get_assistant(request),
+                session_id=session_id,
+                conversation_id=conversation,
+            )
+        if counted:
+            get_inbound(request).recorded(conversation, senders=senders)
     return AppendRecordsResponse(
         part=part,
         written=written,
@@ -258,3 +279,14 @@ async def read_recent_session_turns_route(
             for turn in turns
         ],
     )
+
+
+def _posters(records: Sequence[RecordBody]) -> list[str]:
+    """Name the poster of each person's line among ``records``, in order."""
+    return [
+        sender
+        for record in records
+        if record.kind == "AgentToAgentMessage" and isinstance(record.payload, dict)
+        for sender in (record.payload.get("sender"),)
+        if isinstance(sender, str)
+    ]

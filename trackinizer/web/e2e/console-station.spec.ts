@@ -32,6 +32,20 @@ async function capture(request: APIRequestContext, id: string, records: readonly
   expect(appended.ok(), await appended.text()).toBe(true);
 }
 
+/** Give the station a chat of the user's own (its head says typing joins it), so the console may tell it. */
+async function bindOwnChat(page: Page, request: APIRequestContext): Promise<void> {
+  const { email } = await (await request.get("/api/me/profile")).json();
+  const started = await request.post("/api/sessions/start", { data: { cli: "claude", title: "console chat" } });
+  expect(started.ok(), await started.text()).toBe(true);
+  const { id: session } = await started.json();
+  const conversation = crypto.randomUUID();
+  await page.route(`**/api/chats/${conversation}`, (route) => route.fulfill({ json: {
+    conversation_id: conversation, session_id: session, title: "E2E", account: email, live: true, forks: 0, forked_from: null,
+    forks_on_typing: false, shared_with: [], may_share: false, may_delete: false,
+  } }));
+  expect((await request.post(`/api/workspaces/for-chat/${conversation}`)).ok()).toBe(true);
+}
+
 async function openConsole(page: Page): Promise<void> {
   const subscribed = streamOpened(page);
   await page.goto("/app/#/console");
@@ -78,6 +92,7 @@ test("the console opens on the station's agents, and All sessions widens it and 
 test("a line to an agent goes to it, then the station's chat is told once, under one key, with the agent that took it", async ({ page, request }) => {
   const actor = `relay-${TAG}`;
   await startAgent(request, actor, "Waiting for work.");
+  await bindOwnChat(page, request);
   const relays: { key: string | undefined; body: unknown }[] = [];
   await page.route("**/api/workspaces/*/relay", async (route) => {
     relays.push({ key: route.request().headers()["idempotency-key"], body: route.request().postDataJSON() });
@@ -97,6 +112,7 @@ test("a line to an agent goes to it, then the station's chat is told once, under
 test("a chat that was not told is said quietly, and the console's box names its target", async ({ page, request }) => {
   const actor = `quiet-${TAG}`;
   await startAgent(request, actor, "Standing by.");
+  await bindOwnChat(page, request);
   await page.route("**/api/workspaces/*/relay", (route) => route.fulfill({ json: { delivered: false } }));
   await openConsole(page);
   await page.getByRole("group", { name: "Scope" }).getByRole("button", { name: "All sessions" }).click();
@@ -122,7 +138,7 @@ for (const style of ["default", "terminal"] as const) {
     ], "chat.jsonl");
     const conversation = crypto.randomUUID();
     await page.route(`**/api/chats/${conversation}`, (route) => route.fulfill({ json: {
-      conversation_id: conversation, session_id: session, title: "E2E", account: email, live: true, forks: 0, forked_from: null, forks_on_typing: false,
+      conversation_id: conversation, session_id: session, title: "E2E", account: email, live: true, forks: 0, forked_from: null, forks_on_typing: false, shared_with: [], may_share: false, may_delete: false,
     } }));
     expect((await request.post(`/api/workspaces/for-chat/${conversation}`)).ok()).toBe(true);
     await page.addInitScript((choice) => localStorage.setItem("trackinizer.chat.style", choice!), style);

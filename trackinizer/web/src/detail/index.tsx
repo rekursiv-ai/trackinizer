@@ -6,7 +6,7 @@ import { ApiError } from "../api/client";
 import type { Detail, DetailRow } from "../api/detail";
 import { LockedContext, useMeta, useProfile, useWriteMode } from "../app/boot";
 import { useIsHighlighted } from "../app/highlights";
-import { PurgeDialog } from "../bulk/Purge";
+import { mayPurge, PurgeDialog } from "../bulk/Purge";
 import { useCommands } from "../commands/registry";
 import { CopyDetails } from "../debug/CopyDetails";
 import { TextEditor, TitleEditor } from "../editors/TextEditor";
@@ -250,7 +250,8 @@ function MoreMenu({ detail }: { detail: Detail }) {
   const offline = useWriteMode() === "disabled";
   const trigger = useRef<HTMLButtonElement>(null);
   const [purging, setPurging] = useState(false);
-  const admin = useProfile().role === "admin";
+  const profile = useProfile();
+  const admin = profile.role === "admin";
   const lock = useLockToggle(detail);
   if (!actions.length) return null;
   const name = `${detail.self.kind}#${detail.self.seq}`;
@@ -273,7 +274,9 @@ function MoreMenu({ detail }: { detail: Detail }) {
           ...(admin
             ? [{ value: LOCK, label: detail.locked ? "Unlock" : "Lock", icon: <Icon name="lock" size={14} /> }]
             : []),
-          { value: PURGE, label: "Purge…", icon: <Icon name="trash" size={14} />, danger: true },
+          ...(mayPurge(detail.self, profile)
+            ? [{ value: PURGE, label: "Purge…", icon: <Icon name="trash" size={14} />, danger: true }]
+            : []),
         ]}
         onPick={(id) => {
           if (id === PURGE) setPurging(true);

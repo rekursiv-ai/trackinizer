@@ -703,6 +703,29 @@ test("Purge shows in the danger style in the inquiry's ⋯ menu", async () => {
   expect(screen.getByRole("option", { name: /^Add relation…/ }).classList.contains("danger")).toBe(false);
 });
 
+async function openActions(account: string, role: "writer" | "admin" = "writer") {
+  stubLayout();
+  serveDetails([detail(row("Issue", 1, { account }))]);
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, { profile: { ...PROFILE, role } });
+  await screen.findByRole("heading", { level: 1 });
+  await userEvent.click(screen.getByRole("button", { name: "Issue#1 actions" }));
+}
+
+test("Purge is not offered to a writer who is not the row's account", async () => {
+  await openActions("bob@example.com");
+  expect(screen.queryByRole("option", { name: "Purge…" })).toBeNull();
+});
+
+test("Purge is offered to the row's account, whatever the case of the address", async () => {
+  await openActions("ADA@example.com");
+  expect(screen.getByRole("option", { name: "Purge…" })).toBeTruthy();
+});
+
+test("Purge is offered to an admin on another account's row", async () => {
+  await openActions("bob@example.com", "admin");
+  expect(screen.getByRole("option", { name: "Purge…" })).toBeTruthy();
+});
+
 test("a locked inquiry wears a Locked badge, and an unlocked one does not", async () => {
   const locked = row("Issue", 1);
   serveDetails([detail(locked, { locked: true })]);

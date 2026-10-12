@@ -84,7 +84,9 @@ async def session_start_route(
     adopts whatever it was given.
 
     The session opens into the audience the caller's key is pinned to, else
-    ``open``. A pin the caller no longer holds is 403 ``audience_not_held``.
+    ``open``. A pin the caller no longer holds is 403 ``audience_not_held``. A
+    ``cli_session_id`` of a deleted science chat (``chat:<id>``) is 410
+    ``chat_deleted``.
 
     Args:
       body: Session metadata (title, cli, cli_session_id, started, rooms,
@@ -448,6 +450,7 @@ async def session_inbound_drain_route(
         if held
         else inbound.drain(session_id)
     )
+    inbound.hand_out(drained)
     return DrainInboundResponse(
         messages=[
             InboundDrainItem(

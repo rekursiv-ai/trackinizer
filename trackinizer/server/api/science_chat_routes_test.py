@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from functools import partial
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Final
 
 import asyncio
 import json
@@ -16,7 +18,7 @@ from treekle import from_plain, json_loads
 import pytest
 
 from trackinizer.lib.agent.types.sessions import AgentToAgentMessage
-from trackinizer.server.api import workspace_routes
+from trackinizer.server.api import science_chat_routes, workspace_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,
@@ -49,12 +51,21 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
+from trackinizer.server.chat_hub import ChatHub, WorkspaceFrame
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.route_iter import iter_routes
+from trackinizer.server.visuals.chat_forks import (
+    ChatRefusedError,
+    ForeignChatError,
+)
+from trackinizer.server.visuals.chat_shares import UnboundStation
+from trackinizer.server.visuals.workspaces import WorkspaceState
+from trackinizer.types.errors import ChatDeletedError
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_science_chat import (
     CHAT_HELPER_CLI,
     SCIENCE_CHAT_LABEL,
+    ChatSent,
     chat_session_id,
 )
 from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
@@ -63,9 +74,14 @@ from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from fastapi.testclient import TestClient
+
     import httpx2
 
+    from trackinizer.conftest import FakeEngine
+    from trackinizer.server.auth import AuthIdentity
     from trackinizer.server.store.core import Store
+    from trackinizer.wire.wire_science_chat import ChatSend
 
 
 type _Client = tuple[httpx2.AsyncClient, Store]
@@ -616,8 +632,8 @@ async def test_without_an_assistant_there_are_no_chats(
     assert (await client.get(f"/api/chats/{conversation}")).status_code == 404
 
 
-def test_no_route_deletes_or_edits_a_chat() -> None:
-    """Science chat is public and permanent: the routes only read and post."""
+def test_no_route_edits_a_chat_but_posting_sharing_and_deleting_it_whole() -> None:
+    """A chat's lines are its posters': no route rewrites one."""
     chat_routes = [
         (path, methods)
         for path, methods in iter_routes(app)
@@ -625,8 +641,132 @@ def test_no_route_deletes_or_edits_a_chat() -> None:
     ]
     assert sorted((path, sorted(methods)) for path, methods in chat_routes) == [
         ("/api/chats", ["POST"]),
+        ("/api/chats/{conversation_id}", ["DELETE"]),
         ("/api/chats/{conversation_id}", ["GET"]),
+        ("/api/chats/{conversation_id}/shares/{email}", ["DELETE"]),
+        ("/api/chats/{conversation_id}/shares/{email}", ["PUT"]),
     ]
+
+
+class TestShareAndDeleteAnswers:
+    """What the share and delete routes answer, with the store beneath them faked."""
+
+    def test_a_refused_line_answers_a_code_the_web_acts_on(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, _store, _engine = route_client
+        install_identity(make_test_identity(api_key_id=None))
+        monkeypatch.setattr(science_chat_routes, "send_chat_line", _refuse_the_line)
+
+        refused = [
+            client.post(
+                "/api/chats",
+                json={"workspace_id": str(uuid.uuid4()), "text": text},
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            )
+            for text in ("may I?", "again?")
+        ]
+
+        assert [(r.status_code, json_loads(r.content)) for r in refused] == [
+            (403, {"detail": {"code": "chat_not_shared", "message": "not yours"}}),
+            (410, {"detail": {"code": "chat_deleted", "message": "deleted"}}),
+        ]
+
+    def test_a_share_answers_the_list_and_a_refusal_its_code(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, _store, _engine = route_client
+        install_identity(make_test_identity(api_key_id=None))
+        monkeypatch.setattr(science_chat_routes, "set_share", _set_share_as_told)
+        chat = uuid.uuid4()
+
+        answers = [
+            client.put(f"/api/chats/{chat}/shares/Ada@Example.com"),
+            client.delete(f"/api/chats/{chat}/shares/ada@example.com"),
+            client.put(f"/api/chats/{chat}/shares/{_REFUSED}"),
+            client.delete(f"/api/chats/{chat}/shares/{_UNKNOWN}"),
+            client.put(f"/api/chats/{chat}/shares/not-an-email"),
+        ]
+
+        assert [r.status_code for r in answers] == [200, 200, 403, 404, 422]
+        assert [json_loads(r.content) for r in answers[:4]] == [
+            [f"Ada@Example.com shared in {chat}"],
+            [f"ada@example.com unshared in {chat}"],
+            {"detail": {"code": "chat_not_starter"}},
+            {"detail": "Conversation not found"},
+        ]
+
+    def test_a_delete_answers_204_and_tells_each_station_it_unbound(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, _store, _engine = route_client
+        install_identity(make_test_identity(api_key_id=None))
+        hub = ChatHub()
+        locked: list[list[uuid.UUID]] = []
+        monkeypatch.setattr(app.state, "hub", hub, raising=False)
+        monkeypatch.setattr(science_chat_routes, "read_conversation", _one_session)
+        monkeypatch.setattr(
+            science_chat_routes,
+            "require_unlocked",
+            partial(_record_lock, locked),
+        )
+        monkeypatch.setattr(science_chat_routes, "delete_chat", _delete_as_told)
+        monkeypatch.setattr(science_chat_routes, "read_workspace", _station_state)
+
+        with hub.subscribe(_STATION) as tab:
+            deleted = client.delete(f"/api/chats/{_DELETED}")
+            frame = tab.queue.get_nowait()
+        refused = client.delete(f"/api/chats/{uuid.uuid4()}")
+        unknown = client.delete(f"/api/chats/{_UNKNOWN_CHAT}")
+
+        assert (deleted.status_code, deleted.content) == (204, b"")
+        assert isinstance(frame, WorkspaceFrame)
+        assert (frame.state.id, frame.state.revision) == (_STATION, 7)
+        assert refused.status_code == 403
+        assert json_loads(refused.content) == {
+            "detail": {"code": "chat_has_other_posters"},
+        }
+        assert (unknown.status_code, json_loads(unknown.content)) == (
+            404,
+            {"detail": "Conversation not found"},
+        )
+        assert locked == [[_SESSION]] * 3
+
+    def test_an_agents_key_shares_nothing_and_deletes_only_what_it_opened(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, _store, _engine = route_client
+        monkeypatch.setattr(science_chat_routes, "set_share", _set_share_as_told)
+        monkeypatch.setattr(science_chat_routes, "delete_chat", _delete_as_told)
+        monkeypatch.setattr(science_chat_routes, "read_workspace", _station_state)
+        monkeypatch.setattr(
+            science_chat_routes,
+            "require_unlocked",
+            partial(_record_lock, []),
+        )
+
+        monkeypatch.setattr(science_chat_routes, "read_conversation", _one_session)
+        share = client.put(f"/api/chats/{_DELETED}/shares/ada@example.com")
+        foreign = client.delete(f"/api/chats/{_DELETED}")
+        monkeypatch.setattr(
+            science_chat_routes,
+            "read_conversation",
+            partial(_one_session, opened=True),
+        )
+        opened = client.delete(f"/api/chats/{_DELETED}")
+
+        assert [(r.status_code, json_loads(r.content)) for r in (share, foreign)] == [
+            (403, {"detail": "Browser session required"}),
+        ] * 2
+        assert opened.status_code == 204
 
 
 class _Stream:
@@ -1380,6 +1520,120 @@ async def test_only_the_owners_browser_chooses_the_partner(
     assert (await _state(client, workspace_id=workspace_id))[
         "partner_choice"
     ] == "shared"
+
+
+_REFUSED: Final = "no@example.com"
+_UNKNOWN: Final = "gone@example.com"
+_DELETED: Final = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
+_UNKNOWN_CHAT: Final = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000002")
+_STATION: Final = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000003")
+_SESSION: Final = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000004")
+_OWNER: Final = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000005")
+
+
+async def _refuse_the_line(
+    engine: object,
+    *,
+    body: ChatSend,
+    **line: object,
+) -> ChatSent:
+    """Refuse a line as an unshared chat does, or one asking again as a deleted one."""
+    del engine, line
+    if body.text == "again?":
+        raise ChatDeletedError("deleted")
+    raise ForeignChatError("not yours")
+
+
+async def _set_share_as_told(
+    engine: object,
+    *,
+    assistant: object,
+    caller: AuthIdentity,
+    conversation_id: uuid.UUID,
+    email: str,
+    shared: bool,
+) -> list[str] | None:
+    """Share or unshare as the email says: refuse one, find no chat for another."""
+    _check_served(engine, assistant=assistant, caller=caller)
+    if email == _REFUSED:
+        raise ChatRefusedError("chat_not_starter")
+    done = "shared" if shared else "unshared"
+    return None if email == _UNKNOWN else [f"{email} {done} in {conversation_id}"]
+
+
+async def _one_session(
+    conn: object,
+    *,
+    assistant: object,
+    caller: AuthIdentity,
+    conversation_id: uuid.UUID,
+    opened: bool = False,
+) -> SimpleNamespace:
+    """Find a chat of one session, whatever is asked."""
+    del conversation_id
+    _check_served(conn, assistant=assistant, caller=caller)
+    return SimpleNamespace(sessions=[_SESSION], opened=opened)
+
+
+async def _record_lock(
+    locked: list[list[uuid.UUID]],
+    request: object,
+    identity: AuthIdentity,
+    row_ids: list[uuid.UUID],
+    *,
+    include_peers: bool,
+) -> None:
+    """Note the rows a delete asks to be unlocked, with their peers."""
+    assert request is not None
+    assert include_peers
+    assert identity.email == TEST_USER_EMAIL
+    locked.append(list(row_ids))
+
+
+async def _delete_as_told(
+    store: object,
+    *,
+    assistant: object,
+    caller: AuthIdentity,
+    conversation_id: uuid.UUID,
+    inbound: object,
+) -> list[UnboundStation] | None:
+    """Delete one chat, find no other, and refuse the rest."""
+    _check_served(store, assistant=assistant, caller=caller)
+    assert isinstance(inbound, InboundQueue)
+    if conversation_id == _UNKNOWN_CHAT:
+        return None
+    if conversation_id != _DELETED:
+        raise ChatRefusedError("chat_has_other_posters")
+    return [UnboundStation(workspace_id=_STATION, user_id=_OWNER)]
+
+
+async def _station_state(
+    engine: object,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    inbound: object,
+    assistant: object,
+) -> WorkspaceState:
+    """Read a station, for its owner, as it stands after its chat was deleted."""
+    assert engine is not None
+    assert isinstance(inbound, InboundQueue)
+    assert (user_id, assistant) == (_OWNER, ASSISTANT_CONFIG.assistant)
+    return WorkspaceState(
+        id=workspace_id,
+        revision=7,
+        name="unnamed-workstream#1",
+        conversation_id=None,
+        page=None,
+        visuals=[],
+    )
+
+
+def _check_served(source: object, *, assistant: object, caller: AuthIdentity) -> None:
+    """Fail unless a fake got the database, the configured assistant and the caller."""
+    assert source is not None
+    assert (assistant, caller.email) == (ASSISTANT_CONFIG.assistant, TEST_USER_EMAIL)
 
 
 def _append(record: AgentToAgentMessage) -> dict[str, object]:

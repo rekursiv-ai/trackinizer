@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { type ChatHead, getChatHead, sendChatLine } from "../api/chats";
+import { CHAT_DELETED, CHAT_NOT_SHARED, type ChatHead, deleteChat, getChatHead, sendChatLine, shareChat, unshareChat } from "../api/chats";
 import { stationForChat } from "../api/stations";
 import { ApiError } from "../api/client";
 import { findRef, getDetail } from "../api/detail";
@@ -23,12 +23,16 @@ import { useStation } from "../stations/useStation";
 import { currentChatColumn, setChatHidden, setChatSide } from "./chatColumn";
 import { ChatFeed, ChatFeedContext } from "./chatFeed";
 import { OPENING } from "./chatRecords";
+import { ToastProvider } from "../ui/toast";
 import { AGREED } from "../api/testing";
 
 vi.mock("../api/chats", async (original) => ({
   ...(await original<typeof import("../api/chats")>()),
   getChatHead: vi.fn(),
   sendChatLine: vi.fn(),
+  shareChat: vi.fn(),
+  unshareChat: vi.fn(),
+  deleteChat: vi.fn(),
 }));
 vi.mock("../api/stations", () => ({ stationForChat: vi.fn() }));
 vi.mock("../api/workspaces", () => ({ getWorkspace: vi.fn() }));
@@ -80,7 +84,7 @@ afterEach(() => {
   stopTrail = () => {};
   cleanup();
   vi.restoreAllMocks();
-  for (const mock of [getChatHead, sendChatLine, stationForChat, getWorkspace, listSessionParts, readSessionRecords, getDetail, findRef]) vi.mocked(mock).mockReset();
+  for (const mock of [getChatHead, sendChatLine, shareChat, unshareChat, deleteChat, stationForChat, getWorkspace, listSessionParts, readSessionRecords, getDetail, findRef]) vi.mocked(mock).mockReset();
   sessions.clear();
   registered = [];
   localStorage.clear();
@@ -90,7 +94,7 @@ afterEach(() => {
 
 function head(conversation: string, account = ME, extra: Partial<ChatHead> = {}): ChatHead {
   return { conversation_id: conversation, session_id: `s-${conversation}`, title: "t", account, live: true,
-    forks: 0, forked_from: null, forks_on_typing: false, ...extra };
+    forks: 0, forked_from: null, forks_on_typing: false, shared_with: [], may_share: false, may_delete: false, ...extra };
 }
 function record(idx: number, kind: string, payload: { [field: string]: unknown }): SessionRecord {
   return { idx, kind, payload, text: "", context_id: null, timestamp: null, model: null, ciphertext: null } as unknown as SessionRecord;
@@ -125,11 +129,11 @@ function shell(
   const held = (next: WorkspaceState) => (opened ? { ...next, conversation_id: opened } : next);
   setStation(state.id);
   client.setQueryData(["workspace", state.id], held(state));
-  const ui = (pinned?: WorkspaceState) => <QueryClientProvider client={client}><MetaContext value={META}>
+  const ui = (pinned?: WorkspaceState) => <ToastProvider><QueryClientProvider client={client}><MetaContext value={META}>
     <ProfileContext value={{ ...PROFILE, ...options.profile }}><LiveContext value={live}>
       <ChatFeedContext value={feed}><HighlightContext value={highlights}>
         <Station pinned={pinned} />
-      </HighlightContext></ChatFeedContext></LiveContext></ProfileContext></MetaContext></QueryClientProvider>;
+      </HighlightContext></ChatFeedContext></LiveContext></ProfileContext></MetaContext></QueryClientProvider></ToastProvider>;
   const view = render(ui());
   return {
     feed, client, view, highlights,
@@ -233,10 +237,132 @@ test("Chat asks its partner: the box reads Ask <partner>", () => {
   expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toBe("Ask scout…");
 });
 
-test("the composer says chats are public to every user and cannot be deleted, and Chat offers no delete", () => {
+test("the composer says what is true in every mode: public to read, and whoever may not post forks it", async () => {
+  open("c1");
+  hold("c1", ...TALK);
   shell();
-  expect(screen.getByText(/public to every user and cannot be deleted/)).toBeTruthy();
-  expect(screen.queryByRole("button", { name: /delete|remove/i })).toBeNull();
+  await screen.findByText("a2");
+  expect(screen.getByText(/Public to read\. Whoever may not post here forks it instead\./)).toBeTruthy();
+  expect(document.body.textContent).not.toContain("cannot be deleted");
+});
+
+test("a chat I may neither share nor delete has neither button", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", GRACE));
+  shell();
+  await screen.findByText("a2");
+  expect(screen.queryByRole("button", { name: "Share" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+});
+
+test("Share lists who has the chat, adds an address, removes one, and reads the head again", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  let shared: string[] = [GRACE];
+  vi.mocked(getChatHead).mockImplementation(async () => head("c1", ME, { may_share: true, shared_with: shared }));
+  vi.mocked(shareChat).mockImplementation(async (_, who) => { shared = [...shared, who]; });
+  vi.mocked(unshareChat).mockImplementation(async (_, who) => { shared = shared.filter((each) => each !== who); });
+  shell();
+  await screen.findByText("a2");
+  fireEvent.click(await screen.findByRole("button", { name: "Share" }));
+  const panel = screen.getByRole("dialog", { name: "Share chat" });
+  expect(within(panel).getByText(GRACE)).toBeTruthy();
+  fireEvent.change(within(panel).getByRole("textbox", { name: "Email to share with" }), { target: { value: " Linus@Example.com " } });
+  fireEvent.click(within(panel).getByRole("button", { name: "Add" }));
+  await within(panel).findByText("Linus@Example.com");
+  expect(shareChat).toHaveBeenCalledWith("c1", "Linus@Example.com");
+  fireEvent.click(within(panel).getByRole("button", { name: `Remove ${GRACE}` }));
+  await waitFor(() => expect(within(panel).queryByText(GRACE)).toBeNull());
+  expect(unshareChat).toHaveBeenCalledWith("c1", GRACE);
+});
+
+test("a refused share says why in one toast line and keeps the address in the field", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_share: true }));
+  vi.mocked(shareChat).mockRejectedValue(new ApiError(403, "Only the starter shares a chat"));
+  shell();
+  await screen.findByText("a2");
+  fireEvent.click(await screen.findByRole("button", { name: "Share" }));
+  const field = screen.getByRole("textbox", { name: "Email to share with" });
+  fireEvent.change(field, { target: { value: "linus@example.com" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(await screen.findByText("Only the starter shares a chat")).toBeTruthy();
+  expect((field as HTMLInputElement).value).toBe("linus@example.com");
+});
+
+test("Delete asks first, Cancel deletes nothing, and Delete chat leaves the station with an empty chat", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_delete: true }));
+  vi.mocked(deleteChat).mockResolvedValue();
+  const { client } = shell();
+  await screen.findByText("a2");
+  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  expect(screen.getByText("Delete this chat? Its forks keep their copies.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByText(/Its forks keep their copies/)).toBeNull();
+  expect(deleteChat).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
+  await waitFor(() => expect(screen.queryByText("a2")).toBeNull());
+  expect(deleteChat).toHaveBeenCalledWith("c1");
+  expect(client.getQueryData<WorkspaceState>(["workspace", WORKSPACE_ID])?.conversation_id).toBeNull();
+  expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+});
+
+test("a share refused with chat_not_starter is said in words", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_share: true }));
+  vi.mocked(shareChat).mockRejectedValue(new ApiError(403, "403 Forbidden", "chat_not_starter"));
+  shell();
+  await screen.findByText("a2");
+  fireEvent.click(await screen.findByRole("button", { name: "Share" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Email to share with" }), { target: { value: "linus@example.com" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(await screen.findByText("Only the person who started this chat can do that.")).toBeTruthy();
+});
+
+test("a delete refused with chat_has_other_posters is said in words, and an unknown code keeps the server's detail", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_delete: true }));
+  vi.mocked(deleteChat).mockRejectedValueOnce(new ApiError(403, "403 Forbidden", "chat_has_other_posters"))
+    .mockRejectedValueOnce(new ApiError(403, "Locked by an admin", "locked"));
+  shell();
+  await screen.findByText("a2");
+  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
+  expect(await screen.findByText("Others have posted in this chat, so only an admin can delete it.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
+  expect(await screen.findByText("Locked by an admin")).toBeTruthy();
+});
+
+test("a workspace frame that drops the conversation leaves the station on an empty chat, and drops a fork picked in it", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  const { client } = shell();
+  await screen.findByText("a2");
+  fireEvent.click(forkButton("a1"));
+  expect(screen.getByText(/Your next message starts a fork/)).toBeTruthy();
+  await act(async () => client.setQueryData(["workspace", WORKSPACE_ID], { ...workspace, conversation_id: null, revision: 9 }));
+  await waitFor(() => expect(screen.queryByText("a2")).toBeNull());
+  expect(screen.queryByText(/Your next message starts a fork/)).toBeNull();
+});
+
+test("a refused delete says why in a toast and keeps the chat", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_delete: true }));
+  vi.mocked(deleteChat).mockRejectedValue(new ApiError(403, "Someone else has posted in this chat"));
+  shell();
+  await screen.findByText("a2");
+  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
+  expect(await screen.findByText("Someone else has posted in this chat")).toBeTruthy();
+  expect(screen.getByText("a2")).toBeTruthy();
 });
 
 test("a line shows pending, then the conversation's id at once, then its record once the assistant has opened the session", async () => {
@@ -714,7 +840,7 @@ test("typing in a chat of my own organisation joins it, and sends no fork", asyn
   vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
   shell();
   await screen.findByText("a2");
-  expect(screen.queryByText(/outside your organisation/)).toBeNull();
+  expect(screen.queryByText(/cannot post in this chat/)).toBeNull();
   await type("and so?");
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
   expect(vi.mocked(sendChatLine).mock.calls[0]![0]).toMatchObject({ conversationId: "c1" });
@@ -784,7 +910,7 @@ test("typing in a chat started outside my organisation forks it at its latest li
   vi.mocked(sendChatLine).mockResolvedValue(FORKED);
   shell();
   await screen.findByText("a2");
-  expect(screen.getByText(/outside your organisation/)).toBeTruthy();
+  expect(screen.getByText(/cannot post in this chat/)).toBeTruthy();
   await type("a question of my own");
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
   expect(vi.mocked(sendChatLine).mock.calls[0]![0]).toMatchObject({ conversationId: null, fork: { sessionId: "s-c1", part: 0, idx: 3 } });
@@ -821,7 +947,7 @@ test("a conversation cannot be typed into before its head says whose it is", asy
 test("a post the server refuses as outside the chat's organisation is sent again as a fork at its latest line", async () => {
   open("c1");
   hold("c1", ...TALK);
-  vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(403, "fork it")).mockResolvedValue(FORKED);
+  vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(403, "403 Forbidden", CHAT_NOT_SHARED)).mockResolvedValue(FORKED);
   shell();
   await screen.findByText("a2");
   await type("a question of my own");
@@ -834,15 +960,93 @@ test("a post the server refuses as outside the chat's organisation is sent again
   await waitFor(() => expect(currentStation().id).toBe("w-fork"), { interval: 1 });
 });
 
+test("a 403 that is not the chat's refusal of the poster is shown, never sent as a fork", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(sendChatLine).mockRejectedValue(new ApiError(403, "Viewers cannot post", "role"));
+  shell();
+  await screen.findByText("a2");
+  await type("a question");
+  expect((await screen.findByRole("alert")).textContent).toContain("Viewers cannot post");
+  expect(sendChatLine).toHaveBeenCalledOnce();
+});
+
+test("the box waits for the chat's lines, since a fork starts from the latest of them", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  let release: (records: SessionRecord[]) => void = () => {};
+  vi.mocked(readSessionRecords).mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+  shell();
+  await waitFor(() => expect(getChatHead).toHaveBeenCalled());
+  const box = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  await waitFor(() => expect(readSessionRecords).toHaveBeenCalled());
+  expect(box.disabled).toBe(true);
+  await act(async () => release(sessions.get("s-c1")!));
+  await screen.findByText("a2");
+  await waitFor(() => expect(box.disabled).toBe(false), { interval: 1 });
+});
+
+test("a post into a deleted chat lets it go and starts a new chat with the same line", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(410, "This chat was deleted; start a new one", CHAT_DELETED))
+    .mockResolvedValue({ conversation_id: "n1", session_id: null, workspace_id: WORKSPACE_ID });
+  const { client } = shell();
+  await screen.findByText("a2");
+  await type("still there?");
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledTimes(2), { interval: 1 });
+  const [[first], [second]] = vi.mocked(sendChatLine).mock.calls as [[object, string], [object, string]];
+  expect(first).toMatchObject({ conversationId: "c1" });
+  expect(second).toMatchObject({ text: "still there?", conversationId: null });
+  expect(second).not.toHaveProperty("fork");
+  await waitFor(() => expect(client.getQueryData<WorkspaceState>(["workspace", WORKSPACE_ID])?.conversation_id).toBe("n1"));
+});
+
+test("a fork of a deleted chat's line lets the chat go and starts a new chat with the line", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(410, "This chat was deleted; start a new one", CHAT_DELETED))
+    .mockResolvedValue({ conversation_id: "n1", session_id: null, workspace_id: WORKSPACE_ID });
+  const { client } = shell();
+  await screen.findByText("a2");
+  fireEvent.click(forkButton("a1"));
+  await type("a branch");
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledTimes(2), { interval: 1 });
+  const [[first], [second]] = vi.mocked(sendChatLine).mock.calls as [[object, string], [object, string]];
+  expect(first).toMatchObject({ conversationId: null, fork: { sessionId: "s-c1" } });
+  expect(second).toMatchObject({ text: "a branch", conversationId: null });
+  expect(second).not.toHaveProperty("fork");
+  await waitFor(() => expect(client.getQueryData<WorkspaceState>(["workspace", WORKSPACE_ID])?.conversation_id).toBe("n1"));
+  expect(screen.queryByText(/Your next message starts a fork/)).toBeNull();
+});
+
+test("opening a deleted chat by link says it was deleted", async () => {
+  vi.mocked(getDetail).mockResolvedValue({ self: { cli_session_id: "chat:c9", labels: ["science-chat"] } } as never);
+  vi.mocked(stationForChat).mockRejectedValue(new ApiError(410, "This chat was deleted; start a new one", CHAT_DELETED));
+  const { feed } = shell();
+  act(() => feed.continueIn("s9"));
+  expect(await screen.findByText("This chat was deleted; start a new one")).toBeTruthy();
+});
+
+test("a head read that says the chat is deleted (410) leaves the station on an empty chat, with no error to retry", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockRejectedValue(new ApiError(410, "This chat was deleted; start a new one", CHAT_DELETED));
+  const { client } = shell();
+  await waitFor(() => expect(client.getQueryData<WorkspaceState>(["workspace", WORKSPACE_ID])?.conversation_id).toBeNull());
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  expect(screen.queryByText("a2")).toBeNull();
+});
+
 test("a refused post in a chat with no stored line to fork after says why and is not sent again", async () => {
   open("c1");
   hold("c1");
   vi.mocked(getChatHead).mockResolvedValue(head("c1", GRACE));
-  vi.mocked(sendChatLine).mockRejectedValue(new ApiError(403, "started outside your organisation"));
+  vi.mocked(sendChatLine).mockRejectedValue(new ApiError(403, "403 Forbidden", CHAT_NOT_SHARED));
   shell();
   await waitFor(() => expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).disabled).toBe(false), { interval: 1 });
   await type("hello");
-  expect((await screen.findByRole("alert")).textContent).toContain("started outside your organisation");
+  expect((await screen.findByRole("alert")).textContent).toContain("403 Forbidden");
   expect(sendChatLine).toHaveBeenCalledOnce();
 });
 

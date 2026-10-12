@@ -4,8 +4,10 @@ A conversation is one open AgentSession whose ``cli_session_id`` is
 ``chat:<conversation id>`` and whose label is :data:`SCIENCE_CHAT_LABEL`. Its records
 are the people's lines (each from its poster), the assistant's tool calls and results,
 and its answers. There is no second store: the browser reads the session's records,
-anyone signed in as a writer may post a line, and the assistant opens the session when
-it first hears the conversation.
+its starter and the people they share it with post lines (and whoever else the
+server's setting lets), and the assistant opens the session when it first hears the
+conversation. A share names a person by email and follows the conversation, and the
+starter deletes the conversation while every person's line in it is theirs.
 
 A fork is a science chat of its own that starts from another's lines. It is a session
 with a ``produced_by`` edge to the original, labelled :data:`FORK_EDGE_LABEL` and
@@ -37,6 +39,7 @@ __all__ = [
     "CHAT_HELPER_CLI",
     "CHAT_PATH",
     "CHAT_SESSION_PREFIX",
+    "CHAT_SHARE_PATH",
     "FORK_EDGE_LABEL",
     "FORK_POINT_PREFIX",
     "POSTER_LABEL_PREFIX",
@@ -46,6 +49,7 @@ __all__ = [
     "ChatSend",
     "ChatSent",
     "chat_actor",
+    "chat_conversation_id",
     "chat_session_id",
     "fork_point_label",
     "poster_label",
@@ -54,6 +58,7 @@ __all__ = [
 
 CHATS_PATH: Final = "/api/chats"
 CHAT_PATH: Final = "/api/chats/{conversation_id}"
+CHAT_SHARE_PATH: Final = "/api/chats/{conversation_id}/shares/{email}"
 
 SCIENCE_CHAT_LABEL: Final = "science-chat"
 """The label every science chat session carries."""
@@ -91,6 +96,24 @@ def chat_session_id(conversation_id: uuid.UUID) -> str:
 
     """
     return f"{CHAT_SESSION_PREFIX}{conversation_id}"
+
+
+def chat_conversation_id(cli_session_id: str | None) -> uuid.UUID | None:
+    """Read the conversation out of a science chat session's ``cli_session_id``.
+
+    Args:
+      cli_session_id: A session's ``cli_session_id``, if it has one.
+
+    Returns:
+      conversation_id: The ``<id>`` of ``chat:<id>``; None for any other.
+
+    """
+    if cli_session_id is None or not cli_session_id.startswith(CHAT_SESSION_PREFIX):
+        return None
+    try:
+        return uuid.UUID(cli_session_id.removeprefix(CHAT_SESSION_PREFIX))
+    except ValueError:
+        return None
 
 
 def chat_actor(conversation_id: uuid.UUID) -> str:
@@ -218,4 +241,17 @@ class ChatHead(BaseModel):
 
     forks_on_typing: bool
     """Whether a line the caller types starts a fork instead of joining the chat:
-    the caller is not in the starter's organisation."""
+    the caller is not its starter, not one it is shared with, and not one the server's
+    setting lets continue it."""
+
+    shared_with: list[str]
+    """The emails the chat is shared with, oldest share first: each posts into it as
+    its starter does. Empty for anyone but the starter and an admin."""
+
+    may_share: bool
+    """Whether the caller may share the chat and stop sharing it: its starter, or an
+    admin."""
+
+    may_delete: bool
+    """Whether the caller may delete the chat: an admin, the key that opened it, or
+    its starter while every person's line in it is theirs."""

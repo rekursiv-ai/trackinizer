@@ -51,6 +51,8 @@ _LEFT_OUT: Final = frozenset(
         "machine_credentials",
         "machine_enrollments",
         "machines",
+        "science_chat_shares",
+        "science_chat_tombstones",
         "session_bodies",
         "session_ciphertext",
         "session_embeddings",

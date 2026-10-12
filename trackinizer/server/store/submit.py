@@ -9,6 +9,7 @@ through each item so a mixed-kind batch commits or rolls back atomically.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
@@ -27,6 +28,7 @@ from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
 )
+from trackinizer.server.store.deleted_chats import refuse_a_deleted_chat
 from trackinizer.server.store.edge import _EdgeMixin
 from trackinizer.server.store.edit import _EditMixin
 from trackinizer.server.values import canonical_strs
@@ -45,6 +47,7 @@ from trackinizer.wire.bodies import (
     SubmitWebResult,
     SubmitWebSearch,
 )
+from trackinizer.wire.wire_science_chat import chat_conversation_id
 
 
 if TYPE_CHECKING:
@@ -680,6 +683,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         actor: Inquiry.Actor = "system",
         conn: Conn | None = None,
     ) -> UUID:
+        conversation_id = chat_conversation_id(req.cli_session_id)
         return await self._submit_generic(
             req,
             kind="AgentSession",
@@ -700,6 +704,11 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 # the audience it granted, so no path can open a session by omission.
                 "agentsession_audience": audience,
             },
+            # A science chat's session starts under its conversation's lock, so a
+            # delete either takes it or leaves the tombstone this start then finds.
+            pre_insert=None
+            if conversation_id is None
+            else partial(refuse_a_deleted_chat, conversation_id=conversation_id),
             conn=conn,
         )
 

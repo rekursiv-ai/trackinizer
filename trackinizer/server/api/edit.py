@@ -29,7 +29,11 @@ from treekle import from_plain
 
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.locks import require_unlocked
-from trackinizer.server.api.session_access import require_session_row_write
+from trackinizer.server.api.session_access import (
+    require_row_account,
+    require_session_id_change,
+    require_session_row_write,
+)
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,
@@ -91,6 +95,15 @@ def _make_put(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON]]
     ) -> MutableJSON:
         await require_unlocked(request, identity, [target_id])
         await require_session_row_write(request, identity, target_id)
+        if route.column == "account":
+            await require_row_account(request, identity, target_id)
+        if route.column == "cli_session_id":
+            await require_session_id_change(
+                request,
+                identity,
+                target_id,
+                value=from_plain(body.value, str, default=None),
+            )
         store = get_store(request)
         if body.mode == "cas":
             change_id = await _run_compare_and_set(
@@ -149,6 +162,8 @@ def _make_delete(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSO
     ) -> MutableJSON:
         await require_unlocked(request, identity, [target_id])
         await require_session_row_write(request, identity, target_id)
+        if route.column == "cli_session_id":
+            await require_session_id_change(request, identity, target_id, value=None)
         store = get_store(request)
         change_id = await _clear_value(route, target_id, body, store, identity)
         return _mutation_response(target_id, change_id)

@@ -1,4 +1,4 @@
-"""Science chat routes: post a line, list a person's chats, find a conversation's session.
+"""Science chat routes: post a line, find a conversation's session, share it, delete it.
 
 A canvas Chat conversation is an AgentSession the assistant opens (see
 :mod:`trackinizer.wire.wire_science_chat`). A line posted here is queued for the
@@ -8,29 +8,41 @@ session, and every viewer of that session sees it arrive as a change to the sess
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, Response
 
-from trackinizer.server.api._deps import get_assistant, get_chat_orgs, get_inbound
+from trackinizer.server.api._deps import (
+    get_assistant,
+    get_chat_orgs,
+    get_hub,
+    get_inbound,
+    get_store,
+)
 from trackinizer.server.api._routes_shared import engine_of, require_browser
+from trackinizer.server.api.locks import require_unlocked
 from trackinizer.server.auth import AuthIdentity, require_role
+from trackinizer.server.chat_hub import WorkspaceFrame
 from trackinizer.server.inbound import IdempotencyReuseError
 from trackinizer.server.visuals.chat_forks import (
+    ChatRefusedError,
     ConversationTakenError,
     ForeignChatError,
 )
-from trackinizer.server.visuals.science_chats import read_head
+from trackinizer.server.visuals.chat_shares import delete_chat, set_share
+from trackinizer.server.visuals.science_chats import read_conversation, read_head
 from trackinizer.server.visuals.workspace_store import (
     PartnerBusyError,
     StationChatError,
     WorkspaceSessionUnavailableError,
+    read_workspace,
     send_chat_line,
 )
 from trackinizer.wire.wire_science_chat import (
     CHAT_PATH,
+    CHAT_SHARE_PATH,
     CHATS_PATH,
     ChatHead,
     ChatSend,
@@ -38,7 +50,15 @@ from trackinizer.wire.wire_science_chat import (
 )
 
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from trackinizer.server.visuals.chat_shares import UnboundStation
+
+
 router = APIRouter()
+
+ShareEmail = Annotated[str, Path(pattern=r"^[^@\s]+@[^@\s]+$", max_length=320)]
 
 
 @router.post(CHATS_PATH, response_model=ChatSent)
@@ -50,19 +70,22 @@ async def post_chat_line_route(
 ) -> ChatSent:
     """Post a line to a science chat, or start one, and queue it for the assistant.
 
-    Any signed-in writer in a chat's organisation may post into it; a viewer may not,
-    and a writer outside it is refused with 403 and forks it instead (``fork`` names the
-    line to start from), whether the chat is named by ``conversation_id`` or by the
-    ``Idempotency-Key`` of a post that names none; a fork whose key names a
-    conversation someone else began is refused with 409. A station holds one chat: its
-    first line binds the station to the line's conversation, and a line naming another
-    conversation is refused with 409, as is one for a conversation another station of
-    the poster holds. A fork goes to a new station, copied from the one it was sent
-    from and named in the answer's ``workspace_id``. The line's poster is the
-    attested identity, never anything in the body. The answer is
-    the conversation id at once: the conversation's session appears when the
-    assistant opens it, and ``GET /api/chats/{id}`` finds it. A retry under the same
-    key queues nothing again.
+    A chat's starter posts into it, as does each person it is shared with and anyone
+    the server's ``TRACKINIZER_CHAT_ORGS`` lets in; a viewer may not, and any other
+    writer is refused with 403 ``chat_not_shared`` and forks it instead (``fork``
+    names the line to start from), whether the chat is named by ``conversation_id``
+    or by the ``Idempotency-Key`` of a post that names none; a fork whose key names a
+    conversation someone else began is refused with 409. A line under the id of a
+    deleted chat, named or as a fork's key, or a fork from a line of one, is refused
+    with 410 ``chat_deleted``: no chat starts under that id again. A station holds one
+    chat: its first line binds the station to the line's conversation, and a line
+    naming another conversation is refused with 409, as is one for a conversation
+    another station of the poster holds. A fork goes to a new station, copied from
+    the one it was sent from and named in the answer's ``workspace_id``. The line's
+    poster is the attested identity, never anything in the body. The answer is the
+    conversation id at once: the conversation's session appears when the assistant
+    opens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key
+    queues nothing again.
 
     Args:
       body: The line, the poster's station, and the conversation to post into or the
@@ -92,7 +115,10 @@ async def post_chat_line_route(
             audiences=identity.read_audiences,
         )
     except ForeignChatError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "chat_not_shared", "message": str(error)},
+        ) from error
     except (
         WorkspaceSessionUnavailableError,
         PartnerBusyError,
@@ -116,6 +142,8 @@ async def read_chat_route(
 ) -> ChatHead:
     """Find a conversation's session; 404 until the assistant has opened it.
 
+    A chat that was deleted is 410 ``chat_deleted``.
+
     Args:
       conversation_id: The conversation.
       request: Request carrying the database engine.
@@ -124,17 +152,187 @@ async def read_chat_route(
 
     Returns:
       head: The session, its starter, whether the assistant still has it open, how
-        often it was forked, what it was forked from, and whether the caller's typing
-        forks it.
+        often it was forked, what it was forked from, whether the caller's typing
+        forks it, who it is shared with, and whether the caller may share or delete
+        it.
 
     """
     head = await read_head(
         engine_of(request),
         assistant=get_assistant(request),
-        email=identity.email,
+        caller=identity,
         conversation_id=conversation_id,
         orgs=get_chat_orgs(request),
     )
     if head is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return head
+
+
+@router.put(CHAT_SHARE_PATH, response_model=list[str])
+async def share_chat_route(
+    conversation_id: uuid.UUID,
+    email: ShareEmail,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
+) -> list[str]:
+    """Share a chat with one person, who then posts into it as its starter does.
+
+    Only the chat's starter or an admin shares it, from a browser: an API key is
+    403, and anyone else is 403 ``chat_not_starter``. Sharing again changes nothing.
+
+    Args:
+      conversation_id: The chat.
+      email: The person's email; stored lowercase.
+      request: Request carrying the database engine.
+      identity: The signed-in writer.
+
+    Returns:
+      shared_with: The chat's shares, oldest first.
+
+    """
+    return await _set_share(
+        request,
+        identity=identity,
+        conversation_id=conversation_id,
+        email=email,
+        shared=True,
+    )
+
+
+@router.delete(CHAT_SHARE_PATH, response_model=list[str])
+async def unshare_chat_route(
+    conversation_id: uuid.UUID,
+    email: ShareEmail,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
+) -> list[str]:
+    """Stop sharing a chat with one person: their next line forks it, their past stay.
+
+    Only the chat's starter or an admin unshares it, from a browser: an API key is
+    403, and anyone else is 403 ``chat_not_starter``. Unsharing a person it is not
+    shared with changes nothing.
+
+    Args:
+      conversation_id: The chat.
+      email: The person's email.
+      request: Request carrying the database engine.
+      identity: The signed-in writer.
+
+    Returns:
+      shared_with: The chat's shares, oldest first.
+
+    """
+    return await _set_share(
+        request,
+        identity=identity,
+        conversation_id=conversation_id,
+        email=email,
+        shared=False,
+    )
+
+
+@router.delete(CHAT_PATH, status_code=204)
+async def delete_chat_route(
+    conversation_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
+) -> Response:
+    """Delete a chat: every session of it with its records, its shares, its stations.
+
+    An admin deletes any chat, and so does the key that opened every session of it;
+    any other API key is 403, as only a person's browser deletes a chat otherwise.
+    Its starter deletes it while every person's line in it is theirs, a line a fork
+    copied counting as its original poster's and a line on its way in, queued or
+    taken by the assistant and not yet recorded, as posted; once someone else has
+    posted they are 403 ``chat_has_other_posters``, and anyone else is 403
+    ``chat_not_starter``. A session that is locked, or linked to a locked row, needs
+    an admin. Each station that held the chat holds none after, at its next
+    revision, and its open tabs get a ``workspace`` frame saying so. The chat's
+    forks stay, and so do its sessions' change log rows, without the titles and
+    descriptions they held. Its queued lines go, and its id starts no chat again: a
+    session, a line or a station under it is 410 ``chat_deleted``.
+
+    Args:
+      conversation_id: The chat.
+      request: Request carrying the store, the inbound queue and the event hub.
+      identity: The signed-in writer, or an API key.
+
+    Returns:
+      response: 204; 404 when the caller finds no such chat.
+
+    """
+    assistant = get_assistant(request)
+    store = get_store(request)
+    async with store.engine.acquire() as conn:
+        found = await read_conversation(
+            conn,
+            assistant=assistant,
+            caller=identity,
+            conversation_id=conversation_id,
+        )
+    if found is not None:
+        # An agent's key acts for its owner unseen, so only a person's browser deletes
+        # a chat, save the assistant's own key deleting the chat it opened.
+        if not found.opened:
+            require_browser(identity)
+        await require_unlocked(request, identity, found.sessions, include_peers=True)
+    try:
+        stations = await delete_chat(
+            store,
+            assistant=assistant,
+            caller=identity,
+            conversation_id=conversation_id,
+            inbound=get_inbound(request),
+        )
+    except ChatRefusedError as error:
+        raise HTTPException(status_code=403, detail={"code": error.code}) from error
+    if stations is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    await _publish_stations(request, stations=stations)
+    return Response(status_code=204)
+
+
+async def _set_share(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    conversation_id: uuid.UUID,
+    email: str,
+    shared: bool,
+) -> list[str]:
+    """Share a chat with ``email`` or stop, answering 403 and 404 as the routes do."""
+    require_browser(identity)
+    try:
+        shared_with = await set_share(
+            engine_of(request),
+            assistant=get_assistant(request),
+            caller=identity,
+            conversation_id=conversation_id,
+            email=email,
+            shared=shared,
+        )
+    except ChatRefusedError as error:
+        raise HTTPException(status_code=403, detail={"code": error.code}) from error
+    if shared_with is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return shared_with
+
+
+# Published after the delete commits, so a tab never reads a station still holding it.
+async def _publish_stations(
+    request: Request,
+    stations: Sequence[UnboundStation],
+) -> None:
+    """Send each station's open tabs a ``workspace`` frame without the deleted chat."""
+    hub = get_hub(request)
+    for station in stations:
+        state = await read_workspace(
+            engine_of(request),
+            user_id=station.user_id,
+            workspace_id=station.workspace_id,
+            inbound=get_inbound(request),
+            assistant=get_assistant(request),
+        )
+        if state is not None:
+            hub.publish(station.workspace_id, frame=WorkspaceFrame(state=state))

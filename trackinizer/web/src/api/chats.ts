@@ -33,6 +33,12 @@ export type ChatLine = {
 export const CHAT_SESSION_PREFIX = "chat:";
 export const SCIENCE_CHAT_LABEL = "science-chat";
 
+/** The 403 code of a post into a chat that does not take the poster; what was typed is then sent as a fork. */
+export const CHAT_NOT_SHARED = "chat_not_shared";
+
+/** The code (410) of a post, a head read or a station's for-chat switch that names a deleted chat; the chat is then let go and what was typed starts a new one. */
+export const CHAT_DELETED = "chat_deleted";
+
 /** The routing name the assistant opens a conversation's session under: `chat-` and the first twelve hex digits of its id. */
 export function chatHandleOf(conversationId: string): string {
   return `chat-${conversationId.replaceAll("-", "").slice(0, 12)}`;
@@ -83,5 +89,26 @@ export async function sendChatLine(line: ChatLine, key: string): Promise<ChatSen
       page: line.page, trail: [...line.trail],
     },
     signal,
+  }));
+}
+
+/** Let `email` post into a conversation. The head says who now has it. */
+export async function shareChat(id: string, email: string): Promise<void> {
+  await send(TIMEOUT_MS.write, undefined, (signal) => client.PUT("/api/chats/{conversation_id}/shares/{email}", {
+    params: { path: { conversation_id: id, email } }, signal,
+  }));
+}
+
+/** Stop `email` posting into a conversation; their earlier lines stay. */
+export async function unshareChat(id: string, email: string): Promise<void> {
+  await send(TIMEOUT_MS.write, undefined, (signal) => client.DELETE("/api/chats/{conversation_id}/shares/{email}", {
+    params: { path: { conversation_id: id, email } }, signal,
+  }));
+}
+
+/** Delete a whole conversation: its sessions, records and shares, and the station binding. Its forks keep their copies. */
+export async function deleteChat(id: string): Promise<void> {
+  await send(TIMEOUT_MS.write, undefined, (signal) => client.DELETE("/api/chats/{conversation_id}", {
+    params: { path: { conversation_id: id } }, signal,
   }));
 }

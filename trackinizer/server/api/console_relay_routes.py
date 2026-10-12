@@ -8,7 +8,11 @@ import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
-from trackinizer.server.api._deps import get_assistant, get_inbound
+from trackinizer.server.api._deps import (
+    get_assistant,
+    get_chat_orgs,
+    get_inbound,
+)
 from trackinizer.server.api._routes_shared import engine_of, require_browser
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.console_relay import relay_console_line
@@ -33,7 +37,8 @@ async def console_relay_route(
     accepted it. The partner records it in the station's chat as a line of the
     owner's that starts with ``→ `` and answers nothing, and reads it in its next
     prompt. A retry under the same key queues nothing again. A station without a
-    chat, or whose partner is not running or has too many unread lines, answers
+    chat, one whose chat the owner may not post into (bound to read it, not shared
+    with them), or whose partner is not running or has too many unread lines, answers
     ``delivered: false``: the agents are not told otherwise, so it is no error.
 
     Args:
@@ -58,6 +63,7 @@ async def console_relay_route(
         source_role=identity.role,
         inbound=get_inbound(request),
         assistant=get_assistant(request),
+        orgs=get_chat_orgs(request),
     )
     if delivered is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
