@@ -171,6 +171,31 @@ test("narrow, the rail stacks under the title and text, above other relations", 
   expect(rail!.y + rail!.height).toBeLessThanOrEqual(other!.y);
 });
 
+test("an HTML Artifact opens filling its record's pane, and the record follows below it", async ({ page, request }) => {
+  const [issue] = await create(request, [{ kind: "Issue", title: "An HTML report's issue" }]);
+  const published = await request.post("/api/artifacts/content", {
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    data: { issue_id: issue, title: "An HTML report", summary: "A report.", format: "html", html: "<p>report</p>" },
+  });
+  expect(published.ok(), await published.text()).toBe(true);
+  const { artifact_id: artifact } = (await published.json()) as { artifact_id: string };
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto(`/app/#/lookup/${artifact}`);
+  const frame = page.locator(".artifact-html-frame");
+  await expect(frame).toBeVisible();
+  await expect(heading(page)).toHaveText("An HTML report (revision 1)");
+  const sizes = await frame.evaluate((element) => {
+    const pane = element.closest(".d-scroll")!.getBoundingClientRect();
+    const box = element.getBoundingClientRect();
+    return { pane: [pane.left, pane.top, pane.width, pane.height], frame: [box.left, box.top, box.width, box.height] };
+  });
+  // The frame is the pane, edge to edge; the record's title waits below it.
+  sizes.frame.forEach((value, at) => expect(value).toBeCloseTo(sizes.pane[at]!, 0));
+  const title = (await heading(page).boundingBox())!;
+  expect(title.y).toBeGreaterThanOrEqual(sizes.frame[1]! + sizes.frame[3]!);
+  await expect(page.getByRole("link", { name: "Open full page" })).toHaveCount(0);
+});
+
 test("a description that is a job's JSON result shows as a JSON view, its metrics a table; code takes its colours", async ({
   page,
   request,

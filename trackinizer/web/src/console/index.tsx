@@ -45,6 +45,7 @@ import { MentionField } from "./MentionField";
 import { Minimap } from "./Minimap";
 import { parseLine, receipt, targetName } from "./send";
 import { useViews } from "./views";
+import { UNNAMED } from "../stations/cycle";
 import { useStation } from "../stations/useStation";
 import { useContinueInChat } from "../visuals/continueChat";
 import { ViewsSection } from "./ViewsRail";
@@ -81,12 +82,13 @@ export function ConsoleView() {
   const rail = usePanel(RAIL);
   useCommands([panelCommand(rail)]);
   const [active, setActive] = useState<Active>("1h");
-  // Opened inside a station, the console starts on that station's agents; one control widens it to every session.
+  // Opened inside a named station, the console starts on that station's agents; inside an unnamed one, on every
+  // session, as before stations. One control switches it, for the station it was switched in.
   // Only a user with the canvas has stations; the first read waits for the one this tab shows, so no feed is read unscoped first.
   const stationRead = useStation({ enabled: useProfile().visual_workspace_enabled });
   const station = stationRead.data ?? null;
-  const [widenedFor, setWidenedFor] = useState<string | null>(null);
-  const scoped = station !== null && widenedFor !== station.id;
+  const [scopeFor, setScopeFor] = useState<{ readonly id: string; readonly scoped: boolean } | null>(null);
+  const scoped = station !== null && (scopeFor?.id === station.id ? scopeFor.scoped : !UNNAMED.test(station.name));
   const stationId = scoped ? station.id : undefined;
   // The station's own chat is the Chat column, not an agent: widened, its lines are hidden and it is no target.
   const ownChat = station?.conversation_id ? chatHandleOf(station.conversation_id) : null;
@@ -206,10 +208,10 @@ export function ConsoleView() {
             <RangeControls key={JSON.stringify(view.range)} range={view.range} onRange={(range) => change({ ...view, range })} />
             {station ? (
               <div className="console-seg" role="group" aria-label="Scope">
-                <button type="button" aria-pressed={scoped} title="Only the agents this station's chat started" onClick={() => setWidenedFor(null)}>
+                <button type="button" aria-pressed={scoped} title="Only the agents this station's chat started" onClick={() => setScopeFor({ id: station.id, scoped: true })}>
                   This station
                 </button>
-                <button type="button" aria-pressed={!scoped} title="Every session" onClick={() => setWidenedFor(station.id)}>
+                <button type="button" aria-pressed={!scoped} title="Every session" onClick={() => setScopeFor({ id: station.id, scoped: false })}>
                   All sessions
                 </button>
               </div>

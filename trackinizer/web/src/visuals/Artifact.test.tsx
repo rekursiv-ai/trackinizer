@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
-import { Artifact, ArtifactContent, ArtifactPage, type ArtifactContentRevision } from "./Artifact";
+import { Artifact, ArtifactContent, ArtifactFrame, ArtifactPage, type ArtifactContentRevision } from "./Artifact";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -65,7 +65,7 @@ test("keeps section details closed while summaries and citation links stay visib
   expect(screen.getByText("favors · argues against (-0.5)")).toBeTruthy();
 });
 
-test("embeds custom HTML from the sandboxed page route and links to it as a full page", () => {
+test("embeds custom HTML from the sandboxed page route, with no full-page link", () => {
   const id = "0b6f7c1e-2f7a-4c55-9d7e-1f0e6b1d2a33";
   const artifact: ArtifactContentRevision = {
     ...structuredArtifact,
@@ -81,16 +81,32 @@ test("embeds custom HTML from the sandboxed page route and links to it as a full
   expect(frame.getAttribute("referrerpolicy")).toBe("no-referrer");
   expect(frame.getAttribute("src")).toBe(`/api/artifacts/${id}/html`);
   expect(frame.hasAttribute("srcdoc")).toBe(false);
-
-  const full = screen.getByRole("link", { name: "Open full page" });
-  expect(full.getAttribute("href")).toBe(`/api/artifacts/${id}/html`);
-  expect(full.getAttribute("target")).toBe("_blank");
-  expect(full.getAttribute("rel")).toBe("noopener noreferrer");
+  // A record's page opens it across the pane: no link to open it larger.
+  expect(screen.queryByRole("link", { name: "Open full page" })).toBeNull();
 });
 
-test("a structured Artifact has no full-page link", () => {
-  render(<ArtifactContent artifact={structuredArtifact} />);
-  expect(screen.queryByRole("link", { name: "Open full page" })).toBeNull();
+test("on a record's page an HTML Artifact's frame stands apart: the content leaves it out, and ArtifactFrame draws it alone", async () => {
+  const id = "0b6f7c1e-2f7a-4c55-9d7e-1f0e6b1d2a33";
+  const html = { ...structuredArtifact, artifact_id: id, format: "html" as const, html: "<p>page</p>" };
+  const content = render(<ArtifactContent artifact={html} framed={false} />);
+  expect(screen.getByRole("heading", { name: "Scaling directions" })).toBeTruthy();
+  expect(screen.queryByTitle("Scaling directions Artifact content")).toBeNull();
+  content.unmount();
+
+  stubFetch(() => Response.json(html));
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={queryClient}><ArtifactFrame id={id} /></QueryClientProvider>);
+  expect((await screen.findByTitle("Scaling directions Artifact content")).getAttribute("src")).toBe(`/api/artifacts/${id}/html`);
+  expect(screen.queryByRole("heading", { name: "Scaling directions" })).toBeNull();
+});
+
+test("ArtifactFrame draws nothing for a structured Artifact", async () => {
+  const id = "0b6f7c1e-2f7a-4c55-9d7e-1f0e6b1d2a33";
+  stubFetch(() => Response.json({ ...structuredArtifact, artifact_id: id, html: null }));
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { container } = render(<QueryClientProvider client={queryClient}><ArtifactFrame id={id} /></QueryClientProvider>);
+  await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+  expect(container.innerHTML).toBe("");
 });
 
 test("a shared link reads its exact revision and renders the artifact", async () => {

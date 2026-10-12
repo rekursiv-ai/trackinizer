@@ -853,6 +853,8 @@ test("Fork from here on an earlier line makes the next message a fork after it, 
   vi.mocked(sendChatLine).mockResolvedValue(FORKED);
   shell();
   await screen.findByText("a2");
+  // Only an answer forks: a line typed to the assistant has no button.
+  expect(within(screen.getByText("q1").closest("article")!).queryByRole("button", { name: "Fork from here" })).toBeNull();
   fireEvent.click(forkButton("a1"));
   expect((await screen.findByText(/Your next message starts a fork of this chat after/)).textContent).toContain("“a1”");
   await type("is a1 wrong?");
@@ -894,7 +896,7 @@ test("Cancel fork goes back to posting into the chat", async () => {
   vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
   shell();
   await screen.findByText("a2");
-  fireEvent.click(forkButton("q2"));
+  fireEvent.click(forkButton("a1"));
   fireEvent.click(await screen.findByRole("button", { name: "Cancel fork" }));
   expect(screen.queryByText(/Your next message starts a fork/)).toBeNull();
   await type("still here");
@@ -924,10 +926,10 @@ test("Fork from here in a chat outside my organisation forks after the line pick
   vi.mocked(sendChatLine).mockResolvedValue(FORKED);
   shell();
   await screen.findByText("a2");
-  fireEvent.click(forkButton("q1"));
-  await type("from the first line");
+  fireEvent.click(forkButton("a1"));
+  await type("from the first answer");
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
-  expect(vi.mocked(sendChatLine).mock.calls[0]![0]).toMatchObject({ fork: { part: 0, idx: 0 } });
+  expect(vi.mocked(sendChatLine).mock.calls[0]![0]).toMatchObject({ fork: { part: 0, idx: 1 } });
 });
 
 test("a conversation cannot be typed into before its head says whose it is", async () => {
@@ -1074,7 +1076,8 @@ test("a line still being sent, and a chat I cannot post in, offer no fork", asyn
   vi.mocked(sendChatLine).mockImplementation(() => new Promise(() => {}));
   const { view } = shell();
   await screen.findByText("a2");
-  expect(screen.getAllByRole("button", { name: "Fork from here" })).toHaveLength(4);
+  // One for each answer, a1 and a2.
+  expect(screen.getAllByRole("button", { name: "Fork from here" })).toHaveLength(2);
   await type("on its way");
   const pending = (await within(screen.getByRole("log")).findByText("on its way")).closest("article")!;
   expect(within(pending).queryByRole("button", { name: "Fork from here" })).toBeNull();

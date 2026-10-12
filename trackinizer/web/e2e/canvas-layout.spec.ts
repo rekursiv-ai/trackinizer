@@ -82,28 +82,34 @@ for (const { name, operations } of CASES) {
     await page.waitForTimeout(500);
     await page.screenshot({ path: `${SHOTS}/${name}-1280.png` });
     expect(await overflow(page)).toEqual([]);
+    // With a keyboard, Enter sends: no Send button.
+    await expect(page.getByRole("button", { name: "Send message" })).toBeHidden();
   });
 
-  test(`at 390 px the canvas is usable with ${name}: no sideways scroll, and the message box reachable`, async ({ page, request }) => {
-    await arrange(request, operations);
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto("/app/#/list/Issue");
-    await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
-    await page.waitForTimeout(500);
-    await page.screenshot({ path: `${SHOTS}/${name}-390.png` });
-    expect(await overflow(page)).toEqual([]);
-    const box = page.getByRole("textbox", { name: "Message" });
-    await box.scrollIntoViewIfNeeded();
-    const bounds = (await box.boundingBox())!;
-    expect(bounds.x).toBeGreaterThanOrEqual(0);
-    expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
-    expect(bounds.y + bounds.height).toBeLessThanOrEqual(844);
-    // Chat and the page, the two a phone mostly shows, fit the screen together: the send button is on it too.
-    if (name === "page-alone") {
-      const send = (await page.getByRole("button", { name: "Send message" }).boundingBox())!;
-      expect(send.y + send.height).toBeLessThanOrEqual(844);
-    }
-    await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
+  // A phone is a touch screen, the one place the Send button shows.
+  test.describe(() => {
+    test.use({ hasTouch: true });
+    test(`at 390 px the canvas is usable with ${name}: no sideways scroll, and the message box reachable`, async ({ page, request }) => {
+      await arrange(request, operations);
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto("/app/#/list/Issue");
+      await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
+      await page.waitForTimeout(500);
+      await page.screenshot({ path: `${SHOTS}/${name}-390.png` });
+      expect(await overflow(page)).toEqual([]);
+      const box = page.getByRole("textbox", { name: "Message" });
+      await box.scrollIntoViewIfNeeded();
+      const bounds = (await box.boundingBox())!;
+      expect(bounds.x).toBeGreaterThanOrEqual(0);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(844);
+      // Chat and the page, the two a phone mostly shows, fit the screen together: the send button is on it too.
+      if (name === "page-alone") {
+        const send = (await page.getByRole("button", { name: "Send message" }).boundingBox())!;
+        expect(send.y + send.height).toBeLessThanOrEqual(844);
+      }
+      await expect(page.getByRole("button", { name: "Send message" })).toBeVisible();
+    });
   });
 }
 

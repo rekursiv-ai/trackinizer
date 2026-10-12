@@ -41,6 +41,7 @@ import "../writes/writes.css";
 import "./detail.css";
 
 const ArtifactContent = lazy(() => import("../visuals/Artifact").then((module) => ({ default: module.ArtifactPage })));
+const ArtifactFrame = lazy(() => import("../visuals/Artifact").then((module) => ({ default: module.ArtifactFrame })));
 
 /** Which inquiry a detail shows: by kind and seq, or by id. */
 export type DetailTarget = { kind: string; seq: number } | { id: string };
@@ -162,6 +163,10 @@ function Page({ detail, stale, retry }: { detail: Detail; stale: Error | null; r
             </Bar>
           ) : null}
           <div className="d-scroll">
+            {/* An HTML Artifact opens as its own page, across the pane; the record follows below it. */}
+            {row.kind === "Artifact" && <Suspense fallback={null}>
+              <ArtifactFrame id={row.id} />
+            </Suspense>}
             <div className="d-grid">
               <div className="d-top">
                 <div className="d-main-inner">
@@ -186,7 +191,7 @@ function Page({ detail, stale, retry }: { detail: Detail; stale: Error | null; r
                     </TextEditor>
                   ))}
                   {row.kind === "Artifact" && <Suspense fallback={<p className="d-loading">Loading Artifact…</p>}>
-                    <ArtifactContent id={row.id} optional />
+                    <ArtifactContent id={row.id} optional framed={false} />
                   </Suspense>}
                   <Metrics row={row} />
                   <Transcript row={row} />

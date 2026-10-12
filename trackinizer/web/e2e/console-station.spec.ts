@@ -2,8 +2,8 @@ import type { APIRequestContext, Page } from "@playwright/test";
 import { resetCanvas } from "./canvasState";
 import { expect, streamOpened, test } from "./fixtures";
 
-// The console inside a station: it starts on the station's agents and one control
-// widens it to every session; a line sent to an agent is told to the station's chat
+// The console inside a station: a named one starts on the station's agents, an unnamed
+// one on every session, and one control switches it; a line sent to an agent is told to the station's chat
 // once, as a relay; and the chat draws that relay line as its own. The server here
 // has no assistant, so what the chat would answer is out of reach: the relay request
 // is intercepted, and the relay line is seeded as the chat's session record.
@@ -12,8 +12,11 @@ test.use({ canvas: true });
 
 const TAG = crypto.randomUUID().slice(0, 8);
 
+/** The station each test starts in: new, so unnamed. */
+let station = "";
+
 test.beforeEach(async ({ request }) => {
-  await resetCanvas(request);
+  station = await resetCanvas(request);
 });
 
 /** Start a session for agent `actor`, captured once, and polled as its `trax run` would poll it; its id. */
@@ -63,30 +66,43 @@ function watchFeed(page: Page): (string | null)[] {
   return reads;
 }
 
-test("the console opens on the station's agents, and All sessions widens it and This station narrows it again", async ({ page, request }) => {
+test("in a named station the console opens on the station's agents, and All sessions widens it and This station narrows it again", async ({ page, request }) => {
   const actor = `scope-${TAG}`;
   await startAgent(request, actor, "Agent outside the station.");
+  const renamed = await request.patch(`/api/workspaces/${station}`, { data: { name: `scope-${TAG}` } });
+  expect(renamed.ok(), await renamed.text()).toBe(true);
   const reads = watchFeed(page);
   await openConsole(page);
   const scope = page.getByRole("group", { name: "Scope" });
   await expect(scope.getByRole("button", { name: "This station" })).toHaveAttribute("aria-pressed", "true");
-  const station = reads.find((each) => each !== null)!;
-  expect(station).toMatch(/^[0-9a-f-]{36}$/);
   // Never read unscoped first: every read before the widening carries the station.
   expect(reads.every((each) => each === station)).toBe(true);
   // The agent was not started by the station's chat, so its line is not there.
   await expect(page.locator(".console-line", { hasText: "Agent outside the station." })).toHaveCount(0);
 
+  // A live refetch may still go out scoped while the click lands: from the first read in the new scope on, every read is in it.
   reads.length = 0;
   await scope.getByRole("button", { name: "All sessions" }).click();
   await expect(page.locator(".console-line", { hasText: "Agent outside the station." })).toBeVisible();
-  expect(reads.length).toBeGreaterThan(0);
-  expect(reads.every((each) => each === null)).toBe(true);
+  expect(reads).toContain(null);
+  expect(reads.slice(reads.indexOf(null)).every((each) => each === null), JSON.stringify(reads)).toBe(true);
 
   reads.length = 0;
   await scope.getByRole("button", { name: "This station" }).click();
   await expect(page.locator(".console-line", { hasText: "Agent outside the station." })).toHaveCount(0);
-  expect(reads.every((each) => each === station)).toBe(true);
+  expect(reads).toContain(station);
+  expect(reads.slice(reads.indexOf(station)).every((each) => each === station), JSON.stringify(reads)).toBe(true);
+});
+
+test("in an unnamed station the console opens on every session, as before stations", async ({ page, request }) => {
+  await startAgent(request, `unnamed-${TAG}`, "Agent of no station.");
+  const reads = watchFeed(page);
+  await openConsole(page);
+  const scope = page.getByRole("group", { name: "Scope" });
+  await expect(scope.getByRole("button", { name: "All sessions" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".console-line", { hasText: "Agent of no station." })).toBeVisible();
+  expect(reads.length).toBeGreaterThan(0);
+  expect(reads.every((each) => each === null)).toBe(true);
 });
 
 test("a line to an agent goes to it, then the station's chat is told once, under one key, with the agent that took it", async ({ page, request }) => {
@@ -102,7 +118,7 @@ test("a line to an agent goes to it, then the station's chat is told once, under
   await page.getByRole("group", { name: "Scope" }).getByRole("button", { name: "All sessions" }).click();
   await expect(page.locator(".console-line", { hasText: "Waiting for work." })).toBeVisible();
   await page.getByRole("textbox", { name: "Message" }).last().fill(`@${actor} rerun the suite`);
-  await page.getByRole("button", { name: "Send message" }).last().click();
+  await page.getByRole("textbox", { name: "Message" }).last().press("Enter");
   await expect(page.locator(".composer-receipt")).toHaveText("Sent to 1 session");
   expect(relays).toHaveLength(1);
   expect(relays[0]!.body).toEqual({ targets: [{ actor, room: null }], text: "rerun the suite" });
@@ -121,7 +137,7 @@ test("a chat that was not told is said quietly, and the console's box names its 
   await agents.getByRole("checkbox", { name: `quiet-*`, exact: true }).check();
   await expect(page.getByRole("textbox", { name: "Message" }).last()).toHaveAttribute("placeholder", new RegExp(`^Message ${actor}…`));
   await page.getByRole("textbox", { name: "Message" }).last().fill("hello");
-  await page.getByRole("button", { name: "Send message" }).last().click();
+  await page.getByRole("textbox", { name: "Message" }).last().press("Enter");
   await expect(page.locator(".composer-receipt")).toHaveText("Sent to 1 session; Chat not told");
 });
 

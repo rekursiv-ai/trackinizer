@@ -1,7 +1,7 @@
 import { type APIRequestContext, expect, type Page } from "@playwright/test";
 
-/** A new station, then the one changed last, which holds the page alone and no chat. */
-export async function resetCanvas(request: APIRequestContext): Promise<void> {
+/** A new station, then the one changed last, which holds the page alone and no chat; its id. */
+export async function resetCanvas(request: APIRequestContext): Promise<string> {
   const read = async <T>(response: { ok(): boolean; text(): Promise<string>; json(): Promise<unknown> }) => {
     expect(response.ok(), await response.text()).toBe(true);
     return (await response.json()) as T;
@@ -16,6 +16,7 @@ export async function resetCanvas(request: APIRequestContext): Promise<void> {
   for (const visual of state.visuals.filter((held) => held.type !== "trax.browse")) {
     await apply({ kind: "hide", instance_id: visual.id });
   }
+  return state.id;
 }
 
 /** Keep the page's event sources where the script can reach them. */

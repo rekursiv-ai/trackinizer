@@ -8,5 +8,10 @@
 .composer textarea::placeholder { color: var(--muted); }
 .composer-actions { display: flex; align-items: center; gap: 8px; }
 .composer-actions .btn:disabled { opacity: .5; }
+/* With a keyboard, Enter sends: the button stays for a touch screen, and the row goes while it holds nothing else (Retry). */
+@media (hover: hover) {
+  .composer-send { display: none; }
+  .composer-actions:not(:has(.btn:not(.composer-send))) { display: none; }
+}
 .composer [role="alert"] { font-size: 12px; color: var(--error-text); }
 .composer-receipt { font-size: 12px; color: var(--accent-hover); }

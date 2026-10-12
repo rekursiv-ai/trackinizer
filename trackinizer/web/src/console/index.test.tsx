@@ -784,6 +784,21 @@ test("opened inside a station, the console reads its agents only; All sessions w
   expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set(["w1"]));
 });
 
+test("opened inside an unnamed station, the console reads every session, as before stations; This station narrows it", async () => {
+  setStation("w1");
+  const sent = serve(undefined, EVENTS, { ...STATION, name: "unnamed-workstream#3" });
+  renderConsole(CANVAS_USER);
+  await lines(3);
+  const scope = within(screen.getByRole("group", { name: "Scope" }));
+  expect(scope.getByRole("button", { name: "All sessions" }).getAttribute("aria-pressed")).toBe("true");
+  expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set([null]));
+
+  sent.length = 0;
+  fireEvent.click(scope.getByRole("button", { name: "This station" }));
+  await waitFor(() => expect(stationOf(sent, "/api/web/feed").length).toBeGreaterThan(0));
+  expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set(["w1"]));
+});
+
 test("with no station there is no scope control and nothing is scoped", async () => {
   const sent = serve();
   renderConsole();

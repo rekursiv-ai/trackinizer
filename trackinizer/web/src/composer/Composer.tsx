@@ -25,7 +25,8 @@ export type FieldProps = {
  * whose answer was lost reaches the agent once; an edited draft, or the draft
  * sent to another `target`, takes a fresh key. Enter sends, and Shift+Enter (or
  * Enter while an input method composes) types a line break. Alt+Enter never sends:
- * it is Chat's full screen key. A failure keeps the
+ * it is Chat's full screen key. The Send button shows only on a touch screen
+ * (composer.css): with a keyboard, Enter is the way to send. A failure keeps the
  * draft and says `failure(error)`; a success empties the box and shows what
  * `send` resolved with. A draft `check` finds wrong (it names the problem, or
  * returns `""`) is not sent: the composer says why until the draft changes. Under a new `target`, the old key, failure and receipt
@@ -121,7 +122,7 @@ export function Composer({
         edit,
       )}
       <div className="composer-actions">
-        <button className="btn" type="submit" disabled={!enabled || !draft.trim() || sending.isPending}>
+        <button className="btn composer-send" type="submit" disabled={!enabled || !draft.trim() || sending.isPending}>
           Send message
         </button>
         {failed && sending.error && retryable(sending.error) ? (

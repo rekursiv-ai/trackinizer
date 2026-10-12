@@ -51,8 +51,8 @@ export function publicNotice(): string {
  *
  * Typing in a chat joins it, unless the chat was started outside the user's
  * organisation: then what they type starts a fork of their own, from its latest
- * line, and they land in it. "Fork from here" on any stored line does the same
- * from that line, in any chat; the next message sent starts the fork.
+ * line, and they land in it. "Fork from here" on any stored answer does the same
+ * from that answer, in any chat; the next message sent starts the fork.
  */
 export function Chat({ workspace }: { readonly workspace: WorkspaceState | null }) {
   const queryClient = useQueryClient();
@@ -389,7 +389,7 @@ const ChatLine = memo(function ChatLine({ line, me, station, kinds, onFork }: {
   /** The station's name, which the Terminal style's prompt shows. */
   readonly station: string;
   readonly kinds: readonly string[];
-  /** Pick this stored line as where a fork starts; absent where a fork cannot be started. */
+  /** Pick this stored answer as where a fork starts; absent where a fork cannot be started. */
   readonly onFork?: (at: LineAt, quote: string) => void;
 }) {
   const other = line.role === "user" && line.author !== null && line.author !== me;
@@ -404,7 +404,7 @@ const ChatLine = memo(function ChatLine({ line, me, station, kinds, onFork }: {
     {line.role === "assistant"
       ? <Markdown source={line.text} kinds={kinds} className="md chat-line-body" images={false} />
       : <p className="chat-line-body"><ChatPrompt author={line.author ?? me} station={station} />{line.text}</p>}
-    {onFork && at && <button className="btn ghost chat-line-fork" type="button" onClick={() => onFork(at, quoted(line.text))}>Fork from here</button>}
+    {onFork && at && line.role === "assistant" && <button className="btn ghost chat-line-fork" type="button" onClick={() => onFork(at, quoted(line.text))}>Fork from here</button>}
   </article>;
 });
 
