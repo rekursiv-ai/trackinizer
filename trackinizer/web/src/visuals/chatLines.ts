@@ -24,6 +24,8 @@ export type Line = {
   /** The poster's attested email for a person's line; null for an answer. */
   readonly author: string | null;
   readonly text: string;
+  /** When the record was written, ISO 8601; null for a line not yet stored, or a record with no time. */
+  readonly sentAt: string | null;
   /** Sent from this browser and not yet a record of the session. */
   readonly pending: boolean;
 };
@@ -68,14 +70,14 @@ export function readTranscript(parts: readonly ChatPart[]): Transcript {
       const payload = record.payload ?? {};
       if (record.kind === "AgentToAgentMessage" && text(payload.content).startsWith(RELAY_MARK)) {
         // News for the partner, not a question to it: no answer is owed, so the agent is no busier.
-        lines.push({ key, at: { part, idx: record.idx }, role: "relay", author: text(payload.sender) || null, text: text(payload.content), pending: false });
+        lines.push({ key, at: { part, idx: record.idx }, role: "relay", author: text(payload.sender) || null, text: text(payload.content), sentAt: record.timestamp ?? null, pending: false });
       } else if (record.kind === "AgentToAgentMessage") {
-        lines.push({ key, at: { part, idx: record.idx }, role: "user", author: text(payload.sender) || null, text: text(payload.content), pending: false });
+        lines.push({ key, at: { part, idx: record.idx }, role: "user", author: text(payload.sender) || null, text: text(payload.content), sentAt: record.timestamp ?? null, pending: false });
         working = "";
         pointing = false;
       } else if (record.kind === "AssistantMessage" && text(payload.content)) {
         if (pointing) pointed.add(key);
-        lines.push({ key, at: { part, idx: record.idx }, role: "assistant", author: null, text: text(payload.content), pending: false });
+        lines.push({ key, at: { part, idx: record.idx }, role: "assistant", author: null, text: text(payload.content), sentAt: record.timestamp ?? null, pending: false });
         working = null;
       } else if (record.kind === "ToolCall") {
         if (isHighlight(text(payload.name))) pointing = true;
@@ -100,7 +102,7 @@ export function withPending(
   const stored = transcript.lines.filter((line) => line.role === "user" && line.author === me).length;
   const waiting = pending
     .filter((line) => stored < line.baseline + 1)
-    .map((line): Line => ({ key: `${PENDING}${line.key}`, at: null, role: "user", author: me, text: line.text, pending: true }));
+    .map((line): Line => ({ key: `${PENDING}${line.key}`, at: null, role: "user", author: me, text: line.text, sentAt: null, pending: true }));
   return [...transcript.lines, ...waiting];
 }
 

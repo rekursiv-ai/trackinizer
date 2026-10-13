@@ -22,6 +22,7 @@ import { setStation, currentStation } from "../stations/store";
 import { useStation } from "../stations/useStation";
 import { currentChatColumn, setChatHidden, setChatSide } from "./chatColumn";
 import { ChatFeed, ChatFeedContext } from "./chatFeed";
+import { FOLLOW_UP_ASK } from "./chatFollowUp";
 import { OPENING } from "./chatRecords";
 import { ToastProvider } from "../ui/toast";
 import { AGREED } from "../api/testing";
@@ -1283,4 +1284,37 @@ test("in the Terminal style a user's line, mine or another's, follows a shell pr
   expect(prompts).toEqual(["ada@localhost:[unnamed-workstream#1]$ my question", "grace@localhost:[unnamed-workstream#1]$ and mine"]);
   act(() => chooseChatStyle("default"));
   expect(document.querySelector(".chat-prompt")).toBeNull();
+});
+
+test("a recap whose last answer proposes a next experiment offers to launch it, sending the canned ask", async () => {
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  open("c1");
+  hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nThe climb held.\n\n## Next experiment\nRaise the effort to high."));
+  shell();
+  const launch = await screen.findByRole("button", { name: "Launch the follow-up" });
+  fireEvent.click(launch);
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
+  expect(vi.mocked(sendChatLine).mock.calls[0]![0].text).toBe(FOLLOW_UP_ASK);
+});
+
+test("a plain last answer offers no follow-up", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "and then?"), answered(1, "The run plateaued; nothing new to try."));
+  shell();
+  await screen.findByText("The run plateaued; nothing new to try.");
+  expect(screen.queryByRole("button", { name: "Launch the follow-up" })).toBeNull();
+});
+
+test("hovering a stored line shows when it was sent, in the reader's own time; a line still being sent shows none", async () => {
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  open("c1");
+  hold("c1", { ...said(0, ME, "my question"), timestamp: "2026-10-13T11:50:00Z" } as SessionRecord);
+  shell();
+  const line = (await screen.findByText("my question")).closest("article")!;
+  expect(line.getAttribute("title")).toMatch(/^Sent .*2026/);
+  await type("still sending");
+  await screen.findByText("still sending");
+  const pending = document.querySelector(".chat-line-pending");
+  expect(pending).not.toBeNull();
+  expect(pending!.getAttribute("title")).toBeNull();
 });

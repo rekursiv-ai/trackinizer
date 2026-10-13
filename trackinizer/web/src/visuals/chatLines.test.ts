@@ -15,9 +15,17 @@ test("a person's line is a message from its poster, an answer an assistant messa
   const { lines } = readTranscript(parts(said(0, "ada@example.com", "what is X?"), call(1, "SearchRecords"), result(2), answer(3, "X is Y."),
     record(4, "TurnContext", {}), answer(5, "")));
   expect(lines).toEqual([
-    { key: "0:0", at: { part: 0, idx: 0 }, role: "user", author: "ada@example.com", text: "what is X?", pending: false },
-    { key: "0:3", at: { part: 0, idx: 3 }, role: "assistant", author: null, text: "X is Y.", pending: false },
+    { key: "0:0", at: { part: 0, idx: 0 }, role: "user", author: "ada@example.com", text: "what is X?", sentAt: null, pending: false },
+    { key: "0:3", at: { part: 0, idx: 3 }, role: "assistant", author: null, text: "X is Y.", sentAt: null, pending: false },
   ]);
+});
+
+test("a stored line carries when its record was written; a line still being sent carries none", () => {
+  const at = record(0, "AgentToAgentMessage", { sender: "ada", content: "hi" });
+  const stored = readTranscript(parts({ ...at, timestamp: "2026-10-13T11:50:00Z" } as SessionRecord));
+  expect(stored.lines.map((line) => line.sentAt)).toEqual(["2026-10-13T11:50:00Z"]);
+  const sending = withPending(stored, [{ key: "k", text: "more", conversationId: "c", baseline: 1 }], { me: "ada" });
+  expect(sending.at(-1)?.sentAt).toBeNull();
 });
 
 test("an answer is pointed when its turn called the Highlight tool, whatever prefix a host gives it", () => {

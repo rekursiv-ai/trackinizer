@@ -21,6 +21,7 @@ import { Icon } from "../ui/icons";
 import { type ChatPart, type Line, type LineAt, linesThrough, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
 import { chatRecordsKey, OPENING, readChatParts, useLiveChat } from "./chatRecords";
 import { useChatFeed } from "./chatFeed";
+import { FOLLOW_UP_ASK, followUpSuggested } from "./chatFollowUp";
 import { flipChatSide, setChatHidden, useChatColumn } from "./chatColumn";
 import { useAnswerHighlights } from "./chatHighlights";
 import { ChatPrompt } from "./ChatPrompt";
@@ -108,6 +109,16 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   }, [sentAt]);
 
   const pickFork = useCallback((at: LineAt, quote: string) => setForkAt({ ...at, quote }), []);
+  // "Launch the follow-up" on a recap sends the canned ask as any typed line would, through the latest
+  // `send` (a fresh closure each render); a ref keeps the handler's identity stable, and a guard drops a
+  // second press while the first is on its way.
+  const sendRef = useRef<(text: string, key: string) => Promise<string>>(() => Promise.resolve(""));
+  const launching = useRef(false);
+  const launchFollowUp = useCallback(async () => {
+    if (launching.current) return;
+    launching.current = true;
+    try { await sendRef.current(FOLLOW_UP_ASK, newUuid()); } finally { launching.current = false; }
+  }, []);
   const stored = lines.filter((line) => !line.pending);
   const forks = head.data?.forks_on_typing === true;
   const latest = stored.at(-1)?.at ?? null;
@@ -264,6 +275,10 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
     }
   }
 
+  sendRef.current = send;
+  // The last line, when it is a stored recap and posting is open, may carry a "keep going" button.
+  const followUpKey = live && last && !last.pending && last.role === "assistant" ? last.key : null;
+
   return (
     <section className="chat-panel" aria-label="Chat">
       <header className="chat-head">
@@ -312,7 +327,8 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
         {head.data && head.data.forks > 0 && <p className="chat-note">{forkedTimes(head.data.forks)}</p>}
         {forks && <p className="chat-note" role="status">You cannot post in this chat, so what you type
           starts a fork of your own from its latest line.</p>}
-        {lines.map((line) => <ChatLine key={line.key} line={line} me={me} station={workspace?.name ?? ""} kinds={kinds} onFork={live && head.data ? pickFork : undefined} />)}
+        {lines.map((line) => <ChatLine key={line.key} line={line} me={me} station={workspace?.name ?? ""} kinds={kinds}
+          onFork={live && head.data ? pickFork : undefined} onFollowUp={line.key === followUpKey ? launchFollowUp : undefined} />)}
         {/* One working line, the last tool call's name, in place of a status the partner no longer sends. */}
         {statusText && <p className="chat-status" role="status">{statusText}</p>}
         {workspace && writing && !live && !loading && <ChatOff local={workspace.partner_choice === "local"} />}
@@ -383,7 +399,7 @@ function ChatOff({ local }: { readonly local: boolean }) {
  * so the panel's renders (a status, the canvas around it) leave each line's
  * Markdown alone unless its text changed. A line by someone else says who.
  */
-const ChatLine = memo(function ChatLine({ line, me, station, kinds, onFork }: {
+const ChatLine = memo(function ChatLine({ line, me, station, kinds, onFork, onFollowUp }: {
   readonly line: Line;
   readonly me: string;
   /** The station's name, which the Terminal style's prompt shows. */
@@ -391,22 +407,34 @@ const ChatLine = memo(function ChatLine({ line, me, station, kinds, onFork }: {
   readonly kinds: readonly string[];
   /** Pick this stored answer as where a fork starts; absent where a fork cannot be started. */
   readonly onFork?: (at: LineAt, quote: string) => void;
+  /** Launch the follow-up a recap proposes; absent where none is offered on this line. */
+  readonly onFollowUp?: () => void;
 }) {
   const other = line.role === "user" && line.author !== null && line.author !== me;
   const at = line.at;
+  // Hovering a line shows when it was sent, in the reader's own time zone.
+  const when = line.sentAt ? sentWhen(line.sentAt) : undefined;
   if (line.role === "relay") {
     // What the person told agents from the Console: "you → lead-2: text", neither a message to the partner nor an answer.
     const who = line.author === null || line.author === me ? "you" : line.author.split("@")[0];
-    return <article className="chat-line chat-line-relay"><p className="chat-line-body">{who} {line.text}</p></article>;
+    return <article className="chat-line chat-line-relay" title={when}><p className="chat-line-body">{who} {line.text}</p></article>;
   }
-  return <article className={`chat-line chat-line-${line.role}${other ? " chat-line-other" : ""}${line.pending ? " chat-line-pending" : ""}`}>
+  return <article className={`chat-line chat-line-${line.role}${other ? " chat-line-other" : ""}${line.pending ? " chat-line-pending" : ""}`} title={when}>
     {other && <span className="chat-line-author">{line.author}</span>}
     {line.role === "assistant"
       ? <Markdown source={line.text} kinds={kinds} className="md chat-line-body" images={false} />
       : <p className="chat-line-body"><ChatPrompt author={line.author ?? me} station={station} />{line.text}</p>}
+    {onFollowUp && line.role === "assistant" && followUpSuggested(line.text)
+      && <button className="btn chat-line-followup" type="button" onClick={onFollowUp}>Launch the follow-up</button>}
     {onFork && at && line.role === "assistant" && <button className="btn ghost chat-line-fork" type="button" onClick={() => onFork(at, quoted(line.text))}>Fork from here</button>}
   </article>;
 });
+
+/** When a line was sent, in the reader's own time zone, for the hover title; "" for a time that will not parse. */
+function sentWhen(iso: string): string {
+  const at = new Date(iso);
+  return Number.isNaN(at.getTime()) ? "" : `Sent ${at.toLocaleString()}`;
+}
 
 /** The start of a line, on one line, for the banner that says where a fork starts. */
 function quoted(text: string): string {

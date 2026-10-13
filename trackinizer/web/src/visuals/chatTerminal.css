@@ -39,6 +39,8 @@
 :root[data-chat-style="terminal"] .chat-panel .chat-line-relay, :root[data-chat-style="terminal"] .chat-panel .chat-line-relay * { color: var(--t-bright-black); }
 /* Fork from here is always there (no hover effects), so it is plain text flush under its line, unboxed, in the notes' white. */
 :root[data-chat-style="terminal"] .chat-panel .chat-line-fork { margin-top: 0; padding: 0; border: 0; color: var(--t-white); }
+/* Keep going reads as a prompt in the terminal: unboxed, flush, in the green a command is typed in. */
+:root[data-chat-style="terminal"] .chat-panel .chat-line-followup { margin-top: 0; padding: 0; border: 0; color: var(--t-bright-green); background: transparent; }
 :root[data-chat-style="terminal"] .chat-panel .chat-prompt strong { color: var(--t-bright-green); font-weight: bold; }
 :root[data-chat-style="terminal"] .chat-panel .chat-prompt .chat-prompt-station { color: var(--t-bright-yellow); }
 :root[data-chat-style="terminal"] .chat-panel .chat-note, :root[data-chat-style="terminal"] .chat-panel .chat-status, :root[data-chat-style="terminal"] .chat-panel .chat-notice, :root[data-chat-style="terminal"] .chat-panel .chat-fork-banner, :root[data-chat-style="terminal"] .chat-panel .chat-record-context, :root[data-chat-style="terminal"] .chat-panel .composer label { color: var(--t-white); font-style: normal; }

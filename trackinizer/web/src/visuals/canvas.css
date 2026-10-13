@@ -53,6 +53,9 @@
 .chat-line-author { display: block; margin-bottom: 3px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .chat-notice { margin: 0; padding: 6px 12px 0; color: var(--muted); font-size: 11px; }
 .chat-line-body { margin: 0; }
+/* A recap's "keep going": shown at once, not on hover, since it is the message's call to action. */
+.chat-line-followup { display: inline-flex; margin-top: 8px; padding: 3px 10px; border: 1px solid var(--accent); border-radius: 7px; color: var(--accent-hover); background: transparent; font-size: 12px; }
+.chat-line-followup:hover { background: var(--accent-soft); }
 /* Seen on hover or focus, and always where there is no hover to find it by. */
 .chat-line-fork { display: block; margin-top: 4px; padding: 0; font-size: 11px; opacity: 0; }
 .chat-line:hover .chat-line-fork, .chat-line:focus-within .chat-line-fork { opacity: 1; }
