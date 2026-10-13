@@ -19,6 +19,7 @@ from trackinizer.server.visuals.reports import (
     publish_artifact_content,
     read_artifact_content,
 )
+from trackinizer.wire.artifact_html import CONTENT_SECURITY_POLICY
 
 
 router = APIRouter()
@@ -124,41 +125,15 @@ async def read_artifact_html_route(
     artifact = await read_artifact_content(get_store(request), artifact_id)
     if artifact is None or artifact.html is None:
         raise HTTPException(status_code=404, detail="HTML Artifact not found.")
-    # The script and font allowlist matches Claude Sites, so a page built for
-    # Claude Sites works here. ``connect-src 'none'`` keeps ``fetch`` from
-    # reaching anything, and ``frame-ancestors 'self'`` lets only Trackinizer
-    # embed it. ``private``: no shared cache may keep team content.
-    # ``no-transform``: without it Cloudflare rewrites email-shaped text such as
+    # ``private``: no shared cache may keep team content. ``no-transform``:
+    # without it Cloudflare rewrites email-shaped text such as
     # ``user:%s@github.com`` into "[email protected]" and injects decoder and
     # bot-detection scripts this policy blocks, so viewers see and copy broken
     # text. Compression survives: caddy compresses before Cloudflare.
     return HTMLResponse(
         artifact.html,
         headers={
-            "Content-Security-Policy": "; ".join(
-                [
-                    "sandbox allow-scripts allow-popups",
-                    "default-src 'none'",
-                    "base-uri 'none'",
-                    "connect-src 'none'",
-                    "font-src data: https://fonts.gstatic.com",
-                    "form-action 'none'",
-                    "frame-ancestors 'self'",
-                    "frame-src 'none'",
-                    "img-src data: blob:",
-                    "manifest-src 'none'",
-                    "media-src data: blob:",
-                    "object-src 'none'",
-                    (
-                        "script-src 'unsafe-inline' 'unsafe-eval' "
-                        "https://cdnjs.cloudflare.com "
-                        "https://cdn.jsdelivr.net/npm/ https://unpkg.com "
-                        "https://cdn.tailwindcss.com https://code.jquery.com"
-                    ),
-                    "style-src 'unsafe-inline' https://fonts.googleapis.com",
-                    "worker-src 'none'",
-                ],
-            ),
+            "Content-Security-Policy": CONTENT_SECURITY_POLICY,
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
             "Cache-Control": "private, no-transform",
