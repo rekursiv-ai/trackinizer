@@ -903,6 +903,6 @@ def test_line_reader_supports_lines_equals_and_rejects_dash_paths() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

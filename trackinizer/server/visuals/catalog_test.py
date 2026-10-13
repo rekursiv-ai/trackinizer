@@ -164,6 +164,6 @@ def test_parameter_bounds_that_do_not_apply_to_the_type_are_rejected(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

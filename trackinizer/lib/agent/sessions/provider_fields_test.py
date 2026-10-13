@@ -22,6 +22,6 @@ def test_a_mistyped_value_reads_as_none_when_the_default_is_none() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

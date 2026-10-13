@@ -161,6 +161,6 @@ def test_a_captured_session_survives_the_json_round_trip(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

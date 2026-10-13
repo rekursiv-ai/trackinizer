@@ -323,6 +323,6 @@ async def test_a_pinned_key_may_revoke_a_key_pinned_inside_its_open_set(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

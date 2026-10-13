@@ -88,6 +88,6 @@ def test_a_parent_filter_is_refused_rather_than_read_off_the_row() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

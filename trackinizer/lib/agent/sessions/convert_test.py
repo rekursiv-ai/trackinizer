@@ -916,6 +916,6 @@ def test_a_streamed_json_rewrite_is_exact_by_content(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

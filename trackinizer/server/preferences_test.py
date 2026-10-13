@@ -325,6 +325,6 @@ def test_a_value_past_its_bound_or_type_is_refused(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

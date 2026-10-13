@@ -5699,6 +5699,6 @@ def _json_objects(response: httpx2.Response) -> list[dict[str, object]]:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

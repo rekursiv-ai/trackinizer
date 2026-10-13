@@ -218,6 +218,6 @@ def test_cached_builder_never_constructs_uncached_weights(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

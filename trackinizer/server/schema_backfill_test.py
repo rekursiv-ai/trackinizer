@@ -339,6 +339,6 @@ async def test_a_mixed_session_keeps_its_parts_separate(store: Store) -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -769,6 +769,6 @@ def test_actor_display_uses_system_and_omits_redundant_principal() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

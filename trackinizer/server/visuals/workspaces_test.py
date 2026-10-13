@@ -500,6 +500,6 @@ def test_a_show_without_a_record_is_never_refused_for_one() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

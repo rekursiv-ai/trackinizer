@@ -198,6 +198,6 @@ async def test_pglite_engine_cache_fixture_closes_cache(tmp_path: Path) -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

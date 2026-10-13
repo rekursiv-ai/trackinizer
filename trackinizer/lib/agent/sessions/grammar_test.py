@@ -318,6 +318,6 @@ def test_a_session_rewrites_to_the_bytes_it_was_read_from(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -73,6 +73,6 @@ def test_grammar_rejects_bare_open_range() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

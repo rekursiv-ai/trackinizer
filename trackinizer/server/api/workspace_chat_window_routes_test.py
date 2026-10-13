@@ -142,6 +142,6 @@ async def test_hiding_chat_pushes_one_frame_and_changes_no_revision(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

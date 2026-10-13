@@ -703,6 +703,6 @@ def test_every_route_that_reaches_session_content_is_registered() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

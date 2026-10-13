@@ -29,9 +29,9 @@ import pytest_asyncio
 
 from trackinizer.lib import postgres
 from trackinizer.lib.postgres import DatabaseEngine
-from trackinizer.lib.testing.resource_markers import pytest_collection_modifyitems
-from trackinizer.lib.testing.userdirs_fixture import (
+from trackinizer.lib.testing.resources import (
     isolate_user_dirs,
+    pytest_collection_modifyitems,
     pytest_configure,
 )
 from trackinizer.server.embedders.stub import StubEmbedder

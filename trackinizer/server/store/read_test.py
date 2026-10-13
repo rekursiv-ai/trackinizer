@@ -595,6 +595,6 @@ class TestUnboundableRegexRefusal:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

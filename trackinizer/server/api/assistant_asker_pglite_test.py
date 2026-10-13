@@ -323,6 +323,6 @@ async def test_a_blank_asker_is_not_a_request(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

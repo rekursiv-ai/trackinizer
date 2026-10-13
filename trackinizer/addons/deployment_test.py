@@ -342,6 +342,6 @@ async def _crash_late(*, attempts: list[int], fifth_attempt: asyncio.Event) -> N
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

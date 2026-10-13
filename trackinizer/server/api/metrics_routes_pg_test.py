@@ -90,6 +90,6 @@ async def test_rank_filter_regex_stops_at_the_statement_timeout(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

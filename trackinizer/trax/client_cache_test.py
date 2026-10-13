@@ -29,6 +29,6 @@ def test_target_still_keys_on_the_api_key() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

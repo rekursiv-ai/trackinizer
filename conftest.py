@@ -23,7 +23,7 @@ from typing import Final
 
 import importlib
 
-from trackinizer.lib.testing.threads import cap_math_threads
+from trackinizer.lib.testing.resources import cap_math_threads
 
 
 cap_math_threads()

@@ -174,6 +174,6 @@ async def test_dimensionless_column_holds_the_seeded_vectors(store: Store) -> No
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

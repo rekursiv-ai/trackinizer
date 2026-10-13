@@ -54,6 +54,6 @@ def test_logistic_matches_the_reference_form_where_it_computes() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

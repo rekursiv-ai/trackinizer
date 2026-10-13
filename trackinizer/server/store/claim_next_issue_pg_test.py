@@ -99,6 +99,6 @@ async def test_32_true_concurrent_claimants_on_4_issues_exactly_4_win(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

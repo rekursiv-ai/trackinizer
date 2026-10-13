@@ -147,6 +147,6 @@ def test_the_fork_is_linked_to_its_original_with_the_fork_point() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

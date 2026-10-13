@@ -731,6 +731,6 @@ async def test_a_pin_the_owner_lost_still_files_rows_that_are_not_sessions(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

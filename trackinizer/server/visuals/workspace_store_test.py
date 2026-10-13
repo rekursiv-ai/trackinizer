@@ -243,6 +243,6 @@ def test_a_station_that_stays_invisible_after_its_insert_is_an_error() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

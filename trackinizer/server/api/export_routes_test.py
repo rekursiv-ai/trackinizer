@@ -160,6 +160,6 @@ def test_the_export_is_read_for_the_audiences_of_its_caller(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

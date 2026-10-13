@@ -72,6 +72,6 @@ def test_science_is_the_only_kind_of_chat() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

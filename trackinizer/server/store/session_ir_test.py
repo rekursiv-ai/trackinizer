@@ -756,6 +756,6 @@ async def test_a_slash_command_consumes_no_record_position(store: Store) -> None
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

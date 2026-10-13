@@ -2293,6 +2293,6 @@ def test_main_runs_one_worker_per_slot_scans_then_reports(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)
