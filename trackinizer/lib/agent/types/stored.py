@@ -48,7 +48,9 @@ def to_stored(record: object) -> dict[str, MutablePlainTree]:
         payload must.
 
     """
-    plain = to_plain(_with_json_fields(record, convert=mutable))
+    # Records keep their declaration order so the stored bytes stay stable; a
+    # session's normalized JSON is a frozen on-disk and PostgreSQL payload.
+    plain = to_plain(_with_json_fields(record, convert=mutable), sort=False)
     if not isinstance(plain, dict):
         raise TypeError(f"{type(record).__name__} does not store as a JSON object")
     return plain
