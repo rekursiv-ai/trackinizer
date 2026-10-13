@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from treekle import immutable
+from treekle import immutable, json_loads
 
 import pytest
 import pytest_asyncio
@@ -24,6 +24,7 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
 )
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.store import session_ir
 from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.types.errors import ConflictError, NotFoundError
@@ -753,6 +754,54 @@ async def test_a_slash_command_consumes_no_record_position(store: Store) -> None
     read = await store.read_session_records(session_id, part=0)
 
     assert [row.idx for row in read] == [0, 1]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_captured_nul_is_stored_as_a_replacement_character(
+    store: Store,
+) -> None:
+    """A NUL in a record or a slash command must not fail the append.
+
+    Postgres text cannot hold NUL. A refused batch is re-sent by the capturing
+    client forever, so the append stores U+FFFD in its place.
+    """
+    session_id = await _session(store)
+    at = datetime(2026, 6, 1, tzinfo=UTC)
+    records: list[SessionRecord] = [
+        UserMessage(content="a\x00b"),
+        ToolCall(call_id="c1", name="Read", arguments={"pa\x00th": "x\x00"}),
+    ]
+
+    await store.append_session_records(
+        session_id,
+        await _bounded(store, session_id, records),
+        slash_commands=[SlashCommandRow(timestamp=at, command="model", args="o\x00")],
+    )
+    read = await store.read_session_records(session_id, part=0)
+    turns = await store.read_recent_session_turns(session_id, limit=20)
+    stored = await store.read_session_slash_commands(session_id)
+
+    assert [row.record() for row in read] == [
+        UserMessage(content="a\ufffdb"),
+        ToolCall(call_id="c1", name="Read", arguments={"pa\ufffdth": "x\ufffd"}),
+    ]
+    assert read[0].text == "a\ufffdb"
+    assert [turn.content for turn in turns] == ["a\ufffdb"]
+    assert [command.args for command in stored] == ["o\ufffd"]
+
+
+def test_a_payload_nul_is_replaced_in_keys_and_nested_strings() -> None:
+    r"""Only NUL changes: an escaped ``\u0000`` written as text stays as it was."""
+    payload = immutable({"a\x00": ["x\x00", {"k": "\x00"}], "n": 1, "lit": "\\u0000"})
+
+    encoded = session_ir._encoded_payload(payload)
+
+    assert json_loads(encoded) == {
+        "a\ufffd": ["x\ufffd", {"k": "\ufffd"}],
+        "n": 1,
+        "lit": "\\u0000",
+    }
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ from uuid import UUID
 
 import json
 
-from treekle import PlainTree, immutable, json_loads, mutable
+from treekle import MutablePlainTree, PlainTree, immutable, json_loads, mutable
 
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.cascade import _CascadeAuditMixin
@@ -148,6 +148,9 @@ class _SessionIRMixin(_CascadeAuditMixin):
         because a sink counter restarts at 0 on a resumed run and would
         collide.
 
+        Every NUL this writes, in a column or inside a payload, is stored as
+        U+FFFD: Postgres text cannot hold one (see :func:`_nul_free`).
+
         Args:
           session_id: The owning AgentSession.
           rows: Records to store, each carrying its derived ``idx``.
@@ -222,12 +225,15 @@ class _SessionIRMixin(_CascadeAuditMixin):
                         [row.session_id for row in rows],
                         [row.part for row in rows],
                         [row.idx for row in rows],
-                        [row.kind for row in rows],
+                        [_nul_free(row.kind) for row in rows],
                         [row.context_id for row in rows],
                         [row.timestamp for row in rows],
-                        [row.model for row in rows],
+                        [
+                            None if row.model is None else _nul_free(row.model)
+                            for row in rows
+                        ],
                         [_encoded_payload(row.payload) for row in rows],
-                        [row.text for row in rows],
+                        [_nul_free(row.text) for row in rows],
                     )
                     if rows
                     else []
@@ -293,8 +299,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
             "RETURNING seq",
             session_id,
             [row.timestamp for row in commands],
-            [row.command for row in commands],
-            [row.args for row in commands],
+            [_nul_free(row.command) for row in commands],
+            [_nul_free(row.args) for row in commands],
         )
         return len(stored)
 
@@ -675,8 +681,33 @@ class _SessionIRMixin(_CascadeAuditMixin):
 # ``separators`` drops the whitespace ``json.dumps`` adds by default -- the text is
 # stored verbatim, so the padding would be too.
 def _encoded_payload(payload: Mapping[str, PlainTree]) -> str:
-    """One record's payload as JSON text, key order intact."""
-    return json.dumps(mutable(payload), separators=(",", ":"))
+    """One record's payload as NUL-free JSON text, key order intact."""
+    encoded = json.dumps(mutable(payload), separators=(",", ":"))
+    # ``json.dumps`` writes every NUL as the escape ``\u0000``, so a payload whose
+    # text lacks it holds none, and the common path skips the walk.
+    if "\\u0000" not in encoded:
+        return encoded
+    return json.dumps(_nul_free_tree(mutable(payload)), separators=(",", ":"))
+
+
+# Postgres text cannot hold NUL, and ``->>`` cannot extract one escaped inside a
+# ``json`` payload, which fails the feed for every reader of that record. A tool's
+# output can carry one, and refusing it fails the whole batch, which the capturing
+# client then re-sends forever. U+FFFD keeps the spot visible.
+def _nul_free(text: str) -> str:
+    """Return ``text`` with each NUL replaced by U+FFFD."""
+    return text.replace("\x00", "\ufffd")
+
+
+def _nul_free_tree(tree: MutablePlainTree) -> MutablePlainTree:
+    """Return ``tree`` with each NUL in a key or string replaced by U+FFFD."""
+    if isinstance(tree, str):
+        return _nul_free(tree)
+    if isinstance(tree, dict):
+        return {_nul_free(key): _nul_free_tree(value) for key, value in tree.items()}
+    if isinstance(tree, list):
+        return [_nul_free_tree(item) for item in tree]
+    return tree
 
 
 # Parsed, never decoded: ``from_plain`` lets a codec tag decide even under ``object``,

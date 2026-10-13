@@ -122,6 +122,27 @@ async def test_pglite_connection_survives_a_failed_extended_query(
 
 
 @pytest.mark.db_pglite
+@pytest.mark.asyncio
+async def test_pglite_answers_after_many_failed_statements(tmp_path: Path) -> None:
+    """Failed statements must not exhaust PGlite's stack for every later query.
+
+    PGlite 0.5.3 leaked stack on each ERROR: after about 1,800 of them every
+    statement, ``SELECT 1`` included, failed with ``stack depth limit exceeded``
+    until Node restarted. At the 100 kB floor of ``max_stack_depth`` the leak
+    surfaces after about 90 errors.
+    """
+    async with (
+        PGliteEngine(workdir=tmp_path / "pg", extensions=(), persist=False) as engine,
+        engine.acquire() as conn,
+    ):
+        await conn.execute("SET max_stack_depth = '100kB'")
+        for _ in range(200):
+            with pytest.raises(asyncpg.DivisionByZeroError):
+                await conn.execute("SELECT 1/0")
+        assert await conn.fetchval("SELECT 1") == 1
+
+
+@pytest.mark.db_pglite
 @pytest.mark.cli_python_subprocess
 @pytest.mark.parametrize(("persist", "use_tcp"), [(False, True), (True, False)])
 def test_pglite_node_exits_when_its_python_parent_is_killed(
