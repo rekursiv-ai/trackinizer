@@ -187,6 +187,14 @@ class EdgeWrite(NamedTuple):
     changed: bool
 
 
+class ArtifactRevision(NamedTuple):
+    """One published revision of an Artifact's content."""
+
+    artifact_id: uuid.UUID
+
+    revision: int
+
+
 class Client:
     """Thin HTTP client over the trackinizer server."""
 
@@ -1282,6 +1290,49 @@ class Client:
         self.delete(
             f"/api/inquiries/{target_id}",
             body={"actor": actor, "reason": reason},
+        )
+
+    def publish_artifact_content(
+        self,
+        issue_id: uuid.UUID,
+        *,
+        title: str,
+        summary: str,
+        html: str,
+        previous_id: uuid.UUID | None = None,
+    ) -> ArtifactRevision:
+        """Publish one HTML document as an Artifact revision produced by an Issue.
+
+        The server adds the Artifact ``produced_by`` the Issue and, with
+        ``previous_id``, ``supersedes`` that Artifact, in one change.
+
+        Args:
+          issue_id: The Issue that produces the Artifact.
+          title: The Artifact's title.
+          summary: One sentence shown above the page.
+          html: One complete document, every asset inline.
+          previous_id: The Artifact this revision supersedes; ``None`` starts one.
+
+        Returns:
+          revision: The Artifact and revision number the server stored.
+
+        """
+        body: dict[str, object] = {
+            "issue_id": str(issue_id),
+            "title": title,
+            "summary": summary,
+            "format": "html",
+            "html": html,
+        }
+        if previous_id is not None:
+            body["previous_artifact_id"] = str(previous_id)
+        response = cast(
+            Mapping[str, object],
+            self.post("/api/artifacts/content", body=body),
+        )
+        return ArtifactRevision(
+            artifact_id=uuid.UUID(str(response["artifact_id"])),
+            revision=cast(int, response["revision"]),
         )
 
     def session_start(self, body: SessionStart) -> SessionStartResponse:

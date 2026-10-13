@@ -18,7 +18,7 @@ from treekle.absent import Absent
 
 import pytest
 
-from trackinizer.client.client import Client, EdgeWrite
+from trackinizer.client.client import ArtifactRevision, Client, EdgeWrite
 from trackinizer.trax import cli
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import (
@@ -795,6 +795,30 @@ class FakeClient:
     def purge(self, target_id: uuid.UUID, *, actor: str, reason: str = "") -> None:
         """Purge."""
         self.calls.append(("purge", (target_id,), {"actor": actor, "reason": reason}))
+
+    def publish_artifact_content(
+        self,
+        issue_id: uuid.UUID,
+        *,
+        title: str,
+        summary: str,
+        html: str,
+        previous_id: uuid.UUID | None = None,
+    ) -> ArtifactRevision:
+        """Publish artifact content."""
+        self.calls.append(
+            (
+                "publish_artifact_content",
+                (issue_id,),
+                {
+                    "title": title,
+                    "summary": summary,
+                    "html": html,
+                    "previous_id": previous_id,
+                },
+            ),
+        )
+        return ArtifactRevision(artifact_id=uuid.uuid4(), revision=1)
 
     def session_start(self, body: SessionStart) -> SessionStartResponse:
         """Session start."""

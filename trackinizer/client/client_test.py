@@ -19,6 +19,7 @@ import httpx2
 import pytest
 
 from trackinizer.client.client import (
+    ArtifactRevision,
     Client,
     EdgeWrite,
     server_url,
@@ -1872,6 +1873,43 @@ def _edge_post(
         return {"change_id": change_id, "created": created}
 
     return fake_post
+
+
+@pytest.mark.parametrize("previous", [None, uuid.uuid4()])
+def test_publish_artifact_content_posts_html_and_reads_the_revision(
+    monkeypatch: pytest.MonkeyPatch,
+    previous: uuid.UUID | None,
+) -> None:
+    """The route gets an HTML body; ``previous_id`` is sent only when given."""
+    client = Client("http://example.com")
+    issue_id, artifact_id = uuid.uuid4(), uuid.uuid4()
+    posted: list[tuple[str, object]] = []
+
+    def fake_post(path: str, *, body: object = None) -> Mapping[str, object]:
+        posted.append((path, body))
+        return {"artifact_id": str(artifact_id), "revision": 2, "title": "Mock"}
+
+    monkeypatch.setattr(client, "post", fake_post)
+
+    result = client.publish_artifact_content(
+        issue_id,
+        title="Mock",
+        summary="Edges first.",
+        html="<!doctype html><p>x</p>",
+        previous_id=previous,
+    )
+
+    assert result == ArtifactRevision(artifact_id=artifact_id, revision=2)
+    expected: dict[str, object] = {
+        "issue_id": str(issue_id),
+        "title": "Mock",
+        "summary": "Edges first.",
+        "format": "html",
+        "html": "<!doctype html><p>x</p>",
+    }
+    if previous is not None:
+        expected["previous_artifact_id"] = str(previous)
+    assert posted == [("/api/artifacts/content", expected)]
 
 
 def test_add_edge_reports_created(monkeypatch: pytest.MonkeyPatch) -> None:
