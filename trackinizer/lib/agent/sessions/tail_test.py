@@ -109,6 +109,34 @@ def test_a_fresh_reader_has_read_nothing() -> None:
     assert reader._produced.empty()
 
 
+def test_a_restart_needs_a_reader() -> None:
+    with pytest.raises(ValueError, match=r"^Expected self\._reader is not None\.$"):
+        tail.Tail(_records)._restart()
+
+
+def test_an_end_signal_with_no_reader_is_refused() -> None:
+    reader = tail.Tail(_records)
+    reader._produced.put(tail._ENDED)
+    with pytest.raises(ValueError, match=r"^Expected self\._reader is not None\.$"):
+        _ = reader._collect()
+
+
+def test_a_stray_signal_is_never_returned_as_a_record() -> None:
+    reader = tail.Tail(_records)
+    reader._produced.put(tail._NO_MORE_LINES)
+    with pytest.raises(
+        TypeError,
+        match=r"^Expected not isinstance\(item, _Signal\)\.$",
+    ):
+        _ = reader._collect()
+
+
+def test_a_pushed_stream_cannot_be_read_whole() -> None:
+    stream = tail._Pulled[SessionRecord](queue.SimpleQueue(), queue.SimpleQueue())
+    with pytest.raises(NotImplementedError, match="read by lines"):
+        _ = stream.read()
+
+
 def test_whole_file_reading_stays_threadless() -> None:
     reader = tail.Tail(_records, whole_file=True)
     assert reader.feed("first\n") == [
