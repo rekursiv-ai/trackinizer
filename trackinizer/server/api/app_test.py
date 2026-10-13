@@ -25,6 +25,7 @@ from trackinizer.server.api.app import (
     _RequestLogSpan,
     check_violation_handler,
     conflict_handler,
+    data_error_handler,
     fk_violation_handler,
     lifespan,
     not_found_handler,
@@ -107,6 +108,31 @@ class TestCLIHelpers:
             assert leak not in detail
             assert "from_id" not in detail
             assert constraint not in detail
+
+    def test_a_value_the_database_cannot_store_is_a_422_that_does_not_echo_it(
+        self,
+    ) -> None:
+        req = cast(Request, Mock())
+        quoted = "the-value-the-database-quoted"
+        exc = asyncpg.CharacterNotInRepertoireError(
+            f'invalid byte sequence for encoding "UTF8": 0x00 near {quoted}',
+        )
+
+        response = asyncio.run(data_error_handler(req, exc))
+
+        body = json_loads(bytes(response.body), dict[str, object])
+        assert response.status_code == 422
+        assert body == {
+            "detail": "the database cannot store a value (SQLSTATE 22021)",
+            "code": "unstorable_value",
+        }
+        assert quoted not in bytes(response.body).decode()
+
+    def test_every_value_the_database_cannot_store_reaches_the_422_handler(
+        self,
+    ) -> None:
+        assert app.app.exception_handlers[asyncpg.DataError] is data_error_handler
+        assert issubclass(asyncpg.UntranslatableCharacterError, asyncpg.DataError)
 
     def test_conflict_handler_emits_error_code(self) -> None:
         req = cast(Request, Mock())

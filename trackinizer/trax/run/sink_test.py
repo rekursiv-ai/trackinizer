@@ -20,6 +20,7 @@ import httpx2
 import pytest
 
 from trackinizer.client.client import Client
+from trackinizer.client.errors import ClientError
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
     AgentToAgentMessage,
@@ -2388,6 +2389,82 @@ def _uncut(record: TraxRecord) -> RecordBody:
     return RecordBody.of(
         SessionRecordRow.of(session_id=uuid4(), part=0, idx=0, record=record),
     )
+
+
+class _RefusingClient(_FakeClient):
+    """Refuses, as the server does a value it cannot store, any batch with a NUL."""
+
+    @override
+    def append_records(
+        self,
+        session_id: UUID,
+        *,
+        name: str = "",
+        manifest: ManifestBody | None = None,
+        records: object = (),
+        restart: bool = False,
+        slash_commands: object = (),
+    ) -> AppendRecordsResponse:
+        if any("\x00" in body.text for body in cast(list[RecordBody], records)):
+            raise ClientError("cannot store", status_code=422)
+        return super().append_records(
+            session_id,
+            name=name,
+            manifest=manifest,
+            records=records,
+            restart=restart,
+            slash_commands=slash_commands,
+        )
+
+
+def _stored_kinds(client: _FakeClient) -> dict[int, str]:
+    return {
+        body.idx: body.kind for _, _, bodies, _ in client.appended for body in bodies
+    }
+
+
+class TestARefusedRecord:
+    """A record the server can never store must not hold back the rest of a run."""
+
+    def test_it_is_stood_in_and_every_other_record_and_command_is_sent(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        client = _RefusingClient()
+        sink = TrackinizerSink(cast(Client, client), "claude", batch_size=50)
+        for text in ("one", "binary \x00 output", "three", "four"):
+            sink.emit("claude", _event(text))
+        sink.emit_slash_command(SlashCommand(command="model", args="opus"), _AT)
+
+        sink.close()
+
+        assert _stored_kinds(client) == {
+            0: "UserMessage",
+            1: "UncategorizedRecord",
+            2: "UserMessage",
+            3: "UserMessage",
+        }
+        assert [command.command for command in client.slash] == ["model"]
+        assert client.ended == [client._id]
+        assert "refused record 1 of a.jsonl (UserMessage)" in capsys.readouterr().err
+
+    def test_a_run_whose_record_is_refused_never_falls_back_to_local_capture(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client = _RefusingClient()
+        fallback = tmp_path / "run.jsonl"
+        sink = ResilientSink(
+            TrackinizerSink(cast(Client, client), "claude", batch_size=2),
+            fallback_path=fallback,
+        )
+        for text in ("one", "binary \x00 output", "three", "four"):
+            sink.emit("claude", _event(text))
+
+        sink.close()
+
+        assert not fallback.exists()
+        assert sorted(_stored_kinds(client)) == [0, 1, 2, 3]
 
 
 if __name__ == "__main__":

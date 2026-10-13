@@ -646,6 +646,33 @@ async def check_violation_handler(
     )
 
 
+@app.exception_handler(asyncpg.DataError)
+async def data_error_handler(request: Request, exc: asyncpg.DataError) -> JSONResponse:
+    """Translate a value the database cannot store into HTTP 422.
+
+    SQLSTATE class 22 is the data itself: a NUL byte in text, a number out of
+    range, a malformed timestamp. A resend fails the same way, so as a 500 it read
+    as an outage, and an uploader retried it forever. The message can quote the
+    value, which may be a secret, so only the SQLSTATE is returned.
+
+    Args:
+      request: FastAPI Request object (unused).
+      exc: The DataError from asyncpg, read only for its SQLSTATE.
+
+    Returns:
+      response: JSON response with 422 status, a generic detail and a code.
+
+    """
+    del request
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": f"the database cannot store a value (SQLSTATE {exc.sqlstate})",
+            "code": "unstorable_value",
+        },
+    )
+
+
 @app.exception_handler(asyncpg.UniqueViolationError)
 async def unique_violation_handler(
     request: Request,

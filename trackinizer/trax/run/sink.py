@@ -33,6 +33,7 @@ from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from typing import IO, TYPE_CHECKING, Protocol, cast, override
 from uuid import UUID, uuid4
 
@@ -45,6 +46,7 @@ from treekle import PlainTree, immutable
 
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.redact import redact_body
+from trackinizer.trax.run.refusal import send_isolating
 from trackinizer.trax.run.truncate import bounded, encoded_size
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import (
@@ -646,25 +648,17 @@ class TrackinizerSink(Sink):
                 max_records=MAX_RECORD_BATCH,
                 max_bytes=self._batch_bytes,
             ):
-                self._client.append_records(
-                    session_id,
-                    name=path.name,
-                    manifest=ManifestBody(
-                        name=path.name,
-                        metadata=self._metadata_for(path),
-                        ir_id=self._ir_ids.setdefault(path, uuid4()),
-                        format=self._cli,
-                        records=self._next_idx.get(path, 0),
-                    ),
+                # A record the server refuses goes up as a stand-in rather than
+                # failing the batch: resent, it would be refused again, and the
+                # records after it would wait behind it for good.
+                for refused in send_isolating(
+                    partial(self._send, session_id, path),
                     records=records,
-                    restart=path in self._restarted,
-                    slash_commands=self._slash,
-                )
-                # Cleared only once the request RETURNED. A command's ``seq`` is
-                # server-assigned, so a resend after a failure partway through
-                # would store a second copy rather than collide -- unlike a
-                # record, whose derived key makes a retry a no-op.
-                self._slash = []
+                ):
+                    sys.stderr.write(
+                        f"[trax run] the server refused record {refused.idx} of "
+                        f"{path.name} ({refused.kind}); a stand-in holds its place\n",
+                    )
             self._restarted.discard(path)
             # Sent with the first part only; the rest carry records alone.
             self._buffer = [entry for entry in self._buffer if entry[0] != path]
@@ -673,6 +667,28 @@ class TrackinizerSink(Sink):
             self._slash = []
         self._buffer = []
         self._oldest_buffered_at = None
+
+    def _send(self, session_id: UUID, path: Path, records: list[RecordBody]) -> None:
+        """Append one batch of ``path``'s records, with the commands typed since."""
+        self._client.append_records(
+            session_id,
+            name=path.name,
+            manifest=ManifestBody(
+                name=path.name,
+                metadata=self._metadata_for(path),
+                ir_id=self._ir_ids.setdefault(path, uuid4()),
+                format=self._cli,
+                records=self._next_idx.get(path, 0),
+            ),
+            records=records,
+            restart=path in self._restarted,
+            slash_commands=self._slash,
+        )
+        # Cleared only once the request RETURNED. A command's ``seq`` is
+        # server-assigned, so a resend after a failure partway through would store
+        # a second copy rather than collide -- unlike a record, whose derived key
+        # makes a retry a no-op.
+        self._slash = []
 
     # Not decoration, and not derivable server-side: claude's ascii-escaping convention
     # (a majority flag plus its exception bitmap) rides on the ``TurnContext`` in force,
