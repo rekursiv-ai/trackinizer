@@ -17,7 +17,7 @@ import { useWorkbenchMounted, useWorkbenchSlot } from "../app/workbenchSlot";
 import { parseHash } from "../router/route";
 import { useBrowserState } from "../state/store";
 import { type Size, dropLegacySizes, fitSizes, heldWidth, legacyLayout, MIN_COLUMN, MIN_FLOAT, readLegacySizes, toFraction } from "./canvasSizes";
-import { followColumns } from "./chatColumn";
+import { followColumns } from "./chatColumnState";
 import { CLICK_SLOP, EDGES, finishGesture, moveGesture, rememberedTile, resizeRect, slideDivider, snapZone, startGesture, TEAR_SLOP, withTile, type Edge, type TileMemory, type Gesture, type Rect, type Zone } from "./floatingTile";
 import { orderVisuals, SIDES } from "./layout";
 import { holds, useLayout, type Layout } from "./stationLayout";

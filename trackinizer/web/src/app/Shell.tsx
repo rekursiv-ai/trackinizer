@@ -14,7 +14,7 @@ import { BarStack, OfflineBar, PausedBar } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { kindLook } from "../ui/kinds";
 import { panelCommand, usePanel } from "../ui/panel";
-import { useChatColumn } from "../visuals/chatColumn";
+import { useChatColumn } from "../visuals/chatColumnState";
 import { useHoverOpen } from "../visuals/hoverOpen";
 import { EmptyState, OpenDrawerContext, ViewHeader } from "../ui/view";
 import { useMeta, useProfile, useWriteMode } from "./boot";

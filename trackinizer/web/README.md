@@ -311,7 +311,7 @@ with one response shape, so the fixtures take one per verb.
   `localStorage` with the canvas's sizes (`trackinizer.v2.canvas.sizes`, `chat`).
   A button in Chat's header moves it to the other side, kept under
   `trackinizer.chat.side`. State that lasts only for the page, hidden and full
-  screen, lives with the side in one store (`src/visuals/chatColumn.ts`), so a
+  screen, lives with the side in one store (`src/visuals/chatColumnState.ts`), so a
   reload shows Chat. `Ctrl+\` (⌘\) and the Hide button in its header hide it,
   and three docked columns in the workbench hide it until one goes; hidden,
   it leaves a 16 px strip in the accent colour at its edge, and a press on the

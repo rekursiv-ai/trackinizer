@@ -1,5 +1,5 @@
 import { useCallback, useContext } from "react";
-import { setChatHidden } from "./chatColumn";
+import { setChatHidden } from "./chatColumnState";
 import { ChatFeedContext } from "./chatFeed";
 
 /**

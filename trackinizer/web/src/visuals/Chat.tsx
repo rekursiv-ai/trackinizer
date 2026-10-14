@@ -22,7 +22,7 @@ import { type ChatPart, type Line, type LineAt, linesThrough, PENDING, type Pend
 import { chatRecordsKey, OPENING, readChatParts, useLiveChat } from "./chatRecords";
 import { useChatFeed } from "./chatFeed";
 import { FOLLOW_UP_ASK, followUpSuggested } from "./chatFollowUp";
-import { flipChatSide, setChatHidden, useChatColumn } from "./chatColumn";
+import { flipChatSide, setChatHidden, useChatColumn } from "./chatColumnState";
 import { useAnswerHighlights } from "./chatHighlights";
 import { ChatPrompt } from "./ChatPrompt";
 import { DeleteChat, ShareChat } from "./ChatSharing";

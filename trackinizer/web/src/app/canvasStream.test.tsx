@@ -9,7 +9,7 @@ import { META } from "../detail/testing";
 import { LiveContext } from "../live";
 import { LiveHub as LiveHubClass, type LiveHub } from "../live/hub";
 import { preferences } from "../preferences";
-import { currentChatColumn, setChatFullscreen, setChatSide } from "../visuals/chatColumn";
+import { currentChatColumn, setChatFullscreen, setChatSide } from "../visuals/chatColumnState";
 import { ChatFeedContext, useChatFeed } from "../visuals/chatFeed";
 import { MetaContext } from "./boot";
 import { resetPreferences } from "../state/testing";

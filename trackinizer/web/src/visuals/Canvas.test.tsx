@@ -18,7 +18,7 @@ import { newerWorkspace } from "../stations/cache";
 import { setStation } from "../stations/store";
 import { setStationLayout } from "../api/stations";
 import { Canvas } from "./Canvas";
-import { currentChatColumn, setChatHidden } from "./chatColumn";
+import { currentChatColumn, setChatHidden } from "./chatColumnState";
 import { CLICK_SLOP, rememberedTile, SNAP_SIDE, SNAP_TOP, TEAR_SLOP } from "./floatingTile";
 import { flushLayouts, forgetLayouts, type Layout } from "./stationLayout";
 

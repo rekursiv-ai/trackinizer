@@ -9,7 +9,7 @@ afterEach(() => {
 /** The column's module as a page that has just loaded sees it, reading what the browser kept. */
 async function fresh() {
   vi.resetModules();
-  return import("./chatColumn");
+  return import("./chatColumnState");
 }
 
 test("Chat starts on the left, shown, and not full screen", async () => {

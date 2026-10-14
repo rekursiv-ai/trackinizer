@@ -9,7 +9,7 @@ import { setStationMenu, useStationMenu } from "../stations/actions";
 import { currentStation, setStation } from "../stations/store";
 import { ChatColumn } from "./ChatColumn";
 import { preferences, receivePreferences } from "../preferences";
-import { currentChatColumn, setChatFullscreen, setChatHidden } from "./chatColumn";
+import { currentChatColumn, setChatFullscreen, setChatHidden } from "./chatColumnState";
 import { FOLD_AFTER_MS, OPEN_AFTER_MS } from "./hoverOpen";
 import { flushLayouts, forgetLayouts, type Layout } from "./stationLayout";
 

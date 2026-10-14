@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import { currentChatColumn, setChatHidden } from "../visuals/chatColumn";
+import { currentChatColumn, setChatHidden } from "../visuals/chatColumnState";
 import { ChatFeed } from "../visuals/chatFeed";
 import { detail, renderDetail, row, serveDetails, uuid } from "./testing";
 

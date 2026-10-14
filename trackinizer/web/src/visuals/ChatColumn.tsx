@@ -6,7 +6,7 @@ import { useStation } from "../stations/useStation";
 import { useCommands } from "../commands/registry";
 import { Chat } from "./Chat";
 import { dropLegacySizes, fitWidth, heldWidth, MIN_CHAT, readLegacySizes } from "./canvasSizes";
-import { flipChatSide, setChatFullscreen, setChatHidden, toggleChatFullscreen, toggleChatHidden, useChatColumn } from "./chatColumn";
+import { flipChatSide, setChatFullscreen, setChatHidden, toggleChatFullscreen, toggleChatHidden, useChatColumn } from "./chatColumnState";
 import { useHoverOpen } from "./hoverOpen";
 import { useLayout } from "./stationLayout";
 import "./chatColumn.css";

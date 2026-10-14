@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { AGREED, stubFetch } from "../api/testing";
 import { FakeEventSource } from "../live/testing";
-import { setChatSide } from "../visuals/chatColumn";
+import { setChatSide } from "../visuals/chatColumnState";
 import { FOLD_AFTER_MS, OPEN_AFTER_MS } from "../visuals/hoverOpen";
 import { Icon } from "../ui/icons";
 import { App } from "./App";

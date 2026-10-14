@@ -20,7 +20,7 @@ import { preferences, receivePreferences, sendWaiting } from "../preferences";
 import { Chat } from "./Chat";
 import { setStation, currentStation } from "../stations/store";
 import { useStation } from "../stations/useStation";
-import { currentChatColumn, setChatHidden, setChatSide } from "./chatColumn";
+import { currentChatColumn, setChatHidden, setChatSide } from "./chatColumnState";
 import { ChatFeed, ChatFeedContext } from "./chatFeed";
 import { FOLLOW_UP_ASK } from "./chatFollowUp";
 import { OPENING } from "./chatRecords";

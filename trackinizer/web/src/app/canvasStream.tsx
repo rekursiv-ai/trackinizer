@@ -5,7 +5,7 @@ import { recordFrame, recordNavigation } from "../debug/timings";
 import { LiveContext } from "../live";
 import { receivePreferences } from "../preferences";
 import { parseHash } from "../router/route";
-import { setChatHidden } from "../visuals/chatColumn";
+import { setChatHidden } from "../visuals/chatColumnState";
 import { ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
 import { acceptWorkspace } from "../stations/cache";
 import { useStation } from "../stations/useStation";
