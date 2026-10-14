@@ -236,18 +236,9 @@ a.ws-switch:hover { background: var(--surface-raised); }
   .app.sidebar-collapsed:not(.sidebar-peek) .me-row { justify-content: center; padding: 4px 0; }
   /* The Workbench section's controls need room: the rail shows the icon that opens the sidebar on them. */
   .app.sidebar-collapsed:not(.sidebar-peek) .workbench-slot { display: none; }
-  /* The sidebar stands opposite Chat: at the right, the grid and the page's margin turn over. */
-  .app.sidebar-right { grid-template-columns: minmax(0, 1fr) 244px; }
-  .app.sidebar-right.sidebar-collapsed { grid-template-columns: minmax(0, 1fr) 48px; }
-  .app.sidebar-right .sidebar-dock { order: 2; }
-  .app.sidebar-right .main { margin: 8px 0 8px 8px; }
-  /* Opened at the right, each row turns over, so its icon stays at the outer edge where the rail has it. */
-  .app.sidebar-right :is(.nav-item, .sidebar-search, .sidebar-new, .me-row, .nav-section-h) { flex-direction: row-reverse; text-align: right; }
-  .app.sidebar-right :is(.sidebar-search, .sidebar-new) { padding: 0 5px 0 4px; }
   /* A rail opened by hover lies over the workbench from its own edge, the rail's cell unchanged. */
   .app.sidebar-collapsed .sidebar-dock { z-index: 40; }
   .app.sidebar-peek .sidebar { position: absolute; top: 0; bottom: 0; left: 0; width: 244px; background: var(--sidebar); border-right: 1px solid var(--line); box-shadow: 0 8px 32px #0006; }
-  .app.sidebar-peek.sidebar-right .sidebar { left: auto; right: 0; border-right: 0; border-left: 1px solid var(--line); }
 }
 .workbench-rail { display: none; width: 100%; }
 @media (width > 760px) { .app.sidebar-collapsed:not(.sidebar-peek) .workbench-rail { display: flex; } }

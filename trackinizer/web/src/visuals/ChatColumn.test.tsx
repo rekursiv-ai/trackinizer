@@ -246,7 +246,7 @@ async function hidden() {
 test("a pointer resting on the hidden strip opens Chat over the workbench at its column width, and the row is left as it was", async () => {
   const { row, column, strip, wait } = await hidden();
   expect(column.hidden).toBe(true);
-  fireEvent.pointerEnter(strip);
+  fireEvent.pointerMove(strip);
   wait(OPEN_AFTER_MS - 1);
   expect(column.hidden).toBe(true);
   wait(1);
@@ -259,10 +259,10 @@ test("a pointer resting on the hidden strip opens Chat over the workbench at its
 
 test("the opened Chat folds a moment after the pointer left it, and a pointer moving from the strip onto it keeps it open", async () => {
   const { column, strip, wait } = await hidden();
-  fireEvent.pointerEnter(strip);
+  fireEvent.pointerMove(strip);
   wait(OPEN_AFTER_MS);
   fireEvent.pointerLeave(strip);
-  fireEvent.pointerEnter(column);
+  fireEvent.pointerMove(column);
   wait(FOLD_AFTER_MS);
   expect(column.hidden).toBe(false);
   fireEvent.pointerLeave(column);
@@ -274,7 +274,7 @@ test("the opened Chat folds a moment after the pointer left it, and a pointer mo
 
 test("the keyboard inside the opened Chat holds it open after the pointer has left", async () => {
   const { column, strip, wait } = await hidden();
-  fireEvent.pointerEnter(strip);
+  fireEvent.pointerMove(strip);
   wait(OPEN_AFTER_MS);
   act(() => screen.getByRole("textbox", { name: "Message" }).focus());
   fireEvent.pointerLeave(column);
@@ -287,7 +287,7 @@ test("the keyboard inside the opened Chat holds it open after the pointer has le
 
 test("a click on the strip, or the hide key, stands Chat beside the workbench again, and hiding afterwards starts folded", async () => {
   const { row, column, strip, wait } = await hidden();
-  fireEvent.pointerEnter(strip);
+  fireEvent.pointerMove(strip);
   wait(OPEN_AFTER_MS);
   fireEvent.click(strip);
   expect(currentChatColumn().hidden).toBe(false);
@@ -299,7 +299,7 @@ test("a click on the strip, or the hide key, stands Chat beside the workbench ag
 
 test("full screen Chat is never a peek, and hidden Chat that a frame shows is a column", async () => {
   const { column, strip, wait } = await hidden();
-  fireEvent.pointerEnter(strip);
+  fireEvent.pointerMove(strip);
   wait(OPEN_AFTER_MS);
   act(() => setChatFullscreen(true));
   expect(column.classList).not.toContain("chat-column-peek");

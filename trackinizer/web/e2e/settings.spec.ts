@@ -130,9 +130,9 @@ test("Settings opens as half a page over the page, from the sidebar's side, and 
   // Half the main area inside its 1 px border, and no narrower than 560 px.
   const inner = main.width - 2;
   expect(Math.round(half.width)).toBe(Math.round(Math.min(inner, Math.max(inner / 2, 560))));
-  // Against the main area's edge on the sidebar's side, whichever side that is.
-  if (sidebar.x < main.x) expect(Math.round(half.x)).toBe(Math.round(main.x + 1));
-  else expect(Math.round(half.x + half.width)).toBe(Math.round(main.x + main.width - 1));
+  // Against the main area's left edge, beside the sidebar, which stands at the left.
+  expect(sidebar.x).toBeLessThan(main.x);
+  expect(Math.round(half.x)).toBe(Math.round(main.x + 1));
   // The sections take the sheet's width, so Close stands at their right edge.
   const close = (await page.getByRole("link", { name: "Close settings" }).boundingBox())!;
   const profile = (await page.getByRole("region", { name: "Profile" }).boundingBox())!;

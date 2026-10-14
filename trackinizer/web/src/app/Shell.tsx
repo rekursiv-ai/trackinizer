@@ -14,7 +14,6 @@ import { BarStack, OfflineBar, PausedBar } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { kindLook } from "../ui/kinds";
 import { panelCommand, usePanel } from "../ui/panel";
-import { useChatColumn } from "../visuals/chatColumnState";
 import { useHoverOpen } from "../visuals/hoverOpen";
 import { EmptyState, OpenDrawerContext, ViewHeader } from "../ui/view";
 import { useMeta, useProfile, useWriteMode } from "./boot";
@@ -42,14 +41,15 @@ const ChatColumn = lazyView(() => import("../visuals/ChatColumn"), (module) => m
 /** A route that shows a page; a new inquiry's form, Settings and Admin show over one. */
 type ViewRoute = Exclude<Route, { name: "new" | "settings" | "admin" }>;
 
-/** Settings and Admin: a sheet over the page, half its width, from the sidebar's side. */
+/** Settings and Admin: a sheet over the page, half its width, from the left, beside the sidebar. */
 type SheetRoute = Extract<Route, { name: "settings" | "admin" }>;
 
 /**
  * The signed-in app: the sidebar, the bars, the current route's view, and the
  * palette and the create form, with the shell's own commands. The sidebar
- * stands opposite Chat, a rail of its icons that opens over the workbench while
- * hovered, or pinned open; narrow, it is a drawer whether collapsed or not.
+ * stands at the left whichever side Chat is on, a rail of its icons that opens
+ * over the workbench while hovered, or pinned open; narrow, it is a drawer
+ * whether collapsed or not.
  */
 export function Shell() {
   const { route, navigate } = useRouter();
@@ -69,8 +69,7 @@ export function Shell() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const openDrawer = useCallback(() => setDrawerOpen(true), []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
-  // The sidebar stands opposite Chat, so one flip of Chat's side moves both.
-  const sidebar = usePanel({ ...SIDEBAR, side: useChatColumn().side === "left" ? "right" : "left" });
+  const sidebar = usePanel(SIDEBAR);
   // A rail opens over the workbench while the pointer rests on it or the keyboard is in it.
   const dock = useRef<HTMLDivElement>(null);
   const peek = useHoverOpen(dock);
@@ -129,7 +128,7 @@ export function Shell() {
   return (
     <PaletteContext value={palette}>
       <OpenDrawerContext value={openDrawer}>
-        <div className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}${peeking ? " sidebar-peek" : ""}${sidebar.side === "right" ? " sidebar-right" : ""}`}>
+        <div className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}${peeking ? " sidebar-peek" : ""}`}>
           <div ref={dock} className="sidebar-dock">
             <Sidebar onNavigate={navigated} onWorkbench={openWorkbench} panel={sidebar} />
           </div>

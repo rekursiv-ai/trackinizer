@@ -2,10 +2,12 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, setPreferences, test } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
-// The navigation sidebar stands opposite Chat as a rail of icons. Hovering the
-// rail opens it over the workbench, a pin (⌘B) opens it for good, and the
-// canvas's controls are its Workbench section, in place of the canvas's old
-// toolbar row.
+// The navigation sidebar stands at the left, whichever side Chat is on, as a
+// rail of icons. Hovering the rail opens it over the workbench, a pin (⌘B)
+// opens it for good, and the canvas's controls are its Workbench section, in
+// place of the canvas's old toolbar row. The page loads under Playwright's
+// pointer at its top-left corner, on the rail, which stays folded until the
+// pointer moves.
 
 test.use({ canvas: true });
 
@@ -31,14 +33,15 @@ async function forget(page: Page): Promise<void> {
   await setPreferences(page.request, { chat_side: null });
 }
 
-test("the sidebar starts as a rail at the right, opposite Chat, and the canvas has no toolbar row", async ({ page }) => {
+test("the sidebar starts as a rail at the left, and the canvas has no toolbar row", async ({ page }) => {
   const { sidebar, app, main } = await open(page);
   await expect(app).toHaveClass(/sidebar-collapsed/);
-  await expect(app).toHaveClass(/sidebar-right/);
+  await expect(app).not.toHaveClass(/sidebar-right/);
   const rail = await box(sidebar);
   const work = await box(main);
   expect(Math.round(rail.width)).toBe(48);
-  expect(rail.x).toBeGreaterThanOrEqual(work.x + work.width - 1);
+  expect(rail.x + rail.width).toBeLessThanOrEqual(work.x + 1);
+  // Chat, at the left by default, stands inside the workbench, beside the rail.
   expect((await box(page.locator(".chat-column"))).x).toBeLessThan(work.x + work.width / 2);
   await expect(page.locator(".visual-toolbar")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Configure" })).toHaveCount(0);
@@ -74,10 +77,13 @@ test("the pin button, or Ctrl+B, opens the sidebar for good and takes room from 
   expect((await box(main)).width).toBeGreaterThan(rail.width - 2);
 });
 
-test("flipping Chat's side moves the sidebar to the other", async ({ page }) => {
+test("flipping Chat's side leaves the sidebar at the left", async ({ page }) => {
   const { sidebar, main } = await open(page);
+  const before = await box(sidebar);
+  expect(before.x).toBeLessThan((await box(main)).x);
   await page.locator(".chat-column").getByRole("button", { name: "Move Chat to the right" }).click();
   const work = await box(main);
+  expect((await box(sidebar)).x).toBe(before.x);
   expect((await box(sidebar)).x).toBeLessThan(work.x);
   await expect(page.locator(".app")).not.toHaveClass(/sidebar-right/);
   await forget(page);
@@ -89,10 +95,10 @@ async function middle(locator: Locator): Promise<[number, number]> {
   return [Math.round(x + width / 2), Math.round(y + height / 2)];
 }
 
-for (const side of ["right", "left"] as const) {
-  test(`at the ${side}, the pin button stays put as the rail opens and is pinned, over Search and then New, each a row, above Graph`, async ({ page }) => {
+for (const chat of ["left", "right"] as const) {
+  test(`with Chat at the ${chat}, the pin button stays put as the rail opens and is pinned, over Search and then New, each a row, above Graph`, async ({ page }) => {
     const { sidebar, app } = await open(page);
-    if (side === "left") await page.locator(".chat-column").getByRole("button", { name: "Move Chat to the right" }).click();
+    if (chat === "right") await page.locator(".chat-column").getByRole("button", { name: "Move Chat to the right" }).click();
     const pin = sidebar.locator(".panel-toggle");
     const rail = await middle(pin);
     await sidebar.hover();
@@ -129,10 +135,10 @@ async function iconPlaces(sidebar: Locator): Promise<Record<string, [number, num
   });
 }
 
-for (const side of ["right", "left"] as const) {
-  test(`at the ${side}, every icon stands where it stood in the rail, the rail opened or pinned`, async ({ page }) => {
+for (const chat of ["left", "right"] as const) {
+  test(`with Chat at the ${chat}, every icon stands where it stood in the rail, the rail opened or pinned`, async ({ page }) => {
     const { sidebar, app } = await open(page);
-    if (side === "left") await page.locator(".chat-column").getByRole("button", { name: "Move Chat to the right" }).click();
+    if (chat === "right") await page.locator(".chat-column").getByRole("button", { name: "Move Chat to the right" }).click();
     const rail = await iconPlaces(sidebar);
     expect(Object.keys(rail)).toEqual(expect.arrayContaining(["pin", "Search", "New issue", "Graph", "Issues", "Your settings", "Admin", "Signed in"]));
     await sidebar.hover();

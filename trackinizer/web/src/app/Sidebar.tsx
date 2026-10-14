@@ -6,15 +6,18 @@ import { formatRoute, type Route } from "../router/route";
 import { useRouter } from "../router/router";
 import { chooseTheme, useTheme } from "../theme";
 import { Icon, Logo } from "../ui/icons";
+import { useOnline } from "../ui/bars";
 import { KindIcon, kindLook } from "../ui/kinds";
 import { type Panel, type PanelSpec, PanelToggle } from "../ui/panel";
+import { useToast } from "../ui/toast";
 import { useMeta, useProfile } from "./boot";
+import { NO_AUTH_EMAIL, useSignOut } from "./signOut";
 import { useWorkbenchPresent, WorkbenchSlot } from "./workbenchSlot";
 /**
  * The sidebar as a panel, pinned open or collapsed by ⌘B (Ctrl+B), as VS
  * Code's primary side bar is: `[` and `]` are each view's own panels'. It
- * starts as a rail, which hovering opens over the workbench. Its side is the
- * one opposite Chat's, so the shell gives it `side`.
+ * starts as a rail, which hovering opens over the workbench. It stands at the
+ * left of the canvas, whichever side Chat is on.
  */
 export const SIDEBAR: PanelSpec = { id: "app.sidebar", name: "sidebar", side: "left", keys: ["$mod+b"], startsCollapsed: true };
 
@@ -25,8 +28,8 @@ const SIDEBAR_ID = "app-sidebar";
  * The sidebar: the logo, Search, New, Graph (the home view), Console,
  * Activity, one Browse entry per kind, the Workbench section (the canvas's
  * visuals and Artifact link, while a canvas is mounted, folded at first), and at
- * its foot Your settings, Admin (for admins only), the theme and the signed-in
- * user. Each icon stands where the rail has it, opened or not. The mock's other
+ * its foot Your settings, Admin (for admins only), the theme, Sign out (unless
+ * the server runs with `--no-auth`) and the signed-in user. Each icon stands where the rail has it, opened or not. The mock's other
  * entries (Starred, Notifications, Views, Later) belong to later phases and
  * stay out until those ship. The button beside the logo, at the sidebar's
  * outer edge, collapses it (`panel`) to a rail, as VS Code's activity bar is:
@@ -54,13 +57,12 @@ export function Sidebar({ onNavigate, onWorkbench, panel }: {
   return (
     <nav id={SIDEBAR_ID} className="sidebar" aria-label="Sidebar">
       <div className="ws-row">
-        {/* At the outer edge: placed here, not by CSS `order`, so Tab meets it where the eye does. The rail hides the logo. */}
-        {panel.side === "left" ? toggle : null}
+        {/* At the outer edge, the left: placed first, so Tab meets it where the eye does. The rail hides the logo. */}
+        {toggle}
         <a className="ws-switch" href={formatRoute({ name: "graph" })} onClick={onNavigate}>
           <Logo />
           Trackinizer
         </a>
-        {panel.side === "right" ? toggle : null}
       </div>
       <div className="sidebar-tools">
         <button
@@ -129,7 +131,7 @@ export function Sidebar({ onNavigate, onWorkbench, panel }: {
         </button>
         <WorkbenchSlot />
       </NavSection>
-      {/* The foot, a row each: Settings, Admin, the theme and the user, in the rail as opened. */}
+      {/* The foot, a row each: Settings, Admin, the theme, Sign out and the user, in the rail as opened. */}
       <div className="sidebar-foot">
         <NavItem
           route={{ name: "settings" }}
@@ -150,6 +152,7 @@ export function Sidebar({ onNavigate, onWorkbench, panel }: {
           />
         ) : null}
         <ThemeButton />
+        {profile.email === NO_AUTH_EMAIL ? null : <SignOutButton />}
         <div className="me-row" role="group" aria-label="Signed in" title={compact ? `${profile.email} (${profile.role})` : undefined}>
           <span className="avatar" aria-hidden="true">
             {profile.email.charAt(0).toUpperCase()}
@@ -175,6 +178,27 @@ function ThemeButton() {
     <button type="button" className="nav-item theme-btn" aria-label={label} title={label} onClick={() => chooseTheme(next)}>
       <Icon name={next === "light" ? "sun" : "moon"} />
       <span className="label">{next === "light" ? "Light theme" : "Dark theme"}</span>
+    </button>
+  );
+}
+
+/** Sign out, as Settings does; a failure shows as a toast, which the rail has room for. */
+function SignOutButton() {
+  const online = useOnline();
+  const toast = useToast();
+  const { pending, leave } = useSignOut({ failed: ({ message, error }) => toast(`Could not sign out. ${message}`, { failed: true, error }) });
+  return (
+    <button
+      type="button"
+      className="nav-item sign-out"
+      aria-label="Sign out"
+      title="Sign out"
+      disabled={!online}
+      aria-disabled={pending || undefined}
+      onClick={() => void leave()}
+    >
+      <Icon name="logOut" />
+      <span className="label">Sign out</span>
     </button>
   );
 }

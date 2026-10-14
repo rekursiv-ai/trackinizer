@@ -8,6 +8,7 @@ import { setChatSide } from "../visuals/chatColumnState";
 import { FOLD_AFTER_MS, OPEN_AFTER_MS } from "../visuals/hoverOpen";
 import { Icon } from "../ui/icons";
 import { App } from "./App";
+import { LOGIN_URL } from "./session";
 import { useWorkbenchMounted, useWorkbenchSlot } from "./workbenchSlot";
 
 // Counts the times the canvas's code is loaded: a module's factory runs once,
@@ -37,20 +38,24 @@ vi.mock("../visuals/ChatColumn", () => {
   return { ChatColumn: ({ children }: { children: ReactNode }) => <div data-testid="chat-column">{children}</div> };
 });
 
-/** Serve boot for a user whose canvas is `enabled`, and an empty list. */
-function serve(enabled: boolean) {
+/** Serve boot for a user whose canvas is `enabled`, and an empty list; `logout` answers a sign-out. */
+function serve(enabled: boolean, { email = "ada@example.com", logout = () => new Response(null, { status: 204 }) }: {
+  readonly email?: string;
+  readonly logout?: () => Response;
+} = {}) {
   const DEFAULTS = { theme: "dark", chat_style: "default", chat_side: "left", highlight_mentions: true, terminal_font_size: "13px" };
   const bodies: { [path: string]: unknown } = {
     "/api/meta/enums": { inquiry_kind_all: ["Issue"], status: ["active"] },
     "/api/meta/fields": {},
     "/api/meta/edges": {},
-    "/api/me/profile": { user_id: "u", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: enabled, ...AGREED },
+    "/api/me/profile": { user_id: "u", email, name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: enabled, ...AGREED },
     "/api/inquiries": [],
   };
   return stubFetch(async (request) => {
     const path = new URL(request.url).pathname;
     // The server's merge of a preference change: the keys sent, the defaults for the rest.
     if (request.method === "PATCH" && path === "/api/me/preferences") return Response.json({ ...DEFAULTS, ...(await request.json()) });
+    if (path === "/auth/logout") return logout();
     return Response.json(bodies[path]);
   });
 }
@@ -140,7 +145,7 @@ test("the sidebar starts as a rail of its entries, named, titled and in order; i
   expect(within(sidebar).getByRole("group", { name: "Signed in" }).getAttribute("title")).toBe("ada@example.com (writer)");
   // Settings stands at the foot with the theme and the user, not among the views.
   const foot = sidebar.querySelector(".sidebar-foot") as HTMLElement;
-  expect([...foot.children].map((child) => child.getAttribute("aria-label"))).toEqual(["Your settings", "Switch to light theme", "Signed in"]);
+  expect([...foot.children].map((child) => child.getAttribute("aria-label"))).toEqual(["Your settings", "Switch to light theme", "Sign out", "Signed in"]);
   await user.click(toggle());
   expect(document.querySelector(".app")!.classList).not.toContain("sidebar-collapsed");
   expect(toggle().getAttribute("aria-label")).toBe("Collapse sidebar");
@@ -153,26 +158,23 @@ test("the sidebar starts as a rail of its entries, named, titled and in order; i
   expect(toggle().getAttribute("aria-label")).toBe("Expand sidebar");
 });
 
-test("the sidebar stands opposite Chat, and moves with it when Chat's side flips", async () => {
+test("the sidebar stands at the left whichever side Chat is on", async () => {
   serve(false);
   render(<App assign={vi.fn()} />);
   await screen.findByRole("heading", { level: 1 });
   const app = document.querySelector(".app")!;
   const toggle = () => within(screen.getByRole("navigation", { name: "Sidebar" })).getByRole("button", { name: /sidebar$/ });
-  // Chat is at the left by default; the sidebar is at the right, and its button points to that edge.
   const icon = (name: "panelLeftOpen" | "panelRightOpen") => render(<Icon name={name} />).container.querySelector("svg")!.innerHTML;
-  // The button stands at the sidebar's outer edge, beside the logo; Search and New are the row under them.
+  // The button stands at the sidebar's outer edge, the left, before the logo; Search and New are the row under them.
   const header = () => [...document.querySelector(".ws-row")!.children].map((child) => child.getAttribute("aria-label") ?? child.textContent);
   const tools = () => [...document.querySelector(".sidebar-tools")!.children].map((child) => child.getAttribute("aria-label"));
-  expect(app.classList).toContain("sidebar-right");
-  expect(toggle().querySelector("svg")!.innerHTML).toBe(icon("panelRightOpen"));
-  expect(header()).toEqual(["Trackinizer", "Expand sidebar"]);
-  expect(tools()).toEqual(["Search", "New issue"]);
-  act(() => setChatSide("right"));
-  expect(app.classList).not.toContain("sidebar-right");
-  expect(toggle().querySelector("svg")!.innerHTML).toBe(icon("panelLeftOpen"));
-  expect(header()).toEqual(["Expand sidebar", "Trackinizer"]);
-  expect(tools()).toEqual(["Search", "New issue"]);
+  for (const side of ["left", "right"] as const) {
+    act(() => setChatSide(side));
+    expect(app.classList).not.toContain("sidebar-right");
+    expect(toggle().querySelector("svg")!.innerHTML).toBe(icon("panelLeftOpen"));
+    expect(header()).toEqual(["Expand sidebar", "Trackinizer"]);
+    expect(tools()).toEqual(["Search", "New issue"]);
+  }
 });
 
 test("a rail opens over the workbench after the pointer rests on it, and folds after it leaves; pinned, it does not", async () => {
@@ -182,7 +184,7 @@ test("a rail opens over the workbench after the pointer rests on it, and folds a
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const app = document.querySelector(".app")!;
   const dock = document.querySelector(".sidebar-dock")!;
-  fireEvent.pointerEnter(dock);
+  fireEvent.pointerMove(dock);
   act(() => { vi.advanceTimersByTime(OPEN_AFTER_MS - 1); });
   expect(app.classList).not.toContain("sidebar-peek");
   act(() => { vi.advanceTimersByTime(1); });
@@ -193,7 +195,7 @@ test("a rail opens over the workbench after the pointer rests on it, and folds a
   // Pinned open, there is nothing to peek at.
   fireEvent.click(within(dock as HTMLElement).getByRole("button", { name: "Expand sidebar" }));
   expect(app.classList).not.toContain("sidebar-collapsed");
-  fireEvent.pointerEnter(dock);
+  fireEvent.pointerMove(dock);
   act(() => { vi.advanceTimersByTime(OPEN_AFTER_MS); });
   expect(app.classList).not.toContain("sidebar-peek");
 });
@@ -206,7 +208,7 @@ test("the keyboard in an opened rail holds it open, and a link followed folds it
   const app = document.querySelector(".app")!;
   const dock = document.querySelector(".sidebar-dock")!;
   const link = within(dock as HTMLElement).getByRole("link", { name: "Console" });
-  fireEvent.pointerEnter(dock);
+  fireEvent.pointerMove(dock);
   act(() => { vi.advanceTimersByTime(OPEN_AFTER_MS); });
   act(() => link.focus());
   fireEvent.pointerLeave(dock);
@@ -248,7 +250,7 @@ test("the opened rail stays open while the pointer rests on the canvas's control
   const dock = document.querySelector<HTMLElement>(".sidebar-dock")!;
   const link = within(dock).getByRole("link", { name: "Console" });
   const note = within(dock).getByRole("checkbox", { name: "Note" });
-  fireEvent.pointerEnter(dock);
+  fireEvent.pointerMove(dock);
   act(() => { vi.advanceTimersByTime(OPEN_AFTER_MS); });
   expect(app.classList).toContain("sidebar-peek");
   // From a link onto the controls, which the canvas draws there by a portal: the pointer is still in the sidebar.
@@ -289,4 +291,31 @@ test("the sidebar's theme button switches dark to light and back, kept in the us
   await waitFor(() => expect(sent.filter((request) => request.path === "/api/me/preferences").map((request) => request.body))
     .toEqual([{ theme: "light" }, { theme: "dark" }]));
   expect(localStorage.length).toBe(0);
+});
+
+test("Sign out in the rail posts to /auth/logout, then loads the login page", async () => {
+  const sent = serve(false);
+  const assign = vi.fn();
+  render(<App assign={assign} />);
+  await screen.findByRole("heading", { level: 1 });
+  fireEvent.click(within(screen.getByRole("navigation", { name: "Sidebar" })).getByRole("button", { name: "Sign out" }));
+  await waitFor(() => expect(assign).toHaveBeenCalledWith(LOGIN_URL), { interval: 1 });
+  expect(sent.filter((request) => request.path === "/auth/logout").map((request) => request.method)).toEqual(["POST"]);
+});
+
+test("a refused sign-out from the sidebar says why in a toast, and stays on the page", async () => {
+  serve(false, { logout: () => Response.json({ detail: "cross-origin logout rejected" }, { status: 403 }) });
+  const assign = vi.fn();
+  render(<App assign={assign} />);
+  await screen.findByRole("heading", { level: 1 });
+  fireEvent.click(within(screen.getByRole("navigation", { name: "Sidebar" })).getByRole("button", { name: "Sign out" }));
+  expect(await screen.findByText("Could not sign out. cross-origin logout rejected")).toBeTruthy();
+  expect(assign).not.toHaveBeenCalled();
+});
+
+test("under --no-auth, where nobody signs in, the sidebar offers no sign out", async () => {
+  serve(false, { email: "no-auth@localhost" });
+  render(<App assign={vi.fn()} />);
+  await screen.findByRole("heading", { level: 1 });
+  expect(within(screen.getByRole("navigation", { name: "Sidebar" })).queryByRole("button", { name: "Sign out" })).toBeNull();
 });

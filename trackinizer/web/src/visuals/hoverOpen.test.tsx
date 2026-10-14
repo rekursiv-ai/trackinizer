@@ -27,7 +27,7 @@ afterEach(() => {
 
 test("the tile opens once the pointer has rested on it, and folds once it has been off it", () => {
   const { tile, open, wait } = mount();
-  fireEvent.pointerEnter(tile);
+  fireEvent.pointerMove(tile);
   wait(OPEN_AFTER_MS - 1);
   expect(open()).toBe(false);
   wait(1);
@@ -39,25 +39,36 @@ test("the tile opens once the pointer has rested on it, and folds once it has be
   expect(open()).toBe(false);
 });
 
-test("a pointer only crossing the tile opens nothing, and one that comes back folds nothing", () => {
+test("a tile that comes to lie under a resting pointer, as when the page loads under it, opens once the pointer moves", () => {
   const { tile, open, wait } = mount();
   fireEvent.pointerEnter(tile);
+  fireEvent.pointerOver(tile);
+  wait(OPEN_AFTER_MS + FOLD_AFTER_MS);
+  expect(open()).toBe(false);
+  fireEvent.pointerMove(screen.getByLabelText("Message"));
+  wait(OPEN_AFTER_MS);
+  expect(open()).toBe(true);
+});
+
+test("a pointer only crossing the tile opens nothing, and one that comes back folds nothing", () => {
+  const { tile, open, wait } = mount();
+  fireEvent.pointerMove(tile);
   fireEvent.pointerLeave(tile);
   wait(OPEN_AFTER_MS + FOLD_AFTER_MS);
   expect(open()).toBe(false);
 
-  fireEvent.pointerEnter(tile);
+  fireEvent.pointerMove(tile);
   wait(OPEN_AFTER_MS);
   fireEvent.pointerLeave(tile);
   wait(FOLD_AFTER_MS - 1);
-  fireEvent.pointerEnter(tile);
+  fireEvent.pointerMove(tile);
   wait(FOLD_AFTER_MS);
   expect(open()).toBe(true);
 });
 
 test("the keyboard in the contents holds the tile open after the pointer left, until it leaves too", () => {
   const { tile, open, wait } = mount();
-  fireEvent.pointerEnter(tile);
+  fireEvent.pointerMove(tile);
   wait(OPEN_AFTER_MS);
   act(() => screen.getByLabelText("Message").focus());
   fireEvent.pointerLeave(tile);
@@ -74,7 +85,7 @@ test("set folds the tile at once and takes the keyboard out of it, and a fold un
   fireEvent.click(fold);
   expect(open()).toBe(true);
   // The pointer is on the tile and the keyboard in its contents: both would hold it open.
-  fireEvent.pointerEnter(tile);
+  fireEvent.pointerMove(tile);
   act(() => screen.getByLabelText("Message").focus());
   fireEvent.click(fold);
   expect(open()).toBe(false);
@@ -85,7 +96,7 @@ test("set folds the tile at once and takes the keyboard out of it, and a fold un
 
 test("a touch has no hover: it opens and folds nothing by coming and going", () => {
   const { tile, open, wait } = mount();
-  fireEvent.pointerEnter(tile, { pointerType: "touch" });
+  fireEvent.pointerMove(tile, { pointerType: "touch" });
   wait(OPEN_AFTER_MS);
   expect(open()).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Fold" }));
@@ -96,7 +107,7 @@ test("a touch has no hover: it opens and folds nothing by coming and going", () 
 
 test("a tile not watched opens nothing under the pointer", () => {
   const { tile, open, wait } = mount(false);
-  fireEvent.pointerEnter(tile);
+  fireEvent.pointerMove(tile);
   wait(OPEN_AFTER_MS + FOLD_AFTER_MS);
   expect(open()).toBe(false);
 });

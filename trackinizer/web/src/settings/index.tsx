@@ -1,8 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { setVisualWorkspacePreference, signOut } from "../api/me";
+import { setVisualWorkspacePreference } from "../api/me";
 import { bootQueries, useProfile } from "../app/boot";
-import { LOGIN_URL } from "../app/session";
+import { NO_AUTH_EMAIL, useSignOut } from "../app/signOut";
 import { CopyDetails } from "../debug/CopyDetails";
 import { dateTime, relativeTime, useMinuteClock } from "../detail/time";
 import { useOnline } from "../ui/bars";
@@ -126,53 +125,28 @@ function ThemeSection() {
   );
 }
 
-/**
- * Sign out: the server clears the session cookie, then the login page loads.
- *
- * Not a write through the write layer: it changes no data, a second request
- * does no harm, and its failures are about signing out, not saving.
- */
+/** Sign out, here or from the sidebar's foot (`useSignOut`), with its progress and failure in the row. */
 function SessionSection({ assign }: { assign: (url: string) => void }) {
   const online = useOnline();
-  const [state, setState] = useState<{ readonly pending: boolean; readonly failure: { readonly message: string; readonly error: unknown } | null }>(IDLE);
-  const leave = async () => {
-    if (state.pending) return;
-    setState({ pending: true, failure: null });
-    try {
-      await signOut();
-    } catch (error) {
-      setState({ pending: false, failure: { message: error instanceof Error ? error.message : String(error), error } });
-      return;
-    }
-    assign(LOGIN_URL);
-  };
+  const { pending, failure, leave } = useSignOut({ assign });
   return (
     <Section title="Session">
       <div className="st-row">
-        <button type="button" className="btn ghost" disabled={!online} aria-disabled={state.pending || undefined} onClick={() => void leave()}>
+        <button type="button" className="btn ghost" disabled={!online} aria-disabled={pending || undefined} onClick={() => void leave()}>
           Sign out
         </button>
-        {state.pending ? (
+        {pending ? (
           <span className="w-status" role="status">
             Signing out…
           </span>
         ) : null}
-        {state.failure ? (
+        {failure ? (
           <span className="form-err" role="alert">
-            Could not sign out. {state.failure.message}
-            <CopyDetails message={`Could not sign out. ${state.failure.message}`} error={state.failure.error} />
+            Could not sign out. {failure.message}
+            <CopyDetails message={`Could not sign out. ${failure.message}`} error={failure.error} />
           </span>
         ) : null}
       </div>
     </Section>
   );
 }
-
-const IDLE = { pending: false, failure: null };
-
-/**
- * The account a server run with `--no-auth` answers every request as
- * (`server/auth.py`). Nobody signs in there, so signing out would only land on
- * a login page with nothing to sign in with.
- */
-const NO_AUTH_EMAIL = "no-auth@localhost";

@@ -14,6 +14,11 @@ export const FOLD_AFTER_MS = 300;
  * pointer that left and came back, or a focus that moved within it, folds
  * nothing. A touch has no hover: it opens and folds by `set`.
  *
+ * The pointer counts once it moves on the tile, not when the tile comes to lie
+ * under it: a page that loads, or a layout that shifts, under a pointer resting
+ * at the screen's edge sends the tile an enter with no move, and the user, who
+ * moved nothing, asked for nothing.
+ *
  * The tile is watched by the page's own pointer and focus events, not React's.
  * React tells an element of these by the component tree, where what a portal
  * draws into the tile (the canvas's controls, in the sidebar) is not in it, so
@@ -26,7 +31,7 @@ export function useHoverOpen(tile: RefObject<HTMLElement | null>, { enabled = tr
   readonly set: (open: boolean) => void;
   /** The handlers of the strip that opens the tile, which holds it open as the tile does. */
   readonly handlers: {
-    readonly onPointerEnter: (event: PointerEvent) => void;
+    readonly onPointerMove: (event: PointerEvent) => void;
     readonly onPointerLeave: (event: PointerEvent) => void;
     readonly onBlur: () => void;
   };
@@ -45,17 +50,21 @@ export function useHoverOpen(tile: RefObject<HTMLElement | null>, { enabled = tr
     hovered.current = on;
     settle(on ? OPEN_AFTER_MS : FOLD_AFTER_MS);
   };
+  // Only the first move counts: the rest would put off the opening, or open again what `set` folded.
+  const moved = (pointerType: string) => {
+    if (!hovered.current) hover(true, pointerType);
+  };
   useEffect(() => {
     const element = tile.current;
     if (!enabled || !element) return;
-    const enter = (event: globalThis.PointerEvent) => hover(true, event.pointerType);
+    const move = (event: globalThis.PointerEvent) => moved(event.pointerType);
     const leave = (event: globalThis.PointerEvent) => hover(false, event.pointerType);
     const blur = () => settle(FOLD_AFTER_MS);
-    element.addEventListener("pointerenter", enter);
+    element.addEventListener("pointermove", move);
     element.addEventListener("pointerleave", leave);
     element.addEventListener("focusout", blur);
     return () => {
-      element.removeEventListener("pointerenter", enter);
+      element.removeEventListener("pointermove", move);
       element.removeEventListener("pointerleave", leave);
       element.removeEventListener("focusout", blur);
       // No leave comes once the tile is not watched, so a pointer on it now holds nothing.
@@ -72,7 +81,7 @@ export function useHoverOpen(tile: RefObject<HTMLElement | null>, { enabled = tr
       setOpen(next);
     },
     handlers: {
-      onPointerEnter: (event) => hover(true, event.pointerType),
+      onPointerMove: (event) => moved(event.pointerType),
       onPointerLeave: (event) => hover(false, event.pointerType),
       onBlur: () => settle(FOLD_AFTER_MS),
     },
