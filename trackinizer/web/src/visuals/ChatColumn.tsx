@@ -89,8 +89,9 @@ export function ChatColumn({
   useEffect(() => {
     if (!workspace || !unit.ch) return;
     const { chat } = readLegacySizes();
-    if (chat && layout.chat_ch === undefined) changeLayout({ chat_ch: Math.round((chat / unit.ch) * 100) / 100 }, { now: true });
-    dropLegacySizes("chat");
+    if (chat && workspace.layout?.chat_ch == null) {
+      changeLayout({ chat_ch: Math.round((chat / unit.ch) * 100) / 100 }, { now: true, onSaved: () => dropLegacySizes("chat") });
+    } else dropLegacySizes("chat");
   }, [workspace?.id, unit.ch > 0]);
   // The width the stylesheet gave the column while the user has set none, for the divider to tell.
   const [drawn, setDrawn] = useState(0);

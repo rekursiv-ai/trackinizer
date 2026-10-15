@@ -612,6 +612,48 @@ async def test_facets_hold_one_snapshot_while_a_session_is_purged(
 # ---- The conversation feed ----------------------------------------------------
 
 
+@pytest.mark.db_postgres
+@pytest.mark.asyncio(loop_scope="session")
+async def test_backward_feed_cursor_pages_same_instant_ties_without_overlap(
+    integ_store: Store,
+) -> None:
+    """Backward pages preserve the whole order key and the caller's scope."""
+    picked = await _session(integ_store, "picked", rooms=("lab",))
+    outside = await _session(integ_store, "outside", rooms=("ops",))
+    await _records(
+        integ_store,
+        picked,
+        [("AssistantMessage", _T0 - timedelta(seconds=1), _SAID)]
+        + [("ContextState", _T0, "{}") for _ in range(301)],
+    )
+    await _records(integ_store, outside, [("AssistantMessage", _T0, _SAID)])
+    scope = FeedScope(reader=_ANYONE, rooms=("lab",))
+    newest = await integ_store.read_feed(scope=scope, tail=True, limit=300)
+    assert [event.seq for event in newest] == list(range(2, 302))
+    first = newest[0]
+    older = await integ_store.read_feed(
+        before=(first.created, first.session_id, first.part, first.seq),
+        scope=scope,
+        tail=True,
+        limit=300,
+    )
+    assert [(event.session_id, event.seq) for event in older] == [
+        (picked, 0),
+        (picked, 1),
+    ]
+    assert {(event.session_id, event.part, event.seq) for event in older + newest} == {
+        (picked, 0, seq) for seq in range(302)
+    }
+    assert (
+        await integ_store.read_feed(
+            before=(older[0].created, picked, 0, 0),
+            scope=scope,
+            tail=True,
+        )
+        == []
+    )
+
+
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_the_conversation_feed_keeps_what_the_facets_count(

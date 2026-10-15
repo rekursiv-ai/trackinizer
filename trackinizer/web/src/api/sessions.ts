@@ -119,6 +119,8 @@ export type FeedRead = FeedFilters & {
   /** Only what a person or agent said: the records the facets count as `conversation`. */
   readonly conversation?: boolean;
   readonly after?: FeedCursor;
+  /** Exclusive upper bound in the same order; with `tail`, the preceding page. */
+  readonly before?: FeedCursor;
   /** ISO times; `since` and `until` are both inclusive. */
   readonly since?: string;
   readonly until?: string;
@@ -132,7 +134,7 @@ export type FeedRead = FeedFilters & {
  * page can end inside a group written in the same instant.
  */
 export async function readFeed(
-  { tail, conversation, after, since, until, limit, ...filters }: FeedRead,
+  { tail, conversation, after, before, since, until, limit, ...filters }: FeedRead,
   { signal }: CallOptions = {},
 ): Promise<FeedPage> {
   return send(TIMEOUT_MS.read, signal, (signal) =>
@@ -143,6 +145,9 @@ export async function readFeed(
           ...(conversation ? { conversation } : {}),
           ...(after
             ? { after_created: after.created, after_session: after.session_id, after_part: after.part, after_seq: after.seq }
+            : {}),
+          ...(before
+            ? { before_created: before.created, before_session: before.session_id, before_part: before.part, before_seq: before.seq }
             : {}),
           ...(since ? { since } : {}),
           ...(until ? { until } : {}),

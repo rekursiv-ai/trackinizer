@@ -61,10 +61,12 @@ test("the feed's first live page is its newest; later pages resume past the whol
   expect(await readFeed({ tail: true, limit: 300 })).toEqual({ events: [], next_after: null });
   const cursor = { created: "2026-10-01T10:00:00Z", session_id: ID, part: 1, seq: 7 };
   await readFeed({ after: cursor, limit: 300 });
+  await readFeed({ tail: true, before: cursor, limit: 300 });
   await readFeed({ since: "2026-10-01T09:00:00.000Z", until: "2026-10-01T10:00:00.000Z", limit: 300 });
   expect(sent.map((request) => [request.method, request.path, Object.fromEntries(new URLSearchParams(request.query))])).toEqual([
     ["GET", "/api/web/feed", { tail: "true", limit: "300" }],
     ["GET", "/api/web/feed", { after_created: "2026-10-01T10:00:00Z", after_session: ID, after_part: "1", after_seq: "7", limit: "300" }],
+    ["GET", "/api/web/feed", { tail: "true", before_created: "2026-10-01T10:00:00Z", before_session: ID, before_part: "1", before_seq: "7", limit: "300" }],
     ["GET", "/api/web/feed", { since: "2026-10-01T09:00:00.000Z", until: "2026-10-01T10:00:00.000Z", limit: "300" }],
   ]);
 });

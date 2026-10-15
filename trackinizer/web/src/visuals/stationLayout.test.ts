@@ -103,3 +103,47 @@ test("a refused write is not an error the page shows", async () => {
   await vi.advanceTimersByTimeAsync(1);
   expect(result.current[0].chat_ch).toBe(70);
 });
+
+test.each(["timer", "now", "pagehide"])("a held layout write coalesces newer changes and sends them after it (%s)", async (flush) => {
+  let release: () => void = () => { throw new Error("No held write"); };
+  let saved = 0;
+  vi.mocked(setStationLayout).mockImplementationOnce(() => new Promise<void>((resolve) => {
+    release = () => { saved = 0.3; resolve(); };
+  })).mockImplementation(async (_id, patch) => { saved = patch.columns?.side ?? saved; });
+  const { result } = useIt();
+  act(() => result.current[1]({ columns: { side: 0.3 } }, { now: true }));
+  act(() => result.current[1]({ columns: { side: 0.4 } }));
+  act(() => result.current[1]({ columns: { side: 0.5 } }, { now: flush === "now" }));
+  if (flush === "pagehide") act(() => { dispatchEvent(new Event("pagehide")); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(LAYOUT_EVERY_MS); });
+  expect(setStationLayout).toHaveBeenCalledTimes(1);
+  await act(async () => release());
+  expect(setStationLayout).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(setStationLayout).mock.calls.at(-1)).toEqual(["s1", { columns: { side: 0.5 } }]);
+  expect(saved).toBe(0.5);
+});
+
+test("another station writes independently while a refused write releases its own queue", async () => {
+  let reject: (error: Error) => void = () => { throw new Error("No held write"); };
+  vi.mocked(setStationLayout).mockImplementationOnce(() => new Promise<void>((_resolve, refuse) => { reject = refuse; }));
+  const { result, rerender } = useIt();
+  act(() => result.current[1]({ chat_ch: 70 }, { now: true }));
+  act(() => result.current[1]({ chat_ch: 80 }, { now: true }));
+  act(() => station({ chat_ch: 90 }, "s2"));
+  rerender();
+  act(() => result.current[1]({ chat_ch: 100 }, { now: true }));
+  expect(vi.mocked(setStationLayout).mock.calls.map(([id]) => id)).toEqual(["s1", "s2"]);
+  await act(async () => reject(new Error("offline")));
+  expect(vi.mocked(setStationLayout).mock.calls.at(-1)).toEqual(["s1", { chat_ch: 80 }]);
+});
+
+test("forget discards changes waiting behind an outstanding write", async () => {
+  let release: () => void = () => { throw new Error("No held write"); };
+  vi.mocked(setStationLayout).mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+  const { result } = useIt();
+  act(() => result.current[1]({ chat_ch: 70 }, { now: true }));
+  act(() => result.current[1]({ chat_ch: 80 }, { now: true }));
+  act(() => forgetLayouts());
+  await act(async () => release());
+  expect(setStationLayout).toHaveBeenCalledTimes(1);
+});

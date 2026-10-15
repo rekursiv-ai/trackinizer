@@ -207,6 +207,22 @@ test("a browser that kept Chat's width in pixels hands it to the first station i
   expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual({ side: 400, floating: {}, share: {} });
 });
 
+test("Chat retains legacy width through a refused migration and retries it on reload", async () => {
+  const sizes = { chat: 512, side: 400, floating: {}, share: {} };
+  localStorage.setItem(SIZES_KEY, JSON.stringify(sizes));
+  let reject: (error: Error) => void = () => { throw new Error("No held migration"); };
+  vi.mocked(setStationLayout).mockImplementationOnce(() => new Promise<void>((_resolve, refuse) => { reject = refuse; }));
+  await show();
+  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual(sizes);
+  await act(async () => reject(new Error("offline")));
+  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual(sizes);
+  cleanup();
+  forgetLayouts();
+  setStation(null);
+  await show();
+  await vi.waitFor(() => expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual({ side: 400, floating: {}, share: {} }), { interval: 1 });
+});
+
 test("a station that already holds Chat's width keeps it over the pixels the browser kept", async () => {
   localStorage.setItem(SIZES_KEY, JSON.stringify({ chat: 512 }));
   const { column } = await show({ ...workspace, layout: { chat_ch: 50 } });

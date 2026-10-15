@@ -280,6 +280,55 @@ test("a smaller window holds a saved place inside the page", async ({ page, requ
   }).toBe(true);
 });
 
+test("a phone shows a floating tile as a full-width header and keeps its desktop geometry", async ({ page, request }) => {
+  await floatGraph(request);
+  const { tile, bar } = await open(page);
+  // At 760 px and below the app shows Chat alone and hides the workbench.
+  await page.setViewportSize({ width: 800, height: 844 });
+  const unsizedStage = await box(page.locator(".visual-stage"));
+  const unsized = await box(tile);
+  expect(Math.abs(unsized.x - unsizedStage.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(unsized.width - unsizedStage.width)).toBeLessThanOrEqual(1);
+  expect(unsized.height).toBe(34);
+
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await dragBy(page, bar.locator("span"), -300, 80);
+  const edge = tile.locator(".visual-window-edge-e");
+  const edgeBox = await box(edge);
+  await page.mouse.move(edgeBox.x + edgeBox.width / 2, edgeBox.y + edgeBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(edgeBox.x + edgeBox.width / 2 + 40, edgeBox.y + edgeBox.height / 2, { steps: 5 });
+  await page.mouse.up();
+  const saved = await box(tile);
+  await page.setViewportSize({ width: 800, height: 844 });
+  const stage = await box(page.locator(".visual-stage"));
+  const phone = await box(tile);
+  expect(Math.abs(phone.x - stage.x)).toBeLessThanOrEqual(1);
+  expect(Math.abs(phone.width - stage.width)).toBeLessThanOrEqual(1);
+  expect(phone.x).toBeGreaterThanOrEqual(0);
+  expect(phone.x + phone.width).toBeLessThanOrEqual(800);
+  expect(phone.height).toBe(34);
+
+  await bar.getByRole("button", { name: "Expand" }).click();
+  await expect(tile).toHaveClass(/visual-tile-mobile-expanded/);
+  const expanded = await box(tile);
+  expect(expanded.height).toBeGreaterThan(34);
+  await bar.getByRole("button", { name: "Collapse" }).click();
+  const collapsed = await box(tile);
+  expect(collapsed.height).toBe(34);
+
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await expect.poll(async () => {
+    const restored = await box(tile);
+    return [restored.x, restored.y, restored.width, restored.height].map(Math.round);
+  }).toEqual([saved.x, saved.y, saved.width, saved.height].map(Math.round));
+  const restored = await box(tile);
+  test.info().annotations.push({
+    type: "mobile-canvas-geometry",
+    description: JSON.stringify({ viewport: 800, unsizedStage, unsized, stage, phone, expanded, collapsed, saved, restored }),
+  });
+});
+
 test("dropped at an edge of the stage the tile docks there, and dragged out by its bar it floats again", async ({ page, request }) => {
   await floatGraph(request);
   const { tile, bar } = await open(page);

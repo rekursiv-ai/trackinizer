@@ -12,6 +12,7 @@
 .visual-stage { display: flex; flex: 1; min-height: 0; position: relative; overflow: auto; }
 .visual-tile { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
 .visual-tile-browse { overflow: hidden; }
+.visual-browse-content { display: contents; }
 .visual-tile-floating { position: absolute; right: 16px; width: min(390px, calc(100% - 32px)); height: min(480px, calc(100% - 100px)); min-width: min(280px, calc(100vw - 32px)); min-height: min(220px, calc(100vh - 80px)); max-width: calc(100vw - 32px); max-height: calc(100vh - 80px); border: 1px solid var(--line-strong); border-radius: var(--panel-radius); box-shadow: 0 16px 48px #0008; overflow: hidden; }
 .visual-tile-focused { outline: 1px solid var(--accent); outline-offset: -1px; }
 .visual-tile-toolbar { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 2px 8px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--muted); }
@@ -70,7 +71,7 @@
 .visual-main-strip { display: flex; flex: 1 1 0; min-width: 0; min-height: 0; overflow-x: auto; }
 .visual-main-strip > .visual-tile { flex: var(--tile-share, 1) 0 var(--tile-basis, 240px); min-width: 240px; }
 /* The page's lists need 300 px for their own toolbar. */
-.visual-main-strip > .visual-tile-browse { flex-basis: var(--tile-basis, 300px); min-width: 300px; }
+.visual-main-strip > .visual-browse-slot { flex-basis: var(--tile-basis, 300px); min-width: 300px; }
 .visual-main-strip > .visual-tile + .visual-tile, .visual-main-strip > .visual-divider + .visual-tile { border-left: 1px solid var(--line); }
 .visual-side-column { display: flex; flex: 0 1 var(--column-width, min(360px, 30%)); flex-direction: column; min-width: 260px; max-width: 70%; min-height: 0; border-left: 1px solid var(--line); overflow-y: auto; }
 .visual-side-column > .visual-tile { flex: var(--tile-share, 1) 1 0; min-height: 280px; }
@@ -86,7 +87,7 @@
   .visual-side-column > .visual-tile { flex: 0 0 min(400px, 48vh); min-height: 0; }
   .visual-main-strip > .visual-tile + .visual-tile, .visual-main-strip > .visual-divider + .visual-tile { border-left: 0; border-top: 1px solid var(--line); }
 }
-@media (max-width: 900px) { .visual-tile-floating { position: relative; top: auto !important; right: auto; width: 100%; height: 34px; border-radius: 0; box-shadow: none; flex: 0 0 auto; } .visual-tile-floating.visual-tile-mobile-expanded { height: min(400px, 48vh); } .visual-mobile-tab-toggle { display: inline-block; } }
+@media (max-width: 900px) { .visual-tile-floating { position: relative; top: auto !important; right: auto; left: auto !important; width: 100% !important; min-width: 0; max-width: 100%; height: 34px !important; min-height: 0; border-radius: 0; box-shadow: none; flex: 0 0 auto; } .visual-tile-floating.visual-tile-mobile-expanded { height: min(400px, 48vh) !important; } .visual-mobile-tab-toggle { display: inline-block; } }
 /* A tile's whole top bar drags it (a press without movement focuses it); the controls on the bar keep their own cursors. */
 .visual-tile-toolbar-draggable { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
 .visual-tile-toolbar-draggable:active { cursor: grabbing; }

@@ -20,7 +20,7 @@ import { type Size, dropLegacySizes, fitSizes, heldWidth, legacyLayout, MIN_COLU
 import { followColumns } from "./chatColumnState";
 import { CLICK_SLOP, EDGES, finishGesture, moveGesture, rememberedTile, resizeRect, slideDivider, snapZone, startGesture, TEAR_SLOP, withTile, type Edge, type TileMemory, type Gesture, type Rect, type Zone } from "./floatingTile";
 import { orderVisuals, SIDES } from "./layout";
-import { holds, useLayout, type Layout } from "./stationLayout";
+import { holds, layoutOf, useLayout, type Layout } from "./stationLayout";
 import { preloadRenderers, RENDERERS, VisualPane } from "./registry";
 import { WorkspaceActionsProvider } from "./workspaceActions";
 import "./canvas.css";
@@ -49,6 +49,10 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const [artifactLink, setArtifactLink] = useState("");
   const [artifactLinkError, setArtifactLinkError] = useState<string | null>(null);
   const [expandedMobileFloat, setExpandedMobileFloat] = useState<string | null>(null);
+  // Browse stays under the stage: moving DOM nodes would reset iframe documents
+  // and focus even when React keeps their components mounted.
+  const browseRef = useRef<HTMLDivElement>(null);
+  const browseSlotRef = useRef<HTMLDivElement>(null);
   // How the station's tiles and columns were left, as fractions of the stage,
   // and the stage they are fitted to. The station keeps the layout; the stage is
   // measured as it resizes, and nothing is written for a fit.
@@ -82,6 +86,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }));
   const visualTypes = useMemo(() => new Set(catalog.data?.visuals.map((visual) => visual.type)), [catalog.data]);
   const panes = orderVisuals(visible, workspace?.focused_instance ?? null);
+  const browse = panes.find((pane) => pane.type === PAGE);
   /** Whether `pane` is drawn floating over the stage. */
   const floats = (pane: (typeof panes)[number]) => pane.placement === "floating";
   // Three columns, the left, the page's and the right, take the room Chat stands in.
@@ -108,35 +113,54 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   useLayoutEffect(() => {
     const element = stageRef.current;
     if (!element) return;
-    const measure = () => setStage((previous) => previous.width === element.clientWidth && previous.height === element.clientHeight
-      ? previous : { width: element.clientWidth, height: element.clientHeight });
+    const measure = () => {
+      setStage((previous) => previous.width === element.clientWidth && previous.height === element.clientHeight
+        ? previous : { width: element.clientWidth, height: element.clientHeight });
+      projectBrowse(element, browseRef.current, browseSlotRef.current);
+    };
     measure();
     addEventListener("resize", measure);
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
     observer?.observe(element);
+    if (browseSlotRef.current) {
+      observer?.observe(browseSlotRef.current);
+      observer?.observe(browseSlotRef.current.parentElement!);
+    }
+    addEventListener("scroll", measure, true);
     return () => {
       removeEventListener("resize", measure);
       observer?.disconnect();
+      removeEventListener("scroll", measure, true);
     };
-  }, []);
+  }, [browse?.placement, panes.length]);
+
+  useLayoutEffect(() => {
+    if (stageRef.current) projectBrowse(stageRef.current, browseRef.current, browseSlotRef.current);
+  });
 
   // A browser that kept column widths, window sizes and places before the station
   // did: the first station it shows takes them, as fractions of its stage, unless
   // it already holds a layout of its own, and the browser forgets them either way.
   useEffect(() => {
     if (!workspaceId || stage.width === 0 || stage.height === 0) return;
-    if (!holds(layout, "columns", "floating", "tiles", "share")) {
+    const forget = () => {
+      dropLegacySizes("canvas");
+      if (Object.keys(browser.ui.tiles).length) {
+        try {
+          updateBrowser((state) => ({ ...state, ui: { ...state.ui, tiles: {} } }));
+        } catch {
+          // Storage is off, full or holds a value this build cannot read.
+        }
+      }
+    };
+    if (!holds(layoutOf(workspace?.layout), "columns", "floating", "tiles", "share")) {
       const patch = legacyLayout(readLegacySizes(), browser.ui.tiles, stage);
-      if (Object.keys(patch).length) changeLayout(patch, { now: true });
-    }
-    dropLegacySizes("canvas");
-    if (Object.keys(browser.ui.tiles).length) {
-      try {
-        updateBrowser((state) => ({ ...state, ui: { ...state.ui, tiles: {} } }));
-      } catch {
-        // Storage is off, full or holds a value this build cannot read.
+      if (Object.keys(patch).length) {
+        changeLayout(patch, { now: true, onSaved: forget });
+        return;
       }
     }
+    forget();
   }, [workspaceId, stage.width > 0 && stage.height > 0]);
 
   // What decides a floating tile's size and place; the tiles are held inside the
@@ -178,8 +202,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }, [floatingLayoutKey, stage.width, stage.height]);
 
   function acceptWorkspace(state: WorkspaceState) {
-    latestWorkspace.current = newerWorkspace(latestWorkspace.current, state);
     cacheWorkspace(queryClient, state);
+    if (latestWorkspace.current?.id === state.id) latestWorkspace.current = newerWorkspace(latestWorkspace.current, state);
   }
 
   useEffect(() => {
@@ -208,24 +232,28 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }, [pageClosed]);
 
   const change = useMutation({
+    // A station change resets the observer, preserving queued mutations' scopes.
+    mutationKey: ["workspace", workspaceId, "operation"],
     scope: { id: `workspace:${workspaceId ?? "default"}` },
-    mutationFn: async (operation: WorkspaceOperation) => {
-      const current = latestWorkspace.current;
-      if (!current) throw new Error("The workspace is not ready.");
-      return applyWorkspaceOperation(current.id, current.revision, operation, newUuid());
+    mutationFn: async ({ id, operation }: { readonly id: string; readonly operation: WorkspaceOperation }) => {
+      const current = queryClient.getQueryData<WorkspaceState>(["workspace", id]);
+      if (!current || current.id !== id) throw new Error("The workspace is not ready.");
+      return applyWorkspaceOperation(id, current.revision, operation, newUuid());
     },
     onMutate: () => setWriteError(null),
     onSuccess: acceptWorkspace,
-    onError: () => {
+    onError: (_error, { id }) => {
+      if (latestWorkspace.current?.id !== id) return;
       setWriteError("Could not update the workbench. Its revision may have changed; try again.");
       void station.refetch();
     },
   });
 
   async function write(operation: WorkspaceOperation): Promise<boolean> {
-    if (!latestWorkspace.current) return false;
+    const id = latestWorkspace.current?.id;
+    if (!id) return false;
     try {
-      await change.mutateAsync(operation);
+      await change.mutateAsync({ id, operation });
       return true;
     } catch {
       return false;
@@ -584,11 +612,9 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     const size = sizes.floating[pane.type] ?? pane.floating_rect;
     const share = sizes.share[pane.type];
     return (
-    // Browse is keyed by its type, which a canvas has once: its id is the
-    // type until the server's canvas arrives, then a UUID, and a new key
-    // would remount the view inside it, which reads its data again.
     <div className={`visual-tile visual-tile-${floating ? "floating" : pane.placement ?? "main"}${pane.type === "trax.browse" ? " visual-tile-browse" : ""}${workspace?.focused_instance === pane.id ? " visual-tile-focused" : ""}${expandedMobileFloat === pane.id ? " visual-tile-mobile-expanded" : ""}${collapsed ? " visual-tile-collapsed" : ""}`}
       key={pane.type === "trax.browse" ? pane.type : pane.id}
+      ref={isPage ? browseRef : undefined}
       data-visual-instance={pane.id}
       data-visual-type={pane.type}
       style={floating ? {
@@ -596,6 +622,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         ...(at ? { left: `${at.left}px`, right: "auto" } : {}),
         ...(size ? { width: `${size.width}px`, height: `${size.height}px` } : {}),
         zIndex: 10 + index,
+      } : isPage ? {
+        position: "fixed", left: 0, top: 0, right: "auto", width: "100%", height: "100%", clipPath: "inset(0px)",
       } : share ? { "--tile-share": share, "--tile-basis": "0px" } as CSSProperties : undefined}>
       {/* A floating window resizes by any edge or corner, as a desktop's does; folded to its bar it has no size to give. */}
       {floating && !collapsed && EDGES.map((edge) => <div key={edge} className={`visual-window-edge visual-window-edge-${edge}`} aria-hidden="true"
@@ -632,11 +660,10 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       </div>}
       <VisualPane instance={pane} workspace={workspace ?? null} onWorkspaceChanged={acceptWorkspace}
         focused={workspace?.focused_instance === pane.id}>
-        {/* A crash in the page is the app's crash screen, here, and clears when the page moves. */}
-        {pane.type === "trax.browse"
-          ? <CrashBoundary reload={() => window.location.reload()} resetKey={window.location.hash}
+        {isPage && <div className="visual-browse-content">
+          <CrashBoundary reload={() => window.location.reload()} resetKey={window.location.hash}
             frame={(crash) => <div className="view">{crash}</div>}>{children}</CrashBoundary>
-          : null}
+        </div>}
       </VisualPane>
     </div>
     );
@@ -651,7 +678,10 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     let flowing = 0;
     return panes.flatMap((pane, index) => {
       if ((pane.placement ?? "main") !== placement) return [];
-      const tile = renderTile(pane, index);
+      const share = sizes.share[pane.type];
+      const tile = pane.type === PAGE ? <div key="browse-slot" ref={browseSlotRef} className="visual-tile visual-browse-slot"
+        data-visual-type={PAGE}
+        style={share ? { "--tile-share": share, "--tile-basis": "0px" } as CSSProperties : undefined} /> : renderTile(pane, index);
       if (floats(pane)) return [tile];
       flowing += 1;
       return flowing === 1 ? [tile] : [
@@ -730,13 +760,31 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           </div>
         )}
         {sideColumn("side")}
-        {panes.map((pane, index) => pane.placement === "floating" ? renderTile(pane, index) : null)}
+        {panes.map((pane, index) => pane.placement === "floating" && pane.type !== PAGE ? renderTile(pane, index) : null)}
+        {browse && renderTile(browse, panes.indexOf(browse))}
         <div ref={snapRef} className="visual-snap" aria-hidden="true" />
         <div ref={ghostRef} className="visual-drag-ghost" aria-hidden="true" />
       </div>
     </div>
     </WorkspaceActionsProvider>
   );
+}
+
+/** Fit the fixed Browse tile to its docked flow slot without moving its DOM. */
+function projectBrowse(stage: HTMLElement, tile: HTMLElement | null, slot: HTMLElement | null): void {
+  if (!tile || !slot || tile.classList.contains("visual-tile-floating")) return;
+  const origin = stage.getBoundingClientRect();
+  const rect = slot.getBoundingClientRect();
+  const clip = slot.parentElement!.getBoundingClientRect();
+  const left = rect.left + slot.clientLeft;
+  const top = rect.top + slot.clientTop;
+  const width = slot.clientWidth;
+  const height = slot.clientHeight;
+  Object.assign(tile.style, {
+    left: `${left}px`, top: `${top}px`,
+    width: `${width}px`, height: `${height}px`,
+    clipPath: `inset(${Math.max(0, Math.max(clip.top, origin.top) - top)}px ${Math.max(0, left + width - Math.min(clip.right, origin.right))}px ${Math.max(0, top + height - Math.min(clip.bottom, origin.bottom))}px ${Math.max(0, Math.max(clip.left, origin.left) - left)}px)`,
+  });
 }
 
 function VisualOption({ visual, checked, disabled, missingRecord, onToggle }: {

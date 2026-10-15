@@ -752,6 +752,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         self,
         *,
         after: tuple[datetime, UUID, int, int] | None = None,
+        before: tuple[datetime, UUID, int, int] | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         scope: FeedScope = WHOLE_FEED,
@@ -772,6 +773,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             part, idx)`` to resume past. The cursor is composite (not bare
             ``created``) because the order key is, so a page boundary falling
             inside a same-``created`` group does not skip the rows after it.
+          before: Exclusive composite upper bound; with ``tail``, the page
+            immediately preceding this key, including same-instant ties.
           since: Inclusive lower bound on ``created`` -- a historical window's
             start (distinct from ``after``, which is the exclusive resume
             cursor); combine with ``until`` to bound a fixed window.
@@ -794,13 +797,14 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         """
         clauses = ["i.kind = 'AgentSession'"]
         params: list[object] = []
-        if after is not None:
-            params.extend(after)
-            n = len(params)
-            clauses.append(
-                f"(e.created, e.session_id, e.part, e.idx) > "
-                f"(${n - 3}, ${n - 2}, ${n - 1}, ${n})",
-            )
+        for cursor, comparison in ((after, ">"), (before, "<")):
+            if cursor is not None:
+                params.extend(cursor)
+                n = len(params)
+                clauses.append(
+                    f"(e.created, e.session_id, e.part, e.idx) {comparison} "
+                    f"(${n - 3}, ${n - 2}, ${n - 1}, ${n})",
+                )
         if since is not None:
             params.append(since)
             clauses.append(f"e.created >= ${len(params)}")

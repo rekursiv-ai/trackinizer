@@ -1080,6 +1080,48 @@ class TestFeedRoute:
 class TestFeedReads:
     """The feed, its facets and its histogram take one set of repeatable filters."""
 
+    def test_backward_feed_cursor_reaches_the_store_whole(self) -> None:
+        store = AsyncMock()
+        store.read_feed = AsyncMock(return_value=[])
+        client = self._client(store)
+        session = new_uuid()
+        created = datetime(2026, 6, 1, tzinfo=UTC)
+        response = client.get(
+            "/api/web/feed",
+            params={
+                "tail": "true",
+                "before_created": created.isoformat(),
+                "before_session": str(session),
+                "before_part": 1,
+                "before_seq": 7,
+            },
+        )
+        assert response.status_code == 200
+        assert store.read_feed.call_args.kwargs.get("before") == (
+            created,
+            session,
+            1,
+            7,
+        )
+
+    def test_backward_feed_cursor_requires_every_component(self) -> None:
+        store = AsyncMock()
+        client = self._client(store)
+        cursor = {
+            "before_created": "2026-06-01T00:00:00Z",
+            "before_session": str(new_uuid()),
+            "before_part": "0",
+            "before_seq": "7",
+        }
+        for missing in cursor:
+            response = client.get(
+                "/api/web/feed",
+                params={key: value for key, value in cursor.items() if key != missing},
+            )
+            assert response.status_code == 400, missing
+            assert "before_" in response.text
+        store.read_feed.assert_not_called()
+
     @classmethod
     def _client(cls, store: AsyncMock) -> TestClient:
         app = FastAPI()

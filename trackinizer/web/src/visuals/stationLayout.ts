@@ -51,7 +51,9 @@ const listeners = new Set<() => void>();
 /** The layouts this tab changed, by station; a station not here shows what the server read. */
 const changed = new Map<string, Layout>();
 /** The keys not yet written, by station, and when they go. */
-const waiting = new Map<string, { patch: Layout; timer: ReturnType<typeof setTimeout> }>();
+const waiting = new Map<string, { patch: Layout; timer: ReturnType<typeof setTimeout> | null; saved: (() => void)[] }>();
+/** A station's outstanding write; another station writes independently. */
+const writing = new Map<string, symbol>();
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
@@ -65,7 +67,7 @@ function subscribe(listener: () => void): () => void {
  * is written but what the user changes: a screen that fits the layout to its own
  * size writes nothing. A tab with no station yet keeps its changes only here.
  */
-export function useLayout(): readonly [Layout, (change: LayoutChange, options?: { readonly now?: boolean }) => void] {
+export function useLayout(): readonly [Layout, (change: LayoutChange, options?: { readonly now?: boolean; readonly onSaved?: () => void }) => void] {
   // Only reads the station the tab shows, from the cache the shell's read fills;
   // asking for a station is the canvas's and Chat's business, not a layout's.
   const { id: current } = useCurrentStation();
@@ -79,37 +81,40 @@ export function useLayout(): readonly [Layout, (change: LayoutChange, options?: 
     addEventListener("pagehide", flushLayouts);
     return () => removeEventListener("pagehide", flushLayouts);
   }, []);
-  const change = useCallback((change: LayoutChange, { now = false } = {}) => {
+  const change = useCallback((change: LayoutChange, { now = false, onSaved }: { readonly now?: boolean; readonly onSaved?: () => void } = {}) => {
     const patch = typeof change === "function" ? change(changed.get(id) ?? latest.current) : change;
     changed.set(id, { ...(changed.get(id) ?? latest.current), ...patch });
     listeners.forEach((listener) => listener());
-    if (id) queueWrite(id, patch, now);
+    if (id) queueWrite(id, patch, now, onSaved);
   }, [id]);
   return [mine ?? server, change] as const;
 }
 
-function queueWrite(id: string, patch: Layout, now: boolean): void {
+function queueWrite(id: string, patch: Layout, now: boolean, onSaved?: () => void): void {
   const pending = waiting.get(id);
-  if (pending) clearTimeout(pending.timer);
+  if (pending?.timer) clearTimeout(pending.timer);
   const merged = { ...pending?.patch, ...patch };
-  if (now) {
-    waiting.delete(id);
-    send(id, merged);
-    return;
-  }
-  waiting.set(id, { patch: merged, timer: setTimeout(() => flush(id), LAYOUT_EVERY_MS) });
+  const ready = now || pending?.timer === null;
+  waiting.set(id, { patch: merged, timer: ready ? null : setTimeout(() => flush(id), LAYOUT_EVERY_MS), saved: [...(pending?.saved ?? []), ...(onSaved ? [onSaved] : [])] });
+  if (ready) flush(id);
 }
 
 function flush(id: string): void {
   const pending = waiting.get(id);
   if (!pending) return;
-  clearTimeout(pending.timer);
+  if (pending.timer) clearTimeout(pending.timer);
+  pending.timer = null;
+  if (writing.has(id)) return;
   waiting.delete(id);
-  send(id, pending.patch);
-}
-
-function send(id: string, patch: Layout): void {
-  void setStationLayout(id, patch).catch(() => {});
+  const write = Symbol();
+  writing.set(id, write);
+  void setStationLayout(id, pending.patch).then(() => {
+    for (const saved of pending.saved) saved();
+  }).catch(() => {}).finally(() => {
+    if (writing.get(id) !== write) return;
+    writing.delete(id);
+    if (waiting.get(id)?.timer === null) flush(id);
+  });
 }
 
 /** Write every layout change still waiting, as the page goes. */
@@ -119,8 +124,9 @@ export function flushLayouts(): void {
 
 /** Forget this tab's changes and the writes waiting; for a test's start. */
 export function forgetLayouts(): void {
-  for (const { timer } of waiting.values()) clearTimeout(timer);
+  for (const { timer } of waiting.values()) if (timer) clearTimeout(timer);
   waiting.clear();
+  writing.clear();
   changed.clear();
   listeners.forEach((listener) => listener());
 }

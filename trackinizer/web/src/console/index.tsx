@@ -129,7 +129,7 @@ export function ConsoleView() {
     void feed.load();
     if (!hub || !view.range.live) return () => feed.dispose();
     // A captured record wakes the stream with its session's id; any batch may be one.
-    const registration = hub.register({ update: (batch) => feed.update(batch), failing: setFailure });
+    const registration = hub.register({ update: (batch, open) => feed.update(batch, open), failing: setFailure });
     return () => {
       registration.dispose();
       feed.dispose();

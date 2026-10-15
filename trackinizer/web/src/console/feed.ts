@@ -127,13 +127,14 @@ export class ConsoleFeed {
    * being read, wait for it, since it may predate the change; after it failed,
    * there is nothing to read past until the view's Retry loads it again.
    */
-  async update({ gap }: Batch): Promise<Later | null> {
+  async update({ gap }: Batch, open: () => boolean = () => true): Promise<Later | null> {
     if (this.#state.loading) return { afterMs: 1000 };
     if (this.#state.error && !this.#state.held.length) return null;
     let page: FeedPage;
     do {
       page = await this.#read(this.#window(), false);
       this.#take(page);
+      if (!open()) return null;
     } while (page.events.length >= PAGE);
     if (gap) {
       const newest = await this.#read({ tail: true, limit: PAGE }, false);
@@ -153,15 +154,15 @@ export class ConsoleFeed {
     const newest = await this.#read({ tail: true, limit: PAGE }, true);
     let [page, events] = [newest, newest.events];
     for (let pages = 1; pages < FILL_PAGES && page.events.length >= PAGE && this.#shown(events) < FILL; pages++) {
-      // `until` holds its own instant, so a page cut inside a same-instant group loses none of it.
-      page = await this.#read({ tail: true, until: events[0]!.created, limit: PAGE }, true);
+      const oldest = page.events[0]!;
+      page = await this.#read({ tail: true, before: { created: oldest.created, session_id: oldest.session_id, part: oldest.part, seq: oldest.seq }, limit: PAGE }, true);
       events = [...page.events, ...events];
     }
     return { ...newest, events };
   }
 
   #shown(events: readonly FeedEvent[]): number {
-    return events.filter((event) => levelOf(event) <= this.#level).length;
+    return new Set(events.filter((event) => levelOf(event) <= this.#level).map(keyOf)).size;
   }
 
   /** The next read past the cursor, within the window when there is one. */

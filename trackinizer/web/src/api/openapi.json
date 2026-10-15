@@ -17677,7 +17677,7 @@
     },
     "/api/web/feed": {
       "get": {
-        "description": "Cross-session captured-turn feed for the multi-agent console.\n\nInterleaves every session's turns into one time-ordered stream so the\nconsole shows many agents at once.\n\n``after_created`` / ``after_session`` / ``after_part`` / ``after_seq``\ntogether form the composite keyset cursor a poll resumes past (all are\nrequired; the order key is composite so a bare ``created`` resume would\nskip same-instant ties, and ``part`` joined it when the feed moved to IR\nrecords -- position restarts within each source file). ``since`` / ``until``\nbound a fixed historical window; ``actor`` / ``room`` / ``cli`` / ``kind`` /\n``whose`` filter and ``hidden`` keeps ``private`` sessions (:func:`feed_scope`),\nand ``conversation=true`` keeps only what the facets count as conversation.\n``tail=true`` returns the\nnewest page (the live console's first load) so a backlog does not force a\nreplay from the beginning. The response carries ``next_after`` (a composite\ncursor) for the next poll; an empty page echoes the supplied cursor so the\ntail does not rewind.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  scope: Which sessions and record kinds to read.\n  after_created: Resume cursor: creation timestamp of last-seen turn.\n  after_session: Resume cursor: session id of last-seen turn.\n  after_part: Resume cursor: part index within the session.\n  after_seq: Resume cursor: sequence number within the part.\n  since: Absolute window start (inclusive).\n  until: Absolute window end (inclusive).\n  conversation: Keep only conversation, what a person or agent said.\n  limit: Maximum turns to return.\n  tail: Return newest page first (true) or oldest available (false).\n\nReturns:\n  feed: Turns across the sessions the caller reads, pagination cursor for next\n    poll. A session whose transcript the caller does not read has no turn here.",
+        "description": "Cross-session captured-turn feed for the multi-agent console.\n\nInterleaves every session's turns into one time-ordered stream so the\nconsole shows many agents at once.\n\n``after_created`` / ``after_session`` / ``after_part`` / ``after_seq``\ntogether form the composite keyset cursor a poll resumes past (all are\nrequired; the order key is composite so a bare ``created`` resume would\nskip same-instant ties, and ``part`` joined it when the feed moved to IR\nrecords -- position restarts within each source file). ``since`` / ``until``\nbound a fixed historical window; ``actor`` / ``room`` / ``cli`` / ``kind`` /\n``whose`` filter and ``hidden`` keeps ``private`` sessions (:func:`feed_scope`),\nand ``conversation=true`` keeps only what the facets count as conversation.\n``tail=true`` returns the\nnewest page (the live console's first load) so a backlog does not force a\nreplay from the beginning. The response carries ``next_after`` (a composite\ncursor) for the next poll; an empty page echoes the supplied cursor so the\ntail does not rewind.\n\n``before_created`` / ``before_session`` / ``before_part`` / ``before_seq``\nform an exclusive upper cursor in the same order. With ``tail=true`` they\nread the preceding page without repeating a same-instant boundary.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  scope: Which sessions and record kinds to read.\n  after_created: Resume cursor: creation timestamp of last-seen turn.\n  after_session: Resume cursor: session id of last-seen turn.\n  after_part: Resume cursor: part index within the session.\n  after_seq: Resume cursor: sequence number within the part.\n  before_created: Upper cursor: creation timestamp of the oldest turn held.\n  before_session: Upper cursor: session id of the oldest turn held.\n  before_part: Upper cursor: part index within the session.\n  before_seq: Upper cursor: sequence number within the part.\n  since: Absolute window start (inclusive).\n  until: Absolute window end (inclusive).\n  conversation: Keep only conversation, what a person or agent said.\n  limit: Maximum turns to return.\n  tail: Return newest page first (true) or oldest available (false).\n\nReturns:\n  feed: Turns across the sessions the caller reads, pagination cursor for next\n    poll. A session whose transcript the caller does not read has no turn here.",
         "operationId": "web_feed_api_web_feed_get",
         "parameters": [
           {
@@ -17744,6 +17744,72 @@
                 }
               ],
               "title": "After Seq"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_created",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Created"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Session"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_part",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Part"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_seq",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Seq"
             }
           },
           {

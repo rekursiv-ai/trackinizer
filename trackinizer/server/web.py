@@ -683,6 +683,10 @@ async def web_feed(
     after_session: UUID | None = None,
     after_part: int | None = None,
     after_seq: int | None = None,
+    before_created: UtcDatetime | None = None,
+    before_session: UUID | None = None,
+    before_part: int | None = None,
+    before_seq: int | None = None,
     since: UtcDatetime | None = None,
     until: UtcDatetime | None = None,
     conversation: bool = False,
@@ -708,6 +712,10 @@ async def web_feed(
     cursor) for the next poll; an empty page echoes the supplied cursor so the
     tail does not rewind.
 
+    ``before_created`` / ``before_session`` / ``before_part`` / ``before_seq``
+    form an exclusive upper cursor in the same order. With ``tail=true`` they
+    read the preceding page without repeating a same-instant boundary.
+
     Args:
       request: FastAPI request object for middleware access.
       identity: Authenticated user, validated to have viewer role.
@@ -716,6 +724,10 @@ async def web_feed(
       after_session: Resume cursor: session id of last-seen turn.
       after_part: Resume cursor: part index within the session.
       after_seq: Resume cursor: sequence number within the part.
+      before_created: Upper cursor: creation timestamp of the oldest turn held.
+      before_session: Upper cursor: session id of the oldest turn held.
+      before_part: Upper cursor: part index within the session.
+      before_seq: Upper cursor: sequence number within the part.
       since: Absolute window start (inclusive).
       until: Absolute window end (inclusive).
       conversation: Keep only conversation, what a person or agent said.
@@ -731,9 +743,22 @@ async def web_feed(
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be in [1, 1000]")
     _check_window(since, until)
-    after = _feed_cursor(after_created, after_session, after_part, after_seq)
+    after = _feed_cursor(
+        after_created,
+        session_id=after_session,
+        part=after_part,
+        seq=after_seq,
+    )
+    before = _feed_cursor(
+        before_created,
+        session_id=before_session,
+        part=before_part,
+        seq=before_seq,
+        direction="before",
+    )
     events = await get_store(request).read_feed(
         after=after,
+        before=before,
         since=since,
         until=until,
         scope=scope,
@@ -1090,14 +1115,26 @@ def _feed_cursor(
     session_id: UUID | None,
     part: int | None,
     seq: int | None,
+    *,
+    direction: Literal["after", "before"] = "after",
 ) -> tuple[datetime, UUID, int, int] | None:
     """Assemble the composite feed cursor, or ``None`` when unset."""
     if created is None and session_id is None and seq is None and part is None:
         return None
-    if created is None or session_id is None or seq is None:
+    if (
+        created is None
+        or session_id is None
+        or seq is None
+        or (direction == "before" and part is None)
+    ):
         raise HTTPException(
             status_code=400,
-            detail="after_created, after_session, after_seq must be given together",
+            detail=(
+                "before_created, before_session, before_part, before_seq must "
+                "be given together"
+                if direction == "before"
+                else "after_created, after_session, after_seq must be given together"
+            ),
         )
     return (created, session_id, 0 if part is None else part, seq)
 

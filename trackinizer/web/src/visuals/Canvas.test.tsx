@@ -1,6 +1,6 @@
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render as renderBare, screen, waitFor, within } from "@testing-library/react";
-import { Profiler, useEffect, type ReactElement, type ReactNode } from "react";
+import { Profiler, useEffect, useLayoutEffect, useRef, type ReactElement, type ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { getVisualCatalog } from "../api/visuals";
 import { findRef } from "../api/detail";
@@ -20,7 +20,8 @@ import { setStationLayout } from "../api/stations";
 import { Canvas } from "./Canvas";
 import { currentChatColumn, setChatHidden } from "./chatColumnState";
 import { CLICK_SLOP, rememberedTile, SNAP_SIDE, SNAP_TOP, TEAR_SLOP } from "./floatingTile";
-import { flushLayouts, forgetLayouts, type Layout } from "./stationLayout";
+import { flushLayouts, forgetLayouts, LAYOUT_EVERY_MS, type Layout } from "./stationLayout";
+import { useWorkspaceActions } from "./workspaceActions";
 
 vi.mock("../api/visuals", () => ({ getVisualCatalog: vi.fn() }));
 vi.mock("../api/stations", () => ({ setStationLayout: vi.fn().mockResolvedValue(undefined) }));
@@ -59,6 +60,7 @@ afterEach(() => {
   forgetLayouts();
   cleanup();
   vi.clearAllMocks();
+  vi.mocked(setStationLayout).mockResolvedValue(undefined);
   vi.useRealTimers();
   focusManager.setFocused(undefined);
   window.innerWidth = 1024;
@@ -82,13 +84,13 @@ function browseOnly() {
   });
 }
 
-test("the browse pane keeps its content mounted while the server's canvas arrives", async () => {
+test.each(["main", "floating"] as const)("the browse pane keeps its content mounted while the server's %s canvas arrives", async (placement) => {
   browseOnly();
   let open: (state: WorkspaceState) => void = () => { throw new Error("No canvas pending"); };
   vi.mocked(createDefaultWorkspace).mockImplementation(() => new Promise((resolve) => { open = resolve; }));
   vi.mocked(getWorkspace).mockResolvedValue(workspace);
-  // The page stands where a canvas puts it, in the strip of main visuals, before and after the server's.
-  const inStrip: WorkspaceState = { ...workspace, visuals: [{ ...workspace.visuals[0]!, placement: "main" }] };
+  // A saved canvas may move the page out of the initial main strip.
+  const inStrip: WorkspaceState = { ...workspace, visuals: [{ ...workspace.visuals[0]!, placement }] };
   // The catalog is slow too: the page is in the strip before it arrives.
   vi.mocked(getVisualCatalog).mockImplementation(() => new Promise(() => {}));
   const mounted = vi.fn();
@@ -100,6 +102,89 @@ test("the browse pane keeps its content mounted while the server's canvas arrive
   expect(await screen.findByText("Browse content")).toBeTruthy();
   await act(async () => open(inStrip));
   await waitFor(() => expect(document.querySelector(`[data-visual-instance="${inStrip.visuals[0]!.id}"]`)).not.toBeNull(), { interval: 1 });
+  expect(mounted).toHaveBeenCalledTimes(1);
+});
+
+test("Browse's initial children mount connected and can autofocus before a saved station arrives", () => {
+  browseOnly();
+  vi.mocked(createDefaultWorkspace).mockImplementation(() => new Promise(() => {}));
+  const connected = vi.fn();
+  function Content() {
+    const input = useRef<HTMLInputElement>(null);
+    useLayoutEffect(() => { connected(input.current?.isConnected); }, []);
+    return <input ref={input} aria-label="Initial Browse draft" autoFocus />;
+  }
+  render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><Content /></Canvas></QueryClientProvider>);
+  expect(connected.mock.calls).toEqual([[true]]);
+  expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Initial Browse draft" }));
+});
+
+test("Browse keeps focus when an unrelated Canvas stage measurement renders", async () => {
+  browseOnly();
+  const initial: WorkspaceState = { ...workspace, visuals: [{ ...workspace.visuals[0]!, placement: "main" }] };
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(initial);
+  render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><input aria-label="Focused Browse draft" /></Canvas></QueryClientProvider>);
+  const input = await screen.findByRole<HTMLInputElement>("textbox", { name: "Focused Browse draft" });
+  await waitFor(() => expect(document.querySelector(`[data-visual-instance="${initial.visuals[0]!.id}"]`)).not.toBeNull(), { interval: 1 });
+  input.focus();
+  const stage = document.querySelector(".visual-stage")!;
+  Object.defineProperty(stage, "clientWidth", { configurable: true, value: 900 });
+  fireEvent(window, new Event("resize"));
+  expect(document.activeElement).toBe(input);
+});
+
+test("docked Browse fits its flow slot and scroll clipping without moving focus or DOM", async () => {
+  browseOnly();
+  const initial: WorkspaceState = { ...workspace, visuals: [{ ...workspace.visuals[0]!, placement: "main" }] };
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(initial);
+  render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><input aria-label="Clipped Browse draft" /></Canvas></QueryClientProvider>);
+  const input = await screen.findByRole<HTMLInputElement>("textbox", { name: "Clipped Browse draft" });
+  await waitFor(() => expect(document.querySelector(`[data-visual-instance="${initial.visuals[0]!.id}"]`)).not.toBeNull(), { interval: 1 });
+  const stage = document.querySelector<HTMLElement>(".visual-stage")!;
+  const slot = document.querySelector<HTMLElement>(".visual-browse-slot")!;
+  const strip = slot.parentElement!;
+  const tile = input.closest<HTMLElement>(".visual-tile")!;
+  drawnAt(stage, 20, 10);
+  drawnAt(slot, 100, 50);
+  drawnAt(strip, 150, 40);
+  Object.defineProperties(slot, { clientLeft: { value: 1 }, clientWidth: { value: 300 }, clientHeight: { value: 400 } });
+  stage.scrollLeft = 7;
+  stage.scrollTop = 11;
+  input.focus();
+  fireEvent(window, new Event("resize"));
+  expect([tile.style.left, tile.style.top, tile.style.width, tile.style.height, tile.style.clipPath]).toEqual(["101px", "50px", "300px", "400px", "inset(0px 81px 40px 49px)"]);
+  drawnAt(slot, 50, 50);
+  fireEvent.scroll(strip);
+  expect([tile.style.left, tile.style.clipPath]).toEqual(["51px", "inset(0px 31px 40px 99px)"]);
+  expect(tile.parentElement).toBe(stage);
+  expect(document.activeElement).toBe(input);
+});
+
+test("Browse keeps its input state and DOM identity when live placement changes between strip and floating", async () => {
+  browseOnly();
+  const initial: WorkspaceState = { ...workspace, visuals: [{ ...workspace.visuals[0]!, placement: "main" }] };
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(initial);
+  const mounted = vi.fn();
+  function Content() {
+    useEffect(() => mounted(), []);
+    return <input aria-label="Browse draft" defaultValue="" />;
+  }
+  const client = createQueryClient(() => {});
+  render(<QueryClientProvider client={client}><Canvas><Content /></Canvas></QueryClientProvider>);
+  const input = await screen.findByRole<HTMLInputElement>("textbox", { name: "Browse draft" });
+  await waitFor(() => expect(document.querySelector(`[data-visual-instance="${initial.visuals[0]!.id}"]`)).not.toBeNull(), { interval: 1 });
+  fireEvent.change(input, { target: { value: "unfinished draft" } });
+  input.focus();
+  const parent = input.closest(".visual-tile")?.parentNode;
+  for (const [revision, placement] of [[4, "floating"], [5, "main"]] as const) {
+    await act(async () => client.setQueryData(["workspace", workspace.id], { ...initial, revision, visuals: [{ ...initial.visuals[0]!, placement }] }));
+    await waitFor(() => expect(input.closest(".visual-tile")?.classList.contains(`visual-tile-${placement}`)).toBe(true), { interval: 1 });
+    expect(screen.getByRole("textbox", { name: "Browse draft" })).toBe(input);
+    expect(input.value).toBe("unfinished draft");
+    expect(input.closest(".visual-tile")?.parentNode).toBe(parent);
+    expect(document.activeElement).toBe(input);
+    expect(input.closest(".visual-tile")?.classList.contains(`visual-tile-${placement}`)).toBe(true);
+  }
   expect(mounted).toHaveBeenCalledTimes(1);
 });
 
@@ -141,13 +226,13 @@ test("the page has the close control the other tiles have, and closing it hides 
   vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...withNote, revision: 4, visuals: [withNote.visuals[1]!] });
   render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   await screen.findAllByTitle("Dismiss visual");
-  const tiles = [...document.querySelectorAll<HTMLElement>(".visual-tile")];
+  const tiles = [...document.querySelectorAll<HTMLElement>(".visual-tile[data-visual-instance]")];
   expect(tiles).toHaveLength(2);
   expect(tiles.map((tile) => within(tile).queryAllByTitle("Dismiss visual").length)).toEqual([1, 1]);
   expect(screen.getByRole("checkbox", { name: /Browse/ })).toHaveProperty("disabled", false);
   expect(screen.getByRole("checkbox", { name: /Browse/ })).toHaveProperty("checked", true);
 
-  fireEvent.click(within(tiles[0]!).getByTitle("Dismiss visual"));
+  fireEvent.click(within(document.querySelector<HTMLElement>(BROWSE_TILE)!).getByTitle("Dismiss visual"));
 
   await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
     withNote.id, withNote.revision, { kind: "hide", instance_id: withNote.visuals[0]!.id }, expect.any(String)), { interval: 1 });
@@ -252,6 +337,48 @@ test("older reads and replay receipts cannot replace a newer canvas revision", (
   expect(newerWorkspace(workspace, older)).toBe(workspace);
   expect(newerWorkspace(older, workspace)).toBe(workspace);
   expect(newerWorkspace(undefined, workspace)).toBe(workspace);
+});
+
+test.each([false, true])("queued operations keep their originating station while another writes independently (replaced=%s)", async (replaced) => {
+  vi.mocked(getVisualCatalog).mockResolvedValue(CATALOG_WITH_NOTE);
+  const a = pageAndNote(true);
+  const b: WorkspaceState = { ...a, id: "station-b", revision: 100, visuals: a.visuals.map((visual) => ({ ...visual, id: `${visual.id}-b` })) };
+  const client = createQueryClient(() => {});
+  client.setQueryData(["workspace", a.id], a);
+  client.setQueryData(["workspace", b.id], b);
+  setStation(a.id);
+  let release: (state: WorkspaceState) => void = () => { throw new Error("No held operation"); };
+  vi.mocked(applyWorkspaceOperation).mockImplementationOnce(() => new Promise<WorkspaceState>((resolve) => { release = resolve; }))
+    .mockImplementation(async (id, revision) => ({ ...(id === a.id ? a : b), revision: revision + 1 }));
+  function Content() {
+    const actions = useWorkspaceActions();
+    return <>{[a, b].map((state) => <button key={state.id} onClick={() => actions?.operate({ kind: "focus", instance_id: state.visuals[0]!.id })}>Focus {state.id}</button>)}</>;
+  }
+  render(<QueryClientProvider client={client}><Canvas><Content /></Canvas></QueryClientProvider>);
+  await screen.findAllByTitle("Dismiss visual");
+  fireEvent.click(within(document.querySelector<HTMLElement>(NOTE_TILE)!).getByTitle("Dismiss visual"));
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledTimes(1), { interval: 1 });
+  fireEvent.click(screen.getByRole("button", { name: `Focus ${a.id}` }));
+  await act(async () => { setStation(b.id); history.replaceState(null, "", "#/b"); });
+  await waitFor(() => expect(document.querySelector('[data-visual-instance="note-instance-b"]')).not.toBeNull(), { interval: 1 });
+  fireEvent.click(screen.getByRole("button", { name: `Focus ${b.id}` }));
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledTimes(2), { interval: 1 });
+  expect(vi.mocked(applyWorkspaceOperation).mock.calls[1]!.slice(0, 2)).toEqual([b.id, 100]);
+  // A 404 read may cache the default replacement under the unavailable station's query key.
+  if (replaced) client.setQueryData(["workspace", a.id], b);
+  await act(async () => release({ ...a, revision: 4, visuals: [a.visuals[0]!] }));
+  if (replaced) {
+    await waitFor(() => expect(client.getMutationCache().getAll().some((mutation) => mutation.state.status === "pending")).toBe(false), { interval: 1 });
+    expect(applyWorkspaceOperation).toHaveBeenCalledTimes(2);
+    expect(document.querySelector(".visual-write-error")).toBeNull();
+    expect(getWorkspace).not.toHaveBeenCalled();
+  } else {
+    await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledTimes(3), { interval: 1 });
+    expect(vi.mocked(applyWorkspaceOperation).mock.calls[2]!.slice(0, 3)).toEqual([a.id, 4, { kind: "focus", instance_id: a.visuals[0]!.id }]);
+    expect(client.getQueryData<WorkspaceState>(["workspace", a.id])?.revision).toBe(5);
+  }
+  expect(client.getQueryData<WorkspaceState>(["workspace", b.id])?.revision).toBe(101);
+  expect(document.querySelector('[data-visual-instance="note-instance-b"]')).not.toBeNull();
 });
 
 test("a single floating visual keeps its bar", async () => {
@@ -442,7 +569,7 @@ test("a dock button moves a tile to that side of the page at once; the page itse
   await waitFor(() => expect(document.querySelector(`.visual-side-column-left > ${NOTE_TILE}`)).not.toBeNull(), { interval: 1 });
   // The left column stands before the page's strip, and its button has nowhere left to go.
   const stage = document.querySelector(".visual-stage")!;
-  expect([...stage.children].map((child) => child.className)).toEqual([
+  expect([...stage.children].filter((child) => !child.classList.contains("visual-tile-browse")).map((child) => child.className)).toEqual([
     "visual-side-column visual-side-column-left", "visual-column-edge", "visual-main-strip", "visual-snap", "visual-drag-ghost"]);
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Dock Note at the left" }).disabled).toBe(true), { interval: 1 });
 });
@@ -929,11 +1056,12 @@ test("a station that refuses the layout still lets the tile move and collapse", 
 
 test("a stage narrower than the stored place shows the tile pulled inside and writes nothing", async () => {
   const { tile } = await mountFloating(withLayout({ tiles: { "trax.browse": { place: { left: 0.875, top: 0.1667 } } }, columns: { side: 0.9 } }));
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const stage = document.querySelector<HTMLElement>(".visual-stage")!;
   Object.defineProperty(stage, "clientWidth", { configurable: true, value: 400 });
   fireEvent(window, new Event("resize"));
   expect(tile.style.left).toBe("100px");
-  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(LAYOUT_EVERY_MS + 100); });
   expect(setStationLayout).not.toHaveBeenCalled();
 });
 
@@ -943,6 +1071,28 @@ function legacyBrowserState(tiles: object) {
   localStorage.setItem(key, JSON.stringify({ version: 2, stars: [], views: [], aliases: [], people: {}, read: { boundary: null, marks: [] }, ui: { collapsed: [], lens: null, tiles } }));
   return key;
 }
+
+test("legacy layout survives a refused migration and is forgotten only after a successful reload saves it", async () => {
+  const tiles = { "trax.browse": { collapsed: true, place: { left: 160, top: 60 } } };
+  const key = legacyBrowserState(tiles);
+  const sizes = { side: 400, chat: 512, floating: {}, share: {} };
+  localStorage.setItem("trackinizer.v2.canvas.sizes", JSON.stringify(sizes));
+  let reject: (error: Error) => void = () => { throw new Error("No held migration"); };
+  vi.mocked(setStationLayout).mockImplementationOnce(() => new Promise<void>((_resolve, refuse) => { reject = refuse; }));
+  await mountFloating();
+  expect(JSON.parse(localStorage.getItem("trackinizer.v2.canvas.sizes")!)).toEqual(sizes);
+  expect(JSON.parse(localStorage.getItem(key)!).ui.tiles).toEqual(tiles);
+  await act(async () => reject(new Error("offline")));
+  expect(JSON.parse(localStorage.getItem("trackinizer.v2.canvas.sizes")!)).toEqual(sizes);
+  expect(JSON.parse(localStorage.getItem(key)!).ui.tiles).toEqual(tiles);
+  cleanup();
+  forgetLayouts();
+  setStation(null);
+  await mountFloating();
+  await waitFor(() => expect(JSON.parse(localStorage.getItem("trackinizer.v2.canvas.sizes")!)).toEqual({ chat: 512 }), { interval: 1 });
+  expect(JSON.parse(localStorage.getItem(key)!).ui.tiles).toEqual({});
+  expect(setStationLayout).toHaveBeenCalledTimes(2);
+});
 
 test("the first station a browser opens takes the places and sizes it kept before, as fractions, and the browser forgets them", async () => {
   const key = legacyBrowserState({ "trax.browse": { collapsed: true, place: { left: 160, top: 60 } } });
