@@ -32,6 +32,7 @@ in a compressed or re-encoded form, is not recognised.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 import base64
@@ -178,16 +179,24 @@ class Redactor:
 
 # ``TRAX_REDACT_NAMES`` lists the delivered secrets' names. A name the environment lacks
 # stops the run: it would otherwise upload a transcript that this process cannot vouch
-# for.
-def redactor_from_environ(environ: Mapping[str, str]) -> Redactor | None:
+# for. A secret handed over some other way, such as on standard input, is never in the
+# environment, since every process of the same account reads a process's environment
+# for as long as it runs; it is given to ``also`` instead.
+def redactor_from_environ(
+    environ: Mapping[str, str],
+    *,
+    also: Mapping[str, str] = MappingProxyType({}),
+) -> Redactor | None:
     """Return the redactor for the secrets named in ``TRAX_REDACT_NAMES``, if any.
 
     Args:
       environ: The process environment.
+      also: Secrets the process holds outside its environment, name to value; they
+        are masked beside the named ones.
 
     Returns:
-      redactor: Masks the value of each named variable; ``None`` when no name is
-        listed.
+      redactor: Masks the value of each named variable and of each of ``also``;
+        ``None`` when no name is listed and ``also`` is empty.
 
     Raises:
       SystemExit: A named variable is absent from ``environ`` or its value is
@@ -210,7 +219,8 @@ def redactor_from_environ(environ: Mapping[str, str]) -> Redactor | None:
             f"TRAX_REDACT_NAMES names {', '.join(short)}, whose values are shorter "
             f"than {MIN_SECRET_LENGTH} characters",
         )
-    return Redactor({name: environ[name] for name in names}) if names else None
+    secrets = {**{name: environ[name] for name in names}, **also}
+    return Redactor(secrets) if secrets else None
 
 
 def redact_body(body: RecordBody, *, redactor: Redactor | None) -> RecordBody:

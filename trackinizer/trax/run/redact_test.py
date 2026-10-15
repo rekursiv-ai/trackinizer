@@ -170,6 +170,21 @@ def test_the_named_variables_are_redacted() -> None:
     )
 
 
+def test_redactor_masks_values_held_outside_the_environment() -> None:
+    named = redactor_from_environ(
+        {"TRAX_REDACT_NAMES": "A_KEY", "A_KEY": "value-1234"},
+        also={"HELD": "held-secret-5678"},
+    )
+    alone = redactor_from_environ({}, also={"HELD": "held-secret-5678"})
+
+    assert named is not None
+    assert alone is not None
+    assert named.redact("value-1234 held-secret-5678") == (
+        "[redacted:A_KEY] [redacted:HELD]"
+    )
+    assert alone.redact("held-secret-5678") == "[redacted:HELD]"
+
+
 def test_a_named_variable_that_is_absent_exits() -> None:
     environ = {
         "TRAX_REDACT_NAMES": "A_KEY,MISSING_ONE,MISSING_TWO",
