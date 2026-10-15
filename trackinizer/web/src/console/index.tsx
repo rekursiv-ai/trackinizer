@@ -76,8 +76,8 @@ import "./console.css";
  * Every read is scoped: to a station's agents, or by whose sessions they are
  * (`Whose`): the person's own (Mine, where the console opens outside a named
  * station), those of the campaigns they launched, or every one the server lets
- * them read. Sessions their owners hid are left out unless Show hidden is on;
- * the person hides one of their own from the rail, and shows it again there.
+ * them read. Sessions their owners made private are left out unless Show private
+ * is on; the person flips one of their own between Public and Private in the rail.
  *
  * A line with no target goes to the To chips, the view's agents that have not
  * ended, less those left out of that view; `@agent`, `@agent:room`, `@a,@b`, and
@@ -245,10 +245,10 @@ export function ConsoleView() {
               type="button"
               className="pill"
               aria-pressed={showHidden}
-              title="List the hidden sessions you may read: your own, and as staff or an admin, other people's"
+              title="List the private sessions you may read: your own, and as staff or an admin, other people's"
               onClick={() => setShowHidden(!showHidden)}
             >
-              Show hidden
+              Show private
             </button>
           </div>
           {filter ? (
@@ -347,9 +347,10 @@ function useFeed(range: Range, filter: FeedFilters | null | undefined, level: Le
 }
 
 /**
- * Hide one of the person's sessions from everyone but staff and admins, or show
- * it again; then read the console again, as hidden sessions leave its listings
- * unless they show hidden ones. A hide offers Undo; a refusal says why.
+ * Make one of the person's sessions private, read by them, staff and admins
+ * alone, or public again; then read the console again, as private sessions leave
+ * its listings unless Show private is on. Making one private offers Undo; a
+ * refusal says why.
  */
 function useHide(reread: () => void): (agent: FeedActorFacet) => void {
   const hiding = { client: useQueryClient(), toast: useToast(), reread };
@@ -364,20 +365,20 @@ async function changeAudience(hiding: Hiding, agent: FeedActorFacet, audience: S
   try {
     await setSessionAudience(agent.session_id, audience, newUuid());
   } catch (error) {
-    toast(hideRefusal(error) || `Could not ${audience === "private" ? "hide" : "unhide"} ${agent.actor}.`, { failed: true, error });
+    toast(hideRefusal(error) || `Could not make ${agent.actor} ${audience === "private" ? "private" : "public"}.`, { failed: true, error });
     return;
   }
   reread();
   void client.invalidateQueries({ queryKey: ["console"] });
-  if (audience === "open") toast(`Unhid ${agent.actor}.`);
-  else toast(`Hid the transcript of ${agent.actor}: only you, staff and admins read it now.`, { undo: () => void changeAudience(hiding, { ...agent, audience }, "open") });
+  if (audience === "open") toast(`${agent.actor} is public again.`);
+  else toast(`Made ${agent.actor} private: only you, staff and admins read its transcript now.`, { undo: () => void changeAudience(hiding, { ...agent, audience }, "open") });
 }
 
-/** What a refused hide says, in words for its code, which the server sends alone; "" for any other failure. */
+/** What a refused switch says, in words for its code, which the server sends alone; "" for any other failure. */
 function hideRefusal(error: unknown): string {
   if (!(error instanceof ApiError)) return "";
-  if (error.code === SESSION_NOT_OWNER) return "Only the session's owner can hide it or show it again.";
-  return error.code === SESSION_STAFF ? "A staff session keeps its audience: it is never hidden or shown to more people." : "";
+  if (error.code === SESSION_NOT_OWNER) return "Only the session's owner can make it public or private.";
+  return error.code === SESSION_STAFF ? "A staff session keeps its audience: it is never made public or private." : "";
 }
 
 /** Every agent the facets have listed while the console is open, one row per name (`remember`). */

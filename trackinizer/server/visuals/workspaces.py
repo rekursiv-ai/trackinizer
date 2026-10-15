@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Final, Literal
 
+import math
 import uuid
 
 from pydantic import (
@@ -140,18 +141,12 @@ class _Columns(BaseModel):
     side: Annotated[float, Field(gt=0, le=1)] | None = None
 
 
-class StationLayout(BaseModel):
-    """A station's layout: resolution-free, fitted to each screen by the browser.
-
-    Every key is optional, and a write replaces only the keys it names. Widths,
-    sizes and places are fractions of the stage, never pixels; Chat's width is in
-    ``ch`` (a Terminal Chat is 80 columns).
-    """
+class _CanvasSizes(BaseModel):
+    """How a canvas's columns and windows were left, as fractions of the stage."""
 
     model_config = ConfigDict(extra="forbid")
 
     columns: _Columns | None = None
-    chat_ch: Annotated[float, Field(ge=10, le=400)] | None = None
     floating: dict[_TypeKey, _TileSize] | None = None
     """Floating window sizes, by visual type."""
 
@@ -161,15 +156,136 @@ class StationLayout(BaseModel):
     share: dict[_TypeKey, Annotated[float, Field(gt=0, le=100)]] | None = None
     """Each docked tile's share of its strip, by visual type (1 is an even share)."""
 
-    console: Annotated[str, Field(min_length=1, max_length=64)] | None = None
-    """The id of the Console view that is open."""
-
     @field_validator("floating", "tiles", "share")
     @classmethod
     def _bounded(cls, value: dict[str, object] | None) -> dict[str, object] | None:
         """Hold a by-type map to a count no canvas reaches."""
         if value is not None and len(value) > _MAX_TYPES:
             raise ValueError(f"At most {_MAX_TYPES} visual types.")
+        return value
+
+
+type _TabId = Annotated[str, Field(min_length=1, max_length=64)]
+"""A canvas tab's id, which the browser makes."""
+
+
+class TabVisual(BaseModel):
+    """A visual a canvas tab shows, kept while another tab is open."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: _TypeKey
+    placement: Placement = "main"
+    record_id: uuid.UUID | None = None
+    params: Annotated[
+        dict[
+            Annotated[str, Field(max_length=64)],
+            Annotated[str, Field(max_length=2_000)] | int | bool,
+        ],
+        Field(max_length=32),
+    ] = Field(default_factory=dict)
+
+
+class CanvasTab(_CanvasSizes):
+    """One of a station's canvas tabs.
+
+    The open tab is the station's canvas itself; the others keep here what they
+    show (the page, the visuals and their sizes) until they are opened again,
+    when the browser shows it through the canvas's own operations.
+    """
+
+    id: _TabId
+    name: Annotated[str, Field(min_length=1, max_length=60)]
+    page: Annotated[str, Field(max_length=512, pattern=ROUTE_PATTERN)] | None = None
+    """The `#/...` page the tab was on, or None when it showed no page."""
+
+    visuals: Annotated[list[TabVisual], Field(max_length=12)] = Field(
+        default_factory=list,
+    )
+
+
+class StationLayout(_CanvasSizes):
+    """A station's layout: resolution-free, fitted to each screen by the browser.
+
+    Every key is optional, and a write replaces only the keys it names. Widths,
+    sizes and places are fractions of the stage, never pixels; Chat's width is in
+    ``ch`` (a Terminal Chat is 80 columns). The sizes are the open canvas tab's.
+    """
+
+    chat_ch: Annotated[float, Field(ge=10, le=400)] | None = None
+    console: Annotated[str, Field(min_length=1, max_length=64)] | None = None
+    """The id of the Console view that is open."""
+
+    tabs: Annotated[list[CanvasTab], Field(max_length=12)] | None = None
+    """The canvas tabs, in the order they stand; none until a second one is made."""
+
+    tab: _TabId | None = None
+    """The id of the canvas tab that is open."""
+
+    @field_validator("tabs")
+    @classmethod
+    def _distinct(cls, tabs: list[CanvasTab] | None) -> list[CanvasTab] | None:
+        """Refuse two tabs of one id, which no switch could tell apart."""
+        if tabs is not None and len({tab.id for tab in tabs}) < len(tabs):
+            raise ValueError("Each canvas tab needs its own id.")
+        return tabs
+
+
+class CampaignLead(BaseModel):
+    """The lead's model and effort in a workspace's campaign setup; either may be unset."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: Annotated[str, Field(min_length=1, max_length=120)] | None = None
+    effort: Annotated[str, Field(min_length=1, max_length=20)] | None = None
+
+
+class CampaignSetup(BaseModel):
+    """A workspace's default campaign settings, any subset of them.
+
+    A launch from a chat in the workspace takes each field the asker's line leaves
+    unset, and the site's terms under both. Only the shape is validated here: the
+    terms bound and default every field at launch, where the model catalog and the
+    staffing grammar are known, so a value over a ceiling, or a model the site cannot
+    run, is refused there with a plain line, never at the write.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    hours: Annotated[float, Field(gt=0)] | None = None
+    budget_usd: Annotated[float, Field(gt=0)] | None = None
+    scientists: Annotated[int, Field(ge=1, le=8)] | None = None
+    lead: CampaignLead | None = None
+    staffing: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    repo: Annotated[str, Field(min_length=1, max_length=140)] | None = None
+
+    @field_validator("hours", "budget_usd")
+    @classmethod
+    def _finite(cls, value: float | None) -> float | None:
+        """Reject non-finite hours or budget: only a real number bounds a launch."""
+        if value is not None and not math.isfinite(value):
+            raise ValueError("Hours and budget must be finite numbers.")
+        return value
+
+    @field_validator("staffing")
+    @classmethod
+    def _staffing_shape(cls, value: str) -> str:
+        """Hold staffing to MODEL:EFFORT:COUNT parts; their models bind at launch."""
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        if not parts or not all(_is_staffing_part(part) for part in parts):
+            raise ValueError(
+                "Staffing is MODEL:EFFORT:COUNT parts joined by commas, such as "
+                "gpt-6.1-sol:high:2.",
+            )
+        return value
+
+    @field_validator("repo")
+    @classmethod
+    def _repo_shape(cls, value: str) -> str:
+        """Hold a repository to ``owner/name``; the asker's link to it binds at launch."""
+        owner, slash, name = value.partition("/")
+        if not owner.strip() or not slash or not name.strip() or "/" in name:
+            raise ValueError("A repository is owner/name, such as rekursiv-ai/loop.")
         return value
 
 
@@ -187,6 +303,8 @@ class StationData(BaseModel):
     conversation_id: uuid.UUID | None = None
     page: str | None = None
     layout: StationLayout | None = None
+    campaign: CampaignSetup | None = None
+    """The default campaign settings a launch from this station's chat takes."""
 
 
 class WorkspacePartner(BaseModel):
@@ -224,6 +342,9 @@ class WorkspaceState(WorkspaceData):
 
     layout: StationLayout | None = None
     """How the station's columns and windows were left, once they were."""
+
+    campaign: CampaignSetup | None = None
+    """The default campaign settings a launch from this station's chat takes, or None."""
 
     assistant: str | None = None
     """The configured assistant's actor, or None when the server has none."""
@@ -269,6 +390,18 @@ class SetPage(BaseModel):
 
     route: str = Field(max_length=512, pattern=ROUTE_PATTERN)
     """A `#/...` hash with no space or control character, as a navigation's."""
+
+
+class WorkspaceCampaign(BaseModel):
+    """A station's campaign setup, as its owner writes it and the assistant reads it.
+
+    The whole setup, or ``None`` to clear it on a write and for a station that holds
+    none on a read.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    campaign: CampaignSetup | None = None
 
 
 class OperationModel(BaseModel):
@@ -620,3 +753,9 @@ def _refuse_value(
     elif schema.maximum is not None and value > schema.maximum:
         return f"Parameter {name!r} is above its maximum of {schema.maximum}."
     return None
+
+
+def _is_staffing_part(part: str) -> bool:
+    """Say whether ``part`` is a ``MODEL:EFFORT:COUNT`` triple with a numeric count."""
+    fields = part.split(":")
+    return len(fields) == 3 and fields[2].strip().isdigit()

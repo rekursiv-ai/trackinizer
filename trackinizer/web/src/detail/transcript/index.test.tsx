@@ -1272,3 +1272,76 @@ test("tagged rows render as plain rows do: a shell command, a web search and att
   expect(message.querySelector(".tr-chip")!.textContent).toBe("2 attachments (image/png, 2.1 KB; image/png, 2.1 KB)");
   expect(document.querySelector("img")).toBeNull();
 });
+
+/** A worktree-diff part's listing entry, lifted out of the transcript. */
+const diffPart = (records: number): SessionPart => ({ part: 9, name: "worktree-diff", format: "", records, metadata: {}, ir_id: null });
+
+/** One changed file in the diff: a FileEditResult with a one-line hunk. */
+function edit(idx: number): SessionRecord {
+  return {
+    idx,
+    kind: "FileEditResult",
+    context_id: null,
+    timestamp: null,
+    model: null,
+    payload: { call_id: "", path: `f${idx}.py`, edits: [{ lead: "@@ -1 +1 @@\n", before: "o\n", after: "n\n", trail: null, start: 1, count: 1 }] },
+    text: `f${idx}.py`,
+    ciphertext: null,
+  };
+}
+
+test("the worktree diff shows as its own Changes panel, out of the transcript total", async () => {
+  serve([part(0, 1), diffPart(2)], undefined, edit);
+  renderDetail({ id: SESSION.id });
+  await waitFor(() => expect(document.querySelectorAll('[data-section="changes"] .sd-file').length).toBe(2));
+  // The diff part is a panel, not a transcript part, and not in the record total.
+  expect(document.querySelector('[data-part="9"]')).toBeNull();
+  expect(document.querySelector('[data-section="transcript"] h2')!.textContent).toBe("Transcript 1 record");
+  expect(document.querySelector('[data-section="changes"] h2')!.textContent).toBe("Changes 2 files");
+});
+
+test("each changed file draws in the shared split view, under its path, and the toggle switches it to unified", async () => {
+  serve([part(0, 1), diffPart(1)], undefined, edit);
+  renderDetail({ id: SESSION.id });
+  const changes = () => within(document.querySelector<HTMLElement>('[data-section="changes"]')!);
+  await waitFor(() => expect(document.querySelector('[data-section="changes"] .sd-split')).not.toBeNull());
+  expect(document.querySelector('[data-section="changes"] .sd-file .sd-path')!.textContent).toBe("f0.py");
+  // Split draws each side of the hunk in its own code cell: the removed line, then the added one.
+  expect(document.querySelector('[data-section="changes"] .sd-code.sd-del')!.textContent).toContain("o");
+  expect(document.querySelector('[data-section="changes"] .sd-code.sd-add')!.textContent).toContain("n");
+  // Unified reuses the transcript's one-column diff; the split table goes away.
+  fireEvent.click(changes().getByRole("button", { name: "Unified" }));
+  expect(document.querySelector('[data-section="changes"] .sd-split')).toBeNull();
+  expect(document.querySelector('[data-section="changes"] .tr-diff')).not.toBeNull();
+});
+
+test("a record with no hunk shows as a note, and the aggregate count names no file", async () => {
+  const note = (idx: number, path: string, message: string): SessionRecord => ({
+    idx,
+    kind: "FileEditResult",
+    context_id: null,
+    timestamp: null,
+    model: null,
+    payload: { call_id: "", path, edits: [{ lead: `(${message})\n`, before: null, after: null, trail: null, start: null, count: null }] },
+    text: path,
+    ciphertext: null,
+  });
+  serve([part(0, 1), diffPart(2)], undefined, (idx) =>
+    idx === 0 ? note(0, "big.bin", "binary or no textual change") : note(1, "(more)", "3 more changed files omitted"),
+  );
+  renderDetail({ id: SESSION.id });
+  await waitFor(() => expect(document.querySelectorAll('[data-section="changes"] .sd-note').length).toBe(2));
+  // A note stands in for a diff, so no split table is drawn.
+  expect(document.querySelector('[data-section="changes"] .sd-split')).toBeNull();
+  const files = [...document.querySelectorAll<HTMLElement>('[data-section="changes"] .sd-file')];
+  // The per-file note shows under its path; the aggregate count names no file.
+  expect(files.map((file) => file.querySelector(".sd-path")?.textContent ?? null)).toEqual(["big.bin", null]);
+  expect(files.map((file) => file.querySelector(".sd-note")!.textContent)).toEqual(["(binary or no textual change)", "(3 more changed files omitted)"]);
+});
+
+test("no Changes panel without a worktree-diff part", async () => {
+  serve([part(0, 2)]);
+  renderDetail({ id: SESSION.id });
+  await waitFor(() => expect(shown(0)).toBe(2));
+  expect(document.querySelector('[data-section="changes"]')).toBeNull();
+});

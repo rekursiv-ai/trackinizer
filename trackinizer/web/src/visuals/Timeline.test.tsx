@@ -188,6 +188,17 @@ test("an Experiment target rides on the Issue that produced it", async () => {
   expect(container.querySelector(".tl-result.tl-selected")?.getAttribute("data-ref")).toBe("Experiment#655");
 });
 
+test("an Experiment without a unique anchor has one node, its evidence and no self production edge", async () => {
+  const selected = timeline.directions[0]!.results[0]!;
+  vi.mocked(getEvidenceTimeline).mockResolvedValue({ ...timeline, target: selected.record, issue: null,
+    selected_result: selected, leads: [], root_results: [], root_results_truncated: false, directions: [] });
+  const { container } = renderTimeline(view(selected.record.id));
+  await screen.findByRole("link", { name: /Experiment#655/ });
+  expect(container.querySelectorAll(".tl-produced")).toHaveLength(0);
+  expect(screen.getAllByRole("link", { name: /Experiment#655/ })).toHaveLength(1);
+  expect(container.querySelectorAll(".tl-mark")).toHaveLength(selected.evidence.length);
+});
+
 test("a record of any other kind is the record row, alone when nothing links it", async () => {
   vi.mocked(getEvidenceTimeline).mockResolvedValue({
     ...timeline, target: record("Paper", 4, "A paper", "2026-09-29T00:00:00Z"), issue: null, leads: [],
@@ -196,7 +207,7 @@ test("a record of any other kind is the record row, alone when nothing links it"
   const { container } = renderTimeline(view("Paper-4"));
   await screen.findByRole("link", { name: /Paper#4/ });
   expect([...container.querySelectorAll("[data-role]")].map((row) => row.getAttribute("data-role"))).toEqual(["record"]);
-  expect(screen.getByText("Nothing else is linked to this record yet.")).toBeTruthy();
+  expect(screen.getByText("No dated results in this chart.")).toBeTruthy();
 });
 
 test("does not request data until the visual has a record target", () => {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, TypeGuard, cast, override
@@ -66,6 +66,7 @@ from trackinizer.trax.run.truncate import (
     encoded_size,
     was_truncated,
 )
+from trackinizer.trax.run.worktree_diff import WORKTREE_DIFF_PART
 from trackinizer.types.session_records import _BY_KIND, SessionRecordRow
 from trackinizer.types.streams import Stderr, Stdin, Stdout
 from trackinizer.wire.wire_session_ir import (
@@ -645,6 +646,16 @@ class TestAPrivateRun:
         assert [body.private for body in client.started] == [True]
         assert len(client.appended) == 1
 
+    def test_a_fresh_sink_records_no_refusal_so_it_can_still_open(self) -> None:
+        """The refusal reason starts EMPTY -- a null would read the same in the
+        ``if self._refusal`` guard, so assert the value: it is what lets a sink
+        that has met no refusal open instead of re-raising a stored one.
+        """
+        sink = TrackinizerSink(cast(Client, _FakeClient()), "claude", private=True)
+        assert sink._refusal == ""
+        sink.open()  # Empty reason -> opens rather than raising PrivateNotHeldError.
+        assert sink.session_id is not None
+
     @pytest.mark.parametrize(
         "answered",
         [None, "open"],
@@ -908,6 +919,76 @@ class _OutageClient(_FakeClient):
             raise RuntimeError("server down")
 
 
+class TestWorktreeDiffSink:
+    """``emit_worktree_diff`` stores the net diff beside the records."""
+
+    def test_diff_part_is_a_restart_with_an_empty_format(self) -> None:
+        """The diff is a restart append to a formatless part, so resume skips it."""
+        client = _FakeClient()
+        sink = _instant_sink(client)
+        sink.emit_worktree_diff(
+            [
+                FileEditResult(
+                    call_id="",
+                    path="a.py",
+                    edits=(Splice(before="old\n", after="new\n"),),
+                ),
+            ],
+        )
+        [(_, name, bodies, restart)] = client.appended
+        assert name == WORKTREE_DIFF_PART
+        assert restart is True
+        assert [body.kind for body in bodies] == ["FileEditResult"]
+        manifest = client.manifests[-1]
+        assert manifest.name == WORKTREE_DIFF_PART
+        assert manifest.format == ""
+        assert manifest.records == 1
+
+    def test_the_diff_passes_the_redactor(self) -> None:
+        """A secret the diff carries is masked, like every other stored record."""
+        client = _FakeClient()
+        sink = _instant_sink(client, redactor=Redactor({"K": _VALUE}))
+        sink.emit_worktree_diff(
+            [
+                FileEditResult(
+                    call_id="",
+                    path="a.py",
+                    edits=(Splice(before="old\n", after=f"token {_VALUE}\n"),),
+                ),
+            ],
+        )
+        stored = _stored_by(client)
+        assert _VALUE_ESCAPED not in stored
+        assert "[redacted:K]" in stored
+
+    def test_file_sink_writes_the_diff_part(self) -> None:
+        """A local-file run writes the diff under the diff part's name."""
+        buf = io.StringIO()
+        sink = FileSink(buf)
+        sink.emit_worktree_diff(
+            [
+                FileEditResult(
+                    call_id="",
+                    path="a.py",
+                    edits=(Splice(before="old\n", after="new\n"),),
+                ),
+                FileEditResult(
+                    call_id="",
+                    path="b.py",
+                    edits=(Splice(before="old\n", after="two\n"),),
+                ),
+            ],
+        )
+        rows = [
+            json_loads(line, dict[str, object]) for line in buf.getvalue().splitlines()
+        ]
+        assert [row["part_name"] for row in rows] == [
+            WORKTREE_DIFF_PART,
+            WORKTREE_DIFF_PART,
+        ]
+        assert {row["kind"] for row in rows} == {"FileEditResult"}
+
+
 class TestCatchUp:
     """A run that loses the server keeps capturing, and catches it up on return."""
 
@@ -1165,6 +1246,11 @@ class _ExplodingSink(Sink):
     @override
     def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
         del command, at
+        raise RuntimeError("server exploded")
+
+    @override
+    def emit_worktree_diff(self, records: Sequence[FileEditResult]) -> None:
+        del records
         raise RuntimeError("server exploded")
 
     @override
@@ -1523,6 +1609,14 @@ class TestSinkFeed:
         ]
         assert rows[-1]["text"] == "hello\n"
 
+    def test_on_record_sees_each_record_the_chunk_produced(self) -> None:
+        """The diff capture reads edited paths through ``on_record``: one per record."""
+        buf = io.StringIO()
+        sink = FileSink(buf)
+        seen: list[TraxRecord] = []
+        kinds = sink.feed(IOStreamAdapter(), _PART, b"hello\n", on_record=seen.append)
+        assert [type(record).__name__ for record in seen] == kinds
+
     def test_two_files_get_separate_readers(self) -> None:
         """A shared reader would number the second file after the first.
 
@@ -1633,6 +1727,10 @@ class _BlockingSink(Sink):
     @override
     def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
         del command, at
+
+    @override
+    def emit_worktree_diff(self, records: Sequence[FileEditResult]) -> None:
+        del records
 
     @override
     def flush(self) -> None:

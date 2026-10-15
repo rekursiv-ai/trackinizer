@@ -34,6 +34,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
+from pathlib import Path
 from typing import IO, TYPE_CHECKING, Protocol, cast, override
 from uuid import UUID, uuid4
 
@@ -48,6 +49,7 @@ from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.redact import redact_body
 from trackinizer.trax.run.refusal import send_isolating
 from trackinizer.trax.run.truncate import bounded, encoded_size
+from trackinizer.trax.run.worktree_diff import WORKTREE_DIFF_PART
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.audience import PRIVATE
 from trackinizer.wire.wire_session_ir import (
@@ -60,14 +62,18 @@ from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from trackinizer.client.client import Client
     from trackinizer.lib.agent.sessions.tail import Tail
+    from trackinizer.lib.agent.types.sessions import FileEditResult
     from trackinizer.trax.run.adapters.custom_types import Adapter
     from trackinizer.trax.run.redact import Redactor
     from trackinizer.trax.run.slash import SlashCommand
     from trackinizer.types.streams import TraxRecord
+
+
+# The source "file" the synthetic diff part is keyed by; its records carry no
+# position in any real log, so any path with this basename serves.
+_DIFF_PATH = Path(WORKTREE_DIFF_PART)
 
 
 class Sink(Protocol):
@@ -157,6 +163,22 @@ class Sink(Protocol):
         """
         ...
 
+    def emit_worktree_diff(self, records: Sequence[FileEditResult]) -> None:
+        """Store the session's net worktree diff, overwriting the last one.
+
+        NOT transcript records: these are a derived view, held on a synthetic
+        part (:data:`~trackinizer.trax.run.worktree_diff.WORKTREE_DIFF_PART`)
+        whose format is empty, so a resume never replays it. The batch is a
+        RESTART, so it overwrites the previous refresh's records in place -- the
+        part is the current net diff, not an append log. Same audience as the
+        transcript, same redactor as every record.
+
+        Args:
+          records: One :class:`FileEditResult` per changed file, in order.
+
+        """
+        ...
+
     def feed(
         self,
         adapter: Adapter,
@@ -164,6 +186,7 @@ class Sink(Protocol):
         raw: bytes,
         *,
         restart: bool = False,
+        on_record: Callable[[TraxRecord], None] | None = None,
     ) -> list[str]:
         """Normalize one captured chunk into records and record each.
 
@@ -184,6 +207,10 @@ class Sink(Protocol):
           restart: Whether the file was REPLACED immediately before this
             chunk, which discards the reader's position -- the records that
             follow re-derive the part from its start.
+          on_record: Called with each normalized record before it is emitted,
+            for an observer that needs the records the chunk produced (the
+            worktree-diff capture reads edited paths this way). Runs on the
+            caller's thread, inside any ``feed`` lock.
 
         Returns:
           kinds: The record kind names this chunk produced, for the run's
@@ -202,6 +229,8 @@ class Sink(Protocol):
             self.readers[path] = reader
         kinds: list[str] = []
         for record in reader.feed(raw.decode(errors="replace")):
+            if on_record is not None:
+                on_record(record)
             self.emit(adapter.name, Event(record=record, path=path, restart=restart))
             kinds.append(type(record).__name__)
         return kinds
@@ -340,6 +369,22 @@ class FileSink(Sink):
             )
             + "\n",
         )
+
+    @override
+    def emit_worktree_diff(self, records: Sequence[FileEditResult]) -> None:
+        # Written as ordinary record lines under the diff part. A local file is
+        # an append log with no overwrite, so each refresh adds its lines afresh;
+        # the dedup upstream keeps that to one set per actual change.
+        for idx, record in enumerate(records):
+            self._write_record(
+                "",
+                _DIFF_PATH,
+                _record_body(
+                    idx,
+                    Event(record=record, path=_DIFF_PATH),
+                    redactor=self._redactor,
+                ),
+            )
 
     @override
     def pending(self) -> list[tuple[Path, RecordBody]]:
@@ -502,6 +547,9 @@ class TrackinizerSink(Sink):
         # One IR id per file, minted on first send: the manifest records what
         # the file declared, and a fresh id per BATCH would rewrite it.
         self._ir_ids: dict[Path, UUID] = {}
+        # The synthetic diff part's IR id, minted once and reused so each
+        # refresh redeclares the same part rather than minting a new one.
+        self._diff_ir_id: UUID | None = None
         # Set whenever the buffer fills from empty, so this value is never read.
         self._oldest_buffered_at: float | None = None  # pragma: no mutate
         self._closed = False  # pragma: no mutate -- read only for truthiness.
@@ -559,6 +607,37 @@ class TrackinizerSink(Sink):
                 command=_redacted(command.command, redactor=self._redactor),
                 args=_redacted(command.args, redactor=self._redactor),
             ),
+        )
+
+    @override
+    def emit_worktree_diff(self, records: Sequence[FileEditResult]) -> None:
+        self._ensure_session()
+        session_id = cast("UUID", self._session_id)
+        if self._diff_ir_id is None:
+            self._diff_ir_id = uuid4()
+        bodies = [
+            _record_body(
+                idx,
+                Event(record=record, path=_DIFF_PATH),
+                redactor=self._redactor,
+            )
+            for idx, record in enumerate(records)
+        ]
+        # A RESTART with an empty format: it overwrites the previous refresh in
+        # place (the part is the CURRENT diff), and a formatless part is searchable
+        # but never resumable, so the diff is never replayed into a CLI.
+        self._client.append_records(
+            session_id,
+            name=WORKTREE_DIFF_PART,
+            manifest=ManifestBody(
+                name=WORKTREE_DIFF_PART,
+                metadata={},
+                ir_id=self._diff_ir_id,
+                format="",
+                records=len(bodies),
+            ),
+            records=bodies,
+            restart=True,
         )
 
     @override
@@ -898,6 +977,18 @@ class ResilientSink(Sink):
         )
 
     @override
+    def emit_worktree_diff(self, records: Sequence[FileEditResult]) -> None:
+        # Sent, not buffered, so a send that fails is held and mirrored to the
+        # local file; a restart append makes a replay on recovery idempotent.
+        self._forward(
+            _Held(
+                apply=lambda sink: sink.emit_worktree_diff(records),
+                taken_before_sending=False,
+            ),
+            mirror=lambda fallback: fallback.emit_worktree_diff(records),
+        )
+
+    @override
     def restart(self, path: Path) -> None:
         self._forward(
             _Held(apply=lambda sink: sink.restart(path), taken_before_sending=False),
@@ -1100,6 +1191,11 @@ class LockedSink(Sink):
             self._inner.emit_slash_command(command, at)
 
     @override
+    def emit_worktree_diff(self, records: Sequence[FileEditResult]) -> None:
+        with self._lock:
+            self._inner.emit_worktree_diff(records)
+
+    @override
     def feed(
         self,
         adapter: Adapter,
@@ -1107,12 +1203,19 @@ class LockedSink(Sink):
         raw: bytes,
         *,
         restart: bool = False,
+        on_record: Callable[[TraxRecord], None] | None = None,
     ) -> list[str]:
         # Held across the WHOLE chunk, not per record: the inner sink's
         # per-file position advances once per record, so another thread
         # emitting between two of them would interleave positions.
         with self._lock:
-            return self._inner.feed(adapter, path, raw, restart=restart)
+            return self._inner.feed(
+                adapter,
+                path,
+                raw,
+                restart=restart,
+                on_record=on_record,
+            )
 
     @override
     def flush(self) -> None:

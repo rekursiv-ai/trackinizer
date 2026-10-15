@@ -72,6 +72,7 @@ if TYPE_CHECKING:
     import pydantic
 
     from trackinizer.wire import (
+        wire_code,
         wire_machine_host,
         wire_machines,
         wire_metrics,
@@ -81,6 +82,7 @@ if TYPE_CHECKING:
         wire_variables,
     )
     from trackinizer.wire.filters import Filter
+    from trackinizer.wire.wire_code import CodeSnapshot, CodeSnapshotHead
     from trackinizer.wire.wire_machine_host import (
         EnrollResponse,
         HeartbeatResponse,
@@ -130,6 +132,8 @@ else:
     wire_machine_host = lazy_import("trackinizer.wire.wire_machine_host")
     # Same lazy-bind for ``wire_variables``: only the variable methods touch it.
     wire_variables = lazy_import("trackinizer.wire.wire_variables")
+    # Same lazy-bind for ``wire_code``: only the code-store methods touch it.
+    wire_code = lazy_import("trackinizer.wire.wire_code")
     pydantic = lazy_import("pydantic")
 
 
@@ -2176,6 +2180,113 @@ class Client:
             "POST",
             wire_machine_host.REVOKE_PATH.format(name=quote(name, safe="")),
         )
+
+    def code_missing(self, owner: str, *, hashes: Sequence[str]) -> list[str]:
+        """Return the blob hashes the code store lacks for ``owner``, in the order given.
+
+        Args:
+          owner: The email the blobs are filed under: the caller's, unless it holds
+            ``staff``.
+          hashes: Each blob's sha256 hex, at most ``MAX_MISSING_HASHES``.
+
+        Returns:
+          missing: The hashes to send with :meth:`code_put_blobs`, each once.
+
+        """
+        where = wire_code.CODE_MISSING_PATH
+        body = _build_body(
+            wire_code.CodeMissingRequest,
+            "code blob check",
+            owner=owner,
+            sha256=list(hashes),
+        )
+        response = self._request("POST", where, body=body.model_dump(mode="json"))
+        return _validate_model(wire_code.CodeMissing, response, where).missing
+
+    def code_put_blobs(self, owner: str, *, blobs: Mapping[str, str]) -> int:
+        """Store blobs for ``owner``; the server checks each hash against its text.
+
+        Args:
+          owner: The email the blobs are filed under: the caller's, unless it holds
+            ``staff``.
+          blobs: Each blob's sha256 hex to its text: at most
+            ``MAX_BLOBS_PER_REQUEST`` blobs and ``MAX_REQUEST_TEXT_BYTES`` of UTF-8.
+
+        Returns:
+          stored: How many were new to the store.
+
+        """
+        where = wire_code.CODE_BLOBS_PATH
+        body = _build_body(
+            wire_code.CodeBlobsPut,
+            "code blobs",
+            owner=owner,
+            blobs=[{"sha256": sha, "text": text} for sha, text in blobs.items()],
+        )
+        response = self._request("POST", where, body=body.model_dump(mode="json"))
+        return _validate_model(wire_code.CodeBlobsStored, response, where).stored
+
+    def code_put_snapshot(
+        self,
+        record_id: uuid.UUID,
+        *,
+        owner: str,
+        private: bool,
+        parent_record_id: uuid.UUID | None,
+        files: Mapping[str, str],
+        partial: str = "",
+    ) -> CodeSnapshotHead:
+        """File a record's code, replacing the snapshot it had.
+
+        The server answers 409 ``code_blobs_missing`` while a blob is not stored for
+        ``owner``, and 409 ``code_parent_missing`` while the parent record holds no
+        snapshot of ``owner``.
+
+        Args:
+          record_id: The record the code belongs to.
+          owner: The email the snapshot is filed under: the caller's, unless it holds
+            ``staff``.
+          private: Let ``owner`` alone read it.
+          parent_record_id: The record whose snapshot this one builds on.
+          files: Each path to its blob's sha256 hex.
+          partial: One line saying what was left out, when the upload stopped short.
+
+        Returns:
+          head: The snapshot as stored.
+
+        """
+        where = wire_code.CODE_SNAPSHOT_PATH.format(record_id=record_id)
+        body = _build_body(
+            wire_code.CodeSnapshotPut,
+            f"code snapshot of {record_id}",
+            owner=owner,
+            private=private,
+            parent_record_id=parent_record_id,
+            files=dict(files),
+            partial=partial,
+        )
+        response = self._request("PUT", where, body=body.model_dump(mode="json"))
+        return _validate_model(wire_code.CodeSnapshotHead, response, where)
+
+    def code_snapshot(self, record_id: uuid.UUID) -> CodeSnapshot | None:
+        """Return a record's code snapshot, its files sorted by path.
+
+        Args:
+          record_id: The record.
+
+        Returns:
+          snapshot: The snapshot; ``None`` when the record has none the caller reads,
+            which the server answers 404 for alike.
+
+        """
+        where = wire_code.CODE_SNAPSHOT_PATH.format(record_id=record_id)
+        try:
+            response = self._request("GET", where)
+        except ClientError as error:
+            if error.status_code == 404:
+                return None
+            raise
+        return _validate_model(wire_code.CodeSnapshot, response, where)
 
     def _patch_field(
         self,

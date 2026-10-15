@@ -771,6 +771,226 @@
         "title": "BatchEdge",
         "type": "object"
       },
+      "CampaignLead": {
+        "additionalProperties": false,
+        "description": "The lead's model and effort in a workspace's campaign setup; either may be unset.",
+        "properties": {
+          "effort": {
+            "anyOf": [
+              {
+                "maxLength": 20,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effort"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          }
+        },
+        "title": "CampaignLead",
+        "type": "object"
+      },
+      "CampaignSetup": {
+        "additionalProperties": false,
+        "description": "A workspace's default campaign settings, any subset of them.\n\nA launch from a chat in the workspace takes each field the asker's line leaves\nunset, and the site's terms under both. Only the shape is validated here: the\nterms bound and default every field at launch, where the model catalog and the\nstaffing grammar are known, so a value over a ceiling, or a model the site cannot\nrun, is refused there with a plain line, never at the write.",
+        "properties": {
+          "budget_usd": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Usd"
+          },
+          "hours": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hours"
+          },
+          "lead": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CampaignLead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "maxLength": 140,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo"
+          },
+          "scientists": {
+            "anyOf": [
+              {
+                "maximum": 8.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scientists"
+          },
+          "staffing": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Staffing"
+          }
+        },
+        "title": "CampaignSetup",
+        "type": "object"
+      },
+      "CanvasTab": {
+        "additionalProperties": false,
+        "description": "One of a station's canvas tabs.\n\nThe open tab is the station's canvas itself; the others keep here what they\nshow (the page, the visuals and their sizes) until they are opened again,\nwhen the browser shows it through the canvas's own operations.",
+        "properties": {
+          "columns": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/_Columns"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "floating": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/_TileSize"
+                },
+                "propertyNames": {
+                  "$ref": "#/components/schemas/_TypeKey"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Floating"
+          },
+          "id": {
+            "$ref": "#/components/schemas/_TabId"
+          },
+          "name": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "share": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "exclusiveMinimum": 0.0,
+                  "maximum": 100.0,
+                  "type": "number"
+                },
+                "propertyNames": {
+                  "$ref": "#/components/schemas/_TypeKey"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share"
+          },
+          "tiles": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/_TileMemory"
+                },
+                "propertyNames": {
+                  "$ref": "#/components/schemas/_TypeKey"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tiles"
+          },
+          "visuals": {
+            "items": {
+              "$ref": "#/components/schemas/TabVisual"
+            },
+            "maxItems": 12,
+            "title": "Visuals",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "CanvasTab",
+        "type": "object"
+      },
       "Change": {
         "description": "An append-only audit row, chained to its cause via ``caused_by``.\n\nOn the Python side the flat ``old_*`` / ``new_*`` columns collapse into\ntwo nested :class:`Snapshot` objects. The populated fields in each name\nthe columns the event touched; a NULL on one side means the value came\ninto being or ceased to exist. The schema CHECK constraints decide which\ndeltas a given ``kind`` may carry.\n\n``old`` / ``new`` is the temporal pair, kept distinct from\n``edges.from_id`` / ``edges.to_id``, which are graph endpoints in a\ndifferent table.\n\nThe per-event USD spend is the difference between the sides:\n:attr:`marginal_cost` returns ``new.marginal_cost - old.marginal_cost``,\ntreating a ``None`` side as ``Cost()``.",
         "properties": {
@@ -1241,6 +1461,407 @@
           "owner"
         ],
         "title": "ClaimNextIssue",
+        "type": "object"
+      },
+      "CodeBlob": {
+        "additionalProperties": false,
+        "description": "One file's text and the sha256 hex of its UTF-8 bytes, which the server checks.",
+        "properties": {
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha256",
+          "text"
+        ],
+        "title": "CodeBlob",
+        "type": "object"
+      },
+      "CodeBlobsPut": {
+        "additionalProperties": false,
+        "description": "Store blobs for ``owner``; one already stored is a no-op.",
+        "properties": {
+          "blobs": {
+            "items": {
+              "$ref": "#/components/schemas/CodeBlob"
+            },
+            "title": "Blobs",
+            "type": "array"
+          },
+          "owner": {
+            "minLength": 1,
+            "title": "Owner",
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner",
+          "blobs"
+        ],
+        "title": "CodeBlobsPut",
+        "type": "object"
+      },
+      "CodeBlobsStored": {
+        "additionalProperties": false,
+        "description": "How many of the blobs sent were new to the store.",
+        "properties": {
+          "stored": {
+            "title": "Stored",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stored"
+        ],
+        "title": "CodeBlobsStored",
+        "type": "object"
+      },
+      "CodeDiff": {
+        "additionalProperties": false,
+        "description": "The paths that differ between two snapshots, sorted, with their diffs.\n\nThe diffs hold at most ``MAX_DIFF_CHARS`` characters in all. The file that would\npass it is cut after its last whole line inside the bound, and no later file is\nlisted; ``more`` then says so.",
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/CodeFileDiff"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "more": {
+            "title": "More",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "files",
+          "more"
+        ],
+        "title": "CodeDiff",
+        "type": "object"
+      },
+      "CodeFile": {
+        "additionalProperties": false,
+        "description": "One file of a snapshot, with its text.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "text"
+        ],
+        "title": "CodeFile",
+        "type": "object"
+      },
+      "CodeFileDiff": {
+        "additionalProperties": false,
+        "description": "How one path differs between two snapshots.",
+        "properties": {
+          "change": {
+            "enum": [
+              "added",
+              "modified",
+              "deleted"
+            ],
+            "title": "Change",
+            "type": "string"
+          },
+          "diff": {
+            "title": "Diff",
+            "type": "string"
+          },
+          "new_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Sha256"
+          },
+          "old_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Old Sha256"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "change",
+          "old_sha256",
+          "new_sha256",
+          "diff"
+        ],
+        "title": "CodeFileDiff",
+        "type": "object"
+      },
+      "CodeMissing": {
+        "additionalProperties": false,
+        "description": "The hashes the store lacks for the owner, each once, in the order asked.",
+        "properties": {
+          "missing": {
+            "items": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          }
+        },
+        "required": [
+          "missing"
+        ],
+        "title": "CodeMissing",
+        "type": "object"
+      },
+      "CodeMissingRequest": {
+        "additionalProperties": false,
+        "description": "Ask which of ``sha256`` the store lacks for ``owner``.",
+        "properties": {
+          "owner": {
+            "minLength": 1,
+            "title": "Owner",
+            "type": "string"
+          },
+          "sha256": {
+            "items": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "title": "Sha256",
+            "type": "array"
+          }
+        },
+        "required": [
+          "owner",
+          "sha256"
+        ],
+        "title": "CodeMissingRequest",
+        "type": "object"
+      },
+      "CodeSnapshot": {
+        "additionalProperties": false,
+        "description": "A snapshot and its files, sorted by path.",
+        "properties": {
+          "file_count": {
+            "title": "File Count",
+            "type": "integer"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/CodeSnapshotFile"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "parent_record_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Record Id"
+          },
+          "partial": {
+            "title": "Partial",
+            "type": "string"
+          },
+          "private": {
+            "title": "Private",
+            "type": "boolean"
+          },
+          "record_id": {
+            "format": "uuid",
+            "title": "Record Id",
+            "type": "string"
+          },
+          "total_bytes": {
+            "title": "Total Bytes",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id",
+          "parent_record_id",
+          "private",
+          "file_count",
+          "total_bytes",
+          "partial",
+          "updated_at",
+          "files"
+        ],
+        "title": "CodeSnapshot",
+        "type": "object"
+      },
+      "CodeSnapshotFile": {
+        "additionalProperties": false,
+        "description": "One path of a snapshot.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "size"
+        ],
+        "title": "CodeSnapshotFile",
+        "type": "object"
+      },
+      "CodeSnapshotHead": {
+        "additionalProperties": false,
+        "description": "A snapshot without its files. The owner's email is never sent.",
+        "properties": {
+          "file_count": {
+            "title": "File Count",
+            "type": "integer"
+          },
+          "parent_record_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Record Id"
+          },
+          "partial": {
+            "title": "Partial",
+            "type": "string"
+          },
+          "private": {
+            "title": "Private",
+            "type": "boolean"
+          },
+          "record_id": {
+            "format": "uuid",
+            "title": "Record Id",
+            "type": "string"
+          },
+          "total_bytes": {
+            "title": "Total Bytes",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id",
+          "parent_record_id",
+          "private",
+          "file_count",
+          "total_bytes",
+          "partial",
+          "updated_at"
+        ],
+        "title": "CodeSnapshotHead",
+        "type": "object"
+      },
+      "CodeSnapshotPut": {
+        "additionalProperties": false,
+        "description": "File a record's code, replacing the snapshot it had.",
+        "properties": {
+          "files": {
+            "additionalProperties": {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "object"
+          },
+          "owner": {
+            "minLength": 1,
+            "title": "Owner",
+            "type": "string"
+          },
+          "parent_record_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Record Id"
+          },
+          "partial": {
+            "default": "",
+            "title": "Partial",
+            "type": "string"
+          },
+          "private": {
+            "title": "Private",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "owner",
+          "private",
+          "parent_record_id",
+          "files"
+        ],
+        "title": "CodeSnapshotPut",
         "type": "object"
       },
       "ConsoleLive": {
@@ -3877,6 +4498,103 @@
         ],
         "type": "string"
       },
+      "LineageEdge": {
+        "additionalProperties": false,
+        "description": "One stored relationship, with its direction and signed annotation.",
+        "properties": {
+          "edge_kind": {
+            "$ref": "#/components/schemas/trackinizer__types__edges__Kind"
+          },
+          "from_id": {
+            "format": "uuid",
+            "title": "From Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "to_id": {
+            "format": "uuid",
+            "title": "To Id",
+            "type": "string"
+          },
+          "valence": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valence"
+          }
+        },
+        "required": [
+          "from_id",
+          "to_id",
+          "edge_kind",
+          "valence",
+          "note"
+        ],
+        "title": "LineageEdge",
+        "type": "object"
+      },
+      "LineagePage": {
+        "additionalProperties": false,
+        "description": "A paged neighborhood whose selected record is outside the peer quota.",
+        "properties": {
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/LineageEdge"
+            },
+            "maxItems": 350,
+            "title": "Edges",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineRecord"
+            },
+            "maxItems": 50,
+            "title": "Records",
+            "type": "array"
+          },
+          "target": {
+            "$ref": "#/components/schemas/TimelineRecord"
+          }
+        },
+        "required": [
+          "target",
+          "records",
+          "edges",
+          "next_cursor"
+        ],
+        "title": "LineagePage",
+        "type": "object"
+      },
       "LockBody": {
         "description": "Request body for ``PUT /api/admin/inquiries/{id}/lock``.",
         "properties": {
@@ -4868,6 +5586,17 @@
             "description": "Light up the rows the assistant's answers mention.",
             "title": "Highlight Mentions",
             "type": "boolean",
+            "x-setting": true
+          },
+          "home": {
+            "default": "graph",
+            "description": "What the canvas's Home button and a new canvas tab show: the graph, or an empty canvas.",
+            "enum": [
+              "graph",
+              "empty"
+            ],
+            "title": "Home",
+            "type": "string",
             "x-setting": true
           },
           "lens": {
@@ -6719,7 +7448,7 @@
       },
       "StationLayout": {
         "additionalProperties": false,
-        "description": "A station's layout: resolution-free, fitted to each screen by the browser.\n\nEvery key is optional, and a write replaces only the keys it names. Widths,\nsizes and places are fractions of the stage, never pixels; Chat's width is in\n``ch`` (a Terminal Chat is 80 columns).",
+        "description": "A station's layout: resolution-free, fitted to each screen by the browser.\n\nEvery key is optional, and a write replaces only the keys it names. Widths,\nsizes and places are fractions of the stage, never pixels; Chat's width is in\n``ch`` (a Terminal Chat is 80 columns). The sizes are the open canvas tab's.",
         "properties": {
           "chat_ch": {
             "anyOf": [
@@ -6792,6 +7521,31 @@
               }
             ],
             "title": "Share"
+          },
+          "tab": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/_TabId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tabs": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CanvasTab"
+                },
+                "maxItems": 12,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tabs"
           },
           "tiles": {
             "anyOf": [
@@ -8395,6 +9149,58 @@
         "title": "SubmitWebSearch",
         "type": "object"
       },
+      "TabVisual": {
+        "additionalProperties": false,
+        "description": "A visual a canvas tab shows, kept while another tab is open.",
+        "properties": {
+          "params": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "maxLength": 2000,
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "maxProperties": 32,
+            "propertyNames": {
+              "maxLength": 64
+            },
+            "title": "Params",
+            "type": "object"
+          },
+          "placement": {
+            "$ref": "#/components/schemas/Placement",
+            "default": "main"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Id"
+          },
+          "type": {
+            "$ref": "#/components/schemas/_TypeKey"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "TabVisual",
+        "type": "object"
+      },
       "TimelineDirection": {
         "additionalProperties": false,
         "description": "One direct Issue direction and its capped results.",
@@ -8527,6 +9333,20 @@
           },
           "kind": {
             "$ref": "#/components/schemas/InquiryKind"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Labels"
           },
           "modified": {
             "format": "date-time",
@@ -8987,6 +9807,24 @@
         "additionalProperties": true,
         "type": "object"
       },
+      "WorkspaceCampaign": {
+        "additionalProperties": false,
+        "description": "A station's campaign setup, as its owner writes it and the assistant reads it.\n\nThe whole setup, or ``None`` to clear it on a write and for a station that holds\nnone on a read.",
+        "properties": {
+          "campaign": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CampaignSetup"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "WorkspaceCampaign",
+        "type": "object"
+      },
       "WorkspaceConflict": {
         "description": "A stale operation's conflict response, including live state.",
         "properties": {
@@ -9240,6 +10078,16 @@
               }
             ],
             "title": "Assistant"
+          },
+          "campaign": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CampaignSetup"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "continuation_record_id": {
             "anyOf": [
@@ -9495,6 +10343,11 @@
         "maximum": 1.0,
         "minimum": 0.0,
         "type": "number"
+      },
+      "_TabId": {
+        "maxLength": 64,
+        "minLength": 1,
+        "type": "string"
       },
       "_TileMemory": {
         "additionalProperties": false,
@@ -11509,6 +12362,287 @@
           }
         },
         "summary": "Share Chat Route"
+      }
+    },
+    "/api/code/blobs": {
+      "post": {
+        "description": "Store blobs for the owner after checking each hash against its text.\n\nArgs:\n  body: The owner and the blobs.\n  request: Request carrying the store.\n  identity: Writer filing code under ``body.owner``.\n\nReturns:\n  stored: How many blobs were new.",
+        "operationId": "code_put_blobs_route_api_code_blobs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeBlobsPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeBlobsStored"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Code Put Blobs Route"
+      }
+    },
+    "/api/code/blobs/missing": {
+      "post": {
+        "description": "Return which of the hashes the store lacks for the owner, in the order asked.\n\nArgs:\n  body: The owner and the hashes, at most ``MAX_MISSING_HASHES``.\n  request: Request carrying the store.\n  identity: Writer filing code under ``body.owner``.\n\nReturns:\n  missing: The hashes not stored for the owner, each once.",
+        "operationId": "code_missing_route_api_code_blobs_missing_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeMissingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeMissing"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Code Missing Route"
+      }
+    },
+    "/api/code/diff": {
+      "get": {
+        "description": "Return how one record's code differs from another's, path by path.\n\nArgs:\n  from_record: The record whose snapshot is the old side.\n  to_record: The record whose snapshot is the new side.\n  request: Request carrying the store.\n  identity: Viewer reading both.\n  context: Lines of context around each change.\n\nReturns:\n  diff: Each path that differs, sorted, with its unified diff.",
+        "operationId": "code_diff_route_api_code_diff_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "From",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "To",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "context",
+            "required": false,
+            "schema": {
+              "default": 3,
+              "maximum": 50,
+              "minimum": 0,
+              "title": "Context",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeDiff"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Code Diff Route"
+      }
+    },
+    "/api/code/records/{record_id}/file": {
+      "get": {
+        "description": "Return one file of a record's snapshot, with its text.\n\nArgs:\n  record_id: The record.\n  path: The file's path in the snapshot.\n  request: Request carrying the store.\n  identity: Viewer reading it.\n\nReturns:\n  file: Its path, hash and text.",
+        "operationId": "code_file_route_api_code_records__record_id__file_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Record Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeFile"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Code File Route"
+      }
+    },
+    "/api/code/records/{record_id}/snapshot": {
+      "get": {
+        "description": "Return a record's snapshot and its files, sorted by path.\n\nArgs:\n  record_id: The record.\n  request: Request carrying the store.\n  identity: Viewer reading it.\n\nReturns:\n  snapshot: The snapshot, without its owner's email.",
+        "operationId": "code_snapshot_route_api_code_records__record_id__snapshot_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Record Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeSnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Code Snapshot Route"
+      },
+      "put": {
+        "description": "File a record's code, replacing the snapshot it had.\n\nArgs:\n  record_id: The record the code belongs to.\n  body: The snapshot.\n  request: Request carrying the store.\n  identity: Writer filing code under ``body.owner``.\n\nReturns:\n  head: The snapshot as stored.\n\nRaises:\n  HTTPException: 403 when the owner is not the caller's and the caller does not\n    hold ``staff``, or the record's snapshot is another owner's.",
+        "operationId": "code_put_snapshot_route_api_code_records__record_id__snapshot_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Record Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeSnapshotPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeSnapshotHead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Code Put Snapshot Route"
       }
     },
     "/api/codechange/{target_id}/sha": {
@@ -17803,9 +18937,122 @@
         "summary": "Visuals Route"
       }
     },
+    "/api/visuals/lineage/{record_id}": {
+      "get": {
+        "description": "Read typed research links without requiring a launch or a single parent.\n\nArgs:\n  record_id: The selected inquiry UUID.\n  request: Request carrying the Store.\n  direction: Read incoming or outgoing stored edges.\n  edge_kind: Relationship kinds, defaulting to taxonomy and provenance.\n  peer_kind: Restrict peers to one inquiry kind.\n  page_size: Distinct peer quota, at most fifty.\n  cursor: Continuation bound to this record and these filters.\n\nReturns:\n  page: Selected record, peer records, directed edges and continuation.",
+        "operationId": "lineage_page_route_api_visuals_lineage__record_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "record_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Record Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "default": "in",
+              "enum": [
+                "in",
+                "out"
+              ],
+              "title": "Direction",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "edge_kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "$ref": "#/components/schemas/trackinizer__types__edges__Kind"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Edge Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "peer_kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/InquiryKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Peer Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 1024,
+              "title": "Cursor",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LineagePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Lineage Page Route"
+      }
+    },
     "/api/visuals/timeline/{record_id}": {
       "get": {
-        "description": "Return the lineage and timeline of a record of any kind, with hard bounded SQL.\n\nThe anchor Issue supplies `leads` (its `narrows` ancestors, at most three,\nfarthest first), results, and directions. An Issue is its own anchor; an\nExperiment is anchored on the Issue that produced it; any other kind stays\nthe record and takes the nearest `produced_by` Issue, with the anchor itself\nas its nearest lead. A record with no anchor is returned alone.\n\nArgs:\n  record_id: Selected record UUID, of any kind.\n  request: Request with the shared Store.\n  direction_limit: Direct child Issues to return; the catalog sets the default\n    and maximum.\n  results_per_direction: Experiments per Issue; the catalog sets the default\n    and maximum.\n\nReturns:\n  timeline: Bounded record, result, and signed evidence projection.",
+        "description": "Return the lineage and timeline of a record of any kind, with hard bounded SQL.\n\nThe anchor Issue supplies `leads` (its `narrows` ancestors, at most three,\nfarthest first), results, and directions. An Issue is its own anchor; an\nExperiment is anchored on its sole Issue producer; any other kind stays\nthe record and takes its sole `produced_by` Issue as its nearest lead.\nMultiple producers or broader Issues stop the overview's ancestry spine;\nall origins remain available through the paged lineage endpoint.\n\nArgs:\n  record_id: Selected record UUID, of any kind.\n  request: Request with the shared Store.\n  direction_limit: Direct child Issues to return; the catalog sets the default\n    and maximum.\n  results_per_direction: Experiments per Issue; the catalog sets the default\n    and maximum.\n\nReturns:\n  timeline: Bounded record, result, and signed evidence projection.",
         "operationId": "evidence_timeline_route_api_visuals_timeline__record_id__get",
         "parameters": [
           {
@@ -19473,6 +20720,63 @@
         "summary": "Workspace For Chat Route"
       }
     },
+    "/api/workspaces/for-chat/{conversation_id}/campaign": {
+      "get": {
+        "description": "Read the campaign setup of the asker's station that holds a chat.\n\nOnly the configured assistant may read for an ``asker``, and it reads the asker's\nown station, so one writer's setup never governs another's launch from a shared\nchat. A launch takes this setup where the asker's line leaves a field unset.\n\nArgs:\n  conversation_id: The science chat the station holds.\n  request: Request carrying the database engine and the configuration.\n  identity: The assistant's agent key.\n  asker: The account the assistant reads for.\n\nReturns:\n  setup: The station's setup, or a null ``campaign`` when there is none.",
+        "operationId": "campaign_for_chat_route_api_workspaces_for_chat__conversation_id__campaign_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asker",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asker"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceCampaign"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Campaign For Chat Route"
+      }
+    },
     "/api/workspaces/new": {
       "post": {
         "description": "Make a station named with the lowest free ``unnamed-workstream#N``.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: The new station.",
@@ -19583,6 +20887,57 @@
           }
         },
         "summary": "Rename Workspace Route"
+      }
+    },
+    "/api/workspaces/{workspace_id}/campaign": {
+      "put": {
+        "description": "Store the default campaign setup of one of the principal's stations.\n\nThe whole setup replaces what was stored, and a null ``campaign`` clears it. Only\nthe station's owner may write it; a launch from its chat takes the setup where the\nasker's line leaves a field unset. No revision changes and nothing is published.\n\nArgs:\n  workspace_id: The station.\n  body: The setup to store, or a null ``campaign`` to clear it.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n\nReturns:\n  state: The station with its setup as stored.",
+        "operationId": "set_workspace_campaign_route_api_workspaces__workspace_id__campaign_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceCampaign"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Workspace Campaign Route"
       }
     },
     "/api/workspaces/{workspace_id}/events": {

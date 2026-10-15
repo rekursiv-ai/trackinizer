@@ -1301,6 +1301,53 @@ revoke. Revoking a revoked machine, or one that never joined, is a no-op.
 `DELETE` answers 409 `machine_in_service` while the machine holds a live
 credential; revoke it first.
 
+### 1.27 Code store
+
+```
+POST   /api/code/blobs/missing
+POST   /api/code/blobs
+PUT    /api/code/records/<uuid>/snapshot
+GET    /api/code/records/<uuid>/snapshot
+GET    /api/code/records/<uuid>/file?path=<path>
+GET    /api/code/diff?from=<uuid>&to=<uuid>&context=<n>
+```
+
+Each record's code (a campaign iteration's Experiment), so any two records'
+diff shows with full context. A blob is one text file, named by the sha256 hex
+of its UTF-8 bytes and stored once per owner, zstd-compressed; dedupe never
+crosses owners. A snapshot maps a record's paths to blob hashes and names the
+record whose snapshot it builds on. The two `POST`s and the `PUT` are writer
+role; the `GET`s are viewer role. Bodies: section 3.28.
+
+An uploader asks which blobs are `missing`, sends those, then `PUT`s the
+snapshot. Each names an `owner`, which must be the caller's own email, compared
+lowercase, unless the caller holds `staff`; anything else answers 403. A
+non-staff caller replaces only a snapshot filed under its own email (403
+otherwise). The server checks each blob's hash against the UTF-8 of its text:
+a mismatch answers 422, as do a blob over 1 MiB, a request over 1000 blobs or
+8 MiB of text, and a `missing` request over 5000 hashes. A blob already stored
+is a no-op. The `PUT` answers 404 for an unknown record; 422 for a snapshot of
+over 20000 files, for a path that is not relative POSIX (an empty, `.` or `..`
+segment, a leading `/`, a NUL, over 1024 characters) and for a parent that is
+the record itself; 409 `code_blobs_missing`, naming how many, while a listed
+blob is not stored for the owner; and 409 `code_parent_missing` while the
+parent record holds no snapshot of the same owner. It replaces the record's
+snapshot, so filing the same one again changes only `updated_at`.
+
+A snapshot that is not `private` is read by any viewer who reads its record (a
+session's by those who read its transcript); a `private` one by its owner
+alone, with no staff or admin override. An unreadable or missing snapshot, a
+path the snapshot does not map, and a diff whose either side is unreadable or
+missing all answer 404, never 403. No answer carries the owner's email.
+
+`diff` lists the paths whose blob differs between the `from` and `to`
+snapshots, sorted by path, each with a unified diff of `context` lines
+(0..50, default 3). Both headers are always `--- a/<path>` and
+`+++ b/<path>`, for an added or deleted file too, and a last line with no
+newline is followed by `\ No newline at end of file`. The diffs total at most
+2,000,000 characters: the file that would pass that is cut after its last
+whole line within it, no later file is listed, and `more` is `true`.
+
 ## 2. Glossary
 
 ### 2.1 Route tokens
@@ -1880,6 +1927,37 @@ answers 422, as does `role: "admin"` on the account. A key's `role` and
 `open_into` are optional and default to the account's role and to no pin. `secret` is in the one answer that mints the key and in no
 later one.
 
+### 3.28 Code store
+
+```
+POST /api/code/blobs/missing   {"owner": "<email>", "sha256": ["<hex64>", ...]}
+                               -> 200 {"missing": ["<hex64>", ...]}
+POST /api/code/blobs           {"owner": "<email>", "blobs": [{"sha256": "<hex64>", "text": "<text>"}, ...]}
+                               -> 200 {"stored": <int>}
+PUT  /api/code/records/<uuid>/snapshot
+     {"owner": "<email>", "private": <bool>, "parent_record_id": "<uuid>" | null,
+      "files": {"<path>": "<hex64>", ...}, "partial": "<text>"}
+     -> 200 <head>
+GET  /api/code/records/<uuid>/snapshot
+     -> 200 <head> + {"files": [{"path": "<path>", "sha256": "<hex64>", "size": <int>}, ...]}
+GET  /api/code/records/<uuid>/file?path=<path>
+     -> 200 {"path": "<path>", "sha256": "<hex64>", "text": "<text>"}
+GET  /api/code/diff?from=<uuid>&to=<uuid>&context=<n>
+     -> 200 {"files": [{"path": "<path>", "change": "added" | "modified" | "deleted",
+                        "old_sha256": "<hex64>" | null, "new_sha256": "<hex64>" | null,
+                        "diff": "<unified diff>"}, ...], "more": <bool>}
+
+<head> = {"record_id": "<uuid>", "parent_record_id": "<uuid>" | null, "private": <bool>,
+          "file_count": <int>, "total_bytes": <int>, "partial": "<text>",
+          "updated_at": "<ts>"}
+```
+
+`<hex64>` is a lowercase sha256 hex. `missing` lists each missing hash once, in
+the order asked. `stored` counts the blobs new to the store. `partial` defaults
+to `""`; an uploader that stopped short says so there in one line.
+`total_bytes` sums the UTF-8 bytes of every file, a blob mapped at two paths
+counted twice, and `size` is one blob's. `files` is sorted by path.
+
 ## 4. Other details
 
 ### 4.1 HTTP status codes
@@ -1890,9 +1968,9 @@ later one.
 302  auth redirect
 400  invalid body, invalid field for kind, invalid projected edge mutation
 401  missing or invalid auth; an unusable enrollment token or machine credential
-403  role too low; a service account's key on a route that manages keys; a grant beyond the caller's role or audiences; a chat's share or delete the caller may not make; a session's transcript the caller does not read (`session_audience`), or may not hide (`session_not_owner`), or a chat it may not read into (`chat_not_member`)
+403  role too low; a service account's key on a route that manages keys; a grant beyond the caller's role or audiences; a chat's share or delete the caller may not make; a session's transcript the caller does not read (`session_audience`), or may not hide (`session_not_owner`), or a chat it may not read into (`chat_not_member`); code filed under another's email by a caller who does not hold `staff`
 404  row not found
-409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, machine in service, another host connected, service account name taken or account disabled; a `staff` session hidden (`session_staff`), a private or staff chat forked (`chat_fork_closed`), a staff chat shared outside staff (`chat_staff_only`), a staff read into a private chat (`chat_private`)
+409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, machine in service, another host connected, service account name taken or account disabled; a `staff` session hidden (`session_staff`), a private or staff chat forked (`chat_fork_closed`), a staff chat shared outside staff (`chat_staff_only`), a staff read into a private chat (`chat_private`); a code snapshot whose blob is not stored (`code_blobs_missing`) or whose parent holds none of its owner (`code_parent_missing`)
 410  machine credential revoked; a deleted science chat (`chat_deleted`)
 422  well-formed body rejected by domain validation (e.g. self-loop edge, priority on a non-priority edge kind)
 500  server fault
@@ -1915,7 +1993,8 @@ viewer  GET /api/** except GET /api/variables and GET /api/machines/**, GET /api
         PUT /api/me/visual-workspace,
         POST /api/workspaces, POST /api/workspaces/<uuid>/operations
 writer  viewer + inquiry/edge create/mutate/delete, GET /api/variables,
-        GET /api/machines/**
+        GET /api/machines/**, POST /api/code/blobs/**,
+        PUT /api/code/records/<uuid>/snapshot
 admin   writer + /api/admin/**, PUT/DELETE /api/variables/<name>,
         PUT/PATCH/DELETE /api/machines/**, POST /api/machines/enroll,
         POST /api/machines/<name>/revoke

@@ -15,6 +15,7 @@ import { listSessionParts, readSessionRecords, sendSessionMessage, type SessionP
 import { useMeta, useWriteMode } from "../../app/boot";
 import { Composer } from "../../composer/Composer";
 import { ReadFailure } from "../../ui/failure";
+import { type DiffMode, DiffModeToggle, FileDiff, useDiffMode } from "../../visuals/SplitDiff";
 import { Refresh } from "../Refresh";
 import { dateTime } from "../time";
 import { placeholderHeight, useDrawnFrom } from "./drawing";
@@ -25,6 +26,13 @@ import "./transcript.css";
 
 /** Records per request. The old UI read one page of 200 and stopped there (R44). */
 const RECORDS_PAGE = 200;
+
+/**
+ * The synthetic part the capture writes its net worktree diff to -- the same
+ * name `trax run --diff` gives it. It is lifted out of the transcript into its
+ * own Changes panel and left out of the transcript's record total.
+ */
+const WORKTREE_DIFF_PART = "worktree-diff";
 
 /** Records a part reads at once: its newest on open, then as many earlier ones on each Load earlier. */
 const BATCH_RECORDS = 1000;
@@ -85,33 +93,113 @@ function SessionTranscript({ row }: { row: DetailRow }) {
   const { id } = row;
   const parts = useQuery(transcriptQueries.parts(id));
   const heading = useId();
-  const total = parts.data?.reduce((sum, part) => sum + part.records, 0) ?? 0;
+  // The worktree diff is its own panel, not a transcript part, and is left out
+  // of the record total.
+  const diffPart = parts.data?.find((part) => part.name === WORKTREE_DIFF_PART) ?? null;
+  const shown = parts.data?.filter((part) => part.name !== WORKTREE_DIFF_PART) ?? [];
+  const total = shown.reduce((sum, part) => sum + part.records, 0);
   return (
-    <section className="sec" aria-labelledby={heading} data-section="transcript">
+    <>
+      {diffPart ? <Changes sessionId={id} part={diffPart} /> : null}
+      <section className="sec" aria-labelledby={heading} data-section="transcript">
+        <div className="sec-h">
+          <h2 id={heading}>
+            Transcript{" "}
+            {parts.data ? (
+              <span className="count">
+                {total.toLocaleString("en")} {total === 1 ? "record" : "records"}
+              </span>
+            ) : null}
+          </h2>
+          <span className="spacer" />
+          <Refresh queryKey={["session", id]} title="Read every loaded record again; new ones arrive on their own" />
+        </div>
+        {!parts.data ? (
+          parts.isError ? (
+            <ReadFailure error={parts.error} retry={() => void parts.refetch()} />
+          ) : (
+            <p className="unset">Loading the transcript…</p>
+          )
+        ) : shown.length === 0 ? (
+          <p className="unset">No records captured yet.</p>
+        ) : (
+          shown.map((part) => <Part key={part.part} sessionId={id} part={part} named={shown.length > 1} />)
+        )}
+        <SessionComposer row={row} />
+      </section>
+    </>
+  );
+}
+
+/**
+ * The net `git diff` of the files this session edited (`trax run --diff`), each
+ * file drawn by the shared split/unified diff view, the one trax.files and
+ * campaign lineage draw with. It reads a key OUTSIDE the `records` slot so the
+ * live layer refetches it on every wake (`keyedBy` in `src/live/detail.ts`):
+ * the diff part is overwritten whole each turn, which the parts listing's
+ * record count cannot reveal.
+ */
+function Changes({ sessionId, part }: { sessionId: string; part: SessionPart }) {
+  const heading = useId();
+  const [mode, setMode] = useDiffMode();
+  const query = useQuery({
+    queryKey: ["session", sessionId, "worktree-diff"],
+    queryFn: ({ signal }) =>
+      readSessionRecords(sessionId, { part: part.part, afterIdx: -1, limit: Math.max(part.records, 1) }, { signal }),
+  });
+  const records = query.data ?? [];
+  return (
+    <section className="sec" aria-labelledby={heading} data-section="changes">
       <div className="sec-h">
         <h2 id={heading}>
-          Transcript{" "}
-          {parts.data ? (
+          Changes{" "}
+          {query.data ? (
             <span className="count">
-              {total.toLocaleString("en")} {total === 1 ? "record" : "records"}
+              {records.length.toLocaleString("en")} {records.length === 1 ? "file" : "files"}
             </span>
           ) : null}
         </h2>
+        {records.length > 0 ? <DiffModeToggle mode={mode} onChange={setMode} /> : null}
         <span className="spacer" />
-        <Refresh queryKey={["session", id]} title="Read every loaded record again; new ones arrive on their own" />
+        <Refresh queryKey={["session", sessionId, "worktree-diff"]} title="Read the diff again; it refreshes on its own as the session edits files" />
       </div>
-      {!parts.data ? (
-        parts.isError ? (
-          <ReadFailure error={parts.error} retry={() => void parts.refetch()} />
+      {!query.data ? (
+        query.isError ? (
+          <ReadFailure error={query.error} retry={() => void query.refetch()} />
         ) : (
-          <p className="unset">Loading the transcript…</p>
+          <p className="unset">Loading changes…</p>
         )
-      ) : parts.data.length === 0 ? (
-        <p className="unset">No records captured yet.</p>
+      ) : records.length === 0 ? (
+        <p className="unset">No file changes yet.</p>
       ) : (
-        parts.data.map((part) => <Part key={part.part} sessionId={id} part={part} named={parts.data.length > 1} />)
+        <div className="sd-patch" role="group" aria-label="Changed files">
+          {records.map((record) => (
+            <ChangedFile key={record.idx} record={record} mode={mode} />
+          ))}
+        </div>
       )}
-      <SessionComposer row={row} />
+    </section>
+  );
+}
+
+/**
+ * One file of the worktree diff: its path, then its hunks drawn by the shared
+ * `FileDiff`. A record with no hunk is a note the capture left where a diff
+ * would be (a binary or over-size file, or a count of the rest); its message
+ * shows alone, under its path when it names one. A file's diff opens at its
+ * `@@` hunk and a note never does, which tells the two apart; the aggregate
+ * count's pseudo-path opens with "(", so it names no file.
+ */
+function ChangedFile({ record, mode }: { record: SessionRecord; mode: DiffMode }) {
+  const view = recordView(record);
+  if (view.shape !== "edit") return null;
+  const body = view.lines.map((line) => line.text);
+  const path = view.source;
+  const diffing = view.lines[0]?.kind === "hunk";
+  return (
+    <section className="sd-file" aria-label={path || "Note"} data-path={path}>
+      {path && !path.startsWith("(") ? <h4 className="sd-path">{path}</h4> : null}
+      {diffing ? <FileDiff file={{ path, head: [], body }} mode={mode} /> : <pre className="sd-note">{body.join("\n")}</pre>}
     </section>
   );
 }

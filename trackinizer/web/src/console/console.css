@@ -48,16 +48,16 @@
 .console-group:only-child .console-row:not(.console-row-head) { padding-left: 4px; }
 .console-row-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .console-n { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
-/* A session its owner hid, and the Hide or Unhide of one the caller may hide,
-   shown on hover or focus as a view's own buttons are. */
+/* A private session's mark, and the Public/Private switch of one the caller may flip: Private always shows,
+   as the mark does; Public shows on hover or focus, as a view's own buttons do, so the rail stays quiet. */
 .console-badge {
   flex-shrink: 0; font-size: 10.5px; line-height: 15px; padding: 0 4px; border: 1px solid var(--line-strong);
   border-radius: 4px; color: var(--muted);
 }
 .console-agent { display: flex; align-items: center; gap: 2px; }
 .console-agent .console-row { flex: 1; min-width: 0; }
-.console-hide { flex-shrink: 0; height: 20px; padding: 0 6px; font-size: 11px; opacity: 0; }
-.console-agent:hover .console-hide, .console-hide:focus-visible { opacity: 1; }
+.console-privacy { flex-shrink: 0; height: 20px; padding: 0 6px; font-size: 11px; opacity: 0; }
+.console-privacy-private, .console-agent:hover .console-privacy, .console-privacy:focus-visible { opacity: 1; }
 .console-picked { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
 .console-chip {
   display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: 22px; padding: 0 2px 0 8px;

@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from trackinizer.server.api._deps import get_assistant, get_hub, get_inbound
 from trackinizer.server.api._routes_shared import engine_of, require_browser
-from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.api.session_access import resolve_asker, session_reader
 from trackinizer.server.api.visuals_routes import visual_catalog
 from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import AuthIdentity, require_role
@@ -31,11 +31,13 @@ from trackinizer.server.visuals.workspace_store import (
     StationNameTakenError,
     WorkspaceKeyRefusedError,
     apply_workspace_operation,
+    campaign_for_chat,
     list_workspaces,
     new_workspace,
     open_latest_workspace,
     read_workspace,
     rename_workspace,
+    set_workspace_campaign,
     set_workspace_layout,
     set_workspace_page,
     workspace_for_chat,
@@ -49,6 +51,7 @@ from trackinizer.server.visuals.workspaces import (
     SetPage,
     SetPreferences,
     StationLayout,
+    WorkspaceCampaign,
     WorkspaceConflict,
     WorkspaceState,
     WorkspaceSummary,
@@ -215,6 +218,47 @@ async def workspace_for_chat_route(
     )
 
 
+@router.get(
+    "/api/workspaces/for-chat/{conversation_id}/campaign",
+    response_model=WorkspaceCampaign,
+)
+async def campaign_for_chat_route(
+    conversation_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    asker: str | None = None,
+) -> WorkspaceCampaign:
+    """Read the campaign setup of the asker's station that holds a chat.
+
+    Only the configured assistant may read for an ``asker``, and it reads the asker's
+    own station, so one writer's setup never governs another's launch from a shared
+    chat. A launch takes this setup where the asker's line leaves a field unset.
+
+    Args:
+      conversation_id: The science chat the station holds.
+      request: Request carrying the database engine and the configuration.
+      identity: The assistant's agent key.
+      asker: The account the assistant reads for.
+
+    Returns:
+      setup: The station's setup, or a null ``campaign`` when there is none.
+
+    """
+    found = await resolve_asker(request, identity=identity, email=asker)
+    if found is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assistant may read a campaign setup for an asker.",
+        )
+    return WorkspaceCampaign(
+        campaign=await campaign_for_chat(
+            engine_of(request),
+            email=found.email,
+            conversation_id=conversation_id,
+        ),
+    )
+
+
 @router.patch(
     "/api/workspaces/{workspace_id}",
     response_model=WorkspaceState,
@@ -318,6 +362,44 @@ async def set_workspace_layout_route(
     ):
         raise HTTPException(status_code=404, detail="Workspace not found")
     return Response(status_code=204)
+
+
+@router.put("/api/workspaces/{workspace_id}/campaign", response_model=WorkspaceState)
+async def set_workspace_campaign_route(
+    workspace_id: uuid.UUID,
+    body: WorkspaceCampaign,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> WorkspaceState:
+    """Store the default campaign setup of one of the principal's stations.
+
+    The whole setup replaces what was stored, and a null ``campaign`` clears it. Only
+    the station's owner may write it; a launch from its chat takes the setup where the
+    asker's line leaves a field unset. No revision changes and nothing is published.
+
+    Args:
+      workspace_id: The station.
+      body: The setup to store, or a null ``campaign`` to clear it.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account, which must own the station.
+
+    Returns:
+      state: The station with its setup as stored.
+
+    """
+    require_browser(identity)
+    if not await set_workspace_campaign(
+        engine_of(request),
+        user_id=identity.user_id,
+        workspace_id=workspace_id,
+        campaign=body.campaign,
+    ):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return await _current_state(
+        request,
+        user_id=identity.user_id,
+        workspace_id=workspace_id,
+    )
 
 
 @router.get("/api/workspaces/{workspace_id}", response_model=WorkspaceState)

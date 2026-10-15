@@ -1293,10 +1293,11 @@ async def test_migration_046_gives_an_existing_database_the_app_column(
     """A database migrated by 046 has the catalog a fresh install has, names aside.
 
     Bootstrap builds the baseline. This takes ``app`` away again (its column, its
-    two audit columns, their CHECKs and its change kind), and what 047 adds after it,
-    leaves an Issue and its ``created`` change behind as such a database holds them,
-    and lets the runner apply the migrations. Every table, column, constraint, index
-    and sequence must equal the baseline's, and a replay of the files changes nothing.
+    two audit columns, their CHECKs and its change kind), and what 047 and 048 add
+    after it, leaves an Issue and its ``created`` change behind as such a database
+    holds them, and lets the runner apply the migrations. Every table, column,
+    constraint, index and sequence must equal the baseline's, and a replay of the
+    files changes nothing.
     """
     await reset_schema(pglite_engine)
     store = Store(pglite_engine, embed=StubEmbedder())
@@ -1321,6 +1322,7 @@ async def test_migration_046_gives_an_existing_database_the_app_column(
         app = await conn.fetchval("SELECT app FROM inquiries WHERE id = $1", issue)
         await conn.execute(load_sql("schema.046"))
         await conn.execute(load_sql("schema.047"))
+        await conn.execute(load_sql("schema.048"))
         replayed = await _catalog_names_aside(conn)
 
     assert app is None
@@ -1371,8 +1373,10 @@ async def test_the_app_column_holds_one_object_of_at_most_64_kib_on_any_kind(
     assert stored == 65_536
 
 
+# Nor is there a code store, which came after, in 048.
 async def _make_audience_old(conn: Conn) -> None:
     """Turn a fresh database back into 046's shape: no audience move is audited."""
+    await _make_code_store_old(conn)
     # Dropping a column drops the CHECKs that name it; the one tying the kind to the
     # subject names neither, so it is found by what it says.
     subject = from_plain(
@@ -1430,11 +1434,12 @@ async def test_migration_047_audits_audience_and_retitles_chats(
 
     Bootstrap builds the baseline and embeds the titles as they stand, a chat's first
     line among them. This then takes the audience audit away again (its two columns,
-    their CHECKs and its change kind) and lets the runner apply the migration. Every
-    table, column, constraint, index and sequence must equal the baseline's, a replay
-    of the file must change nothing, and the chat comes out ``Science chat``: its row,
-    the title change the log kept for it, and its embedding, which then equals that
-    of another session so titled. No other row changes.
+    their CHECKs and its change kind), and the code store 048 adds after it, and lets
+    the runner apply the migrations. Every table, column, constraint, index and
+    sequence must equal the baseline's, a replay of the files must change nothing,
+    and the chat comes out ``Science chat``: its row, the title change the log kept
+    for it, and its embedding, which then equals that of another session so titled.
+    No other row changes.
     """
     await reset_schema(pglite_engine)
     store = Store(pglite_engine, embed=StubEmbedder())
@@ -1466,6 +1471,7 @@ async def test_migration_047_audits_audience_and_retitles_chats(
             sessions["reference"],
         )
         await conn.execute(load_sql("schema.047"))
+        await conn.execute(load_sql("schema.048"))
         replayed = await _catalog_names_aside(conn)
 
     assert migrated == fresh
@@ -1477,6 +1483,88 @@ async def test_migration_047_audits_audience_and_retitles_chats(
     assert logged is not None
     assert (logged["old_title"], logged["new_title"]) == ("", "")
     assert same is True
+
+
+async def _make_code_store_old(conn: Conn) -> None:
+    """Turn a fresh database back into 047's shape: no code store."""
+    await conn.execute("DROP TABLE code_snapshots, code_blobs")
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.048.sql'")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_048_gives_an_existing_database_the_code_store(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """A database migrated by 048 has the catalog a fresh install has.
+
+    Bootstrap builds the baseline. This drops both code tables again, as a 047
+    database lacks them, and lets the runner apply the migration. Every table, column,
+    constraint, index and sequence must equal the baseline's, by name too, and a
+    replay of the file changes nothing.
+    """
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    tables = ("code_blobs", "code_snapshots")
+    async with pglite_engine.acquire() as conn:
+        fresh = await _catalog_names_aside(conn)
+        baseline = [await _table_shape(conn, table) for table in tables]
+        await _make_code_store_old(conn)
+
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        migrated = await _catalog_names_aside(conn)
+        shapes = [await _table_shape(conn, table) for table in tables]
+        await conn.execute(load_sql("schema.048"))
+        replayed = await _catalog_names_aside(conn)
+
+    assert all(shape[0] for shape in baseline), "the baseline lacks a code table"
+    assert migrated == fresh
+    assert shapes == baseline
+    assert replayed == fresh
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_code_tables_check_owner_hash_size_and_files(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """A blob's owner is a lowercase address, its hash 32 bytes, its size at most 1 MiB.
+
+    A snapshot's owner is the same, and its files are one JSON object.
+    """
+    await reset_schema(pglite_engine)
+    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
+    blob = (
+        "INSERT INTO code_blobs (owner, sha256, size, data_zst) VALUES ($1, $2, $3, '')"
+    )
+    snapshot = (
+        "INSERT INTO code_snapshots (record_id, owner, files, file_count, total_bytes) "
+        "VALUES ($1, $2, $3, 0, 0)"
+    )
+    async with pglite_engine.acquire() as conn:
+        record = await conn.fetchval(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title) VALUES "
+            "(gen_random_uuid(), 'Experiment', 1, 'active', 'a@x.y', 't') RETURNING id",
+        )
+        for owner, sha256, size in (
+            ("Ada@x.y", bytes(32), 0),
+            ("", bytes(32), 0),
+            ("ada@x.y", bytes(31), 0),
+            ("ada@x.y", bytes(32), 1_048_577),
+        ):
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(blob, owner, sha256, size)
+        await conn.execute(blob, "ada@x.y", bytes(32), 1_048_576)
+        bad_files: tuple[tuple[str, object], ...] = (
+            ("Ada@x.y", {}),
+            ("ada@x.y", ["a.py"]),
+        )
+        for owner, files in bad_files:
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(snapshot, record, owner, files)
+        await conn.execute(snapshot, record, "ada@x.y", {})
 
 
 if __name__ == "__main__":

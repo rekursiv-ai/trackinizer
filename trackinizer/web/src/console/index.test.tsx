@@ -909,45 +909,45 @@ test("an empty My campaigns says a campaign's sessions are staff only to a perso
   expect(await said({ ...PROFILE, read_audiences: ["open", "private", "staff"] })).toBe("No records match this view.");
 });
 
-test("Show hidden reads the sessions their owners hid as well, and lists them marked; off again leaves them out", async () => {
+test("Show private reads the sessions their owners made private as well, and lists them marked; off again leaves them out", async () => {
   AUDIENCES.set(TILES_A, "private");
   const sent = serve();
   renderConsole();
   await lines(1);
   expect(agentBoxes()).toEqual(["claude", "tiles-b"]);
   expect(paramOf(sent, "/api/web/feed", "hidden")).toEqual([null]);
-  const toggle = screen.getByRole("button", { name: "Show hidden" });
+  const toggle = screen.getByRole("button", { name: "Show private" });
   fireEvent.click(toggle);
   expect(toggle.getAttribute("aria-pressed")).toBe("true");
   await waitFor(() => expect(agentBoxes()).toEqual(["tiles-a", "claude", "tiles-b"]));
   expect(paramOf(sent, "/api/web/feed", "hidden").at(-1)).toBe("true");
   expect(paramOf(sent, "/api/web/feed/facets", "hidden").at(-1)).toBe("true");
-  expect(rail("Agents").getByText("Hidden")).toBeTruthy();
+  expect(rail("Agents").getByText("Private")).toBeTruthy();
   fireEvent.click(toggle);
   await waitFor(() => expect(agentBoxes()).toEqual(["claude", "tiles-b"]));
   expect(paramOf(sent, "/api/web/feed", "hidden").at(-1)).toBeNull();
 });
 
-test("Hide takes a session of mine out of the console and reads it again; Undo shows it again", async () => {
+test("making a session of mine private takes it out of the console and reads it again; Undo makes it public again", async () => {
   const sent = serve();
   renderConsole();
   await lines(3);
   const audiences = () => sent.filter((request) => request.path.endsWith("/audience")).map((request) => [request.path, request.body]);
   const reads = feedReads(sent).length;
-  fireEvent.click(rail("Agents").getByRole("button", { name: "Hide tiles-a" }));
+  fireEvent.click(rail("Agents").getByRole("button", { name: "tiles-a is public: make it private" }));
   await waitFor(() => expect(agentBoxes()).toEqual(["claude", "tiles-b"]));
   expect(audiences()).toEqual([[`/api/sessions/${TILES_A}/audience`, { audience: "private" }]]);
   await waitFor(() => expect(feedReads(sent).length).toBeGreaterThan(reads));
-  expect(await screen.findByText("Hid the transcript of tiles-a: only you, staff and admins read it now.")).toBeTruthy();
+  expect(await screen.findByText("Made tiles-a private: only you, staff and admins read its transcript now.")).toBeTruthy();
   screen.getByRole("button", { name: "Undo" }).focus();
   await userEvent.keyboard("{Enter}");
   await waitFor(() => expect(agentBoxes()).toEqual(["tiles-a", "claude", "tiles-b"]));
   expect(audiences().at(-1)).toEqual([`/api/sessions/${TILES_A}/audience`, { audience: "open" }]);
-  // Only the person's own session offers Hide.
-  expect(rail("Agents").queryByRole("button", { name: "Hide claude" })).toBeNull();
+  // Only the person's own session has the switch.
+  expect(rail("Agents").queryByRole("button", { name: /^claude is / })).toBeNull();
 });
 
-test("a hide the server refuses says why in words for its code, and the session stays", async () => {
+test("a switch the server refuses says why in words for its code, and the session stays", async () => {
   const sent = serve();
   renderConsole();
   await lines(3);
@@ -960,10 +960,10 @@ test("a hide the server refuses says why in words for its code, and the session 
     return Response.json({ detail: { code } }, { status });
   });
   const reads = feedReads(sent).length;
-  fireEvent.click(rail("Agents").getByRole("button", { name: "Hide tiles-a" }));
-  expect(await screen.findByText("Only the session's owner can hide it or show it again.")).toBeTruthy();
-  fireEvent.click(rail("Agents").getByRole("button", { name: "Hide tiles-a" }));
-  expect(await screen.findByText("A staff session keeps its audience: it is never hidden or shown to more people.")).toBeTruthy();
+  fireEvent.click(rail("Agents").getByRole("button", { name: "tiles-a is public: make it private" }));
+  expect(await screen.findByText("Only the session's owner can make it public or private.")).toBeTruthy();
+  fireEvent.click(rail("Agents").getByRole("button", { name: "tiles-a is public: make it private" }));
+  expect(await screen.findByText("A staff session keeps its audience: it is never made public or private.")).toBeTruthy();
   expect(agentBoxes()).toEqual(["tiles-a", "claude", "tiles-b"]);
   expect(feedReads(sent)).toHaveLength(reads);
 });

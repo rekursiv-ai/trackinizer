@@ -55,6 +55,8 @@ _LEFT_OUT: Final = frozenset(
         "allowlist",
         "api_keys",
         "applied_migrations",
+        "code_blobs",
+        "code_snapshots",
         "credit_entries",
         "inquiry_embeddings",
         "inquiry_lock_log",

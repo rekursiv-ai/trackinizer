@@ -26,3 +26,13 @@
 .sd-split .sd-add .sd-mark { color: var(--code-string); }
 .sd-split .sd-hunk td { padding: 3px 10px; color: var(--accent-hover); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .sd-more { margin: 4px 10px; font-size: 12px; color: var(--muted); }
+
+/* The row over unchanged lines a diff left out: its expand buttons, then how many lines it hides. */
+.sd-split .sd-gap td, div.sd-gap { padding: 2px 6px; background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.sd-gap-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font: 11px var(--mono); color: var(--muted); }
+.sd-expand {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); color: var(--accent-hover); font: inherit; cursor: pointer;
+}
+.sd-expand:hover:not(:disabled) { background: var(--surface-hover); }
+.sd-expand:disabled { opacity: .45; cursor: default; }

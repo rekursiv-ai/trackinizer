@@ -139,3 +139,23 @@
 .visual-window-edge-w, .visual-window-edge-nw, .visual-window-edge-sw { left: 0; }
 .visual-window-edge-ne, .visual-window-edge-sw { cursor: nesw-resize; }
 .visual-window-edge-nw, .visual-window-edge-se { cursor: nwse-resize; }
+/* The canvas's top bar, a browser's: Back, Forward and Home, then the canvas tabs, then +. Its height is whole
+   pixels: a fractional one leaves the stage off the pixel grid, and docked Browse, sized by its slot's whole-pixel
+   clientWidth and clientHeight, would miss its slot by half a pixel (src/visuals/Canvas.tsx, projectBrowse). */
+.canvas-bar { display: flex; flex: 0 0 auto; align-items: flex-end; gap: 2px; height: 38px; padding: 6px 8px 0; border-bottom: 1px solid var(--line); background: var(--surface); font-size: 13px; }
+.canvas-bar-button { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; margin-bottom: 3px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.canvas-bar-button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+.canvas-bar-button:disabled { opacity: .4; cursor: default; }
+/* The strip's width is fractional and its scroll whole pixels: the end padding keeps the last tab whole when scrolled to the end. */
+.canvas-tabs { display: flex; flex: 0 1 auto; gap: 2px; min-width: 0; margin-left: 6px; padding-inline-end: 2px; overflow-x: auto; scrollbar-width: none; }
+.canvas-tab { display: inline-flex; flex: 0 1 auto; align-items: center; min-width: 6em; max-width: 14em; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; color: var(--muted); }
+.canvas-tab:hover { background: var(--surface-hover); color: var(--text); }
+.canvas-tab[aria-current="true"] { border-color: var(--line); background: var(--bg); color: var(--text); font-weight: 600; }
+.canvas-tab-open { flex: 1; min-width: 0; padding: 6px 4px 6px 10px; border: 0; background: transparent; color: inherit; font: inherit; line-height: 18px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.canvas-tab-close { display: inline-flex; margin-right: 4px; padding: 2px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; opacity: 0; }
+.canvas-tab:hover .canvas-tab-close, .canvas-tab[aria-current="true"] .canvas-tab-close, .canvas-tab-close:focus-visible { opacity: 1; }
+.canvas-tab-close:hover { background: var(--surface-overlay); color: var(--text); }
+@media (hover: none) { .canvas-tab-close { opacity: 1; } }
+input.canvas-tab-name { flex: 0 0 14em; padding: 6px 10px; border-color: var(--accent); background: var(--bg); color: var(--text); font: inherit; line-height: 18px; outline: 0; }
+/* A canvas with nothing on it, as an empty Home leaves it. */
+.visual-empty { margin: auto; padding: 24px; color: var(--muted); font-size: 13px; text-align: center; }

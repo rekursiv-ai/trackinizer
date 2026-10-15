@@ -285,9 +285,16 @@ async def test_the_layout_merges_by_key_with_no_revision_and_no_frame(
             },
         )
         second = await client.put(path, json={"columns": {"left": 0.2}})
+        tabs = await client.put(
+            path,
+            json={
+                "tabs": [{"id": "a", "name": "Tab 1", "page": "#/graph"}],
+                "tab": "a",
+            },
+        )
         assert stream.queue.empty()
 
-    assert (first.status_code, second.status_code) == (204, 204)
+    assert [r.status_code for r in (first, second, tabs)] == [204] * 3
     state = json_loads(
         (await client.get(f"/api/workspaces/{workspace_id}")).content,
         dict[str, object],
@@ -298,6 +305,19 @@ async def test_the_layout_merges_by_key_with_no_revision_and_no_frame(
         "columns": {"left": 0.2, "side": None},
         "chat_ch": 80.0,
         "tiles": {"trax.browse": tile},
+        "tabs": [
+            {
+                "id": "a",
+                "name": "Tab 1",
+                "page": "#/graph",
+                "visuals": [],
+                "columns": None,
+                "floating": None,
+                "tiles": None,
+                "share": None,
+            },
+        ],
+        "tab": "a",
     }
     foreign = f"/api/workspaces/{other_station}/layout"
     assert (await client.put(foreign, json={"chat_ch": 80})).status_code == 404
@@ -323,6 +343,7 @@ async def test_a_layout_of_pixels_or_unknown_keys_is_refused(
         {"tiles": {"trax.browse": {"place": {"left": 1.5, "top": 0}}}},
         {"floating": {"trax.browse": {"width": 0, "height": 0.5}}},
         {"floating": {f"t{n}": {"width": 0.5, "height": 0.5} for n in range(65)}},
+        {"tabs": [{"id": "a", "name": "One"}, {"id": "a", "name": "Two"}]},
         {"pixels": 1},
     ]
 

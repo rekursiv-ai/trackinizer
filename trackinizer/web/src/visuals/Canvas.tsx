@@ -14,9 +14,15 @@ import { acceptWorkspace as cacheWorkspace, newerWorkspace } from "../stations/c
 import { useStation } from "../stations/useStation";
 import { CrashBoundary } from "../app/CrashBoundary";
 import { useWorkbenchMounted, useWorkbenchSlot } from "../app/workbenchSlot";
+import { usePreferences } from "../preferences";
 import { parseHash } from "../router/route";
+import { useHash } from "../router/trail";
 import { useBrowserState } from "../state/store";
+import { CanvasBar } from "./CanvasBar";
+import { forget, go, settle, step, useCanvasHistory } from "./canvasHistory";
 import { type Size, dropLegacySizes, fitSizes, heldWidth, legacyLayout, MIN_COLUMN, MIN_FLOAT, readLegacySizes, toFraction } from "./canvasSizes";
+import { HOME_ROUTE, homeSnapshot, PAGE, planRestore, type Snapshot, snapshotOf } from "./canvasSnapshot";
+import { type CanvasTab, leftTab, MAX_TABS, neighbourOf, newTabName, openTabOf, sizesOf, tabSnapshot, tabsOf } from "./canvasTabs";
 import { followColumns } from "./chatColumnState";
 import { CLICK_SLOP, EDGES, finishGesture, moveGesture, rememberedTile, resizeRect, slideDivider, snapZone, startGesture, TEAR_SLOP, withTile, type Edge, type TileMemory, type Gesture, type Rect, type Zone } from "./floatingTile";
 import { orderVisuals, SIDES } from "./layout";
@@ -57,6 +63,16 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   // and the stage they are fitted to. The station keeps the layout; the stage is
   // measured as it resizes, and nothing is written for a fit.
   const [layout, changeLayout] = useLayout();
+  // The open canvas tab, and what it shows: the steps Back and Forward walk are
+  // its own, as a browser tab's history is. Chat's agent changes the station's
+  // canvas, which is always the open tab.
+  const home = usePreferences().home;
+  const hash = useHash();
+  const tabs = tabsOf(layout);
+  const openTab = openTabOf(layout);
+  const historyKey = workspaceId ? tabKey(workspaceId, openTab) : null;
+  const snapshot = workspace ? snapshotOf(workspace.visuals, hash) : null;
+  const history = useCanvasHistory(historyKey, snapshot);
   const [browser, updateBrowser] = useBrowserState();
   const [stage, setStage] = useState<Size>({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement>(null);
@@ -258,6 +274,63 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Show `target` on the canvas, a step tab `key` has already taken: its
+   * visuals by the canvas's own operations, one after another, then its page.
+   * The tab then stands where the canvas got to, there or short of it.
+   */
+  async function restore(key: string, target: Snapshot): Promise<void> {
+    for (const operation of planRestore(latestWorkspace.current?.visuals ?? [], target)) {
+      if (!(await write(operation))) break;
+    }
+    if (target.page !== null && window.location.hash !== target.page) window.location.hash = target.page;
+    settle(key, target, snapshotOf(latestWorkspace.current?.visuals ?? [], window.location.hash));
+  }
+
+  function stepBy(by: -1 | 1) {
+    const target = historyKey ? step(historyKey, by) : null;
+    if (historyKey && target) void restore(historyKey, target);
+  }
+
+  function goHome() {
+    if (!historyKey) return;
+    const target = homeSnapshot(home);
+    go(historyKey, target);
+    void restore(historyKey, target);
+  }
+
+  /** The tabs with the open one as it is left now: what it shows, under a sheet the graph, and its sizes. */
+  function leaving(): CanvasTab[] {
+    const visuals = latestWorkspace.current?.visuals ?? [];
+    const now = snapshotOf(visuals, window.location.hash) ?? snapshotOf(visuals, HOME_ROUTE)!;
+    return tabs.map((tab) => (tab.id === openTab ? leftTab(tab, now, layout) : tab));
+  }
+
+  /** Open tab `id` of `kept`, the tabs the station keeps from now: its sizes at once, then what it shows. */
+  function switchTab(id: string, kept: CanvasTab[]) {
+    const tab = kept.find((each) => each.id === id);
+    if (!workspaceId || !tab) return;
+    changeLayout({ ...sizesOf(tab), tabs: kept, tab: id }, { now: true });
+    const key = tabKey(workspaceId, id);
+    const target = tabSnapshot(tab);
+    go(key, target);
+    void restore(key, target);
+  }
+
+  function addTab() {
+    const target = homeSnapshot(home);
+    const tab: CanvasTab = { id: newUuid(), name: newTabName(tabs), page: target.page, visuals: target.visuals.map((visual) => ({ ...visual, params: { ...visual.params } })) };
+    switchTab(tab.id, [...leaving(), tab]);
+  }
+
+  function closeTab(id: string) {
+    if (!workspaceId || tabs.length < 2) return;
+    const kept = tabs.filter((tab) => tab.id !== id);
+    if (id === openTab) switchTab(neighbourOf(tabs, id)!.id, kept);
+    else changeLayout({ tabs: kept });
+    forget(tabKey(workspaceId, id));
   }
 
   function openArtifact(event: FormEvent<HTMLFormElement>) {
@@ -725,6 +798,12 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       visualTypes,
     } : null}>
     <div className="visual-canvas">
+      {workspace && <CanvasBar tabs={tabs} open={openTab} back={history.back} forward={history.forward}
+        moving={history.moving} home={home} canAdd={tabs.length < MAX_TABS}
+        actions={{
+          back: () => stepBy(-1), forward: () => stepBy(1), home: goHome, open: (id) => switchTab(id, leaving()),
+          add: addTab, close: closeTab, rename: (id, name) => changeLayout({ tabs: tabs.map((tab) => (tab.id === id ? { ...tab, name } : tab)) }),
+        }} />}
       {writeError && <p className="visual-write-error" role="alert">{writeError}</p>}
       {controlsSlot && createPortal(
         <div className="workbench-controls" role="group" aria-label="Workbench visuals">
@@ -760,6 +839,9 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           </div>
         )}
         {sideColumn("side")}
+        {workspace && panes.length === 0 && <p className="visual-empty">
+          Nothing on this canvas. Go to a page, or open a visual from Workbench in the sidebar.
+        </p>}
         {panes.map((pane, index) => pane.placement === "floating" && pane.type !== PAGE ? renderTile(pane, index) : null)}
         {browse && renderTile(browse, panes.indexOf(browse))}
         <div ref={snapRef} className="visual-snap" aria-hidden="true" />
@@ -872,8 +954,10 @@ type DividerDrag = {
   now: readonly number[];
 };
 
-/** The page: the catalog's default visual, which a canvas opens with and a navigation moves. */
-const PAGE = "trax.browse";
+/** Where tab `tab` of station `station` keeps its Back and Forward steps. */
+function tabKey(station: string, tab: string): string {
+  return `${station}/${tab}`;
+}
 
 /** Where on the card that stands for a docked tile the pointer holds it, and so where the floating tile lands under it. */
 const GHOST_GRIP = { x: 60, y: 16 };

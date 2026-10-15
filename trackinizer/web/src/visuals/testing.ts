@@ -87,3 +87,30 @@ export function answerFiles(url: URL, rows: readonly unknown[] = []): Response |
   if (url.pathname === "/api/inquiries" && url.searchParams.getAll("kind").includes("Artifact")) return Response.json(rows);
   return null;
 }
+
+/** A file of 30 lines, `line 1` to `line 30`: the new side of `TWO_HUNKS`. */
+export const THIRTY = Array.from({ length: 30 }, (_, k) => `line ${k + 1}`);
+
+/**
+ * Two hunks of that file at 3 lines of context: the old side lacked line 9, so its
+ * numbers run one behind until line 25 changed.
+ */
+export const TWO_HUNKS = [
+  "@@ -6,6 +6,7 @@",
+  " line 6",
+  " line 7",
+  " line 8",
+  "+line 9",
+  " line 10",
+  " line 11",
+  " line 12",
+  "@@ -21,7 +22,7 @@",
+  " line 22",
+  " line 23",
+  " line 24",
+  "-old 25",
+  "+line 25",
+  " line 26",
+  " line 27",
+  " line 28",
+];

@@ -1771,6 +1771,186 @@ async def _partner(
     return from_plain(state["partner"], dict[str, object])
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_only_the_owner_writes_a_stations_campaign_setup(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The owner stores a setup; another account's write is a 404 and changes nothing."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    workspace_id = await open_workspace(client)
+
+    browser()
+    stored = await client.put(
+        f"/api/workspaces/{workspace_id}/campaign",
+        json={"campaign": {"hours": 2, "scientists": 3}},
+    )
+    assert stored.status_code == 200
+    setup = from_plain(
+        json_loads(stored.content, dict[str, object])["campaign"],
+        dict[str, object],
+    )
+    assert (setup["hours"], setup["scientists"]) == (2.0, 3)
+
+    browser(OTHER_USER_ID, email=OTHER_EMAIL)
+    denied = await client.put(
+        f"/api/workspaces/{workspace_id}/campaign",
+        json={"campaign": {"hours": 9}},
+    )
+    assert denied.status_code == 404
+
+    browser()
+    state = await client.get(f"/api/workspaces/{workspace_id}")
+    kept = from_plain(
+        json_loads(state.content, dict[str, object])["campaign"],
+        dict[str, object],
+    )
+    assert kept["hours"] == 2.0
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_null_campaign_clears_a_stations_setup(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Writing a null setup removes it, leaving the station with none."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    workspace_id = await open_workspace(client)
+
+    browser()
+    _ = await client.put(
+        f"/api/workspaces/{workspace_id}/campaign",
+        json={"campaign": {"hours": 2}},
+    )
+    cleared = await client.put(
+        f"/api/workspaces/{workspace_id}/campaign",
+        json={"campaign": None},
+    )
+
+    assert cleared.status_code == 200
+    assert json_loads(cleared.content, dict[str, object])["campaign"] is None
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_assistant_reads_only_the_askers_own_station_campaign(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each asker's setup is their own station's, and a non-assistant key is refused."""
+    client, store = pglite_route_client
+    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    await seed_accounts(store)
+    conversation_id = uuid.uuid4()
+    await _bind_campaign(
+        store,
+        user_id=TEST_USER_ID,
+        conversation_id=conversation_id,
+        hours=2.0,
+    )
+    await _bind_campaign(
+        store,
+        user_id=OTHER_USER_ID,
+        conversation_id=conversation_id,
+        hours=9.0,
+    )
+
+    act_as_assistant("writer")
+    mine = await client.get(
+        f"/api/workspaces/for-chat/{conversation_id}/campaign",
+        params={"asker": TEST_USER_EMAIL},
+    )
+    others = await client.get(
+        f"/api/workspaces/for-chat/{conversation_id}/campaign",
+        params={"asker": OTHER_EMAIL},
+    )
+    assert mine.status_code == 200
+    assert _campaign_hours(mine) == 2.0
+    assert _campaign_hours(others) == 9.0
+
+    act_as_user_agent("writer")
+    denied = await client.get(
+        f"/api/workspaces/for-chat/{conversation_id}/campaign",
+        params={"asker": OTHER_EMAIL},
+    )
+    assert denied.status_code == 403
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_chat_with_no_setup_reads_a_null_campaign(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A station that holds the chat but set no campaign reads a null setup."""
+    client, store = pglite_route_client
+    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    await seed_accounts(store)
+    conversation_id = uuid.uuid4()
+    await _bind_campaign(
+        store,
+        user_id=TEST_USER_ID,
+        conversation_id=conversation_id,
+        hours=None,
+    )
+
+    act_as_assistant("writer")
+    read = await client.get(
+        f"/api/workspaces/for-chat/{conversation_id}/campaign",
+        params={"asker": TEST_USER_EMAIL},
+    )
+
+    assert read.status_code == 200
+    assert json_loads(read.content, dict[str, object])["campaign"] is None
+
+
+def _campaign_hours(response: httpx2.Response) -> float:
+    """Return the ``hours`` of a campaign-setup response."""
+    return from_plain(
+        from_plain(
+            json_loads(response.content, dict[str, object])["campaign"],
+            dict[str, object],
+        )["hours"],
+        float,
+    )
+
+
+async def _bind_campaign(
+    store: Store,
+    *,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    hours: float | None,
+) -> None:
+    """Insert a station for ``user_id`` bound to a chat, with an hours setup or none."""
+    name = f"station-{user_id.hex[:6]}"
+    async with store.engine.acquire() as conn:
+        if hours is None:
+            await conn.execute(
+                "INSERT INTO visual_workspaces (id, user_id, state, station) VALUES ("
+                "$1, $2, '{}'::jsonb, jsonb_build_object("
+                "'name', $3::text, 'conversation_id', $4::text))",
+                uuid.uuid4(),
+                user_id,
+                name,
+                str(conversation_id),
+            )
+        else:
+            await conn.execute(
+                "INSERT INTO visual_workspaces (id, user_id, state, station) VALUES ("
+                "$1, $2, '{}'::jsonb, jsonb_build_object("
+                "'name', $3::text, 'conversation_id', $4::text, "
+                "'campaign', jsonb_build_object('hours', $5::double precision)))",
+                uuid.uuid4(),
+                user_id,
+                name,
+                str(conversation_id),
+                hours,
+            )
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

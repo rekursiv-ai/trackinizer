@@ -27,6 +27,8 @@
 .st-form, .st-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
 .st-form .field { height: 30px; flex: 1; min-width: 180px; }
 .st-form .st-role { height: 30px; flex: 0 0 auto; min-width: 0; }
+.st-campaign { margin-bottom: 10px; }
+.st-campaign .st-campaign-text { width: 100%; min-height: 160px; height: auto; padding: 8px; resize: vertical; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; margin-bottom: 8px; }
 .st-actions { margin: 10px 0 0; }
 .st-secret { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; font-size: 12.5px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .st-secret code { font-family: var(--mono); color: var(--text); word-break: break-all; }

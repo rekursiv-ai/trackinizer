@@ -45,23 +45,25 @@ test("a long agent or room name is cut to an ellipsis in its row and its picked 
   expect(screen.getByRole("checkbox", { name: room })).toBeTruthy();
 });
 
-test("a session the caller may hide offers Hide, a hidden one is marked and offers Unhide, and the rest offer neither", () => {
+test("a session the caller may flip has a Public/Private switch; another's private one is marked; the rest have neither", () => {
   const mine = { ...session(1, "mine", 1, 5), account: "ada@example.com", audience: "open", hideable: true };
   const hid = { ...session(2, "hid", 1, 3), account: "ada@example.com", audience: "private", hideable: true };
   const theirs = { ...session(3, "theirs", 1, 2), account: "grace@example.com", audience: "open", hideable: false };
-  // Another's hidden session, which an admin lists: marked, but not theirs to unhide.
+  // Another's private session, which an admin lists: marked, but not theirs to flip.
   const seen = { ...session(4, "seen", 1, 1), account: "grace@example.com", audience: "private", hideable: false };
-  const hidden: FeedActorFacet[] = [];
+  const flipped: FeedActorFacet[] = [];
   const props = { picks: [], onPicks: () => {}, active: "1h" as const, onActive: null };
-  const { rerender } = render(<AgentsSection agents={[mine, hid, theirs, seen]} {...props} onHide={(agent) => hidden.push(agent)} />);
-  const offered = () => screen.queryAllByRole("button", { name: /^(Hide|Unhide) / }).map((button) => button.getAttribute("aria-label"));
-  expect(offered()).toEqual(["Hide mine", "Unhide hid"]);
+  const { rerender } = render(<AgentsSection agents={[mine, hid, theirs, seen]} {...props} onHide={(agent) => flipped.push(agent)} />);
+  const offered = () => screen.queryAllByRole("button", { name: / is (public|private): / }).map((button) => [button.getAttribute("aria-label"), button.textContent]);
+  expect(offered()).toEqual([["mine is public: make it private", "Public"], ["hid is private: make it public", "Private"]]);
+  // The switch says it for the caller's own: only another's private session carries the mark.
   const marked = [...document.querySelectorAll(".console-row")].filter((row) => row.querySelector(".console-badge")).map((row) => row.querySelector(".console-row-name")!.textContent);
-  expect(marked).toEqual(["hid", "seen"]);
-  fireEvent.click(screen.getByRole("button", { name: "Hide mine" }));
-  fireEvent.click(screen.getByRole("button", { name: "Unhide hid" }));
-  expect(hidden.map(({ actor }) => actor)).toEqual(["mine", "hid"]);
-  // With no way to hide, no row offers it.
+  expect(marked).toEqual(["seen"]);
+  fireEvent.click(screen.getByRole("button", { name: "mine is public: make it private" }));
+  fireEvent.click(screen.getByRole("button", { name: "hid is private: make it public" }));
+  expect(flipped.map(({ actor }) => actor)).toEqual(["mine", "hid"]);
+  // With no switch to offer, a private session of the caller's is marked instead.
   rerender(<AgentsSection agents={[mine, hid]} {...props} />);
   expect(offered()).toEqual([]);
+  expect(screen.getByText("Private").className).toBe("console-badge");
 });

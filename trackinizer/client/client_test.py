@@ -33,6 +33,7 @@ from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import SeqRef, UuidRef
 from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
+from trackinizer.wire.wire_code import CODE_BLOBS_PATH, CODE_MISSING_PATH
 from trackinizer.wire.wire_export import EXPORT_API_PATH
 from trackinizer.wire.wire_machine_host import (
     ENROLL_PATH,
@@ -1376,13 +1377,15 @@ class TestClientMethods:
 # raw HTTP verbs. The fake bypasses HTTP entirely, so these would be dead
 # on the fake. The variable and machine methods are driven through stub clients in
 # ``trax/variables_test.py`` and ``trax/machines_test.py``, so the shared fake does
-# not carry them.
+# not carry them. No ``trax`` command files code, so the fake carries no code-store
+# method either.
 _FAKE_EXEMPT: frozenset[str] = frozenset(
     {"flags", "from_args", "get", "post", "put", "patch", "delete"}
     | {"list_variables", "put_variable", "delete_variable"}
     | {"list_machines", "get_machine", "put_machine"}
     | {"change_machine_labels", "delete_machine"}
-    | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"},
+    | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"}
+    | {"code_missing", "code_put_blobs", "code_put_snapshot", "code_snapshot"},
 )
 
 
@@ -2492,6 +2495,143 @@ class TestVariableMethods:
             ("DELETE", "/api/variables/REGION"),
         ] * 2
         assert err.value.status_code == 404
+
+
+_CODE_SHA = "ab" * 32
+_CODE_HEAD = {
+    "parent_record_id": None,
+    "private": False,
+    "file_count": 1,
+    "total_bytes": 3,
+    "partial": "",
+    "updated_at": "2026-10-15T12:00:00Z",
+}
+
+
+class TestCodeMethods:
+    """The code-store methods build the right requests and parse the answers."""
+
+    def test_code_missing_asks_under_the_lowercase_owner(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"missing": [_CODE_SHA]})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            missing = client.code_missing("Ada@X.Y", hashes=[_CODE_SHA])
+
+        [request] = seen
+        assert (request.method, request.url.path) == ("POST", CODE_MISSING_PATH)
+        assert json_loads(request.content) == {
+            "owner": "ada@x.y",
+            "sha256": [_CODE_SHA],
+        }
+        assert missing == [_CODE_SHA]
+
+    def test_code_put_blobs_sends_each_hash_with_its_text(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"stored": 1})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            stored = client.code_put_blobs("a@x.y", blobs={_CODE_SHA: "abc"})
+
+        [request] = seen
+        assert (request.method, request.url.path) == ("POST", CODE_BLOBS_PATH)
+        assert json_loads(request.content) == {
+            "owner": "a@x.y",
+            "blobs": [{"sha256": _CODE_SHA, "text": "abc"}],
+        }
+        assert stored == 1
+
+    def test_code_put_snapshot_puts_it_under_the_record_and_parses_the_head(
+        self,
+    ) -> None:
+        record, parent = uuid.uuid4(), uuid.uuid4()
+        seen: list[httpx2.Request] = []
+
+        head = {**_CODE_HEAD, "record_id": str(record)}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json=head)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            head = client.code_put_snapshot(
+                record,
+                owner="a@x.y",
+                private=True,
+                parent_record_id=parent,
+                files={"a.py": _CODE_SHA},
+            )
+
+        [request] = seen
+        assert (request.method, request.url.path) == (
+            "PUT",
+            f"/api/code/records/{record}/snapshot",
+        )
+        assert json_loads(request.content) == {
+            "owner": "a@x.y",
+            "private": True,
+            "parent_record_id": str(parent),
+            "files": {"a.py": _CODE_SHA},
+            "partial": "",
+        }
+        assert (head.record_id, head.file_count) == (record, 1)
+
+    def test_code_snapshot_is_none_on_404_and_raises_on_any_other_refusal(
+        self,
+    ) -> None:
+        record = uuid.uuid4()
+        answers = iter(
+            (
+                httpx2.Response(
+                    200,
+                    json={
+                        **_CODE_HEAD,
+                        "record_id": str(record),
+                        "files": [{"path": "a.py", "sha256": _CODE_SHA, "size": 3}],
+                    },
+                ),
+                httpx2.Response(404, json={"detail": "No code snapshot"}),
+                httpx2.Response(403, json={"detail": "role too low"}),
+            ),
+        )
+
+        path = f"/api/code/records/{record}/snapshot"
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            assert (request.method, request.url.path) == ("GET", path)
+            return next(answers)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            snapshot = client.code_snapshot(record)
+            absent = client.code_snapshot(record)
+            with pytest.raises(ClientError) as err:
+                client.code_snapshot(record)
+
+        assert snapshot is not None
+        assert [(f.path, f.size) for f in snapshot.files] == [("a.py", 3)]
+        assert absent is None
+        assert err.value.status_code == 403
+
+    def test_a_malformed_hash_is_refused_before_sending(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            raise AssertionError(f"sent {request.url}")
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError, match="sha256") as err:
+                client.code_missing("a@x.y", hashes=["not-a-hash"])
+
+        assert err.value.status_code is None
 
 
 _MACHINE_ROW = {

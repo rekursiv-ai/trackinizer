@@ -35,8 +35,9 @@ async def load_timeline(
     The record shown is the target for every kind except an Experiment, whose
     row is the Issue that produced it. The Issue supplying leads, results and
     directions is the *anchor*: an Issue is its own anchor, an Experiment's is
-    its `produced_by` Issue, and any other kind takes the nearest Issue it was
-    `produced_by` (oldest first). `narrows` is Issue-to-Issue only, so no other
+    its sole `produced_by` Issue, and any other kind takes its sole Issue producer.
+    Multiple origins stay in the paged relationship view rather than being
+    reduced to an arbitrary tree. `narrows` is Issue-to-Issue only, so no other
     kind can reach an Issue by it. A record with no anchor is shown alone.
 
     Args:
@@ -62,7 +63,10 @@ async def load_timeline(
         producer = await conn.fetchrow(
             "SELECT i.id FROM edges e JOIN inquiries i ON i.id = e.to_id "
             "WHERE e.from_id = $1 AND e.edge_kind = 'produced_by' "
-            "AND e.to_kind = 'Issue' ORDER BY i.created, i.id LIMIT 1",
+            "AND e.to_kind = 'Issue' AND NOT EXISTS (SELECT 1 FROM edges other "
+            "WHERE other.from_id=e.from_id AND other.edge_kind='produced_by' "
+            "AND other.to_kind='Issue' AND other.to_id<>e.to_id) "
+            "ORDER BY i.created, i.id LIMIT 1",
             target_id,
         )
         issue_id = _as_uuid(producer["id"]) if producer is not None else None
@@ -178,7 +182,7 @@ def _as_uuid(value: object) -> UUID:
 
 
 # One indexed lookup a level keeps the read bounded however deep a lineage runs. The
-# oldest parent is the one an Issue was first filed under, and a repeated Issue means a
+# sole parent supplies an unambiguous spine, and a repeated Issue means a
 # `narrows` cycle, which would otherwise fill every level with the same rows. A record
 # that is not an Issue shows its anchor as its nearest lead, so the anchor takes a level.
 async def _load_leads(
@@ -197,7 +201,10 @@ async def _load_leads(
             "i.created, i.modified, LEFT(i.description, 2000) AS description "
             "FROM edges e JOIN inquiries i ON i.id=e.to_id WHERE e.from_id=$1 "
             "AND e.edge_kind='narrows' AND e.from_kind='Issue' "
-            "AND e.to_kind='Issue' ORDER BY i.created, i.id LIMIT 1",
+            "AND e.to_kind='Issue' AND NOT EXISTS (SELECT 1 FROM edges other "
+            "WHERE other.from_id=e.from_id AND other.edge_kind='narrows' "
+            "AND other.to_kind='Issue' AND other.to_id<>e.to_id) "
+            "ORDER BY i.created, i.id LIMIT 1",
             current,
         )
         if parent is None:

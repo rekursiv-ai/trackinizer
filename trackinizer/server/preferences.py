@@ -40,7 +40,14 @@ if TYPE_CHECKING:
 
 
 ASSISTANT_KEYS: Final = frozenset(
-    {"theme", "chat_style", "chat_side", "highlight_mentions", "terminal_font_size"},
+    {
+        "theme",
+        "chat_style",
+        "chat_side",
+        "highlight_mentions",
+        "terminal_font_size",
+        "home",
+    },
 )
 """The preferences a station's assistant may read and change for its owner: the
 UI's, each marked ``SETTING`` below. Every other key (the user's own data) stays
@@ -232,6 +239,14 @@ class Preferences(_Strict):
         pattern=r"^[1-9][0-9]?(\.[0-9])?(px|pt)$",
         description=(
             "Chat's font size in the Terminal style, in px or pt: 13px, or 16pt."
+        ),
+        json_schema_extra=SETTING,
+    )
+    home: Literal["graph", "empty"] = Field(
+        default="graph",
+        description=(
+            "What the canvas's Home button and a new canvas tab show: "
+            "the graph, or an empty canvas."
         ),
         json_schema_extra=SETTING,
     )

@@ -25,8 +25,9 @@ export const ACTIVE: readonly { readonly value: Active; readonly label: string; 
  * step), how far back to look when live, and groups, each picked in one step.
  * A row is a session, so a name an ended session and a live one share shows
  * twice. Working turns Quiet as the minutes pass, with or without new records.
- * A session its owner hid says so, and one the server says the caller may hide
- * (`hideable`: their own, and no chat) offers Hide, or Unhide once hidden.
+ * A session the server says the caller may change (`hideable`: their own, and no
+ * chat) has a switch that says Public or Private and flips on a click; another's
+ * private session is marked Private.
  */
 export function AgentsSection({
   agents,
@@ -42,7 +43,7 @@ export function AgentsSection({
   active: Active;
   /** Null when the view is a window of history, which sets how far back on its own. */
   onActive: ((active: Active) => void) | null;
-  /** Hide a session of the caller's, or show it again; null offers neither. */
+  /** Make a session of the caller's private, or public again; null offers no switch. */
   onHide?: ((agent: FeedActorFacet) => void) | null;
 }) {
   const [query, setQuery] = useState("");
@@ -185,7 +186,10 @@ function Find({
   );
 }
 
-/** One session's tick, marked when its owner hid it, and its Hide or Unhide beside it when the caller may. */
+/**
+ * One session's tick, with its Public/Private switch beside it when the caller
+ * may flip it, else marked Private when its owner made it so.
+ */
 function AgentRow({
   agent,
   picks,
@@ -198,20 +202,24 @@ function AgentRow({
   onHide: ((agent: FeedActorFacet) => void) | null;
 }) {
   const { actor, count } = agent;
-  const hidden = agent.audience === "private";
-  const row = <Row label={actor} text={actor} count={count} picks={picks} names={[actor]} onChange={() => onPicks(toggle(picks, [actor], null))} hidden={hidden} />;
-  if (!onHide || !agent.hideable) return row;
+  const isPrivate = agent.audience === "private";
+  const switchable = onHide !== null && agent.hideable;
+  const row = <Row label={actor} text={actor} count={count} picks={picks} names={[actor]} onChange={() => onPicks(toggle(picks, [actor], null))}
+    isPrivate={isPrivate && !switchable} />;
+  if (!switchable) return row;
   return (
     <div className="console-agent">
       {row}
       <button
         type="button"
-        className="btn ghost console-hide"
-        aria-label={`${hidden ? "Unhide" : "Hide"} ${actor}`}
-        title={hidden ? "Let whoever may read your sessions read its transcript again" : "Only you, staff and admins will read its transcript; its name stays listed"}
+        className={`btn ghost console-privacy${isPrivate ? " console-privacy-private" : ""}`}
+        aria-label={`${actor} is ${isPrivate ? "private: make it public" : "public: make it private"}`}
+        title={isPrivate
+          ? "Private: only you, staff and admins read its transcript. Click to let whoever may read your sessions read it."
+          : "Public: whoever may read your sessions reads its transcript. Click to keep it to you, staff and admins; its name stays listed."}
         onClick={() => onHide(agent)}
       >
-        {hidden ? "Unhide" : "Hide"}
+        {isPrivate ? "Private" : "Public"}
       </button>
     </div>
   );
@@ -226,7 +234,7 @@ function Row({
   names,
   onChange,
   head = false,
-  hidden = false,
+  isPrivate = false,
 }: {
   label: string;
   text: string;
@@ -235,8 +243,8 @@ function Row({
   names: readonly string[];
   onChange: () => void;
   head?: boolean;
-  /** A session its owner hid: only they, staff and admins read it. */
-  hidden?: boolean;
+  /** A session its owner made private: only they, staff and admins read it. */
+  isPrivate?: boolean;
 }) {
   const ticked = names.filter((name) => isPicked(picks, name)).length;
   return (
@@ -253,9 +261,9 @@ function Row({
       <span className="console-row-name" title={text}>
         {text}
       </span>
-      {hidden ? (
-        <span className="console-badge" title="Hidden: only its owner, staff and admins read it">
-          Hidden
+      {isPrivate ? (
+        <span className="console-badge" title="Private: only its owner, staff and admins read it">
+          Private
         </span>
       ) : null}
       <span className="console-n">{count.toLocaleString("en")}</span>

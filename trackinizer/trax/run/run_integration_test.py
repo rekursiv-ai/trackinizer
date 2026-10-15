@@ -75,11 +75,12 @@ from trackinizer.wire.wire_sessions import SessionStart, SessionStartResponse
 
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Awaitable, Callable, Iterator, Sequence
     from datetime import datetime
 
     from starlette.requests import Request
 
+    from trackinizer.lib.agent.types.sessions import FileEditResult
     from trackinizer.trax.run.custom_types import Event
     from trackinizer.trax.run.slash import SlashCommand
     from trackinizer.types.streams import TraxRecord
@@ -1253,6 +1254,10 @@ class _StubSessionSink(Sink):
     @override
     def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
         del command, at
+
+    @override
+    def emit_worktree_diff(self, records: Sequence[FileEditResult]) -> None:
+        del records
 
     @override
     def flush(self) -> None:

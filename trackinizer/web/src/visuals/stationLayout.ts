@@ -29,6 +29,10 @@ export type Layout = {
   readonly share?: { readonly [type: string]: number };
   /** The id of the Console view that is open. */
   readonly console?: string;
+  /** The canvas tabs, in order (src/visuals/canvasTabs.ts); none until a second is made. The sizes above are the open tab's. */
+  readonly tabs?: components["schemas"]["CanvasTab"][];
+  /** The id of the canvas tab that is open. */
+  readonly tab?: string;
 };
 
 /** What the server stores: the same, with a key it holds nothing for null. */

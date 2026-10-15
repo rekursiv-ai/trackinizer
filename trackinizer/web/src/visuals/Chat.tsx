@@ -27,7 +27,7 @@ import { flipChatSide, setChatHidden, useChatColumn } from "./chatColumnState";
 import { useAnswerHighlights } from "./chatHighlights";
 import { useChatPartial } from "./chatPartial";
 import { ChatPrompt } from "./ChatPrompt";
-import { DeleteChat, HideChat, ShareChat } from "./ChatSharing";
+import { DeleteChat, PrivacySwitch, ShareChat } from "./ChatSharing";
 
 /** The most characters one message may have, as the server holds it. */
 const MAX_TEXT = 16_384;
@@ -63,7 +63,7 @@ const READERS: { readonly [mode in OrgMode | "unnamed"]: string } = {
 };
 
 function chatReach(audience: string, orgMode: OrgMode | undefined): string {
-  if (audience === "private") return `Hidden: only ${READERS.individual} read it.`;
+  if (audience === "private") return `Private: only ${READERS.individual} read it.`;
   const readers = READERS[orgMode ?? "unnamed"];
   return audience === "staff" ? `Staff only: of ${readers}, only those who hold staff read it.` : `Read by ${readers}.`;
 }
@@ -81,8 +81,8 @@ function chatReach(audience: string, orgMode: OrgMode | undefined): string {
  * `forks_on_typing`, reads none of it: the server refuses its records and their
  * lines, so Chat says why and takes no line. "Fork from here" on any stored
  * answer of an open chat starts a fork of it from that answer; the next message
- * sent starts it. A hidden or staff-only chat cannot be forked, since the copy
- * would not keep who may read it. The starter may hide a chat (`HideChat`).
+ * sent starts it. A private or staff-only chat cannot be forked, since the copy
+ * would not keep who may read it. The starter makes a chat private or public (`PrivacySwitch`).
  */
 export function Chat({ workspace }: { readonly workspace: WorkspaceState | null }) {
   const queryClient = useQueryClient();
@@ -327,7 +327,8 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
     <section className="chat-panel" aria-label="Chat">
       {workspace && <StationTabs station={workspace} />}
       <header className="chat-head">
-        {head.data && head.data.audience !== "open" && <ChatBadge audience={head.data.audience} />}
+        {head.data && head.data.audience !== "open" && !(head.data.may_hide && head.data.audience === "private")
+          && <ChatBadge audience={head.data.audience} />}
         <div className="chat-partner" role="group" aria-label="Chat partner">
           {partner && <>
             <strong>{partnerName(partner)}</strong>
@@ -335,7 +336,7 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
           </>}
         </div>
         <div className="chat-head-actions" role="toolbar" aria-label="Chat controls">
-          {head.data?.may_hide && <HideChat head={head.data} />}
+          {head.data?.may_hide && <PrivacySwitch head={head.data} />}
           {head.data?.may_share && <ShareChat head={head.data} />}
           {head.data?.may_delete && <DeleteChat head={head.data} onDeleted={() => chatDeleted(head.data!.conversation_id)} />}
           {/* Hidden, Chat is open over the page by hovering its strip; pinning stands it beside the page again. */}
@@ -438,8 +439,8 @@ function readOnly(status: string | undefined, writing: boolean): string {
 /** Why a chat I do not read is closed to me: staff only and I hold no staff, or not shared with me. */
 function outsiderNote(audience: string): string {
   if (audience === "staff") return "This chat is staff only and you hold no staff, so you can neither read it nor post in it.";
-  const hidden = audience === "private" ? "hidden and " : "";
-  return `This chat is ${hidden}not shared with you, so you can neither read it nor post in it. Ask its starter to share it.`;
+  const kept = audience === "private" ? "private and " : "";
+  return `This chat is ${kept}not shared with you, so you can neither read it nor post in it. Ask its starter to share it.`;
 }
 
 /** The box's placeholder in a chat I do not read. */
@@ -447,12 +448,16 @@ function closedTo(audience: string): string {
   return audience === "staff" ? "This chat is staff only" : "This chat is not shared with you";
 }
 
-/** A chat that is not open to whom the org mode lets in says so in its header: hidden by its starter, or staff only. */
+/**
+ * A chat that is not open to whom the org mode lets in says so in its header:
+ * made private by its starter, or staff only. The starter's own Public/Private
+ * switch says it for them.
+ */
 function ChatBadge({ audience }: { readonly audience: string }) {
   const staff = audience === "staff";
   return <span className="chat-badge" title={staff
     ? "The assistant read a staff session into this chat, so only its readers who hold staff read it"
-    : "Its starter hid it: only they and the people they share it with read it"}>{staff ? "Staff only" : "Hidden"}</span>;
+    : "Its starter made it private: only they and the people they share it with read it"}>{staff ? "Staff only" : "Private"}</span>;
 }
 
 /** What to do when no partner is live: two lines, then the commands that start a local helper. */

@@ -18,10 +18,13 @@ from trackinizer.server.visuals.catalog import (
 )
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
+    CampaignSetup,
     HideVisual,
     Placement,
     PlaceVisual,
     ShowVisual,
+    StationLayout,
+    TabVisual,
     WorkspaceData,
     apply_operation,
     initial_data,
@@ -649,6 +652,100 @@ def test_a_show_without_a_record_is_never_refused_for_one() -> None:
         )
         is None
     )
+
+
+def test_a_campaign_setup_validates_a_partial_subset_with_a_nested_lead() -> None:
+    setup = CampaignSetup.model_validate(
+        {"hours": 2, "scientists": 3, "lead": {"model": "gpt-6.1-sol"}},
+    )
+
+    assert setup.hours == 2.0
+    assert setup.scientists == 3
+    assert setup.lead is not None
+    assert setup.lead.model == "gpt-6.1-sol"
+    assert (setup.budget_usd, setup.staffing, setup.repo) == (None, None, None)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"hours": 0}, "greater than 0"),
+        ({"hours": float("inf")}, "finite"),
+        ({"budget_usd": -5}, "greater than 0"),
+        ({"scientists": 9}, "less than or equal to 8"),
+        ({"scientists": 0}, "greater than or equal to 1"),
+        ({"staffing": "gpt-6.1-sol:high"}, "MODEL:EFFORT:COUNT"),
+        ({"staffing": ""}, "at least 1"),
+        ({"repo": "loop"}, "owner/name"),
+        ({"extra": 1}, "Extra inputs"),
+    ],
+)
+def test_a_campaign_setup_refuses_a_misshapen_field_with_a_plain_line(
+    payload: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError) as caught:
+        CampaignSetup.model_validate(payload)
+
+    assert message in str(caught.value)
+
+
+def test_a_canvas_tab_keeps_its_page_visuals_and_sizes() -> None:
+    """A tab not open holds what it shows, so opening it again can show it."""
+    record_id = uuid.uuid4()
+    layout = StationLayout.model_validate(
+        {
+            "tab": "b",
+            "tabs": [
+                {"id": "a", "name": "Tab 1"},
+                {
+                    "id": "b",
+                    "name": "Review",
+                    "page": "#/ref/Issue/7",
+                    "visuals": [
+                        {"type": "trax.browse"},
+                        {
+                            "type": "trax.subgraph",
+                            "placement": "side",
+                            "record_id": str(record_id),
+                            "params": {"hops": 2},
+                        },
+                    ],
+                    "columns": {"side": 0.3},
+                    "share": {"trax.browse": 1.5},
+                },
+            ],
+        },
+    )
+    assert layout.tabs is not None
+    first, second = layout.tabs
+    assert (first.page, first.visuals) == (None, [])
+    assert second.visuals[1] == TabVisual(
+        type="trax.subgraph",
+        placement="side",
+        record_id=record_id,
+        params={"hops": 2},
+    )
+    assert layout.model_dump(mode="json", exclude_none=True)["tab"] == "b"
+
+
+@pytest.mark.parametrize(
+    "tabs",
+    [
+        [{"id": "a", "name": "One"}, {"id": "a", "name": "Two"}],
+        [{"id": "a", "name": ""}],
+        [{"id": "a", "name": "x" * 61}],
+        [{"id": "a", "name": "One", "page": "#/has space"}],
+        [{"id": "a", "name": "One", "visuals": [{"type": "trax.browse"}] * 13}],
+        [{"id": "a", "name": "One", "visuals": [{"type": "x", "where": "main"}]}],
+        [{"id": "a", "name": "One", "columns": {"side": 420}}],
+        [{"id": str(n), "name": "Tab"} for n in range(13)],
+    ],
+)
+def test_canvas_tabs_out_of_bounds_are_refused(tabs: list[dict[str, object]]) -> None:
+    """Tabs keep distinct ids, short names, clean pages, and bounded visuals."""
+    with pytest.raises(ValidationError):
+        StationLayout.model_validate({"tabs": tabs})
 
 
 if __name__ == "__main__":

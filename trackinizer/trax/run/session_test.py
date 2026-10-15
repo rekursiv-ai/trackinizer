@@ -40,6 +40,7 @@ from trackinizer.client.client import Client
 from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
+    FileEditResult,
     IncompleteRecord,
     SessionRecord,
     UserMessage,
@@ -80,6 +81,7 @@ from trackinizer.trax.run.sink import (
     TrackinizerSink,
 )
 from trackinizer.trax.run.slash import SlashCommand
+from trackinizer.trax.run.worktree_diff import Output, WorktreeDiff
 from trackinizer.wire.wire_session_ir import (
     AppendRecordsResponse,
     RecordBody,
@@ -129,6 +131,7 @@ class _RecordingSink(Sink):
     def __init__(self) -> None:
         self.events: list[tuple[int, str, Event]] = []
         self.slash: list[tuple[SlashCommand, datetime]] = []
+        self.diffs: list[list[FileEditResult]] = []
         self.closed = False
         self.flushes = 0
         self.cli_session_ids: list[str] = []
@@ -160,6 +163,10 @@ class _RecordingSink(Sink):
     @override
     def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
         self.slash.append((command, at))
+
+    @override
+    def emit_worktree_diff(self, records: Sequence[FileEditResult]) -> None:
+        self.diffs.append(list(records))
 
     @override
     def flush(self) -> None:
@@ -274,6 +281,38 @@ class _WholeFileAdapter(_FakeAdapter):
     @override
     def reader(self) -> Tail[TraxRecord]:
         return Tail(_document_records, whole_file=True)
+
+
+# Each line is the absolute path of a file the session edited, so the diff
+# capture's ``note`` sees it through ``feed``'s ``on_record`` hook.
+def _edit_records(stream: TextIO) -> Iterator[SessionRecord]:
+    """One empty ``FileEditResult`` per line, its path the line's text."""
+    for line in stream:
+        yield FileEditResult(call_id="", path=line.rstrip("\n"), edits=())
+
+
+class _FakeEditAdapter(_FakeAdapter):
+    """Treats every ``*.jsonl`` line as one file-edit record naming a path."""
+
+    name: str = "fakeedit"
+
+    @override
+    def reader(self) -> Tail[TraxRecord]:
+        return Tail(_edit_records)
+
+
+def _unused_git(argv: Sequence[str], max_bytes: int) -> Output:
+    """Fail if called at all -- ``note`` resolves paths and never runs git."""
+    del argv, max_bytes
+    raise AssertionError("note must not run git")
+
+
+def _diff_git(argv: Sequence[str], max_bytes: int) -> Output:
+    """Answer a one-line diff for ``a.py`` and nothing else."""
+    del max_bytes
+    if "diff" in argv and "a.py" in argv:
+        return Output(returncode=0, stdout=b"@@ -1 +1 @@\n-old\n+new\n", cut=False)
+    return Output(returncode=1, stdout=b"", cut=False)
 
 
 class _PoisonAdapter(_FakeAdapter):
@@ -723,6 +762,87 @@ class TestSessionScoping:
             expected=3,
         )
         assert stats.counts == {"UserMessage": 3}
+
+
+class TestWorktreeDiffWiring:
+    """``trax run --diff`` wires a session's edits to its worktree diff."""
+
+    def test_a_chunk_notes_each_edited_path(self, tmp_path: Path) -> None:
+        """``feed``'s ``on_record`` hook feeds the session's edits to ``note``."""
+        diff = WorktreeDiff(top=tmp_path, run=_unused_git, base="HEAD")
+        sink = _RecordingSink()
+        session._process_chunk(
+            session._Captured(
+                path=tmp_path / "s.jsonl",
+                raw=f"{tmp_path / 'a.py'}\n".encode(),
+            ),
+            _FakeEditAdapter(tmp_path),
+            sink,
+            _Stats(),
+            RunConfig(cli_name="fakeedit"),
+            worktree_diff=diff,
+        )
+        assert diff.touched == {"a.py"}
+
+    def test_refresh_uploads_the_diff_and_none_is_a_no_op(self, tmp_path: Path) -> None:
+        """The teardown refresh uploads the net diff; no capture means nothing sent."""
+        diff = WorktreeDiff(top=tmp_path, run=_diff_git, base="HEAD")
+        diff.note(FileEditResult(call_id="", path=str(tmp_path / "a.py"), edits=()))
+        sink = _RecordingSink()
+        session._refresh_diff(diff, sink, force=True)
+        [batch] = sink.diffs
+        assert [record.path for record in batch] == ["a.py"]
+        session._refresh_diff(None, sink, force=True)
+        assert len(sink.diffs) == 1
+
+    def test_refresh_swallows_a_sink_failure(self, tmp_path: Path) -> None:
+        """A git or sink failure costs one refresh, never the run's capture."""
+        diff = WorktreeDiff(top=tmp_path, run=_diff_git, base="HEAD")
+        diff.note(FileEditResult(call_id="", path=str(tmp_path / "a.py"), edits=()))
+
+        class _Boom(_RecordingSink):
+            @override
+            def emit_worktree_diff(self, records: Sequence[FileEditResult]) -> None:
+                raise RuntimeError("server down")
+
+        session._refresh_diff(diff, _Boom(), force=True)  # Must not raise.
+
+
+def _rewrite(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` -- a sync helper so the async caller stays clean."""
+    path.write_text(text)
+
+
+async def _queue_body_thrice(source: Path) -> list[session._Captured]:
+    """Queue ``source``'s body, re-read it unchanged, then queue it changed."""
+    queue: asyncio.Queue[session._Captured] = asyncio.Queue()
+    bodies: dict[Path, str] = {}
+    _rewrite(source, '{"m": 1}')
+    await session._queue_body(source, queue, bodies)
+    await session._queue_body(source, queue, bodies)  # Unchanged -> skipped.
+    _rewrite(source, '{"m": 22}')
+    await session._queue_body(source, queue, bodies)  # Changed -> queued.
+    drained: list[session._Captured] = []
+    while not queue.empty():
+        drained.append(queue.get_nowait())
+    return drained
+
+
+class TestQueueBody:
+    """``_queue_body`` queues a whole-file body once, by path, as a restart."""
+
+    def test_queues_by_path_as_a_restart_and_skips_an_unchanged_reread(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A changed body is queued (``restart=True``); an unchanged reread is not."""
+        source = tmp_path / "s.json"
+        captured = asyncio.run(_queue_body_thrice(source))
+        assert [(c.path, c.restart) for c in captured] == [
+            (source, True),
+            (source, True),
+        ]
+        assert captured[0].raw == b'{"m": 1}'
 
 
 class TestAppendedLineDrain:
@@ -2386,6 +2506,134 @@ def _wire(
         stats or _Stats(),
     )
     return wiring, status
+
+
+class _RecordingOpener:
+    """Stand in for ``open_worktree_diff``: record each cwd, return a fixed value."""
+
+    def __init__(self, result: object) -> None:
+        self.calls: list[Path] = []
+        self.result = result
+
+    def __call__(self, cwd: Path) -> object:
+        self.calls.append(cwd)
+        return self.result
+
+
+class _RefusingSink(_RecordingSink):
+    """A sink whose ``open`` refuses, like a server that will not hide a session."""
+
+    @override
+    def open(self) -> str | None:
+        raise PrivateNotHeldError("the server predates hiding a session")
+
+
+# The sleep outlives the microseconds between ``sink.open`` raising and the watchdog
+# join, so a join that WAITS (deadline ahead) finds the thread gone while one whose
+# deadline is already in the past leaves it alive.
+def _sleeping_drain(
+    recorded: list[threading.Thread],
+    *args: object,
+    armed: threading.Event,
+    **kwargs: object,
+) -> None:
+    """Record the drain thread, arm the spawn, then briefly stay alive."""
+    del args, kwargs
+    recorded.append(threading.current_thread())
+    armed.set()
+    time.sleep(0.002)
+
+
+class TestSpawnWorktreeDiffWiring:
+    """``_spawn_and_drain`` builds the worktree diff only with ``--diff``."""
+
+    def test_the_diff_flag_opens_the_capture_and_hands_it_to_the_drain(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """With ``diff=True`` the cwd's capture is opened and passed to the drain."""
+        sentinel = object()
+        opener = _RecordingOpener(sentinel)
+        monkeypatch.setattr(session, "open_worktree_diff", opener)
+        wiring, _ = _wire(
+            monkeypatch,
+            tmp_path,
+            RunConfig(cli_name="claude", sync=False, diff=True),
+            ClaudeAdapter(),
+        )
+        assert opener.calls == [Path.cwd()]
+        assert wiring.drain["worktree_diff"] is sentinel
+
+    def test_without_the_flag_no_capture_is_opened(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """With ``diff=False`` the capture is never opened and the drain gets None."""
+        opener = _RecordingOpener(object())
+        monkeypatch.setattr(session, "open_worktree_diff", opener)
+        wiring, _ = _wire(
+            monkeypatch,
+            tmp_path,
+            RunConfig(cli_name="claude", sync=False, diff=False),
+            ClaudeAdapter(),
+        )
+        assert opener.calls == []
+        assert wiring.drain["worktree_diff"] is None
+
+    def test_a_private_refusal_joins_the_drain_then_reraises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A refused private session joins the drain thread by name and re-raises.
+
+        Drives the ``except PrivateNotHeldError`` branch so its
+        ``_join_with_watchdog(drain_thread, ...)`` call runs: a mutant that drops
+        the thread or the deadline crashes before the re-raise, so the refusal no
+        longer surfaces.
+        """
+        with pytest.raises(PrivateNotHeldError):
+            _ = _wire(
+                monkeypatch,
+                tmp_path,
+                RunConfig(cli_name="claude", sync=False),
+                ClaudeAdapter(),
+                sink=_RefusingSink(),
+            )
+
+    def test_the_refusal_join_waits_for_the_drain_before_reraising(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """The refusal join's deadline is AHEAD, so it waits out the drain thread.
+
+        With the drain thread still finishing (~2 ms) and the deadline ~80 ms
+        off, the join waits and the thread is gone by the re-raise. A deadline
+        flipped into the past would time out at once and leave it alive -- caught
+        here without touching the warning text.
+        """
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        monkeypatch.setattr(shutil, "which", _always_found)
+        monkeypatch.setattr(session, "_JOIN_DEADLINE_SEC", 0.08)
+        recorded: list[threading.Thread] = []
+        monkeypatch.setattr(
+            session,
+            "_drain_filesystem_loop",
+            partial(_sleeping_drain, recorded),
+        )
+        with pytest.raises(PrivateNotHeldError):
+            _ = session._spawn_and_drain(
+                replace(RunConfig(cli_name="claude", sync=False), quiesce_seconds=0.0),
+                ClaudeAdapter(),
+                _RefusingSink(),
+                _Stats(),
+            )
+        assert recorded
+        assert not recorded[0].is_alive()
+        assert recorded[0].name == "drain"
 
 
 _CODEX_BANNER = b"Session ID: 01234567-89ab-cdef-0123-456789abcdef\r\n"

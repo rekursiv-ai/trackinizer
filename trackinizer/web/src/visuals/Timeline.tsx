@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState, type MouseEvent } from "react";
-import { getEvidenceTimeline, type TimelineEvidence, type TimelineRecord } from "../api/timeline";
+import { getEvidenceTimeline, type TimelineEvidence, type TimelineExperiment, type TimelineRecord } from "../api/timeline";
 import { formatRoute } from "../router/route";
 import { useVisualMark } from "./marks";
 import type { RendererProps } from "./registry";
+import { RecordLineage } from "./RecordLineage";
 import {
   DEFAULT_WIDTH, ROW_H, TOP, BOTTOM, heightOf, nodeAt, resultXs, rowY, ticks, timeAxis, timelineRows,
   type Axis, type RowRole, type TimelineRow,
@@ -87,13 +88,14 @@ export function Timeline({ instance, workspace, width }: RendererProps & { reado
       </g>
       {rows.map((row, index) => <Results key={`results-${row.record.id}`} row={row} index={index} axis={axis}
         selectedId={data.selected_result?.record.id} open={open} />)}
-      {rows.map((row, index) => <Cards key={`card-${row.record.id}`} row={row} index={index} axis={axis} open={open} />)}
+      {rows.map((row, index) => <Cards key={`card-${row.record.id}`} row={row} index={index} axis={axis} open={open} selected={data.selected_result} />)}
     </svg>
     {data.root_results_truncated
       && <p className="lineage-timeline-note">Showing the latest {resultsPerDirection} results of this record.</p>}
     {data.directions_truncated
       && <p className="lineage-timeline-note">Showing the first {directionLimit} directions.</p>}
-    {alone && <p className="lineage-timeline-note" role="status">Nothing else is linked to this record yet.</p>}
+    {alone && <p className="lineage-timeline-note" role="status">No dated results in this chart.</p>}
+    <RecordLineage recordId={recordId} visualType={instance.type} />
   </section>;
 }
 
@@ -103,18 +105,20 @@ function Band({ row, index, width }: { readonly row: TimelineRow; readonly index
 }
 
 /** The label card on the left and the node on the row; each moves the window to the row's record. */
-function Cards({ row, index, axis, open }: {
+function Cards({ row, index, axis, open, selected }: {
   readonly row: TimelineRow; readonly index: number; readonly axis: Axis;
   readonly open: (event: MouseEvent, record: TimelineRecord) => void;
+  readonly selected: TimelineExperiment | null;
 }) {
   const { record } = row;
   const { cx, cy } = nodeAt(row, index, axis);
   const radius = row.role === "record" ? 9 : 7;
   const y = rowY(index);
   const label = `${ref(record)} ${record.title}`;
+  const self = selected?.record.id === record.id ? selected : null;
   return <g data-role={row.role} data-ref={ref(record)}>
     <a href={recordHref(record)} aria-label={label} onClick={(event) => open(event, record)}>
-      <title>{hover(record)}</title>
+      <title>{self ? resultHover(record, self.evidence, self.evidence_truncated) : hover(record)}</title>
       <rect x={0} y={TOP + index * ROW_H} width={axis.labelW} height={ROW_H} className="tl-card-hit" />
       <text x={16} y={y - 4} className="tl-row-ref">{ref(record)}</text>
       <text x={16} y={y + 13} className="tl-row-title">{clip(record.title, axis.titleChars)}</text>
@@ -123,6 +127,7 @@ function Cards({ row, index, axis, open }: {
       <circle cx={cx} cy={cy} r={radius} className={`tl-node tl-kind-${record.kind}${faded(record)}`} />
     </a>
     {row.role === "lead" && <text x={axis.labelW + 30} y={cy + 4} className="tl-lead-date" aria-hidden="true">{day(record.created)}</text>}
+    {self && <EvidenceMarks evidence={self.evidence} truncated={self.evidence_truncated} x={cx} y={cy} />}
   </g>;
 }
 
@@ -137,8 +142,6 @@ function Results({ row, index, axis, selectedId, open }: {
   return <g>
     {row.results.map(({ record, evidence, evidence_truncated }, i) => {
       const rx = xs[i]!;
-      const shown = evidence.slice(0, MARKS_SHOWN);
-      const more = evidence.length - shown.length;
       return <g key={record.id} className={`tl-result${record.id === selectedId ? " tl-selected" : ""}`} data-ref={ref(record)}>
         <line x1={node.cx} y1={node.cy} x2={rx} y2={ry} className="tl-produced" aria-hidden="true" />
         <a href={recordHref(record)} aria-label={`${ref(record)} ${record.title}`} onClick={(event) => open(event, record)}>
@@ -146,14 +149,24 @@ function Results({ row, index, axis, selectedId, open }: {
           <rect x={rx - 6} y={ry - 6} width={12} height={12} rx={3}
             className={`tl-square tl-kind-${record.kind}${faded(record)}`} />
         </a>
-        {shown.map((item, k) => <Mark key={`${item.claim.id}:${item.edge_kind}`} item={item} x={rx} y={ry - 27 - k * 15} />)}
-        {(more > 0 || evidence_truncated) && <g className="tl-mark" data-sign="neutral">
-          <rect x={rx - 15} y={ry - 27 - shown.length * 15} width={30} height={13} rx={6} />
-          <text x={rx} y={ry - 17.5 - shown.length * 15}>{more > 0 ? `+${more}` : "…"}</text>
-        </g>}
+        <EvidenceMarks evidence={evidence} truncated={evidence_truncated} x={rx} y={ry} />
       </g>;
     })}
   </g>;
+}
+
+function EvidenceMarks({ evidence, truncated, x, y }: {
+  readonly evidence: readonly TimelineEvidence[]; readonly truncated: boolean; readonly x: number; readonly y: number;
+}) {
+  const shown = evidence.slice(0, MARKS_SHOWN);
+  const more = evidence.length - shown.length;
+  return <>
+    {shown.map((item, k) => <Mark key={`${item.claim.id}:${item.edge_kind}`} item={item} x={x} y={y - 27 - k * 15} />)}
+    {(more > 0 || truncated) && <g className="tl-mark" data-sign="neutral">
+      <rect x={x - 15} y={y - 27 - shown.length * 15} width={30} height={13} rx={6} />
+      <text x={x} y={y - 17.5 - shown.length * 15}>{more > 0 ? `+${more}` : "…"}</text>
+    </g>}
+  </>;
 }
 
 function Mark({ item, x, y }: { readonly item: TimelineEvidence; readonly x: number; readonly y: number }) {

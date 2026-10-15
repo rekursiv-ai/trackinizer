@@ -30,6 +30,12 @@ from trackinizer.wire.routes import (
     inquiry_field_path,
     inquiry_field_routes,
 )
+from trackinizer.wire.wire_code import (
+    CODE_API_PATHS,
+    CODE_BLOBS_PATH,
+    CODE_DIFF_PATH,
+    CODE_MISSING_PATH,
+)
 from trackinizer.wire.wire_export import EXPORT_API_PATHS
 from trackinizer.wire.wire_machine_host import (
     ENROLL_PATH,
@@ -262,6 +268,22 @@ def test_machine_host_paths_are_registered_and_documented() -> None:
     assert f"POST   {JOIN_PATH}" in api_md
     assert "POST   /api/machines/<uuid>/heartbeat" in api_md
     assert "POST   /api/machines/<name>/revoke" in api_md
+
+
+def test_code_paths_are_registered_and_documented() -> None:
+    """The code-store routes exist on the live app and appear in ``docs/api.md``."""
+    registered = registered_paths(app)
+    api_md = (_CWD.parents[1] / "docs" / "api.md").read_text()
+    assert [p for p in CODE_API_PATHS if p not in registered] == []
+    for line in (
+        f"POST   {CODE_MISSING_PATH}\n",
+        f"POST   {CODE_BLOBS_PATH}\n",
+        "PUT    /api/code/records/<uuid>/snapshot\n",
+        "GET    /api/code/records/<uuid>/snapshot\n",
+        "GET    /api/code/records/<uuid>/file?path=<path>\n",
+        f"GET    {CODE_DIFF_PATH}?from=<uuid>&to=<uuid>&context=<n>\n",
+    ):
+        assert line in api_md
 
 
 def test_service_account_paths_are_registered_and_documented() -> None:

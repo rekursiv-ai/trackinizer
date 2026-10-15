@@ -49,6 +49,7 @@ from trackinizer.server.visuals.science_chats import (
 from trackinizer.server.visuals.screens import read_screen
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
+    CampaignSetup,
     ChatWindow,
     ChoosePartner,
     Highlight,
@@ -698,6 +699,86 @@ async def set_workspace_layout(
         )
 
 
+async def set_workspace_campaign(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    campaign: CampaignSetup | None,
+) -> bool:
+    """Store a station's default campaign setup, or clear it when ``campaign`` is None.
+
+    The whole setup replaces what was stored; ``None`` removes the ``campaign`` key.
+    Only the station's owner reaches it (the ``user_id`` guard), so no one edits
+    another's defaults. No revision changes and nothing is published.
+
+    Args:
+      engine: Database connection source.
+      user_id: Owner of the station.
+      workspace_id: The station.
+      campaign: The validated setup to store, or None to clear it.
+
+    Returns:
+      found: Whether the user has such a station.
+
+    """
+    async with engine.acquire() as conn:
+        if campaign is None:
+            cleared = await conn.fetchval(
+                "UPDATE visual_workspaces SET station = coalesce(station, '{}') - "
+                "'campaign', modified_at = clock_timestamp() "
+                "WHERE id = $1 AND user_id = $2 RETURNING 1",
+                workspace_id,
+                user_id,
+            )
+            return cleared is not None
+        return (
+            await conn.fetchval(
+                "UPDATE visual_workspaces SET station = coalesce(station, '{}') || "
+                "jsonb_build_object('campaign', $3::jsonb), "
+                "modified_at = clock_timestamp() "
+                "WHERE id = $1 AND user_id = $2 RETURNING 1",
+                workspace_id,
+                user_id,
+                campaign.model_dump(mode="json", exclude_none=True),
+            )
+            is not None
+        )
+
+
+async def campaign_for_chat(
+    engine: DatabaseEngine,
+    *,
+    email: str,
+    conversation_id: uuid.UUID,
+) -> CampaignSetup | None:
+    """Return the campaign setup of ``email``'s station that holds a chat, if any.
+
+    The assistant reads this for the asker it answers: the station is the asker's own,
+    found by its owner and the conversation it holds, so one writer's setup never
+    governs another's launch from a shared chat.
+
+    Args:
+      engine: Database connection source.
+      email: The owner, as the assistant attested the asker.
+      conversation_id: The science chat the station holds.
+
+    Returns:
+      setup: The station's validated setup, or None when there is no such station,
+        or it holds none.
+
+    """
+    async with engine.acquire() as conn:
+        stored = await conn.fetchval(
+            "SELECT vw.station->'campaign' FROM visual_workspaces vw "
+            "JOIN users u ON u.id = vw.user_id "
+            "WHERE u.email = $1 AND vw.station->>'conversation_id' = $2",
+            email.lower(),
+            str(conversation_id),
+        )
+    return None if stored is None else CampaignSetup.model_validate(stored)
+
+
 def next_station_name(names: Iterable[str]) -> str:
     """Name a station with the lowest ``unnamed-workstream#N`` not in ``names``.
 
@@ -979,6 +1060,7 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
         conversation_id=station.conversation_id,
         page=station.page,
         layout=station.layout,
+        campaign=station.campaign,
         visuals=data.visuals,
         focused_instance=data.focused_instance,
         agent_instructions=data.agent_instructions,

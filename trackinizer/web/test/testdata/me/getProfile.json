@@ -27,6 +27,7 @@
         "create_draft": null,
         "drafts": {},
         "highlight_mentions": true,
+        "home": "graph",
         "lens": null,
         "people": {},
         "read": {

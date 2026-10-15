@@ -23,7 +23,7 @@ anyone when it runs with `--no-auth`. Any other browser gets the sign-in page.
 - `test/testdata/` holds the server's real answer to the calls of the
   modules in `fixtures_test.py`'s table (see
   [response shapes](#response-shapes-and-fixtures)); the canvas's and Chat's
-  calls (`workspaces`, `chats`, and the visuals, timeline and Artifact
+  calls (`workspaces`, `chats`, `code`, and the visuals, timeline and Artifact
   modules) have none.
 - `e2e/` is the Playwright suite, `e2e/live/` its live and responsiveness part.
 - `scripts/` holds the schema dump, the local preview, the seed and writer
@@ -85,10 +85,10 @@ anyone when it runs with `--no-auth`. Any other browser gets the sign-in page.
 ### The calls
 
 Each call's fixture, where it has one, is
-`test/testdata/<module>/<function>.json`. The `workspaces` and `chats` calls have
-none: the schema types them (`tsc` against `openapi.json`, kept in step by
-`openapi_drift_test.py`), and their API-module tests check what each sends and
-how it reads a frame.
+`test/testdata/<module>/<function>.json`. The `workspaces`, `chats` and `code`
+calls have none: the schema types them (`tsc` against `openapi.json`, kept in step
+by `openapi_drift_test.py`), and their API-module tests check what each sends and
+how it reads a frame or an answer.
 
 | Module | Function | Route |
 |---|---|---|
@@ -139,6 +139,8 @@ how it reads a frame.
 | | `shareChat`, `unshareChat` | `PUT`, `DELETE /api/chats/{id}/shares/{email}` |
 | | `deleteChat` | `DELETE /api/chats/{id}` |
 | | `readChatPartial` | `GET /api/sessions/{id}/partial?after=&wait_sec=25` (held until the partial's `seq` is not `after`, or 25 s; 404 when the server streams no replies) |
+| `code` | `getCodeDiff` | `GET /api/code/diff?from=&to=` (404 when either record has no snapshot the reader may read: `null`) |
+| | `readCodeFile` | `GET /api/code/records/{id}/file?path=` |
 
 Edges are stored child to parent: `from` is the child, which `narrows` its
 parent or `proves` its Belief. `/api/web/get` returns `edges` (this row is the

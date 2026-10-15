@@ -17,6 +17,8 @@ Submodules:
   - :mod:`.refs` -- row addressing forms.
   - :mod:`.files_doc` -- the files document a files visual reads: a record's
     files and what changed in them, with diffs.
+  - :mod:`.pipeline_doc` -- the pipeline document a pipeline visual reads: a
+    campaign's stages, their flows, and the files and config keys of each.
   - :mod:`.row_filter` -- row-vs-``Filter`` predicate shared by the
     server list route and the CLI test fake.
 """

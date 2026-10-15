@@ -263,6 +263,7 @@ _DEFAULTS: dict[str, object] = {
     "chat_side": "left",
     "highlight_mentions": True,
     "terminal_font_size": "13px",
+    "home": "graph",
     "stars": [],
     "views": [],
     "console_views": [],

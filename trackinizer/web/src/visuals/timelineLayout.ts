@@ -40,7 +40,7 @@ export function timelineRows(data: EvidenceTimeline): readonly TimelineRow[] {
   const { target, issue, selected_result: selected } = data;
   const own = target.kind === "Experiment" && issue ? issue : target;
   const results = [...data.root_results];
-  if (selected && !results.some(({ record }) => record.id === selected.record.id)) results.push(selected);
+  if (selected && selected.record.id !== own.id && !results.some(({ record }) => record.id === selected.record.id)) results.push(selected);
   const byDate = (a: TimelineExperiment, b: TimelineExperiment) => a.record.created.localeCompare(b.record.created);
   return [
     ...data.leads.map((record): TimelineRow => ({ role: "lead", record, results: [] })),

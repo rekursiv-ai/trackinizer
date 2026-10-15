@@ -185,7 +185,7 @@ const CANVAS = "/api/workspaces";
 
 type Server = ReturnType<typeof serveAccount>;
 
-type AccountBody = { name?: string; role?: Role; email_or_pattern?: string; enabled?: boolean; revision?: number; operation?: WorkspaceOperation };
+type AccountBody = { name?: string; role?: Role; email_or_pattern?: string; enabled?: boolean; revision?: number; operation?: WorkspaceOperation; campaign?: WorkspaceState["campaign"] };
 
 function answer(server: Server, caller: Profile, call: string, body: AccountBody): Response {
   const [method, path] = call.split(" ") as [string, string];
@@ -196,6 +196,10 @@ function answer(server: Server, caller: Profile, call: string, body: AccountBody
     return Response.json({ enabled: caller.visual_workspace_enabled });
   }
   if (call === `POST ${CANVAS}` || call === `GET ${CANVAS}/${server.workspace.id}`) return Response.json(server.workspace);
+  if (call === `PUT /api/workspaces/${server.workspace.id}/campaign`) {
+    server.workspace = { ...server.workspace, campaign: body.campaign ?? null };
+    return Response.json(server.workspace);
+  }
   if (call === `POST /api/workspaces/${server.workspace.id}/operations`) return operate(server, body);
   if (call === "GET /api/me/tokens") return Response.json({ tokens: server.tokens });
   if (call === "GET /api/admin/users") return Response.json({ users: server.users });

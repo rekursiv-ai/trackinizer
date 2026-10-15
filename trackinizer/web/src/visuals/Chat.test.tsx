@@ -297,14 +297,14 @@ test("the composer says who reads the chat, as the server's org mode lets them i
   expect(notice()).toMatch(/^Read by its starter, the people they share it with, and their organisation where this server lets it in\./);
 });
 
-test("the composer says a hidden chat is its starter's and their shares', and a staff-only one its staff readers'", async () => {
+test("the composer says a private chat is its starter's and their shares', and a staff-only one its staff readers'", async () => {
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { audience: "private" }));
   const notice = () => document.querySelector(".chat-notice")!.textContent;
   shell(workspace, { profile: { org_mode: "single" } });
   await screen.findByText("a2");
-  expect(notice()).toBe("Hidden: only its starter and the people they share it with read it. Do not type secrets here.");
+  expect(notice()).toBe("Private: only its starter and the people they share it with read it. Do not type secrets here.");
   cleanup();
   vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { audience: "staff" }));
   shell(workspace, { profile: { org_mode: "single" } });
@@ -1144,13 +1144,13 @@ test("a staff-only chat says so in its header, offers no fork, and tells a reade
   expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).placeholder).toBe("This chat is staff only");
 });
 
-test("a hidden chat says so in its header and offers no fork; an open one offers it and has no mark", async () => {
+test("a private chat says so in its header and offers no fork; an open one offers it and has no mark", async () => {
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { audience: "private" }));
   const { view } = shell();
   await screen.findByText("a2");
-  expect(within(document.querySelector<HTMLElement>(".chat-head")!).getByText("Hidden")).toBeTruthy();
+  expect(within(document.querySelector<HTMLElement>(".chat-head")!).getByText("Private")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Fork from here" })).toBeNull();
   view.unmount();
   vi.mocked(getChatHead).mockResolvedValue(head("c1", ME));
@@ -1171,7 +1171,7 @@ test("lines read before the chat closed to me go with it", async () => {
   expect(screen.queryByText("a2")).toBeNull();
 });
 
-test("the starter hides a chat and shows it again; nobody else is offered either", async () => {
+test("the starter's switch says Public or Private and a click flips it; nobody else is offered it", async () => {
   open("c1");
   hold("c1", ...TALK);
   let audience = "open";
@@ -1182,19 +1182,22 @@ test("the starter hides a chat and shows it again; nobody else is offered either
   });
   const { view } = shell();
   await screen.findByText("a2");
-  fireEvent.click(screen.getByRole("button", { name: "Hide this chat from others" }));
-  await within(document.querySelector<HTMLElement>(".chat-head")!).findByText("Hidden");
-  fireEvent.click(screen.getByRole("button", { name: "Unhide this chat" }));
-  await waitFor(() => expect(document.querySelector(".chat-badge")).toBeNull());
+  const controls = () => within(screen.getByRole("toolbar", { name: "Chat controls" }));
+  fireEvent.click(controls().getByRole("button", { name: "Public chat: make it private" }));
+  expect((await controls().findByRole("button", { name: "Private chat: make it public" })).textContent).toBe("Private");
+  // The switch says it for the starter: no badge besides.
+  expect(document.querySelector(".chat-badge")).toBeNull();
+  fireEvent.click(controls().getByRole("button", { name: "Private chat: make it public" }));
+  expect((await controls().findByRole("button", { name: "Public chat: make it private" })).textContent).toBe("Public");
   expect(vi.mocked(setSessionAudience).mock.calls.map(([session, next]) => [session, next])).toEqual([["s-c1", "private"], ["s-c1", "open"]]);
   view.unmount();
   vi.mocked(getChatHead).mockImplementation(async () => head("c1", GRACE));
   shell();
   await screen.findByText("a2");
-  expect(screen.queryByRole("button", { name: "Hide this chat from others" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /^(Public|Private) chat:/ })).toBeNull();
 });
 
-test("a refused hide says why in a toast, in words for the server's code, and leaves the chat as it was", async () => {
+test("a refused flip says why in a toast, in words for the server's code, and leaves the chat as it was", async () => {
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_hide: true }));
@@ -1203,11 +1206,11 @@ test("a refused hide says why in a toast, in words for the server's code, and le
     .mockRejectedValueOnce(new ApiError(409, "409 Conflict", SESSION_STAFF));
   shell();
   await screen.findByText("a2");
-  fireEvent.click(screen.getByRole("button", { name: "Hide this chat from others" }));
-  expect(await screen.findByText("Only the person who started this chat can hide it or show it again.")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Hide this chat from others" }));
-  expect(await screen.findByText("This chat is staff only, so it is never hidden or opened again.")).toBeTruthy();
-  expect(document.querySelector(".chat-badge")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Public chat: make it private" }));
+  expect(await screen.findByText("Only the person who started this chat can make it public or private.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Public chat: make it private" }));
+  expect(await screen.findByText("This chat is staff only, so it is never made public or private.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Public chat: make it private" }).textContent).toBe("Public");
 });
 
 test("a conversation cannot be typed into before its head says whose it is", async () => {
