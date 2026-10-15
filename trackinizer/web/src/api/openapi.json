@@ -982,6 +982,61 @@
         "title": "ChatHead",
         "type": "object"
       },
+      "ChatPartial": {
+        "additionalProperties": false,
+        "description": "The answer a chat's assistant is writing, as far as it has written it.",
+        "properties": {
+          "done": {
+            "default": false,
+            "title": "Done",
+            "type": "boolean"
+          },
+          "text": {
+            "maxLength": 16384,
+            "title": "Text",
+            "type": "string"
+          },
+          "turn": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Turn",
+            "type": "string"
+          }
+        },
+        "required": [
+          "turn",
+          "text"
+        ],
+        "title": "ChatPartial",
+        "type": "object"
+      },
+      "ChatPartialState": {
+        "additionalProperties": false,
+        "description": "What the server holds of a chat's answer in writing, and how new it is.",
+        "properties": {
+          "partial": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatPartial"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq",
+          "partial"
+        ],
+        "title": "ChatPartialState",
+        "type": "object"
+      },
       "ChatSend": {
         "additionalProperties": false,
         "description": "One line a signed-in writer posts to a science chat from their canvas.",
@@ -17142,6 +17197,152 @@
           }
         },
         "summary": "Session Inbound Enqueue Route"
+      }
+    },
+    "/api/sessions/{session_id}/partial": {
+      "get": {
+        "description": "Read the answer the chat's assistant is writing, once it is not the one seen.\n\nAnswers at once when the held partial's ``seq`` is not ``after``; else when it\nchanges, or when it expires; else after ``wait_sec`` with it unchanged. 404\n``chat_partials_off`` when the server streams no answers, 404 for no session,\nand 403 ``session_audience`` to a caller who does not read the session's records,\nasked again before a changed partial is answered.\n\nArgs:\n  session_id: The chat's session.\n  request: Request carrying the store and the partials.\n  identity: A reader of the chat.\n  after: The ``seq`` the caller last saw; 0 for none.\n  wait_sec: Seconds to hold the request for a change, clamped to [0, 25].\n\nReturns:\n  state: The partial held, and its ``seq``; ``seq`` 0 and none when none is.",
+        "operationId": "read_chat_partial_route_api_sessions__session_id__partial_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "wait_sec",
+            "required": false,
+            "schema": {
+              "default": 0.0,
+              "title": "Wait Sec",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatPartialState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Chat Partial Route"
+      },
+      "put": {
+        "description": "Hold the answer a chat's assistant is writing, in place of the one held.\n\nRefused in this order: 404 ``chat_partials_off`` when the server streams no\nanswers; 403 ``not_the_assistant`` from anyone but the configured assistant; 404\nfor no session; 404 ``not_a_chat`` for a session that is no science chat; 403\nfrom a key that did not open the session; 409 ``session_ended`` once it ended.\n\nArgs:\n  session_id: The chat's session.\n  body: The answer so far, its turn, and whether it is whole.\n  request: Request carrying the store and the partials.\n  identity: The assistant, by the key that opened the session.\n\nReturns:\n  response: Empty.",
+        "operationId": "put_chat_partial_route_api_sessions__session_id__partial_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatPartial"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Chat Partial Route"
+      }
+    },
+    "/api/sessions/{session_id}/partial/{turn}": {
+      "delete": {
+        "description": "Drop the chat's partial if it is of ``turn``; a later turn's stays.\n\nRefused as a put is, but for an ended session, whose partial may still go.\n\nArgs:\n  session_id: The chat's session.\n  turn: The turn whose partial ends.\n  request: Request carrying the store and the partials.\n  identity: The assistant, by the key that opened the session.\n\nReturns:\n  response: Empty, whether or not a partial was dropped.",
+        "operationId": "delete_chat_partial_route_api_sessions__session_id__partial__turn__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "turn",
+            "required": true,
+            "schema": {
+              "title": "Turn",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Chat Partial Route"
       }
     },
     "/api/sessions/{session_id}/parts": {

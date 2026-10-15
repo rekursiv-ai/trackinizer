@@ -37,7 +37,8 @@ anyone when it runs with `--no-auth`. Any other browser gets the sign-in page.
 ### How every call is made
 
 - Every call goes through `send` in `src/api/client.ts`, under a timeout: 15 s
-  for reads, 6 s for search, 30 s for writes. A failure is an `ApiError` with the
+  for reads, 6 s for search, 30 s for writes, and 35 s for the read of a chat's
+  reply being written, which the server holds up to 25 s. A failure is an `ApiError` with the
   status and the server's `detail`. Status 0 means no answer: `code` is
   `timeout` or `network`. A 422's field errors become one line per field. A
   success whose body is not JSON keeps its status, with `code` `unreadable`.
@@ -137,6 +138,7 @@ how it reads a frame.
 | | `sendChatLine` | `POST /api/chats` (header `Idempotency-Key`; `conversationId` null starts a conversation; `fork` starts one from a line of another) |
 | | `shareChat`, `unshareChat` | `PUT`, `DELETE /api/chats/{id}/shares/{email}` |
 | | `deleteChat` | `DELETE /api/chats/{id}` |
+| | `readChatPartial` | `GET /api/sessions/{id}/partial?after=&wait_sec=25` (held until the partial's `seq` is not `after`, or 25 s; 404 when the server streams no replies) |
 
 Edges are stored child to parent: `from` is the child, which `narrows` its
 parent or `proves` its Belief. `/api/web/get` returns `edges` (this row is the
@@ -525,8 +527,25 @@ with one response shape, so the fixtures take one per verb.
   refuses a blank message and one over 16,384 characters. A send the server
   refused (4xx) shows the server's reason and offers no Retry; one that got no
   answer, or a 5xx, keeps the draft with Retry under one idempotency key. The
-  transcript follows the newest row, the working row too, unless the reader has
-  scrolled up.
+  transcript follows the newest row, the working row and the reply being written
+  too, unless the reader has scrolled up.
+- The reply the assistant is writing shows as it is written
+  (`useChatPartial`, `src/visuals/chatPartial.ts`). While an answer is owed (the
+  last line is pending, or has no answer after it) in a chat the reader reads,
+  and the partner is live, Chat reads `GET /api/sessions/{id}/partial`, each read
+  held by the server until the reply changes and the next asking after the `seq`
+  the last one answered. Nothing of it is stored: the server keeps it in memory,
+  for the chat's readers only, until the answer is stored, the turn calls a tool
+  or fails (the assistant clears it), or 60 s pass with no change. The reply is a
+  bubble drawn as the answer will be (Markdown, no images, ending in a caret) in
+  place of "Waiting for the assistant…" or "Working…"; "Sending…" and a partner
+  gone still show instead. It is `aria-busy`, so the log announces the answer
+  once, when it is stored. The stored answer takes the bubble's place in the
+  render that counts it, and a later reply of that turn shows no more; a turn's
+  finished text (`done`) shows only where its bubble already is, so one still
+  held raises none under the next line (`nextBubble`). A 404 (the server streams
+  no replies, `TRACKINIZER_CHAT_STREAMING=off`) ends the reads, and Chat shows
+  the working line as before; another failure is read again after 1, 2, then 5 s.
 - The graph is the home view. It draws the newest 1,000 inquiries by default,
   or 100, 5,000, all of them, or any count typed into the Nodes menu (a typed
   count picks exactly that count: 50 is 50, and 1,000 the 1k preset), each

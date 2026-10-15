@@ -995,6 +995,9 @@ GET    /api/chats/<uuid>
 DELETE /api/chats/<uuid>
 PUT    /api/chats/<uuid>/shares/<email>
 DELETE /api/chats/<uuid>/shares/<email>
+GET    /api/sessions/<uuid>/partial
+PUT    /api/sessions/<uuid>/partial
+DELETE /api/sessions/<uuid>/partial/<turn>
 GET    /api/workspaces/<uuid>/events
 ```
 
@@ -1146,6 +1149,34 @@ locked row, needs an admin, as a purge does. The chat's forks stay. Its sessions
 `change_log` rows stay, but each title and description they held is blanked (a
 title to `""`, a description to null): the log is append-only by convention, not
 by any constraint, and a deleted chat's words do not outlive it there.
+
+The answer in writing. While a turn runs, the assistant puts the answer it is
+writing at `PUT /api/sessions/<uuid>/partial`, a few times a second, with
+`{turn, text, done}`: `turn` is 1-64 of `A-Z a-z 0-9 _ -`, new for each line it
+answers; `text` is the answer so far, vetted and clipped, at most 16,384
+characters; `done` is true for the whole answer as posted, put once while its
+record is on its way. A put is refused, in this order: 404
+`{"detail": {"code": "chat_partials_off"}}` when the server streams no answers
+(`TRACKINIZER_CHAT_STREAMING=off`; `on` is the default, anything else stops the
+boot), 403 `not_the_assistant` from anyone but the configured assistant, 404 for
+no session, 404 `not_a_chat` for a session that is no science chat, 403 from a key
+that did not open it, and 409 `session_ended` once it ended. It answers 204.
+`DELETE /api/sessions/<uuid>/partial/<turn>` drops the partial if it is of `<turn>`
+and leaves a later turn's, with the same refusals but the last, and answers 204.
+`GET /api/sessions/<uuid>/partial?after=<seq>&wait_sec=<s>` answers `{seq, partial}`
+to whoever reads the session's records (403 `session_audience` otherwise, asked
+again before a changed partial is answered, so a reader unshared while the read
+was held sees none of what was written since): at once when the held `seq` is not
+`after`, else when the partial changes or expires, else after `wait_sec` (default
+0, at most 25) unchanged. `seq` names the partial held: drawn at random below
+2^53 when the chat held none, then one more per put, so it tells nothing of other
+chats; compare it for equality only. 0 and a null `partial` mean none is held. The
+server holds one partial per chat, in memory, for 60 s after its last put and at
+most 256 at once; none reaches the database, the change log or the event stream,
+and the stored answer is the record. It runs one process. Several would each hold
+their own partials and seqs, and a reader whose reads alternate between them would
+be answered at once every time, in a loop; they would need each session pinned to
+one process, or a channel they share.
 
 When a session ends with Chat lines it never drained, the unread lines of a
 science chat are queued again for the assistant's service session, which

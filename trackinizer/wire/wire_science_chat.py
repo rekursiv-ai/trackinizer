@@ -22,6 +22,11 @@ otherwise, which opens or resumes the conversation's session before it answers. 
 answer to a post is the conversation id at once; ``GET /api/chats/{id}`` answers 404
 until the assistant has opened the session.
 
+While a turn runs, the assistant puts the answer it is writing at
+:data:`CHAT_PARTIAL_PATH`, where the chat's readers wait for it to change. The server
+keeps it in memory alone, for a minute after its last change: it is no record, and
+the stored answer replaces it.
+
 This package is part of the publishable client distribution, so it must not
 import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 """
@@ -39,6 +44,10 @@ __all__ = [
     "CHATS_PATH",
     "CHAT_ACTOR_PREFIX",
     "CHAT_HELPER_CLI",
+    "CHAT_PARTIAL_CHARS",
+    "CHAT_PARTIAL_PATH",
+    "CHAT_PARTIAL_TURN_PATH",
+    "CHAT_PARTIAL_WAIT_SEC",
     "CHAT_PATH",
     "CHAT_SESSION_PREFIX",
     "CHAT_SHARE_PATH",
@@ -49,6 +58,8 @@ __all__ = [
     "SCIENCE_CHAT_LABEL",
     "ChatForkAt",
     "ChatHead",
+    "ChatPartial",
+    "ChatPartialState",
     "ChatSend",
     "ChatSent",
     "chat_actor",
@@ -62,6 +73,14 @@ __all__ = [
 CHATS_PATH: Final = "/api/chats"
 CHAT_PATH: Final = "/api/chats/{conversation_id}"
 CHAT_SHARE_PATH: Final = "/api/chats/{conversation_id}/shares/{email}"
+CHAT_PARTIAL_PATH: Final = "/api/sessions/{session_id}/partial"
+CHAT_PARTIAL_TURN_PATH: Final = "/api/sessions/{session_id}/partial/{turn}"
+
+CHAT_PARTIAL_CHARS: Final = 16_384
+"""The most text a partial carries; the assistant clips what it has written to it."""
+
+CHAT_PARTIAL_WAIT_SEC: Final = 25.0
+"""The longest a read of a partial is held for a change, under the edge's idle cutoff."""
 
 SCIENCE_CHAT_LABEL: Final = "science-chat"
 """The label every science chat session carries."""
@@ -215,6 +234,37 @@ class ChatSend(BaseModel):
         if self.fork is not None and self.conversation_id is not None:
             raise ValueError("a fork starts a new conversation; it cannot name one")
         return self
+
+
+class ChatPartial(BaseModel):
+    """The answer a chat's assistant is writing, as far as it has written it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    turn: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    """The delivery the answer is for, new for each: a reader that saw its answer
+    stored shows no partial of it again."""
+
+    text: str = Field(max_length=CHAT_PARTIAL_CHARS)
+    """The answer so far, as a reader is shown it: vetted for secrets, without the
+    notes the model keeps, and clipped."""
+
+    done: bool = False
+    """Whether ``text`` is the whole answer, which the assistant is now storing."""
+
+
+class ChatPartialState(BaseModel):
+    """What the server holds of a chat's answer in writing, and how new it is."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    seq: int
+    """Names the partial held: drawn at random, below 2**53, when the chat held none,
+    and one more with each put after it, so a put always names a new one and says
+    nothing of other chats; 0 when the server holds none for the chat. A reader
+    passes the last it saw to wait for a change, and compares it for equality only."""
+
+    partial: ChatPartial | None
 
 
 class ChatSent(BaseModel):

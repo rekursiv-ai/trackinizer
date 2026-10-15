@@ -25,6 +25,7 @@ import { useChatFeed } from "./chatFeed";
 import { FOLLOW_UP_ASK, followUpSuggested } from "./chatFollowUp";
 import { flipChatSide, setChatHidden, useChatColumn } from "./chatColumnState";
 import { useAnswerHighlights } from "./chatHighlights";
+import { useChatPartial } from "./chatPartial";
 import { ChatPrompt } from "./ChatPrompt";
 import { DeleteChat, HideChat, ShareChat } from "./ChatSharing";
 
@@ -156,18 +157,24 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   const fork: ChatFork | null = session && forkAt ? { sessionId: session, part: forkAt.part, idx: forkAt.idx } : null;
 
   const last = lines.at(-1);
-  const waiting = last?.pending ? (sending.has(last.key.slice(PENDING.length)) ? "Sending…" : "Waiting for the assistant…") : "";
+  const sendingLast = last?.pending === true && sending.has(last.key.slice(PENDING.length));
+  const waiting = last?.pending ? (sendingLast ? "Sending…" : "Waiting for the assistant…") : "";
   const busyText = waiting || (transcript.working === null || last?.pending ? "" : transcript.working ? `Working: ${transcript.working}…` : "Working…");
   // A partner that has gone away answers no more: the wait for it gives way to that.
   const statusText = busyText && partner && partner.status !== "live" ? partnerGone(partner) : busyText;
+  // The reply being written, read while an answer is owed in a chat I read from a live partner, stands
+  // in for the wait for it; "Sending…" says more. The stored answer takes its place in one render.
+  const owed = (last?.pending === true || transcript.working !== null) && partner?.status === "live";
+  const bubble = useChatPartial(readable, { active: owed, answers: answers?.length ?? 0 });
+  const reply = sendingLast ? null : bubble;
 
   const stage = useRef<HTMLDivElement>(null);
   const stuck = useRef(true);
-  // Every row that grows the log, the working line included.
+  // Every row that grows the log, the working line and the reply being written included.
   useLayoutEffect(() => {
     const element = stage.current;
     if (element && stuck.current) element.scrollTop = element.scrollHeight;
-  }, [lines.length, statusText, conversationId, notice]);
+  }, [lines.length, statusText, reply?.text, conversationId, notice]);
 
   // The target names where a draft goes, so a retry under one key only ever
   // repeats a send to the same place.
@@ -367,8 +374,14 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
         {outsider && <p className="chat-note" role="status">{outsiderNote(head.data!.audience)}</p>}
         {lines.map((line) => <ChatLine key={line.key} line={line} me={me} station={workspace?.name ?? ""} kinds={kinds}
           onFork={forkable ? pickFork : undefined} onFollowUp={line.key === followUpKey ? launchFollowUp : undefined} />)}
-        {/* One working line, the last tool call's name, in place of a status the partner no longer sends. */}
-        {statusText && <p className="chat-status" role="status">{statusText}</p>}
+        {/* One working line, the last tool call's name, in place of a status the partner no longer sends.
+            The reply being written takes its place, drawn as the answer will be; busy, so the log
+            announces the answer once, when it is stored, and not each word on its way. */}
+        {reply
+          ? <article className="chat-line chat-line-assistant chat-line-partial" aria-busy="true">
+              <Markdown source={reply.text} kinds={kinds} className="md chat-line-body" images={false} />
+            </article>
+          : statusText && <p className="chat-status" role="status">{statusText}</p>}
         {workspace && writing && !live && !loading && <ChatOff local={workspace.partner_choice === "local"} />}
       </div>
       {forkAt && <p className="chat-fork-banner" role="status">

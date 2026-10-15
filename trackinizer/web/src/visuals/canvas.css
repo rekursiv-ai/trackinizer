@@ -66,6 +66,10 @@
 .chat-fork-banner { margin: 0; padding: 6px 12px 0; color: var(--muted); font-size: 12px; }
 .chat-line p.chat-line-body { white-space: pre-wrap; }
 .chat-status { align-self: flex-start; color: var(--muted); font-size: 12px; font-style: italic; }
+/* The reply the assistant is writing ends in a caret after its last word. It needs no rule
+   of its own for prefers-reduced-motion: styles.css stops every animation there, so it stands still. */
+.chat-line-partial .chat-line-body > :last-child::after { content: ""; display: inline-block; width: 2px; height: 1.1em; margin-left: 2px; vertical-align: text-bottom; background: currentColor; animation: chat-caret 1s steps(2) infinite; }
+@keyframes chat-caret { 50% { opacity: 0; } }
 .chat-panel .composer { padding: 8px 12px 12px; border-top: 1px solid var(--line); }
 /* The page and the other main visuals share a strip: each has 240 px at least, and a strip with more than fit scrolls inside itself. Visuals docked at a side stand in one column there, left or right of it, up to 360 px or 30% wide. */
 .visual-main-strip { display: flex; flex: 1 1 0; min-width: 0; min-height: 0; overflow-x: auto; }

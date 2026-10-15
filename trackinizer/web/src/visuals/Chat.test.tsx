@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { CHAT_DELETED, CHAT_FORK_CLOSED, CHAT_FORK_WIDER, CHAT_NOT_SHARED, CHAT_STAFF_ONLY, type ChatHead, deleteChat, getChatHead, sendChatLine, shareChat, unshareChat } from "../api/chats";
+import { CHAT_DELETED, CHAT_FORK_CLOSED, CHAT_FORK_WIDER, CHAT_NOT_SHARED, CHAT_STAFF_ONLY, type ChatHead, type ChatPartial, type ChatPartialState, deleteChat, getChatHead,
+  readChatPartial, sendChatLine, shareChat, unshareChat } from "../api/chats";
 import { stationForChat } from "../api/stations";
-import { ApiError } from "../api/client";
+import { ApiError, type CallOptions } from "../api/client";
 import { findRef, getDetail } from "../api/detail";
 import type { Profile } from "../api/me";
 import { listSessionParts, readSessionRecords, SESSION_NOT_OWNER, SESSION_STAFF, type SessionRecord, setSessionAudience } from "../api/sessions";
@@ -30,6 +31,7 @@ import { AGREED } from "../api/testing";
 vi.mock("../api/chats", async (original) => ({
   ...(await original<typeof import("../api/chats")>()),
   getChatHead: vi.fn(),
+  readChatPartial: vi.fn(),
   sendChatLine: vi.fn(),
   shareChat: vi.fn(),
   unshareChat: vi.fn(),
@@ -75,7 +77,31 @@ beforeEach(() => {
   vi.mocked(readSessionRecords).mockImplementation(async (id, { afterIdx, limit }) =>
     (sessions.get(id) ?? []).filter((record) => record.idx > afterIdx).slice(0, limit));
   vi.mocked(getChatHead).mockImplementation(async (id) => (sessions.has(`s-${id}`) ? head(id) : null));
+  vi.mocked(readChatPartial).mockImplementation(heldPartial);
 });
+
+/** The reply the assistant is writing, as the server holds it for every chat; `write` changes it. */
+let partial: ChatPartialState = { seq: 0, partial: null };
+let wakePartial = () => {};
+
+/** A read of the partial, which the server holds until its seq is not `after`. */
+async function heldPartial(_session: string, after: number, { signal }: CallOptions = {}): Promise<ChatPartialState> {
+  while (partial.seq === after) {
+    await new Promise<void>((resolve, reject) => {
+      wakePartial = resolve;
+      signal?.addEventListener("abort", () => reject(signal.reason));
+    });
+  }
+  return partial;
+}
+
+/** The assistant writes `next` as the reply under way; null clears it. */
+async function write(next: ChatPartial | null) {
+  await act(async () => {
+    partial = { seq: partial.seq + 1, partial: next };
+    wakePartial();
+  });
+}
 
 let stopTrail = () => {};
 /** What a fork's first line is answered with: a station of its own, holding the new conversation. */
@@ -84,13 +110,14 @@ const FORKED = { conversation_id: "f1", session_id: null, workspace_id: "w-fork"
 let opened: string | null = null;
 afterEach(async () => {
   opened = null;
+  partial = { seq: 0, partial: null };
   setStation(null);
   vi.useRealTimers();
   stopTrail();
   stopTrail = () => {};
   cleanup();
   vi.restoreAllMocks();
-  for (const mock of [getChatHead, sendChatLine, shareChat, unshareChat, deleteChat, stationForChat, getWorkspace, listSessionParts, readSessionRecords, setSessionAudience, getDetail, findRef]) {
+  for (const mock of [getChatHead, readChatPartial, sendChatLine, shareChat, unshareChat, deleteChat, stationForChat, getWorkspace, listSessionParts, readSessionRecords, setSessionAudience, getDetail, findRef]) {
     vi.mocked(mock).mockReset();
   }
   sessions.clear();
@@ -551,6 +578,113 @@ test("a conversation whose last line is an answer shows no working line", async 
   shell();
   await screen.findByText("done");
   expect(screen.queryByText(/Working/)).toBeNull();
+});
+
+test("the reply being written shows as its answer will, in place of the wait for the assistant", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "q"), answered(1, "a"));
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  shell();
+  await screen.findByText("a");
+  await type("and now?");
+  await screen.findByText("Waiting for the assistant…");
+  await write({ turn: "t1", text: "It is **open**.", done: false });
+  const bold = await screen.findByText("open");
+  expect(bold.tagName).toBe("STRONG");
+  expect(bold.closest("article")!.className).toContain("chat-line-partial");
+  expect(bold.closest("article")!.getAttribute("aria-busy")).toBe("true");
+  expect(screen.queryByText("Waiting for the assistant…")).toBeNull();
+  expect(readChatPartial).toHaveBeenCalledWith("s-c1", 0, expect.anything());
+});
+
+test("the stored answer takes the bubble's place, once, and a partial cleared for a tool call gives way to Working…", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "hi"));
+  shell();
+  await screen.findByText("Working…");
+  await write({ turn: "t1", text: "Let me look", done: false });
+  await screen.findByText("Let me look");
+  expect(screen.queryByText("Working…")).toBeNull();
+  await write(null);
+  await screen.findByText("Working…");
+  expect(document.querySelector(".chat-line-partial")).toBeNull();
+  await write({ turn: "t1", text: "It is open.", done: false });
+  await write({ turn: "t1", text: "It is open.", done: true });
+  await screen.findByText("It is open.");
+  hold("c1", said(0, ME, "hi"), answered(1, "It is open."));
+  await changed("s-c1");
+  await waitFor(() => expect(screen.getByText("It is open.").closest("article")!.className).not.toContain("chat-line-partial"), { interval: 1 });
+  expect(document.querySelector(".chat-line-partial")).toBeNull();
+});
+
+test("my next line's Sending… shows over the bubble, and an answer stored while that line waits takes the bubble's place, once", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "first"));
+  let finish: (value: { conversation_id: string; session_id: string | null; workspace_id: string }) => void = () => {};
+  vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  shell();
+  await screen.findByText("Working…");
+  await write({ turn: "t1", text: "The first", done: false });
+  await screen.findByText("The first");
+  await type("second");
+  await screen.findByText("Sending…");
+  expect(document.querySelector(".chat-line-partial")).toBeNull();
+  await act(async () => finish({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID }));
+  await screen.findByText("The first");
+  expect(screen.queryByText("Waiting for the assistant…")).toBeNull();
+  await write({ turn: "t1", text: "The first answer", done: true });
+  expect(await screen.findByText("The first answer")).toBeTruthy();
+  hold("c1", said(0, ME, "first"), answered(1, "The first answer"));
+  await changed("s-c1");
+  await screen.findByText("Waiting for the assistant…");
+  expect(screen.getAllByText("The first answer")).toHaveLength(1);
+  expect(document.querySelector(".chat-line-partial")).toBeNull();
+});
+
+test("the transcript follows the reply being written as it grows", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "hi"));
+  shell();
+  await screen.findByText("Working…");
+  const log = screen.getByRole("log", { name: "Messages" });
+  let height = 1000;
+  Object.defineProperty(log, "scrollHeight", { configurable: true, get: () => height });
+  Object.defineProperty(log, "clientHeight", { configurable: true, value: 300 });
+  await write({ turn: "t1", text: "One", done: false });
+  await screen.findByText("One");
+  expect(log.scrollTop).toBe(1000);
+  height = 1300;
+  await write({ turn: "t1", text: "One more line", done: false });
+  await screen.findByText("One more line");
+  expect(log.scrollTop).toBe(1300);
+});
+
+test("Chat reads no reply being written while its partner is gone, whose going hides the bubble", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "hi"));
+  const gone = { ...workspace, partner: { ...SCOUT, status: "unavailable" as const } };
+  const { again } = shell(gone);
+  await screen.findByText("scout is unavailable.");
+  await act(() => Promise.resolve());
+  expect(readChatPartial).not.toHaveBeenCalled();
+  again(workspace);
+  await write({ turn: "t1", text: "Half a reply", done: false });
+  await screen.findByText("Half a reply");
+  again(gone);
+  expect(screen.getByText("scout is unavailable.")).toBeTruthy();
+  expect(document.querySelector(".chat-line-partial")).toBeNull();
+});
+
+test("a finished turn's text still held raises no bubble under the next line", async () => {
+  partial = { seq: 1, partial: { turn: "t0", text: "the earlier answer", done: true } };
+  open("c1");
+  hold("c1", said(0, ME, "q"), answered(1, "the earlier answer"), said(2, ME, "and then?"));
+  shell();
+  await screen.findByText("Working…");
+  // The second read asks after the held seq: the first one's answer was taken.
+  await waitFor(() => expect(readChatPartial).toHaveBeenCalledTimes(2), { interval: 1 });
+  expect(document.querySelector(".chat-line-partial")).toBeNull();
+  expect(screen.getByText("Working…")).toBeTruthy();
 });
 
 test("a line the assistant never opens a session for is said plainly after a while, and can be sent again", async () => {

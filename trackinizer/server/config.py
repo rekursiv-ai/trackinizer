@@ -33,6 +33,7 @@ __all__ = [
     "build_engine",
     "parse_assistant",
     "parse_chat_orgs",
+    "parse_chat_streaming",
     "parse_engine",
     "parse_staff",
 ]
@@ -136,6 +137,10 @@ class Config:
         every caller reads every open session and every person every open chat;
         only a server whose users are all one organisation sets it. Environment
         only (``TRACKINIZER_CHAT_ORGS``).
+      chat_streaming: Hold the answer a chat's assistant is writing, in memory, for
+        the chat's readers to read as it grows. Off refuses its routes with 404
+        ``chat_partials_off``, and the assistant stops sending it. Environment
+        only (``TRACKINIZER_CHAT_STREAMING``, ``on`` or ``off``).
 
     """
 
@@ -175,6 +180,7 @@ class Config:
     assistant: Assistant | None = None
     staff: tuple[str, ...] = ()
     chat_orgs: ChatOrgs = "individual"
+    chat_streaming: bool = True
 
     @classmethod
     def from_env(cls) -> Self:
@@ -208,6 +214,9 @@ class Config:
             assistant=parse_assistant(os.environ.get("TRACKINIZER_ASSISTANT", "")),
             staff=parse_staff(os.environ.get("TRACKINIZER_STAFF", "")),
             chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
+            chat_streaming=parse_chat_streaming(
+                os.environ.get("TRACKINIZER_CHAT_STREAMING", ""),
+            ),
         )
 
     @classmethod
@@ -240,8 +249,11 @@ class Config:
             auth_disabled=not flags.auth,
             assistant=parse_assistant(flags.assistant),
             staff=parse_staff(flags.staff),
-            # Like the secrets, a deployment property that no flag overrides.
+            # Like the secrets, deployment properties that no flag overrides.
             chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
+            chat_streaming=parse_chat_streaming(
+                os.environ.get("TRACKINIZER_CHAT_STREAMING", ""),
+            ),
         )
 
     def maintained_embedders(self) -> tuple[str, ...]:
@@ -381,6 +393,30 @@ def parse_chat_orgs(value: str) -> ChatOrgs:
             raise ConfigError(
                 "TRACKINIZER_CHAT_ORGS must be single, domain or individual, "
                 f"got {other!r}",
+            )
+
+
+def parse_chat_streaming(value: str) -> bool:
+    """Parse ``$TRACKINIZER_CHAT_STREAMING``: ``on`` or ``off``; blank is ``on``.
+
+    Args:
+      value: The variable.
+
+    Returns:
+      streaming: Whether a chat's answer in writing is held for its readers.
+
+    Raises:
+      ConfigError: The value is neither.
+
+    """
+    match value.strip():
+        case "" | "on":
+            return True
+        case "off":
+            return False
+        case other:
+            raise ConfigError(
+                f"TRACKINIZER_CHAT_STREAMING must be on or off, got {other!r}",
             )
 
 

@@ -9,6 +9,7 @@ import datetime
 import uuid
 
 from trackinizer.server.chat_hub import ChatHub
+from trackinizer.server.chat_partials import ChatPartials
 from trackinizer.server.config import Config
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
@@ -75,6 +76,37 @@ def get_hub(request: Request) -> ChatHub:
     if not isinstance(hub, ChatHub):
         hub = app.state.hub = ChatHub()
     return hub
+
+
+def get_partials(request: Request) -> ChatPartials:
+    """Return the chats' answers in writing, held on the app state, made on first use.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The ChatPartials.
+
+    """
+    app = cast("FastAPI", request.app)
+    partials: object = getattr(app.state, "partials", None)
+    if not isinstance(partials, ChatPartials):
+        partials = app.state.partials = ChatPartials()
+    return partials
+
+
+def get_chat_streaming(request: Request) -> bool:
+    """Return whether chats' answers are held as they are written; on without a Config.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The configured ``chat_streaming``.
+
+    """
+    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
+    return config.chat_streaming if isinstance(config, Config) else True
 
 
 def get_assistant(request: Request) -> Assistant | None:

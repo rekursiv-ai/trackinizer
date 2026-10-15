@@ -37,6 +37,9 @@
 :root[data-chat-style="terminal"] .chat-panel .chat-line-author { display: none; }
 /* What the person told agents from the Console reads as a comment in the transcript: dim. */
 :root[data-chat-style="terminal"] .chat-panel .chat-line-relay, :root[data-chat-style="terminal"] .chat-panel .chat-line-relay * { color: var(--t-bright-black); }
+/* The reply being written ends in the terminal's cursor: a steady block, since the rule above that stills
+   every element (`.chat-panel *`) does not reach a pseudo-element, whose caret would blink. */
+:root[data-chat-style="terminal"] .chat-panel .chat-line-partial .chat-line-body > :last-child::after { width: 1ch; height: 1lh; margin-left: 0; vertical-align: top; background: var(--t-fg); animation: none; }
 /* Fork from here is always there (no hover effects), so it is plain text flush under its line, unboxed, in the notes' white. */
 :root[data-chat-style="terminal"] .chat-panel .chat-line-fork { margin-top: 0; padding: 0; border: 0; color: var(--t-white); }
 /* Keep going reads as a prompt in the terminal: unboxed, flush, in the green a command is typed in. */

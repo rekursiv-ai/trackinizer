@@ -53,6 +53,12 @@ SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         ("POST", "/api/sessions/{session_id}/end"),
         ("POST", "/api/sessions/{session_id}/inbound"),
         ("GET", "/api/sessions/{session_id}/inbound"),
+        # A science chat's answer in writing, held in memory: a read takes the
+        # records' read test, and again after it was held; a put or a delete is
+        # taken only from the assistant's key that opened the chat.
+        ("PUT", "/api/sessions/{session_id}/partial"),
+        ("GET", "/api/sessions/{session_id}/partial"),
+        ("DELETE", "/api/sessions/{session_id}/partial/{turn}"),
         ("GET", "/api/sessions/{session_id}/parts"),
         ("GET", "/api/sessions/{session_id}/records"),
         ("POST", "/api/sessions/{session_id}/records"),

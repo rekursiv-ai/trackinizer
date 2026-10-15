@@ -10,6 +10,17 @@ import type { components } from "./generated/schema";
 export type ChatHead = components["schemas"]["ChatHead"];
 /** What a posted line was queued for. */
 export type ChatSent = components["schemas"]["ChatSent"];
+/**
+ * The reply the assistant is writing in a chat, held in the server's memory only:
+ * its turn (one per line it answers), its text so far, and `done` once that text is
+ * the answer now being stored.
+ */
+export type ChatPartial = components["schemas"]["ChatPartial"];
+/** A chat's partial as the server holds it now, under `seq`, new with every change and compared for equality only (0: none held). */
+export type ChatPartialState = components["schemas"]["ChatPartialState"];
+
+/** How long the server holds a read of a chat's partial that has nothing new: its cap, `CHAT_PARTIAL_WAIT_SEC`. */
+const PARTIAL_WAIT_SEC = 25;
 
 /** A line of a science chat's session, which a fork starts from. */
 export type ChatFork = {
@@ -93,6 +104,22 @@ export async function getChatHead(id: string, { signal }: CallOptions = {}): Pro
     throw new Error("Invalid chat head");
   }
   return head;
+}
+
+/**
+ * Read the reply the assistant is writing in a chat's session once its `seq` is not
+ * `after`, the one last read (0 at first). The server holds the read until it is, or
+ * for 25 s, so the timeout is 10 s past that: a read's 15 s would end every held read.
+ * Only the chat's readers may read it; 404 when the server streams no replies.
+ */
+export async function readChatPartial(sessionId: string, after: number, { signal }: CallOptions = {}): Promise<ChatPartialState> {
+  const state = await send((PARTIAL_WAIT_SEC + 10) * 1000, signal, (signal) => client.GET("/api/sessions/{session_id}/partial", {
+    params: { path: { session_id: sessionId }, query: { after, wait_sec: PARTIAL_WAIT_SEC } }, signal,
+  }));
+  if (!state || typeof state.seq !== "number" || (state.partial !== null && typeof state.partial?.text !== "string")) {
+    throw new Error("Invalid chat partial");
+  }
+  return state;
 }
 
 /**

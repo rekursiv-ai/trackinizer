@@ -9,7 +9,10 @@ from pydantic import ValidationError
 import pytest
 
 from trackinizer.wire.wire_science_chat import (
+    CHAT_PARTIAL_CHARS,
     CHAT_SESSION_PREFIX,
+    ChatPartial,
+    ChatPartialState,
     ChatSend,
     chat_actor,
     chat_session_id,
@@ -69,6 +72,30 @@ def test_science_is_the_only_kind_of_chat() -> None:
         ChatSend.model_validate(
             {"workspace_id": str(_WORKSPACE), "text": "hello", "kind": "incognito"},
         )
+
+
+def test_a_partial_holds_at_most_16384_characters() -> None:
+    """The server keeps a partial per chat in memory, so its size is bounded."""
+    assert CHAT_PARTIAL_CHARS == 16_384
+    assert ChatPartial(turn="t1", text="x" * 16_384).done is False
+    with pytest.raises(ValidationError):
+        ChatPartial(turn="t1", text="x" * 16_385)
+
+
+@pytest.mark.parametrize("turn", ["", "a/b", "a b", "x" * 65])
+def test_a_partials_turn_is_a_short_word_that_fits_a_path(turn: str) -> None:
+    """The turn is a path segment of the delete, so it holds no slash or space."""
+    assert ChatPartial(turn="ab_C-9" + "x" * 58, text="").turn
+    with pytest.raises(ValidationError):
+        ChatPartial(turn=turn, text="")
+
+
+def test_a_partial_and_its_state_name_no_unknown_field() -> None:
+    with pytest.raises(ValidationError):
+        ChatPartial.model_validate({"turn": "t1", "text": "", "poster": "mallory"})
+    with pytest.raises(ValidationError):
+        ChatPartialState.model_validate({"seq": 0, "partial": None, "text": "x"})
+    assert ChatPartialState(seq=0, partial=None).partial is None
 
 
 if __name__ == "__main__":

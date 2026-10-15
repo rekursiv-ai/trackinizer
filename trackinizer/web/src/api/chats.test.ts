@@ -1,9 +1,12 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { ApiError } from "./client";
-import { conversationOf, deleteChat, getChatHead, isChatHandle, sendChatLine, shareChat, unshareChat } from "./chats";
+import { conversationOf, deleteChat, getChatHead, isChatHandle, readChatPartial, sendChatLine, shareChat, unshareChat } from "./chats";
 import { stubFetch } from "./testing";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 const head = {
   conversation_id: "c1", session_id: "s1", title: "Hello", account: "ada@example.com", live: true,
@@ -76,4 +79,32 @@ test("a share and an unshare name the conversation and the address, which is enc
   ]);
   stubFetch(() => Response.json({ detail: "Only the starter shares" }, { status: 403 }));
   await expect(shareChat("c1", "x@example.com")).rejects.toMatchObject({ status: 403 });
+});
+
+test("the reply being written is read after the seq last read, held by the server, and timed out only past its hold", async () => {
+  const state = { seq: 8, partial: { turn: "t1", text: "So far", done: false } };
+  const sent = stubFetch(() => Response.json(state));
+  await expect(readChatPartial("s1", 7)).resolves.toEqual(state);
+  expect(sent).toMatchObject([{ method: "GET", path: "/api/sessions/s1/partial", query: "?after=7&wait_sec=25" }]);
+
+  // A read's 15 s would end every read the server holds for its 25 s.
+  vi.useFakeTimers();
+  vi.stubGlobal("fetch", (request: Request) => new Promise((_, reject) => {
+    request.signal.addEventListener("abort", () => reject(request.signal.reason));
+  }));
+  let settled = false;
+  const held = readChatPartial("s1", 8).catch((error: unknown) => error).finally(() => { settled = true; });
+  await vi.advanceTimersByTimeAsync(34_999);
+  expect(settled).toBe(false);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(await held).toMatchObject({ status: 0, code: "timeout", detail: "No response within 35 s." });
+});
+
+test("a reply being written that is none and an answer that is no partial are told apart", async () => {
+  stubFetch(() => Response.json({ seq: 0, partial: null }));
+  await expect(readChatPartial("s1", 3)).resolves.toEqual({ seq: 0, partial: null });
+  for (const odd of [{}, { seq: 2 }, { seq: 2, partial: { turn: "t1" } }]) {
+    stubFetch(() => Response.json(odd));
+    await expect(readChatPartial("s1", 0)).rejects.toThrow("Invalid chat partial");
+  }
 });
