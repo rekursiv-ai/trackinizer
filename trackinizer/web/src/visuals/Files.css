@@ -38,3 +38,4 @@
 
 .fv-diff { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
 .fv-diff-head { margin: 0; padding: 4px 10px; font: 11px var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.fv-changed-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

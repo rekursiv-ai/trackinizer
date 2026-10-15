@@ -5,11 +5,12 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { type FilesFound, loadFiles } from "../api/files";
 import { readTrust } from "../api/summaries";
 import { CopyDetails } from "../debug/CopyDetails";
-import { Diff } from "../detail/transcript/Code";
 import { languageOf } from "../detail/transcript/steps";
 import { ReadFailure } from "../ui/failure";
-import { type ChangedFile, type DiffNote, diffParts, type FileChange, type FileNode, type FilesDoc, fileTree, openedPaths, pathMatcher } from "./filesDoc";
+import { type ChangedFile, type DiffNote, type FileChange, type FileNode, type FilesDoc, fileTree, openedPaths, pathMatcher } from "./filesDoc";
 import { useVisualMark } from "./marks";
+import { type DiffMode, DiffModeToggle, FileDiff, useDiffMode } from "./SplitDiff";
+import { patchFiles } from "./splitDiff";
 import type { RendererProps } from "./registry";
 import { useWorkspaceActions } from "./workspaceActions";
 import "../detail/transcript/transcript.css";
@@ -140,9 +141,6 @@ export function filesParams(params: { readonly [name: string]: string | number |
 
 /** The document again every minute: one bounded list read per open pane. */
 const REFRESH_MS = 60_000;
-
-/** The most lines one diff draws; the rest are counted. */
-const DIFF_LINES = 400;
 
 const NO_LABELS: readonly string[] = [];
 const NO_NOTES: FilesNotes = {};
@@ -298,9 +296,13 @@ function ChangedList({
   readonly openness: Openness;
 }) {
   const counted = countOf(changed.length, { of: doc.changed.length, narrowing, more: doc.more_changes });
+  const [mode, setMode] = useDiffMode();
   return (
     <div className="fv-part">
-      <h3>{doc.base ? `Changed from ${doc.base} (${counted})` : `Changed (${counted})`}</h3>
+      <div className="fv-changed-head">
+        <h3>{doc.base ? `Changed from ${doc.base} (${counted})` : `Changed (${counted})`}</h3>
+        {changed.length > 0 ? <DiffModeToggle mode={mode} onChange={setMode} /> : null}
+      </div>
       {doc.changed.length === 0 ? (
         <p className="fv-note">{`No file differs from ${doc.base || "the base"}.`}</p>
       ) : changed.length === 0 ? (
@@ -323,7 +325,7 @@ function ChangedList({
                     <span className="fv-path">{file.path}</span>
                     <Kind change={file.change} />
                   </summary>
-                  {open ? <ChangeBody file={file} /> : null}
+                  {open ? <ChangeBody file={file} mode={mode} /> : null}
                 </details>
               </li>
             );
@@ -335,17 +337,15 @@ function ChangedList({
   );
 }
 
-/** One change opened: its diff's header lines, then its hunks, at most `DIFF_LINES`, and its note. */
-function ChangeBody({ file }: { readonly file: ChangedFile }) {
-  const { head, lines } = useMemo(() => diffParts(file.diff), [file.diff]);
-  const shown = useMemo(() => lines.slice(0, DIFF_LINES), [lines]);
+/** One change opened: its diff's header lines, then its hunks side by side or unified, and its note. */
+function ChangeBody({ file, mode }: { readonly file: ChangedFile; readonly mode: DiffMode }) {
+  const parsed = useMemo(() => patchFiles(file.diff)[0], [file.diff]);
   return (
     <>
-      {file.diff ? (
+      {parsed ? (
         <div className="fv-diff" role="group" aria-label="Code diff">
-          {head.length > 0 ? <pre className="fv-diff-head">{head.join("\n")}</pre> : null}
-          {shown.length > 0 ? <Diff lines={shown} language={languageOf(file.path)} /> : null}
-          {lines.length > shown.length ? <p className="fv-hint">{`… ${lines.length - shown.length} more lines`}</p> : null}
+          {parsed.head.length > 0 ? <pre className="fv-diff-head">{parsed.head.join("\n")}</pre> : null}
+          <FileDiff file={parsed} mode={mode} language={languageOf(file.path)} />
         </div>
       ) : null}
       {file.note ? <p className="fv-hint">{NOTES[file.note]}</p> : null}

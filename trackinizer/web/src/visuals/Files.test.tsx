@@ -17,6 +17,8 @@ beforeAll(() => import("../markdown/highlight"));
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  // The diff layout a test chose is kept for the browser; the next test starts at split.
+  localStorage.removeItem("trax.diff-mode");
 });
 
 /** A diff of one changed line of `path`. */
@@ -83,7 +85,12 @@ test("on no record the pane asks for one and reads nothing", () => {
   expect(client.isFetching()).toBe(0);
 });
 
-test("a changed file opened shows its diff's header lines, then its hunks a row a line, each numbered", async () => {
+/** A side-by-side diff's rows: a hunk header alone, else each side's number and line. */
+function splitCells(diff: HTMLElement): string[][] {
+  return [...diff.querySelectorAll(".sd-split tbody tr")].map((row) => [...row.querySelectorAll("td")].map((cell) => cell.textContent ?? ""));
+}
+
+test("a changed file opened shows its diff's header lines, then its hunks side by side, each side numbered", async () => {
   serve();
   mount({ params: { file: "attn.py" } });
   await loaded();
@@ -91,6 +98,23 @@ test("a changed file opened shows its diff's header lines, then its hunks a row 
   const [modified, added] = [...screen.getByLabelText("Changed files").querySelectorAll("li")];
   const diff = within(modified!).getByRole("group", { name: "Code diff" });
   expect(diff.querySelector(".fv-diff-head")!.textContent).toBe(TREE_DIFF.split("\n").slice(0, 4).join("\n"));
+  expect(splitCells(diff)).toEqual([
+    ["@@ -3,3 +3,3 @@ def tile():"],
+    ["3", " def tile():", "3", " def tile():"],
+    ["4", "-    warps = 4", "4", "+    warps = 2"],
+    ["5", "     return warps", "5", "     return warps"],
+    ["\\ No newline at end of file"],
+  ]);
+  expect(within(added!).queryByRole("group", { name: "Code diff" })).toBeNull();
+});
+
+test("Unified lays a diff out as one column of marked lines, each numbered, and the choice holds for the next diff", async () => {
+  serve();
+  mount({ params: { file: "attn.py" } });
+  await loaded();
+  fireEvent.click(screen.getByRole("button", { name: "Unified" }));
+  const diff = screen.getByRole("group", { name: "Code diff" });
+  expect(diff.querySelector(".sd-split")).toBeNull();
   expect([...diff.querySelectorAll(".tr-diff .ln")].map((line) => [line.className, line.getAttribute("data-n"), line.textContent])).toEqual([
     ["ln d-hunk", null, "@@ -3,3 +3,3 @@ def tile():"],
     ["ln d-ctx", "3", " def tile():"],
@@ -99,17 +123,20 @@ test("a changed file opened shows its diff's header lines, then its hunks a row 
     ["ln d-ctx", "5", "     return warps"],
     ["ln d-hunk", null, "\\ No newline at end of file"],
   ]);
-  expect(within(added!).queryByRole("group", { name: "Code diff" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Unified" }).getAttribute("aria-pressed")).toBe("true");
+  expect(window.localStorage.getItem("trax.diff-mode")).toBe("unified");
 });
 
 test("a diff past 400 lines draws its first 400 and counts the rest", async () => {
+  // Unified, as the viewer chose it before: one element a line keeps the 400 cheap to draw.
+  localStorage.setItem("trax.diff-mode", "unified");
   const long = ["--- a/big.txt", "+++ b/big.txt", "@@ -1,0 +1,404 @@", ...Array.from({ length: 404 }, (_, k) => `+line ${k}`)].join("\n");
   serve([filesRow({ ...FILES, changed: [{ path: "big.txt", change: "added", diff: long, note: "" }] })]);
   mount({ params: { file: "big.txt" } });
   await loaded();
   const diff = screen.getByRole("group", { name: "Code diff" });
   expect(diff.querySelectorAll(".tr-diff .ln")).toHaveLength(400);
-  expect(diff.querySelector(".fv-hint")!.textContent).toBe("… 5 more lines");
+  expect(diff.querySelector(".sd-more")!.textContent).toBe("… 5 more lines");
 });
 
 test("each change opens and folds on a click, and says why its diff is cut or missing", async () => {
