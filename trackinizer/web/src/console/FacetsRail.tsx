@@ -25,6 +25,8 @@ export const ACTIVE: readonly { readonly value: Active; readonly label: string; 
  * step), how far back to look when live, and groups, each picked in one step.
  * A row is a session, so a name an ended session and a live one share shows
  * twice. Working turns Quiet as the minutes pass, with or without new records.
+ * A session its owner hid says so, and one the server says the caller may hide
+ * (`hideable`: their own, and no chat) offers Hide, or Unhide once hidden.
  */
 export function AgentsSection({
   agents,
@@ -32,6 +34,7 @@ export function AgentsSection({
   onPicks,
   active,
   onActive,
+  onHide = null,
 }: {
   agents: readonly FeedActorFacet[];
   picks: readonly string[];
@@ -39,6 +42,8 @@ export function AgentsSection({
   active: Active;
   /** Null when the view is a window of history, which sets how far back on its own. */
   onActive: ((active: Active) => void) | null;
+  /** Hide a session of the caller's, or show it again; null offers neither. */
+  onHide?: ((agent: FeedActorFacet) => void) | null;
 }) {
   const [query, setQuery] = useState("");
   const [by, setBy] = useState<Grouping>("none");
@@ -82,8 +87,8 @@ export function AgentsSection({
                   head
                 />
               )}
-              {group.agents.map(({ session_id, actor, count }) => (
-                <Row key={session_id} label={actor} text={actor} count={count} picks={picks} names={[actor]} onChange={() => onPicks(toggle(picks, [actor], null))} />
+              {group.agents.map((agent) => (
+                <AgentRow key={agent.session_id} agent={agent} picks={picks} onPicks={onPicks} onHide={onHide} />
               ))}
             </div>
           );
@@ -180,6 +185,38 @@ function Find({
   );
 }
 
+/** One session's tick, marked when its owner hid it, and its Hide or Unhide beside it when the caller may. */
+function AgentRow({
+  agent,
+  picks,
+  onPicks,
+  onHide,
+}: {
+  agent: FeedActorFacet;
+  picks: readonly string[];
+  onPicks: (picks: string[]) => void;
+  onHide: ((agent: FeedActorFacet) => void) | null;
+}) {
+  const { actor, count } = agent;
+  const hidden = agent.audience === "private";
+  const row = <Row label={actor} text={actor} count={count} picks={picks} names={[actor]} onChange={() => onPicks(toggle(picks, [actor], null))} hidden={hidden} />;
+  if (!onHide || !agent.hideable) return row;
+  return (
+    <div className="console-agent">
+      {row}
+      <button
+        type="button"
+        className="btn ghost console-hide"
+        aria-label={`${hidden ? "Unhide" : "Hide"} ${actor}`}
+        title={hidden ? "Let whoever may read your sessions read its transcript again" : "Only you, staff and admins will read its transcript; its name stays listed"}
+        onClick={() => onHide(agent)}
+      >
+        {hidden ? "Unhide" : "Hide"}
+      </button>
+    </div>
+  );
+}
+
 /** One tick: a name, or a group's head, which is ticked when all its names are and half ticked when some are. */
 function Row({
   label,
@@ -189,6 +226,7 @@ function Row({
   names,
   onChange,
   head = false,
+  hidden = false,
 }: {
   label: string;
   text: string;
@@ -197,6 +235,8 @@ function Row({
   names: readonly string[];
   onChange: () => void;
   head?: boolean;
+  /** A session its owner hid: only they, staff and admins read it. */
+  hidden?: boolean;
 }) {
   const ticked = names.filter((name) => isPicked(picks, name)).length;
   return (
@@ -213,6 +253,11 @@ function Row({
       <span className="console-row-name" title={text}>
         {text}
       </span>
+      {hidden ? (
+        <span className="console-badge" title="Hidden: only its owner, staff and admins read it">
+          Hidden
+        </span>
+      ) : null}
       <span className="console-n">{count.toLocaleString("en")}</span>
     </label>
   );

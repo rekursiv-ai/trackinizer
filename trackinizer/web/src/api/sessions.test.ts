@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { listSessionParts, readFeed, readFeedFacets, readSessionRecords, sendRoutedMessage, sendSessionMessage } from "./sessions";
+import { listSessionParts, readFeed, readFeedFacets, readSessionRecords, sendRoutedMessage, sendSessionMessage, setSessionAudience } from "./sessions";
 import { stubFetch } from "./testing";
 
 afterEach(() => {
@@ -88,6 +88,35 @@ test("the feed keeps only conversation when asked, and says nothing otherwise", 
     [["tail", "true"], ["conversation", "true"], ["limit", "300"]],
     [["tail", "true"], ["limit", "300"]],
   ]);
+});
+
+test("whose sessions and whether hidden ones count go to the feed and the facets; unset, neither is sent", async () => {
+  const sent = stubFetch((request) =>
+    Response.json(new URL(request.url).pathname.endsWith("/facets") ? { actors: [], rooms: [], kinds: [] } : { events: [], next_after: null }));
+  await readFeed({ tail: true, limit: 300, whose: "mine", hidden: true });
+  await readFeedFacets({ whose: "campaigns" });
+  await readFeed({ tail: true, limit: 300, hidden: false });
+  expect(sent.map((request) => [request.path, [...new URLSearchParams(request.query)]])).toEqual([
+    ["/api/web/feed", [["tail", "true"], ["limit", "300"], ["whose", "mine"], ["hidden", "true"]]],
+    ["/api/web/feed/facets", [["whose", "campaigns"]]],
+    ["/api/web/feed", [["tail", "true"], ["limit", "300"]]],
+  ]);
+});
+
+test("a session's audience changes by one keyed POST naming it; the answer names every session it moved", async () => {
+  const sent = stubFetch(() => Response.json({ session_id: ID, audience: "private", sessions: [ID] }));
+  expect(await setSessionAudience(ID, "private", "11111111-2222-4333-8444-555555555555")).toEqual({ session_id: ID, audience: "private", sessions: [ID] });
+  expect(sent).toEqual([
+    {
+      method: "POST",
+      path: `/api/sessions/${ID}/audience`,
+      query: "",
+      headers: { "content-type": "application/json", "idempotency-key": "11111111-2222-4333-8444-555555555555" },
+      body: { audience: "private" },
+    },
+  ]);
+  stubFetch(() => Response.json({ detail: { code: "session_not_owner" } }, { status: 403 }));
+  await expect(setSessionAudience(ID, "open", "11111111-2222-4333-8444-666666666666")).rejects.toMatchObject({ status: 403, code: "session_not_owner" });
 });
 
 test("the facets count a window, either end open, under the feed's filters", async () => {

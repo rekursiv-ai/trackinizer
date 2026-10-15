@@ -13,7 +13,9 @@ import { adminQueries } from "./queries";
 const USERS = adminQueries.users.queryKey;
 
 /**
- * Every user: change a role, disable or enable, delete. Your own row has no
+ * Every user: change a role, disable or enable, delete. A user the deployment's
+ * staff setting names carries a "staff" chip beside the role: they read campaign
+ * transcripts, which no role grants and this page cannot change. Your own row has no
  * controls: the server refuses an admin's own demotion, disabling and
  * deletion, so the org cannot lock itself out. Disabling revokes every token
  * the user holds for good, and deleting cannot be undone, so both ask first.
@@ -84,6 +86,14 @@ function UserRow({ user, now }: { user: User; now: number }) {
             edit={(role) => accountEdit(() => setUserRole(user.id, role), `${who}: role set to ${role}`)}
           />
         )}
+        {user.staff ? (
+          <>
+            {" "}
+            <span className="role-chip" title={STAFF_TITLE}>
+              staff
+            </span>
+          </>
+        ) : null}
       </td>
       <td>{user.status}</td>
       <td title={dateTime(user.created_at)}>{relativeTime(user.created_at, now)}</td>
@@ -154,3 +164,6 @@ function UserRow({ user, now }: { user: User; now: number }) {
     </tr>
   );
 }
+
+/** What the "staff" chip means, as its tooltip. */
+const STAFF_TITLE = "Staff: reads campaign transcripts. Set by the deployment's STAFF setting, not here.";

@@ -7,11 +7,14 @@
     "body": {
       "actors": [
         {
+          "account": "no-auth@localhost",
           "actor": "Agent",
+          "audience": "open",
           "cli": "claude",
           "conversation": 2,
           "count": 3,
           "ended": null,
+          "hideable": true,
           "last": "2026-01-01T00:00:00.000000Z",
           "rooms": [],
           "session_id": "00000000-0000-4000-8000-000000000011"

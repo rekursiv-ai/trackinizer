@@ -35,7 +35,7 @@ the API route are the next task.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, Literal
 from uuid import UUID
 from weakref import WeakKeyDictionary
@@ -44,8 +44,9 @@ import re
 
 from treekle import from_plain
 
-from trackinizer.server.audience import OPEN_ONLY, visible_sql
+from trackinizer.server.audience import SessionReader, visible_sql
 from trackinizer.server.notify import tx
+from trackinizer.server.store.session_feed import WHOLE_FEED, FeedScope
 from trackinizer.server.values import manifest_bound, vec_to_text, vetted_sql
 from trackinizer.wire.audience import AUDIENCES
 
@@ -115,7 +116,7 @@ async def search_session_records(
     model: str,
     dim: int,
     limit: int = 20,
-    audiences: frozenset[str] = OPEN_ONLY,
+    scope: FeedScope = WHOLE_FEED,
 ) -> list[SessionSearchHit]:
     """Search the session index, RRF-merging the arms that are present.
 
@@ -131,15 +132,17 @@ async def search_session_records(
         partial HNSW index (a bare ``halfvec`` compare over the dimension-free
         column seqscans 4.7M rows); the cast MUST match the index's cast.
       limit: Maximum merged hits to return, in ``[1, 200]``.
-      audiences: What the caller reads. The full-text arm keeps only the sessions in
-        it before it ranks and cuts to ``limit``, so a hit on a hidden session neither
-        appears nor takes the place of one the caller may see. The semantic arm does
-        the same, though its HNSW index offers hidden units among the nearest: for a
-        caller that lacks an audience it has the index keep offering candidates until
-        ``limit`` pass, by an iterative scan where pgvector has them (0.8.0 and later)
-        and by widening the list otherwise. A caller that reads every audience is
-        searched as it always was. The shortfall that remains is where the index
-        ends: ``hnsw.max_scan_tuples``, 20,000 index tuples by default, with iterative
+      scope: Whose sessions, as the feed names them, and who reads. Its record
+        kinds are not searched by. The full-text arm keeps only the sessions the
+        scope keeps and its reader reads before it ranks and cuts to ``limit``, so a
+        hit on a hidden session neither appears nor takes the place of one the
+        caller may see. The semantic arm does the same, though its HNSW index offers
+        hidden units among the nearest: for a scope that may not keep every session
+        it has the index keep offering candidates until ``limit`` pass, by an
+        iterative scan where pgvector has them (0.8.0 and later) and by widening the
+        list otherwise. A scope that keeps every session is searched as it always
+        was. The shortfall that remains is where the index ends:
+        ``hnsw.max_scan_tuples``, 20,000 index tuples by default, with iterative
         scans, and 1,000 candidates without.
 
     Returns:
@@ -162,6 +165,7 @@ async def search_session_records(
         raise ValueError(
             f"query_vector has {len(query_vector)} dims, expected {dim}",
         )
+    scope = replace(scope, kinds=())
     async with engine.acquire() as conn:
         semantic = (
             await _semantic_arm(
@@ -171,14 +175,14 @@ async def search_session_records(
                 model=model,
                 dim=dim,
                 limit=limit,
-                audiences=audiences,
-                scan=await _scan_for(engine, conn, audiences),
+                scope=scope,
+                scan=await _scan_for(engine, conn, scope),
             )
             if query_vector is not None
             else []
         )
         fts = (
-            await _fts_arm(conn, query_text, limit=limit, audiences=audiences)
+            await _fts_arm(conn, query_text, limit=limit, scope=scope)
             if has_text
             else []
         )
@@ -188,26 +192,29 @@ async def search_session_records(
 _MAX_LIMIT: Final = 200
 
 # Whether each engine's pgvector scans iteratively (0.8.0 and later). It is read from
-# the database when a reader that lacks an audience first searches by meaning, and then
-# kept: the answer changes only with an extension upgrade, which a restart follows. The
-# engines are held weakly, so a closed one takes its entry with it.
+# the database when a reader who may not read every session first searches by meaning,
+# and then kept: the answer changes only with an extension upgrade, which a restart
+# follows. The engines are held weakly, so a closed one takes its entry with it.
 _ITERATIVE_SCAN: Final[WeakKeyDictionary[DatabaseEngine, bool]] = WeakKeyDictionary()
 
-# How the semantic arm keeps ``limit`` hits against the audiences its reader lacks: not
-# at all, for a reader that lacks none; by an iterative index scan; or, where pgvector
-# has none, by widening the list of candidates the index offers.
+# How the semantic arm keeps ``limit`` hits against the sessions its reader may not
+# read: not at all, for a reader who reads every one; by an iterative index scan; or,
+# where pgvector has none, by widening the list of candidates the index offers.
 type _Scan = Literal["plain", "iterative", "widening"]
 
 
-# A reader of every audience loses no candidate to the audience test, so it is scanned
-# as it always was and the database is asked nothing more for it.
+# A scope that names no session, read by a reader who holds every audience, reads every
+# session that is not a chat, a private one included, and every chat but a private
+# one, loses almost no candidate to the transcript test, so it is scanned as it always
+# was and the database is asked nothing more for it. Any other loses the hidden ones,
+# and a shortfall would tell it they sit nearest its query.
 async def _scan_for(
     engine: DatabaseEngine,
     conn: Conn,
-    audiences: frozenset[str],
+    scope: FeedScope,
 ) -> _Scan:
-    """Choose how the semantic arm keeps ``limit`` hits against ``audiences``."""
-    if audiences >= AUDIENCES:
+    """Choose how the semantic arm keeps ``limit`` hits against what ``scope`` keeps."""
+    if not scope.names_sessions and _reads_all(scope.reader):
         return "plain"
     known = _ITERATIVE_SCAN.get(engine)
     if known is None:
@@ -251,7 +258,7 @@ async def _semantic_arm(
     model: str,
     dim: int,
     limit: int,
-    audiences: frozenset[str],
+    scope: FeedScope,
     scan: _Scan,
 ) -> list[_ArmHit]:
     """Cosine-nearest units in the ``(mapper, model)`` slice, best first."""
@@ -267,13 +274,13 @@ async def _semantic_arm(
         _SNIPPET_HEAD,
     ]
     # Audience: gated -- in the WHERE, which the HNSW index does not see: it offers its
-    # ``hnsw.ef_search`` nearest units of every audience and the filter drops the hidden
-    # ones afterwards. A reader that lacks an audience would therefore get fewer than
+    # ``hnsw.ef_search`` nearest units of every session and the filter drops the hidden
+    # ones afterwards. A reader who may not read them all would therefore get fewer than
     # ``limit`` hits, or none, when more hidden units than that sit nearest its query,
     # and the shortfall would tell it that they do. ``scan`` has the index keep offering
     # candidates until ``limit`` of them pass the filter (see ``_nearest``). The FTS arm
     # needs none: it ranks every match before it cuts.
-    visible = visible_sql("i.agentsession_audience", params=params, audiences=audiences)
+    visible = _kept(params, scope=scope)
     sql = (
         f"SELECT e.session_id, e.part, e.idx, e.field, e.chunk, "  # noqa: S608 -- ``dim`` is a validated int; a typmod cannot be a bound parameter.
         f"left(r.text, $5) AS snippet, i.title AS title "
@@ -349,7 +356,7 @@ async def _fts_arm(
     query_text: str,
     *,
     limit: int,
-    audiences: frozenset[str],
+    scope: FeedScope,
 ) -> list[_ArmHit]:
     """Return records matching the scoped tsvector, ts_rank order, best first."""
     # Exclude stale tail rows beyond the live manifest prefix (see _semantic_arm).
@@ -357,7 +364,7 @@ async def _fts_arm(
     params: list[object] = [query_text, limit]
     # Audience: gated -- in the WHERE, before the ``LIMIT``, so a hidden hit that ranks
     # higher does not take the place of one the reader may see.
-    visible = visible_sql("i.agentsession_audience", params=params, audiences=audiences)
+    visible = _kept(params, scope=scope)
     rows = await conn.fetch(
         vetted_sql(
             "SELECT r.session_id, r.part, r.idx, "
@@ -398,6 +405,27 @@ async def _fts_arm(
             ),
         )
     return hits
+
+
+def _reads_all(reader: SessionReader) -> bool:
+    """Say whether ``reader`` reads every session but another person's private chat."""
+    return (
+        reader.audiences >= AUDIENCES
+        and reader.every_session
+        and reader.every_chat
+        and reader.oversight
+        and reader.hidden
+    )
+
+
+def _kept(params: list[object], *, scope: FeedScope) -> str:
+    """Return the test, on ``i``, that a session is in ``scope`` and its reader reads it."""
+    return " AND ".join(
+        (
+            *scope.clauses(params, kind=""),
+            visible_sql("i", params=params, reader=scope.reader),
+        ),
+    )
 
 
 def _semantic_hit(row: Record) -> _ArmHit:

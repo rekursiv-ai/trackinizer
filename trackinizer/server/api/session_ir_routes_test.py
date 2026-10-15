@@ -30,6 +30,7 @@ from trackinizer.lib.agent.types.sessions import (
 from trackinizer.server.api import session_ir_routes
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
+    TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
 )
@@ -87,7 +88,13 @@ class TestReadParts:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude", audience="open")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(
             store,
@@ -140,7 +147,13 @@ class TestReadParts:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="sh", audience="open")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="sh",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(
             store,
@@ -193,7 +206,13 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude", audience="open")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(
             store,
@@ -226,7 +245,13 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="codex", audience="open")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="codex",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(
             store,
@@ -261,7 +286,13 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude", audience="open")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(store, "read_session_records", read)
 
@@ -285,7 +316,13 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude", audience="open")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(store, "read_session_records", read)
 
@@ -307,7 +344,13 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude", audience="open")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(store, "read_session_records", read)
 
@@ -328,7 +371,13 @@ class TestRecentTurns:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="codex", audience="open")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="codex",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         read = AsyncMock(
             return_value=[
@@ -370,7 +419,13 @@ class TestRecentTurns:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="codex", audience="open")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="codex",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         read = AsyncMock(return_value=[])
         monkeypatch.setattr(store, "read_recent_session_turns", read)
@@ -436,7 +491,13 @@ class TestLegacyPart:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude", audience="open")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(
             store,
@@ -548,15 +609,16 @@ def _listed_parts(response: httpx2.Response) -> list[int]:
 # Written directly because the table 020 reads no longer exists (021 dropped it);
 # ``schema_backfill_test.py`` runs 020 itself and pins this shape.
 async def _legacy_session(store: Store, *, turns: int) -> uuid.UUID:
-    """Return an AgentSession holding ``turns`` backfilled records at part ``-1``."""
+    """Return the viewer's AgentSession holding ``turns`` records at part ``-1``."""
     session_id = uuid.uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO inquiries (id, kind, seq, status, account, title, "
             "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'legacy', 'open')",
+            "$2, 'legacy', 'open')",
             session_id,
+            TEST_USER_EMAIL,
         )
         await conn.execute(
             "INSERT INTO session_manifests "

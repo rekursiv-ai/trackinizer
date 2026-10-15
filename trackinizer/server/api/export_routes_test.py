@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
+    from trackinizer.server.audience import SessionReader
     from trackinizer.server.store.core import Store
 
 
@@ -42,6 +43,7 @@ def _graph() -> GraphExport:
     return GraphExport(
         migrations=("schema.sql", "schema.019.sql"),
         audiences=("open",),
+        withheld_sessions=2,
         tables=(
             (
                 "inquiries",
@@ -73,8 +75,8 @@ def export_client(
     """Return a route client whose store exports :func:`_graph`."""
     client, store, _engine = route_client
 
-    async def export_graph(*, audiences: frozenset[str]) -> GraphExport:
-        del audiences
+    async def export_graph(*, reader: SessionReader) -> GraphExport:
+        del reader
         return _graph()
 
     monkeypatch.setattr(store, "export_graph", export_graph)
@@ -96,6 +98,7 @@ def test_the_header_comes_first_then_one_line_per_row(
         "version": EXPORT_VERSION,
         "migrations": ["schema.sql", "schema.019.sql"],
         "audiences": ["open"],
+        "withheld_sessions": 2,
     }
     assert [row["table"] for row in rows] == ["inquiries", "change_log"]
 
@@ -143,8 +146,8 @@ def test_the_export_is_read_for_the_audiences_of_its_caller(
     client, store, _engine = route_client
     asked: list[frozenset[str]] = []
 
-    async def export_graph(*, audiences: frozenset[str]) -> GraphExport:
-        asked.append(audiences)
+    async def export_graph(*, reader: SessionReader) -> GraphExport:
+        asked.append(reader.audiences)
         return _graph()
 
     monkeypatch.setattr(store, "export_graph", export_graph)
@@ -156,7 +159,7 @@ def test_the_export_is_read_for_the_audiences_of_its_caller(
     )
     assert client.get(EXPORT_API_PATH).status_code == 200
 
-    assert asked == [frozenset({"open"}), frozenset({"open", "staff"})]
+    assert asked == [frozenset({"open", "private"}), frozenset({"open", "staff"})]
 
 
 if __name__ == "__main__":

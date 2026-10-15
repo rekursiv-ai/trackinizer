@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
     "ContextGraphVisual",
+    "FilesVisual",
     "ParameterDescription",
     "StaticVisual",
     "TimelineVisual",
@@ -255,6 +256,46 @@ class ContextGraphVisual:
         )
 
 
+class FilesVisual:
+    """A record's files and what changed in them, each change with its diff."""
+
+    class Config(Fig["FilesVisual"]):
+        title: str = "Files"
+        """Name shown in the Configure panel."""
+
+    def __init__(self, config: Config) -> None:
+        """Keep the configured title until projection."""
+        self.config = config
+
+    def describe(self) -> VisualDescription:
+        """Describe the view and the narrowing a caller may set.
+
+        Returns:
+          description: Inert catalog entry carrying the narrowing's bounds.
+
+        """
+        return VisualDescription(
+            type="trax.files",
+            version=1,
+            title=self.config.title,
+            description=(
+                "A record's files and what changed in them, each change with its diff."
+            ),
+            requires=["record"],
+            default_size="wide",
+            parameter_schema={
+                # A path prefix (`loop/foo/`), or a glob when it holds `*` or `?`
+                # (`**/*.py`), matched without case; empty shows every path.
+                "path": ParameterDescription(type="string", default="", max_length=512),
+                # True hides the file tree, leaving only the changed files.
+                "changed": ParameterDescription(type="boolean", default=False),
+                # A changed file's path, or a name every changed file ending in
+                # `/<name>` matches, whose diff opens; it never narrows the list.
+                "file": ParameterDescription(type="string", default="", max_length=512),
+            },
+        )
+
+
 class Workspace:
     """The trusted composition of visual configs and its initial selection."""
 
@@ -286,6 +327,7 @@ class Workspace:
                     requires=["record"],
                     record_kinds=["Issue", "AgentSession"],
                 ),
+                FilesVisual.Config(),
             ],
         )
         """Configured visual modules available to a workspace."""

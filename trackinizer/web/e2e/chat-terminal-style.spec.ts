@@ -36,7 +36,7 @@ async function openConversation(page: Page, style: "default" | "terminal"): Prom
   expect(appended.ok(), await appended.text()).toBe(true);
   const conversation = crypto.randomUUID();
   await page.route(`**/api/chats/${conversation}`, (route) => route.fulfill({ json: {
-    conversation_id: conversation, session_id: session, title: "E2E", account: email, live: true, forks: 0, forked_from: null, forks_on_typing: false, shared_with: [], may_share: false, may_delete: false,
+    conversation_id: conversation, session_id: session, title: "E2E", account: email, live: true, forks: 0, forked_from: null, forks_on_typing: false, audience: "open", may_hide: false, shared_with: [], may_share: false, may_delete: false,
   } }));
   // A new station for that chat, which is then the one changed last, so the tab opens on it.
   expect((await request.post(`/api/workspaces/for-chat/${conversation}`)).ok()).toBe(true);
@@ -99,7 +99,7 @@ test("the Terminal style draws Chat as the GNOME terminal profile, from the pale
   expect(await colour(panel.locator(".md-copy").first(), "display")).toBe("none");
   expect(await colour(panel.locator(".chat-line-assistant"), "border-radius")).toBe("0px");
   // The station menu lies over the conversation, so it keeps the terminal's black, and the open station reads in yellow.
-  await panel.locator(".station-name").click();
+  await panel.getByRole("button", { name: "All stations" }).click();
   const menu = panel.locator(".station-menu");
   expect(await colour(menu, "background-color")).toBe("rgb(0, 0, 0)");
   // The menu opens on the open station: highlighted, it reads black on green.

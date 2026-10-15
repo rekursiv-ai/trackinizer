@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS inquiries (
     description    TEXT,
     labels         TEXT[],
     subscribers    TEXT[],
+    -- What an app layered on trackinizer keeps on the row, one JSON object keyed by
+    -- app name; never read here. Mirrors ``Inquiry.app``'s ColumnSpec check.
+    app            JSONB CHECK (
+                       app IS NULL
+                       OR jsonb_typeof(app) = 'object' AND octet_length(app::text) <= 65536
+                   ),
     marginal_cost_agent_usd    NUMERIC(14, 6) NOT NULL DEFAULT 0,
     marginal_cost_resource_usd NUMERIC(14, 6) NOT NULL DEFAULT 0,
     -- Derived load-bearing (PageRank) scores, one per citation-relation graph.

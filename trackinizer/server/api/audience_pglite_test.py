@@ -493,15 +493,23 @@ async def test_no_route_sets_an_audience_field(
     pglite_route_client: _Client,
     hidden: _Hidden,
 ) -> None:
+    """A session's owner hides it by its own route, which lowers no staff session."""
     client, store = pglite_route_client
     _as(STAFF_USER)
     path = f"/api/agentsession/{hidden.lead}/audience"
 
     put = await client.put(path, json={"value": "open"})
     delete = await client.request("DELETE", path, json={})
+    lowered = await client.post(
+        f"/api/sessions/{hidden.lead}/audience",
+        json={"audience": "open"},
+    )
 
     assert (put.status_code, delete.status_code) == (404, 404)
-    assert not [p for p, _ in iter_routes(app) if p.endswith("/audience")]
+    assert [(p, sorted(m)) for p, m in iter_routes(app) if p.endswith("/audience")] == [
+        ("/api/sessions/{session_id}/audience", ["POST"]),
+    ]
+    assert lowered.status_code == 409
     assert await _audience_of(store, hidden.lead) == "staff"
 
 

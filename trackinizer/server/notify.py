@@ -17,11 +17,10 @@ from treekle import from_plain, json_loads
 import asyncpg
 
 from trackinizer.lib.postgres import DatabaseEngine
-from trackinizer.server.audience import OPEN_ONLY
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
     from trackinizer.lib.postgres import Conn
 
@@ -43,6 +42,7 @@ _DEAD_CONN_ERRORS = (
 __all__ = [
     "NOTIFICATION_BUFFER",
     "NOTIFY_CHANNEL",
+    "Hears",
     "Notification",
     "changed_id",
     "iter_changed_ids",
@@ -54,6 +54,10 @@ __all__ = [
 
 NOTIFY_CHANNEL: Final = "trackinizer"
 """Postgres ``LISTEN/NOTIFY`` channel for post-commit inquiry change fan-out."""
+
+type Hears = Callable[[UUID, str], Awaitable[bool]]
+"""Whether a live stream's viewer hears of a write to a session's transcript, given
+the session's id and the audience the write's ping names."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -151,7 +155,7 @@ async def notify_after_commit() -> AsyncGenerator[None]:
 async def iter_sse_events(
     engine: DatabaseEngine,
     *,
-    audiences: frozenset[str] = OPEN_ONLY,
+    hears: Hears,
     keepalive_sec: float = 25.0,
 ) -> AsyncGenerator[bytes]:
     r"""Relay each ``NOTIFY_CHANNEL`` payload as one SSE ``data:`` frame.
@@ -161,8 +165,8 @@ async def iter_sse_events(
     they share one generator and one wire contract.
 
     A payload that names an audience, as a write to a session's transcript does, is
-    relayed only to a viewer who reads it: a live stream would otherwise tell every
-    viewer when a session they may not read is being written.
+    relayed only when ``hears`` says the viewer hears of it: a live stream would
+    otherwise tell every viewer when a session they may not read is being written.
 
     The stream opens with an SSE comment and sends another after every
     ``keepalive_sec`` without a frame; ``EventSource`` ignores comment lines.
@@ -176,7 +180,7 @@ async def iter_sse_events(
 
     Args:
       engine: Database connection to listen on.
-      audiences: What the viewer reads.
+      hears: Whether the viewer hears of a write to a transcript.
       keepalive_sec: Longest silence before a keep-alive comment; must stay
         well under the edge's 125 s idle cutoff.
 
@@ -206,7 +210,7 @@ async def iter_sse_events(
             except StopAsyncIteration:
                 return
             pending = asyncio.ensure_future(anext(payloads))
-            frame = _sse_frame(payload, audiences=audiences)
+            frame = await _sse_frame(payload, hears=hears)
             if frame:
                 yield frame
     finally:
@@ -218,13 +222,14 @@ async def iter_sse_events(
 async def iter_changed_ids(
     engine: DatabaseEngine,
     *,
-    audiences: frozenset[str] = OPEN_ONLY,
+    hears: Hears,
 ) -> AsyncGenerator[str]:
     """Yield the inquiry id of each ``NOTIFY_CHANNEL`` payload, as the web stream relays it.
 
     Args:
       engine: Database connection to listen on.
-      audiences: What the viewer reads; a payload naming another is skipped.
+      hears: Whether the viewer hears of a write to a transcript; a payload naming
+        one it does not is skipped.
 
     Yields:
       id: An inquiry id; a malformed payload is logged and skipped.
@@ -233,29 +238,30 @@ async def iter_changed_ids(
     payloads = engine.listen(NOTIFY_CHANNEL)
     try:
         async for payload in payloads:
-            if (subject_id := changed_id(payload, audiences=audiences)) is not None:
+            if (subject_id := await changed_id(payload, hears=hears)) is not None:
                 yield subject_id
     finally:
         await payloads.aclose()
 
 
-def changed_id(payload: str, *, audiences: frozenset[str] = OPEN_ONLY) -> str | None:
+async def changed_id(payload: str, *, hears: Hears) -> str | None:
     """Read the inquiry id out of a NOTIFY payload a viewer may hear of.
 
     Args:
       payload: The payload ``_publish_notifications`` sent.
-      audiences: What the viewer reads.
+      hears: Whether the viewer hears of a write to a transcript.
 
     Returns:
-      id: The inquiry id; None for a malformed payload, and for one naming an
-        audience the viewer does not read.
+      id: The inquiry id; None for a malformed payload, and for a write to a
+        transcript the viewer does not hear of.
 
     """
     try:
         payload_data = json_loads(payload, dict[str, object])
         subject_id = from_plain(payload_data["id"], str)
         audience = from_plain(payload_data.get("audience"), str, default=None)
-    except (json.JSONDecodeError, KeyError, TypeError):
+        transcript = None if audience is None else (UUID(subject_id), audience)
+    except (KeyError, TypeError, ValueError):
         # Drop one bad payload rather than kill the stream, but LOG it: a
         # silent drop would hide a payload-shape regression (the producer
         # and this relay drifting apart).
@@ -265,14 +271,14 @@ def changed_id(payload: str, *, audiences: frozenset[str] = OPEN_ONLY) -> str | 
             payload,
         )
         return None
-    if audience is not None and audience not in audiences:
-        return None
-    return subject_id
+    if transcript is None or await hears(*transcript):
+        return subject_id
+    return None
 
 
-def _sse_frame(payload: str, *, audiences: frozenset[str]) -> bytes:
+async def _sse_frame(payload: str, *, hears: Hears) -> bytes:
     """One SSE ``data:`` frame for a NOTIFY payload; empty when the viewer gets none."""
-    subject_id = changed_id(payload, audiences=audiences)
+    subject_id = await changed_id(payload, hears=hears)
     if subject_id is None:
         return b""
     return f"data: {json.dumps({'id': subject_id})}\n\n".encode()

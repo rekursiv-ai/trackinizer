@@ -15,6 +15,8 @@ Submodules:
   - :mod:`.edge_bodies` -- edge request bodies.
   - :mod:`.filters` -- list-query filter shapes.
   - :mod:`.refs` -- row addressing forms.
+  - :mod:`.files_doc` -- the files document a files visual reads: a record's
+    files and what changed in them, with diffs.
   - :mod:`.row_filter` -- row-vs-``Filter`` predicate shared by the
     server list route and the CLI test fake.
 """

@@ -20,7 +20,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from treekle import from_plain
 
-from trackinizer.server.api._deps import get_hub, get_staff, get_store
+from trackinizer.server.api._deps import (
+    get_chat_orgs,
+    get_hub,
+    get_staff,
+    get_store,
+)
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
     engine_of,
@@ -148,8 +153,10 @@ async def profile_route(
         id of the API key the request used (``None`` for a browser session), when
         the caller agreed to the rules and to which version, and the current rules
         version with the id of the Issue that holds the rules (both ``None`` while
-        Issue#1 is missing or unlocked), and the audiences the credential reads and
-        opens into, with its pin if any.
+        Issue#1 is missing or unlocked), the audiences the credential reads and
+        opens into, with its pin if any, and the server's organisation mode
+        (``org_mode``: ``single``, ``domain`` or ``individual``), which says who
+        reads what the caller makes.
 
     """
     engine = engine_of(request)
@@ -190,6 +197,7 @@ async def profile_route(
         "read_audiences": _names(identity.read_audiences),
         "open_audiences": _names(identity.open_audiences),
         "pinned_audience": identity.pinned_audience,
+        "org_mode": get_chat_orgs(request),
         # The service accounts the operator made staff: the accounts whose Artifacts a
         # page may trust as the summary service's, since only an admin makes one.
         "summary_accounts": [a for a in get_staff(request) if is_service_address(a)],

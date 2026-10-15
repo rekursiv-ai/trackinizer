@@ -19,6 +19,11 @@ export type User = {
   readonly status: string;
   readonly created_at: string;
   readonly last_login: string | null;
+  /**
+   * Whether the deployment's staff setting (`STAFF`) names the user, so they read
+   * campaign transcripts. Set on the server, not by any route; it is no role.
+   */
+  readonly staff: boolean;
 };
 
 /** Who may sign in, and as what (written by hand from `_serialize_allowlist`). */

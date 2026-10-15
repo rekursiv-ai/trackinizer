@@ -1,20 +1,20 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FOLD_AFTER_MS, OPEN_AFTER_MS, useHoverOpen } from "./hoverOpen";
+import { FOLD_AFTER_MS, OPEN_AFTER_MS, RAIL_FOLD_AFTER_MS, useHoverOpen } from "./hoverOpen";
 
 /** A tile that folds on its own: a fold button, a button beside it, and contents that take the keyboard. */
-function Tile({ enabled = true }: { readonly enabled?: boolean }) {
+function Tile({ enabled = true, foldAfterMs }: { readonly enabled?: boolean; readonly foldAfterMs?: number }) {
   const tile = useRef<HTMLDivElement>(null);
-  const hover = useHoverOpen(tile, { enabled });
+  const hover = useHoverOpen(tile, { enabled, foldAfterMs });
   return <div ref={tile} data-testid="tile" data-open={hover.open}>
     <button type="button" onClick={() => hover.set(!hover.open)}>Fold</button>
     <textarea aria-label="Message" />
   </div>;
 }
 
-function mount(enabled = true) {
-  render(<><Tile enabled={enabled} /><button type="button">Page</button></>);
+function mount(enabled = true, foldAfterMs?: number) {
+  render(<><Tile enabled={enabled} foldAfterMs={foldAfterMs} /><button type="button">Page</button></>);
   const tile = screen.getByTestId("tile");
   return { tile, open: () => tile.dataset.open === "true", wait: (ms: number) => act(() => { vi.advanceTimersByTime(ms); }) };
 }
@@ -36,6 +36,23 @@ test("the tile opens once the pointer has rested on it, and folds once it has be
   wait(FOLD_AFTER_MS - 1);
   expect(open()).toBe(true);
   wait(1);
+  expect(open()).toBe(false);
+});
+
+test("a tile given its own fold wait folds that long after the pointer left, and after the keyboard left", () => {
+  expect(RAIL_FOLD_AFTER_MS).toBeLessThan(FOLD_AFTER_MS);
+  const { tile, open, wait } = mount(true, RAIL_FOLD_AFTER_MS);
+  fireEvent.pointerMove(tile);
+  wait(OPEN_AFTER_MS);
+  fireEvent.pointerLeave(tile);
+  wait(RAIL_FOLD_AFTER_MS - 1);
+  expect(open()).toBe(true);
+  wait(1);
+  expect(open()).toBe(false);
+  act(() => screen.getByRole("textbox", { name: "Message" }).focus());
+  wait(OPEN_AFTER_MS);
+  act(() => screen.getByRole("button", { name: "Page" }).focus());
+  wait(RAIL_FOLD_AFTER_MS);
   expect(open()).toBe(false);
 });
 

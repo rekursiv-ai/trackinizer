@@ -2,7 +2,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import { newUuid } from "../api/idempotency";
-import { CHAT_DELETED, CHAT_NOT_SHARED, type ChatFork, conversationOf, getChatHead, SCIENCE_CHAT_LABEL, sendChatLine } from "../api/chats";
+import { CHAT_DELETED, CHAT_FORK_CLOSED, CHAT_FORK_WIDER, type ChatFork, conversationOf, getChatHead, SCIENCE_CHAT_LABEL, sendChatLine } from "../api/chats";
+import type { OrgMode } from "../api/me";
 import { getWorkspace } from "../api/workspaces";
 import type { WorkspacePartner, WorkspaceState } from "../api/workspaces";
 import { MetaContext, useProfile, useWriteMode } from "../app/boot";
@@ -15,7 +16,7 @@ import { parseHash } from "../router/route";
 import { useHash, validHash, visited } from "../router/trail";
 import { HelperCommands } from "../settings/ChatPartner";
 import { stationForChat } from "../api/stations";
-import { StationMenu } from "../stations/StationMenu";
+import { StationTabs } from "../stations/StationTabs";
 import { showStation } from "../stations/useStation";
 import { Icon } from "../ui/icons";
 import { type ChatPart, type Line, type LineAt, linesThrough, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
@@ -25,7 +26,7 @@ import { FOLLOW_UP_ASK, followUpSuggested } from "./chatFollowUp";
 import { flipChatSide, setChatHidden, useChatColumn } from "./chatColumnState";
 import { useAnswerHighlights } from "./chatHighlights";
 import { ChatPrompt } from "./ChatPrompt";
-import { DeleteChat, ShareChat } from "./ChatSharing";
+import { DeleteChat, HideChat, ShareChat } from "./ChatSharing";
 
 /** The most characters one message may have, as the server holds it. */
 const MAX_TEXT = 16_384;
@@ -36,29 +37,56 @@ const MAX_TRAIL = 8;
 /** The most characters of a line the fork banner quotes. */
 const QUOTED = 80;
 
-/** What the composer says about a chat's reach, which is the same in every mode: public to read, and who posts. */
-export function publicNotice(): string {
-  return "Public to read. Whoever may not post here forks it instead. Do not type secrets here.";
+/** What Chat says when the server refuses a fork, by the refusal's code. */
+const FORK_REFUSED: ReadonlyMap<string, string> = new Map([
+  [CHAT_FORK_CLOSED, "This chat was hidden or made staff only, so it can no longer be forked."],
+  [CHAT_FORK_WIDER, "This chat is shared with you, not with your organisation, which would read a fork of it; post in it instead."],
+]);
+
+/**
+ * What the composer says about who reads a chat, the same for every reader: by
+ * its audience (`open`, as the server's org mode lets people in; `private`, once
+ * its starter hid it; `staff`, once the assistant read a staff session into it)
+ * and the org mode, which a server older than it does not name.
+ */
+export function chatNotice(audience: string, orgMode: OrgMode | undefined): string {
+  return `${chatReach(audience, orgMode)} Do not type secrets here.`;
+}
+
+/** Who reads an open chat, by the server's org mode. */
+const READERS: { readonly [mode in OrgMode | "unnamed"]: string } = {
+  single: "everyone signed in to this server",
+  domain: "its starter, the people they share it with, and the starter's organisation",
+  individual: "its starter and the people they share it with",
+  unnamed: "its starter, the people they share it with, and their organisation where this server lets it in",
+};
+
+function chatReach(audience: string, orgMode: OrgMode | undefined): string {
+  if (audience === "private") return `Hidden: only ${READERS.individual} read it.`;
+  const readers = READERS[orgMode ?? "unnamed"];
+  return audience === "staff" ? `Staff only: of ${readers}, only those who hold staff read it.` : `Read by ${readers}.`;
 }
 
 /**
  * Talk with the workspace's partner in a science chat: a session the assistant
- * opens, shared with everyone signed in like a Slack thread. Its lines are the
- * session's records (read as the Console reads them, and kept current by the
- * canvas stream's changed ids); a line posted here shows at once, pending, until
- * its record arrives. A new conversation has an id at once and a session when
- * the assistant opens it. The open conversation lives in the shell's `ChatFeed`,
- * so Chat mounting again keeps it.
+ * opens, read by whom the server's org mode lets in, as a Slack channel is by its
+ * workspace. Its lines are the session's records (read as the Console reads
+ * them, and kept current by the canvas stream's changed ids); a line posted here
+ * shows at once, pending, until its record arrives. A new conversation has an id
+ * at once and a session when the assistant opens it. The open conversation lives
+ * in the shell's `ChatFeed`, so Chat mounting again keeps it.
  *
- * Typing in a chat joins it, unless the chat was started outside the user's
- * organisation: then what they type starts a fork of their own, from its latest
- * line, and they land in it. "Fork from here" on any stored answer does the same
- * from that answer, in any chat; the next message sent starts the fork.
+ * Whoever reads a chat joins it by typing in it. Anyone else, whose head says
+ * `forks_on_typing`, reads none of it: the server refuses its records and their
+ * lines, so Chat says why and takes no line. "Fork from here" on any stored
+ * answer of an open chat starts a fork of it from that answer; the next message
+ * sent starts it. A hidden or staff-only chat cannot be forked, since the copy
+ * would not keep who may read it. The starter may hide a chat (`HideChat`).
  */
 export function Chat({ workspace }: { readonly workspace: WorkspaceState | null }) {
   const queryClient = useQueryClient();
   const kinds = useContext(MetaContext)?.kinds ?? [];
-  const { email: me } = useProfile();
+  const { email: me, org_mode: orgMode } = useProfile();
   const writing = useWriteMode() === "enabled";
   const { feed, state } = useChatFeed();
   const { side, hidden } = useChatColumn();
@@ -82,22 +110,27 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
     refetchInterval: (query) => (query.state.data === null && sentAt !== null && Date.now() - sentAt < OPENING.giveUpMs ? OPENING.everyMs : false),
   });
   const session = head.data?.session_id ?? null;
+  // I do not read the chat: the server refuses its records and my lines alike.
+  const outsider = head.data?.forks_on_typing === true;
+  const readable = outsider ? null : session;
   const records = useQuery({
     queryKey: chatRecordsKey(session),
     queryFn: ({ signal }) => readChatParts(session!, queryClient.getQueryData<ChatPart[]>(chatRecordsKey(session)), signal),
-    enabled: session !== null,
+    enabled: readable !== null,
     // The stream keeps it current (`useLiveChat`); a mount or a reconnect reads what it missed.
     structuralSharing: false,
   });
   useLiveChat(session);
+  // Lines read before the chat closed to me (made staff only, or unshared) go with it.
+  const parts = outsider ? undefined : records.data;
 
-  const transcript = useMemo(() => readTranscript(records.data ?? []), [records.data]);
+  const transcript = useMemo(() => readTranscript(parts ?? []), [parts]);
   // What the answers cite lights up on the page as they arrive (the Settings switch turns it off).
-  const answers = useMemo(() => records.data === undefined ? null
-    : transcript.lines.filter((line) => line.role === "assistant").map(({ key, text }) => ({ key, text, pointed: transcript.pointed.has(key) })), [records.data, transcript]);
+  const answers = useMemo(() => parts === undefined ? null
+    : transcript.lines.filter((line) => line.role === "assistant").map(({ key, text }) => ({ key, text, pointed: transcript.pointed.has(key) })), [parts, transcript]);
   useAnswerHighlights(answers, session);
   const lines = withPending(transcript, pending.filter((line) => line.conversationId === conversationId), { me });
-  const loading = session !== null && records.data === undefined && !records.isError;
+  const loading = readable !== null && records.data === undefined && !records.isError;
   const unopened = conversationId !== null && head.data === null && !head.isFetching;
   const stale = unopened && sentAt !== null && Date.now() - sentAt >= OPENING.giveUpMs;
   // The give-up time is not a render of its own: the last look may come just before it.
@@ -119,12 +152,8 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
     launching.current = true;
     try { await sendRef.current(FOLLOW_UP_ASK, newUuid()); } finally { launching.current = false; }
   }, []);
-  const stored = lines.filter((line) => !line.pending);
-  const forks = head.data?.forks_on_typing === true;
-  const latest = stored.at(-1)?.at ?? null;
-  // The line a message sent now would fork after: the one picked, else the latest of a chat that cannot be joined.
-  const forkPoint = forkAt ?? (forks ? latest : null);
-  const fork: ChatFork | null = session && forkPoint ? { sessionId: session, part: forkPoint.part, idx: forkPoint.idx } : null;
+  // The line a message sent now would fork after: the one "Fork from here" picked.
+  const fork: ChatFork | null = session && forkAt ? { sessionId: session, part: forkAt.part, idx: forkAt.idx } : null;
 
   const last = lines.at(-1);
   const waiting = last?.pending ? (sending.has(last.key.slice(PENDING.length)) ? "Sending…" : "Waiting for the assistant…") : "";
@@ -144,8 +173,10 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   // repeats a send to the same place.
   const target = JSON.stringify([workspaceId, partner?.session_id ?? null, fork]);
   const live = !!workspace && partner?.status === "live" && writing;
-  // Whose chat this is, and so whether typing joins it or forks it, is known once its head has been read.
+  // Who reads this chat, and so whether I may read it and type in it, is known once its head has been read.
   const reading = conversationId !== null && head.isPending;
+  // Only an open chat forks: a copy would not keep a hidden or staff-only chat's readers.
+  const forkable = live && head.data?.audience === "open";
   const hash = useHash();
   const screen = parseHash(hash, kinds);
 
@@ -220,20 +251,26 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   }, [goneHead, conversationId]);
 
   /**
-   * The server refuses a post into a chat that does not take me; what I typed then forks it at its
-   * latest line. A post into a deleted chat (410) lets it go and starts a new chat with the line. Any
-   * other refusal is shown.
+   * A post into a deleted chat (410) lets it go and starts a new chat with the line. Any other refusal is
+   * shown: one into a chat I do not read never becomes a fork, since a fork copies lines I may not read.
+   * A fork refused (`FORK_REFUSED`), because the chat was hidden or made staff only since its line was
+   * picked or because my organisation would read the fork, drops that line, keeps the draft, says why,
+   * and reads the head again. The composer drops its failure along with the fork's target, so the reason
+   * is a notice of Chat's own.
    */
   async function send(text: string, key: string): Promise<string> {
     try {
-      return await post(text, key, forkPoint);
+      return await post(text, key, forkAt);
     } catch (error) {
-      if (error instanceof ApiError && error.code === CHAT_DELETED && conversationId) {
-        chatDeleted(conversationId);
-        return post(text, newUuid(), null, true);
+      const refused = error instanceof ApiError ? FORK_REFUSED.get(error.code ?? "") : undefined;
+      if (refused) {
+        setForkAt(null);
+        setNotice(refused);
+        void queryClient.invalidateQueries({ queryKey: ["chat", "head", conversationId] });
       }
-      if (!(error instanceof ApiError && error.status === 403 && error.code === CHAT_NOT_SHARED) || fork || latest === null) throw error;
-      return post(text, newUuid(), latest);
+      if (!(error instanceof ApiError && error.code === CHAT_DELETED && conversationId)) throw error;
+      chatDeleted(conversationId);
+      return post(text, newUuid(), null, true);
     }
   }
 
@@ -281,8 +318,9 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
 
   return (
     <section className="chat-panel" aria-label="Chat">
+      {workspace && <StationTabs station={workspace} />}
       <header className="chat-head">
-        {workspace && <StationMenu station={workspace} />}
+        {head.data && head.data.audience !== "open" && <ChatBadge audience={head.data.audience} />}
         <div className="chat-partner" role="group" aria-label="Chat partner">
           {partner && <>
             <strong>{partnerName(partner)}</strong>
@@ -290,6 +328,7 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
           </>}
         </div>
         <div className="chat-head-actions" role="toolbar" aria-label="Chat controls">
+          {head.data?.may_hide && <HideChat head={head.data} />}
           {head.data?.may_share && <ShareChat head={head.data} />}
           {head.data?.may_delete && <DeleteChat head={head.data} onDeleted={() => chatDeleted(head.data!.conversation_id)} />}
           {/* Hidden, Chat is open over the page by hovering its strip; pinning stands it beside the page again. */}
@@ -325,10 +364,9 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
         {head.data?.forked_from && <p className="chat-note">Forked from{" "}
           <button className="btn ghost" type="button" onClick={() => void openConversation(head.data!.forked_from!)}>another chat</button>.</p>}
         {head.data && head.data.forks > 0 && <p className="chat-note">{forkedTimes(head.data.forks)}</p>}
-        {forks && <p className="chat-note" role="status">You cannot post in this chat, so what you type
-          starts a fork of your own from its latest line.</p>}
+        {outsider && <p className="chat-note" role="status">{outsiderNote(head.data!.audience)}</p>}
         {lines.map((line) => <ChatLine key={line.key} line={line} me={me} station={workspace?.name ?? ""} kinds={kinds}
-          onFork={live && head.data ? pickFork : undefined} onFollowUp={line.key === followUpKey ? launchFollowUp : undefined} />)}
+          onFork={forkable ? pickFork : undefined} onFollowUp={line.key === followUpKey ? launchFollowUp : undefined} />)}
         {/* One working line, the last tool call's name, in place of a status the partner no longer sends. */}
         {statusText && <p className="chat-status" role="status">{statusText}</p>}
         {workspace && writing && !live && !loading && <ChatOff local={workspace.partner_choice === "local"} />}
@@ -337,9 +375,10 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
         Your next message starts a fork of this chat after “{forkAt.quote}”.{" "}
         <button className="btn ghost" type="button" onClick={() => setForkAt(null)}>Cancel fork</button>
       </p>}
-      <p className="chat-notice">{publicNotice()}</p>
-      <Composer send={send} target={target} enabled={live && !reading && !loading} editable
-        placeholder={reading ? "Loading the conversation…" : live ? `Ask ${partner?.actor ?? "your partner"}…` : readOnly(partner?.status, writing)}
+      <p className="chat-notice">{chatNotice(head.data?.audience ?? "open", orgMode)}</p>
+      <Composer send={send} target={target} enabled={live && !reading && !loading && !outsider} editable
+        placeholder={reading ? "Loading the conversation…" : outsider ? closedTo(head.data!.audience)
+          : live ? `Ask ${partner?.actor ?? "your partner"}…` : readOnly(partner?.status, writing)}
         check={checkText} retryable={resendable}
         failure={(error) => error instanceof ApiError && error.status >= 400 && error.status < 500 && error.detail
           ? error.detail : "Could not send this message. Retry to send the same draft safely."} />
@@ -381,6 +420,26 @@ function partnerGone(partner: WorkspacePartner): string {
 
 function readOnly(status: string | undefined, writing: boolean): string {
   return status === "live" && !writing ? "You can read this chat but not post in it" : "Chat is off";
+}
+
+/** Why a chat I do not read is closed to me: staff only and I hold no staff, or not shared with me. */
+function outsiderNote(audience: string): string {
+  if (audience === "staff") return "This chat is staff only and you hold no staff, so you can neither read it nor post in it.";
+  const hidden = audience === "private" ? "hidden and " : "";
+  return `This chat is ${hidden}not shared with you, so you can neither read it nor post in it. Ask its starter to share it.`;
+}
+
+/** The box's placeholder in a chat I do not read. */
+function closedTo(audience: string): string {
+  return audience === "staff" ? "This chat is staff only" : "This chat is not shared with you";
+}
+
+/** A chat that is not open to whom the org mode lets in says so in its header: hidden by its starter, or staff only. */
+function ChatBadge({ audience }: { readonly audience: string }) {
+  const staff = audience === "staff";
+  return <span className="chat-badge" title={staff
+    ? "The assistant read a staff session into this chat, so only its readers who hold staff read it"
+    : "Its starter hid it: only they and the people they share it with read it"}>{staff ? "Staff only" : "Hidden"}</span>;
 }
 
 /** What to do when no partner is live: two lines, then the commands that start a local helper. */

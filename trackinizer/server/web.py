@@ -27,7 +27,7 @@ design.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import (
@@ -61,9 +61,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from treekle import from_plain
 from treekle.absent import ABSENT
 
-from trackinizer.server.api._deps import get_store, tag_row
+from trackinizer.server.api._deps import get_assistant, get_store, tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import parse_fields
+from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import (
     AuthIdentity,
     current_user,
@@ -94,6 +96,7 @@ from trackinizer.wire.wire_sessions import (
     FeedFacetsResponse,
     FeedHistogramResponse,
     FeedResponse,
+    FeedWhose,
 )
 
 
@@ -224,6 +227,8 @@ async def web_search_sessions(
     limit: int = 20,
     model: str = "",
     dim: int | None = None,
+    whose: FeedWhose | None = None,
+    hidden: bool = False,
 ) -> WebView:
     """Hybrid session search: embeddings + scoped tsvector, RRF-merged.
 
@@ -246,12 +251,17 @@ async def web_search_sessions(
         be swept). Unknown names are a 400. Empty uses the process default.
       dim: Optional dim override paired with ``model`` (a Matryoshka model
         accepts any dim in its range); must agree with any ``@dim`` in ``model``.
+      whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a
+        person searches their own, as the console opens on them, and the
+        configured assistant every one it reads, since it holds none of the
+        sessions it is asked about.
+      hidden: Search the ``private`` sessions the caller reads too.
 
     Returns:
       body: ``{"hits": [...], "semantic": bool, "degraded": bool}`` -- each hit
         carries ``session_id``/``part``/``idx`` (where the console opens),
         ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``. A session
-        whose audience the caller does not read has no hit.
+        whose transcript the caller does not read has no hit.
 
     """
     if limit < 1 or limit > _SESSION_SEARCH_MAX_LIMIT:
@@ -275,7 +285,12 @@ async def web_search_sessions(
         # skipped; 1 is a valid placeholder the query never reaches.
         dim=embedder.dim if embedder is not None else 1,
         limit=limit,
-        audiences=identity.read_audiences,
+        scope=feed_scope(
+            request,
+            identity,
+            whose=whose or _searched_by_default(request, identity),
+            hidden=hidden,
+        ),
     )
     return {
         "hits": [_session_hit_to_dict(hit) for hit in hits],
@@ -516,7 +531,7 @@ async def web_subscribe(
     read route (see the Auth section of ``docs/design.md``). Every subscriber
     sees every mutated id and the SPA decides what to fetch, except that a
     record written to a session's transcript is relayed only to a subscriber
-    whose audiences include the session's.
+    who reads that session.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -528,7 +543,13 @@ async def web_subscribe(
     """
     engine = _state(request).engine
     return StreamingResponse(
-        iter_sse_events(engine, audiences=identity.read_audiences),
+        iter_sse_events(
+            engine,
+            hears=TranscriptPings(
+                engine=engine,
+                reader=session_reader(request, identity),
+            ).hears,
+        ),
         media_type="text/event-stream",
     )
 
@@ -601,6 +622,7 @@ async def web_subscribe_probe(
 
 
 def feed_scope(
+    request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
     actor: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
@@ -608,11 +630,15 @@ def feed_scope(
     cli: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     kind: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     station: UUID | None = None,
+    whose: FeedWhose = "everyone",
+    hidden: bool = False,
 ) -> FeedScope:
     """Read the feed's filters: each repeatable, any of its values, all of them.
 
     Args:
-      identity: Authenticated user, whose station ``station`` must be.
+      request: The request, which carries the configuration.
+      identity: Authenticated user, whose station ``station`` must be, and who
+        reads.
       actor: Sessions by routing name.
       room: Sessions by a room they joined.
       cli: Sessions by the CLI they wrap.
@@ -621,9 +647,14 @@ def feed_scope(
         its chat's by ``produced_by`` edges, to depth 4 and 500 sessions, never the
         chat's own. A station that is not the caller's, or holds no chat, keeps
         nothing.
+      whose: ``mine``, the sessions held under the caller's account; ``campaigns``,
+        those of the campaigns the caller launched; ``everyone``, every session the
+        caller reads.
+      hidden: Keep the ``private`` sessions the caller reads; they are left out
+        otherwise.
 
     Returns:
-      scope: The records the filters keep.
+      scope: The records the filters keep, read as the caller.
 
     """
     return FeedScope(
@@ -636,6 +667,9 @@ def feed_scope(
             if station is None
             else StationAgents(workspace_id=station, user_id=identity.user_id)
         ),
+        account=identity.email if whose == "mine" else "",
+        asker=identity.email if whose == "campaigns" else "",
+        reader=session_reader(request, identity, hidden=hidden),
     )
 
 
@@ -665,9 +699,10 @@ async def web_feed(
     required; the order key is composite so a bare ``created`` resume would
     skip same-instant ties, and ``part`` joined it when the feed moved to IR
     records -- position restarts within each source file). ``since`` / ``until``
-    bound a fixed historical window; ``actor`` / ``room`` / ``cli`` / ``kind``
-    filter (:func:`feed_scope`), and ``conversation=true`` keeps only what the
-    facets count as conversation. ``tail=true`` returns the
+    bound a fixed historical window; ``actor`` / ``room`` / ``cli`` / ``kind`` /
+    ``whose`` filter and ``hidden`` keeps ``private`` sessions (:func:`feed_scope`),
+    and ``conversation=true`` keeps only what the facets count as conversation.
+    ``tail=true`` returns the
     newest page (the live console's first load) so a backlog does not force a
     replay from the beginning. The response carries ``next_after`` (a composite
     cursor) for the next poll; an empty page echoes the supplied cursor so the
@@ -689,9 +724,10 @@ async def web_feed(
 
     Returns:
       feed: Turns across the sessions the caller reads, pagination cursor for next
-        poll. A session whose audience the caller does not read has no turn here.
+        poll. A session whose transcript the caller does not read has no turn here.
 
     """
+    del identity
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be in [1, 1000]")
     _check_window(since, until)
@@ -700,7 +736,7 @@ async def web_feed(
         after=after,
         since=since,
         until=until,
-        scope=replace(scope, audiences=identity.read_audiences),
+        scope=scope,
         conversation=conversation,
         limit=limit,
         tail=tail,
@@ -753,10 +789,11 @@ async def web_feed_facets(
 
     """
     _check_window(since, until)
+    del identity
     return await get_store(request).read_feed_facets(
         since=since,
         until=until,
-        scope=replace(scope, audiences=identity.read_audiences),
+        scope=scope,
     )
 
 
@@ -795,6 +832,7 @@ async def web_feed_histogram(
         ``since``, or an ``until`` more than 7 days ago.
 
     """
+    del identity
     if buckets < 2 or buckets > 1_000:
         raise HTTPException(status_code=400, detail="buckets must be in [2, 1000]")
     _check_window(since, until)
@@ -812,7 +850,7 @@ async def web_feed_histogram(
         until=until,
         earliest=earliest,
         buckets=buckets,
-        scope=replace(scope, audiences=identity.read_audiences),
+        scope=scope,
     )
 
 
@@ -1450,6 +1488,14 @@ def _search_embedder(
     if model:
         return _override_embedder(request, model, dim)
     return _session_embedder(request)
+
+
+def _searched_by_default(request: Request, identity: AuthIdentity) -> FeedWhose:
+    """Return whose sessions a search that names none reads: see the route."""
+    assistant = get_assistant(request)
+    if assistant is not None and identity.email.lower() == assistant.email.lower():
+        return "everyone"
+    return "mine"
 
 
 async def _probe_frames(

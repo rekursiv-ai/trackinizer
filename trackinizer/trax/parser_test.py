@@ -646,22 +646,31 @@ def test_token_after_del_still_rejected() -> None:
         parse_actions(["title", "to", "x", "del", "status", "to", "y"])
 
 
-def test_config_set_parses_inline_json_object_to_dict() -> None:
-    """``config to JSON`` coerces the token to a dict at parse time."""
-    actions = parse_actions(["config", "to", '{"lr": 0.1, "epochs": 2}'])
-    assert actions == [SetField(field="config", value={"lr": 0.1, "epochs": 2})]
+@pytest.mark.parametrize("field", ["config", "app"])
+def test_json_object_set_parses_inline_json_object_to_dict(field: str) -> None:
+    """``config to JSON`` and ``app to JSON`` coerce the token to a dict at parse time."""
+    actions = parse_actions([field, "to", '{"lr": 0.1, "epochs": 2}'])
+    assert actions == [SetField(field=field, value={"lr": 0.1, "epochs": 2})]
 
 
-def test_config_bare_token_reads_field() -> None:
-    assert parse_actions(["config"]) == [ReadField(field="config")]
+@pytest.mark.parametrize("field", ["config", "app"])
+def test_json_object_bare_token_reads_field(field: str) -> None:
+    assert parse_actions([field]) == [ReadField(field=field)]
 
 
-def test_config_sentinel_values_pass_through_uncoerced() -> None:
+@pytest.mark.parametrize("field", ["config", "app"])
+def test_json_object_sentinel_values_pass_through_uncoerced(field: str) -> None:
     """``@path`` and ``-`` defer coercion until the verb layer reads them."""
-    assert parse_actions(["config", "to", "@cfg.json"]) == [
-        SetField(field="config", value="@cfg.json"),
+    assert parse_actions([field, "to", "@cfg.json"]) == [
+        SetField(field=field, value="@cfg.json"),
     ]
-    assert parse_actions(["config", "to", "-"]) == [SetField(field="config", value="-")]
+    assert parse_actions([field, "to", "-"]) == [SetField(field=field, value="-")]
+
+
+@pytest.mark.parametrize("value", ['["works"]', '{"verdict": NaN}'])
+def test_app_that_is_not_one_standard_json_object_is_refused(value: str) -> None:
+    with pytest.raises(ClientError, match="app must be"):
+        parse_actions(["app", "to", value])
 
 
 def test_positive_citation_rejects_negative_valence() -> None:

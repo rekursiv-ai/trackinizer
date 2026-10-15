@@ -10,8 +10,11 @@ surface with its own grammar.
 
 The append requires ``writer``, and for a science chat the key that opened it; the
 reads require ``viewer``. Each route also answers 403 ``session_audience`` to a caller
-who neither opened the session nor reads its audience. Tenant scope is
-derived by joining to ``inquiries``, as every session route does.
+who neither opened the session nor reads it. A read takes an ``asker`` and a ``chat``:
+the configured assistant reads for that user, on the user's rights and never its own,
+into the chat it answers them in (see ``require_session_access``), and anyone else's
+``asker`` and ``chat`` are ignored. Tenant scope is derived by joining to
+``inquiries``, as every session route does.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from trackinizer.server.api.session_access import (
     require_session,
     require_session_access,
     require_session_write_access,
+    resolve_asker,
 )
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.session_reaper import revive_if_reaped
@@ -89,7 +93,7 @@ async def append_session_records_route(
     store = get_store(request)
     session = await require_session(store, session_id)
     require_session_write_access(identity, session)
-    require_session_access(identity, session=session, mode="write")
+    await require_session_access(request, identity, session=session, mode="write")
     require_chat_opener(identity, session=session)
     # A run closed for silence that uploads again was alive all along; reopen
     # its session first, or the append is refused as a write to an ended one.
@@ -153,6 +157,9 @@ async def read_session_parts_route(
     session_id: UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    asker: str | None = None,
+    chat: UUID | None = None,
 ) -> ReadPartsResponse:
     """List the files this session was captured from, in ``part`` order.
 
@@ -160,14 +167,22 @@ async def read_session_parts_route(
       session_id: AgentSession ID to list parts from.
       request: FastAPI request (carries auth and store).
       identity: Authenticated reader.
+      asker: The account the configured assistant reads for.
+      chat: The conversation the configured assistant reads into.
 
     Returns:
       result: ReadPartsResponse with manifest info for each part.
 
     """
     store = get_store(request)
-    session = await require_session(store, session_id)
-    require_session_access(identity, session=session, mode="read")
+    await require_session_access(
+        request,
+        identity,
+        session=await require_session(store, session_id),
+        mode="read",
+        asker=await resolve_asker(request, identity, email=asker),
+        chat=chat,
+    )
     manifests = await store.read_session_manifests(session_id)
     return ReadPartsResponse(
         parts=[
@@ -196,6 +211,8 @@ async def read_session_records_route(
     after_idx: int = -1,
     limit: int = DEFAULT_LIST_LIMIT,
     plaintext_only: bool = False,
+    asker: str | None = None,
+    chat: UUID | None = None,
 ) -> ReadRecordsResponse:
     """Read one page of a part's records.
 
@@ -216,6 +233,8 @@ async def read_session_records_route(
       after_idx: Exclusive lower bound on idx (cursor-based paging).
       limit: Max rows per page.
       plaintext_only: Omit ciphertext.
+      asker: The account the configured assistant reads for.
+      chat: The conversation the configured assistant reads into.
 
     Returns:
       result: ReadRecordsResponse with matching records.
@@ -230,8 +249,14 @@ async def read_session_records_route(
     # reader fetches every part it names, so refusing one blanks the transcript.
     # A number no file resolved to has no manifest and reads as empty.
     store = get_store(request)
-    session = await require_session(store, session_id)
-    require_session_access(identity, session=session, mode="read")
+    await require_session_access(
+        request,
+        identity,
+        session=await require_session(store, session_id),
+        mode="read",
+        asker=await resolve_asker(request, identity, email=asker),
+        chat=chat,
+    )
     rows = await store.read_session_records(
         session_id,
         part=part,
@@ -249,6 +274,8 @@ async def read_recent_session_turns_route(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
     limit: int = 20,
+    asker: str | None = None,
+    chat: UUID | None = None,
 ) -> ReadRecentTurnsResponse:
     """Read recent conversation turns without transferring intervening tools.
 
@@ -257,6 +284,8 @@ async def read_recent_session_turns_route(
       request: FastAPI request carrying auth and store.
       identity: Authenticated reader.
       limit: Maximum user and assistant turns, from 1 through 100.
+      asker: The account the configured assistant reads for.
+      chat: The conversation the configured assistant reads into.
 
     Returns:
       result: The newest turns in display order across session parts.
@@ -265,8 +294,14 @@ async def read_recent_session_turns_route(
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=400, detail="limit must be in [1, 100]")
     store = get_store(request)
-    session = await require_session(store, session_id)
-    require_session_access(identity, session=session, mode="read")
+    await require_session_access(
+        request,
+        identity,
+        session=await require_session(store, session_id),
+        mode="read",
+        asker=await resolve_asker(request, identity, email=asker),
+        chat=chat,
+    )
     turns = await store.read_recent_session_turns(session_id, limit=limit)
     return ReadRecentTurnsResponse(
         turns=[

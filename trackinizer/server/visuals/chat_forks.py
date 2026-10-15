@@ -1,15 +1,17 @@
-"""Who continues a science chat and who forks it; who shares it and who deletes it.
+"""Who shares a science chat and who deletes it.
 
-A science chat is its starter's. They continue it by typing in it, and so do the people
-they share it with. Who else does is the server's setting: the starter's organisation
-(``domain``), the people whose verified email has the starter's domain; everyone
-(``single``); or nobody (``individual``). Anyone else forks it: typing starts a new chat
-of their own from the chat's latest line, and the original is never posted into.
+A science chat is its starter's. Who else reads it, and so posts in it and forks it,
+is :func:`~trackinizer.server.audience.visible_sql`'s rule, the one every read of
+a transcript takes: the people the starter shares it with, and as the server's
+organisation mode says, the starter's organisation (``domain``) or everyone
+(``single``). Anyone else neither reads it nor posts in it, and so cannot fork it
+either: a fork opens with copies of its original's lines. A reader forks it only
+when the fork, open to its own starter's organisation, reaches no one the chat
+does not: under ``domain``, a person it is shared with from another organisation
+posts in it and does not fork it.
 
-A consumer mail domain is no organisation, since its users have nothing in common, so
-under ``domain`` those users fork every chat that is not their own or shared with them.
-
-The starter shares their chat and stops sharing it, and so does an admin. One rule
+The starter shares their chat and stops sharing it. An admin only stops sharing it: a
+share lets its person read the chat, and an admin reads no one else's. One rule
 decides who deletes: you delete what you made, admins delete anything. The starter
 deletes their chat while every person's line in it is theirs; once someone else has
 posted, only an admin, or the key that opened it, does.
@@ -17,43 +19,19 @@ posted, only an admin, or the key that opened it, does.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, Literal
-
-
-if TYPE_CHECKING:
-    from collections.abc import Collection
-
-    from trackinizer.server.config import ChatOrgs
+from typing import Literal
 
 
 __all__ = [
-    "CONSUMER_DOMAINS",
+    "ChatClosedError",
+    "ChatClosure",
     "ChatRefusal",
     "ChatRefusedError",
     "ConversationTakenError",
     "ForeignChatError",
     "delete_refusal",
-    "may_continue",
     "may_share",
-    "org_of",
 ]
-
-
-CONSUMER_DOMAINS: Final = frozenset(
-    {
-        "gmail.com",
-        "googlemail.com",
-        "outlook.com",
-        "hotmail.com",
-        "live.com",
-        "yahoo.com",
-        "icloud.com",
-        "me.com",
-        "proton.me",
-        "protonmail.com",
-    },
-)
-"""Mail domains open to anyone, which never make their users one organisation."""
 
 
 type ChatRefusal = Literal["chat_not_starter", "chat_has_other_posters"]
@@ -62,11 +40,18 @@ someone else has posted in it since."""
 
 
 class ForeignChatError(Exception):
-    """A person who may not continue a chat tried to post into it."""
+    """A person who may not read a chat tried to post into it."""
 
 
 class ConversationTakenError(Exception):
     """A fork was asked to start as a conversation someone else already began."""
+
+
+type ChatClosure = Literal["chat_fork_closed", "chat_fork_wider", "chat_staff_only"]
+"""Why a chat's audience refuses what its reader asks: a ``private`` or ``staff`` chat
+is forked by no one, since a fork's copies would not keep its audience; one is
+forked by no one whose fork its organisation would read and the chat's readers do
+not include; a ``staff`` chat is shared with no one who does not hold ``staff``."""
 
 
 class ChatRefusedError(Exception):
@@ -77,54 +62,31 @@ class ChatRefusedError(Exception):
         self.code: ChatRefusal = code
 
 
-def org_of(email: str) -> str | None:
-    """Return the organisation an email belongs to: its domain, unless a consumer one.
+class ChatClosedError(Exception):
+    """A chat's audience refuses a fork or a share; ``code`` says which."""
+
+    def __init__(self, code: ChatClosure) -> None:
+        super().__init__(code)
+        self.code: ChatClosure = code
+
+
+def may_share(caller: str, *, starter: str, admin: bool, shared: bool) -> bool:
+    """Return whether ``caller`` may share the chat ``starter`` began, or unshare it.
+
+    A share lets its person read the chat, so only the starter grants one. An admin
+    stops sharing it but never shares it, with anyone, itself included.
 
     Args:
-      email: A verified email address.
-
-    Returns:
-      org: The lowercase domain; ``None`` for a consumer domain or text with no
-        domain.
-
-    """
-    _, at, domain = email.lower().rpartition("@")
-    return None if not at or domain in CONSUMER_DOMAINS else domain or None
-
-
-def may_continue(
-    poster: str,
-    *,
-    starter: str,
-    shared_with: Collection[str],
-    orgs: ChatOrgs,
-) -> bool:
-    """Return whether ``poster`` may type into the chat ``starter`` began.
-
-    Args:
-      poster: The attested email of the person typing.
+      caller: The email of the person asking.
       starter: The email of the person who started the chat.
-      shared_with: The lowercase emails the starter shared the chat with.
-      orgs: Who else continues a chat.
+      admin: Whether the caller is an admin.
+      shared: Share it; False stops sharing it.
 
     Returns:
-      continues: True for the starter, for the people the chat is shared with, for
-        anyone at all on a ``single`` server, and on a ``domain`` one for those in
-        the starter's organisation.
+      allowed: True for the starter, and for an admin stopping a share.
 
     """
-    person = poster.lower()
-    if orgs == "single" or person == starter.lower() or person in shared_with:
-        return True
-    if orgs == "individual":
-        return False
-    org = org_of(person)
-    return org is not None and org == org_of(starter)
-
-
-def may_share(caller: str, *, starter: str, admin: bool) -> bool:
-    """Return whether ``caller`` may share the chat ``starter`` began, or unshare it."""
-    return admin or caller.lower() == starter.lower()
+    return caller.lower() == starter.lower() or (admin and not shared)
 
 
 def delete_refusal(

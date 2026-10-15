@@ -21,7 +21,8 @@ async function open(page: Page, size = { width: 1280, height: 800 }): Promise<{ 
   await page.goto("/app/#/list/Issue");
   const column = page.locator(".chat-column");
   await expect(column.getByRole("region", { name: "Chat" })).toBeVisible();
-  await expect(page.locator(".visual-stage")).toBeVisible();
+  // A phone shows Chat alone; elsewhere the canvas stands beside it.
+  if (size.width > 760) await expect(page.locator(".visual-stage")).toBeVisible();
   return { column, stage: page.locator(".visual-stage") };
 }
 
@@ -100,8 +101,8 @@ test("a button in Chat's header moves it to the other side of the workbench, and
   const work = await box(stage);
   expect(chat.x).toBeGreaterThanOrEqual(work.x + work.width - 1);
   const main = await box(page.locator("main.main"));
-  // At the main area's right edge, inside its 1 px rule.
-  expect(Math.round(chat.x + chat.width)).toBe(Math.round(main.x + main.width) - 1);
+  // At the main area's right edge: wide, the main area draws no rule, and Chat is a panel in it.
+  expect(Math.round(chat.x + chat.width)).toBe(Math.round(main.x + main.width));
   await page.reload();
   await expect(column.getByRole("button", { name: "Move Chat to the left" })).toBeVisible();
   expect((await box(column)).x).toBeGreaterThan(640);
@@ -109,7 +110,7 @@ test("a button in Chat's header moves it to the other side of the workbench, and
   expect((await box(column)).x).toBeLessThan(640);
 });
 
-test("the shortcut hides Chat to a strip in the accent colour; the strip shows it, and a reload shows it again", async ({ page }) => {
+test("the shortcut hides Chat to a strip with its icon and an accent line toward the workbench; the strip shows it, and a reload shows it again", async ({ page }) => {
   const { column, stage } = await open(page);
   const shown = await box(column);
   const strip = page.getByRole("button", { name: "Show Chat" });
@@ -119,19 +120,22 @@ test("the shortcut hides Chat to a strip in the accent colour; the strip shows i
   await expect(column).toBeHidden();
   await expect(strip).toBeVisible();
   const thin = await box(strip);
-  expect(Math.round(thin.width)).toBe(16);
+  expect(Math.round(thin.width)).toBe(24);
   expect(Math.round(thin.height)).toBe(Math.round(shown.height));
   // The workbench takes the room Chat left, less the strip.
   expect(Math.round((await box(stage)).width)).toBeGreaterThan(Math.round(shown.width));
-  const fill = await strip.evaluate((element) => {
+  await expect(strip.locator("svg")).toBeVisible();
+  // Chat is at the left, so the line is on the strip's right, toward the workbench.
+  const line = await strip.evaluate((element) => {
     const probe = document.createElement("i");
-    probe.style.background = "var(--accent)";
+    probe.style.color = "var(--accent)";
     document.body.append(probe);
-    const accent = getComputedStyle(probe).backgroundColor;
+    const accent = getComputedStyle(probe).color;
     probe.remove();
-    return { strip: getComputedStyle(element).backgroundColor, accent };
+    const style = getComputedStyle(element);
+    return { accent, color: style.borderRightColor, width: style.borderRightWidth };
   });
-  expect(fill.strip).toBe(fill.accent);
+  expect([line.color, line.width]).toEqual([line.accent, "2px"]);
 
   await strip.click();
   await expect(column).toBeVisible();
@@ -185,8 +189,8 @@ test("Alt+Enter takes Chat over the whole main area, the workbench kept; Esc and
   await page.keyboard.press("Alt+Enter");
   await expect(stage).toBeHidden();
   const full = await box(column);
-  // The main area less its rule on each side.
-  expect(Math.round(full.width)).toBe(Math.round(main.width) - 2);
+  // The main area: wide, it draws no rule of its own, and Chat is a panel in it.
+  expect(Math.round(full.width)).toBe(Math.round(main.width));
   await page.keyboard.press("Escape");
   await expect(stage).toBeVisible();
   expect(Math.round((await box(column)).width)).toBeLessThan(Math.round(main.width) / 2);
@@ -216,11 +220,11 @@ test("an agent that moves the page covers nothing: Chat and the workbench stay w
   expect(await box(stage)).toEqual(work);
 });
 
-test("on a phone Chat stands under the page at full width, with no sideways scroll", async ({ page }) => {
+test("on a phone only Chat shows, at full width, with no sideways scroll", async ({ page }) => {
   const { column, stage } = await open(page, { width: 390, height: 844 });
-  const [chat, work] = [await box(column), await box(stage)];
+  await expect(stage).toBeHidden();
+  const chat = await box(column);
   expect(Math.round(chat.width)).toBe(390);
-  expect(chat.y).toBeGreaterThanOrEqual(work.y + work.height - 1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
   await expect(column.locator(".station-name")).toBeInViewport();
   await expect(page.getByRole("separator", { name: "Resize Chat" })).toBeHidden();

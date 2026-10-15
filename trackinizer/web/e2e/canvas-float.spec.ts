@@ -243,7 +243,7 @@ test("a drag cut off by the tile leaving the page does not freeze every tile", a
   await page.mouse.down();
   await page.mouse.move(title.x + 50, title.y + 10, { steps: 4 });
   // The tile is hidden under the pointer (an agent or another tab does the same), so no release reaches its bar.
-  await page.evaluate(() => document.querySelector<HTMLElement>("[title='Dismiss visual']")!.click());
+  await page.evaluate(() => document.querySelector<HTMLElement>(".visual-tile-floating [title='Dismiss visual']")!.click());
   await expect(page.locator(".visual-tile-floating")).toHaveCount(0);
   await page.mouse.up();
   await floatGraph(request);

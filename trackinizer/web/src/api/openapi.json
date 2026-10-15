@@ -902,6 +902,10 @@
             "title": "Account",
             "type": "string"
           },
+          "audience": {
+            "title": "Audience",
+            "type": "string"
+          },
           "conversation_id": {
             "format": "uuid",
             "title": "Conversation Id",
@@ -935,6 +939,10 @@
             "title": "May Delete",
             "type": "boolean"
           },
+          "may_hide": {
+            "title": "May Hide",
+            "type": "boolean"
+          },
           "may_share": {
             "title": "May Share",
             "type": "boolean"
@@ -965,6 +973,8 @@
           "forks",
           "forked_from",
           "forks_on_typing",
+          "audience",
+          "may_hide",
           "shared_with",
           "may_share",
           "may_delete"
@@ -1865,9 +1875,25 @@
       "FeedActorFacet": {
         "description": "One session's share of a feed window, as the console's agent list shows it.",
         "properties": {
+          "account": {
+            "default": "",
+            "title": "Account",
+            "type": "string"
+          },
           "actor": {
             "title": "Actor",
             "type": "string"
+          },
+          "audience": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audience"
           },
           "cli": {
             "anyOf": [
@@ -1901,6 +1927,11 @@
               }
             ],
             "title": "Ended"
+          },
+          "hideable": {
+            "default": false,
+            "title": "Hideable",
+            "type": "boolean"
           },
           "last": {
             "format": "date-time",
@@ -2220,6 +2251,14 @@
         ],
         "title": "FeedRoomFacet",
         "type": "object"
+      },
+      "FeedWhose": {
+        "enum": [
+          "mine",
+          "campaigns",
+          "everyone"
+        ],
+        "type": "string"
       },
       "FieldDraft": {
         "additionalProperties": false,
@@ -5719,6 +5758,58 @@
         "title": "ServiceTokenList",
         "type": "object"
       },
+      "SessionAudienceChange": {
+        "additionalProperties": false,
+        "description": "Hide a session from everyone but its owner and those who oversee, or show it.",
+        "properties": {
+          "audience": {
+            "enum": [
+              "open",
+              "private"
+            ],
+            "title": "Audience",
+            "type": "string"
+          }
+        },
+        "required": [
+          "audience"
+        ],
+        "title": "SessionAudienceChange",
+        "type": "object"
+      },
+      "SessionAudienceResponse": {
+        "description": "The audience a session now has, and every session that moved with it.",
+        "properties": {
+          "audience": {
+            "enum": [
+              "open",
+              "private"
+            ],
+            "title": "Audience",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "sessions": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Sessions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "session_id",
+          "audience",
+          "sessions"
+        ],
+        "title": "SessionAudienceResponse",
+        "type": "object"
+      },
       "SessionEnd": {
         "description": "Mark a session closed, optionally backfilling late-known fields.",
         "properties": {
@@ -5842,6 +5933,11 @@
             ],
             "title": "Idempotency Key"
           },
+          "private": {
+            "default": false,
+            "title": "Private",
+            "type": "boolean"
+          },
           "rooms": {
             "anyOf": [
               {
@@ -5899,6 +5995,17 @@
               }
             ],
             "title": "Actor"
+          },
+          "audience": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audience"
           },
           "cli_session_id": {
             "anyOf": [
@@ -6070,6 +6177,17 @@
               }
             ]
           },
+          "agentsession_audience": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agentsession Audience"
+          },
           "agentsession_cli": {
             "anyOf": [
               {
@@ -6129,6 +6247,18 @@
               }
             ],
             "title": "Agentsession Started"
+          },
+          "app": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App"
           },
           "belief_confidence": {
             "anyOf": [
@@ -6662,6 +6792,18 @@
             ],
             "title": "Actor"
           },
+          "app": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App"
+          },
           "cli": {
             "anyOf": [
               {
@@ -6827,6 +6969,18 @@
               }
             ],
             "title": "Actor"
+          },
+          "app": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App"
           },
           "description": {
             "anyOf": [
@@ -7024,6 +7178,18 @@
             ],
             "title": "Actor"
           },
+          "app": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App"
+          },
           "confidence": {
             "anyOf": [
               {
@@ -7177,6 +7343,18 @@
             ],
             "title": "Actor"
           },
+          "app": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App"
+          },
           "description": {
             "anyOf": [
               {
@@ -7303,6 +7481,18 @@
               }
             ],
             "title": "Actor"
+          },
+          "app": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App"
           },
           "codechanges": {
             "anyOf": [
@@ -7457,6 +7647,18 @@
               }
             ],
             "title": "Actor"
+          },
+          "app": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App"
           },
           "description": {
             "anyOf": [
@@ -7653,6 +7855,18 @@
               }
             ],
             "title": "Actor"
+          },
+          "app": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App"
           },
           "authors": {
             "anyOf": [
@@ -7861,6 +8075,18 @@
             ],
             "title": "Actor"
           },
+          "app": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App"
+          },
           "description": {
             "anyOf": [
               {
@@ -7987,6 +8213,18 @@
               }
             ],
             "title": "Actor"
+          },
+          "app": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App"
           },
           "description": {
             "anyOf": [
@@ -9125,6 +9363,23 @@
             "title": "Id",
             "type": "string"
           },
+          "params": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "title": "Params",
+            "type": "object"
+          },
           "record": {
             "anyOf": [
               {
@@ -9268,6 +9523,7 @@
           "account",
           "subscribers",
           "marginal_cost",
+          "app",
           "issue_kind",
           "issue_validation",
           "issue_priority",
@@ -9294,6 +9550,7 @@
           "agentsession_started",
           "agentsession_ended",
           "agentsession_rooms",
+          "agentsession_audience",
           "edge_added",
           "edge_removed",
           "edge_annotation_changed",
@@ -10909,7 +11166,7 @@
     },
     "/api/change_log/stream": {
       "get": {
-        "description": "Stream change ids over SSE.\n\nShares ``iter_sse_events`` with ``/api/web/subscribe`` so both emit\none wire shape; offline catch-up uses ``GET /api/change_log``. A record\nwritten to a session's transcript is streamed only to a caller whose\naudiences include the session's.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, viewer-role-gated.\n\nReturns:\n  result: Server-sent events stream emitting change ids.",
+        "description": "Stream change ids over SSE.\n\nShares ``iter_sse_events`` with ``/api/web/subscribe`` so both emit\none wire shape; offline catch-up uses ``GET /api/change_log``. A record\nwritten to a session's transcript is streamed only to a caller who reads\nthat session.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, viewer-role-gated.\n\nReturns:\n  result: Server-sent events stream emitting change ids.",
         "operationId": "change_log_stream_route_api_change_log_stream_get",
         "responses": {
           "200": {
@@ -10967,7 +11224,7 @@
     },
     "/api/chats": {
       "post": {
-        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nA chat's starter posts into it, as does each person it is shared with and anyone\nthe server's ``TRACKINIZER_CHAT_ORGS`` lets in; a viewer may not, and any other\nwriter is refused with 403 ``chat_not_shared`` and forks it instead (``fork``\nnames the line to start from), whether the chat is named by ``conversation_id``\nor by the ``Idempotency-Key`` of a post that names none; a fork whose key names a\nconversation someone else began is refused with 409. A line under the id of a\ndeleted chat, named or as a fork's key, or a fork from a line of one, is refused\nwith 410 ``chat_deleted``: no chat starts under that id again. A station holds one\nchat: its first line binds the station to the line's conversation, and a line\nnaming another conversation is refused with 409, as is one for a conversation\nanother station of the poster holds. A fork goes to a new station, copied from\nthe one it was sent from and named in the answer's ``workspace_id``. The line's\nposter is the attested identity, never anything in the body. The answer is the\nconversation id at once: the conversation's session appears when the assistant\nopens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key\nqueues nothing again.\n\nArgs:\n  body: The line, the poster's station, and the conversation to post into or the\n    line to fork; neither continues the station's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the station it went to, and its session when the\n    assistant has it open.",
+        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nWhoever reads a chat posts into it: its starter, each person it is shared with\nand anyone the server's ``TRACKINIZER_CHAT_ORGS`` lets in, holding its audience;\na viewer may not, and any other writer is refused with 403 ``chat_not_shared``,\nwhether the chat is named by ``conversation_id`` or by the ``Idempotency-Key`` of\na post that names none. A reader forks a chat from one of its lines (``fork``\nnames it); a fork from a line of a chat the poster does not read is 422, since it\nwould copy lines they may not read, a fork of a ``private`` or ``staff`` chat is\n409 ``chat_fork_closed``, since its copies would not keep the audience, a fork\nthat the poster's organisation would read and the chat's readers do not\ninclude is 409 ``chat_fork_wider``, and a fork whose key names a conversation\nsomeone else began is refused with 409. A\nline under the id of a\ndeleted chat, named or as a fork's key, or a fork from a line of one, is refused\nwith 410 ``chat_deleted``: no chat starts under that id again. A station holds one\nchat: its first line binds the station to the line's conversation, and a line\nnaming another conversation is refused with 409, as is one for a conversation\nanother station of the poster holds. A fork goes to a new station, copied from\nthe one it was sent from and named in the answer's ``workspace_id``. The line's\nposter is the attested identity, never anything in the body. The answer is the\nconversation id at once: the conversation's session appears when the assistant\nopens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key\nqueues nothing again.\n\nArgs:\n  body: The line, the poster's station, and the conversation to post into or the\n    line to fork; neither continues the station's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the station it went to, and its session when the\n    assistant has it open.",
         "operationId": "post_chat_line_route_api_chats_post",
         "parameters": [
           {
@@ -11050,7 +11307,7 @@
         "summary": "Delete Chat Route"
       },
       "get": {
-        "description": "Find a conversation's session; 404 until the assistant has opened it.\n\nA chat that was deleted is 410 ``chat_deleted``.\n\nArgs:\n  conversation_id: The conversation.\n  request: Request carrying the database engine.\n  identity: The signed-in user; every chat of the assistant is open to every\n    user, and a chat of a user's own helper to that user.\n\nReturns:\n  head: The session, its starter, whether the assistant still has it open, how\n    often it was forked, what it was forked from, whether the caller's typing\n    forks it, who it is shared with, and whether the caller may share or delete\n    it.",
+        "description": "Find a conversation's session; 404 until the assistant has opened it.\n\nA chat that was deleted is 410 ``chat_deleted``.\n\nArgs:\n  conversation_id: The conversation.\n  request: Request carrying the database engine.\n  identity: The signed-in user; the head of every chat of the assistant is found\n    for every user, and of a chat of a user's own helper for that user. Its\n    transcript is read by the chat's members alone.\n\nReturns:\n  head: The session, its starter, whether the assistant still has it open, how\n    often it was forked, what it was forked from, its audience, whether the\n    caller does not read it, who it is shared with, and whether the caller may\n    hide, share or delete it.",
         "operationId": "read_chat_route_api_chats__conversation_id__get",
         "parameters": [
           {
@@ -11091,7 +11348,7 @@
     },
     "/api/chats/{conversation_id}/shares/{email}": {
       "delete": {
-        "description": "Stop sharing a chat with one person: their next line forks it, their past stay.\n\nOnly the chat's starter or an admin unshares it, from a browser: an API key is\n403, and anyone else is 403 ``chat_not_starter``. Unsharing a person it is not\nshared with changes nothing.\n\nArgs:\n  conversation_id: The chat.\n  email: The person's email.\n  request: Request carrying the database engine.\n  identity: The signed-in writer.\n\nReturns:\n  shared_with: The chat's shares, oldest first.",
+        "description": "Stop sharing a chat with one person: they read none of it, their past lines stay.\n\nOnly the chat's starter or an admin unshares it, from a browser: an API key is\n403, and anyone else is 403 ``chat_not_starter``. Unsharing a person it is not\nshared with changes nothing.\n\nArgs:\n  conversation_id: The chat.\n  email: The person's email.\n  request: Request carrying the database engine.\n  identity: The signed-in writer.\n\nReturns:\n  shared_with: The chat's shares, oldest first.",
         "operationId": "unshare_chat_route_api_chats__conversation_id__shares__email__delete",
         "parameters": [
           {
@@ -11145,7 +11402,7 @@
         "summary": "Unshare Chat Route"
       },
       "put": {
-        "description": "Share a chat with one person, who then posts into it as its starter does.\n\nOnly the chat's starter or an admin shares it, from a browser: an API key is\n403, and anyone else is 403 ``chat_not_starter``. Sharing again changes nothing.\n\nArgs:\n  conversation_id: The chat.\n  email: The person's email; stored lowercase.\n  request: Request carrying the database engine.\n  identity: The signed-in writer.\n\nReturns:\n  shared_with: The chat's shares, oldest first.",
+        "description": "Share a chat with one person, who then reads it and posts as its starter does.\n\nOnly the chat's starter shares it, from a browser: an API key is 403, and anyone\nelse, an admin included, is 403 ``chat_not_starter``, since a share lets its\nperson read the chat. A ``staff`` chat is shared only with a person who holds\n``staff`` now, else 409 ``chat_staff_only``. Sharing again changes nothing.\n\nArgs:\n  conversation_id: The chat.\n  email: The person's email; stored lowercase.\n  request: Request carrying the database engine.\n  identity: The signed-in writer.\n\nReturns:\n  shared_with: The chat's shares, oldest first.",
         "operationId": "share_chat_route_api_chats__conversation_id__shares__email__put",
         "parameters": [
           {
@@ -12832,7 +13089,7 @@
     },
     "/api/export": {
       "get": {
-        "description": "Stream every exported row as one JSON object per line.\n\nViewer-gated: it is a read, so a read-only key can run it. A session's transcript\nis exported only to a caller whose audiences include the session's, and the\nheader line names the audiences the file was read for, so a file taken by a\ncaller that reads fewer than the deployment holds says so. A backup or mirror\nthat must hold every transcript runs as a caller that reads every audience.\n\nArgs:\n  request: FastAPI request object for store access.\n  identity: Authenticated user identity, viewer-role-gated.\n\nReturns:\n  result: The header line, then one line per row.",
+        "description": "Stream every exported row as one JSON object per line.\n\nViewer-gated: it is a read, so a read-only key can run it. A session's transcript\nis exported only to a caller who reads it: one whose audiences include the\nsession's, and for a science chat one of the chat's members, an admin no more\nthan anyone else. The header line names the audiences the file was read for and\ncounts the sessions whose transcripts it left out (``withheld_sessions``), so a\nfile that is not a whole backup says so.\n\nArgs:\n  request: FastAPI request object for store access.\n  identity: Authenticated user identity, viewer-role-gated.\n\nReturns:\n  result: The header line, then one line per row.",
         "operationId": "export_route_api_export_get",
         "responses": {
           "200": {
@@ -12849,7 +13106,7 @@
     },
     "/api/inquiries": {
       "get": {
-        "description": "List inquiries across one or more ``kind`` query params.\n\nResults from every requested kind are concatenated, one block per\nDISTINCT kind: a repeated ``kind`` param yields one block, not several.\n``limit`` and\n``offset`` apply per kind, since each kind runs its own query. At\nleast one ``kind`` is required. Each ``seq_range`` param is one\ninclusive ``a..b`` interval; their union selects rows across disjoint\nseq windows in a single query.\n\nEach ``fields`` param names one key every row keeps; the others are left\nout. A key only another kind's rows carry is absent from this kind's. The\nedges are read only when a relation (``narrows``, ``proved_by``, ...) is\nnamed. Without ``fields`` each row is whole.\n\n``ancestors=narrows`` adds ``ancestors`` to each row, after ``fields``: the\nIssues it narrows, theirs, and so on up to the roots, nearest first, each\nas ``{id, kind, seq, title, status, child_ids}``. ``child_ids`` names which\nof the row and its listed ancestors narrow that one, so a row with several\nparents keeps them all. The walk stops 8 levels up and at 200 ancestors\nfor the whole response, nearest first.\n\nA ``filter`` on a record of an ``AgentSession`` (``user_message``, ``tool_call``,\n...) is answered from its transcript, so it meets only the sessions whose audience\nthe caller reads; a session the caller does not read is neither found by it nor\nruled out by it.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, viewer-role-gated.\n  kind: Inquiry kinds to list; deduplicated before query.\n  status: Optional status filter applied to each kind's query.\n  limit: Rows per kind (validated in [1, MAX_LIST_LIMIT]).\n  offset: Skip this many rows in each kind's result.\n  seq_range: Inclusive seq intervals; union selects rows.\n  filter_: JSON filter expressions; one per repeated param.\n  fields: Row keys to send, one per repeated param; unset sends every key.\n  ancestors: ``narrows`` adds each row's ``narrows`` ancestry; unset adds none.\n\nReturns:\n  out: One JSON object per distinct kind, with inquiries for that kind.",
+        "description": "List inquiries across one or more ``kind`` query params.\n\nResults from every requested kind are concatenated, one block per\nDISTINCT kind: a repeated ``kind`` param yields one block, not several.\n``limit`` and\n``offset`` apply per kind, since each kind runs its own query. At\nleast one ``kind`` is required. Each ``seq_range`` param is one\ninclusive ``a..b`` interval; their union selects rows across disjoint\nseq windows in a single query.\n\nEach ``fields`` param names one key every row keeps; the others are left\nout. A key only another kind's rows carry is absent from this kind's. The\nedges are read only when a relation (``narrows``, ``proved_by``, ...) is\nnamed. Without ``fields`` each row is whole.\n\n``ancestors=narrows`` adds ``ancestors`` to each row, after ``fields``: the\nIssues it narrows, theirs, and so on up to the roots, nearest first, each\nas ``{id, kind, seq, title, status, child_ids}``. ``child_ids`` names which\nof the row and its listed ancestors narrow that one, so a row with several\nparents keeps them all. The walk stops 8 levels up and at 200 ancestors\nfor the whole response, nearest first.\n\nA ``filter`` on a record of an ``AgentSession`` (``user_message``, ``tool_call``,\n...) is answered from its transcript, so it meets only the sessions whose\ntranscript the caller reads (its audience, and for a science chat its members); a\nsession the caller does not read is neither found by it nor ruled out by it.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, viewer-role-gated.\n  kind: Inquiry kinds to list; deduplicated before query.\n  status: Optional status filter applied to each kind's query.\n  limit: Rows per kind (validated in [1, MAX_LIST_LIMIT]).\n  offset: Skip this many rows in each kind's result.\n  seq_range: Inclusive seq intervals; union selects rows.\n  filter_: JSON filter expressions; one per repeated param.\n  fields: Row keys to send, one per repeated param; unset sends every key.\n  ancestors: ``narrows`` adds each row's ``narrows`` ancestry; unset adds none.\n\nReturns:\n  out: One JSON object per distinct kind, with inquiries for that kind.",
         "operationId": "list_inquiries_route_api_inquiries_get",
         "parameters": [
           {
@@ -13416,6 +13673,104 @@
           }
         },
         "summary": "Set Account Route"
+      }
+    },
+    "/api/inquiries/{target_id}/app": {
+      "delete": {
+        "operationId": "unset_app_route_api_inquiries__target_id__app_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Target Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FieldMutation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutableJSON"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unset App Route"
+      },
+      "put": {
+        "operationId": "set_app_route_api_inquiries__target_id__app_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Target Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FieldSet_Union_dict_str__object___NoneType__"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutableJSON"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set App Route"
       }
     },
     "/api/inquiries/{target_id}/authority": {
@@ -15251,7 +15606,7 @@
     },
     "/api/me/profile": {
       "get": {
-        "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, canvas opt-in, the\n    user's preferences (every key, defaults filled), the\n    id of the API key the request used (``None`` for a browser session), when\n    the caller agreed to the rules and to which version, and the current rules\n    version with the id of the Issue that holds the rules (both ``None`` while\n    Issue#1 is missing or unlocked), and the audiences the credential reads and\n    opens into, with its pin if any.",
+        "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, canvas opt-in, the\n    user's preferences (every key, defaults filled), the\n    id of the API key the request used (``None`` for a browser session), when\n    the caller agreed to the rules and to which version, and the current rules\n    version with the id of the Issue that holds the rules (both ``None`` while\n    Issue#1 is missing or unlocked), the audiences the credential reads and\n    opens into, with its pin if any, and the server's organisation mode\n    (``org_mode``: ``single``, ``domain`` or ``individual``), which says who\n    reads what the caller makes.",
         "operationId": "profile_route_api_me_profile_get",
         "responses": {
           "200": {
@@ -16550,7 +16905,7 @@
     },
     "/api/sessions/start": {
       "post": {
-        "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so ``trax run``\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``. A pin the caller no longer holds is 403 ``audience_not_held``. A\n``cli_session_id`` of a deleted science chat (``chat:<id>``) is 410\n``chat_deleted``.\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, started, rooms,\n    account, idempotency_key).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, and granted actor\n    name.",
+        "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so ``trax run``\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``, or ``private`` when ``private`` asks; a pin the caller no longer holds\nis 403 ``audience_not_held``, and so is ``private`` under a pin to ``staff``. A\nresume asked to be ``private`` hides the ``open`` session it re-attaches, as the\nkey that opened it may, and is 409, leaving it as it was, for a ``staff`` one. A\nsession under the id of a science chat that is not ``open`` takes the chat's\naudience instead, so a chat stays ``private`` or ``staff`` whichever key opens\nits next session. A ``cli_session_id`` of a deleted science chat\n(``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is titled\n``Science chat`` whatever ``title`` says, since every key reads the row and only\nthe chat's members read its lines.\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, started, rooms,\n    account, idempotency_key, private).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, granted actor name and\n    audience.",
         "operationId": "session_start_route_api_sessions_start_post",
         "requestBody": {
           "content": {
@@ -16585,6 +16940,57 @@
           }
         },
         "summary": "Session Start Route"
+      }
+    },
+    "/api/sessions/{session_id}/audience": {
+      "post": {
+        "description": "Make a session ``private``, or ``open`` again; for a chat, every one under its id.\n\nOnly its owner does, from a browser or by key: anyone else, an admin included,\nis 403 ``session_not_owner``. A ``staff`` session is 409 ``session_staff``. Each\nsession that moves is audited in the change log; asking for the audience it has\nmoves nothing.\n\nArgs:\n  session_id: The session.\n  body: The audience it takes.\n  request: Request carrying the store.\n  identity: The caller.\n\nReturns:\n  response: The session, its audience, and every session that moved.",
+        "operationId": "set_session_audience_route_api_sessions__session_id__audience_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionAudienceChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionAudienceResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Session Audience Route"
       }
     },
     "/api/sessions/{session_id}/end": {
@@ -16740,7 +17146,7 @@
     },
     "/api/sessions/{session_id}/parts": {
       "get": {
-        "description": "List the files this session was captured from, in ``part`` order.\n\nArgs:\n  session_id: AgentSession ID to list parts from.\n  request: FastAPI request (carries auth and store).\n  identity: Authenticated reader.\n\nReturns:\n  result: ReadPartsResponse with manifest info for each part.",
+        "description": "List the files this session was captured from, in ``part`` order.\n\nArgs:\n  session_id: AgentSession ID to list parts from.\n  request: FastAPI request (carries auth and store).\n  identity: Authenticated reader.\n  asker: The account the configured assistant reads for.\n  chat: The conversation the configured assistant reads into.\n\nReturns:\n  result: ReadPartsResponse with manifest info for each part.",
         "operationId": "read_session_parts_route_api_sessions__session_id__parts_get",
         "parameters": [
           {
@@ -16751,6 +17157,39 @@
               "format": "uuid",
               "title": "Session Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asker",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asker"
+            }
+          },
+          {
+            "in": "query",
+            "name": "chat",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Chat"
             }
           }
         ],
@@ -16781,7 +17220,7 @@
     },
     "/api/sessions/{session_id}/records": {
       "get": {
-        "description": "Read one page of a part's records.\n\n``after_idx`` is an EXCLUSIVE lower bound rather than an offset, so paging\nis stable while a capture is still appending: an offset would re-window\nevery time the part grew.\n\n``plaintext_only`` skips the ciphertext splice, which is what a viewer\nwants -- only a replay needs the encrypted half, and it is the largest\nthing on the row.\n\nArgs:\n  session_id: AgentSession ID to read from.\n  request: FastAPI request (carries auth and store).\n  identity: Authenticated reader.\n  part: Which file, as ``GET .../parts`` numbers it; ``-1`` holds turns\n    backfilled from the retired event log.\n  after_idx: Exclusive lower bound on idx (cursor-based paging).\n  limit: Max rows per page.\n  plaintext_only: Omit ciphertext.\n\nReturns:\n  result: ReadRecordsResponse with matching records.",
+        "description": "Read one page of a part's records.\n\n``after_idx`` is an EXCLUSIVE lower bound rather than an offset, so paging\nis stable while a capture is still appending: an offset would re-window\nevery time the part grew.\n\n``plaintext_only`` skips the ciphertext splice, which is what a viewer\nwants -- only a replay needs the encrypted half, and it is the largest\nthing on the row.\n\nArgs:\n  session_id: AgentSession ID to read from.\n  request: FastAPI request (carries auth and store).\n  identity: Authenticated reader.\n  part: Which file, as ``GET .../parts`` numbers it; ``-1`` holds turns\n    backfilled from the retired event log.\n  after_idx: Exclusive lower bound on idx (cursor-based paging).\n  limit: Max rows per page.\n  plaintext_only: Omit ciphertext.\n  asker: The account the configured assistant reads for.\n  chat: The conversation the configured assistant reads into.\n\nReturns:\n  result: ReadRecordsResponse with matching records.",
         "operationId": "read_session_records_route_api_sessions__session_id__records_get",
         "parameters": [
           {
@@ -16832,6 +17271,39 @@
               "default": false,
               "title": "Plaintext Only",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asker",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asker"
+            }
+          },
+          {
+            "in": "query",
+            "name": "chat",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Chat"
             }
           }
         ],
@@ -16911,7 +17383,7 @@
     },
     "/api/sessions/{session_id}/turns": {
       "get": {
-        "description": "Read recent conversation turns without transferring intervening tools.\n\nArgs:\n  session_id: AgentSession ID to read from.\n  request: FastAPI request carrying auth and store.\n  identity: Authenticated reader.\n  limit: Maximum user and assistant turns, from 1 through 100.\n\nReturns:\n  result: The newest turns in display order across session parts.",
+        "description": "Read recent conversation turns without transferring intervening tools.\n\nArgs:\n  session_id: AgentSession ID to read from.\n  request: FastAPI request carrying auth and store.\n  identity: Authenticated reader.\n  limit: Maximum user and assistant turns, from 1 through 100.\n  asker: The account the configured assistant reads for.\n  chat: The conversation the configured assistant reads into.\n\nReturns:\n  result: The newest turns in display order across session parts.",
         "operationId": "read_recent_session_turns_route_api_sessions__session_id__turns_get",
         "parameters": [
           {
@@ -16932,6 +17404,39 @@
               "default": 20,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asker",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asker"
+            }
+          },
+          {
+            "in": "query",
+            "name": "chat",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Chat"
             }
           }
         ],
@@ -17172,7 +17677,7 @@
     },
     "/api/web/feed": {
       "get": {
-        "description": "Cross-session captured-turn feed for the multi-agent console.\n\nInterleaves every session's turns into one time-ordered stream so the\nconsole shows many agents at once.\n\n``after_created`` / ``after_session`` / ``after_part`` / ``after_seq``\ntogether form the composite keyset cursor a poll resumes past (all are\nrequired; the order key is composite so a bare ``created`` resume would\nskip same-instant ties, and ``part`` joined it when the feed moved to IR\nrecords -- position restarts within each source file). ``since`` / ``until``\nbound a fixed historical window; ``actor`` / ``room`` / ``cli`` / ``kind``\nfilter (:func:`feed_scope`), and ``conversation=true`` keeps only what the\nfacets count as conversation. ``tail=true`` returns the\nnewest page (the live console's first load) so a backlog does not force a\nreplay from the beginning. The response carries ``next_after`` (a composite\ncursor) for the next poll; an empty page echoes the supplied cursor so the\ntail does not rewind.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  scope: Which sessions and record kinds to read.\n  after_created: Resume cursor: creation timestamp of last-seen turn.\n  after_session: Resume cursor: session id of last-seen turn.\n  after_part: Resume cursor: part index within the session.\n  after_seq: Resume cursor: sequence number within the part.\n  since: Absolute window start (inclusive).\n  until: Absolute window end (inclusive).\n  conversation: Keep only conversation, what a person or agent said.\n  limit: Maximum turns to return.\n  tail: Return newest page first (true) or oldest available (false).\n\nReturns:\n  feed: Turns across the sessions the caller reads, pagination cursor for next\n    poll. A session whose audience the caller does not read has no turn here.",
+        "description": "Cross-session captured-turn feed for the multi-agent console.\n\nInterleaves every session's turns into one time-ordered stream so the\nconsole shows many agents at once.\n\n``after_created`` / ``after_session`` / ``after_part`` / ``after_seq``\ntogether form the composite keyset cursor a poll resumes past (all are\nrequired; the order key is composite so a bare ``created`` resume would\nskip same-instant ties, and ``part`` joined it when the feed moved to IR\nrecords -- position restarts within each source file). ``since`` / ``until``\nbound a fixed historical window; ``actor`` / ``room`` / ``cli`` / ``kind`` /\n``whose`` filter and ``hidden`` keeps ``private`` sessions (:func:`feed_scope`),\nand ``conversation=true`` keeps only what the facets count as conversation.\n``tail=true`` returns the\nnewest page (the live console's first load) so a backlog does not force a\nreplay from the beginning. The response carries ``next_after`` (a composite\ncursor) for the next poll; an empty page echoes the supplied cursor so the\ntail does not rewind.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  scope: Which sessions and record kinds to read.\n  after_created: Resume cursor: creation timestamp of last-seen turn.\n  after_session: Resume cursor: session id of last-seen turn.\n  after_part: Resume cursor: part index within the session.\n  after_seq: Resume cursor: sequence number within the part.\n  since: Absolute window start (inclusive).\n  until: Absolute window end (inclusive).\n  conversation: Keep only conversation, what a person or agent said.\n  limit: Maximum turns to return.\n  tail: Return newest page first (true) or oldest available (false).\n\nReturns:\n  feed: Turns across the sessions the caller reads, pagination cursor for next\n    poll. A session whose transcript the caller does not read has no turn here.",
         "operationId": "web_feed_api_web_feed_get",
         "parameters": [
           {
@@ -17401,6 +17906,31 @@
               ],
               "title": "Station"
             }
+          },
+          {
+            "in": "query",
+            "name": "whose",
+            "required": false,
+            "schema": {
+              "default": "everyone",
+              "enum": [
+                "mine",
+                "campaigns",
+                "everyone"
+              ],
+              "title": "Whose",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hidden",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Hidden",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -17562,6 +18092,31 @@
                 }
               ],
               "title": "Station"
+            }
+          },
+          {
+            "in": "query",
+            "name": "whose",
+            "required": false,
+            "schema": {
+              "default": "everyone",
+              "enum": [
+                "mine",
+                "campaigns",
+                "everyone"
+              ],
+              "title": "Whose",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hidden",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Hidden",
+              "type": "boolean"
             }
           }
         ],
@@ -17734,6 +18289,31 @@
                 }
               ],
               "title": "Station"
+            }
+          },
+          {
+            "in": "query",
+            "name": "whose",
+            "required": false,
+            "schema": {
+              "default": "everyone",
+              "enum": [
+                "mine",
+                "campaigns",
+                "everyone"
+              ],
+              "title": "Whose",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hidden",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Hidden",
+              "type": "boolean"
             }
           }
         ],
@@ -18055,7 +18635,7 @@
     },
     "/api/web/search_sessions": {
       "get": {
-        "description": "Hybrid session search: embeddings + scoped tsvector, RRF-merged.\n\nRuns the full-text arm always, and the semantic arm only when ``semantic``\nis requested AND a session embedder is available. With no embedder the route\ndegrades to full-text-only rather than 500 -- a keyword search must never\ntrigger a model load -- and flags the degrade in the response\n(``degraded: true``, ``semantic: false``). The query embedding uses the\nembedder's query-side prefix; the corpus stayed prefix-free at ingest.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  q: The search query. Full-text terms feed ``websearch_to_tsquery``.\n  identity: Authenticated user, validated to have viewer role.\n  semantic: Request the embedding arm (default true); ignored when no\n    session embedder is available.\n  limit: Maximum merged hits, 1-200.\n  model: Optional A/B override -- a bare slug or full ``slug@dim`` of an\n    embedder to query INSTEAD of the serving default (its rows must already\n    be swept). Unknown names are a 400. Empty uses the process default.\n  dim: Optional dim override paired with ``model`` (a Matryoshka model\n    accepts any dim in its range); must agree with any ``@dim`` in ``model``.\n\nReturns:\n  body: ``{\"hits\": [...], \"semantic\": bool, \"degraded\": bool}`` -- each hit\n    carries ``session_id``/``part``/``idx`` (where the console opens),\n    ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``. A session\n    whose audience the caller does not read has no hit.",
+        "description": "Hybrid session search: embeddings + scoped tsvector, RRF-merged.\n\nRuns the full-text arm always, and the semantic arm only when ``semantic``\nis requested AND a session embedder is available. With no embedder the route\ndegrades to full-text-only rather than 500 -- a keyword search must never\ntrigger a model load -- and flags the degrade in the response\n(``degraded: true``, ``semantic: false``). The query embedding uses the\nembedder's query-side prefix; the corpus stayed prefix-free at ingest.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  q: The search query. Full-text terms feed ``websearch_to_tsquery``.\n  identity: Authenticated user, validated to have viewer role.\n  semantic: Request the embedding arm (default true); ignored when no\n    session embedder is available.\n  limit: Maximum merged hits, 1-200.\n  model: Optional A/B override -- a bare slug or full ``slug@dim`` of an\n    embedder to query INSTEAD of the serving default (its rows must already\n    be swept). Unknown names are a 400. Empty uses the process default.\n  dim: Optional dim override paired with ``model`` (a Matryoshka model\n    accepts any dim in its range); must agree with any ``@dim`` in ``model``.\n  whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a\n    person searches their own, as the console opens on them, and the\n    configured assistant every one it reads, since it holds none of the\n    sessions it is asked about.\n  hidden: Search the ``private`` sessions the caller reads too.\n\nReturns:\n  body: ``{\"hits\": [...], \"semantic\": bool, \"degraded\": bool}`` -- each hit\n    carries ``session_id``/``part``/``idx`` (where the console opens),\n    ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``. A session\n    whose transcript the caller does not read has no hit.",
         "operationId": "web_search_sessions_api_web_search_sessions_get",
         "parameters": [
           {
@@ -18112,6 +18692,32 @@
               ],
               "title": "Dim"
             }
+          },
+          {
+            "in": "query",
+            "name": "whose",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/FeedWhose"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Whose"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hidden",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Hidden",
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -18141,7 +18747,7 @@
     },
     "/api/web/subscribe": {
       "get": {
-        "description": "SSE relay of mutated inquiry ids for the SPA.\n\nForwards every ``NOTIFY_CHANNEL`` payload as ``{\"id\": \"<uuid>\"}``\nvia :func:`iter_sse_events` -- shared with ``/api/change_log/stream``\nso both routes emit one wire shape. Gated at ``viewer`` like every\nread route (see the Auth section of ``docs/design.md``). Every subscriber\nsees every mutated id and the SPA decides what to fetch, except that a\nrecord written to a session's transcript is relayed only to a subscriber\nwhose audiences include the session's.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n\nReturns:\n  stream: Server-sent events of mutated node ids.",
+        "description": "SSE relay of mutated inquiry ids for the SPA.\n\nForwards every ``NOTIFY_CHANNEL`` payload as ``{\"id\": \"<uuid>\"}``\nvia :func:`iter_sse_events` -- shared with ``/api/change_log/stream``\nso both routes emit one wire shape. Gated at ``viewer`` like every\nread route (see the Auth section of ``docs/design.md``). Every subscriber\nsees every mutated id and the SPA decides what to fetch, except that a\nrecord written to a session's transcript is relayed only to a subscriber\nwho reads that session.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n\nReturns:\n  stream: Server-sent events of mutated node ids.",
         "operationId": "web_subscribe_api_web_subscribe_get",
         "responses": {
           "200": {
@@ -18714,7 +19320,7 @@
     },
     "/api/workspaces/{workspace_id}/events": {
       "get": {
-        "description": "Stream a canvas's changes to its owner's browser as server-sent events.\n\nEach frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:\n``workspace`` carries the whole canvas on open, after every change by a\nbrowser or an agent, and when its partner changes; ``navigate`` an agent's\nmove of the page; ``highlight`` the inquiries it points at; ``chat`` whether it\nhid (``hidden``) the tab's Chat window; and ``changed`` an\ninquiry id, as ``/api/web/subscribe`` relays it, so a tab needs this one stream.\nA Chat conversation is an AgentSession, so a line added to it reaches every\nviewer who reads the session's audience as the session's ``changed`` id; no frame\nis Chat's own. The stream opens with a comment and sends another after 25 s without\na frame. A subscriber more than 256 frames behind is dropped; it reconnects from\nthe ``workspace`` frame.\n\nArgs:\n  workspace_id: Canvas to follow.\n  request: Request carrying the database engine and the event hub.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  stream: Server-sent frames.",
+        "description": "Stream a canvas's changes to its owner's browser as server-sent events.\n\nEach frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:\n``workspace`` carries the whole canvas on open, after every change by a\nbrowser or an agent, and when its partner changes; ``navigate`` an agent's\nmove of the page; ``highlight`` the inquiries it points at; ``chat`` whether it\nhid (``hidden``) the tab's Chat window; and ``changed`` an\ninquiry id, as ``/api/web/subscribe`` relays it, so a tab needs this one stream.\nA Chat conversation is an AgentSession, so a line added to it reaches every\nviewer who reads the session as the session's ``changed`` id; no frame is Chat's\nown. The stream opens with a comment and sends another after 25 s without\na frame. A subscriber more than 256 frames behind is dropped; it reconnects from\nthe ``workspace`` frame.\n\nArgs:\n  workspace_id: Canvas to follow.\n  request: Request carrying the database engine and the event hub.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  stream: Server-sent frames.",
         "operationId": "workspace_events_route_api_workspaces__workspace_id__events_get",
         "parameters": [
           {
@@ -18912,7 +19518,7 @@
     },
     "/api/workspaces/{workspace_id}/relay": {
       "post": {
-        "description": "Tell the station's chat partner what the owner sent agents from the Console.\n\nThe agents already have the message, sent to each by ``POST /api/messages``; this\nis the one request per Console line that follows them, naming the targets that\naccepted it. The partner records it in the station's chat as a line of the\nowner's that starts with ``\u2192 `` and answers nothing, and reads it in its next\nprompt. A retry under the same key queues nothing again. A station without a\nchat, one whose chat the owner may not post into (bound to read it, not shared\nwith them), or whose partner is not running or has too many unread lines, answers\n``delivered: false``: the agents are not told otherwise, so it is no error.\n\nArgs:\n  workspace_id: The station the Console is in, which the caller must own.\n  body: The agents the line went to, and its text.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in browser writer.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  receipt: Whether the partner took the relay.",
+        "description": "Tell the station's chat partner what the owner sent agents from the Console.\n\nThe agents already have the message, sent to each by ``POST /api/messages``; this\nis the one request per Console line that follows them, naming the targets that\naccepted it. The partner records it in the station's chat as a line of the\nowner's that starts with ``\u2192 `` and answers nothing, and reads it in its next\nprompt. A retry under the same key queues nothing again. A station without a\nchat, one whose chat the owner may not post into (one they do not read), or whose\npartner is not running or has too many unread lines, answers\n``delivered: false``: the agents are not told otherwise, so it is no error.\n\nArgs:\n  workspace_id: The station the Console is in, which the caller must own.\n  body: The agents the line went to, and its text.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in browser writer.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  receipt: Whether the partner took the relay.",
         "operationId": "console_relay_route_api_workspaces__workspace_id__relay_post",
         "parameters": [
           {

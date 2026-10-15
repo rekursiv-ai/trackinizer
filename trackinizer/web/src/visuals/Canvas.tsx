@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { ApiError } from "../api/client";
 import { findRef } from "../api/detail";
 import { newUuid } from "../api/idempotency";
@@ -187,6 +187,25 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     const timer = setTimeout(preloadRenderers, 0);
     return () => clearTimeout(timer);
   }, [workspaceId]);
+
+  // The page, once closed, comes back with the user's own navigation: a link, an app
+  // route, a changed hash. The server shows it again for an agent's.
+  const pageClosed = workspace !== undefined && !workspace.visuals.some((visual) => visual.type === PAGE);
+  const reopening = useRef(false);
+  useEffect(() => {
+    if (!pageClosed) return;
+    const reopen = () => {
+      if (reopening.current || latestWorkspace.current?.visuals.some((visual) => visual.type === PAGE)) return;
+      reopening.current = true;
+      void write({ kind: "show", visual_type: PAGE, placement: "main" }).finally(() => { reopening.current = false; });
+    };
+    addEventListener("hashchange", reopen);
+    addEventListener("popstate", reopen);
+    return () => {
+      removeEventListener("hashchange", reopen);
+      removeEventListener("popstate", reopen);
+    };
+  }, [pageClosed]);
 
   const change = useMutation({
     scope: { id: `workspace:${workspaceId ?? "default"}` },
@@ -547,6 +566,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         ? { kind: "hide", instance_id: existing.id }
         : {
           kind: "show", visual_type: type,
+          ...(type === PAGE ? { placement: "main" as const } : {}),
           ...(descriptor?.requires.includes("record") && currentRecordId ? { record_id: currentRecordId } : {}),
         };
       void operate(operation);
@@ -588,7 +608,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           onPointerDown: (event: PointerEvent<HTMLElement>) => startTileDrag(event, pane, floating),
           onPointerMove: updateTileDrag, onPointerUp: stopTileDrag, onPointerCancel: cancelTileDrag,
           onLostPointerCapture: cancelTileDrag,
-        } : { onClick: () => focusTile(pane) })}>
+        } : { onClick: (event: MouseEvent<HTMLElement>) => { if (!(event.target instanceof Element && event.target.closest("button"))) focusTile(pane); } })}>
         {floating && <button className="visual-tile-drag-handle" type="button"
           aria-label={`Move ${title}`}
           title="Drag to move; use arrow keys to move"
@@ -607,8 +627,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           onClick={() => setExpandedMobileFloat(expandedMobileFloat === pane.id ? null : pane.id)}>
           {expandedMobileFloat === pane.id ? "Collapse" : "Expand"}
         </button>}
-        {!isPage && <button type="button" title="Dismiss visual" disabled={change.isPending}
-          onClick={() => operate({ kind: "hide", instance_id: pane.id })}>×</button>}
+        <button type="button" title="Dismiss visual" disabled={change.isPending}
+          onClick={() => operate({ kind: "hide", instance_id: pane.id })}>×</button>
       </div>}
       <VisualPane instance={pane} workspace={workspace ?? null} onWorkspaceChanged={acceptWorkspace}
         focused={workspace?.focused_instance === pane.id}>
@@ -683,7 +703,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           {station.isError && !legacyPreview && <p role="alert">Could not open your workbench. <button className="btn" type="button" onClick={() => void station.refetch()}>Retry</button></p>}
           {catalog.data?.visuals.map((visual) => (
             <VisualOption key={visual.type} visual={visual} checked={active.includes(visual.type)}
-              disabled={(!workspace && !legacyPreview) || change.isPending || visual.type === "trax.browse"
+              disabled={(!workspace && !legacyPreview) || change.isPending
                 || (!active.includes(visual.type) && visual.requires.includes("record") && !currentRecordId)}
               missingRecord={visual.requires.includes("record") && !currentRecordId}
               onToggle={() => toggle(visual.type)} />
@@ -803,6 +823,9 @@ type DividerDrag = {
   readonly ruled: readonly number[];
   now: readonly number[];
 };
+
+/** The page: the catalog's default visual, which a canvas opens with and a navigation moves. */
+const PAGE = "trax.browse";
 
 /** Where on the card that stands for a docked tile the pointer holds it, and so where the floating tile lands under it. */
 const GHOST_GRIP = { x: 60, y: 16 };

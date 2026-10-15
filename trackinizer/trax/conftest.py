@@ -378,6 +378,29 @@ class FakeClient:
             ),
         )
 
+    def transition_app(
+        self,
+        target_id: uuid.UUID,
+        *,
+        expected_from: dict[str, object] | None,
+        to: dict[str, object] | None,
+        actor: Inquiry.Actor,
+        reason: str = "",
+    ) -> None:
+        """Transition app."""
+        self.calls.append(
+            (
+                "transition_app",
+                (target_id,),
+                {
+                    "expected_from": expected_from,
+                    "to": to,
+                    "actor": actor,
+                    "reason": reason,
+                },
+            ),
+        )
+
     def submit(self, kind: Inquiry.InquiryKind, body: dict[str, object]) -> uuid.UUID:
         """Submit."""
         self.calls.append(("submit", (kind, body), {}))

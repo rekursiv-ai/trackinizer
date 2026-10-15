@@ -17,7 +17,7 @@ from trackinizer.server.auth import AuthIdentity
 from trackinizer.server.config import Assistant
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.visuals import chat_shares
-from trackinizer.server.visuals.chat_forks import ChatRefusedError
+from trackinizer.server.visuals.chat_forks import ChatClosedError, ChatRefusedError
 from trackinizer.server.visuals.chat_shares import (
     UnboundStation,
     delete_chat,
@@ -87,6 +87,66 @@ def test_anyone_else_is_refused_and_a_chat_that_is_not_found_is_none() -> None:
 
     assert refused.value.code == "chat_not_starter"
     assert _share(bob, email="b@example.com", shared=True, found=False)[1] is None
+
+
+@pytest.mark.parametrize(
+    ("user", "shared"),
+    [
+        ({"email": "lee@staff.example", "hosted_domain": None}, True),
+        ({"email": "bob@example.com", "hosted_domain": None}, False),
+        (None, False),
+    ],
+    ids=["holds staff", "does not", "no such user"],
+)
+def test_a_staff_chat_is_shared_with_staff_only(
+    user: dict[str, object] | None,
+    shared: bool,
+) -> None:
+    """Its assistant read a staff session into it, so only staff may be let in."""
+    engine = FakeEngine()
+    engine.conn.fetchrow.side_effect = None
+    engine.conn.fetchrow.return_value = user
+    email = "lee@staff.example" if user is None else str(user["email"])
+
+    if shared:
+        _, answer = _share(
+            _caller(_ADA),
+            email=email,
+            shared=True,
+            audience="staff",
+            engine=engine,
+        )
+        assert answer == [email]
+        return
+    with pytest.raises(ChatClosedError) as closed:
+        _ = _share(
+            _caller(_ADA),
+            email=email,
+            shared=True,
+            audience="staff",
+            engine=engine,
+        )
+
+    assert closed.value.code == "chat_staff_only"
+    assert all(
+        "INSERT INTO science_chat_shares" not in str(call.args[0])
+        for call in engine.conn.execute.await_args_list
+    )
+
+
+def test_an_unshare_of_a_staff_chat_asks_no_one_whether_they_hold_staff() -> None:
+    engine = FakeEngine()
+
+    _, answer = _share(
+        _caller(_ADA),
+        email="bob@example.com",
+        shared=False,
+        audience="staff",
+        engine=engine,
+    )
+
+    assert answer == ["bob@example.com"]
+    engine.conn.fetchrow.assert_not_awaited()
 
 
 def test_a_delete_purges_each_session_drops_its_shares_and_moves_its_stations() -> None:
@@ -198,11 +258,19 @@ def _share(
     email: str,
     shared: bool,
     found: bool = True,
+    audience: str = "open",
+    engine: FakeEngine | None = None,
 ) -> tuple[FakeEngine, list[str] | None]:
     """Share Ada's chat as ``caller``; return the engine and the answer."""
-    engine = FakeEngine()
+    engine = engine or FakeEngine()
     engine.conn.fetch.return_value = [{"email": email.lower()}]
-    read = partial(_found, expected=caller, others_posted=False, opened=False)
+    read = partial(
+        _found,
+        expected=caller,
+        others_posted=False,
+        opened=False,
+        audience=audience,
+    )
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(chat_shares, "read_conversation", read if found else _missing)
         answer = asyncio.run(
@@ -213,6 +281,7 @@ def _share(
                 conversation_id=_CHAT,
                 email=email,
                 shared=shared,
+                staff=("lee@staff.example",),
             ),
         )
     return engine, answer
@@ -278,6 +347,7 @@ async def _found(
     expected: AuthIdentity,
     others_posted: bool,
     opened: bool,
+    audience: str = "open",
     **asked: object,
 ) -> Conversation:
     """Find Ada's chat of two sessions for ``expected``, as the server reads it."""
@@ -294,6 +364,7 @@ async def _found(
         account=_ADA,
         modified=datetime(2026, 1, 1, tzinfo=UTC),
         live=True,
+        audience=audience,
         sessions=list(_SESSIONS),
         opened=opened,
         others_posted=others_posted,

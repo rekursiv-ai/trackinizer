@@ -14,6 +14,7 @@ import uuid
 
 from treekle import from_plain
 
+from trackinizer.server.audience import reads_session
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import tx
 from trackinizer.server.preferences import (
@@ -27,6 +28,7 @@ from trackinizer.server.store.deleted_chats import (
 )
 from trackinizer.server.values import vetted_sql
 from trackinizer.server.visuals.chat_forks import (
+    ChatClosedError,
     ConversationTakenError,
     ForeignChatError,
 )
@@ -61,8 +63,10 @@ from trackinizer.server.visuals.workspaces import (
     apply_operation,
     initial_data,
     refuse_record,
+    restore_page,
 )
 from trackinizer.types.errors import ChatDeletedError
+from trackinizer.wire.audience import OPEN
 from trackinizer.wire.wire_science_chat import ChatSend, ChatSent
 from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
@@ -73,8 +77,9 @@ if TYPE_CHECKING:
     from asyncpg import Record
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
+    from trackinizer.server.audience import SessionReader
     from trackinizer.server.auth import Role
-    from trackinizer.server.config import Assistant, ChatOrgs
+    from trackinizer.server.config import Assistant
     from trackinizer.server.visuals.catalog import VisualCatalogBody
     from trackinizer.server.visuals.workspaces import PartnerChoice
 
@@ -149,6 +154,10 @@ class AppliedOperation:
     """For a ``preferences`` change, all of the owner's preferences after it, for
     their own tabs; the state carries only those its agent may see."""
 
+    restored_page: bool = False
+    """A ``navigate`` found the page closed and showed it again, so the canvas
+    changed and its new state is to be published."""
+
 
 async def send_chat_line(
     engine: DatabaseEngine,
@@ -160,8 +169,8 @@ async def send_chat_line(
     source_role: Role,
     inbound: InboundQueue,
     assistant: Assistant | None,
-    orgs: ChatOrgs,
-    audiences: frozenset[str],
+    reader: SessionReader,
+    members: SessionReader | None,
 ) -> ChatSent | None:
     """Queue a browser line for a science chat's assistant, with its page and trail.
 
@@ -187,10 +196,12 @@ async def send_chat_line(
       source_role: That principal's role.
       inbound: Session message queue.
       assistant: The configured assistant, if any.
-      orgs: Who besides a chat's starter and the people it is shared with continues
-        it.
-      audiences: What the poster reads; a fork point in a session outside them is
-        no line, as one past the end of a session is none.
+      reader: The poster, as the transcript test reads them: they post into a chat
+        they read, and a fork point in a session they may not read is no line, as
+        one past the end of a session is none.
+      members: Everyone a chat the poster begins is open to besides them, as one
+        reader (:func:`~trackinizer.server.audience.members_reader`); a fork
+        is theirs to read, so they must read what it copies. ``None`` for no one.
 
     Returns:
       sent: The conversation, the station it went to, and its session when the
@@ -204,8 +215,10 @@ async def send_chat_line(
       StationChatError: The station's chat is another conversation, or another
         station of the poster holds the one named.
       IdempotencyReuseError: ``key`` already posted another line.
-      ForeignChatError: The poster may not continue the conversation: it is neither
-        theirs nor shared with them, nor open to them by ``orgs``.
+      ForeignChatError: The poster does not read the conversation.
+      ChatClosedError: The fork point is a line of a ``private`` or ``staff`` chat,
+        whose audience a fork's copies would not keep, or of a chat ``members`` do
+        not read.
       ConversationTakenError: The fork's key names a conversation someone else began.
       ChatDeletedError: The line's conversation, or the fork's key, names a chat that
         was deleted, or the fork point is a line of one.
@@ -235,9 +248,9 @@ async def send_chat_line(
             conversation_id=conversation_id,
             email=source,
             assistant=assistant,
-            orgs=orgs,
             inbound=inbound,
-            audiences=audiences,
+            reader=reader,
+            members=members,
         )
         partner = await resolve_partner(
             conn,
@@ -778,7 +791,9 @@ async def apply_workspace_operation(
 
     A ``navigate``, ``highlight``, ``chat`` or ``preferences`` operation moves no visual
     and no revision: it is only recorded, for replay, and an agent key alone may send
-    it. ``preferences`` changes the station owner's preferences. A show names
+    it. The one exception is a ``navigate`` on a canvas that has closed the page, which
+    shows the page again in the next revision. ``preferences`` changes the station
+    owner's preferences. A show names
     a record the visual accepts: its catalog lists the kinds, and one that takes no
     record refuses any.
 
@@ -880,6 +895,14 @@ async def apply_workspace_operation(
                     change=body.operation.change,
                 )
                 stations = tuple(await station_ids(conn, user_id=owner_id))
+            shown = current
+            if isinstance(body.operation, Navigate):
+                # An agent's navigation never lands on a canvas with no page: the
+                # page returns in the same revision that carries the route.
+                current_data = _data_of(current)
+                restored = restore_page(current_data, catalog=catalog)
+                if restored is not current_data:
+                    shown = await _write_data(conn, current=current, data=restored)
             await _remember(
                 conn,
                 workspace_id=workspace_id,
@@ -889,10 +912,11 @@ async def apply_workspace_operation(
             )
             await trim_operation_receipts(conn, workspace_id=workspace_id)
             return AppliedOperation(
-                state=await with_partner(state=current),
+                state=await with_partner(state=shown),
                 replayed=False,
                 stations=stations,
                 preferences=preferences,
+                restored_page=shown is not current,
             )
         if isinstance(body.operation, ChoosePartner) and agent_api_key_id is not None:
             raise ValueError("Only the canvas's owner chooses its Chat partner.")
@@ -900,35 +924,10 @@ async def apply_workspace_operation(
             raise RevisionConflictError(await with_partner(state=current))
         if isinstance(body.operation, ShowVisual):
             await _check_record(conn, operation=body.operation, catalog=catalog)
-        updated_data = apply_operation(
-            WorkspaceData(
-                visuals=current.visuals,
-                focused_instance=current.focused_instance,
-                agent_instructions=current.agent_instructions,
-                continuation_record_id=current.continuation_record_id,
-                partner_choice=current.partner_choice,
-            ),
-            body.operation,
-            catalog,
-        )
-        updated = WorkspaceState(
-            id=current.id,
-            revision=current.revision + 1,
-            name=current.name,
-            conversation_id=current.conversation_id,
-            page=current.page,
-            visuals=updated_data.visuals,
-            focused_instance=updated_data.focused_instance,
-            agent_instructions=updated_data.agent_instructions,
-            continuation_record_id=updated_data.continuation_record_id,
-            partner_choice=updated_data.partner_choice,
-        )
-        await conn.execute(
-            "UPDATE visual_workspaces SET revision = $2, state = $3, "
-            "modified_at = clock_timestamp() WHERE id = $1",
-            workspace_id,
-            updated.revision,
-            updated_data.model_dump(mode="json"),
+        updated = await _write_data(
+            conn,
+            current=current,
+            data=apply_operation(_data_of(current), body.operation, catalog),
         )
         await _remember(
             conn,
@@ -1286,11 +1285,11 @@ async def _check_fork_or_membership(
     conversation_id: uuid.UUID,
     email: str,
     assistant: Assistant | None,
-    orgs: ChatOrgs,
     inbound: InboundQueue,
-    audiences: frozenset[str],
+    reader: SessionReader,
+    members: SessionReader | None,
 ) -> None:
-    """Refuse a deleted chat, a fork of no chat's line, a post into another's chat."""
+    """Refuse a deleted chat, a fork of no line or a closed chat, a post unread."""
     await refuse_a_deleted_chat(
         conn,
         conversation_id=conversation_id,
@@ -1303,18 +1302,34 @@ async def _check_fork_or_membership(
         assistant=assistant,
         email=email,
         fork=body.fork,
-        audiences=audiences,
+        reader=reader,
     ):
         if await session_was_purged(conn, session_id=body.fork.session_id):
             raise ChatDeletedError("The chat this line was in was deleted")
         raise ValueError("The fork point is not a line of a science chat")
+    if body.fork is not None and await conn.fetchval(
+        "SELECT agentsession_audience <> $2 FROM inquiries WHERE id = $1",
+        body.fork.session_id,
+        OPEN,
+    ):
+        raise ChatClosedError("chat_fork_closed")
+    if (
+        body.fork is not None
+        and members is not None
+        and not await reads_session(
+            conn,
+            reader=members,
+            session_id=body.fork.session_id,
+        )
+    ):
+        raise ChatClosedError("chat_fork_wider")
     if body.fork is None:
         if not await may_post(
             conn,
             poster=email,
+            reader=reader,
             conversation_id=conversation_id,
             assistant=assistant,
-            orgs=orgs,
             inbound=inbound,
         ):
             raise ForeignChatError(
@@ -1331,3 +1346,43 @@ async def _check_fork_or_membership(
         raise ConversationTakenError(
             "This conversation already exists; fork under a new key",
         )
+
+
+def _data_of(state: WorkspaceState) -> WorkspaceData:
+    """Return the stored part of a canvas's state."""
+    return WorkspaceData(
+        visuals=state.visuals,
+        focused_instance=state.focused_instance,
+        agent_instructions=state.agent_instructions,
+        continuation_record_id=state.continuation_record_id,
+        partner_choice=state.partner_choice,
+    )
+
+
+async def _write_data(
+    conn: Conn,
+    *,
+    current: WorkspaceState,
+    data: WorkspaceData,
+) -> WorkspaceState:
+    """Store ``data`` as the canvas's next revision and return the new state."""
+    updated = WorkspaceState(
+        id=current.id,
+        revision=current.revision + 1,
+        name=current.name,
+        conversation_id=current.conversation_id,
+        page=current.page,
+        visuals=data.visuals,
+        focused_instance=data.focused_instance,
+        agent_instructions=data.agent_instructions,
+        continuation_record_id=data.continuation_record_id,
+        partner_choice=data.partner_choice,
+    )
+    await conn.execute(
+        "UPDATE visual_workspaces SET revision = $2, state = $3, "
+        "modified_at = clock_timestamp() WHERE id = $1",
+        current.id,
+        updated.revision,
+        data.model_dump(mode="json"),
+    )
+    return updated

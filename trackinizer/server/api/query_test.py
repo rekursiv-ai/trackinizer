@@ -46,6 +46,7 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.types.change_log import Change, Snapshot
 from trackinizer.types.inquiries import KIND_TO_CLASS
@@ -228,12 +229,12 @@ class TestRoutes:
             ("issue_priority", "gt", "5"),
         ]
 
-    def test_list_kind_route_lists_for_the_audiences_of_its_caller(
+    def test_list_kind_route_lists_for_the_reader_its_caller_is(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, store, _engine = route_client
-        asked: list[object] = []
+        asked: list[tuple[frozenset[str], str]] = []
         with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
             mock.return_value = []
             for audiences in (frozenset({"open"}), frozenset({"open", "staff"})):
@@ -242,9 +243,14 @@ class TestRoutes:
                 )
                 assert client.get("/api/inquiries", params={"kind": "Issue"}).is_success
                 assert mock.await_args is not None
-                asked.append(mock.await_args.kwargs.get("audiences"))
+                reader = mock.await_args.kwargs["reader"]
+                assert isinstance(reader, SessionReader)
+                asked.append((reader.audiences, reader.email))
 
-        assert asked == [frozenset({"open"}), frozenset({"open", "staff"})]
+        assert asked == [
+            (frozenset({"open"}), TEST_USER_EMAIL),
+            (frozenset({"open", "staff"}), TEST_USER_EMAIL),
+        ]
 
     def test_list_kind_route_logs_correlated_query_stage(
         self,
@@ -719,6 +725,8 @@ class TestRoutes:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
+        # The database says the viewer reads the session, once they hold its audience.
+        engine.conn.fetchval = AsyncMock(return_value=True)
         hidden = new_uuid()
         shown = new_uuid()
         engine.listen_messages = [

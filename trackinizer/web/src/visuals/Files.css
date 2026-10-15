@@ -1,0 +1,40 @@
+/* `trax.files`: a record's changed files with their diffs, then its file tree; `.tr-diff` (transcript.css) draws each diff. */
+
+/* The visual fills its canvas window and scrolls inside it; embedded, the panel takes its host's flow. */
+.fv { height: 100%; overflow: auto; box-sizing: border-box; padding: 14px 16px; }
+.fv-panel, .fv-body { display: flex; flex-direction: column; gap: 10px; }
+.fv-note { margin: 0; padding: 4px 0; font-size: 12.5px; color: var(--muted); }
+.fv-hint { margin: 0; font-size: 12px; color: var(--muted); }
+.fv-error { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0; font-size: 12.5px; color: var(--error-text); }
+
+.fv-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
+.fv-controls input[type="search"] {
+  flex: 1 1 220px; max-width: 360px; padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--surface); color: var(--text); font: 12px var(--mono);
+}
+.fv-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-muted); }
+.fv-opened { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-muted); }
+.fv-opened code { font: 11.5px var(--mono); color: var(--text); overflow-wrap: anywhere; }
+
+.fv-part { display: flex; flex-direction: column; gap: 6px; }
+.fv-part h3 { font: 10.5px var(--mono); letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted); margin: 0; }
+.fv-changed, .fv-tree, .fv-tree ul { list-style: none; margin: 0; padding: 0; }
+.fv-changed summary, .fv-tree summary { display: flex; align-items: baseline; gap: 8px; cursor: pointer; padding: 2px 0; }
+.fv-changed details[open] > summary { margin-bottom: 4px; }
+.fv-tree {
+  max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 10px; background: var(--surface);
+}
+.fv-tree ul { padding-left: 14px; }
+.fv-tree li { padding: 1px 0; }
+.fv-leaf {
+  display: inline-flex; align-items: baseline; gap: 8px; padding: 0; border: 0; background: none; cursor: pointer; text-align: left;
+}
+.fv-leaf:hover .fv-path { text-decoration: underline; }
+.fv-path { min-width: 0; font: 11.5px var(--mono); color: var(--text); overflow-wrap: anywhere; }
+.fv-kind { font: 10.5px var(--mono); color: var(--muted); }
+.fv-kind.is-added { color: var(--green); }
+.fv-kind.is-modified { color: var(--amber); }
+.fv-kind.is-deleted { color: var(--error-text); }
+
+.fv-diff { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.fv-diff-head { margin: 0; padding: 4px 10px; font: 11px var(--mono); color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }

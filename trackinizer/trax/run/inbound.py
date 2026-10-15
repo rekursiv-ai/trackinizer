@@ -87,6 +87,8 @@ def render_inbound(
             f"\n  Show its timeline: {workspace} show trax.timeline --record {record}"
             f"\n  Show an artifact: {workspace} show trax.artifact --record {record}"
             " --placement main"
+            f"\n  Show its files and diffs: {workspace} show trax.files --record {record}"
+            " (narrow: --param path=DIR/ or a glob, --param changed=true, --param file=NAME)"
             f"\n  Point at records: {workspace} highlight UUID[,UUID...]"
             " (highlight '' clears)"
             f"\n  Go to a view: {workspace} navigate '#/list/Issue' (or '#/graph',"

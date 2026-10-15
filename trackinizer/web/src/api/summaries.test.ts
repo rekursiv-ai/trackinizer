@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { loadCampaignSummary, readTrust } from "./summaries";
+import { filedRows, loadCampaignSummary, readTrust, trustedRows } from "./summaries";
 import { stubFetch } from "./testing";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -102,4 +102,29 @@ test("a profile with neither reads none", async () => {
   stubFetch(() => Response.json({}));
 
   expect(await readTrust()).toEqual({ audiences: [], accounts: [] });
+});
+
+test("trusted rows carry every label asked for, each its own filter, keep only a trusted account's, and say who filed each and when it changed", async () => {
+  const sent = stubFetch(() => Response.json([
+    { ...row(corpus, ["a", "b"]), modified: "2026-10-12T09:00:00+00:00" },
+    row(corpus, ["a", "b"], "mallory@example.com"),
+  ]));
+
+  const rows = await trustedRows(["a", "b"], [ME]);
+
+  expect(rows).toEqual([{ account: ME, labels: ["a", "b"], description: JSON.stringify(corpus), modified: "2026-10-12T09:00:00+00:00" }]);
+  const query = new URL(`http://x${sent[0]!.query}`).searchParams;
+  expect(query.getAll("filter").map((each) => JSON.parse(each) as unknown)).toEqual([
+    { field: "labels", op: "is", value: "a" },
+    { field: "labels", op: "is", value: "b" },
+  ]);
+});
+
+test("filed rows keep every account's, and drop a row that names none", async () => {
+  stubFetch(() => Response.json([
+    { ...row(corpus, ["a"], "mallory@example.com"), modified: "2026-10-12T09:00:00+00:00" },
+    { ...row(corpus, ["a"]), account: null },
+  ]));
+
+  expect((await filedRows(["a"])).map(({ account }) => account)).toEqual(["mallory@example.com"]);
 });

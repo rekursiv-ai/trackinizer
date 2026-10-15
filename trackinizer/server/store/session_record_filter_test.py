@@ -28,10 +28,12 @@ from trackinizer.lib.agent.types.sessions import (
     ToolCall,
     UserMessage,
 )
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.audience import AUDIENCES
 from trackinizer.wire.filters import Filter
 
 
@@ -39,6 +41,10 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
 
     from trackinizer.lib.postgres import PostgresEngine
+
+
+# Reads every session's transcript: a filter here is of what it matches, not who reads.
+_ANYONE = SessionReader(audiences=AUDIENCES, every_session=True, oversight=True)
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -93,6 +99,7 @@ async def _matching(store: Store, *filters: Filter, lowering: bool = True) -> se
         filters=list(filters),
         limit=500,
         lowering=lowering,
+        reader=_ANYONE,
     )
     return {row.id for row in rows if isinstance(row, AgentSession)}
 
@@ -157,6 +164,7 @@ async def test_a_session_with_two_matching_records_is_returned_once(
         "AgentSession",
         filters=[Filter(field="tool_call", op="re", value="grep")],
         limit=500,
+        reader=_ANYONE,
     )
 
     assert [row.id for row in rows].count(session_id) == 1

@@ -106,7 +106,7 @@ def get_staff(request: Request) -> tuple[str, ...]:
 
 
 def get_chat_orgs(request: Request) -> ChatOrgs:
-    """Return how science chats group their users; ``domain`` without a Config.
+    """Return how science chats group their users; ``individual`` without a Config.
 
     Args:
       request: Request.
@@ -116,7 +116,7 @@ def get_chat_orgs(request: Request) -> ChatOrgs:
 
     """
     config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    return config.chat_orgs if isinstance(config, Config) else "domain"
+    return config.chat_orgs if isinstance(config, Config) else "individual"
 
 
 def get_secrets(request: Request) -> SecretBackend | None:

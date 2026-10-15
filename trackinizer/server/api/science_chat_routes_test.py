@@ -55,6 +55,7 @@ from trackinizer.server.chat_hub import ChatHub, WorkspaceFrame
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.route_iter import iter_routes
 from trackinizer.server.visuals.chat_forks import (
+    ChatClosedError,
     ChatRefusedError,
     ForeignChatError,
 )
@@ -72,7 +73,7 @@ from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
     from fastapi.testclient import TestClient
 
@@ -689,15 +690,17 @@ class TestShareAndDeleteAnswers:
             client.delete(f"/api/chats/{chat}/shares/ada@example.com"),
             client.put(f"/api/chats/{chat}/shares/{_REFUSED}"),
             client.delete(f"/api/chats/{chat}/shares/{_UNKNOWN}"),
+            client.put(f"/api/chats/{chat}/shares/{_NOT_STAFF}"),
             client.put(f"/api/chats/{chat}/shares/not-an-email"),
         ]
 
-        assert [r.status_code for r in answers] == [200, 200, 403, 404, 422]
-        assert [json_loads(r.content) for r in answers[:4]] == [
+        assert [r.status_code for r in answers] == [200, 200, 403, 404, 409, 422]
+        assert [json_loads(r.content) for r in answers[:5]] == [
             [f"Ada@Example.com shared in {chat}"],
             [f"ada@example.com unshared in {chat}"],
             {"detail": {"code": "chat_not_starter"}},
             {"detail": "Conversation not found"},
+            {"detail": {"code": "chat_staff_only"}},
         ]
 
     def test_a_delete_answers_204_and_tells_each_station_it_unbound(
@@ -1524,6 +1527,7 @@ async def test_only_the_owners_browser_chooses_the_partner(
 
 _REFUSED: Final = "no@example.com"
 _UNKNOWN: Final = "gone@example.com"
+_NOT_STAFF: Final = "bob@example.com"
 _DELETED: Final = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001")
 _UNKNOWN_CHAT: Final = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000002")
 _STATION: Final = uuid.UUID("aaaaaaaa-0000-0000-0000-000000000003")
@@ -1552,11 +1556,15 @@ async def _set_share_as_told(
     conversation_id: uuid.UUID,
     email: str,
     shared: bool,
+    staff: Sequence[str],
 ) -> list[str] | None:
-    """Share or unshare as the email says: refuse one, find no chat for another."""
+    """Share or unshare as the email says: refuse two, find no chat for another."""
     _check_served(engine, assistant=assistant, caller=caller)
+    assert staff == ()
     if email == _REFUSED:
         raise ChatRefusedError("chat_not_starter")
+    if email == _NOT_STAFF:
+        raise ChatClosedError("chat_staff_only")
     done = "shared" if shared else "unshared"
     return None if email == _UNKNOWN else [f"{email} {done} in {conversation_id}"]
 

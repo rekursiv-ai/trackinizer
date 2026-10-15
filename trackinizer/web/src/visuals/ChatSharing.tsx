@@ -1,7 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/client";
-import { type ChatHead, deleteChat, shareChat, unshareChat } from "../api/chats";
+import { CHAT_STAFF_ONLY, type ChatHead, deleteChat, shareChat, unshareChat } from "../api/chats";
+import { newUuid } from "../api/idempotency";
+import { SESSION_NOT_OWNER, SESSION_STAFF, setSessionAudience } from "../api/sessions";
 import { useToast } from "../ui/toast";
 import "../stations/stations.css";
 
@@ -9,6 +11,9 @@ import "../stations/stations.css";
 const REFUSALS: { readonly [code: string]: string } = {
   chat_not_starter: "Only the person who started this chat can do that.",
   chat_has_other_posters: "Others have posted in this chat, so only an admin can delete it.",
+  [CHAT_STAFF_ONLY]: "This chat is staff only, so it can be shared only with someone who holds staff.",
+  [SESSION_NOT_OWNER]: "Only the person who started this chat can hide it or show it again.",
+  [SESSION_STAFF]: "This chat is staff only, so it is never hidden or opened again.",
 };
 
 /** What a toast says of a refused or failed change: the words for its code, else the server's reason when it gave one. */
@@ -86,6 +91,37 @@ export function ShareChat({ head }: { readonly head: ChatHead }) {
         </form>
       </div>}
     </div>
+  );
+}
+
+/**
+ * Chat's Hide control, which only its starter has (the head's `may_hide`): Hide
+ * keeps the chat to its starter and the people it is shared with, whatever the
+ * server's org mode lets in, and Unhide opens it to them again. Every session of
+ * the chat changes; the head read again says which it is now.
+ */
+export function HideChat({ head }: { readonly head: ChatHead }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const hidden = head.audience === "private";
+
+  async function flip() {
+    setBusy(true);
+    try {
+      await setSessionAudience(head.session_id, hidden ? "open" : "private", newUuid());
+      await queryClient.invalidateQueries({ queryKey: ["chat", "head", head.conversation_id] });
+    } catch (error) {
+      toast(reason(error, hidden ? "Could not unhide this chat." : "Could not hide this chat."), { failed: true, error });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button className="btn ghost" type="button" disabled={busy} aria-label={hidden ? "Unhide this chat" : "Hide this chat from others"}
+      title={hidden ? "Let whoever this server lets in read it again" : "Only you and the people you share it with will read it"}
+      onClick={() => void flip()}>{hidden ? "Unhide" : "Hide"}</button>
   );
 }
 

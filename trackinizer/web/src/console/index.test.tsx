@@ -10,6 +10,7 @@ import { META, PROFILE } from "../detail/testing";
 import type { WorkspaceState } from "../api/workspaces";
 import { DEFAULT_PREFERENCES, type Preferences, preferences, receivePreferences } from "../preferences";
 import { setStation } from "../stations/store";
+import { ToastProvider } from "../ui/toast";
 import { ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
 import { forgetLayouts } from "../visuals/stationLayout";
 import { clock, ConsoleView } from ".";
@@ -27,6 +28,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   localStorage.clear();
   sessionStorage.clear();
+  AUDIENCES.clear();
 });
 
 const TILES_A = "00000000-0000-4000-8000-0000000000c1";
@@ -67,22 +69,29 @@ const EVENTS = [
   said(6, CLAUDE, "ShellCommandResult", { command: "pytest -x", stdout: "1 passed", stderr: "", exit_code: 0 }),
 ];
 
-/** Session `session`'s agent as the facets count it, last heard from `minutes` before `now`. */
+/** The audience of each session its owner hid, as the fake server holds it; the rest are open. */
+const AUDIENCES = new Map<string, string>();
+
+/**
+ * Session `session`'s agent as the facets count it, last heard from `minutes`
+ * before `now`. tiles-a is the signed-in person's, so they may hide it.
+ */
 function facet(session: string, count: number, conversation: number, minutes: number, now: number, ended: string | null = null) {
   const last = new Date(now - minutes * 60_000).toISOString();
-  return { ...SESSIONS[session]!, session_id: session, count, conversation, last, ended };
+  const account = session === TILES_A ? PROFILE.email : "grace@example.com";
+  return { ...SESSIONS[session]!, session_id: session, count, conversation, last, ended, account, audience: AUDIENCES.get(session) ?? "open", hideable: session === TILES_A };
 }
 
 /**
  * The facets of a read's window, as of `now`: the agents heard from since its
- * `since`, or all of them with none. tiles-b has ended; tiles-c was last heard
- * from two hours ago.
+ * `since`, or all of them with none, less the hidden unless the read keeps them.
+ * tiles-b has ended; tiles-c was last heard from two hours ago.
  */
 function facets(query: URLSearchParams, now: number): FeedFacets {
   const since = query.has("since") ? Date.parse(query.get("since")!) : -Infinity;
   const actors = [facet(TILES_A, 40, 3, 1, now), facet(CLAUDE, 20, 1, 2, now), facet(TILES_B, 10, 1, 30, now, new Date(now).toISOString()), facet(TILES_C, 5, 1, 120, now)];
   return {
-    actors: actors.filter(({ last }) => Date.parse(last) >= since),
+    actors: actors.filter(({ last, audience }) => Date.parse(last) >= since && (audience !== "private" || query.get("hidden") === "true")),
     rooms: [
       { room: "ops", count: 50, actors: ["tiles-a", "tiles-b"] },
       { room: "lab", count: 40, actors: ["tiles-a"] },
@@ -117,11 +126,15 @@ function scoped(query: URLSearchParams, now: number): FeedFacets {
   };
 }
 
-/** Whether `event` passes a feed read's filters: OR within each, AND across; `conversation`, what Messages shows. */
+/**
+ * Whether `event` passes a feed read's filters: OR within each, AND across; `conversation`, what Messages shows;
+ * a hidden session's only when the read keeps them; none for My campaigns, as the person launched none.
+ */
 function passes(event: FeedEvent, query: URLSearchParams): boolean {
   const any = (name: string, values: readonly string[]) => !query.has(name) || values.some((value) => query.getAll(name).includes(value));
   const said = !query.has("conversation") || levelOf(event) === 1;
-  return any("actor", [event.actor]) && any("room", event.rooms ?? []) && any("cli", [event.cli ?? ""]) && any("kind", [event.kind]) && said;
+  const shown = (AUDIENCES.get(event.session_id) !== "private" || query.get("hidden") === "true") && query.get("whose") !== "campaigns";
+  return any("actor", [event.actor]) && any("room", event.rooms ?? []) && any("cli", [event.cli ?? ""]) && any("kind", [event.kind]) && said && shown;
 }
 
 /**
@@ -156,11 +169,17 @@ function serve(
       return Response.json({ start: "2026-10-01T10:00:00Z", end: "2026-10-01T11:00:00Z", bucket_seconds: 3600, counts: [] });
     }
     if (url.pathname === "/api/messages") return message(await request.json());
+    const hiding = /^\/api\/sessions\/([^/]+)\/audience$/.exec(url.pathname);
+    if (hiding && request.method === "POST") {
+      const { audience } = (await request.json()) as { audience: string };
+      AUDIENCES.set(hiding[1]!, audience);
+      return Response.json({ session_id: hiding[1], audience, sessions: [hiding[1]] });
+    }
     if (station && url.pathname === "/api/workspaces" && request.method === "POST") return Response.json(station);
     if (station && url.pathname === `/api/workspaces/${station.id}` && request.method === "GET") return Response.json(station);
     if (station?.conversation_id && url.pathname === `/api/chats/${station.conversation_id}`) {
       return Response.json({ conversation_id: station.conversation_id, session_id: CHAT_A, title: "t", account: "ada@example.com", live: true,
-        forks: 0, forked_from: null, forks_on_typing: forksOnTyping, shared_with: [], may_share: false, may_delete: false });
+        forks: 0, forked_from: null, forks_on_typing: forksOnTyping, audience: "open", may_hide: false, shared_with: [], may_share: false, may_delete: false });
     }
     if (station && url.pathname === `/api/workspaces/${station.id}/relay`) return relay(await request.json());
     return Response.json({ detail: "not found" }, { status: 404 });
@@ -178,18 +197,20 @@ function renderConsole(profile = PROFILE, feed: ChatFeed | null = null) {
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
-    <QueryClientProvider client={client}>
-      <MetaContext value={META}>
-        <ProfileContext value={profile}>
-          <CommandRegistryContext value={new CommandRegistry()}>
-            <Shortcuts />
-            <ChatFeedContext value={feed}>
-              <ConsoleView />
-            </ChatFeedContext>
-          </CommandRegistryContext>
-        </ProfileContext>
-      </MetaContext>
-    </QueryClientProvider>,
+    <ToastProvider>
+      <QueryClientProvider client={client}>
+        <MetaContext value={META}>
+          <ProfileContext value={profile}>
+            <CommandRegistryContext value={new CommandRegistry()}>
+              <Shortcuts />
+              <ChatFeedContext value={feed}>
+                <ConsoleView />
+              </ChatFeedContext>
+            </CommandRegistryContext>
+          </ProfileContext>
+        </MetaContext>
+      </QueryClientProvider>
+    </ToastProvider>,
   );
 }
 
@@ -216,6 +237,12 @@ const MESSAGES = "AgentToAgentMessage,AssistantMessage,ContextState,UserMessage"
 /** Messages' read: only the conversation, no kind. */
 const CONVERSATION = { conversation: "true" };
 
+/** Where the console opens outside a named station: the person's own sessions. */
+const MINE = { whose: "mine" };
+
+/** Where a kept view that picks agents, rooms or CLIs opens: every session the person reads. */
+const EVERYONE = { whose: "everyone" };
+
 // The rail's sections and the level buttons are found by their labels. After each
 // change jsdom works out every element's style again, and a query by role reads
 // it for each candidate: 4-8 ms a call here, against under one by label.
@@ -232,7 +259,7 @@ test("the console opens on every agent's messages, live, drawn as the transcript
   const sent = serve();
   renderConsole();
   const [user, done, onIt] = await lines(3);
-  expect(feedReads(sent)).toEqual([{ tail: "true", limit: "300", ...CONVERSATION }]);
+  expect(feedReads(sent)).toEqual([{ tail: "true", limit: "300", ...CONVERSATION, ...MINE }]);
   // Two lines: when and whose; then where and what.
   expect([...user!.querySelectorAll(".turn-h")].map((row) => row.textContent)).toEqual([`${clock(EVENTS[0]!.created)}tiles-a`, "[ops, lab]User"]);
   expect(clock(EVENTS[0]!.created)).toMatch(/^\d\d:\d\d:\d\d$/);
@@ -302,10 +329,10 @@ test("a level reads the kinds it adds and shows them: + Calls the tool calls, + 
   fireEvent.click(levels().getByRole("button", { name: /^\+ Calls/ }));
   const [, call] = await lines(4);
   expect(call!.querySelector(".tool-arg")!.textContent).toBe("pytest -x");
-  expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", kind: `${MESSAGES},ToolCall` });
+  expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", kind: `${MESSAGES},ToolCall`, ...MINE });
   fireEvent.click(levels().getByRole("button", { name: /^\+ Output/ }));
   await lines(5);
-  expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300" });
+  expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", ...MINE });
   fireEvent.click(levels().getByRole("button", { name: /^All/ }));
   await lines(7);
   // + Output and All read the same records, so All reads nothing more.
@@ -320,10 +347,10 @@ test("agents group by name family, and a family is picked as its pattern; the fe
   fireEvent.change(agents.getByRole("combobox", { name: "Group agents by" }), { target: { value: "family" } });
   expect(agentBoxes()).toEqual(["tiles-*", "tiles-a", "tiles-b", "claude (whole group)", "claude"]);
   fireEvent.click(agents.getByRole("checkbox", { name: "tiles-*" }));
-  await waitFor(() => expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", actor: "tiles-a,tiles-b", ...CONVERSATION }));
+  await waitFor(() => expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", actor: "tiles-a,tiles-b", ...CONVERSATION, ...MINE }));
   expect(agents.getByRole("checkbox", { name: "tiles-b" })).toHaveProperty("checked", true);
   fireEvent.click(agents.getByRole("button", { name: "Clear tiles-*" }));
-  await waitFor(() => expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", ...CONVERSATION }));
+  await waitFor(() => expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", ...CONVERSATION, ...MINE }));
 });
 
 test("agents are found by a fragment of their name or room, and a typed pattern is picked in one step", async () => {
@@ -568,13 +595,13 @@ test("a history range reads its window instead of the live tail, the facets coun
   fireEvent.click(range.getByRole("button", { name: "Apply" }));
   await waitFor(() => expect(feedReads(sent)).toHaveLength(2));
   const since = new Date("2026-10-01T09:30").toISOString();
-  expect(feedReads(sent)[1]).toEqual({ since, limit: "300", ...CONVERSATION });
+  expect(feedReads(sent)[1]).toEqual({ since, limit: "300", ...CONVERSATION, ...MINE });
   // The range's controls start afresh from the new range.
   const applied = within(screen.getByRole("group", { name: "Range" }));
   expect(applied.getByRole("button", { name: "Live" }).getAttribute("aria-pressed")).toBe("false");
   expect((applied.getByLabelText("From") as HTMLInputElement).value).toBe("2026-10-01T09:30");
   expect(document.querySelector(".console-mark")!.textContent).toBe("History");
-  await waitFor(() => expect(sent.filter((request) => request.path === "/api/web/feed/facets").at(-1)!.query).toBe(`?since=${encodeURIComponent(since)}`));
+  await waitFor(() => expect(sent.filter((request) => request.path === "/api/web/feed/facets").at(-1)!.query).toBe(`?since=${encodeURIComponent(since)}&whose=mine`));
 });
 
 test("a history range's facets count at most the 7 days before its end, now for an open one; its feed reads the window as it is", async () => {
@@ -588,7 +615,7 @@ test("a history range's facets count at most the 7 days before its end, now for 
   keepOnServer([open(null, until)]);
   const { unmount } = renderConsole();
   await lines(3);
-  expect(feedReads(sent)).toEqual([{ until, limit: "300", ...CONVERSATION }]);
+  expect(feedReads(sent)).toEqual([{ until, limit: "300", ...CONVERSATION, ...MINE }]);
   await waitFor(() => expect(new Set(facetWindows().map(String))).toEqual(new Set([String(["2026-09-24T10:00:00.000Z", until])])));
   unmount();
   // A start a month back with no end: the 7 days before now.
@@ -596,7 +623,7 @@ test("a history range's facets count at most the 7 days before its end, now for 
   keepOnServer([open("2026-09-01T00:00:00.000Z", null)]);
   renderConsole();
   await lines(3);
-  expect(feedReads(sent)).toEqual([{ since: "2026-09-01T00:00:00.000Z", limit: "300", ...CONVERSATION }]);
+  expect(feedReads(sent)).toEqual([{ since: "2026-09-01T00:00:00.000Z", limit: "300", ...CONVERSATION, ...MINE }]);
   await waitFor(() => expect(new Set(facetWindows().map(String))).toEqual(new Set([String(["2026-09-25T12:00:00.000Z", null])])));
 });
 
@@ -607,7 +634,7 @@ test("a view kept as a window of history opens on that window, its times in the 
   keepOnServer([view]);
   renderConsole();
   await lines(3);
-  expect(feedReads(sent)).toEqual([{ since, limit: "300", ...CONVERSATION }]);
+  expect(feedReads(sent)).toEqual([{ since, limit: "300", ...CONVERSATION, ...MINE }]);
   const range = within(screen.getByRole("group", { name: "Range" }));
   const local = new Date(new Date(since).getTime() - new Date(since).getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
   expect([range.getByLabelText("From"), range.getByLabelText("To")].map((box) => (box as HTMLInputElement).value)).toEqual([local, ""]);
@@ -737,9 +764,26 @@ test("a picked agent the facets do not count stays picked, so it can be cleared 
   keepOnServer([view]);
   renderConsole();
   expect(await screen.findByText("No records match this view.")).toBeTruthy();
-  expect(feedReads(sent)).toEqual([{ tail: "true", limit: "300", actor: "gone-agent" }]);
+  expect(feedReads(sent)).toEqual([{ tail: "true", limit: "300", actor: "gone-agent", ...EVERYONE }]);
   fireEvent.click(rail("Agents").getByRole("button", { name: "Clear gone-agent" }));
   await lines(7);
+});
+
+test("a kept view that picks agents opens on Everyone and reads a colleague's; a view that picks nothing keeps Mine as it picks", async () => {
+  const sent = serve();
+  const view: KeptView = { id: "v", name: "Grace's", pinned: false, created: "2026-10-01T00:00:00Z", agents: ["tiles-b"], rooms: [], clis: [], level: 1, range: { live: true } };
+  keepOnServer([view]);
+  renderConsole();
+  await lines(1);
+  expect(scopeButtons()).toEqual([["Mine", "false"], ["My campaigns", "false"], ["Everyone", "true"]]);
+  expect(feedReads(sent)).toEqual([{ tail: "true", limit: "300", actor: "tiles-b", ...CONVERSATION, ...EVERYONE }]);
+  fireEvent.click(rail("Views").getByText("New view", { selector: "button" }));
+  await lines(3);
+  expect(scopeButtons()).toEqual([["Mine", "true"], ["My campaigns", "false"], ["Everyone", "false"]]);
+  fireEvent.click(rail("Agents").getByLabelText("tiles-a"));
+  await lines(2);
+  expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", actor: "tiles-a", ...CONVERSATION, ...MINE });
+  expect(scopeButtons()).toEqual([["Mine", "true"], ["My campaigns", "false"], ["Everyone", "false"]]);
 });
 
 test("a viewer reads the console but gets no send box", async () => {
@@ -771,27 +815,40 @@ const WITH_CHATS = [
 /** A user with the canvas, whose console has a station to be scoped to. */
 const CANVAS_USER = { ...PROFILE, visual_workspace_enabled: true };
 
-/** The reads of one kind, by their `station` parameter. */
-const stationOf = (sent: readonly Sent[], path: string) =>
-  sent.filter((request) => request.path === path).map((request) => new URLSearchParams(request.query).get("station"));
+/** Each read of one kind, by one of its parameters. */
+const paramOf = (sent: readonly Sent[], path: string, name: string) =>
+  sent.filter((request) => request.path === path).map((request) => new URLSearchParams(request.query).get(name));
 
-test("opened inside a station, the console reads its agents only; All sessions widens it, This station narrows it again", async () => {
+/** The reads of one kind, by their `station` parameter. */
+const stationOf = (sent: readonly Sent[], path: string) => paramOf(sent, path, "station");
+
+/** Each feed and facets read since `sent` was last emptied, as its station and whose sessions it keeps. */
+const scopesOf = (sent: readonly Sent[]) =>
+  new Set(["/api/web/feed", "/api/web/feed/facets"].flatMap((path) => {
+    const whose = paramOf(sent, path, "whose");
+    return stationOf(sent, path).map((station, k) => `${station}|${whose[k]}`);
+  }));
+
+/** The scope's buttons, as named, and which is pressed. */
+const scopeButtons = () =>
+  within(screen.getByRole("group", { name: "Scope" })).getAllByRole("button").map((button) => [button.textContent, button.getAttribute("aria-pressed")]);
+
+test("opened inside a station, the console reads its agents, whoever's they are; Everyone widens it, This station narrows it again", async () => {
   setStation("w1");
   const sent = serve(undefined, EVENTS, STATION);
   renderConsole(CANVAS_USER);
   await lines(3);
   const scope = within(screen.getByRole("group", { name: "Scope" }));
-  expect(scope.getByRole("button", { name: "This station" }).getAttribute("aria-pressed")).toBe("true");
-  expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set(["w1"]));
-  expect(new Set(stationOf(sent, "/api/web/feed/facets"))).toEqual(new Set(["w1"]));
+  expect(scopeButtons()).toEqual([["This station", "true"], ["Mine", "false"], ["My campaigns", "false"], ["Everyone", "false"]]);
+  // A station's agents are the assistant's sessions, under no person's account.
+  expect(scopesOf(sent)).toEqual(new Set(["w1|everyone"]));
 
   sent.length = 0;
-  fireEvent.click(scope.getByRole("button", { name: "All sessions" }));
+  fireEvent.click(scope.getByRole("button", { name: "Everyone" }));
   await waitFor(() => expect(stationOf(sent, "/api/web/feed").length).toBeGreaterThan(0));
   await waitFor(() => expect(stationOf(sent, "/api/web/feed/facets").length).toBeGreaterThan(0));
-  expect(scope.getByRole("button", { name: "All sessions" }).getAttribute("aria-pressed")).toBe("true");
-  expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set([null]));
-  expect(new Set(stationOf(sent, "/api/web/feed/facets"))).toEqual(new Set([null]));
+  expect(scope.getByRole("button", { name: "Everyone" }).getAttribute("aria-pressed")).toBe("true");
+  expect(scopesOf(sent)).toEqual(new Set(["null|everyone"]));
 
   sent.length = 0;
   fireEvent.click(scope.getByRole("button", { name: "This station" }));
@@ -799,14 +856,14 @@ test("opened inside a station, the console reads its agents only; All sessions w
   expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set(["w1"]));
 });
 
-test("opened inside an unnamed station, the console reads every session, as before stations; This station narrows it", async () => {
+test("opened inside an unnamed station, the console reads the person's own sessions; This station narrows it to the station's", async () => {
   setStation("w1");
   const sent = serve(undefined, EVENTS, { ...STATION, name: "unnamed-workstream#3" });
   renderConsole(CANVAS_USER);
   await lines(3);
   const scope = within(screen.getByRole("group", { name: "Scope" }));
-  expect(scope.getByRole("button", { name: "All sessions" }).getAttribute("aria-pressed")).toBe("true");
-  expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set([null]));
+  expect(scope.getByRole("button", { name: "Mine" }).getAttribute("aria-pressed")).toBe("true");
+  expect(scopesOf(sent)).toEqual(new Set(["null|mine"]));
 
   sent.length = 0;
   fireEvent.click(scope.getByRole("button", { name: "This station" }));
@@ -814,12 +871,101 @@ test("opened inside an unnamed station, the console reads every session, as befo
   expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set(["w1"]));
 });
 
-test("with no station there is no scope control and nothing is scoped", async () => {
+test("with no station the scope offers no This station, and the console reads the person's own sessions", async () => {
   const sent = serve();
   renderConsole();
   await lines(3);
-  expect(screen.queryByRole("group", { name: "Scope" })).toBeNull();
-  expect(new Set(stationOf(sent, "/api/web/feed"))).toEqual(new Set([null]));
+  expect(scopeButtons()).toEqual([["Mine", "true"], ["My campaigns", "false"], ["Everyone", "false"]]);
+  await waitFor(() => expect(stationOf(sent, "/api/web/feed/facets").length).toBeGreaterThan(0));
+  expect(scopesOf(sent)).toEqual(new Set(["null|mine"]));
+});
+
+test("My campaigns reads the sessions of the campaigns the person launched, and Everyone every one they read", async () => {
+  const sent = serve();
+  renderConsole();
+  await lines(3);
+  const scope = within(screen.getByRole("group", { name: "Scope" }));
+  for (const [name, whose] of [["My campaigns", "campaigns"], ["Everyone", "everyone"], ["Mine", "mine"]] as const) {
+    sent.length = 0;
+    fireEvent.click(scope.getByRole("button", { name }));
+    await waitFor(() => expect(paramOf(sent, "/api/web/feed", "whose")).toContain(whose));
+    await waitFor(() => expect(paramOf(sent, "/api/web/feed/facets", "whose")).toContain(whose));
+    expect(scopesOf(sent)).toEqual(new Set([`null|${whose}`]));
+  }
+});
+
+test("an empty My campaigns says a campaign's sessions are staff only to a person who holds no staff", async () => {
+  const said = async (profile: typeof PROFILE) => {
+    serve();
+    const { unmount } = renderConsole(profile);
+    await lines(3);
+    fireEvent.click(within(screen.getByRole("group", { name: "Scope" })).getByRole("button", { name: "My campaigns" }));
+    const note = await screen.findByText(/^No records match this view/);
+    unmount();
+    return note.textContent;
+  };
+
+  expect(await said(PROFILE)).toBe("No records match this view: your campaigns' sessions are staff only, and you hold no staff.");
+  expect(await said({ ...PROFILE, read_audiences: ["open", "private", "staff"] })).toBe("No records match this view.");
+});
+
+test("Show hidden reads the sessions their owners hid as well, and lists them marked; off again leaves them out", async () => {
+  AUDIENCES.set(TILES_A, "private");
+  const sent = serve();
+  renderConsole();
+  await lines(1);
+  expect(agentBoxes()).toEqual(["claude", "tiles-b"]);
+  expect(paramOf(sent, "/api/web/feed", "hidden")).toEqual([null]);
+  const toggle = screen.getByRole("button", { name: "Show hidden" });
+  fireEvent.click(toggle);
+  expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  await waitFor(() => expect(agentBoxes()).toEqual(["tiles-a", "claude", "tiles-b"]));
+  expect(paramOf(sent, "/api/web/feed", "hidden").at(-1)).toBe("true");
+  expect(paramOf(sent, "/api/web/feed/facets", "hidden").at(-1)).toBe("true");
+  expect(rail("Agents").getByText("Hidden")).toBeTruthy();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(agentBoxes()).toEqual(["claude", "tiles-b"]));
+  expect(paramOf(sent, "/api/web/feed", "hidden").at(-1)).toBeNull();
+});
+
+test("Hide takes a session of mine out of the console and reads it again; Undo shows it again", async () => {
+  const sent = serve();
+  renderConsole();
+  await lines(3);
+  const audiences = () => sent.filter((request) => request.path.endsWith("/audience")).map((request) => [request.path, request.body]);
+  const reads = feedReads(sent).length;
+  fireEvent.click(rail("Agents").getByRole("button", { name: "Hide tiles-a" }));
+  await waitFor(() => expect(agentBoxes()).toEqual(["claude", "tiles-b"]));
+  expect(audiences()).toEqual([[`/api/sessions/${TILES_A}/audience`, { audience: "private" }]]);
+  await waitFor(() => expect(feedReads(sent).length).toBeGreaterThan(reads));
+  expect(await screen.findByText("Hid the transcript of tiles-a: only you, staff and admins read it now.")).toBeTruthy();
+  screen.getByRole("button", { name: "Undo" }).focus();
+  await userEvent.keyboard("{Enter}");
+  await waitFor(() => expect(agentBoxes()).toEqual(["tiles-a", "claude", "tiles-b"]));
+  expect(audiences().at(-1)).toEqual([`/api/sessions/${TILES_A}/audience`, { audience: "open" }]);
+  // Only the person's own session offers Hide.
+  expect(rail("Agents").queryByRole("button", { name: "Hide claude" })).toBeNull();
+});
+
+test("a hide the server refuses says why in words for its code, and the session stays", async () => {
+  const sent = serve();
+  renderConsole();
+  await lines(3);
+  const answer = globalThis.fetch;
+  // The server names the refusal by its code alone.
+  const refusals = [{ status: 403, code: "session_not_owner" }, { status: 409, code: "session_staff" }];
+  vi.stubGlobal("fetch", async (request: Request) => {
+    if (!new URL(request.url).pathname.endsWith("/audience")) return answer(request);
+    const { status, code } = refusals.shift()!;
+    return Response.json({ detail: { code } }, { status });
+  });
+  const reads = feedReads(sent).length;
+  fireEvent.click(rail("Agents").getByRole("button", { name: "Hide tiles-a" }));
+  expect(await screen.findByText("Only the session's owner can hide it or show it again.")).toBeTruthy();
+  fireEvent.click(rail("Agents").getByRole("button", { name: "Hide tiles-a" }));
+  expect(await screen.findByText("A staff session keeps its audience: it is never hidden or shown to more people.")).toBeTruthy();
+  expect(agentBoxes()).toEqual(["tiles-a", "claude", "tiles-b"]);
+  expect(feedReads(sent)).toHaveLength(reads);
 });
 
 test("the station's own chat is hidden from the widened console, and no chat is offered to message", async () => {
@@ -828,7 +974,7 @@ test("the station's own chat is hidden from the widened console, and no chat is 
   const feed = new ChatFeed();
   renderConsole(CANVAS_USER, feed);
   await lines(4);
-  fireEvent.click(within(screen.getByRole("group", { name: "Scope" })).getByRole("button", { name: "All sessions" }));
+  fireEvent.click(within(screen.getByRole("group", { name: "Scope" })).getByRole("button", { name: "Everyone" }));
   // Every line but the station's own chat's: three of Messages, and the other station's chat.
   const shown = await waitFor(() => {
     const found = [...document.querySelectorAll<HTMLElement>(".console-line")];
@@ -850,7 +996,7 @@ test("a line to a chat, named or by @*, is refused: it is the station's to talk 
   const sent = serve(undefined, WITH_CHATS, STATION);
   renderConsole(CANVAS_USER);
   await lines(4);
-  fireEvent.click(within(screen.getByRole("group", { name: "Scope" })).getByRole("button", { name: "All sessions" }));
+  fireEvent.click(within(screen.getByRole("group", { name: "Scope" })).getByRole("button", { name: "Everyone" }));
   await screen.findByText("In another chat.");
   const box = screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(box, { target: { value: `@${OTHER_CHAT} hello` } });
@@ -923,7 +1069,7 @@ test("a chat that was not told is said quietly, whether the server says so or th
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
-test("a station whose chat forks what the person types is not told, and says so", async () => {
+test("a station whose chat the person does not read is not told, and says so", async () => {
   setStation("w1");
   const sent = serve(undefined, EVENTS, STATION, undefined, true);
   renderConsole(CANVAS_USER);

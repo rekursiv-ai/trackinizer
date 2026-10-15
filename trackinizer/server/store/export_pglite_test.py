@@ -20,11 +20,13 @@ import pytest_asyncio
 
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api.export_routes import export_lines
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stdout
+from trackinizer.wire.audience import AUDIENCES
 from trackinizer.wire.bodies import SubmitExperiment, SubmitIssue
 from trackinizer.wire.wire_export import (
     EXPORT_FORMAT,
@@ -41,6 +43,13 @@ if TYPE_CHECKING:
     from trackinizer.server.store.export import GraphExport
 
 
+# Reads every session's transcript, as a whole backup is taken.
+_ANYONE: Final = SessionReader(
+    audiences=AUDIENCES,
+    every_session=True,
+    every_chat=True,
+    oversight=True,
+)
 _LEFT_OUT: Final = frozenset(
     {
         "allowlist",
@@ -173,7 +182,7 @@ async def test_the_export_carries_every_seeded_row(store: Store) -> None:
     """Rows, edges, audit, metrics and session parts all come out, in order."""
     ids = await _seed(store)
 
-    graph = await store.export_graph()
+    graph = await store.export_graph(reader=_ANYONE)
 
     assert [table for table, _ in graph.tables] == list(EXPORT_TABLES)
     inquiry_ids = {row["id"] for row in _rows(graph, "inquiries")}
@@ -201,7 +210,7 @@ async def test_the_export_carries_every_seeded_row(store: Store) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_the_header_names_the_applied_migrations(store: Store) -> None:
     """A reader learns which schema wrote the rows from the first line alone."""
-    graph = await store.export_graph()
+    graph = await store.export_graph(reader=_ANYONE)
     async with store.engine.acquire() as conn:
         applied = await conn.fetch("SELECT name FROM applied_migrations")
 
@@ -224,8 +233,8 @@ async def test_every_line_is_json_and_an_unchanged_graph_exports_identically(
     """Real column types serialize, and two exports of one graph match byte for byte."""
     await _seed(store)
 
-    first = b"".join(export_lines(await store.export_graph()))
-    second = b"".join(export_lines(await store.export_graph()))
+    first = b"".join(export_lines(await store.export_graph(reader=_ANYONE)))
+    second = b"".join(export_lines(await store.export_graph(reader=_ANYONE)))
 
     assert first == second
     lines = first.decode().splitlines()
@@ -238,12 +247,12 @@ async def test_every_line_is_json_and_an_unchanged_graph_exports_identically(
 async def test_rows_written_later_land_at_the_end(store: Store) -> None:
     """A re-export appends new inquiries instead of reshuffling the old ones."""
     await _seed(store)
-    before = _rows(await store.export_graph(), "inquiries")
+    before = _rows(await store.export_graph(reader=_ANYONE), "inquiries")
 
     await store.submit_issue(
         SubmitIssue(account="tester@example.com", title="Asked later"),
     )
-    after = _rows(await store.export_graph(), "inquiries")
+    after = _rows(await store.export_graph(reader=_ANYONE), "inquiries")
 
     assert after[: len(before)] == before
     assert after[-1]["title"] == "Asked later"

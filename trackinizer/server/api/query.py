@@ -32,7 +32,11 @@ from trackinizer.server.api._routes_shared import (
     parse_seq_ranges,
 )
 from trackinizer.server.api.locks import require_unlocked
-from trackinizer.server.api.session_access import require_row_purge
+from trackinizer.server.api.session_access import (
+    require_row_purge,
+    session_reader,
+)
+from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import iter_sse_events
 from trackinizer.server.primitives import lookup_kinds
@@ -241,9 +245,9 @@ async def list_inquiries_route(
     for the whole response, nearest first.
 
     A ``filter`` on a record of an ``AgentSession`` (``user_message``, ``tool_call``,
-    ...) is answered from its transcript, so it meets only the sessions whose audience
-    the caller reads; a session the caller does not read is neither found by it nor
-    ruled out by it.
+    ...) is answered from its transcript, so it meets only the sessions whose
+    transcript the caller reads (its audience, and for a science chat its members); a
+    session the caller does not read is neither found by it nor ruled out by it.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -306,7 +310,7 @@ async def list_inquiries_route(
                     seq_ranges=seq_ranges,
                     filters=filters,
                     edges=edges,
-                    audiences=identity.read_audiences,
+                    reader=session_reader(request, identity),
                 )
         except asyncio.CancelledError:
             outcome = "cancelled"
@@ -504,8 +508,8 @@ async def change_log_stream_route(
 
     Shares ``iter_sse_events`` with ``/api/web/subscribe`` so both emit
     one wire shape; offline catch-up uses ``GET /api/change_log``. A record
-    written to a session's transcript is streamed only to a caller whose
-    audiences include the session's.
+    written to a session's transcript is streamed only to a caller who reads
+    that session.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -522,7 +526,13 @@ async def change_log_stream_route(
     )
     engine = cast(DatabaseEngine, state_data["engine"])
     return StreamingResponse(
-        iter_sse_events(engine, audiences=identity.read_audiences),
+        iter_sse_events(
+            engine,
+            hears=TranscriptPings(
+                engine=engine,
+                reader=session_reader(request, identity),
+            ).hears,
+        ),
         media_type="text/event-stream",
     )
 

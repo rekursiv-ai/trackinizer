@@ -2,12 +2,12 @@ import type { Locator, Page } from "@playwright/test";
 import { expect, setPreferences, test } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
-// The navigation sidebar stands at the left, whichever side Chat is on, as a
-// rail of icons. Hovering the rail opens it over the workbench, a pin (⌘B)
-// opens it for good, and the canvas's controls are its Workbench section, in
-// place of the canvas's old toolbar row. The page loads under Playwright's
-// pointer at its top-left corner, on the rail, which stays folded until the
-// pointer moves.
+// The navigation sidebar stands at the canvas's left edge as a rail of icons:
+// right of Chat when Chat is at the left, leftmost when Chat is at the right.
+// Hovering the rail opens it over the workbench, a pin (⌘B) opens it for good,
+// and the canvas's controls are its Workbench section, in place of the
+// canvas's old toolbar row. The page loads under Playwright's pointer at its
+// top-left corner, over Chat; a rail there stays folded until the pointer moves.
 
 test.use({ canvas: true });
 
@@ -15,11 +15,16 @@ test.beforeEach(async ({ request }) => {
   await resetCanvas(request);
 });
 
-async function open(page: Page): Promise<{ sidebar: Locator; app: Locator; main: Locator }> {
+async function open(page: Page): Promise<{ sidebar: Locator; app: Locator; main: Locator; canvas: Locator }> {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/app/#/list/Issue");
   await expect(page.locator(".chat-column").getByRole("region", { name: "Chat" })).toBeVisible();
-  return { sidebar: page.getByRole("navigation", { name: "Sidebar" }), app: page.locator(".app"), main: page.locator("main.main") };
+  return {
+    sidebar: page.getByRole("navigation", { name: "Sidebar" }),
+    app: page.locator(".app"),
+    main: page.locator("main.main"),
+    canvas: page.locator(".chat-stage"),
+  };
 }
 
 async function box(locator: Locator) {
@@ -33,16 +38,16 @@ async function forget(page: Page): Promise<void> {
   await setPreferences(page.request, { chat_side: null });
 }
 
-test("the sidebar starts as a rail at the left, and the canvas has no toolbar row", async ({ page }) => {
-  const { sidebar, app, main } = await open(page);
+test("the sidebar starts as a rail between Chat and the canvas, and the canvas has no toolbar row", async ({ page }) => {
+  const { sidebar, app, canvas } = await open(page);
   await expect(app).toHaveClass(/sidebar-collapsed/);
   await expect(app).not.toHaveClass(/sidebar-right/);
   const rail = await box(sidebar);
-  const work = await box(main);
+  const chat = await box(page.locator(".chat-column"));
   expect(Math.round(rail.width)).toBe(48);
-  expect(rail.x + rail.width).toBeLessThanOrEqual(work.x + 1);
-  // Chat, at the left by default, stands inside the workbench, beside the rail.
-  expect((await box(page.locator(".chat-column"))).x).toBeLessThan(work.x + work.width / 2);
+  // Chat, at the left by default, then the rail, then the canvas.
+  expect(chat.x + chat.width).toBeLessThanOrEqual(rail.x + 1);
+  expect(rail.x + rail.width).toBeLessThanOrEqual((await box(canvas)).x + 1);
   await expect(page.locator(".visual-toolbar")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Configure" })).toHaveCount(0);
   await expect(sidebar.getByRole("link", { name: "Issues" })).toHaveAttribute("title", "Issues");
@@ -65,28 +70,40 @@ test("hovering the rail opens the sidebar over the workbench, which keeps its wi
   expect(Math.round((await box(sidebar)).width)).toBe(48);
 });
 
-test("the pin button, or Ctrl+B, opens the sidebar for good and takes room from the workbench; again, a rail", async ({ page }) => {
-  const { sidebar, app, main } = await open(page);
-  const rail = await box(main);
+test("the pin button, or Ctrl+B, opens the sidebar for good and takes room from the canvas; again, a rail", async ({ page }) => {
+  const { sidebar, app, canvas } = await open(page);
+  const rail = await box(canvas);
   await sidebar.getByRole("button", { name: "Expand sidebar" }).click();
   await page.mouse.move(300, 400);
   await expect(app).not.toHaveClass(/sidebar-collapsed/);
-  expect((await box(main)).width).toBeLessThan(rail.width - 150);
+  expect((await box(canvas)).width).toBeLessThan(rail.width - 150);
   await page.keyboard.press("Control+b");
   await expect(app).toHaveClass(/sidebar-collapsed/);
-  expect((await box(main)).width).toBeGreaterThan(rail.width - 2);
+  expect((await box(canvas)).width).toBeGreaterThan(rail.width - 2);
 });
 
-test("flipping Chat's side leaves the sidebar at the left", async ({ page }) => {
-  const { sidebar, main } = await open(page);
-  const before = await box(sidebar);
-  expect(before.x).toBeLessThan((await box(main)).x);
-  await page.locator(".chat-column").getByRole("button", { name: "Move Chat to the right" }).click();
-  const work = await box(main);
-  expect((await box(sidebar)).x).toBe(before.x);
-  expect((await box(sidebar)).x).toBeLessThan(work.x);
+test("with Chat at the right, the rail stands leftmost, still at the canvas's left edge", async ({ page }) => {
+  const { sidebar, canvas } = await open(page);
+  const chat = page.locator(".chat-column");
+  expect((await box(sidebar)).x).toBeGreaterThan((await box(chat)).x);
+  await chat.getByRole("button", { name: "Move Chat to the right" }).click();
+  const rail = await box(sidebar);
+  expect(rail.x).toBeLessThan((await box(chat)).x);
+  expect(rail.x + rail.width).toBeLessThanOrEqual((await box(canvas)).x + 1);
+  expect((await box(canvas)).x).toBeLessThan((await box(chat)).x);
   await expect(page.locator(".app")).not.toHaveClass(/sidebar-right/);
   await forget(page);
+});
+
+test("Settings opens over the page from the rail's edge, leaving Chat and the rail in view", async ({ page }) => {
+  const { sidebar } = await open(page);
+  await page.goto("/app/#/settings");
+  const sheet = page.getByRole("complementary", { name: "Your settings" });
+  await expect(sheet.getByRole("heading", { level: 1 })).toHaveText("Your settings");
+  const rail = await box(sidebar);
+  const chat = await box(page.locator(".chat-column"));
+  expect(Math.round((await box(sheet)).x)).toBe(Math.round(rail.x + rail.width));
+  expect(chat.x + chat.width).toBeLessThanOrEqual(rail.x + 1);
 });
 
 /** The middle of `locator`, in whole pixels. */
@@ -183,7 +200,8 @@ test("the rail shows one Workbench icon that opens the sidebar on the visual tog
   await expect(app).toHaveClass(/sidebar-peek/);
   const browse = sidebar.getByRole("checkbox", { name: /Browse/ });
   await expect(browse).toBeVisible();
-  await expect(browse).toBeDisabled();
+  await expect(browse).toBeEnabled();
+  await expect(browse).toBeChecked();
   await expect(sidebar.getByRole("textbox", { name: "Artifact link" })).toBeVisible();
   await expect(sidebar.locator(".workbench-slot :focus")).toHaveCount(1);
 });

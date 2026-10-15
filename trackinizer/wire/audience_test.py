@@ -10,6 +10,7 @@ from trackinizer.wire.audience import (
     AUDIENCE_SHAPE,
     AUDIENCES,
     OPEN,
+    PRIVATE,
     STAFF,
     AudienceName,
     validate_audience,
@@ -20,9 +21,9 @@ class _Holder(BaseModel):
     audience: AudienceName
 
 
-def test_the_accepted_values_are_open_and_staff() -> None:
-    assert frozenset({OPEN, STAFF}) == AUDIENCES
-    assert (OPEN, STAFF) == ("open", "staff")
+def test_the_accepted_values_are_open_private_and_staff() -> None:
+    assert frozenset({OPEN, PRIVATE, STAFF}) == AUDIENCES
+    assert (OPEN, PRIVATE, STAFF) == ("open", "private", "staff")
 
 
 @pytest.mark.parametrize("value", sorted(AUDIENCES))

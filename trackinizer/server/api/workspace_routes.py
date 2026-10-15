@@ -12,7 +12,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from trackinizer.server.api._deps import get_assistant, get_hub, get_inbound
 from trackinizer.server.api._routes_shared import engine_of, require_browser
+from trackinizer.server.api.session_access import session_reader
 from trackinizer.server.api.visuals_routes import visual_catalog
+from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.chat_hub import (
     ChatFrame,
@@ -71,8 +73,8 @@ async def workspace_events_route(
     hid (``hidden``) the tab's Chat window; and ``changed`` an
     inquiry id, as ``/api/web/subscribe`` relays it, so a tab needs this one stream.
     A Chat conversation is an AgentSession, so a line added to it reaches every
-    viewer who reads the session's audience as the session's ``changed`` id; no frame
-    is Chat's own. The stream opens with a comment and sends another after 25 s without
+    viewer who reads the session as the session's ``changed`` id; no frame is Chat's
+    own. The stream opens with a comment and sends another after 25 s without
     a frame. A subscriber more than 256 frames behind is dropped; it reconnects from
     the ``workspace`` frame.
 
@@ -101,7 +103,10 @@ async def workspace_events_route(
             is_active=partial(_owner_is_active, request, user_id=identity.user_id),
             changes=iter_changed_ids(
                 engine_of(request),
-                audiences=identity.read_audiences,
+                hears=TranscriptPings(
+                    engine=engine_of(request),
+                    reader=session_reader(request, identity),
+                ).hears,
             ),
         ),
         media_type="text/event-stream",
@@ -417,6 +422,8 @@ async def workspace_operation_route(
     if not applied.replayed:
         hub = get_hub(request)
         if isinstance(body.operation, Navigate):
+            if applied.restored_page:
+                hub.publish(workspace_id, frame=WorkspaceFrame(state=applied.state))
             hub.publish(workspace_id, frame=NavigateFrame(route=body.operation.route))
         elif isinstance(body.operation, Highlight):
             hub.publish(workspace_id, frame=HighlightFrame(ids=body.operation.ids))

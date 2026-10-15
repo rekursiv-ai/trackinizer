@@ -107,7 +107,7 @@ class ColumnSpec(UserDict[str, "ColumnSpec"]):
 
     compare_and_set: bool = False
     """``PUT`` accepts a compare-and-set ``expected`` guard (owner, status,
-    judgement). The route rejects ``expected`` on any other column."""
+    judgement, app). The route rejects ``expected`` on any other column."""
 
     list_verb_stem: str = ""
     """Singular stem for a list column's atomic Store methods, e.g.

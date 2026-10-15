@@ -1,7 +1,12 @@
 import { ApiError, type CallOptions, client, send, TIMEOUT_MS } from "./client";
 import type { components } from "./generated/schema";
 
-/** A conversation's session, its starter and whether the assistant still has it open. */
+/**
+ * A conversation's session, its starter, whether the assistant still has it
+ * open, who reads it (`audience`: `open` as the org mode says, `private` once its
+ * starter hid it, `staff` once the assistant read a staff session into it), and
+ * what the caller may do: `forks_on_typing` says they do not read it.
+ */
 export type ChatHead = components["schemas"]["ChatHead"];
 /** What a posted line was queued for. */
 export type ChatSent = components["schemas"]["ChatSent"];
@@ -33,8 +38,24 @@ export type ChatLine = {
 export const CHAT_SESSION_PREFIX = "chat:";
 export const SCIENCE_CHAT_LABEL = "science-chat";
 
-/** The 403 code of a post into a chat that does not take the poster; what was typed is then sent as a fork. */
+/**
+ * The 403 code of a post into a chat the poster does not read: not shared with
+ * them, or staff only and they hold no staff. A fork would copy its lines, so it
+ * is no way in either.
+ */
 export const CHAT_NOT_SHARED = "chat_not_shared";
+
+/** The 409 code of a fork from a hidden or staff-only chat: the copy would not keep who may read it. */
+export const CHAT_FORK_CLOSED = "chat_fork_closed";
+
+/**
+ * The 409 code of a fork whose readers the chat's are not: my organisation reads a
+ * chat I start, so a chat shared with me from another one is posted in, not forked.
+ */
+export const CHAT_FORK_WIDER = "chat_fork_wider";
+
+/** The 409 code of a share of a staff-only chat with someone who holds no staff. */
+export const CHAT_STAFF_ONLY = "chat_staff_only";
 
 /** The code (410) of a post, a head read or a station's for-chat switch that names a deleted chat; the chat is then let go and what was typed starts a new one. */
 export const CHAT_DELETED = "chat_deleted";
@@ -92,14 +113,17 @@ export async function sendChatLine(line: ChatLine, key: string): Promise<ChatSen
   }));
 }
 
-/** Let `email` post into a conversation. The head says who now has it. */
+/**
+ * Let `email` read a conversation and post into it. The head says who now has it.
+ * A staff-only chat takes only someone who holds staff (409 `chat_staff_only`).
+ */
 export async function shareChat(id: string, email: string): Promise<void> {
   await send(TIMEOUT_MS.write, undefined, (signal) => client.PUT("/api/chats/{conversation_id}/shares/{email}", {
     params: { path: { conversation_id: id, email } }, signal,
   }));
 }
 
-/** Stop `email` posting into a conversation; their earlier lines stay. */
+/** Stop `email` reading or posting into a conversation; their earlier lines stay. */
 export async function unshareChat(id: string, email: string): Promise<void> {
   await send(TIMEOUT_MS.write, undefined, (signal) => client.DELETE("/api/chats/{conversation_id}/shares/{email}", {
     params: { path: { conversation_id: id, email } }, signal,

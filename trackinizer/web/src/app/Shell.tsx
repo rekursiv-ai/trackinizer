@@ -14,7 +14,7 @@ import { BarStack, OfflineBar, PausedBar } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { kindLook } from "../ui/kinds";
 import { panelCommand, usePanel } from "../ui/panel";
-import { useHoverOpen } from "../visuals/hoverOpen";
+import { RAIL_FOLD_AFTER_MS, useHoverOpen } from "../visuals/hoverOpen";
 import { EmptyState, OpenDrawerContext, ViewHeader } from "../ui/view";
 import { useMeta, useProfile, useWriteMode } from "./boot";
 import { SIDEBAR, Sidebar } from "./Sidebar";
@@ -41,15 +41,16 @@ const ChatColumn = lazyView(() => import("../visuals/ChatColumn"), (module) => m
 /** A route that shows a page; a new inquiry's form, Settings and Admin show over one. */
 type ViewRoute = Exclude<Route, { name: "new" | "settings" | "admin" }>;
 
-/** Settings and Admin: a sheet over the page, half its width, from the left, beside the sidebar. */
+/** Settings and Admin: a sheet over the page, half its width, from the sidebar's rail. */
 type SheetRoute = Extract<Route, { name: "settings" | "admin" }>;
 
 /**
  * The signed-in app: the sidebar, the bars, the current route's view, and the
  * palette and the create form, with the shell's own commands. The sidebar
- * stands at the left whichever side Chat is on, a rail of its icons that opens
- * over the workbench while hovered, or pinned open; narrow, it is a drawer
- * whether collapsed or not.
+ * stands at the canvas's left edge: right of Chat when Chat is at the left,
+ * leftmost when Chat is at the right, and leftmost too with no canvas. It is a
+ * rail of its icons that opens over the workbench while hovered, or pinned
+ * open; narrow, it is a drawer whether collapsed or not.
  */
 export function Shell() {
   const { route, navigate } = useRouter();
@@ -70,9 +71,9 @@ export function Shell() {
   const openDrawer = useCallback(() => setDrawerOpen(true), []);
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   const sidebar = usePanel(SIDEBAR);
-  // A rail opens over the workbench while the pointer rests on it or the keyboard is in it.
+  // A rail opens over the workbench while the pointer rests on it or the keyboard is in it, and folds soon after both leave.
   const dock = useRef<HTMLDivElement>(null);
-  const peek = useHoverOpen(dock);
+  const peek = useHoverOpen(dock, { foldAfterMs: RAIL_FOLD_AFTER_MS });
   const peeking = sidebar.collapsed && peek.open;
   const navigated = () => {
     closeDrawer();
@@ -125,13 +126,27 @@ export function Shell() {
     panelCommand(sidebar),
   ]);
 
+  // With the canvas, Chat's row holds the rail, beside the canvas; without it, the app's grid does.
+  const chatRow = visualWorkspaceEnabled && canvasLoaded;
+  const rail = (
+    <div ref={dock} className="sidebar-dock">
+      <Sidebar onNavigate={navigated} onWorkbench={openWorkbench} panel={sidebar} />
+    </div>
+  );
+  // With the canvas, the sheet opens over the canvas's page from the rail's edge (ChatColumn); without it, over the main area.
+  const sheetView = sheet ? (
+    <aside className="sheet" aria-label={sheet.name === "settings" ? "Your settings" : "Admin"}>
+      <Suspense fallback={<div className="view" aria-busy="true" />}>
+        {sheet.name === "settings" ? <SettingsView /> : <AdminView />}
+      </Suspense>
+    </aside>
+  ) : null;
+
   return (
     <PaletteContext value={palette}>
       <OpenDrawerContext value={openDrawer}>
-        <div className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}${peeking ? " sidebar-peek" : ""}`}>
-          <div ref={dock} className="sidebar-dock">
-            <Sidebar onNavigate={navigated} onWorkbench={openWorkbench} panel={sidebar} />
-          </div>
+        <div className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}${peeking ? " sidebar-peek" : ""}${chatRow ? " rail-in-row" : ""}`}>
+          {chatRow ? null : rail}
           <div className="drawer-scrim" onClick={closeDrawer} />
           <main className="main">
             <BarStack>
@@ -142,7 +157,7 @@ export function Shell() {
                 {/* The canvas holds the shell's busy frame until its chunk is in, then mounts the page once, inside it. */}
                 {visualWorkspaceEnabled ? (
                   canvasLoaded ? (
-                    <ChatColumn><Canvas><RouteView route={view ?? background} /></Canvas></ChatColumn>
+                    <ChatColumn rail={rail} sheet={sheetView}><Canvas><RouteView route={view ?? background} /></Canvas></ChatColumn>
                   ) : (
                     <div className="view" aria-busy="true" />
                   )
@@ -150,13 +165,7 @@ export function Shell() {
                   <RouteView route={view ?? background} />
                 )}
               </Suspense>
-              {sheet ? (
-                <aside className="sheet" aria-label={sheet.name === "settings" ? "Your settings" : "Admin"}>
-                  <Suspense fallback={<div className="view" aria-busy="true" />}>
-                    {sheet.name === "settings" ? <SettingsView /> : <AdminView />}
-                  </Suspense>
-                </aside>
-              ) : null}
+              {chatRow ? null : sheetView}
             </BarStack>
           </main>
         </div>

@@ -357,7 +357,7 @@ async def test_a_fork_goes_to_a_new_station_that_holds_the_forks_chat(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_typing_in_a_foreign_chat_is_refused_and_forking_it_is_not(
+async def test_typing_in_a_foreign_chat_is_refused_and_no_share_lets_another_org_fork(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
@@ -372,7 +372,14 @@ async def test_typing_in_a_foreign_chat_is_refused_and_forking_it_is_not(
         text="jan joins in",
         conversation_id=chat.conversation,
     )
-    forked = await send_chat(
+    unshared = await send_chat(
+        client,
+        workspace_id=workspace_id,
+        text="jan forks",
+        fork=chat.at(2),
+    )
+    await _share(store, chat=chat, email=JAN)
+    shared = await send_chat(
         client,
         workspace_id=workspace_id,
         text="jan forks",
@@ -380,14 +387,19 @@ async def test_typing_in_a_foreign_chat_is_refused_and_forking_it_is_not(
     )
 
     # The server refuses the post, whatever the browser did, and queues nothing for
-    # the original; the fork is a conversation of Jan's own at the latest line.
-    assert posted.status_code == 403
+    # the original. A fork copies the original's lines, which Jan reads only once the
+    # chat is shared with him; even then his fork would be read by his own
+    # organisation, which the chat is not shared with, so he posts in it instead.
+    assert (posted.status_code, unshared.status_code, shared.status_code) == (
+        403,
+        422,
+        409,
+    )
+    assert json_loads(shared.content, dict[str, object])["detail"] == {
+        "code": "chat_fork_wider",
+    }
     assert (await _heard(client, session_id=chat.session)) == []
-    assert forked.status_code == 200
-    assert conversation_of(forked) != chat.conversation
-    [heard] = await _heard(client, session_id=chat.service)
-    assert (heard["text"], heard["source"]) == ("jan forks", JAN)
-    assert from_plain(heard["context"], dict[str, object])["fork"] == chat.at(2)
+    assert (await _heard(client, session_id=chat.service)) == []
 
 
 @pytest.mark.db_pglite
@@ -419,7 +431,8 @@ async def test_consumer_domains_are_no_organisation_but_my_own_chat_stays_mine(
         conversation_id=chat.conversation,
     )
 
-    assert (posted.status_code, forked.status_code, mine.status_code) == (403, 200, 200)
+    # Bob neither types in Alice's chat nor reads its lines to fork them.
+    assert (posted.status_code, forked.status_code, mine.status_code) == (403, 422, 200)
     assert conversation_of(mine) == chat.conversation
 
 
@@ -502,12 +515,61 @@ async def test_a_fork_cannot_probe_the_lines_of_a_chat_its_caller_may_not_read(
                 email=OTHER_EMAIL,
             ),
             read_audiences=frozenset({"open", "staff"}),
+            hosted_domain="example.com",
         ),
     )
     staffed = await answers()
 
-    assert staffed == [200, 200, 200, 422]
+    # A reader of the chat is told which are lines, and that a staff chat forks not.
+    assert staffed == [409, 409, 409, 422]
     assert opened == [422, 422, 422, 422]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_hidden_or_staff_chat_cannot_be_forked(
+    pglite_route_client: _Client,
+) -> None:
+    """A fork copies lines out, and its copies would not keep the original's audience."""
+    client, store = pglite_route_client
+    chat = await _original(store, starter=TEST_USER_EMAIL)
+    workspace_id = await _canvas(client, email=TEST_USER_EMAIL)
+    body = {"workspace_id": str(workspace_id), "text": "fork"}
+    answers: dict[str, tuple[int, object]] = {}
+    for audience, held in (
+        ("open", frozenset({"open"})),
+        ("private", frozenset({"open", "private"})),
+        ("staff", frozenset({"open", "staff"})),
+    ):
+        async with store.engine.acquire() as conn:
+            await conn.execute(
+                "UPDATE inquiries SET agentsession_audience = $2 WHERE id = $1",
+                chat.session,
+                audience,
+            )
+        install_identity(
+            replace(
+                make_test_identity(
+                    user_id=OTHER_USER_ID,
+                    api_key_id=None,
+                    email=TEST_USER_EMAIL,
+                ),
+                read_audiences=held,
+            ),
+        )
+        response = await client.post(
+            "/api/chats",
+            json={**body, "fork": chat.at(0)},
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+        )
+        answers[audience] = (
+            response.status_code,
+            from_plain(response.json(), dict[str, object]).get("detail"),
+        )
+
+    assert answers["open"][0] == 200
+    assert answers["private"] == (409, {"code": "chat_fork_closed"})
+    assert answers["staff"] == (409, {"code": "chat_fork_closed"})
 
 
 @pytest.mark.db_pglite
@@ -579,7 +641,8 @@ async def test_a_key_that_names_the_original_posts_nothing_into_it(
     workspace_id = await _canvas(client, email=JAN)
 
     # The conversation id is in the link Jan was given; sent as the idempotency key of
-    # a post that names no conversation, or of a fork, it is still the original.
+    # a post that names no conversation, or of a fork, it is still the original. Jan
+    # may not read it to fork it; a colleague who may is refused the key.
     typed = await send_chat(
         client,
         workspace_id=workspace_id,
@@ -593,8 +656,20 @@ async def test_a_key_that_names_the_original_posts_nothing_into_it(
         key=chat.conversation,
         fork=chat.at(0),
     )
+    colleague = await _canvas(client, email=OTHER_EMAIL)
+    taken = await send_chat(
+        client,
+        workspace_id=colleague,
+        text="a colleague forks into it",
+        key=chat.conversation,
+        fork=chat.at(0),
+    )
 
-    assert (typed.status_code, forked.status_code) == (403, 409)
+    assert (typed.status_code, forked.status_code, taken.status_code) == (
+        403,
+        422,
+        409,
+    )
     assert (await _heard(client, session_id=chat.session)) == []
     assert (await _heard(client, session_id=chat.service)) == []
 
@@ -647,20 +722,21 @@ async def test_a_forker_may_retry_their_own_fork_under_its_key(
 ) -> None:
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
-    workspace_id = await _canvas(client, email=JAN)
+    await _share(store, chat=chat, email=ALICE)
+    workspace_id = await _canvas(client, email=ALICE)
     key = uuid.uuid4()
 
     first = await send_chat(
         client,
         workspace_id=workspace_id,
-        text="jan forks",
+        text="alice forks",
         key=key,
         fork=chat.at(2),
     )
     retry = await send_chat(
         client,
         workspace_id=workspace_id,
-        text="jan forks",
+        text="alice forks",
         key=key,
         fork=chat.at(2),
     )
@@ -771,6 +847,7 @@ async def test_a_writer_outside_the_chat_cannot_drain_its_session_or_the_assista
 ) -> None:
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
+    await _share(store, chat=chat, email=ALICE)
     workspace_id = await _canvas(client, email=ALICE)
     _ = await send_chat(
         client,
@@ -803,6 +880,18 @@ async def _fork(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     return response.status_code
+
+
+async def _share(store: Store, *, chat: _Original, email: str) -> None:
+    """Share ``chat`` with ``email``, as its starter does."""
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO science_chat_shares (conversation_id, email, shared_by) "
+            "VALUES ($1, $2, $3)",
+            chat.conversation,
+            email,
+            TEST_USER_EMAIL,
+        )
 
 
 def _now() -> str:

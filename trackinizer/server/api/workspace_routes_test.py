@@ -1488,10 +1488,10 @@ async def test_a_show_names_a_record_its_visual_can_draw(
 @pytest.mark.db_pglite
 @pytest.mark.usefixtures("assistant_served")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_the_page_cannot_be_hidden_but_another_visual_can(
+async def test_the_page_can_be_hidden_like_another_visual(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """Browse is the page itself."""
+    """Browse is the default visual a canvas opens with, and closes like the rest."""
     client, store = pglite_route_client
     await seed_accounts(store)
     workspace_id, _ = await _canvas_with_graph(client)
@@ -1515,8 +1515,74 @@ async def test_the_page_cannot_be_hidden_but_another_visual_can(
         )
         return response.status_code
 
-    assert await hide("trax.browse") == 422
+    assert await hide("trax.browse") == 200
     assert await hide("trax.subgraph") == 200
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_navigation_with_no_page_shows_it_in_the_same_revision(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    assistant_served: ChatHub,
+) -> None:
+    """An agent's navigate never lands nowhere: the page returns, then the route."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    await seed_session(store, ASSISTANT, actor=KB_ACTOR)
+    workspace_id, _ = await _canvas_with_graph(client)
+    page = next(
+        from_plain(v["id"], str)
+        for v in from_plain(
+            (await _state(client, workspace_id=workspace_id))["visuals"],
+            list[dict[str, object]],
+        )
+        if v["type"] == "trax.browse"
+    )
+    closed = await client.post(
+        f"/api/workspaces/{workspace_id}/operations",
+        json={
+            "revision": await revision_of(client, workspace_id=workspace_id),
+            "operation": {"kind": "hide", "instance_id": page},
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert closed.status_code == 200, closed.text
+    await seed_converse(
+        client,
+        store,
+        workspace_id=workspace_id,
+        text="go to the graph",
+    )
+    revision = await revision_of(client, workspace_id=workspace_id)
+    path = f"/api/workspaces/{workspace_id}/operations"
+    body = {"revision": 0, "operation": {"kind": "navigate", "route": "#/graph"}}
+    key = uuid.uuid4()
+
+    with assistant_served.subscribe(workspace_id) as stream:
+        act_as_assistant()
+        moved = await client.post(
+            path,
+            json=body,
+            headers={"Idempotency-Key": str(key)},
+        )
+        assert moved.status_code == 200, moved.text
+        replay = await client.post(
+            path,
+            json=body,
+            headers={"Idempotency-Key": str(key)},
+        )
+        assert replay.status_code == 200
+        frames = _frames(stream)
+    state = json_loads(moved.content, dict[str, object])
+    assert state["revision"] == revision + 1
+    assert [
+        (v["type"], v["placement"])
+        for v in from_plain(state["visuals"], list[dict[str, object]])
+    ] == [("trax.subgraph", "main"), ("trax.browse", "main")]
+    assert [f.type for f in frames if f is not None] == ["workspace", "navigate"]
+    browser()
+    assert await revision_of(client, workspace_id=workspace_id) == revision + 1
 
 
 # A keepalive is also when the stream asks whether its owner may still use the app, and

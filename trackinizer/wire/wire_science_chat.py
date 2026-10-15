@@ -3,11 +3,13 @@
 A conversation is one open AgentSession whose ``cli_session_id`` is
 ``chat:<conversation id>`` and whose label is :data:`SCIENCE_CHAT_LABEL`. Its records
 are the people's lines (each from its poster), the assistant's tool calls and results,
-and its answers. There is no second store: the browser reads the session's records,
-its starter and the people they share it with post lines (and whoever else the
-server's setting lets), and the assistant opens the session when it first hears the
-conversation. A share names a person by email and follows the conversation, and the
-starter deletes the conversation while every person's line in it is theirs.
+and its answers. There is no second store: its members read the session's records and
+post lines (its starter, the people they share it with, and whoever else the server's
+setting lets), and the assistant opens the session when it first hears the
+conversation. The session's row, which every key reads, says only who started it and
+who posted: its title is :data:`CHAT_TITLE`. A share names a person by email and
+follows the conversation, and the starter deletes the conversation while every
+person's line in it is theirs.
 
 A fork is a science chat of its own that starts from another's lines. It is a session
 with a ``produced_by`` edge to the original, labelled :data:`FORK_EDGE_LABEL` and
@@ -40,6 +42,7 @@ __all__ = [
     "CHAT_PATH",
     "CHAT_SESSION_PREFIX",
     "CHAT_SHARE_PATH",
+    "CHAT_TITLE",
     "FORK_EDGE_LABEL",
     "FORK_POINT_PREFIX",
     "POSTER_LABEL_PREFIX",
@@ -80,6 +83,10 @@ FORK_POINT_PREFIX: Final = "fork-at:"
 
 CHAT_HELPER_CLI: Final = "trax-helper"
 """The CLI a ``trax helper`` session opens with: it takes messages only through Chat."""
+
+CHAT_TITLE: Final = "Science chat"
+"""The title of every science chat's session, whatever its opener asks for. Every key
+reads a session's row, while a chat's lines are its members' alone."""
 
 _ROUTE: Final = r"^#/[^\s\x00-\x1f\x7f]*$"
 """A `#/...` hash with no space or control character."""
@@ -240,17 +247,28 @@ class ChatHead(BaseModel):
     """The conversation this one was forked from; ``None`` for one that was not."""
 
     forks_on_typing: bool
-    """Whether a line the caller types starts a fork instead of joining the chat:
-    the caller is not its starter, not one it is shared with, and not one the server's
-    setting lets continue it."""
+    """Whether the caller does not read the chat: not its starter, not one it is
+    shared with, and not one the server's setting lets in, or it is a ``private`` or
+    ``staff`` chat they may not read. They read none of its lines, and a line they
+    type is refused with 403 ``chat_not_shared``; they cannot fork it either, since a
+    fork copies lines its poster reads."""
+
+    audience: str
+    """Who reads the chat: ``open`` (its members), ``private`` (its starter and the
+    people it is shared with) or ``staff`` (its members who hold ``staff``, once its
+    assistant has read a staff session for one of them)."""
+
+    may_hide: bool
+    """Whether the caller may make the chat ``private`` or ``open`` again: its starter,
+    while it is not ``staff``."""
 
     shared_with: list[str]
-    """The emails the chat is shared with, oldest share first: each posts into it as
-    its starter does. Empty for anyone but the starter and an admin."""
+    """The emails the chat is shared with, oldest share first: each reads it and posts
+    into it as its starter does. Empty for anyone but the starter and an admin."""
 
     may_share: bool
-    """Whether the caller may share the chat and stop sharing it: its starter, or an
-    admin."""
+    """Whether the caller may share the chat and stop sharing it: its starter alone.
+    An admin may only stop sharing it, since a share lets its person read it."""
 
     may_delete: bool
     """Whether the caller may delete the chat: an admin, the key that opened it, or

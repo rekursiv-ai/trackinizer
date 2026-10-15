@@ -717,6 +717,8 @@ def test_show_extra_labels_share_the_fixed_value_column() -> None:
 
 def test_session_hit_rendering_all_branches() -> None:
     assert render.format_session_hits({}) == "(no matches)\n"
+    assert render.format_session_hits({"hits": None}) == "(no matches)\n"
+    assert render.format_session_hits({"hits": []}) == "(no matches)\n"
     assert (
         render.format_session_hits({"degraded": True})
         == "(semantic search unavailable; showing full-text results only)\n(no matches)\n"

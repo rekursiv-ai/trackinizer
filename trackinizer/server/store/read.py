@@ -14,7 +14,12 @@ from uuid import UUID
 
 from treekle import from_plain
 
-from trackinizer.server.audience import OPEN_ONLY, hidden_exists_sql, visible_sql
+from trackinizer.server.audience import (
+    NOBODY,
+    SessionReader,
+    hidden_exists_sql,
+    visible_sql,
+)
 from trackinizer.server.notify import tx
 from trackinizer.server.projection import (
     fetch_edges,
@@ -157,7 +162,7 @@ class _ReadMixin(_StoreShared):
         filters: Sequence[RowFilter] = (),
         lowering: bool = True,
         edges: bool = True,
-        audiences: frozenset[str] = OPEN_ONLY,
+        reader: SessionReader = NOBODY,
     ) -> list[Inquiry]:
         """Paginated list of one kind, optionally filtered.
 
@@ -185,7 +190,7 @@ class _ReadMixin(_StoreShared):
 
         A session's row is open, so a list shows every session. A filter on one of its
         records is answered from its transcript, so it is asked only of the sessions
-        whose audience is in ``audiences``: the others are not in the rows it is
+        whose transcript ``reader`` reads: the others are not in the rows it is
         applied to, and an ``isnull`` cannot tell a caller what a hidden session holds.
 
         Args:
@@ -200,8 +205,8 @@ class _ReadMixin(_StoreShared):
             (for testing equivalence).
           edges: Fill the relation fields. False leaves them empty and skips
             the two edge reads, for a caller that sends none of them.
-          audiences: What the caller reads. Only a filter on a record of an
-            ``AgentSession`` consults it.
+          reader: Who reads. Only a filter on a record of an ``AgentSession``
+            consults it.
 
         Returns:
           rows: Materialized Inquiry rows in created-desc order (newest first),
@@ -219,13 +224,7 @@ class _ReadMixin(_StoreShared):
             # A record filter is answered from the transcript, so it only meets the
             # sessions the caller reads. That gates the SQL a record clause lowers to
             # (``column_shapes._RECORDS_WHERE``), which names no audience.
-            clauses.append(
-                visible_sql(
-                    "agentsession_audience",
-                    params=params,
-                    audiences=audiences,
-                ),
-            )
+            clauses.append(visible_sql("inquiries", params=params, reader=reader))
         # Every filter whose SQL form provably selects the same rows as the
         # Python predicate joins the prefilter, so the query keeps its LIMIT.
         # Whatever cannot lower stays in ``filters`` and forces the
@@ -266,7 +265,7 @@ class _ReadMixin(_StoreShared):
                     conn,
                     [cast(UUID, r["id"]) for r in rows],
                     filters,
-                    audiences=audiences,
+                    reader=reader,
                 )
                 kept = [
                     r
@@ -795,14 +794,14 @@ def _lower_filter(filt: RowFilter, params: list[object]) -> str | None:
 # row it is about to filter -- rather than a rewritten row, which would lose the
 # ``Record`` that ``materialize`` needs.
 #
-# A session whose audience is not in ``audiences`` has no texts here, as a session with
-# no such record has none.
+# A session whose transcript ``reader`` may not read has no texts here, as a session
+# with no such record has none.
 async def _record_texts(
     conn: Conn,
     ids: Sequence[UUID],
     filters: Sequence[RowFilter],
     *,
-    audiences: frozenset[str],
+    reader: SessionReader,
 ) -> dict[UUID, dict[str, object]]:
     """One session's IR record texts per id, for the record clauses in ``filters``."""
     kinds = _record_kinds(filters)
@@ -814,8 +813,8 @@ async def _record_texts(
     # holds even though the aggregate groups across parts.
     join, predicate = manifest_bound("r")
     params: list[object] = [list(ids), list(kinds)]
-    # Audience: gated -- no text of a session outside ``audiences`` feeds a clause.
-    readable = hidden_exists_sql("r.session_id", params=params, audiences=audiences)
+    # Audience: gated -- no text of a session ``reader`` may not read feeds a clause.
+    readable = hidden_exists_sql("r.session_id", params=params, reader=reader)
     found = await conn.fetch(
         vetted_sql(
             "SELECT r.session_id, r.kind, array_agg(r.text) AS texts "

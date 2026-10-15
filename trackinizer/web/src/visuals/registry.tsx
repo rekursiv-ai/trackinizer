@@ -1,6 +1,6 @@
 import { Component, Suspense, type ComponentType, type ReactNode } from "react";
 import type { WorkspaceState } from "../api/workspaces";
-import { lazyView } from "../router/lazy";
+import { lazyView, type LazyView } from "../router/lazy";
 import { DetailView } from "../router/views";
 import { useVisualMark } from "./marks";
 import rendererVersions from "./renderer-versions.json";
@@ -18,12 +18,17 @@ const ContextGraph = lazyView(() => import("./ContextGraph"), (module) => module
 const Timeline = lazyView(() => import("./Timeline"), (module) => module.Timeline);
 const Artifact = lazyView(() => import("./Artifact"), (module) => module.Artifact);
 const Summary = lazyView(() => import("./Summary"), (module) => module.Summary);
+const Files = lazyView(() => import("./Files"), (module) => module.Files);
 /**
  * Renderers for visuals an addon's deployment adds to the catalog. They stay out
  * of renderer-versions.json, which mirrors the default catalog every server has.
  */
 const ADDON_RENDERERS: Readonly<Record<string, Renderer>> = {
 };
+
+/** The addon renderers' chunks; an assistant shows a campaign as it launches it, so its first show must not wait. */
+const ADDON_VIEWS: readonly LazyView<RendererProps>[] = [
+];
 
 /**
  * Load every renderer's chunk, and the record view an agent's navigation opens.
@@ -33,7 +38,7 @@ const ADDON_RENDERERS: Readonly<Record<string, Renderer>> = {
  * stay out of the first load.
  */
 export function preloadRenderers(): void {
-  for (const view of [ContextGraph, Timeline, Artifact, Summary, DetailView]) void view.preload().catch(() => {});
+  for (const view of [ContextGraph, Timeline, Artifact, Summary, Files, DetailView, ...ADDON_VIEWS]) void view.preload().catch(() => {});
 }
 
 /** Frontend counterparts of the backend's inert visual descriptions. */
@@ -44,6 +49,7 @@ export const RENDERERS: Readonly<Record<string, Renderer>> = {
   "trax.timeline": { version: rendererVersions["trax.timeline"], Component: Timeline },
   "trax.artifact": { version: rendererVersions["trax.artifact"], Component: Artifact },
   "trax.summary": { version: rendererVersions["trax.summary"], Component: Summary },
+  "trax.files": { version: rendererVersions["trax.files"], Component: Files },
 } satisfies Record<keyof typeof rendererVersions, Renderer>;
 
 /** A missing or newer renderer fails within its tile, never the entire canvas. */

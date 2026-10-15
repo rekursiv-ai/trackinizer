@@ -18,7 +18,10 @@ from pydantic import (
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from trackinizer.server.visuals.catalog import (
+        ParameterDescription,
         VisualCatalogBody,
         VisualDescription,
     )
@@ -402,6 +405,33 @@ def initial_data(catalog: VisualCatalogBody) -> WorkspaceData:
     )
 
 
+def restore_page(data: WorkspaceData, *, catalog: VisualCatalogBody) -> WorkspaceData:
+    """Show the page again, in the main strip, on a canvas that has closed it.
+
+    A navigation moves the page, so it must find one to move.
+
+    Args:
+      data: Current canvas data.
+      catalog: Trusted descriptor set, whose default visual is the page.
+
+    Returns:
+      state: ``data`` itself when the page is there, else a copy with the page
+        shown and focused.
+
+    """
+    if any(visual.type == catalog.default_visual for visual in data.visuals):
+        return data
+    return apply_operation(
+        data,
+        ShowVisual(
+            kind="show",
+            visual_type=catalog.default_visual,
+            placement="main",
+        ),
+        catalog,
+    )
+
+
 def refuse_record(
     operation: ShowVisual,
     *,
@@ -433,6 +463,35 @@ def refuse_record(
             f"{descriptor.title} shows {' or '.join(descriptor.record_kinds)} "
             f"records, not {kind or 'an unknown record'}."
         )
+    return None
+
+
+def refuse_params(
+    params: Mapping[str, str | int | bool],
+    *,
+    descriptor: VisualDescription,
+) -> str | None:
+    """Say why a visual cannot take the params a show names, or None if it can.
+
+    One rule for every caller, the server and an agent checking before it asks: a
+    name the catalog does not list, a value of another type, a string past its
+    length, or an integer outside its bounds is refused. A name left out takes its
+    default, which the catalog keeps valid.
+
+    Args:
+      params: The params the show sets.
+      descriptor: The catalog entry of the visual it names.
+
+    Returns:
+      reason: A sentence for the refused caller, naming the bound it breaks, or None.
+
+    """
+    if set(params) - set(descriptor.parameter_schema):
+        return "Visual parameters do not match the catalog schema."
+    for name, value in params.items():
+        reason = _refuse_value(name, value, schema=descriptor.parameter_schema[name])
+        if reason is not None:
+            return reason
     return None
 
 
@@ -470,28 +529,13 @@ def apply_operation(
             reason := refuse_record(operation, descriptor=descriptor, kind=None) or ""
         ):
             raise ValueError(reason)
-        if set(operation.params) - set(descriptor.parameter_schema):
-            raise ValueError("Visual parameters do not match the catalog schema.")
+        reason = refuse_params(operation.params, descriptor=descriptor)
+        if reason is not None:
+            raise ValueError(reason)
         params = {
             name: schema.default for name, schema in descriptor.parameter_schema.items()
         }
         params.update(operation.params)
-        for name, schema in descriptor.parameter_schema.items():
-            value = params[name]
-            if schema.type == "string":
-                if not isinstance(value, str):
-                    raise ValueError(f"Parameter {name!r} must be a string.")
-                if len(value) > (schema.max_length or 0):
-                    raise ValueError(f"Parameter {name!r} exceeds maximum length.")
-            if schema.type == "boolean" and not isinstance(value, bool):
-                raise ValueError(f"Parameter {name!r} must be a boolean.")
-            if schema.type == "integer":
-                if not isinstance(value, int) or isinstance(value, bool):
-                    raise ValueError(f"Parameter {name!r} must be an integer.")
-                if schema.minimum is not None and value < schema.minimum:
-                    raise ValueError(f"Parameter {name!r} is below its minimum.")
-                if schema.maximum is not None and value > schema.maximum:
-                    raise ValueError(f"Parameter {name!r} is above its maximum.")
         existing = next(
             (visual for visual in updated.visuals if visual.type == descriptor.type),
             None,
@@ -528,11 +572,6 @@ def apply_operation(
     elif isinstance(operation, HideVisual):
         if not any(visual.id == operation.instance_id for visual in updated.visuals):
             raise ValueError("Visual instance not found.")
-        if any(
-            visual.id == operation.instance_id and visual.type == catalog.default_visual
-            for visual in updated.visuals
-        ):
-            raise ValueError("The default visual is the page and cannot be hidden.")
         updated.visuals = [
             visual for visual in updated.visuals if visual.id != operation.instance_id
         ]
@@ -557,3 +596,27 @@ def apply_operation(
         if operation.placement != "floating":
             instance.floating_rect = None
     return updated
+
+
+def _refuse_value(
+    name: str,
+    value: str | int | bool,
+    *,
+    schema: ParameterDescription,
+) -> str | None:
+    """Say why one param's value breaks its catalog schema, or None."""
+    if schema.type == "string":
+        if not isinstance(value, str):
+            return f"Parameter {name!r} must be a string."
+        if len(value) > (schema.max_length or 0):
+            return f"Parameter {name!r} exceeds maximum length of {schema.max_length}."
+    elif schema.type == "boolean":
+        if not isinstance(value, bool):
+            return f"Parameter {name!r} must be a boolean."
+    elif not isinstance(value, int) or isinstance(value, bool):
+        return f"Parameter {name!r} must be an integer."
+    elif schema.minimum is not None and value < schema.minimum:
+        return f"Parameter {name!r} is below its minimum of {schema.minimum}."
+    elif schema.maximum is not None and value > schema.maximum:
+        return f"Parameter {name!r} is above its maximum of {schema.maximum}."
+    return None

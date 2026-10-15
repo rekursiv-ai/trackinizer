@@ -2,7 +2,8 @@
 
 Three principals share one PGlite database: the browser user, a second user, and
 the account the assistant runs under. Each acts through a browser
-identity (no API key) or an agent identity (an API key that opened sessions).
+identity (no API key) or an agent identity (an API key that opened sessions), with
+the ``hd`` claim Google gives its login: its email's domain, unless a consumer one.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
+from trackinizer.server.audience import CONSUMER_DOMAINS
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.inbound import InboundQueue
@@ -40,7 +42,7 @@ if TYPE_CHECKING:
 
     import httpx2
 
-    from trackinizer.server.auth import Role
+    from trackinizer.server.auth import AuthIdentity, Role
     from trackinizer.server.store.core import Store
 
 
@@ -81,7 +83,9 @@ def browser(user_id: uuid.UUID = TEST_USER_ID, *, email: str = TEST_USER_EMAIL) 
       email: Their email.
 
     """
-    install_identity(make_test_identity(user_id=user_id, api_key_id=None, email=email))
+    install_identity(
+        _signed_in(make_test_identity(user_id=user_id, api_key_id=None, email=email)),
+    )
 
 
 def act_as_user_agent(role: Role = "viewer") -> None:
@@ -523,10 +527,21 @@ async def drain(
 def _agent(key_id: uuid.UUID, *, user_id: uuid.UUID, email: str, role: Role) -> None:
     """Act as an agent holding one API key."""
     install_identity(
-        make_test_identity(
-            user_id=user_id,
-            api_key_id=key_id,
-            email=email,
-            role=role,
+        _signed_in(
+            make_test_identity(
+                user_id=user_id,
+                api_key_id=key_id,
+                email=email,
+                role=role,
+            ),
         ),
+    )
+
+
+def _signed_in(identity: AuthIdentity) -> AuthIdentity:
+    """Give ``identity`` the hd claim Google gives its login."""
+    domain = identity.email.lower().rpartition("@")[2]
+    return replace(
+        identity,
+        hosted_domain=None if domain in CONSUMER_DOMAINS else domain,
     )

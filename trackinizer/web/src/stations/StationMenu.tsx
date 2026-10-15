@@ -1,22 +1,24 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { ApiError } from "../api/client";
-import type { WorkspaceState } from "../api/workspaces";
-import { nameStation, newStation, openStation, setStationMenu, stationsQuery, useStationMenu } from "./actions";
+import { Icon } from "../ui/icons";
+import { openStation, setStationMenu, stationsQuery, useStationMenu } from "./actions";
 import { matching } from "./cycle";
 import "./stations.css";
 
 /**
- * The station's name in Chat's header, which opens the station menu: a search
- * over the user's stations by name (Enter or a click opens one, the arrow keys
- * move the highlight, Esc closes the menu), Rename, and New station.
+ * The All stations button at the end of the tabs, which opens the station menu: a
+ * search over the user's stations by name (Enter or a click opens one, the arrow
+ * keys move the highlight, Esc closes the menu). The tabs rename and make stations.
+ *
+ * A press outside the menu closes it, as does the keyboard leaving it. A blur alone
+ * does not: Safari focuses no button that is clicked, so a click on a station blurs
+ * the search toward nothing, and closing then would lose the click.
  */
-export function StationMenu({ station }: { readonly station: WorkspaceState }) {
+export function StationMenu({ station }: { readonly station: { readonly id: string } }) {
   const queryClient = useQueryClient();
   const open = useStationMenu();
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  const [naming, setNaming] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
@@ -29,9 +31,17 @@ export function StationMenu({ station }: { readonly station: WorkspaceState }) {
     else {
       setQuery("");
       setActive(0);
-      setNaming(null);
       setProblem(null);
     }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !root.current?.contains(event.target)) setStationMenu(false);
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
   }, [open]);
 
   function close() {
@@ -45,28 +55,6 @@ export function StationMenu({ station }: { readonly station: WorkspaceState }) {
       setStationMenu(false);
     } catch {
       setProblem("Could not open that station.");
-    }
-  }
-
-  async function rename() {
-    if (naming === null) return;
-    try {
-      await nameStation(queryClient, station.id, naming);
-      setNaming(null);
-      setProblem(null);
-      // The field that had the keyboard is gone: it goes back to the search, so Esc still closes the menu.
-      search.current?.focus();
-    } catch (error) {
-      setProblem(error instanceof ApiError && error.status === 409 ? "That name is taken" : "Could not rename the station.");
-    }
-  }
-
-  async function create() {
-    try {
-      await newStation(queryClient);
-      setStationMenu(false);
-    } catch {
-      setProblem("Could not make a station.");
     }
   }
 
@@ -84,9 +72,12 @@ export function StationMenu({ station }: { readonly station: WorkspaceState }) {
   return (
     <div className="station" ref={root}
       onKeyDown={(event) => { if (event.key === "Escape" && open) { event.stopPropagation(); close(); } }}
-      onBlur={(event) => { if (open && !root.current?.contains(event.relatedTarget)) setStationMenu(false); }}>
-      <button ref={button} className="btn ghost station-name" type="button" aria-haspopup="dialog" aria-expanded={open}
-        title="Stations" onClick={() => setStationMenu(!open)}>{station.name}</button>
+      onBlur={(event) => {
+        const next = event.relatedTarget;
+        if (open && next instanceof Node && !root.current?.contains(next)) setStationMenu(false);
+      }}>
+      <button ref={button} className="btn ghost station-all" type="button" aria-haspopup="dialog" aria-expanded={open}
+        aria-label="All stations" title="All stations (g s)" onClick={() => setStationMenu(!open)}><Icon name="chevD" size={14} /></button>
       {open && (
         <div className="station-menu" role="dialog" aria-label="Stations">
           <input ref={search} type="search" aria-label="Search stations" placeholder="Search stations" value={query}
@@ -102,19 +93,6 @@ export function StationMenu({ station }: { readonly station: WorkspaceState }) {
               </li>
             ))}
           </ul>
-          {naming === null ? (
-            <div className="station-actions">
-              <button className="btn ghost" type="button" onClick={() => { setNaming(station.name); setProblem(null); }}>Rename</button>
-              <button className="btn ghost" type="button" onClick={() => void create()}>New station</button>
-            </div>
-          ) : (
-            <form className="station-rename" onSubmit={(event) => { event.preventDefault(); void rename(); }}>
-              <input aria-label="Station name" maxLength={120} value={naming} autoFocus
-                onChange={(event) => { setNaming(event.target.value); setProblem(null); }}
-                onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setNaming(null); setProblem(null); } }} />
-              <button className="btn" type="submit" disabled={!naming.trim()}>Save</button>
-            </form>
-          )}
           {problem && <p className="station-problem" role="alert">{problem}</p>}
         </div>
       )}

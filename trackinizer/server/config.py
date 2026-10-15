@@ -55,9 +55,10 @@ _DEFAULT_SESSION_MAX_AGE_SECONDS: int = (
 
 
 type ChatOrgs = Literal["single", "domain", "individual"]
-"""Who types into a science chat besides its starter and the people it is shared with:
-everyone (``single``), those whose verified email has the starter's domain
-(``domain``), or nobody (``individual``)."""
+"""What an organisation is on this server, as a chat workspace has it: everyone
+(``single``), the people whose verified email has one domain (``domain``), or each
+person alone (``individual``). A person reads the open sessions and science chats of
+their organisation besides their own and the chats shared with them."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -124,14 +125,17 @@ class Config:
         ``*@domain``, lowercase. A domain pattern also needs Google's ``hd`` claim
         to name the domain. Empty means nobody is staff and no staff session can
         be opened. Deployment property: ``--staff`` or ``TRACKINIZER_STAFF``.
-      chat_orgs: Who continues a science chat by typing in it besides its starter and
-        the people they shared it with; anyone else forks it instead. ``domain`` (the
-        default) gives each verified email domain its own organisation, consumer
-        domains none, and the starter's organisation continues it. ``single`` makes
-        every user one organisation, so a science chat is always continued by
-        typing in it; only a server whose users are all one organisation sets it.
-        ``individual`` lets nobody else continue it. Environment only
-        (``TRACKINIZER_CHAT_ORGS``).
+      chat_orgs: The organisation mode: who reads an ``open`` session and an open
+        science chat besides its owner, a chat's starter and the people they shared
+        it with, and, for a session that is not a chat, the people who hold
+        ``staff`` or are admins. ``individual`` (the default) makes each person an
+        organisation of one, so nobody else reads what they do not share.
+        ``domain`` gives each email domain Google names a person a member of its
+        own organisation, and service accounts none, so a session or chat is read
+        by its organisation. ``single`` makes every user one organisation, so
+        every caller reads every open session and every person every open chat;
+        only a server whose users are all one organisation sets it. Environment
+        only (``TRACKINIZER_CHAT_ORGS``).
 
     """
 
@@ -170,7 +174,7 @@ class Config:
     auth_disabled: bool = False
     assistant: Assistant | None = None
     staff: tuple[str, ...] = ()
-    chat_orgs: ChatOrgs = "domain"
+    chat_orgs: ChatOrgs = "individual"
 
     @classmethod
     def from_env(cls) -> Self:
@@ -352,8 +356,9 @@ def parse_staff(value: str) -> tuple[str, ...]:
 def parse_chat_orgs(value: str) -> ChatOrgs:
     """Parse ``$TRACKINIZER_CHAT_ORGS``: ``single``, ``domain`` or ``individual``.
 
-    Blank is ``domain``: a server that never set the variable keeps what it did, and
-    never lets a person from another organisation type into a chat that is not theirs.
+    Blank is ``individual``, the mode that reads least: a server that never set the
+    variable lets no one read a session or a chat that is neither theirs nor shared
+    with them.
 
     Args:
       value: The variable.
@@ -366,11 +371,11 @@ def parse_chat_orgs(value: str) -> ChatOrgs:
 
     """
     match value.strip():
-        case "" | "domain":
+        case "domain":
             return "domain"
         case "single":
             return "single"
-        case "individual":
+        case "" | "individual":
             return "individual"
         case other:
             raise ConfigError(

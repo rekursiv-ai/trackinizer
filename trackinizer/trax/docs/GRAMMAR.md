@@ -489,12 +489,14 @@ kinds resolve first, so a field can never shadow a command.
 - `trax send @actor[:room] TEXT...` -- inject a message into a live agent
   session addressed by its routing name (its `run --as` owner).
 - `trax run claude|gemini|codex|sh [--out FILE] [--verbose] [--dry-run]
-  [--no-sync] [--as NAME] [--room ROOM]... [--detach] [--name NAME]` --
-  wrap an agent CLI, tail its session log, and sync turn events. `--as NAME`
-  is the session's owner / routing handle (others address it `@NAME`),
-  uniquified on collision. `--detach` runs it in a background host that
-  outlives the terminal, named by `--name` (else the `--as` name, else the
-  CLI).
+  [--no-sync] [--as NAME] [--room ROOM]... [--private] [--detach]
+  [--name NAME]` -- wrap an agent CLI, tail its session log, and sync turn
+  events. `--as NAME` is the session's owner / routing handle (others address
+  it `@NAME`), uniquified on collision. `--private` starts the session hidden,
+  or hides the one a resume re-attaches: only its owner, staff and admins read
+  it; a server that will not hide it stops the run before the CLI starts.
+  `--detach` runs it in a background host that outlives the terminal, named
+  by `--name` (else the `--as` name, else the CLI).
 - `trax run ls | attach NAME | log NAME [-f] | send NAME TEXT... | stop NAME`
   -- reach a detached host: list hosts, drive one from this terminal
   (Ctrl-\ detaches), print its scrollback, type a message in, or stop it.
@@ -618,7 +620,7 @@ the same commit.
 ### Editable scalar fields (`EDITABLE_FIELDS`)
 
 `owner`, `account`, `title`, `description`, `status`, `validation`,
-`priority`, `judgement`, `confidence`, `outcome`, `config`, `source`,
+`priority`, `judgement`, `confidence`, `outcome`, `config`, `app`, `source`,
 `google_scholar_cluster_id`, `google_scholar_cites_id`,
 `abstract`, `publication_type`, `venue`, `subvenue`, `publish_date`, `query`,
 `provider`, `sha`, `url`,
@@ -791,8 +793,16 @@ trax issue 7 status to complete
 trax experiment 12 config to '{"lr": 0.1, "epochs": 2}'
 ```
 
-`config` accepts one standard JSON object. It is readable and editable, but it
-is not a filter field: structural JSON filter semantics are not defined.
+```trax
+trax issue 7 app to '{"myapp": {"budget_usd": 20}}'
+```
+
+`config` and `app` each accept one standard JSON object. Each is readable and
+editable, but neither is a filter field: structural JSON filter semantics are
+not defined. `config` is an Experiment's input settings. `app` is on every kind:
+an application's own fields on the row, under one key named for the app. An app
+finds its rows by labels and edges, which are filterable; `app` only holds what
+it knows about each one.
 
 ```trax
 trax issue 7 label add backend

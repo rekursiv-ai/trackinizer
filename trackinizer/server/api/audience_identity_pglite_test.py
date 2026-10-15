@@ -114,10 +114,10 @@ async def test_a_workspace_member_and_a_literal_address_are_staff_and_nobody_els
     }
 
     assert held == {
-        "member": ["open", "staff"],
-        "consumer": ["open"],
-        "literal": ["open", "staff"],
-        "outsider": ["open"],
+        "member": ["open", "private", "staff"],
+        "consumer": ["open", "private"],
+        "literal": ["open", "private", "staff"],
+        "outsider": ["open", "private"],
     }
 
 
@@ -131,8 +131,8 @@ async def test_unset_staff_leaves_every_key_with_open_only(
 
     profile = await _profile(client, await _key(store, user))
 
-    assert profile["read_audiences"] == ["open"]
-    assert profile["open_audiences"] == ["open"]
+    assert profile["read_audiences"] == ["open", "private"]
+    assert profile["open_audiences"] == ["open", "private"]
     assert profile["pinned_audience"] is None
 
 
@@ -147,11 +147,11 @@ async def test_a_pinned_staff_key_reads_what_its_owner_reads_and_opens_into_its_
     pinned = await _profile(client, await _key(store, user, open_into="staff"))
 
     assert (plain["read_audiences"], plain["open_audiences"]) == (
-        ["open", "staff"],
-        ["open", "staff"],
+        ["open", "private", "staff"],
+        ["open", "private", "staff"],
     )
     assert (pinned["read_audiences"], pinned["open_audiences"]) == (
-        ["open", "staff"],
+        ["open", "private", "staff"],
         ["staff"],
     )
     assert pinned["pinned_audience"] == "staff"
@@ -171,7 +171,7 @@ async def test_an_owner_who_loses_staff_loses_it_on_every_key_and_the_pin_opens_
     store.forget_bearer_identities(user)
     profile = await _profile(client, secret)
 
-    assert profile["read_audiences"] == ["open"]
+    assert profile["read_audiences"] == ["open", "private"]
     assert profile["open_audiences"] == []
     assert profile["pinned_audience"] == "staff"
 
@@ -236,7 +236,7 @@ async def test_an_unpinned_key_mints_a_key_that_still_reads_staff_later(
     )
     assert minted.status_code == 200, minted.text
     child = from_plain(from_plain(minted.json(), dict[str, object])["secret"], str)
-    assert (await _profile(client, child))["read_audiences"] == ["open"]
+    assert (await _profile(client, child))["read_audiences"] == ["open", "private"]
 
     monkeypatch.setattr(
         app.state,
@@ -246,7 +246,11 @@ async def test_an_unpinned_key_mints_a_key_that_still_reads_staff_later(
     )
     store.forget_bearer_identities(user)
 
-    assert (await _profile(client, child))["read_audiences"] == ["open", "staff"]
+    assert (await _profile(client, child))["read_audiences"] == [
+        "open",
+        "private",
+        "staff",
+    ]
     assert (await _stored_pins(store))["child"] is None
 
 
@@ -288,7 +292,11 @@ async def test_a_pinned_key_cannot_revoke_or_retier_an_unpinned_key(
     )
 
     assert (revoked.status_code, retiered.status_code) == (404, 404)
-    assert (await _profile(client, operator))["read_audiences"] == ["open", "staff"]
+    assert (await _profile(client, operator))["read_audiences"] == [
+        "open",
+        "private",
+        "staff",
+    ]
 
     own = await client.put(
         f"/api/me/tokens/{ids['campaign']}/role",

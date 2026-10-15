@@ -63,6 +63,7 @@ from trackinizer.trax.run.redact import Redactor, redactor_from_environ
 from trackinizer.trax.run.sink import (
     FileSink,
     LockedSink,
+    PrivateNotHeldError,
     ResilientSink,
     Sink,
     TrackinizerSink,
@@ -294,6 +295,12 @@ class RunConfig:
     """Initial room membership (``--room``, repeatable); namespaces the session
     can be addressed within. See :attr:`AgentSession.rooms`."""
 
+    private: bool = False
+    """Start the session hidden (``--private``), or hide the one a resume re-attaches:
+    its transcript is read by its owner and the people who oversee alone. A server that
+    would not hold it so leaves it as it was, or ends one it opened afresh, and the
+    run stops, exit status 2, before the CLI starts."""
+
     out_path: Path | None = None
     """JSONL output file; ``None`` defaults to the `usersdirs.state_dir()`."""
 
@@ -391,6 +398,9 @@ def run(config: RunConfig) -> int:
             rc = _dry_run_drain(config, adapter, sink, stats)
         else:
             rc = _spawn_and_drain(config, adapter, sink, stats)
+    except PrivateNotHeldError as err:
+        sys.stderr.write(f"[trax run] {err}\n")
+        return 2
     finally:
         sink.close()
 
@@ -465,6 +475,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Namespace this session joins; address it as @<name>:<room>. "
             "Repeatable to join several rooms."
+        ),
+    )
+    parser.add_argument(
+        "--private",
+        action="store_true",
+        help=(
+            "Start the session hidden: only you, staff and admins read it. Stops "
+            "before the CLI starts if the server will not hide it."
         ),
     )
     parser.add_argument(
@@ -589,6 +607,7 @@ def _run_flags(
             cli_args=(*resume_argv(flags.cli, cli_session_id), *cli_argv),
             actor=flags.actor or os.environ.get("AGENTNAME", "Agent"),
             rooms=tuple(flags.rooms or ()),
+            private=flags.private,
             out_path=flags.out,
             verbose=flags.verbose,
             dry_run=flags.dry_run,
@@ -623,6 +642,7 @@ def _open_trackinizer_sink(
             adapter.name,
             actor=config.actor,
             rooms=config.rooms,
+            private=config.private,
             redactor=redactor,
         ),
         fallback_path=_default_out_path(adapter.name),
@@ -781,7 +801,17 @@ def _spawn_and_drain(
     # existing AgentSession instead of forking a second one.
     if config.cli_session_id is not None:
         sink.set_cli_session_id(config.cli_session_id)
-    granted_actor = sink.open()
+    try:
+        granted_actor = sink.open()
+    except PrivateNotHeldError:
+        # Nothing has spawned, so the drain has nothing to finish.
+        stop.set()
+        _join_with_watchdog(
+            drain_thread,
+            "drain",
+            deadline=time.monotonic() + _JOIN_DEADLINE_SEC,
+        )
+        raise
     # Run the CLI on a PTY we own rather than letting it inherit the terminal:
     # owning the master fd is what lets the server splice messages into the
     # live session (the human still drives the native TUI). Byte-transparent,
@@ -1627,5 +1657,6 @@ class _Flags(Protocol):
     sync: bool
     actor: str | None
     rooms: list[str] | None
+    private: bool
     detach: bool
     name: str | None

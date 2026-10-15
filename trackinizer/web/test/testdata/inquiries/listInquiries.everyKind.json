@@ -54,6 +54,7 @@
       {
         "abstract": null,
         "account": "no-auth@localhost",
+        "app": null,
         "authors": [
           "Ada Lovelace",
           "Alan Turing"
@@ -101,6 +102,7 @@
       },
       {
         "account": "no-auth@localhost",
+        "app": null,
         "audience": "open",
         "cli": "claude",
         "cli_session_id": null,
@@ -132,6 +134,7 @@
       },
       {
         "account": "no-auth@localhost",
+        "app": null,
         "codechanges": null,
         "config": {
           "ids": 13
@@ -180,6 +183,7 @@
       },
       {
         "account": "no-auth@localhost",
+        "app": null,
         "confidence": 0.7,
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
@@ -233,6 +237,7 @@
       },
       {
         "account": "no-auth@localhost",
+        "app": null,
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
         "favors": [
@@ -267,6 +272,7 @@
       },
       {
         "account": "no-auth@localhost",
+        "app": null,
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
         "favors": [],
@@ -300,6 +306,7 @@
       },
       {
         "account": "no-auth@localhost",
+        "app": null,
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
         "id": "00000000-0000-4000-8000-000000000001",
@@ -352,6 +359,7 @@
       },
       {
         "account": "no-auth@localhost",
+        "app": null,
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
         "id": "00000000-0000-4000-8000-000000000002",
@@ -398,6 +406,7 @@
       },
       {
         "account": "no-auth@localhost",
+        "app": null,
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
         "id": "00000000-0000-4000-8000-000000000003",
@@ -485,6 +494,7 @@
       },
       {
         "account": "no-auth@localhost",
+        "app": null,
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
         "id": "00000000-0000-4000-8000-000000000004",

@@ -19,13 +19,19 @@ import uuid
 from pydantic import BaseModel
 from treekle import from_plain
 
-from trackinizer.server.store.deleted_chats import chat_was_deleted
-from trackinizer.server.visuals.chat_forks import (
-    delete_refusal,
-    may_continue,
-    may_share,
+from trackinizer.server.audience import (
+    chat_beginnings_sql,
+    may_hide,
+    members_reader,
+    reader_for,
+    reads_session,
+    visible_sql,
 )
+from trackinizer.server.store.deleted_chats import chat_was_deleted
+from trackinizer.server.values import vetted_sql
+from trackinizer.server.visuals.chat_forks import delete_refusal, may_share
 from trackinizer.types.errors import ChatDeletedError
+from trackinizer.wire.audience import OPEN, PRIVATE
 from trackinizer.wire.wire_science_chat import (
     FORK_EDGE_LABEL,
     SCIENCE_CHAT_LABEL,
@@ -38,6 +44,7 @@ from trackinizer.wire.wire_science_chat import (
 
 if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn, DatabaseEngine
+    from trackinizer.server.audience import SessionReader
     from trackinizer.server.auth import AuthIdentity
     from trackinizer.server.config import Assistant, ChatOrgs
     from trackinizer.server.inbound import InboundQueue
@@ -46,11 +53,14 @@ if TYPE_CHECKING:
 __all__ = [
     "Conversation",
     "chat_openers",
+    "chat_readers",
     "conversation_of_session",
     "counts_in_chat",
     "helper_began_chat",
     "may_post",
+    "read_chat_sessions",
     "read_conversation",
+    "read_first_session",
     "read_head",
     "read_line_starter",
     "read_shares",
@@ -107,7 +117,7 @@ _HEAD: Final = (
     "LEFT JOIN users AS opener ON opener.id = credential.user_id "
     "WHERE sess.kind = 'AgentSession' AND sess.agentsession_cli_session_id = $3) "
     "SELECT head.session_id, head.cli_session_id, head.title, "
-    "head.modified, head.live, "
+    "head.modified, head.live, head.audience, "
     "ARRAY(SELECT taken.id FROM taken ORDER BY taken.id) AS sessions, "
     "(SELECT bool_and(taken.by_caller) FROM taken) AS opened, "
     "(EXISTS (SELECT 1 FROM taken AS hidden WHERE hidden.counted "
@@ -122,22 +132,15 @@ _HEAD: Final = (
     "ORDER BY head.live DESC, head.created DESC, head.session_id DESC LIMIT 1"
 )
 
-# The session that began a conversation: the oldest under its id that the assistant
-# ($2) opened, or that a key of the session's own account opened, as a person's helper
-# opens theirs. Any writer's key may open a session under a ``chat:`` id, but only as
-# its own account and after the chat's first session, so neither that nor a session a
-# rotated assistant key opens later for a poster begins it. Oldest is by ``created``,
-# which no route writes, never by ``started``, which one does. Only a session start
-# names a session's ``chat:`` id, which is what this rests on. The science-chat label
-# is no test of it: the assistant labels a chat's session after it starts it, so the
-# first session may be unlabelled while a later squat already carries the label.
-_FIRST_SESSION: Final = (
-    "FROM inquiries AS sess JOIN api_keys AS credential "
-    "ON credential.id = sess.agentsession_opened_by_api_key_id "
-    "JOIN users AS opener ON opener.id = credential.user_id "
-    "WHERE sess.kind = 'AgentSession' AND sess.agentsession_cli_session_id = $1 "
-    "AND (opener.email = $2 OR lower(opener.email) = lower(sess.account)) "
-    "ORDER BY sess.created, sess.id LIMIT 1"
+# The session that began the conversation $1, by the one rule for it, the assistant
+# being $2. Only a session start names a session's ``chat:`` id, which is what the rule
+# rests on. The science-chat label is no test of it: the assistant labels a chat's
+# session after it starts it, so the first session may be unlabelled while a later
+# squat already carries the label.
+_FIRST_SESSION: Final = vetted_sql(
+    chat_beginnings_sql(assistant="$2"),
+    " AND began.agentsession_cli_session_id = $1 "
+    "ORDER BY began.created, began.id LIMIT 1",
 )
 
 # A fork edge counts when the one who opened the fork's session is who added it, as
@@ -174,21 +177,6 @@ _FORKED_FROM: Final = (
     "WHERE link.from_id = $4 ORDER BY link.added, link.to_id LIMIT 1"
 )
 
-# A line is a person's, or an answer with words: the records the Chat panel shows.
-# Whether a record exists, and of what kind, is read off the transcript, so a yes is
-# given only for a session whose audience the caller reads ($6). For any other the
-# answer is the no that a position past the end gets, and a caller cannot tell a hidden
-# line from a missing one.
-# Audience: gated -- the session's audience must be one of $6.
-_LINE: Final = (
-    "SELECT EXISTS (SELECT 1 FROM session_records AS line "
-    "WHERE line.session_id = $3 AND line.part = $4 AND line.idx = $5 "
-    "AND (line.kind = 'AgentToAgentMessage' OR (line.kind = 'AssistantMessage' "
-    "AND COALESCE(line.payload ->> 'content', '') <> ''))) "
-    "AND EXISTS (SELECT 1 FROM chat WHERE session_id = $3 "
-    "AND audience = ANY($6::text[]))"
-)
-
 
 class Conversation(BaseModel):
     """A science chat's head session, its other sessions, and what the caller did."""
@@ -203,6 +191,9 @@ class Conversation(BaseModel):
 
     modified: datetime
     live: bool
+    audience: str
+    """The head session's audience, which every session under its id shares."""
+
     sessions: list[uuid.UUID]
     """Every session under the conversation's id, whoever opened it."""
 
@@ -221,7 +212,7 @@ async def read_head(
     assistant: Assistant | None,
     caller: AuthIdentity,
     conversation_id: uuid.UUID,
-    orgs: ChatOrgs,
+    reader: SessionReader,
 ) -> ChatHead | None:
     """Find the session of a conversation.
 
@@ -231,14 +222,14 @@ async def read_head(
       caller: The person asking; the chat of their own helper is found too, and what
         they may do to the chat is said for them.
       conversation_id: The conversation.
-      orgs: Who besides the starter and the people it is shared with continues a
-        chat, which says whether the caller's typing forks it.
+      reader: The caller, as the transcript test reads them, which says whether they
+        read the chat.
 
     Returns:
       head: The conversation's live session, else its newest, with its starter, how
-        often it was forked, what it was forked from, who it is shared with, and
-        whether the caller may share or delete it; None until its partner has opened
-        it.
+        often it was forked, what it was forked from, its audience, who it is shared
+        with, and whether the caller reads it, may hide, share or delete it; None
+        until its partner has opened it.
 
     Raises:
       ChatDeletedError: The conversation was deleted.
@@ -271,8 +262,10 @@ async def read_head(
             found.session_id,
         )
         shares = await read_shares(conn, conversation_id=conversation_id)
+        reads = await reads_session(conn, reader=reader, session_id=found.session_id)
     admin = caller.role == "admin"
-    sharer = may_share(caller.email, starter=found.account, admin=admin)
+    sharer = may_share(caller.email, starter=found.account, admin=admin, shared=True)
+    unsharer = may_share(caller.email, starter=found.account, admin=admin, shared=False)
     return ChatHead(
         conversation_id=conversation_id,
         session_id=found.session_id,
@@ -281,13 +274,14 @@ async def read_head(
         live=found.live,
         forks=from_plain(forks, int, default=0),
         forked_from=None if origin is None else chat_conversation_id(str(origin)),
-        forks_on_typing=not may_continue(
+        forks_on_typing=not reads,
+        audience=found.audience,
+        may_hide=may_hide(
             caller.email,
-            starter=found.account,
-            shared_with=shares,
-            orgs=orgs,
+            owners=(found.account,),
+            audience=found.audience,
         ),
-        shared_with=shares if sharer else [],
+        shared_with=shares if unsharer else [],
         may_share=sharer,
         may_delete=delete_refusal(
             caller.email,
@@ -413,11 +407,131 @@ async def read_starter(
 
     """
     starter = await conn.fetchval(
-        "SELECT sess.account " + _FIRST_SESSION,
+        "SELECT began.account " + _FIRST_SESSION,
         chat_session_id(conversation_id),
         None if assistant is None else assistant.email,
     )
     return from_plain(starter, str, default=None)
+
+
+async def read_first_session(
+    conn: Conn,
+    *,
+    assistant: Assistant | None,
+    conversation_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """Find the session that began a conversation, as :func:`read_starter` finds it.
+
+    Args:
+      conn: A database connection.
+      assistant: The configured assistant, if any.
+      conversation_id: The conversation.
+
+    Returns:
+      session_id: That session; None until some session carries the id.
+
+    """
+    return from_plain(
+        await conn.fetchval(
+            "SELECT began.id " + _FIRST_SESSION,
+            chat_session_id(conversation_id),
+            None if assistant is None else assistant.email,
+        ),
+        uuid.UUID,
+        default=None,
+    )
+
+
+async def chat_readers(
+    conn: Conn,
+    *,
+    assistant: Assistant | None,
+    conversation_id: uuid.UUID,
+    orgs: ChatOrgs,
+) -> list[SessionReader]:
+    """Describe everyone who reads a chat's lines, for what may be copied into it.
+
+    Its starter and each person it is shared with, as the assistant reads for them
+    (``delegated``) and holding what every person holds: a copy into the chat reaches
+    them whatever they oversee, so it may hold only what each of them reads as
+    anyone. And, while the chat is not ``private``, everyone it is open to by the
+    organisation mode, as one reader
+    (:func:`~trackinizer.server.audience.members_reader`).
+
+    Args:
+      conn: A database connection.
+      assistant: The configured assistant, if any.
+      conversation_id: The chat.
+      orgs: The server's organisation mode.
+
+    Returns:
+      readers: One per person, then the one for those it is open to; empty for a
+        conversation no session carries.
+
+    """
+    began = await conn.fetchrow(
+        "SELECT began.account, began.agentsession_audience AS audience "
+        + _FIRST_SESSION,
+        chat_session_id(conversation_id),
+        None if assistant is None else assistant.email,
+    )
+    if began is None:
+        return []
+    starter = from_plain(began["account"], str).lower()
+    people = [starter, *await read_shares(conn, conversation_id=conversation_id)]
+    rows = await conn.fetch(
+        "SELECT lower(email) AS email, hosted_domain FROM users "
+        "WHERE lower(email) = ANY($1::text[])",
+        people,
+    )
+    claims = {
+        from_plain(row["email"], str): from_plain(
+            row["hosted_domain"],
+            str,
+            default=None,
+        )
+        for row in rows
+    }
+    named = "" if assistant is None else assistant.email
+    readers = [
+        reader_for(
+            person,
+            audiences=frozenset({OPEN, PRIVATE}),
+            admin=False,
+            orgs=orgs,
+            assistant=named,
+            hosted_domain=claims.get(person),
+            delegated=True,
+        )
+        for person in dict.fromkeys(people)
+    ]
+    members = members_reader(starter, orgs=orgs, assistant=named)
+    if members is None or began["audience"] == PRIVATE:
+        return readers
+    return [*readers, members]
+
+
+async def read_chat_sessions(
+    conn: Conn,
+    *,
+    conversation_id: uuid.UUID,
+) -> list[uuid.UUID]:
+    """Return every session under a conversation's id, whoever opened it.
+
+    Args:
+      conn: A database connection.
+      conversation_id: The conversation.
+
+    Returns:
+      session_ids: In id order; empty for a conversation no session carries.
+
+    """
+    rows = await conn.fetch(
+        "SELECT id FROM inquiries WHERE kind = 'AgentSession' "
+        "AND agentsession_cli_session_id = $1 ORDER BY id",
+        chat_session_id(conversation_id),
+    )
+    return [from_plain(row["id"], uuid.UUID) for row in rows]
 
 
 async def helper_began_chat(
@@ -443,7 +557,7 @@ async def helper_began_chat(
     """
     return bool(
         await conn.fetchval(
-            "SELECT opener.email <> $2 " + _FIRST_SESSION,
+            "SELECT began_by.email <> $2 " + _FIRST_SESSION,
             chat_session_id(conversation_id),
             None if assistant is None else assistant.email,
         ),
@@ -530,38 +644,38 @@ async def may_post(
     conn: Conn,
     *,
     poster: str,
+    reader: SessionReader,
     conversation_id: uuid.UUID,
     assistant: Assistant | None,
-    orgs: ChatOrgs,
     inbound: InboundQueue,
 ) -> bool:
     """Say whether ``poster`` may add a line to a conversation, by Chat or by a relay.
 
+    Posting is reading: a person posts into the chats whose session that began them
+    they read. A conversation no session carries yet is its first line's sender's.
+
     Args:
       conn: A database connection.
       poster: The attested email of the person whose line it is.
+      reader: The poster, as the transcript test reads them.
       conversation_id: The conversation.
       assistant: The configured assistant, if any.
-      orgs: Who besides the starter and the people it is shared with continues a chat.
       inbound: Session message queue, which knows the sender of a first line.
 
     Returns:
-      allowed: True for a conversation nobody has begun, else as
-        :func:`~trackinizer.server.visuals.chat_forks.may_continue` says.
+      allowed: True when the poster reads the session that began the conversation,
+        or none has and no one else sent its first line.
 
     """
-    starter = await read_line_starter(
+    first = await read_first_session(
         conn,
         assistant=assistant,
         conversation_id=conversation_id,
-        inbound=inbound,
     )
-    return starter is None or may_continue(
-        poster,
-        starter=starter,
-        shared_with=await read_shares(conn, conversation_id=conversation_id),
-        orgs=orgs,
-    )
+    if first is None:
+        sender = inbound.sender_of(conversation_id)
+        return sender is None or sender.lower() == poster.lower()
+    return await reads_session(conn, reader=reader, session_id=first)
 
 
 async def science_chat_exists_at(
@@ -570,31 +684,52 @@ async def science_chat_exists_at(
     assistant: Assistant | None,
     email: str,
     fork: ChatForkAt,
-    audiences: frozenset[str],
+    reader: SessionReader,
 ) -> bool:
     """Say whether ``fork`` names a line of a science chat's session.
+
+    A line is a person's, or an answer with words: the records the Chat panel shows.
+    The assistant copies the lines up to a fork point into the fork, so the point
+    must be in a transcript the person reads. For any other the answer is the no that
+    a position past the end gets, and a caller cannot tell a hidden line from a
+    missing one.
 
     Args:
       conn: A database connection.
       assistant: The configured assistant, if any.
       email: The person asking; the chat of their own helper is found too.
       fork: The session, part and position.
-      audiences: What the person reads. A session outside them has no line to name.
+      reader: The person, as the transcript test reads them.
 
     Returns:
       found: True when the session is a science chat the person may find and read
         and the record is a person's line or an answer with words.
 
     """
+    params: list[object] = [
+        chat_openers(assistant, email=email),
+        SCIENCE_CHAT_LABEL,
+        fork.session_id,
+        fork.part,
+        fork.idx,
+    ]
+    # Audience: gated -- the line is looked for only in a transcript ``reader`` reads.
+    readable = visible_sql("target", params=params, reader=reader)
     return bool(
         await conn.fetchval(
-            _CHAT + _LINE,
-            chat_openers(assistant, email=email),
-            SCIENCE_CHAT_LABEL,
-            fork.session_id,
-            fork.part,
-            fork.idx,
-            sorted(audiences),
+            vetted_sql(
+                _CHAT,
+                "SELECT EXISTS (SELECT 1 FROM session_records AS line "
+                "WHERE line.session_id = $3 AND line.part = $4 AND line.idx = $5 "
+                "AND (line.kind = 'AgentToAgentMessage' OR (line.kind = "
+                "'AssistantMessage' AND COALESCE(line.payload ->> 'content', '') "
+                "<> ''))) AND EXISTS (SELECT 1 FROM chat WHERE session_id = $3) "
+                "AND EXISTS (SELECT 1 FROM inquiries AS target WHERE target.id = $3 "
+                "AND ",
+                readable,
+                ")",
+            ),
+            *params,
         ),
     )
 

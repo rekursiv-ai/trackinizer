@@ -577,7 +577,7 @@ def _semantics_block() -> str:
         f"//   issue_kind/kind: {issue_kind}   publication_type: {pub_type}",
         f"//   priority: an int, or {priority}",
         "//   confidence/valence: a float (valence in [-1,1], sign = for/against)",
-        "//   config: one standard JSON object; readable/editable, not filterable",
+        "//   config/app: one standard JSON object; readable/editable, not filterable",
         "// FIELD VALIDITY (a field is writable only on these kinds):",
         *_kind_field_lines(),
         "// EDGE DIRECTION (edges store child->parent; a reverse-voice alias writes the",

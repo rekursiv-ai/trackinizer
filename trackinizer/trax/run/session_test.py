@@ -50,7 +50,7 @@ from trackinizer.lib.posix.host import HostSpec
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.posix.testing import poll_fsevents
 from trackinizer.trax.profile import LOCALHOST_FALLBACK_URL
-from trackinizer.trax.run import session
+from trackinizer.trax.run import detach, session
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
@@ -74,6 +74,7 @@ from trackinizer.trax.run.session import (
 )
 from trackinizer.trax.run.sink import (
     LockedSink,
+    PrivateNotHeldError,
     ResilientSink,
     Sink,
     TrackinizerSink,
@@ -2002,6 +2003,77 @@ class TestRunPreservesClient:
         rc = run(config)
         assert rc == 0
         assert client.close_calls == 0
+
+
+class TestAPrivateRun:
+    """``--private`` reaches the sink, in a detached host too, and stops a run early."""
+
+    def test_private_reaches_the_run_and_a_detached_host(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ran: list[RunConfig] = []
+        hosted: list[Callable[[HostSpec | None], int]] = []
+        monkeypatch.setattr(session, "run", partial(_keep_run, ran))
+        monkeypatch.setattr(detach, "launch", partial(_keep_host, hosted))
+
+        assert session.main(["claude", "--private", "--no-sync"]) == 0
+        assert session.main(["claude", "--detach"]) == 0
+        assert session.main(["claude", "--private", "--detach"]) == 0
+        for start in hosted:
+            assert start(None) == 0
+
+        assert [config.private for config in ran] == [True, False, True]
+
+    def test_the_sink_of_a_private_run_refuses_a_server_that_does_not_hide(
+        self,
+    ) -> None:
+        """An older server answers no audience: the run stops before the CLI starts."""
+        config = RunConfig(
+            cli_name="sh",
+            client=cast(Client, _UploadsClient()),
+            private=True,
+        )
+
+        with pytest.raises(PrivateNotHeldError):
+            _ = _open_sink(config, IOStreamAdapter()).open()
+
+    def test_a_run_stopped_so_exits_2(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        client = _BorrowedClient()
+        config = RunConfig(cli_name="codex", dry_run=True, client=cast(Client, client))
+        monkeypatch.setattr(session, "_dry_run_drain", _refuse_private)
+
+        assert run(config) == 2
+        assert "predates hiding a session; nothing was sent" in capsys.readouterr().err
+
+
+def _keep_run(ran: list[RunConfig], config: RunConfig) -> int:
+    """Keep the config a run was asked to run, and run nothing."""
+    ran.append(config)
+    return 0
+
+
+def _keep_host(
+    hosted: list[Callable[[HostSpec | None], int]],
+    name: str,
+    *,
+    command: str,
+    start: Callable[[HostSpec | None], int],
+) -> int:
+    """Keep what a detached host would start, and launch nothing."""
+    del name, command
+    hosted.append(start)
+    return 0
+
+
+def _refuse_private(*args: object, **kwargs: object) -> int:
+    """Stand in for a run whose server would not hide its session."""
+    del args, kwargs
+    raise PrivateNotHeldError("the server predates hiding a session")
 
 
 class TestFallbackClientInbound:

@@ -1,8 +1,10 @@
 """Sharing a science chat with a person, and deleting a whole chat.
 
-A share names one person by email, who then posts into the chat as its starter does.
-It follows the conversation, whatever sessions it holds, and lives in
-``science_chat_shares``. The starter adds and removes shares, and so does an admin.
+A share names one person by email, who then reads and posts into the chat as its
+starter does. It follows the conversation, whatever sessions it holds, and lives in
+``science_chat_shares``. The starter adds and removes shares; an admin only removes
+them. A ``staff`` chat is shared only with a person who holds ``staff``: its
+assistant read a staff session into it.
 
 Deleting a conversation takes every session under its id, whoever opened it, with
 their records, its shares, and its binding to any station, whose next line then
@@ -25,9 +27,11 @@ import uuid
 
 from treekle import from_plain
 
+from trackinizer.server.audience import audiences_for
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.deleted_chats import lock_chat_id
 from trackinizer.server.visuals.chat_forks import (
+    ChatClosedError,
     ChatRefusedError,
     delete_refusal,
     may_share,
@@ -36,11 +40,14 @@ from trackinizer.server.visuals.science_chats import (
     read_conversation,
     read_shares,
 )
+from trackinizer.wire.audience import STAFF
 from trackinizer.wire.wire_science_chat import chat_session_id
 
 
 if TYPE_CHECKING:
-    from trackinizer.lib.postgres import DatabaseEngine
+    from collections.abc import Sequence
+
+    from trackinizer.lib.postgres import Conn, DatabaseEngine
     from trackinizer.server.auth import AuthIdentity
     from trackinizer.server.config import Assistant
     from trackinizer.server.inbound import InboundQueue
@@ -70,23 +77,29 @@ async def set_share(
     conversation_id: uuid.UUID,
     email: str,
     shared: bool,
+    staff: Sequence[str],
 ) -> list[str] | None:
     """Share a chat with one person, or stop sharing it; either again changes nothing.
 
     Args:
       engine: Database connection source.
       assistant: The configured assistant, if any.
-      caller: Who asks: the chat's starter, or an admin.
+      caller: Who asks: the chat's starter, or an admin stopping a share.
       conversation_id: The chat.
       email: The person, stored lowercase.
       shared: Share it with them; False stops sharing it.
+      staff: The configured staff patterns, which say whether the person holds
+        ``staff``.
 
     Returns:
       shared_with: The chat's shares after, oldest first; None when the caller finds
         no such chat.
 
     Raises:
-      ChatRefusedError: The caller is neither the chat's starter nor an admin.
+      ChatRefusedError: The caller is not the chat's starter, and is not an admin
+        stopping a share.
+      ChatClosedError: The chat is ``staff`` and the person, an active user or not,
+        does not hold ``staff`` now.
 
     """
     async with engine.acquire() as conn, tx(conn):
@@ -102,8 +115,15 @@ async def set_share(
             caller.email,
             starter=found.account,
             admin=caller.role == "admin",
+            shared=shared,
         ):
             raise ChatRefusedError("chat_not_starter")
+        if (
+            shared
+            and found.audience == STAFF
+            and STAFF not in await _holds(conn, email=email, staff=staff)
+        ):
+            raise ChatClosedError("chat_staff_only")
         if shared:
             await conn.execute(
                 "INSERT INTO science_chat_shares (conversation_id, email, shared_by) "
@@ -231,3 +251,18 @@ async def delete_chat(
         )
         for row in rows
     ]
+
+
+async def _holds(conn: Conn, *, email: str, staff: Sequence[str]) -> frozenset[str]:
+    """Return the audiences the active user ``email`` holds; none for anyone else."""
+    row = await conn.fetchrow(
+        "SELECT email, hosted_domain FROM users WHERE email = $1 AND status = 'active'",
+        email.lower(),
+    )
+    if row is None:
+        return frozenset[str]()
+    return audiences_for(
+        from_plain(row["email"], str),
+        hosted_domain=from_plain(row["hosted_domain"], str, default=None),
+        staff=staff,
+    )

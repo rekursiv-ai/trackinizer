@@ -86,11 +86,13 @@ PUT /api/inquiries/<uuid>/labels
 PUT /api/inquiries/<uuid>/marginal_cost_agent_usd
 PUT /api/inquiries/<uuid>/marginal_cost_resource_usd
 PUT /api/inquiries/<uuid>/subscribers
+PUT /api/inquiries/<uuid>/app
 PUT /api/issue/<uuid>/issue_kind
 PUT /api/issue/<uuid>/validation
 PUT /api/issue/<uuid>/priority
 PUT /api/experiment/<uuid>/outcome
 PUT /api/experiment/<uuid>/codechanges
+PUT /api/experiment/<uuid>/config
 PUT /api/paper/<uuid>/source
 PUT /api/belief/<uuid>/judgement
 PUT /api/belief/<uuid>/confidence
@@ -124,11 +126,13 @@ DELETE /api/inquiries/<uuid>/labels
 DELETE /api/inquiries/<uuid>/marginal_cost_agent_usd
 DELETE /api/inquiries/<uuid>/marginal_cost_resource_usd
 DELETE /api/inquiries/<uuid>/subscribers
+DELETE /api/inquiries/<uuid>/app
 DELETE /api/issue/<uuid>/issue_kind
 DELETE /api/issue/<uuid>/validation
 DELETE /api/issue/<uuid>/priority
 DELETE /api/experiment/<uuid>/outcome
 DELETE /api/experiment/<uuid>/codechanges
+DELETE /api/experiment/<uuid>/config
 DELETE /api/paper/<uuid>/source
 DELETE /api/belief/<uuid>/judgement
 DELETE /api/belief/<uuid>/confidence
@@ -260,7 +264,8 @@ PUT  /api/me/tokens/<uuid>/role
 `GET /api/me/profile` also reports the audiences the credential holds:
 `read_audiences` (whose session transcripts it may read), `open_audiences` (what
 it may open a session into) and `pinned_audience` (the one a key is pinned to, or
-null). They are `open` for everyone; `staff` is added for a person the server
+null), and `org_mode`, the server's organisation mode (section 1.21). They are
+`open` and `private` for everyone; `staff` is added for a person the server
 names as staff. The server's `--staff PATTERNS` (or `$TRACKINIZER_STAFF`) is a
 comma-separated list of `user@host` and `*@domain` patterns. A literal address
 matches the verified email alone. A domain pattern also needs the person's Google
@@ -572,9 +577,11 @@ into a live session by routing name.
 ```
 POST   /api/sessions/start
 POST   /api/sessions/<uuid>/records
-GET    /api/sessions/<uuid>/records?part=N&after_idx=N&limit=N&plaintext_only=B
-GET    /api/sessions/<uuid>/parts
+GET    /api/sessions/<uuid>/records?part=N&after_idx=N&limit=N&plaintext_only=B&asker=EMAIL&chat=UUID
+GET    /api/sessions/<uuid>/parts?asker=EMAIL&chat=UUID
+GET    /api/sessions/<uuid>/turns?limit=N&asker=EMAIL&chat=UUID
 POST   /api/sessions/<uuid>/end
+POST   /api/sessions/<uuid>/audience
 POST   /api/sessions/<uuid>/inbound
 GET    /api/sessions/<uuid>/inbound
 POST   /api/messages
@@ -590,36 +597,98 @@ push envelopes -- JSON metadata for a committed change, generated
 server-side (no HTTP surface produces them). Shape and client-side
 handling: `design_subscriber.md`.
 
-An AgentSession carries an `audience` (`open` or `staff`) saying who may read its
-transcript. A session opens into the audience its key is pinned to (`open_into`, see
-section 1.17), else `open`. Only the transcript is gated: the session's title, actor,
-rooms, times, cost, edges and `audience`, and every row it files, stay readable by
-anyone who can read the graph. A caller reads a session when its `read_audiences` (see
-`GET /api/me/profile`) hold the session's audience, and the key that opened a
-session always does, so a key whose owner no longer holds `staff` can still run the
-`staff` session it opened. Otherwise the session answers 403 with
+An AgentSession carries an `audience` (`open`, `private` or `staff`) saying who may
+read its transcript. Only the transcript is gated: the session's title, actor, rooms,
+times, cost, edges and `audience`, and every row it files, stay readable by anyone
+who can read the graph. Who reads a transcript is one rule, set by the server's
+organisation mode, `TRACKINIZER_CHAT_ORGS`, as a chat workspace sets it:
+
+| mode | `open` session | `private` session | `staff` session |
+|---|---|---|---|
+| `single` (one organisation) | every caller | its owner, and a person who holds `staff` or is an admin | whoever holds `staff` |
+| `domain` (an email domain is an organisation, and a person its member when Google's `hd` claim names it) | its owner, its account's organisation, a person who holds `staff` or is an admin | the same less the organisation | whoever holds `staff` |
+| `individual` (the default, also when unset; each person alone) | its owner, a person who holds `staff` or is an admin | the same | whoever holds `staff` |
+
+A session's owner is its `account`. A service account and the assistant are in no
+organisation and oversee nothing. A science chat (section 1.25) is read by its
+members instead, no role excepted. The caller must hold the audience too, and the key
+that opened a session always reads it, so a key whose owner no longer holds `staff`
+can still run the `staff` session it opened. Otherwise the session answers 403 with
 `{"detail": {"code": "session_audience", "audience": "<value>"}}` on
-`GET .../records`, `.../parts`, `.../turns`, `POST .../records`, `POST .../end`,
-`GET .../inbound` (a drain), `DELETE /api/inquiries/<uuid>` and every field edit of
-the row. Sending input (`POST .../inbound`, `POST /api/messages`) needs the audience
-too. The configured assistant (`--assistant`) relays a user's line to a session it
-cannot read only for an `asker`, an optional field of both bodies naming the user's
-account email. It passes on that user's rights, not its own, and the server reads them
-from its own tables: the asker must be an active user and a writer or admin, and be the
-session's account or hold its audience as a person, whatever key they use. A send that
-names no asker, or one who does not qualify, is 403 `session_audience`. A session the
-assistant reads itself needs no asker, and another sender's `asker` is ignored.
-`POST /api/messages` is refused whole when any session its actor names is hidden from
-the sender: nothing is queued to the others. No field route sets `audience`.
+`GET .../records`, `.../parts`, `.../turns`, `POST .../records`, `POST .../end` and
+`GET .../inbound` (a drain); `DELETE /api/inquiries/<uuid>` and a field edit of the
+row need the audience. Sending input (`POST .../inbound`, `POST /api/messages`) needs
+the same read. The configured assistant (`--assistant`) relays a user's line to a
+session it cannot read only for an `asker`, an optional field of both bodies naming
+the user's account email. It passes on that user's rights, not its own, and the
+server reads them from its own tables: the asker must be an active user and a writer
+or admin, and be the session's account or read it as a person, whatever key they
+use. A send that names no asker, or one who does not qualify, is 403
+`session_audience`. A session the assistant reads itself needs no asker, and another
+sender's `asker` is ignored. `POST /api/messages` is refused whole when any session
+its actor names is hidden from the sender: nothing is queued to the others.
+
+A session opens into the audience its key is pinned to (`open_into`, see section
+1.17), else `open`; `"private": true` in the start body opens it `private` instead,
+which a key pinned to `staff` may not (403 `audience_not_held`). A session that opens
+under the `chat:<id>` of a chat that is not `open` takes the chat's audience. The
+start's answer names the session's `audience`, and `trax run --private` stops before
+its CLI starts when it is not `private`, as an older server, which ignores the field,
+answers. A resume asked to be `private` hides the `open` session it re-attaches, as
+the key that opened it may, and is 409, leaving it as it was, for a `staff` one. A
+session's owner moves it between `open` and `private` with
+`POST .../audience` (`{"audience": "open" | "private"}`): its account, the person
+whose key opened it, or for a chat its starter, which moves every session under the
+chat's id. It answers `{"session_id", "audience", "sessions"}`, the sessions that
+moved; anyone else is 403 `session_not_owner`, a `staff` session 409
+`session_staff`. No field route sets `audience`; each move is audited as an
+`agentsession_audience` change. A `private` session's `account` is moved by that
+account alone, an admin's move included being 403: its account is an owner, who may
+show it again.
+
+The assistant also reads a transcript for a user, into the chat it answers them in:
+`GET .../records`, `.../parts` and `.../turns` take `asker`, the user's account email,
+and `chat`, the conversation. The read is the user's alone, never the assistant's: an
+`asker` the server does not hold active, or a blank one, reads nothing (403
+`session_audience`), and so does one who could not read the session themselves, less
+any oversight. No chat and no `private` session is read for anyone (403
+`session_audience`), a read for an asker that names no chat is 422 `chat_required`,
+and one whose asker does not read the chat it names is 403 `chat_not_member`. What the
+assistant reads lands in the chat, so before it reads a `staff` session every
+session under the chat's id becomes `staff`, audited with the assistant as actor; a
+`private` chat is never made `staff` (409 `chat_private`), and only the chat's
+starter makes one so, as its members who hold no `staff` lose it then (403
+`chat_not_starter` for anyone else, unless the chat is `staff` already). Any other
+session is read into a chat only when everyone who reads the chat reads it too, as
+the assistant would read it for them: its starter, each person it is shared with, and
+while it is not `private` the starter's organisation or every member; else 409
+`chat_readers`. The assistant reads a chat by its id and audience alone only when a
+key of its own opened that chat's session. Another caller's `asker`
+and `chat` are ignored, and so is every bulk route's: the feed, its facets and
+histogram, session search, `GET /api/inquiries` and the export answer for the caller
+alone.
 
 The feed, its facets and histogram, session search, record filters on
 `GET /api/inquiries`, and the export leave out a session the caller does not read,
-and the export's header names the audiences it was read for (section 3.24). A
+another person's science chat included, and the export's header names the audiences
+it was read for and counts the sessions it left out (section 3.24). The feed, its
+facets and histogram, and session search also leave out a `private` session the
+caller reads unless asked with `hidden=true`, and take `whose`: `everyone` (the
+feed's default), `mine` (session search's default), the sessions held under the
+caller's account, or `campaigns`, the
+sessions labelled with, or in a room named for, a slug that a brief Issue labels
+`<slug>:asker:<the caller's email>`, as the assistant labels a campaign it launches
+for a person and a launch whose `--requested-by` is an account labels its brief.
+Neither reads more than the caller does. Each facet names its
+session's `account` and `audience`, and `hideable`, whether the caller may hide it.
+A
 record written to a session pings the live streams
 (`GET /api/change_log/stream`, `GET /api/web/subscribe`, the `changed` frames of
 `GET /api/workspaces/<uuid>/events`) with the session's id, and a stream relays
-that ping only to a caller whose `read_audiences` hold the session's audience.
-Every other change reaches every viewer.
+that ping only to a caller who reads the session, by the one rule above: when a
+session receives a record is part of its transcript. A stream asks once per session
+and audience and keeps the answer for 30 s, so a hide is heard at once, and a share,
+an unshare or an account move within 30 s. Every other change reaches every viewer.
 
 A subscriber push into a session that is not `open` carries no `actor` and no
 `reason`, and its `agent_message` omits "(by ...)": those are free text a writer sets,
@@ -627,8 +696,9 @@ and an inbound line becomes the session's next user turn. The row is still named
 `subject_ref` and `row`, so the session reads the change from the graph.
 
 Existing sessions migrate to `open`; the migration cannot tell a campaign lead or other
-staff session a running deployment already captured from any other. The audience is
-written once, when the session opens, and no route or key changes it afterwards.
+staff session a running deployment already captured from any other. After it opens, a
+session's audience moves only between `open` and `private` by its owner, and to
+`staff` for a chat a staff session was read into; nothing lowers `staff`.
 
 A session whose run dies without calling `end` (killed, host crashed) is
 closed by the server: once a session that polls its inbound queue has gone
@@ -666,10 +736,12 @@ GET /api/export
 The whole graph as JSON lines (`application/x-ndjson`), for backup or a
 public mirror: every inquiry, edge, and change-log row, plus experiment
 metrics and agent-session records, read in one snapshot. Viewer role, like
-any read. A session's records are exported only to a caller that reads its
-audience (section 1.21), so a backup that must hold every transcript runs as a
-caller that reads every audience. Read-only; nothing imports it yet. Line shape:
-section 3.24.
+any read. A session's records are exported only to a caller that reads it
+(section 1.21), a `private` one included. No key holds every chat, since no role
+reads another person's chat, and in `domain` or `individual` mode a person who is no
+staff and no admin reads only their organisation's sessions, so an export is a whole
+backup only when nothing is withheld; its header counts what
+it left out. Read-only; nothing imports it yet. Line shape: section 3.24.
 
 ### 1.24 Visual catalog and workspace
 
@@ -692,9 +764,16 @@ does not fetch graph data or start a session. Each descriptor has a stable
 `type`, `version`, title, description, requirements, default size, bounded
 parameter schema, and `record_kinds`: the kinds of record a show may name
 (`null` for any, an empty list for none). `trax.browse` is the page itself: it
-takes no record and no parameter, and it cannot be hidden. `trax.timeline`
-shows an Issue or an Experiment, `trax.artifact` an Artifact, `trax.subgraph`
-any record.
+takes no record and no parameter, and it hides like any visual: an agent's
+`navigate` on a canvas that has hidden it shows it again in the main strip, in
+the revision that carries the route. `trax.timeline`
+shows an Issue or an Experiment, `trax.artifact` an Artifact, `trax.summary` an
+Issue or an AgentSession, and `trax.subgraph` and `trax.files` any record.
+`trax.files` reads the record's files document, an Artifact labelled `files` and
+`files:of:<record uuid>`, through `GET /api/inquiries`; its params `path` and
+`file` (strings, at most 512) and `changed` (boolean) narrow it. A show's param
+outside its descriptor's bound returns 422 with the sentence that names it
+(`Parameter 'path' exceeds maximum length of 512.`).
 
 `GET /api/visuals/timeline/<record-uuid>` is the one bounded read behind the
 `trax.timeline` visual (Lineage and timeline). The record may be of any kind;
@@ -924,10 +1003,16 @@ A canvas Chat conversation is one AgentSession the assistant opens: label
 `chat-<12 hex>`, account the person who started it. Its records are the
 conversation (a person's line is an agent message from its poster, then the
 assistant's tool calls, results and answers), read with the ordinary session
-routes. There is no separate chat store: chats are public to every user to read.
-Its starter posts into a chat, as do the people they share it with and whoever
-`TRACKINIZER_CHAT_ORGS` lets in (Forking below); anyone else forks it. Its starter
-deletes it while every person's line in it is theirs (Deleting below).
+routes. There is no separate chat store. A chat is private to its members: its
+starter, the people they share it with and whoever `TRACKINIZER_CHAT_ORGS` lets in
+(Forking below) read it and post into it, and every session read refuses anyone
+else, an admin included (section 1.21). Its starter hides it from all but the people
+it is shared with (`POST /api/sessions/<uuid>/audience`, `private`) and shows it
+again; once the assistant has read a `staff` session into it for a member, it is
+`staff`, and only its members who hold `staff` read it, post in it or are shared
+it. Its session's row stays readable by every key, so its title is `Science chat`,
+whatever the assistant asks. Its starter deletes it while every person's line in it
+is theirs (Deleting below).
 
 `POST /api/chats` (browser only, writer role, with an `Idempotency-Key`) posts a
 line. The body is `{kind: "science", workspace_id, text, conversation_id, page,
@@ -958,16 +1043,20 @@ a server restart queues the line again. No live assistant is 409; a full queue i
 409 `partner busy`, and nothing is queued.
 
 `GET /api/chats/<uuid>` returns `{conversation_id, session_id, title, account, live,
-forks, forked_from, forks_on_typing, shared_with, may_share, may_delete}` and is 404
+forks, forked_from, forks_on_typing, audience, may_hide, shared_with, may_share,
+may_delete}` and is 404
 until the assistant has opened the session, and 410 `chat_deleted` once it was
 deleted (Deleting below); any signed-in user may
-read it, which is how a chat opens by link. It is browser only. A chat that
+read it, which is how a chat opens by link, though only its members read its
+records. It is browser only. A chat that
 the caller's own `trax helper` opened (the local choice) is found for its starter
 only. Its `session_id` is the assistant's session under the id whenever one exists,
 and `account` is the chat's starter (Forking below). `shared_with` lists the emails
 the chat is shared with, oldest share first,
-and is empty for anyone but its starter and an admin; `may_share` and `may_delete`
-say whether the caller may share it and delete it (Sharing and Deleting below).
+and is empty for anyone but its starter and an admin; `audience` is the chat's,
+`may_hide` whether the caller may hide it or show it again (its starter, unless it
+is `staff`), and `may_share` and `may_delete` whether the caller may share it and
+delete it (Sharing and Deleting below).
 
 Forking. A fork is a new science chat that starts from a line of another: its
 `account` is the forker, it has its own conversation id (the key), and the
@@ -981,14 +1070,15 @@ the conversations with such an edge to it, counting only an edge that the key th
 opened the fork's session added with the fork label; `forked_from` on a fork's
 head is the original's conversation (the earliest such edge). A helper's forks
 count for the forker alone, since the head counts what the viewer may find. A
-person always joins their own chat, and so does each person it is shared with.
-Who else may join a chat or must fork it is the server's `TRACKINIZER_CHAT_ORGS`:
-`domain` (the default, also when unset) makes each verified email domain one
-organisation, except the consumer domains (`gmail.com`, `googlemail.com`, `outlook.com`, `hotmail.com`,
-`live.com`, `yahoo.com`, `icloud.com`, `me.com`, `proton.me`, `protonmail.com`),
-which are none, and the starter's organisation joins; `single` makes every user
-one organisation, and only a server whose users are all one organisation sets it;
-`individual` lets nobody else join. Anyone else's post is 403
+person is always a member of their own chat, and so is each person it is shared
+with. Who else is one is the server's `TRACKINIZER_CHAT_ORGS`:
+`individual` (the default, also when unset) lets nobody else in; `domain` makes
+each email domain one organisation, whose members are the people Google's `hd`
+claim names members of it (never a consumer account, whatever its address), and the
+starter's organisation is; `single` makes every user one organisation, and only a
+server whose users are all one organisation sets it. Anyone else reads none of the
+chat, and their post
+is 403
 `{"detail": {"code": "chat_not_shared", "message": ...}}` and queues
 nothing, whether the conversation is named by `conversation_id` or by the
 `Idempotency-Key` of a post that names none. The chat's starter is the account of
@@ -1003,21 +1093,33 @@ alone) never moves a session into or out of one, and is 403 if it would. A post 
 assistant would answer
 in a chat a person's own helper began is 409, since only that helper reads it. A
 `fork` whose key names a conversation someone else began is 409. The head's
-`forks_on_typing` says a post
-is refused, and the browser then forks at the latest line instead (or on the 403,
-if it posted before the head was read). A `fork` is allowed to anyone, in a chat they
-may join too. A fork of a chat that was since deleted keeps its lines, and its
-`forked_from` is null.
+`forks_on_typing` says the caller does not read the chat: they are no member, or it
+is `private` or `staff` and they may not read it; their post is refused, they read
+none of it, and the browser says so. A `fork` copies lines its poster reads, so it
+names a line of a chat they read; a line of any other chat is 422, as a line past
+the end of one is. A `private` or `staff` chat is not forked at all, since a fork's
+copies would not keep its audience: 409 `{"detail": {"code": "chat_fork_closed"}}`.
+Nor is a chat whose readers a fork's would not be among: a fork is open to its
+forker's organisation, so under `domain` a person a chat is shared with from another
+organisation posts in it and does not fork it, 409 `chat_fork_wider`. A consumer mail
+domain is no one's organisation, so its people fork what they read.
+A fork of a chat that was since deleted keeps its lines, and its `forked_from` is
+null.
 
 Sharing. `PUT /api/chats/<uuid>/shares/<email>` (writer role, browser only) shares a
-chat with one person, who then posts into it as its starter does; `DELETE` of the
-same path stops sharing it, so their next line, by Chat or by a Console relay, is
-refused while their earlier lines stay. The email is stored lowercase; a malformed
-one is 422. A share follows the conversation, whatever sessions it holds. Only the
-chat's starter (Forking above says who that is) or an admin shares and unshares, an
-API key is 403, and anyone else is 403 `{"detail": {"code": "chat_not_starter"}}`;
-a chat the caller cannot find is 404. Either again changes nothing. The answer is
-the chat's shares, a JSON array of emails, oldest share first.
+chat with one person, who then reads it and posts into it as its starter does;
+`DELETE` of the same path stops sharing it, so they read none of it from then on and
+their next line, by Chat or by a Console relay, is refused while their earlier lines
+stay. The email is stored lowercase; a malformed one is 422. A share follows the
+conversation, whatever sessions it holds. Only the chat's starter (Forking above says
+who that is) shares it; the starter or an admin unshares it. An admin's share, to
+anyone, itself included, is 403 `{"detail": {"code": "chat_not_starter"}}`, since a
+share lets its person read the chat and an admin reads no one else's. A `staff` chat
+is shared only with a person who holds `staff` now, else 409
+`{"detail": {"code": "chat_staff_only"}}`. An API key is 403, and anyone else is 403
+`chat_not_starter`; a chat the caller cannot find is 404.
+Either again changes nothing. The answer is the chat's shares, a JSON array of
+emails, oldest share first.
 
 Deleting. `DELETE /api/chats/<uuid>` (writer role) deletes a whole chat: every
 session under its id, whoever's key opened it, with its records (each purged as
@@ -1217,6 +1319,8 @@ issue_kind                  yes  yes    yes
 validation                  yes  no     yes
 priority                    yes  no     yes
 outcome                     yes  no     yes
+config                      yes  no     yes     one JSON object
+app                         yes  no     yes     one JSON object, at most 64 KiB
 abstract                    yes  no     yes
 authors                     yes  yes    yes
 publication_type            yes  no     yes
@@ -1349,7 +1453,8 @@ reason  optional; default is empty string
 ```
 
 ```
-expected only valid for PUT owner, status, and judgement.
+expected only valid for PUT owner, status, judgement, and app.
+expected for app is the whole object read before; null when unset.
 expected omitted means blind overwrite.
 expected mismatch returns 409.
 expected on any other field returns 400.
@@ -1643,7 +1748,7 @@ data: {"id": "<change_uuid>"}
 ### 3.24 Export lines
 
 ```
-{"format": "trackinizer-export", "version": 1, "migrations": ["schema.sql", ...], "audiences": ["open", "staff"]}
+{"format": "trackinizer-export", "version": 1, "migrations": ["schema.sql", ...], "audiences": ["open", "private", "staff"], "withheld_sessions": 0}
 {"table": "inquiries", "row": {"id": "<uuid>", "kind": "Issue", ...}}
 {"table": "edges", "row": {"from_id": "<uuid>", "edge_kind": "narrows", ...}}
 ...
@@ -1654,7 +1759,10 @@ so a reader knows which columns the rows carry, and `audiences` names, sorted,
 the audiences the caller reads. A session outside them has no row in
 `session_manifests`, `session_records` or `session_slash_commands`, though its
 `inquiries` row is there, so a file whose `audiences` lacks one the deployment
-holds is not a whole backup. Every later line is one row
+holds is not a whole backup. `withheld_sessions` counts every session whose
+records the file left out, the ones the caller does not read (section 1.21); a file
+that counts any is not a whole backup either. Every later line
+is one row
 of one table, keyed by column name. Tables come in the order `inquiries`,
 `edges`, `change_log`, `experiment_metrics`, `session_manifests`,
 `session_records`, `session_slash_commands`, and rows in a fixed order within
@@ -1751,9 +1859,9 @@ later one.
 302  auth redirect
 400  invalid body, invalid field for kind, invalid projected edge mutation
 401  missing or invalid auth; an unusable enrollment token or machine credential
-403  role too low; a service account's key on a route that manages keys; a grant beyond the caller's role or audiences; a chat's share or delete the caller may not make
+403  role too low; a service account's key on a route that manages keys; a grant beyond the caller's role or audiences; a chat's share or delete the caller may not make; a session's transcript the caller does not read (`session_audience`), or may not hide (`session_not_owner`), or a chat it may not read into (`chat_not_member`)
 404  row not found
-409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, machine in service, another host connected, service account name taken or account disabled
+409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, machine in service, another host connected, service account name taken or account disabled; a `staff` session hidden (`session_staff`), a private or staff chat forked (`chat_fork_closed`), a staff chat shared outside staff (`chat_staff_only`), a staff read into a private chat (`chat_private`)
 410  machine credential revoked; a deleted science chat (`chat_deleted`)
 422  well-formed body rejected by domain validation (e.g. self-loop edge, priority on a non-priority edge kind)
 500  server fault

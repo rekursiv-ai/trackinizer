@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Final, Protocol, cast
 from unittest.mock import MagicMock
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -33,6 +34,7 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import (
     BOOTSTRAP_ADMIN_ENV,
     BOOTSTRAP_TOKEN_FILE_ENV,
@@ -64,6 +66,7 @@ from trackinizer.types.inquiries import (
     Paper,
 )
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.audience import AUDIENCES
 from trackinizer.wire.bodies import (
     BatchEdge,
     Citation,
@@ -85,6 +88,12 @@ if TYPE_CHECKING:
 
     from trackinizer.server.store.core import Store
     from trackinizer.types.edges import Edge
+
+
+# Reads every session but a chat: the feed tests are of what it keeps, not who reads.
+_EVERY_SESSION: Final = FeedScope(
+    reader=SessionReader(audiences=AUDIENCES, every_session=True, oversight=True),
+)
 
 
 # The session-start route resolves the request's ``account`` from the authenticated
@@ -1766,7 +1775,7 @@ class TestIntegrationEndToEnd:
         await _record(integ_store, eng, idx=0, text="b")
         await _record(integ_store, sci, idx=1, text="c")
 
-        feed = await integ_store.read_feed()
+        feed = await integ_store.read_feed(scope=_EVERY_SESSION)
         # All three turns, oldest first, each carrying its session context.
         assert len(feed) == 3
         assert [f.actor for f in feed] == ["scientist", "eng", "scientist"]
@@ -1777,15 +1786,20 @@ class TestIntegrationEndToEnd:
         assert [f.created for f in feed] == sorted(f.created for f in feed)
 
         # Room filter narrows to one session.
-        sear_only = await integ_store.read_feed(scope=FeedScope(rooms=("sear",)))
+        sear_only = await integ_store.read_feed(
+            scope=replace(_EVERY_SESSION, rooms=("sear",)),
+        )
         assert {f.actor for f in sear_only} == {"scientist"}
 
         # Actor filter likewise.
-        eng_only = await integ_store.read_feed(scope=FeedScope(actors=("eng",)))
+        eng_only = await integ_store.read_feed(
+            scope=replace(_EVERY_SESSION, actors=("eng",)),
+        )
         assert {f.actor for f in eng_only} == {"eng"}
 
         # The composite keyset cursor resumes strictly past the given event.
         after_first = await integ_store.read_feed(
+            scope=_EVERY_SESSION,
             after=(
                 feed[0].created,
                 feed[0].session_id,
@@ -1797,7 +1811,11 @@ class TestIntegrationEndToEnd:
 
         # ``tail`` returns the newest page (still oldest-first), so a backlog
         # does not force a replay from the beginning.
-        tail2 = await integ_store.read_feed(limit=2, tail=True)
+        tail2 = await integ_store.read_feed(
+            scope=_EVERY_SESSION,
+            limit=2,
+            tail=True,
+        )
         assert [f.actor for f in tail2] == ["eng", "scientist"]
 
     async def test_read_feed_composite_cursor_spans_created_ties(
@@ -1853,13 +1871,14 @@ class TestIntegrationEndToEnd:
                     sid,
                 )
 
-        page1 = await integ_store.read_feed(limit=1)
+        page1 = await integ_store.read_feed(scope=_EVERY_SESSION, limit=1)
         assert len(page1) == 1
         first = page1[0]
         assert first.created == tie
         # Resume past the first via the composite cursor; the tied second row
         # (same created, different session) must still be returned.
         page2 = await integ_store.read_feed(
+            scope=_EVERY_SESSION,
             after=(first.created, first.session_id, first.part, first.seq),
         )
         assert [f.session_id for f in page2] == [
@@ -1889,7 +1908,7 @@ class TestIntegrationEndToEnd:
         app.state.engine = integ_store.engine
         app.state.store = integ_store
         app.state.inbound = InboundQueue()
-        app.state.config = Config()
+        app.state.config = Config(chat_orgs="single")
         app.include_router(sessions_routes.router)
 
         async def _identity() -> object:

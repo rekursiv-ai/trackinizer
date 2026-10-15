@@ -29,6 +29,8 @@
 .chat-partner { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin-right: auto; }
 .chat-partner strong { font-size: 14px; font-weight: 600; }
 .chat-partner-note { color: var(--muted); font-size: 12px; }
+/* A chat its starter hid, or one made staff only. */
+.chat-badge { padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font-size: 11px; line-height: 18px; }
 .chat-head-actions { display: flex; align-items: center; gap: 4px; }
 .chat-head-actions .btn:disabled { opacity: .5; }
 /* A header pop-over opens away from the screen's edge Chat stands at: leftwards from Chat at the

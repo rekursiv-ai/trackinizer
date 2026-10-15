@@ -1,8 +1,9 @@
-"""A science chat is written only by the key that opened it.
+"""A science chat is written only by the key that opened it, and read by its members.
 
-A session is read, written and drained by the key that opened it and by a caller
-whose audiences hold its own; the assistant may also send it input, for a user who may
-write there.
+A session is read, written and drained by the key that opened it and by a caller the
+transcript test lets read it; the assistant may also send input to a session for a
+user who may write there, read a session for a user into their chat, and read a chat
+by its audience.
 """
 
 from __future__ import annotations
@@ -46,14 +47,18 @@ from trackinizer.server.api.session_access import (
     require_row_purge,
     require_session_access,
     resolve_asker,
+    session_reader,
 )
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, Role
-from trackinizer.server.config import Assistant, Config
+from trackinizer.server.config import Assistant, ChatOrgs, Config
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.types.inquiries import AgentSession
+from trackinizer.wire.audience import AUDIENCES
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from unittest.mock import AsyncMock
 
     from fastapi import Request
@@ -330,12 +335,16 @@ async def test_a_session_that_is_not_a_chat_stays_shared(
 
 _OPENER = uuid.uuid4()
 _MODES: tuple[SessionAccess, ...] = ("read", "write", "drain", "input")
+_SCOUT: Final = Assistant(actor="scout", email="scout@example.com")
+_CHAT: Final = uuid.UUID("55555555-5555-5555-5555-555555555555")
+_FIRST: Final = uuid.UUID("66666666-6666-6666-6666-666666666666")
 
 
 def _caller(
     *read: str,
     key: uuid.UUID | None = None,
     email: str = "caller@example.com",
+    hosted_domain: str | None = None,
 ) -> AuthIdentity:
     return AuthIdentity(
         user_id=uuid.uuid4(),
@@ -343,6 +352,7 @@ def _caller(
         email=email,
         role="writer",
         read_audiences=frozenset(read),
+        hosted_domain=hosted_domain,
     )
 
 
@@ -351,29 +361,63 @@ def _asker(
     role: Role = "writer",
     email: str = "asker@example.com",
 ) -> Asker:
-    """Return a user the assistant sends for, holding ``read`` as a person."""
+    """Return a user the assistant acts for, holding ``read`` as a person."""
     return Asker(email=email, role=role, read_audiences=frozenset(read))
 
 
-def _refused(
+# Each answer is one ``fetchval``'s, in order: whether a reader reads a session, and for
+# a read for an asker the chat's first session between them. The check must ask each,
+# and no more.
+async def _refusal(
     caller: AuthIdentity,
     session: AgentSession,
     mode: SessionAccess,
     *,
     assistant: Assistant | None = None,
     asker: Asker | None = None,
-) -> bool:
+    chat: uuid.UUID | None = None,
+    answers: Sequence[object] = (),
+) -> HTTPException | None:
+    """Ask the check with ``assistant`` configured; the database answers ``answers``."""
+    conn = make_conn()
+    conn.fetchval.side_effect = list(answers)
+    store, _engine = make_store(conn)
+    state = SimpleNamespace(store=store, config=Config(assistant=assistant))
+    request = cast("Request", SimpleNamespace(app=SimpleNamespace(state=state)))
     refusal: HTTPException | None = None
     try:
-        require_session_access(
+        await require_session_access(
+            request,
             caller,
             session=session,
             mode=mode,
-            assistant=assistant,
             asker=asker,
+            chat=chat,
         )
     except HTTPException as error:
         refusal = error
+    assert conn.fetchval.await_count == len(answers)
+    return refusal
+
+
+async def _refused(
+    caller: AuthIdentity,
+    session: AgentSession,
+    mode: SessionAccess,
+    *,
+    assistant: Assistant | None = None,
+    asker: Asker | None = None,
+    answers: Sequence[object] = (),
+) -> bool:
+    """Say whether the check refuses; a refusal names the session's audience."""
+    refusal = await _refusal(
+        caller,
+        session,
+        mode,
+        assistant=assistant,
+        asker=asker,
+        answers=answers,
+    )
     if refusal is None:
         return False
     assert (refusal.status_code, refusal.detail) == (
@@ -384,173 +428,387 @@ def _refused(
 
 
 class TestRequireSessionAccess:
-    """Who may do what to a session of a given audience, with no database."""
+    """Whether the check asks the database, and what it makes of the answer."""
 
-    def test_a_reader_of_the_audience_may_do_everything_but_nobody_else(self) -> None:
-        session = AgentSession(audience="staff")
-
-        held = [_refused(_caller("open", "staff"), session, mode) for mode in _MODES]
-        lacking = [_refused(_caller("open"), session, mode) for mode in _MODES]
-
-        assert held == [False] * 4
-        assert lacking == [True] * 4
-
-    def test_the_opening_key_passes_every_mode_without_holding_the_audience(
+    @pytest.mark.asyncio
+    async def test_a_caller_the_database_says_reads_it_may_do_everything(
         self,
     ) -> None:
+        session = AgentSession(audience="staff")
+
+        reads = [await _refused(_caller(), session, m, answers=[True]) for m in _MODES]
+        not_ = [await _refused(_caller(), session, m, answers=[False]) for m in _MODES]
+
+        assert reads == [False] * 4
+        assert not_ == [True] * 4
+
+    @pytest.mark.asyncio
+    async def test_the_opening_key_passes_every_mode_without_asking(self) -> None:
         session = AgentSession(audience="staff", opened_by_api_key_id=_OPENER)
+        opener = _caller("open", key=_OPENER)
 
-        assert [_refused(_caller("open", key=_OPENER), session, m) for m in _MODES] == [
-            False,
-        ] * 4
+        assert [await _refused(opener, session, m) for m in _MODES] == [False] * 4
 
-    def test_another_key_does_not_pass_as_the_opener(self) -> None:
+    @pytest.mark.asyncio
+    async def test_another_key_does_not_pass_as_the_opener(self) -> None:
         session = AgentSession(audience="staff", opened_by_api_key_id=_OPENER)
+        other = _caller("open", key=uuid.uuid4())
 
-        assert _refused(_caller("open", key=uuid.uuid4()), session, "read")
+        assert await _refused(other, session, "read", answers=[False])
 
-    def test_no_key_never_matches_a_session_with_no_opening_key(self) -> None:
+    @pytest.mark.asyncio
+    async def test_no_key_never_matches_a_session_with_no_opening_key(self) -> None:
         """A browser has no key, and ``--no-auth`` sessions have no opener."""
         session = AgentSession(audience="staff", opened_by_api_key_id=None)
 
-        assert _refused(_caller("open", key=None), session, "write")
+        assert await _refused(
+            _caller("open", key=None),
+            session,
+            "write",
+            answers=[False],
+        )
 
-    def test_the_assistant_may_send_input_to_a_session_it_cannot_read_for_an_asker(
+    @pytest.mark.asyncio
+    async def test_the_assistant_reads_a_chat_it_opened_by_its_audience_and_no_other(
         self,
     ) -> None:
-        session = AgentSession(audience="staff")
-        assistant = Assistant(actor="scout", email="scout@example.com")
-        scout = _caller("open", email="scout@example.com")
-        asker = _asker("open", "staff")
+        """A hidden chat a person's own key opened is the transcript test's to answer."""
+        chat = AgentSession(
+            audience="open",
+            cli_session_id="chat:conversation",
+            opened_by_api_key_id=_OPENER,
+        )
+        scout = _caller("open", "private", email="scout@example.com")
 
-        by_mode = {
-            mode: _refused(scout, session, mode, assistant=assistant, asker=asker)
-            for mode in _MODES
-        }
+        read = await _refused(
+            scout,
+            chat,
+            "read",
+            assistant=_SCOUT,
+            answers=["Scout@example.com"],
+        )
+        theirs = await _refused(
+            scout,
+            replace(chat, audience="private"),
+            "read",
+            assistant=_SCOUT,
+            answers=["ann@lab.example", False],
+        )
+        written = await _refused(
+            scout,
+            chat,
+            "write",
+            assistant=_SCOUT,
+            answers=[False],
+        )
+        hidden = await _refused(
+            scout,
+            replace(chat, audience="staff"),
+            "read",
+            assistant=_SCOUT,
+            answers=[False],
+        )
 
-        assert by_mode == {
-            "read": True,
-            "write": True,
-            "drain": True,
-            "input": False,
-        }
-        assert _refused(_caller("open"), session, "input", assistant=assistant)
-        assert _refused(scout, session, "input", assistant=None, asker=asker)
-
-    def test_a_session_with_no_audience_is_hidden_from_everyone_but_its_opener(
-        self,
-    ) -> None:
-        """Failing closed: a row that lost its audience is not read as open."""
-        session = AgentSession(audience=None, opened_by_api_key_id=_OPENER)
-
-        assert _refused(_caller("open", "staff"), session, "read")
-        assert not _refused(_caller("open", key=_OPENER), session, "read")
+        assert (read, theirs, written, hidden) == (False, True, True, True)
 
 
-_SCOUT: Final = Assistant(actor="scout", email="scout@example.com")
+@pytest.mark.parametrize(
+    ("orgs", "email", "hosted_domain", "org", "every_chat", "oversight"),
+    [
+        ("domain", "Ann@Lab.Example", "Lab.example", "lab.example", False, True),
+        ("domain", "Ann@Lab.Example", None, None, False, True),
+        ("domain", "sam@gmail.com", None, None, False, True),
+        ("domain", "agent@service.invalid", "service.invalid", None, False, False),
+        ("domain", "scout@example.com", "example.com", None, False, False),
+        ("single", "Ann@Lab.Example", "lab.example", None, True, True),
+        ("single", "agent@service.invalid", None, None, False, False),
+        ("single", "scout@example.com", None, None, True, False),
+        ("individual", "Ann@Lab.Example", "lab.example", None, False, True),
+        ("individual", "scout@example.com", None, None, False, False),
+    ],
+)
+def test_session_reader_follows_the_chat_orgs_setting(
+    orgs: ChatOrgs,
+    *,
+    email: str,
+    hosted_domain: str | None,
+    org: str | None,
+    every_chat: bool,
+    oversight: bool,
+) -> None:
+    """Only a person has an organisation, which Google's hd claim names, and oversees.
+
+    One server reads every session.
+    """
+    state = SimpleNamespace(config=Config(assistant=_SCOUT, chat_orgs=orgs))
+    request = cast("Request", SimpleNamespace(app=SimpleNamespace(state=state)))
+
+    reader = session_reader(
+        request,
+        _caller("open", "staff", email=email, hosted_domain=hosted_domain),
+    )
+    listing = session_reader(request, _caller("open", email=email), hidden=False)
+
+    assert reader == SessionReader(
+        audiences=frozenset({"open", "staff"}),
+        email=email.lower(),
+        org=org,
+        every_session=orgs == "single",
+        every_chat=every_chat,
+        oversight=oversight,
+        assistant=_SCOUT.email,
+    )
+    assert (listing.hidden, listing.oversight) == (False, False)
+
+
+def test_without_auth_the_one_caller_reads_every_session_and_open_chat() -> None:
+    state = SimpleNamespace(config=Config(auth_disabled=True, chat_orgs="individual"))
+    request = cast("Request", SimpleNamespace(app=SimpleNamespace(state=state)))
+
+    reader = session_reader(request, _caller(email="no-auth@localhost"))
+
+    assert reader == SessionReader(
+        audiences=AUDIENCES,
+        email="no-auth@localhost",
+        every_session=True,
+        every_chat=True,
+        oversight=True,
+    )
 
 
 class TestTheAssistantsAsker:
     """The assistant reaches a session it cannot read only for a user who may write there.
 
     It sends a line for a signed-in user, so it passes on that user's rights and none
-    of its own: the user is the session's account, or holds the session's audience, and
-    can write as a person.
+    of its own: the user is the session's account, or reads the session, and can write
+    as a person.
     """
 
     _session = AgentSession(audience="staff", account="owner@example.com")
     _scout = _caller("open", email="scout@example.com")
 
-    def _refused_for(
+    async def _refused_for(
         self,
         asker: Asker | None,
         *,
+        answers: Sequence[object],
         session: AgentSession | None = None,
     ) -> bool:
-        return _refused(
+        return await _refused(
             self._scout,
             session or self._session,
             "input",
             assistant=_SCOUT,
             asker=asker,
+            answers=answers,
         )
 
-    def test_it_relays_for_an_asker_who_holds_the_audience(self) -> None:
-        assert not self._refused_for(_asker("open", "staff"))
+    @pytest.mark.asyncio
+    async def test_it_relays_for_an_asker_who_reads_the_session(self) -> None:
+        assert not await self._refused_for(
+            _asker("open", "staff"),
+            answers=[False, True],
+        )
 
-    def test_it_relays_for_the_user_whose_session_it_is(self) -> None:
+    @pytest.mark.asyncio
+    async def test_it_relays_for_the_user_whose_session_it_is_without_asking(
+        self,
+    ) -> None:
         """A tester steers the campaign attributed to them, though it is staff's to read."""
         asker = _asker("open", email="owner@example.com")
 
-        assert not self._refused_for(asker)
+        assert not await self._refused_for(asker, answers=[False])
 
-    def test_it_refuses_an_asker_who_neither_holds_the_audience_nor_owns_the_session(
+    @pytest.mark.asyncio
+    async def test_it_refuses_an_asker_who_neither_reads_nor_owns_the_session(
         self,
     ) -> None:
-        assert self._refused_for(_asker("open", email="stranger@example.com"))
+        stranger = _asker("open", email="stranger@example.com")
 
-    def test_it_refuses_a_send_that_names_no_asker(self) -> None:
-        assert self._refused_for(None)
+        assert await self._refused_for(stranger, answers=[False, False])
+
+    @pytest.mark.asyncio
+    async def test_it_refuses_a_send_that_names_no_asker(self) -> None:
+        assert await self._refused_for(None, answers=[False])
 
     @pytest.mark.parametrize(
         "asker",
         [
-            pytest.param(_asker("open", "staff", role="viewer"), id="holds staff"),
+            pytest.param(_asker("open", "staff", role="viewer"), id="reads it"),
             pytest.param(
                 _asker("open", role="viewer", email="owner@example.com"),
                 id="owns it",
             ),
         ],
     )
-    def test_it_refuses_an_asker_who_may_not_write(self, asker: Asker) -> None:
-        assert self._refused_for(asker)
+    @pytest.mark.asyncio
+    async def test_it_refuses_an_asker_who_may_not_write(self, asker: Asker) -> None:
+        assert await self._refused_for(asker, answers=[False])
 
     @pytest.mark.parametrize("role", ["writer", "admin"])
-    def test_a_writer_or_an_admin_asker_may_write(self, role: Role) -> None:
-        assert not self._refused_for(_asker("open", "staff", role=role))
+    @pytest.mark.asyncio
+    async def test_a_writer_or_an_admin_asker_may_write(self, role: Role) -> None:
+        asker = _asker("open", "staff", role=role)
 
-    def test_a_session_with_no_audience_is_still_the_owners_to_steer(self) -> None:
-        """The account rule needs no audience: the user's own session is theirs."""
-        session = AgentSession(audience=None, account="owner@example.com")
+        assert not await self._refused_for(asker, answers=[False, True])
 
-        assert not self._refused_for(
-            _asker("open", email="owner@example.com"),
-            session=session,
-        )
-        assert self._refused_for(_asker("open", "staff"), session=session)
-
-    def test_an_asker_lends_its_rights_to_no_sender_but_the_assistant(self) -> None:
+    @pytest.mark.asyncio
+    async def test_an_asker_lends_its_rights_to_no_sender_but_the_assistant(
+        self,
+    ) -> None:
         asker = _asker("open", "staff")
 
-        assert _refused(
+        assert await _refused(
             _caller("open", email="other@example.com"),
             self._session,
             "input",
             assistant=_SCOUT,
             asker=asker,
+            answers=[False],
         )
 
-    def test_an_asker_opens_no_other_mode_of_the_session(self) -> None:
+    @pytest.mark.asyncio
+    async def test_an_asker_opens_neither_a_write_nor_a_drain(self) -> None:
+        """A read for an asker is ``TestTheAssistantReadsForAnAsker``'s."""
         asker = _asker("open", "staff")
 
         refused = [
-            _refused(self._scout, self._session, mode, assistant=_SCOUT, asker=asker)
-            for mode in ("read", "write", "drain")
+            await _refused(
+                self._scout,
+                self._session,
+                mode,
+                assistant=_SCOUT,
+                asker=asker,
+                answers=[False],
+            )
+            for mode in ("write", "drain")
         ]
 
-        assert refused == [True] * 3
+        assert refused == [True] * 2
 
     @pytest.mark.parametrize("audience", ["open", "staff"])
-    def test_a_session_the_assistant_reads_needs_no_asker(self, audience: str) -> None:
+    @pytest.mark.asyncio
+    async def test_a_session_the_assistant_reads_needs_no_asker(
+        self,
+        audience: str,
+    ) -> None:
         """The assistant is then a writer like another, and asks no one's leave."""
         reading = _caller("open", "staff", email="scout@example.com")
 
-        assert not _refused(
+        assert not await _refused(
             reading,
             AgentSession(audience=audience),
             "input",
             assistant=_SCOUT,
+            answers=[True],
         )
+
+
+class TestTheAssistantReadsForAnAsker:
+    """The assistant reads a session for a user into their chat, as they could read it.
+
+    The database says whether the user reads the session and the chat's first session;
+    a ``staff`` session is the pglite tests', which make its chat staff-only.
+    """
+
+    _session = AgentSession(audience="open", account="owner@example.com")
+    _scout = _caller("open", "staff", email="scout@example.com")
+
+    async def _read_for(
+        self,
+        asker: Asker | None,
+        *,
+        session: AgentSession | None = None,
+        chat: uuid.UUID | None = _CHAT,
+        answers: Sequence[object] = (),
+    ) -> HTTPException | None:
+        return await _refusal(
+            self._scout,
+            session or self._session,
+            "read",
+            assistant=_SCOUT,
+            asker=asker,
+            chat=chat,
+            answers=answers,
+        )
+
+    @pytest.mark.asyncio
+    async def test_it_reads_for_an_asker_who_reads_the_session_and_the_chat(
+        self,
+    ) -> None:
+        refusal = await self._read_for(_asker("open"), answers=[True, _FIRST, True])
+
+        assert refusal is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("asker", "session"),
+        [
+            (_asker(), AgentSession(audience="open")),
+            (_asker("open"), AgentSession(audience="open", cli_session_id="chat:x")),
+            (_asker("open", "staff"), AgentSession(audience="private")),
+        ],
+        ids=["an unknown asker", "a chat", "a private session"],
+    )
+    async def test_it_reads_nothing_for_that_asker_and_asks_nothing(
+        self,
+        asker: Asker,
+        session: AgentSession,
+    ) -> None:
+        refusal = await self._read_for(asker, session=session)
+
+        assert refusal is not None
+        assert (refusal.status_code, refusal.detail) == (
+            403,
+            {"code": "session_audience", "audience": session.audience},
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_read_for_an_asker_names_the_chat(self) -> None:
+        refusal = await self._read_for(_asker("open"), chat=None)
+
+        assert refusal is not None
+        assert (refusal.status_code, refusal.detail) == (422, {"code": "chat_required"})
+
+    @pytest.mark.asyncio
+    async def test_it_is_refused_a_session_the_asker_does_not_read(self) -> None:
+        refusal = await self._read_for(_asker("open"), answers=[False])
+
+        assert refusal is not None
+        assert refusal.detail == {"code": "session_audience", "audience": "open"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "answers",
+        [[True, None], [True, _FIRST, False]],
+        ids=["no such chat", "not the askers"],
+    )
+    async def test_it_is_refused_outside_the_askers_chat(
+        self,
+        answers: list[object],
+    ) -> None:
+        refusal = await self._read_for(_asker("open"), answers=answers)
+
+        assert refusal is not None
+        assert (refusal.status_code, refusal.detail) == (
+            403,
+            {"code": "chat_not_member"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_asker_lends_nothing_to_a_reader_but_the_assistant(self) -> None:
+        other = _caller("open", email="other@example.com")
+        refusal = await _refusal(
+            other,
+            self._session,
+            "read",
+            assistant=_SCOUT,
+            asker=_asker("open", "staff"),
+            chat=_CHAT,
+            answers=[False],
+        )
+
+        assert refusal is not None
 
 
 _USER_SQL: Final = (
@@ -599,7 +857,7 @@ class TestResolveAsker:
         assert asker == Asker(
             email="wes@open.example",
             role="writer",
-            read_audiences=frozenset({"open"}),
+            read_audiences=frozenset({"open", "private"}),
         )
         assert conn.fetchrow.await_args is not None
         assert conn.fetchrow.await_args.args == (_USER_SQL, "wes@open.example")
@@ -608,9 +866,9 @@ class TestResolveAsker:
     @pytest.mark.parametrize(
         ("hosted_domain", "read"),
         [
-            ("staff.example", {"open", "staff"}),
-            ("other.example", {"open"}),
-            (None, {"open"}),
+            ("staff.example", {"open", "private", "staff"}),
+            ("other.example", {"open", "private"}),
+            (None, {"open", "private"}),
         ],
     )
     async def test_it_gives_the_asker_the_audiences_a_person_with_that_account_holds(
@@ -638,20 +896,28 @@ class TestResolveAsker:
             email="lee@staff.example",
             role="admin",
             read_audiences=frozenset(read),
+            hosted_domain=hosted_domain,
         )
 
     @pytest.mark.asyncio
-    async def test_an_account_the_server_does_not_hold_active_is_no_asker(self) -> None:
+    async def test_an_account_the_server_does_not_hold_active_is_an_asker_with_nothing(
+        self,
+    ) -> None:
+        """Named, it stands in for the assistant's own read; held, it gives nothing."""
         conn = make_conn()
         set_field_row(conn, None)
 
         asker = await resolve_asker(
             self._asked(conn),
             self._sender("scout@example.com"),
-            email="gone@open.example",
+            email="Gone@open.example",
         )
 
-        assert asker is None
+        assert asker == Asker(
+            email="gone@open.example",
+            role="viewer",
+            read_audiences=frozenset(),
+        )
 
     @pytest.mark.asyncio
     async def test_it_asks_nothing_when_no_account_is_named(self) -> None:
@@ -775,6 +1041,31 @@ class TestGrantedAudience:
             _ = granted_audience(_opener(None))
 
         assert refused.value.detail == {"code": "audience_not_held", "audience": "open"}
+
+    @pytest.mark.parametrize(
+        ("pin", "opens", "granted"),
+        [
+            (None, ("open", "private", "staff"), "private"),
+            ("open", ("open",), "private"),
+            ("private", ("private",), "private"),
+        ],
+        ids=["unpinned", "pinned open", "pinned private"],
+    )
+    def test_private_narrows_open_and_never_staff(
+        self,
+        pin: str | None,
+        opens: tuple[str, ...],
+        granted: str,
+    ) -> None:
+        """Hiding only narrows, so a key that opens ``open`` may open hidden."""
+        assert granted_audience(_opener(pin, *opens), private=True) == granted
+        with pytest.raises(HTTPException) as refused:
+            _ = granted_audience(_opener("staff", "staff"), private=True)
+
+        assert refused.value.detail == {
+            "code": "audience_not_held",
+            "audience": "private",
+        }
 
 
 class TestRequireAttributable:

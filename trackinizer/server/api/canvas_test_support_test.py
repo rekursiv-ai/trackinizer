@@ -66,12 +66,14 @@ def test_a_browser_acts_with_no_key(installed: list[AuthIdentity]) -> None:
             api_key_id=None,
             email=TEST_USER_EMAIL,
             role="writer",
+            hosted_domain="example.com",
         ),
         AuthIdentity(
             user_id=OTHER_USER_ID,
             api_key_id=None,
             email=OTHER_EMAIL,
             role="writer",
+            hosted_domain="example.com",
         ),
     ]
 
@@ -91,30 +93,35 @@ def test_each_agent_acts_through_its_own_key_as_a_viewer_unless_told(
             api_key_id=TEST_API_KEY_ID,
             email=TEST_USER_EMAIL,
             role="viewer",
+            hosted_domain="example.com",
         ),
         AuthIdentity(
             user_id=OTHER_USER_ID,
             api_key_id=OTHER_KEY_ID,
             email=OTHER_EMAIL,
             role="viewer",
+            hosted_domain="example.com",
         ),
         AuthIdentity(
             user_id=OTHER_USER_ID,
             api_key_id=OTHER_KEY_ID,
             email=OTHER_EMAIL,
             role="writer",
+            hosted_domain="example.com",
         ),
         AuthIdentity(
             user_id=KB_USER_ID,
             api_key_id=KB_KEY_ID,
             email=KB_EMAIL,
             role="viewer",
+            hosted_domain="example.com",
         ),
         AuthIdentity(
             user_id=KB_USER_ID,
             api_key_id=KB_KEY_ID,
             email=KB_EMAIL,
             role="admin",
+            hosted_domain="example.com",
         ),
     ]
 
@@ -220,6 +227,7 @@ def test_a_canvas_is_opened_by_its_user_as_a_browser(
             api_key_id=None,
             email=OTHER_EMAIL,
             role="writer",
+            hosted_domain="example.com",
         ),
     ]
     server.answers[("POST", "/api/workspaces")] = (403, {})

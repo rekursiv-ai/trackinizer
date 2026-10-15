@@ -94,6 +94,43 @@ test("the keyboard inside the opened Chat holds it open until it leaves", async 
   await expect(column).toBeHidden();
 });
 
+test("the opened Chat lies over the folded sidebar rail, so no rail icon shows through it", async ({ page }) => {
+  const { column, strip } = await open(page);
+  await expect(page.locator(".app")).toHaveClass(/sidebar-collapsed/);
+  await pushChat(page, true);
+  await strip.hover();
+  await expect(column).toBeVisible();
+  const rail = await box(page.locator(".sidebar-dock"));
+  const columnBox = await box(column);
+  expect(columnBox.x + columnBox.width).toBeGreaterThan(rail.x + rail.width);
+  // Down the middle of the rail, every point is Chat's.
+  const owners = await page.evaluate(({ x, top, bottom }) => {
+    const found: string[] = [];
+    for (let y = top + 20; y < bottom - 20; y += 40) {
+      const at = document.elementFromPoint(x, y);
+      found.push(at?.closest(".chat-column") ? "chat" : at?.closest(".sidebar-dock") ? "rail" : "other");
+    }
+    return found;
+  }, { x: rail.x + rail.width / 2, top: rail.y, bottom: rail.y + rail.height });
+  expect(new Set(owners)).toEqual(new Set(["chat"]));
+});
+
+test("a click anywhere in the opened Chat pins it beside the workbench, and it stays when the pointer leaves", async ({ page }) => {
+  const { column, stage, strip } = await open(page);
+  const beside = await box(stage);
+  await pushChat(page, true);
+  await strip.hover();
+  await expect(column).toBeVisible();
+  const opened = await box(column);
+  await page.mouse.click(opened.x + opened.width / 2, opened.y + opened.height / 2);
+  await leave(page);
+  await page.waitForTimeout(500);
+  await expect(column).toBeVisible();
+  await expect(column).not.toHaveClass(/chat-column-peek/);
+  await expect(strip).toHaveCount(0);
+  expect(await box(stage)).toEqual(beside);
+});
+
 test("a hidden Chat shown by the hide key or the strip is a column; a hide key press hides it again", async ({ page }) => {
   const { column, strip } = await open(page);
   await pushChat(page, true);

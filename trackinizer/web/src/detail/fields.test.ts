@@ -17,6 +17,7 @@ test("an Issue's fields come from the schema, in the detail's order and places",
     ["account", "details"],
     ["marginal_cost_agent_usd", "details"],
     ["marginal_cost_resource_usd", "details"],
+    ["app", "json"],
   ]);
   expect(fields.find((field) => field.name === "priority")?.route?.path).toBe("/api/issue/{target_id}/priority");
 });

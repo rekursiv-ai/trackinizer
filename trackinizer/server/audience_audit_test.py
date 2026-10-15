@@ -118,8 +118,9 @@ _ENFORCED_AGGREGATES: Final = frozenset(
         # ``list_kind`` not to keep hidden sessions out of the rows it meets.
         ("wire/column_shapes.py", "_RECORDS_WHERE"),
         # Not an aggregate but a probe of one transcript: whether a fork point is a
-        # line. Its yes or no was the answer to a question about a hidden session.
-        ("server/visuals/science_chats.py", "_LINE"),
+        # line. Its yes or no was the answer to a question about a hidden session,
+        # and a yes let the assistant copy that session's lines into a fork.
+        ("server/visuals/science_chats.py", "science_chat_exists_at"),
         # Whether anyone but a chat's starter posted in it, which lets the starter
         # delete it: read only off the sessions the caller reads, a hidden one
         # counting as someone else's.

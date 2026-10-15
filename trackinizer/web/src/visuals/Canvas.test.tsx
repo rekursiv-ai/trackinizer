@@ -119,26 +119,87 @@ test("the canvas does not read at mount, nor on a timer, nor when its tab comes 
   expect(getWorkspace).not.toHaveBeenCalled();
 });
 
-test("the page cannot be dismissed, and the Workbench section cannot hide it", async () => {
-  vi.mocked(getVisualCatalog).mockResolvedValue({
-    default_visual: "trax.browse",
-    visuals: [
-      { type: "trax.browse", version: 1, title: "Browse", description: "Browse records", default_size: "wide", requires: [], parameter_schema: {} },
-      { type: "test.note", version: 1, title: "Note", description: "A visual no renderer draws", default_size: "compact", requires: [], parameter_schema: {} },
-    ],
-  });
-  const withNote: WorkspaceState = { ...workspace, visuals: [{ ...workspace.visuals[0]!, placement: "main" },
-    { id: "note-instance", type: "test.note", version: 1, placement: "side", record_id: null, params: {} }] };
+const CATALOG_WITH_NOTE = {
+  default_visual: "trax.browse",
+  visuals: [
+    { type: "trax.browse", version: 1, title: "Browse", description: "Browse records", default_size: "wide" as const, requires: [], parameter_schema: {} },
+    { type: "test.note", version: 1, title: "Note", description: "A visual no renderer draws", default_size: "compact" as const, requires: [], parameter_schema: {} },
+  ],
+};
+
+/** The page and a note, or the note alone once the page is closed. */
+function pageAndNote(withPage: boolean): WorkspaceState {
+  const note = { id: "note-instance", type: "test.note", version: 1, placement: "side" as const, record_id: null, params: {} };
+  return { ...workspace, visuals: withPage ? [{ ...workspace.visuals[0]!, placement: "main" }, note] : [note] };
+}
+
+test("the page has the close control the other tiles have, and closing it hides the page", async () => {
+  vi.mocked(getVisualCatalog).mockResolvedValue(CATALOG_WITH_NOTE);
+  const withNote = pageAndNote(true);
   vi.mocked(createDefaultWorkspace).mockResolvedValue(withNote);
   vi.mocked(getWorkspace).mockResolvedValue(withNote);
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...withNote, revision: 4, visuals: [withNote.visuals[1]!] });
   render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   await screen.findAllByTitle("Dismiss visual");
   const tiles = [...document.querySelectorAll<HTMLElement>(".visual-tile")];
   expect(tiles).toHaveLength(2);
-  const dismissals = tiles.map((tile) => within(tile).queryAllByTitle("Dismiss visual").length);
-  expect(dismissals).toEqual([0, 1]);
-  expect(screen.getByRole("checkbox", { name: /Browse/ })).toHaveProperty("disabled", true);
-  expect(screen.getByRole("checkbox", { name: /Note/ })).toHaveProperty("disabled", false);
+  expect(tiles.map((tile) => within(tile).queryAllByTitle("Dismiss visual").length)).toEqual([1, 1]);
+  expect(screen.getByRole("checkbox", { name: /Browse/ })).toHaveProperty("disabled", false);
+  expect(screen.getByRole("checkbox", { name: /Browse/ })).toHaveProperty("checked", true);
+
+  fireEvent.click(within(tiles[0]!).getByTitle("Dismiss visual"));
+
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+    withNote.id, withNote.revision, { kind: "hide", instance_id: withNote.visuals[0]!.id }, expect.any(String)), { interval: 1 });
+  await waitFor(() => expect(document.querySelector(".visual-main-strip")).toBeNull(), { interval: 1 });
+  // The press on the close button is not also a click on the bar, which would focus a tile that is gone.
+  expect(applyWorkspaceOperation).toHaveBeenCalledTimes(1);
+});
+
+test("with the page closed, the Workbench section offers it unchecked and checking it shows the page in the main strip", async () => {
+  vi.mocked(getVisualCatalog).mockResolvedValue(CATALOG_WITH_NOTE);
+  const closed = pageAndNote(false);
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(closed);
+  vi.mocked(getWorkspace).mockResolvedValue(closed);
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...pageAndNote(true), revision: 4 });
+  render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
+  const option = await screen.findByRole("checkbox", { name: /Browse/ });
+  await waitFor(() => expect(option).toHaveProperty("disabled", false), { interval: 1 });
+  expect(option).toHaveProperty("checked", false);
+  expect(screen.queryByText("Browse content")).toBeNull();
+
+  fireEvent.click(option);
+
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+    closed.id, closed.revision, { kind: "show", visual_type: "trax.browse", placement: "main" }, expect.any(String)), { interval: 1 });
+  expect(await screen.findByText("Browse content")).toBeTruthy();
+});
+
+/** Move the address as the router does: a replaced entry and one hashchange. */
+function userNavigates(hash: string) {
+  act(() => {
+    history.replaceState(null, "", hash);
+    dispatchEvent(new HashChangeEvent("hashchange"));
+  });
+}
+
+test("with the page closed, the user's own navigation shows it again; with it open, a navigation writes nothing", async () => {
+  vi.mocked(getVisualCatalog).mockResolvedValue(CATALOG_WITH_NOTE);
+  const closed = pageAndNote(false);
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(closed);
+  vi.mocked(getWorkspace).mockResolvedValue(closed);
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...pageAndNote(true), revision: 4 });
+  render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
+  await waitFor(() => expect(document.querySelector('[data-visual-type="test.note"]')).not.toBeNull(), { interval: 1 });
+  expect(applyWorkspaceOperation).not.toHaveBeenCalled();
+
+  userNavigates("#/list/Issue");
+
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+    closed.id, closed.revision, { kind: "show", visual_type: "trax.browse", placement: "main" }, expect.any(String)), { interval: 1 });
+  await waitFor(() => expect(document.querySelector(".visual-main-strip")).not.toBeNull(), { interval: 1 });
+  userNavigates("#/list/Belief");
+  expect(applyWorkspaceOperation).toHaveBeenCalledTimes(1);
 });
 
 test("a view that crashes inside the canvas gets the crash screen with Copy details and Reload, and clears when the page moves", async () => {

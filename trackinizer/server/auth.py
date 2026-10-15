@@ -43,7 +43,7 @@ from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.audience import audiences_for, key_audiences
 from trackinizer.server.notify import tx
 from trackinizer.server.session import read_session_cookie
-from trackinizer.wire.audience import OPEN, STAFF
+from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE
 from trackinizer.wire.wire_machine_host import (
     CREDENTIAL_PREFIX,
     ENROLLMENT_PREFIX,
@@ -204,6 +204,9 @@ class AuthIdentity:
         key's pin when the owner still holds it.
       pinned_audience: The audience the key is pinned to open into, or ``None``. A pin
         the owner no longer holds leaves ``open_audiences`` empty.
+      hosted_domain: Google's ``hd`` claim from the principal's last login, which
+        makes them a member of their email domain's organisation; ``None`` for
+        none.
 
     """
 
@@ -211,9 +214,10 @@ class AuthIdentity:
     api_key_id: uuid.UUID | None
     email: str
     role: Role
-    read_audiences: frozenset[str] = frozenset({OPEN})
-    open_audiences: frozenset[str] = frozenset({OPEN})
+    read_audiences: frozenset[str] = frozenset({OPEN, PRIVATE})
+    open_audiences: frozenset[str] = frozenset({OPEN, PRIVATE})
     pinned_audience: str | None = None
+    hosted_domain: str | None = None
 
 
 def hash_secret(secret: str) -> str:
@@ -338,8 +342,8 @@ async def current_user(request: Request) -> AuthIdentity:
             api_key_id=None,
             email=_NO_AUTH_EMAIL,
             role="admin",
-            read_audiences=frozenset({OPEN, STAFF}),
-            open_audiences=frozenset({OPEN, STAFF}),
+            read_audiences=AUDIENCES,
+            open_audiences=AUDIENCES,
         )
     # Unset staff patterns, or a test that skipped the lifespan, make nobody staff.
     staff = () if config is None else config.staff
@@ -790,11 +794,8 @@ async def lookup_user_by_id(
     email = row["email"]
     assert isinstance(row_id, uuid.UUID)
     assert isinstance(email, str)
-    owner = audiences_for(
-        email,
-        hosted_domain=cast("str | None", row["hosted_domain"]),
-        staff=staff,
-    )
+    hosted_domain = cast("str | None", row["hosted_domain"])
+    owner = audiences_for(email, hosted_domain=hosted_domain, staff=staff)
     return AuthIdentity(
         user_id=row_id,
         api_key_id=None,
@@ -802,6 +803,7 @@ async def lookup_user_by_id(
         role=cast(Role, row["role"]),
         read_audiences=owner,
         open_audiences=owner,
+        hosted_domain=hosted_domain,
     )
 
 
@@ -1112,12 +1114,9 @@ async def _resolve_identity(
             email = row["email"]
             assert isinstance(user_id, uuid.UUID)
             assert isinstance(email, str)
+            hosted_domain = cast("str | None", row["hosted_domain"])
             audiences = key_audiences(
-                audiences_for(
-                    email,
-                    hosted_domain=cast("str | None", row["hosted_domain"]),
-                    staff=staff,
-                ),
+                audiences_for(email, hosted_domain=hosted_domain, staff=staff),
                 open_into=cast("str | None", row["open_into"]),
             )
             identity = AuthIdentity(
@@ -1131,6 +1130,7 @@ async def _resolve_identity(
                 read_audiences=audiences.read,
                 open_audiences=audiences.opening,
                 pinned_audience=audiences.pinned,
+                hosted_domain=hosted_domain,
             )
             store.remember_bearer_identity(secret, identity)
             _log_auth_resolution(

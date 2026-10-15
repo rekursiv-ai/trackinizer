@@ -11,8 +11,9 @@ import uuid
 import pytest
 
 from trackinizer.conftest import FakeEngine, make_conn
+from trackinizer.server.audience import NOBODY, SessionReader, visible_sql
 from trackinizer.server.auth import AuthIdentity
-from trackinizer.server.config import Assistant, ChatOrgs
+from trackinizer.server.config import Assistant
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.visuals.science_chats import (
     chat_openers,
@@ -26,7 +27,7 @@ from trackinizer.server.visuals.science_chats import (
     science_chat_exists_at,
 )
 from trackinizer.types.errors import ChatDeletedError
-from trackinizer.wire.audience import OPEN
+from trackinizer.wire.audience import OPEN, PRIVATE
 from trackinizer.wire.wire_science_chat import (
     FORK_EDGE_LABEL,
     SCIENCE_CHAT_LABEL,
@@ -49,14 +50,16 @@ _SESSION: Final = uuid.UUID("33333333-3333-3333-3333-333333333333")
 _KEY: Final = uuid.UUID("44444444-4444-4444-4444-444444444444")
 _ASSISTANT: Final = Assistant(actor="scout", email="kb@example.com")
 _FIRST_SESSION: Final = (
-    "FROM inquiries AS sess JOIN api_keys AS credential "
-    "ON credential.id = sess.agentsession_opened_by_api_key_id "
-    "JOIN users AS opener ON opener.id = credential.user_id "
-    "WHERE sess.kind = 'AgentSession' AND sess.agentsession_cli_session_id = $1 "
-    "AND (opener.email = $2 OR lower(opener.email) = lower(sess.account)) "
-    "ORDER BY sess.created, sess.id LIMIT 1"
+    "FROM inquiries AS began JOIN api_keys AS began_key "
+    "ON began_key.id = began.agentsession_opened_by_api_key_id "
+    "JOIN users AS began_by ON began_by.id = began_key.user_id "
+    "WHERE began.kind = 'AgentSession' AND (began_by.email = $2 "
+    "OR lower(began_by.email) = lower(began.account)) "
+    "AND began.agentsession_cli_session_id = $1 "
+    "ORDER BY began.created, began.id LIMIT 1"
 )
-_STARTER_SQL: Final = "SELECT sess.account " + _FIRST_SESSION
+_STARTER_SQL: Final = "SELECT began.account " + _FIRST_SESSION
+_BEGINNING_SQL: Final = "SELECT began.id " + _FIRST_SESSION
 _TOMBSTONE_SQL: Final = (
     "SELECT EXISTS (SELECT 1 FROM science_chat_tombstones WHERE conversation_id = $1)"
 )
@@ -121,7 +124,7 @@ def test_a_chat_a_helper_began_is_asked_for_by_its_first_session(helper: bool) -
 
     assert began is helper
     conn.fetchval.assert_awaited_once_with(
-        "SELECT opener.email <> $2 " + _FIRST_SESSION,
+        "SELECT began_by.email <> $2 " + _FIRST_SESSION,
         chat_session_id(_CONVERSATION),
         "kb@example.com",
     )
@@ -160,26 +163,44 @@ def test_a_line_is_looked_for_in_the_session_part_and_position_the_fork_names() 
     conn.fetchval.return_value = True
     fork = ChatForkAt(session_id=_SESSION, part=2, idx=5)
 
+    reader = SessionReader(
+        audiences=frozenset({"staff", "open"}),
+        email="a@example.com",
+        org="example.com",
+        assistant="kb@example.com",
+    )
+
     found = asyncio.run(
         science_chat_exists_at(
             cast("Conn", conn),
             assistant=_ASSISTANT,
             email="a@example.com",
             fork=fork,
-            audiences=frozenset({"staff", "open"}),
+            reader=reader,
         ),
     )
 
     assert found is True
     assert conn.fetchval.await_args is not None
-    assert conn.fetchval.await_args.args[1:] == (
+    sql, *params = conn.fetchval.await_args.args
+    assert isinstance(sql, str)
+    assert params == [
         ["kb@example.com", "a@example.com"],
         SCIENCE_CHAT_LABEL,
         _SESSION,
         2,
         5,
         ["open", "staff"],
-    )
+        "a@example.com",
+        "example.com",
+        False,
+        False,
+        False,
+        True,
+        "kb@example.com",
+    ]
+    # The line is looked for only in a session the reader may read.
+    assert f"AS target WHERE target.id = $3 AND {_visible('target', reader)})" in sql
     conn.fetchval.return_value = None
     assert not asyncio.run(
         science_chat_exists_at(
@@ -187,7 +208,7 @@ def test_a_line_is_looked_for_in_the_session_part_and_position_the_fork_names() 
             assistant=None,
             email="a@example.com",
             fork=fork,
-            audiences=frozenset({"open"}),
+            reader=NOBODY,
         ),
     )
 
@@ -203,8 +224,10 @@ def _head(
     shares: tuple[str, ...] = (),
     opened: bool = False,
     others_posted: bool = False,
+    audience: str = OPEN,
+    reads: bool = True,
 ) -> None:
-    """Script a head's reads: its starter, sessions, forks, origin and shares."""
+    """Script a head's reads: its starter, sessions, forks, origin, shares, a read."""
     engine.conn.fetchrow.side_effect = None
     engine.conn.fetchrow.return_value = {
         "session_id": _SESSION,
@@ -213,11 +236,12 @@ def _head(
         "account": "first-heard@example.com",
         "modified": datetime(2026, 1, 1, tzinfo=UTC),
         "live": True,
+        "audience": audience,
         "sessions": [_SESSION],
         "opened": opened,
         "others_posted": others_posted,
     }
-    engine.conn.fetchval.side_effect = [starter, forks, origin]
+    engine.conn.fetchval.side_effect = [starter, forks, origin, reads]
     engine.conn.fetch.return_value = [{"email": email} for email in shares]
 
 
@@ -225,7 +249,6 @@ def _read(
     engine: FakeEngine,
     *,
     email: str,
-    orgs: ChatOrgs = "domain",
     role: Role = "writer",
     api_key_id: uuid.UUID | None = None,
 ) -> ChatHead | None:
@@ -240,7 +263,7 @@ def _read(
                 role=role,
             ),
             conversation_id=_CONVERSATION,
-            orgs=orgs,
+            reader=SessionReader(email=email),
         ),
     )
 
@@ -266,6 +289,8 @@ def test_a_head_names_its_session_forks_and_origin() -> None:
         "forks": 3,
         "forked_from": _ORIGIN,
         "forks_on_typing": False,
+        "audience": "open",
+        "may_hide": False,
         "shared_with": [],
         "may_share": False,
         "may_delete": False,
@@ -280,9 +305,12 @@ def test_a_head_names_its_session_forks_and_origin() -> None:
         _KEY,
         "kb@example.com",
         "ada@example.com",
-        [OPEN],
+        [OPEN, PRIVATE],
     )
-    starter_call, count_call, origin_call = engine.conn.fetchval.await_args_list
+    starter_call, count_call, origin_call, read_call = (
+        engine.conn.fetchval.await_args_list
+    )
+    assert read_call.args[1] == _SESSION
     assert starter_call.args == (
         _STARTER_SQL,
         chat_session_id(_CONVERSATION),
@@ -306,8 +334,9 @@ def test_a_head_names_its_session_forks_and_origin() -> None:
 
 
 def test_a_head_with_no_forks_or_origin_and_a_stranger_forking_on_typing() -> None:
+    """A caller who does not read the chat is told so: their typing is no post."""
     engine = FakeEngine()
-    _head(engine, forks=None, origin=None, starter="ada@gmail.com")
+    _head(engine, forks=None, origin=None, starter="ada@gmail.com", reads=False)
 
     head = _read(engine, email="bob@gmail.com")
 
@@ -319,23 +348,38 @@ def test_a_head_with_no_forks_or_origin_and_a_stranger_forking_on_typing() -> No
     )
 
 
-def test_the_shares_are_the_starters_and_admins_to_see_and_let_their_people_type() -> (
-    None
-):
+def test_the_starter_grants_shares_and_an_admin_sees_them_only_to_stop_them() -> None:
     shares = ("bob@gmail.com", "grace@example.com")
     heads = [
         _head_of("Ada@Gmail.com", shares=shares),
-        _head_of("root@example.com", role="admin", shares=shares),
+        _head_of("root@example.com", role="admin", shares=shares, reads=False),
         _head_of("bob@gmail.com", shares=shares),
-        _head_of("jan@other.org", shares=shares),
+        _head_of("jan@other.org", shares=shares, reads=False),
     ]
 
     assert [(h.shared_with, h.may_share, h.forks_on_typing) for h in heads] == [
         (list(shares), True, False),
-        (list(shares), True, True),
+        (list(shares), False, True),
         ([], False, False),
         ([], False, True),
     ]
+
+
+@pytest.mark.parametrize(
+    ("audience", "starter_hides", "sharee_hides"),
+    [("open", True, False), ("private", True, False), ("staff", False, False)],
+)
+def test_the_head_says_audience_and_who_may_hide(
+    audience: str,
+    starter_hides: bool,
+    sharee_hides: bool,
+) -> None:
+    """Its starter hides a chat and shows it again; nobody lowers a staff one."""
+    starter = _head_of("Ada@Gmail.com", audience=audience)
+    sharee = _head_of("bob@gmail.com", audience=audience, shares=("bob@gmail.com",))
+
+    assert (starter.audience, sharee.audience) == (audience, audience)
+    assert (starter.may_hide, sharee.may_hide) == (starter_hides, sharee_hides)
 
 
 def test_a_head_says_who_may_delete_the_chat() -> None:
@@ -386,46 +430,51 @@ def test_a_new_lines_starter_is_the_databases_before_the_key_maps() -> None:
 
 
 @pytest.mark.parametrize(
-    ("stored", "shares", "poster", "allowed"),
+    ("answers", "sender", "allowed"),
     [
-        (None, (), "bob@example.com", True),
-        ("ada@example.com", (), "Ada@Example.com", True),
-        ("ada@example.com", (), "bob@example.com", False),
-        ("ada@example.com", ("bob@example.com",), "Bob@Example.com", True),
+        ([None], None, True),
+        ([None], "Bob@Example.com", True),
+        ([None], "ada@example.com", False),
+        ([_SESSION, True], "ada@example.com", True),
+        ([_SESSION, False], None, False),
     ],
-    ids=["nobody-began-it", "its-starter", "a-stranger", "shared-with"],
+    ids=["nobody-began-it", "its-first-sender", "another-first-sender", "reads", "not"],
 )
-def test_who_may_post_into_an_individual_chat(
-    stored: str | None,
-    shares: tuple[str, ...],
-    poster: str,
+def test_a_post_is_a_read_of_the_session_that_began_the_chat(
+    answers: list[object],
+    sender: str | None,
     allowed: bool,
 ) -> None:
+    """Whoever reads the chat's first session posts; before one, its first sender."""
     conn: AsyncMock = make_conn()
-    conn.fetchval.return_value = stored
-    conn.fetch.return_value = [{"email": email} for email in shares]
+    conn.fetchval.side_effect = answers
+    inbound = InboundQueue()
+    if sender is not None:
+        _ = inbound.send_once(
+            _CONVERSATION,
+            [(_SESSION, Inbound(text="first", source=sender))],
+        )
+    reader = SessionReader(email="bob@example.com")
 
     may = asyncio.run(
         may_post(
             cast("Conn", conn),
-            poster=poster,
+            poster="bob@example.com",
+            reader=reader,
             conversation_id=_CONVERSATION,
             assistant=_ASSISTANT,
-            orgs="individual",
-            inbound=InboundQueue(),
+            inbound=inbound,
         ),
     )
 
     assert may is allowed
-    assert conn.fetchval.await_args is not None
-    assert conn.fetchval.await_args.args == (
-        _STARTER_SQL,
+    began, *read = conn.fetchval.await_args_list
+    assert began.args == (
+        _BEGINNING_SQL,
         chat_session_id(_CONVERSATION),
         _ASSISTANT.email,
     )
-    assert [call.args[1:] for call in conn.fetch.await_args_list] == (
-        [] if stored is None else [(_CONVERSATION,)]
-    )
+    assert [call.args[1] for call in read] == [_SESSION] * len(read)
 
 
 def test_shares_are_read_oldest_first_for_one_conversation() -> None:
@@ -468,8 +517,10 @@ def _head_of(
     shares: tuple[str, ...] = (),
     opened: bool = False,
     others_posted: bool = False,
+    audience: str = OPEN,
+    reads: bool = True,
 ) -> ChatHead:
-    """Read the head of Ada's chat on an ``individual`` server, as ``email``."""
+    """Read the head of Ada's chat as ``email``, who reads it when ``reads``."""
     engine = FakeEngine()
     _head(
         engine,
@@ -479,10 +530,17 @@ def _head_of(
         shares=shares,
         opened=opened,
         others_posted=others_posted,
+        audience=audience,
+        reads=reads,
     )
-    head = _read(engine, email=email, orgs="individual", role=role)
+    head = _read(engine, email=email, role=role)
     assert head is not None
     return head
+
+
+def _visible(row: str, reader: SessionReader) -> str:
+    """Return the transcript test of ``row``, bound after a fork point's five values."""
+    return visible_sql(row, params=[None, None, None, None, None], reader=reader)
 
 
 if __name__ == "__main__":

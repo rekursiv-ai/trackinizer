@@ -444,8 +444,8 @@ async def test_p5_a_token_never_exceeds_its_accounts_audiences(
     assert named["open_into"] == "open"
     profile = await _profile(client, unpinned)
     assert (profile["read_audiences"], profile["open_audiences"]) == (
-        ["open"],
-        ["open"],
+        ["open", "private"],
+        ["open", "private"],
     )
     assert await _scalar(store, "SELECT count(*) FROM api_keys") == 3
 
@@ -466,11 +466,15 @@ async def test_p5_staff_is_held_only_through_an_exact_address_in_the_staff_setti
 
     host_profile = await _profile(client, host)
     assert (host_profile["read_audiences"], host_profile["pinned_audience"]) == (
-        ["open", "staff"],
+        ["open", "private", "staff"],
         "staff",
     )
     assert host_profile["open_audiences"] == ["staff"]
-    assert (await _profile(client, unpinned))["read_audiences"] == ["open", "staff"]
+    assert (await _profile(client, unpinned))["read_audiences"] == [
+        "open",
+        "private",
+        "staff",
+    ]
     assert neighbour.status_code == 403
 
 
@@ -490,8 +494,8 @@ async def test_p5_a_domain_pattern_never_gives_a_service_account_staff(
     assert refused.status_code == 403
     profile = await _profile(client, unpinned)
     assert (profile["read_audiences"], profile["open_audiences"]) == (
-        ["open"],
-        ["open"],
+        ["open", "private"],
+        ["open", "private"],
     )
     assert (
         await _scalar(
@@ -543,6 +547,7 @@ async def test_p5_a_token_never_exceeds_the_admin_that_mints_it(
     )
     assert (await _profile(client, by_plain_for_open_account))["read_audiences"] == [
         "open",
+        "private",
     ]
 
 

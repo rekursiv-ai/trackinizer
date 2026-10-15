@@ -19,6 +19,7 @@ from uuid import UUID
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from treekle import from_plain
 
 from trackinizer.server.api._deps import (
     get_assistant,
@@ -49,9 +50,16 @@ from trackinizer.server.visuals.partners import (
     opener_email,
     shared_partner,
 )
+from trackinizer.server.visuals.science_chats import read_first_session
 from trackinizer.types.inquiries import AgentSession
+from trackinizer.wire.audience import OPEN
 from trackinizer.wire.bodies import SubmitAgentSession
-from trackinizer.wire.wire_science_chat import CHAT_HELPER_CLI
+from trackinizer.wire.wire_science_chat import (
+    CHAT_HELPER_CLI,
+    CHAT_SESSION_PREFIX,
+    CHAT_TITLE,
+    chat_conversation_id,
+)
 from trackinizer.wire.wire_sessions import (
     DrainInboundResponse,
     InboundDrainItem,
@@ -85,20 +93,27 @@ async def session_start_route(
     adopts whatever it was given.
 
     The session opens into the audience the caller's key is pinned to, else
-    ``open``. A pin the caller no longer holds is 403 ``audience_not_held``. A
-    ``cli_session_id`` of a deleted science chat (``chat:<id>``) is 410
-    ``chat_deleted``.
+    ``open``, or ``private`` when ``private`` asks; a pin the caller no longer holds
+    is 403 ``audience_not_held``, and so is ``private`` under a pin to ``staff``. A
+    resume asked to be ``private`` hides the ``open`` session it re-attaches, as the
+    key that opened it may, and is 409, leaving it as it was, for a ``staff`` one. A
+    session under the id of a science chat that is not ``open`` takes the chat's
+    audience instead, so a chat stays ``private`` or ``staff`` whichever key opens
+    its next session. A ``cli_session_id`` of a deleted science chat
+    (``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is titled
+    ``Science chat`` whatever ``title`` says, since every key reads the row and only
+    the chat's members read its lines.
 
     Args:
       body: Session metadata (title, cli, cli_session_id, started, rooms,
-        account, idempotency_key).
+        account, idempotency_key, private).
       request: Starlette request object.
       identity: Authenticated user (email, api_key_id, role).
 
     Returns:
       response: SessionStartResponse with session id, next event seq (0 for
-        new, or max(seq)+1 for resumed), cli_session_id, and granted actor
-        name.
+        new, or max(seq)+1 for resumed), cli_session_id, granted actor name and
+        audience.
 
     """
     store = get_store(request)
@@ -110,7 +125,10 @@ async def session_start_route(
             status_code=403,
             detail="Own session key and account required",
         )
-    audience = granted_audience(identity)
+    audience = await _chat_audience(request, body=body) or granted_audience(
+        identity,
+        private=body.private,
+    )
     # An AgentSession is an inquiry like any other, so it carries the same
     # account attribution: default to the authenticated creator, validate it is
     # an active user before minting the row (the gate the submit / edit routes
@@ -126,7 +144,10 @@ async def session_start_route(
     # reads it back off the persisted row (``row.owner``) below.
     session_id, _granted_actor, next_seq = await store.start_session(
         SubmitAgentSession(
-            title=body.title or f"{body.cli} session",
+            # A partner titles a chat by its first line, and every key reads the row.
+            title=CHAT_TITLE
+            if (body.cli_session_id or "").startswith(CHAT_SESSION_PREFIX)
+            else body.title or f"{body.cli} session",
             cli=body.cli,
             cli_session_id=body.cli_session_id,
             started=body.started,
@@ -148,6 +169,7 @@ async def session_start_route(
         seq=next_seq,
         cli_session_id=row.cli_session_id,
         actor=row.owner,
+        audience=row.audience,
     )
 
 
@@ -182,11 +204,11 @@ async def session_inbound_enqueue_route(
 
     """
     session = await require_session(get_store(request), session_id)
-    require_session_access(
+    await require_session_access(
+        request,
         identity,
         session=session,
         mode="input",
-        assistant=get_assistant(request),
         asker=await resolve_asker(request, identity, email=body.asker),
     )
     _refuse_a_chat_helper(session)
@@ -301,11 +323,11 @@ async def send_message_route(
         if session is not None:
             # Before the liveness skip: the send is refused whole, so a caller
             # cannot read which hidden sessions are live from what was delivered.
-            require_session_access(
+            await require_session_access(
+                request,
                 identity,
                 session=cast(AgentSession, session),
                 mode="input",
-                assistant=get_assistant(request),
                 asker=asker,
             )
         if session is None or cast(AgentSession, session).ended is not None:
@@ -391,7 +413,7 @@ async def session_inbound_drain_route(
     """
     store = get_store(request)
     session = await require_session(store, session_id)
-    require_session_access(identity, session=session, mode="drain")
+    await require_session_access(request, identity, session=session, mode="drain")
     # Its queue holds every user's Chat, and a science chat's queue holds its posters'
     # lines, so no one but the opening key reads either. That is every chat and every
     # `trax helper` session, the assistant's or a user's own: a drain by another
@@ -452,7 +474,7 @@ async def session_inbound_drain_route(
         if held
         else inbound.drain(session_id)
     )
-    inbound.hand_out(drained)
+    inbound.hand_out(drained, taker=identity.api_key_id)
     return DrainInboundResponse(
         messages=[
             InboundDrainItem(
@@ -499,7 +521,7 @@ async def session_end_route(
     store = get_store(request)
     session = await require_session(store, session_id)
     require_session_write_access(identity, session)
-    require_session_access(identity, session=session, mode="write")
+    await require_session_access(request, identity, session=session, mode="write")
     require_chat_opener(identity, session=session)
     actor = _actor(identity, body.actor)
     # Always stamp a real ``ended``: ``ended IS NULL`` is the "live" predicate
@@ -593,6 +615,31 @@ async def _is_the_assistants_chat(
         cli_session_id=session.cli_session_id,
         email=opener or "",
     )
+
+
+# The chat's audience is taken without the hold check ``granted_audience`` makes: a
+# ``private`` or ``staff`` chat was made so by its starter or by a staff read, and the
+# key that opens its next session only joins it.
+async def _chat_audience(request: Request, *, body: SessionStart) -> str | None:
+    """Return the audience of the chat a session opens under, when it is not open."""
+    conversation_id = chat_conversation_id(body.cli_session_id)
+    if conversation_id is None:
+        return None
+    async with get_store(request).engine.acquire() as conn:
+        first = await read_first_session(
+            conn,
+            assistant=get_assistant(request),
+            conversation_id=conversation_id,
+        )
+        audience = from_plain(
+            await conn.fetchval(
+                "SELECT agentsession_audience FROM inquiries WHERE id = $1",
+                first,
+            ),
+            str,
+            default=None,
+        )
+    return None if audience == OPEN else audience
 
 
 # A `trax helper` answers each line into the science chat it carries: a line without

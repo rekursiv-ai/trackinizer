@@ -44,7 +44,7 @@ async function bindOwnChat(page: Page, request: APIRequestContext): Promise<void
   const conversation = crypto.randomUUID();
   await page.route(`**/api/chats/${conversation}`, (route) => route.fulfill({ json: {
     conversation_id: conversation, session_id: session, title: "E2E", account: email, live: true, forks: 0, forked_from: null,
-    forks_on_typing: false, shared_with: [], may_share: false, may_delete: false,
+    forks_on_typing: false, audience: "open", may_hide: false, shared_with: [], may_share: false, may_delete: false,
   } }));
   expect((await request.post(`/api/workspaces/for-chat/${conversation}`)).ok()).toBe(true);
 }
@@ -154,7 +154,7 @@ for (const style of ["default", "terminal"] as const) {
     ], "chat.jsonl");
     const conversation = crypto.randomUUID();
     await page.route(`**/api/chats/${conversation}`, (route) => route.fulfill({ json: {
-      conversation_id: conversation, session_id: session, title: "E2E", account: email, live: true, forks: 0, forked_from: null, forks_on_typing: false, shared_with: [], may_share: false, may_delete: false,
+      conversation_id: conversation, session_id: session, title: "E2E", account: email, live: true, forks: 0, forked_from: null, forks_on_typing: false, audience: "open", may_hide: false, shared_with: [], may_share: false, may_delete: false,
     } }));
     expect((await request.post(`/api/workspaces/for-chat/${conversation}`)).ok()).toBe(true);
     await setPreferences(page.request, { chat_style: style });

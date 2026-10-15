@@ -67,6 +67,7 @@ from trackinizer.server.session_reaper import (
 from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.wire_science_chat import CHAT_HELPER_CLI, chat_session_id
+from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
 
 if TYPE_CHECKING:
@@ -192,11 +193,14 @@ class TestSendToAScienceChat:
         store: Store,
         monkeypatch: pytest.MonkeyPatch,
         *,
+        engine: FakeEngine,
         polled: bool,
     ) -> tuple[uuid.UUID, InboundQueue]:
-        """Make ``scientist`` resolve to a live science chat, polled or idle."""
+        """Make ``scientist`` resolve to a live science chat the sender is a member of."""
         inbound = InboundQueue()
         app.state.inbound = inbound
+        # The database answers the chat's membership test: the sender may read it.
+        engine.conn.fetchval.return_value = True
         session_id = uuid.uuid4()
         monkeypatch.setattr(
             store,
@@ -225,10 +229,15 @@ class TestSendToAScienceChat:
         route_client: tuple[TestClient, Store, FakeEngine],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        client, store, _engine = route_client
+        client, store, engine = route_client
         browser()
         for polled in (True, False):
-            session_id, inbound = self._chat_at(store, monkeypatch, polled=polled)
+            session_id, inbound = self._chat_at(
+                store,
+                monkeypatch,
+                engine=engine,
+                polled=polled,
+            )
 
             refused = client.post(
                 "/api/messages",
@@ -246,11 +255,16 @@ class TestSendToAScienceChat:
         route_client: tuple[TestClient, Store, FakeEngine],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        client, store, _engine = route_client
+        client, store, engine = route_client
         act_as_other_agent("writer")
-        _ = self._chat_at(store, monkeypatch, polled=False)
+        _ = self._chat_at(store, monkeypatch, engine=engine, polled=False)
         skipped = client.post("/api/messages", json={"actor": "scientist", "text": "x"})
-        session_id, inbound = self._chat_at(store, monkeypatch, polled=True)
+        session_id, inbound = self._chat_at(
+            store,
+            monkeypatch,
+            engine=engine,
+            polled=True,
+        )
         refused = client.post("/api/messages", json={"actor": "scientist", "text": "x"})
 
         assert (skipped.status_code, skipped.json()) == (200, {"delivered": []})
@@ -358,6 +372,38 @@ class TestInboundHoldEndsWithTheSession:
         )
         assert r.status_code == 200, r.text
         hold.assert_not_awaited()
+
+
+class TestTheKeyThatDrainsAChatLineHoldsItsTurn:
+    def test_the_drain_names_its_key_as_the_lines_taker(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        inbound = InboundQueue()
+        app.state.inbound = inbound
+        session_id = uuid.uuid4()
+        context = WorkspaceMessageContext(
+            workspace_id=uuid.uuid4(),
+            visible_visuals=[],
+            conversation_id=uuid.uuid4(),
+        )
+        _ = inbound.enqueue(
+            session_id,
+            Inbound(text="hi", source="ada@example.com", context=context),
+        )
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
+        )
+        monkeypatch.setattr(store, "record_session_seen", AsyncMock())
+
+        r = client.get(f"/api/sessions/{session_id}/inbound")
+
+        assert r.status_code == 200, r.text
+        assert inbound.took_line(TEST_API_KEY_ID, poster="ada@example.com")
 
 
 async def _seen_as_the_session_ends(
@@ -940,9 +986,9 @@ async def test_without_an_assistant_a_writer_still_drains_any_session(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The refusal is the assistant's alone."""
+    """The refusal is the assistant's alone: on one organisation, the writer reads it."""
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", Config(), raising=False)
+    monkeypatch.setattr(app.state, "config", Config(chat_orgs="single"), raising=False)
     monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
     await seed_accounts(store)
     act_as_assistant()
@@ -1325,6 +1371,128 @@ async def test_the_assistant_long_polls_and_a_chat_message_reaches_it_at_once(
         dict[str, object],
     )
     assert context["conversation_id"] == str(conversation_of(sent))
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_private_start_opens_a_hidden_session_and_says_so(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``trax run --private`` reads the audience back to know it was hidden."""
+    client, store = pglite_route_client
+    await _active_user(store)
+
+    answers = [
+        await client.post(
+            "/api/sessions/start",
+            json={"cli": "claude", **({"private": True} if private else {})},
+        )
+        for private in (True, False)
+    ]
+
+    bodies = [json_loads(each.content, dict[str, object]) for each in answers]
+    assert [each.status_code for each in answers] == [201, 201]
+    assert [body["audience"] for body in bodies] == ["private", "open"]
+    hidden = await _session(store, session_id=uuid.UUID(str(bodies[0]["id"])))
+    assert hidden.audience == "private"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_private_resume_hides_an_open_run_and_leaves_a_staff_one_ended(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The key that opened a run is its owner, who hides it; a staff run no one hides.
+
+    The staff run is refused before it is re-opened: its end stays as it was.
+    """
+    client, store = pglite_route_client
+    await _active_user(store)
+    runs: dict[str, uuid.UUID] = {}
+    for audience in ("open", "staff"):
+        started = await client.post(
+            "/api/sessions/start",
+            json={"cli": "claude", "cli_session_id": f"run-{audience}"},
+        )
+        runs[audience] = uuid.UUID(
+            from_plain(json_loads(started.content, dict[str, object])["id"], str),
+        )
+        async with store.engine.acquire() as conn:
+            await conn.execute(
+                "UPDATE inquiries SET agentsession_audience = $2, status = 'complete', "
+                "agentsession_ended = clock_timestamp() WHERE id = $1",
+                runs[audience],
+                audience,
+            )
+
+    answers = {
+        audience: await client.post(
+            "/api/sessions/start",
+            json={
+                "cli": "claude",
+                "cli_session_id": f"run-{audience}",
+                "private": True,
+            },
+        )
+        for audience in runs
+    }
+
+    hidden = await _session(store, session_id=runs["open"])
+    staff = await _session(store, session_id=runs["staff"])
+    assert answers["open"].status_code == 201, answers["open"].text
+    assert (
+        json_loads(answers["open"].content, dict[str, object])["audience"] == "private"
+    )
+    assert (hidden.audience, hidden.ended) == ("private", None)
+    assert answers["staff"].status_code == 409
+    assert staff.audience == "staff"
+    assert staff.ended is not None
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_session_under_a_staff_chat_id_opens_staff(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A chat stays staff, or private, whichever key opens its next session."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    opened: dict[str, str] = {}
+    for audience in ("staff", "private", "open"):
+        chat = chat_session_id(uuid.uuid4())
+        # The prior session under the chat id is scaffolding, not the subject: seed it
+        # straight in the store (as the assistant opened it) rather than through two
+        # requests, and stamp its audience.
+        first = await seed_session(
+            store,
+            agent=ASSISTANT,
+            actor=f"first-{audience}",
+            cli_session_id=chat,
+            account=TEST_USER_EMAIL,
+            polled=False,
+        )
+        async with store.engine.acquire() as conn:
+            await conn.execute(
+                "UPDATE inquiries SET agentsession_audience = $2 WHERE id = $1",
+                first,
+                audience,
+            )
+        act_as_other_agent("writer")
+        # The next key opening a session under the chat id is the subject, so this goes
+        # through the real start route; the audience it is given is read back from the
+        # row, with no poll the inheritance does not depend on.
+        started = await client.post(
+            "/api/sessions/start",
+            json={"cli": "codex", "cli_session_id": chat},
+        )
+        assert started.status_code == 201, started.text
+        later = uuid.UUID(
+            from_plain(json_loads(started.content, dict[str, object])["id"], str),
+        )
+        opened[audience] = str((await _session(store, session_id=later)).audience)
+
+    assert opened == {"staff": "staff", "private": "private", "open": "open"}
 
 
 @pytest.mark.db_pglite

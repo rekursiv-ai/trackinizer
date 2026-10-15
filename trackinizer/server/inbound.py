@@ -110,6 +110,12 @@ class InboundQueue:
     """How long a taken chat line counts as posted, unrecorded. The assistant records a
     line as it hands it to its agent, before the turn, so seconds are the norm."""
 
+    max_turns: int = 10_000
+
+    turn_ttl_sec: float = 3_600.0
+    """How long the key that took a chat line holds its poster's turn: the line may wait
+    behind a turn of its chat, then run a turn of its own."""
+
     poller_ttl_sec: float = 45.0
 
     _clock: Callable[[], float] = field(default=time.monotonic, repr=False)
@@ -133,6 +139,11 @@ class InboundQueue:
     # conversation, the one handed a line longest ago first: a delete counts these as
     # posted, as it counts the queued ones.
     _handed: OrderedDict[UUID, list[_Handed]] = field(default_factory=OrderedDict)
+
+    # Until when each key that took a chat line holds its poster's turn, by key and
+    # lowercased poster, the one taken longest ago first. Unlike ``_handed``, the chat
+    # recording the line does not end it: the turn runs after that.
+    _turns: OrderedDict[tuple[UUID, str], float] = field(default_factory=OrderedDict)
 
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -409,8 +420,8 @@ class InboundQueue:
         with self._lock:
             return len(self._queues.get(session_id, ()))
 
-    def hand_out(self, messages: Sequence[Inbound]) -> None:
-        """Remember who sent each chat line a poller took, until its chat records it.
+    def hand_out(self, messages: Sequence[Inbound], *, taker: UUID | None) -> None:
+        """Remember who sent each chat line a poller took, and which key took it.
 
         A drained line is in no queue and not yet in its chat's records, so for the
         moment between, only this says it was posted. It is kept in memory alone: a
@@ -419,20 +430,32 @@ class InboundQueue:
         its drain go, and it would hold the chat's delete off until a restart. Over
         ``max_handed_chats`` chats, the one handed a line longest ago is forgotten.
 
+        The key that took a chat line holds its poster's turn for ``turn_ttl_sec``
+        (:meth:`took_line`), whether or not the chat has recorded it since; over
+        ``max_turns``, the turn taken longest ago is forgotten.
+
         Args:
           messages: What one drain gave its poller.
+          taker: The API key that drained them; ``None`` for a browser session, which
+            holds no turn.
 
         """
         with self._lock:
-            until = self._clock() + self.handed_ttl_sec
+            now = self._clock()
             for message in messages:
                 context = message.context
                 if context is None or context.conversation_id is None:
                     continue
                 handed = self._handed.setdefault(context.conversation_id, [])
                 self._handed.move_to_end(context.conversation_id)
-                handed.append(_Handed(source=message.source, until=until))
+                handed.append(
+                    _Handed(source=message.source, until=now + self.handed_ttl_sec),
+                )
                 del handed[: -self.max_per_session]
+                if taker is not None and message.source is not None:
+                    turn = (taker, message.source.lower())
+                    self._turns[turn] = now + self.turn_ttl_sec
+                    self._turns.move_to_end(turn)
             while len(self._handed) > self.max_handed_chats:
                 forgotten, _ = self._handed.popitem(last=False)
                 _LOGGER.warning(
@@ -440,6 +463,23 @@ class InboundQueue:
                     self.max_handed_chats,
                     forgotten,
                 )
+            while len(self._turns) > self.max_turns:
+                _ = self._turns.popitem(last=False)
+
+    def took_line(self, taker: UUID, *, poster: str) -> bool:
+        """Say whether ``taker`` took a chat line ``poster`` sent, within the turn TTL.
+
+        Args:
+          taker: An API key.
+          poster: An attested sender, in any case.
+
+        Returns:
+          held: Whether that key drained a chat line of theirs in the last
+            ``turn_ttl_sec``.
+
+        """
+        with self._lock:
+            return self._turns.get((taker, poster.lower()), 0.0) > self._clock()
 
     def recorded(self, conversation_id: UUID, *, senders: Sequence[str]) -> None:
         """Forget one handed-out line of each sender, now its chat records it.

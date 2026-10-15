@@ -8,6 +8,7 @@ import pytest
 
 from trackinizer.server.visuals.catalog import (
     ContextGraphVisual,
+    FilesVisual,
     ParameterDescription,
     StaticVisual,
     TimelineVisual,
@@ -26,6 +27,7 @@ def test_default_workspace_builds_the_default_catalog() -> None:
         "trax.timeline",
         "trax.artifact",
         "trax.summary",
+        "trax.files",
     ]
 
 
@@ -78,6 +80,7 @@ def test_record_visuals_name_the_kinds_they_accept() -> None:
         "trax.timeline": None,
         "trax.artifact": ["Artifact"],
         "trax.summary": ["Issue", "AgentSession"],
+        "trax.files": None,
     }
 
 
@@ -108,6 +111,46 @@ def test_context_graph_bounds_its_reach_and_its_highlight() -> None:
         "",
         512,
     )
+
+
+def test_files_takes_any_record_and_bounds_its_narrowing() -> None:
+    """The files view draws any record; its path and file are capped at 512."""
+    described = FilesVisual.Config().make().describe()
+    assert described.model_dump() == {
+        "type": "trax.files",
+        "version": 1,
+        "title": "Files",
+        "description": (
+            "A record's files and what changed in them, each change with its diff."
+        ),
+        "requires": ["record"],
+        "default_size": "wide",
+        "parameter_schema": {
+            "path": {
+                "type": "string",
+                "default": "",
+                "minimum": None,
+                "maximum": None,
+                "max_length": 512,
+            },
+            "changed": {
+                "type": "boolean",
+                "default": False,
+                "minimum": None,
+                "maximum": None,
+                "max_length": None,
+            },
+            "file": {
+                "type": "string",
+                "default": "",
+                "minimum": None,
+                "maximum": None,
+                "max_length": 512,
+            },
+        },
+        "record_kinds": None,
+    }
+    assert default_workspace().visual("trax.files") == described
 
 
 def test_context_graph_default_reach_past_three_hops_is_a_config_error() -> None:

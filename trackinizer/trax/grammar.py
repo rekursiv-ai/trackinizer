@@ -20,6 +20,7 @@ from dataclasses import (
     dataclass,
     field as dataclass_field,
 )
+from functools import partial
 from typing import TYPE_CHECKING, Final, Literal, TypeGuard, cast, get_args
 
 import json
@@ -577,8 +578,8 @@ def _coerce_publication_type(value: str) -> str:
 # The ``-`` (stdin) and ``@path`` (file) sentinels pass through untouched: they are
 # resolved at the verb layer, which re-coerces the read text through
 # :func:`field_value`.
-def _coerce_config(value: str) -> object:
-    """Parse a ``config`` token to its JSON-object wire value."""
+def _coerce_json_object(value: str, *, field: str) -> object:
+    """Parse a ``config`` or ``app`` token to its JSON-object wire value."""
     if value == "-" or value.startswith("@"):
         return value
     # ``json.loads`` directly, not :func:`loads`: the stdlib parser accepts
@@ -590,16 +591,16 @@ def _coerce_config(value: str) -> object:
             json.loads(value, parse_constant=_reject_nonstandard_json_constant),
         )
     except ValueError as err:
-        raise ValueError(f"config must be valid JSON: {err}") from err
+        raise ValueError(f"{field} must be valid JSON: {err}") from err
     try:
-        config = from_plain(parsed, dict[str, object])
+        obj = from_plain(parsed, dict[str, object])
     except TypeError as err:
-        raise ValueError("config must be a JSON object") from err
+        raise ValueError(f"{field} must be a JSON object") from err
     try:
-        json.dumps(config, allow_nan=False)
+        json.dumps(obj, allow_nan=False)
     except ValueError as err:
-        raise ValueError("config numbers must be finite") from err
-    return config
+        raise ValueError(f"{field} numbers must be finite") from err
+    return obj
 
 
 def _reject_nonstandard_json_constant(value: str) -> object:
@@ -613,7 +614,8 @@ _COERCE: Mapping[str, Callable[[str], object]] = {
     "status": _coerce_status,
     "judgement": _coerce_judgement,
     "publication_type": _coerce_publication_type,
-    "config": _coerce_config,
+    "config": partial(_coerce_json_object, field="config"),
+    "app": partial(_coerce_json_object, field="app"),
 }
 
 
@@ -679,6 +681,13 @@ _FIELDS: tuple[Field, ...] = (
         payload_key="config",
         shape="scalar",
         help="run settings as one JSON object (inline or @file.json)",
+        filterable=False,
+    ),
+    Field(
+        cli_name="app",
+        payload_key="app",
+        shape="scalar",
+        help="app-layer fields as one JSON object keyed by app name",
         filterable=False,
     ),
     Field(

@@ -229,15 +229,15 @@ class TestGetAssistant:
 
 
 class TestGetChatOrgs:
-    def test_a_server_groups_users_by_domain_unless_its_config_says_single(
+    def test_a_server_is_individual_unless_its_config_says_otherwise(
         self,
     ) -> None:
         app = FastAPI()
-        assert get_chat_orgs(_request(app)) == "domain"
+        assert get_chat_orgs(_request(app)) == "individual"
         app.state.config = "not a config"
-        assert get_chat_orgs(_request(app)) == "domain"
+        assert get_chat_orgs(_request(app)) == "individual"
         app.state.config = Config()
-        assert get_chat_orgs(_request(app)) == "domain"
+        assert get_chat_orgs(_request(app)) == "individual"
         app.state.config = Config(chat_orgs="single")
         assert get_chat_orgs(_request(app)) == "single"
 

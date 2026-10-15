@@ -19,7 +19,7 @@ from trackinizer.conftest import (
     queue_field_rows,
 )
 from trackinizer.lib.postgres import Conn
-from trackinizer.server.audience import hidden_exists_sql
+from trackinizer.server.audience import SessionReader, hidden_exists_sql
 from trackinizer.server.store import read
 from trackinizer.server.values import manifest_bound, vetted_sql
 from trackinizer.types.cost import Cost
@@ -447,7 +447,7 @@ class TestListKindAudiences:
         await store.list_kind(
             kind,
             filters=filters,
-            audiences=frozenset({"open", "staff"}),
+            reader=SessionReader(audiences=frozenset({"open", "staff"})),
         )
         sql, *params = conn.fetch.call_args_list[0].args
         return str(sql), list(params)
@@ -504,14 +504,25 @@ class TestRecordTexts:
                 Filter(field="tool_call", op="notnull", value=""),
                 Filter(field="title", op="is", value="run"),
             ],
-            audiences=frozenset({"open"}),
+            reader=SessionReader(),
         )
 
         assert texts == {session: {"tool_call": ["ls", "pwd"]}}
         join, predicate = manifest_bound("r")
         assert conn.fetch.await_args is not None
         sql, *params = conn.fetch.await_args.args
-        assert params == [[session], ["ToolCall"], ["open"]]
+        assert params == [
+            [session],
+            ["ToolCall"],
+            [],
+            "",
+            None,
+            False,
+            False,
+            False,
+            True,
+            "",
+        ]
         assert sql == vetted_sql(
             "SELECT r.session_id, r.kind, array_agg(r.text) AS texts "
             "FROM session_records r ",
@@ -519,7 +530,7 @@ class TestRecordTexts:
             "WHERE r.session_id = ANY($1::uuid[]) AND r.kind = ANY($2::text[]) AND ",
             predicate,
             " AND ",
-            hidden_exists_sql("r.session_id", params=[[], []], audiences=frozenset()),
+            hidden_exists_sql("r.session_id", params=[[], []], reader=SessionReader()),
             " GROUP BY r.session_id, r.kind",
         )
 
@@ -535,7 +546,7 @@ class TestRecordTexts:
             cast(Conn, conn),
             [with_text, without],
             [Filter(field="user_message", op="re", value="h")],
-            audiences=frozenset({"open"}),
+            reader=SessionReader(),
         )
 
         assert texts == {with_text: {"user_message": ["hi"]}}
@@ -558,7 +569,7 @@ class TestRecordTexts:
                     value="x",
                 ),
             ],
-            audiences=frozenset({"open"}),
+            reader=SessionReader(),
         )
 
         assert texts == {}

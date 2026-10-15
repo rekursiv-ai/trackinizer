@@ -324,6 +324,15 @@ async def _run_compare_and_set(
             actor=actor,
             reason=body.reason,
         )
+    if route.column == "app":
+        return await store.transition_app(
+            target_id,
+            expected_from=cast(dict[str, object] | None, body.expected),
+            to=cast(dict[str, object] | None, body.value),
+            api_key_id=identity.api_key_id,
+            actor=actor,
+            reason=body.reason,
+        )
     # ``compare_and_set`` gated entry above, but each CAS column needs its own
     # named transition method; a new CAS column without a branch here would
     # silently route to the wrong field. Fail loudly instead.

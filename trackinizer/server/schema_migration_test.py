@@ -18,7 +18,7 @@ Each runs against its own scratch database so none touches the shared
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast, get_args
 
 import uuid
 
@@ -34,6 +34,7 @@ from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.sql import load_sql
 from trackinizer.server.store.core import Store
+from trackinizer.types.change_log import Change
 from trackinizer.wire.filters import NON_NULLABLE_COLUMNS
 
 
@@ -1241,6 +1242,241 @@ async def test_migration_045_matches_the_baseline_credit_entries_table(
             )
 
     assert migrated == baseline
+
+
+async def _catalog_names_aside(conn: Conn) -> list[tuple[str, str, str]]:
+    """Return ``_CATALOG``, each constraint keyed by its table rather than its name."""
+    rows = [
+        (
+            from_plain(r["kind"], str),
+            from_plain(r["name"], str),
+            from_plain(r["definition"], str),
+        )
+        for r in await conn.fetch(_CATALOG)
+    ]
+    return sorted(
+        (kind, name.split(".")[0] if kind == "constraint" else name, definition)
+        for kind, name, definition in rows
+    )
+
+
+# Nor is an audience move audited, which came after, in 047.
+async def _make_app_old(conn: Conn) -> None:
+    """Turn a fresh database back into 045's shape: no row has an ``app``."""
+    await _make_audience_old(conn)
+    # Dropping a column drops its CHECKs.
+    await conn.execute("ALTER TABLE inquiries DROP COLUMN app")
+    await conn.execute(
+        "ALTER TABLE change_log "
+        "DROP COLUMN old_app, DROP COLUMN new_app, "
+        "DROP CONSTRAINT change_log_kind_check, "
+        "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
+        f"{_change_kinds('app', 'agentsession_audience')}))",
+    )
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.046.sql'")
+
+
+def _change_kinds(*left_out: str) -> str:
+    """Return the change kinds but ``left_out``, quoted for a SQL ``IN`` list."""
+    return ", ".join(
+        f"'{kind}'"
+        for kind in cast(tuple[str, ...], get_args(cast(object, Change.Kind.__value__)))
+        if kind not in left_out
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_046_gives_an_existing_database_the_app_column(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """A database migrated by 046 has the catalog a fresh install has, names aside.
+
+    Bootstrap builds the baseline. This takes ``app`` away again (its column, its
+    two audit columns, their CHECKs and its change kind), and what 047 adds after it,
+    leaves an Issue and its ``created`` change behind as such a database holds them,
+    and lets the runner apply the migrations. Every table, column, constraint, index
+    and sequence must equal the baseline's, and a replay of the files changes nothing.
+    """
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        fresh = await _catalog_names_aside(conn)
+        await _make_app_old(conn)
+        issue = await conn.fetchval(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "VALUES (gen_random_uuid(), 'Issue', 1, 'active', "
+            "'tester@example.com', 'before') RETURNING id",
+        )
+        await conn.execute(
+            "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind) "
+            "VALUES (gen_random_uuid(), 'tester', $1, 'Issue', 'created')",
+            issue,
+        )
+
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        migrated = await _catalog_names_aside(conn)
+        app = await conn.fetchval("SELECT app FROM inquiries WHERE id = $1", issue)
+        await conn.execute(load_sql("schema.046"))
+        await conn.execute(load_sql("schema.047"))
+        replayed = await _catalog_names_aside(conn)
+
+    assert app is None
+    assert migrated == fresh
+    assert replayed == fresh
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_app_column_holds_one_object_of_at_most_64_kib_on_any_kind(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """An ``app`` is one JSON object of at most 65,536 bytes, on a row of any kind.
+
+    ``{"b": "<n x>"}`` renders as n + 9 bytes, so n = 65,527 is the largest that fits.
+    The audit columns hold the same shape, on a change to a row of any kind.
+    """
+    await reset_schema(pglite_engine)
+    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
+    inquiry = (
+        "INSERT INTO inquiries (id, kind, seq, status, account, title, app) "
+        "VALUES (gen_random_uuid(), $1, $2, 'active', 'a@x.y', 't', $3)"
+    )
+    change = (
+        "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind, "
+        "old_app, new_app) "
+        "VALUES (gen_random_uuid(), 'tester', gen_random_uuid(), $1, 'app', $2, $3)"
+    )
+    largest = {"b": "x" * 65_527}
+    async with pglite_engine.acquire() as conn:
+        for seq, bad in enumerate((["works"], "works", 7, {"b": "x" * 65_528}), 1):
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(inquiry, "Issue", seq, bad)
+            with pytest.raises(asyncpg.CheckViolationError):
+                await conn.execute(change, "Issue", None, bad)
+        goods: tuple[tuple[str, dict[str, str] | None], ...] = (
+            ("Issue", None),
+            ("Artifact", {}),
+            ("Experiment", largest),
+        )
+        for seq, (kind, good) in enumerate(goods, 1):
+            await conn.execute(inquiry, kind, seq, good)
+            await conn.execute(change, kind, {}, good)
+        stored = await conn.fetchval(
+            "SELECT max(octet_length(app::text)) FROM inquiries",
+        )
+
+    assert stored == 65_536
+
+
+async def _make_audience_old(conn: Conn) -> None:
+    """Turn a fresh database back into 046's shape: no audience move is audited."""
+    # Dropping a column drops the CHECKs that name it; the one tying the kind to the
+    # subject names neither, so it is found by what it says.
+    subject = from_plain(
+        await conn.fetchval(
+            "SELECT conname FROM pg_constraint "
+            "WHERE conrelid = 'change_log'::regclass "
+            "AND pg_get_constraintdef(oid) LIKE '%kind <> ''agentsession_audience''%'",
+        ),
+        str,
+    )
+    await conn.execute(
+        "ALTER TABLE change_log "
+        "DROP COLUMN old_agentsession_audience, DROP COLUMN new_agentsession_audience, "
+        f'DROP CONSTRAINT "{subject}", '
+        "DROP CONSTRAINT change_log_kind_check, "
+        "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
+        f"{_change_kinds('agentsession_audience')}))",
+    )
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.047.sql'")
+
+
+async def _seed_chat_titles(conn: Conn) -> dict[str, uuid.UUID]:
+    """Insert a chat titled by its line, another session, and one titled as chats are."""
+    sessions = {name: uuid.uuid4() for name in ("chat", "other", "reference")}
+    for name, title, cli in (
+        ("chat", "my secret line", f"chat:{uuid.uuid4()}"),
+        ("other", "my run", "codex-1"),
+        ("reference", "Science chat", None),
+    ):
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience, agentsession_cli_session_id) VALUES ($1, "
+            "'AgentSession', nextval('seq_agentsession'), 'active', 'a@x.y', $2, "
+            "'open', $3)",
+            sessions[name],
+            title,
+            cli,
+        )
+    await conn.execute(
+        "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind, "
+        "old_title, new_title) VALUES ($1, 'scout', $2, 'AgentSession', 'title', "
+        "'first', 'my secret line')",
+        uuid.uuid4(),
+        sessions["chat"],
+    )
+    return sessions
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_047_audits_audience_and_retitles_chats(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """A database 047 migrates has a fresh catalog, and no chat's line on its row.
+
+    Bootstrap builds the baseline and embeds the titles as they stand, a chat's first
+    line among them. This then takes the audience audit away again (its two columns,
+    their CHECKs and its change kind) and lets the runner apply the migration. Every
+    table, column, constraint, index and sequence must equal the baseline's, a replay
+    of the file must change nothing, and the chat comes out ``Science chat``: its row,
+    the title change the log kept for it, and its embedding, which then equals that
+    of another session so titled. No other row changes.
+    """
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        fresh = await _catalog_names_aside(conn)
+        sessions = await _seed_chat_titles(conn)
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        await _make_audience_old(conn)
+
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        migrated = await _catalog_names_aside(conn)
+        titles = await conn.fetch(
+            "SELECT id, title FROM inquiries WHERE id = ANY($1::uuid[]) ORDER BY title",
+            [sessions["chat"], sessions["other"]],
+        )
+        logged = await conn.fetchrow(
+            "SELECT old_title, new_title FROM change_log WHERE subject_id = $1",
+            sessions["chat"],
+        )
+        same = await conn.fetchval(
+            "SELECT bool_and(mine.embedding = theirs.embedding) "
+            "FROM inquiry_embeddings AS mine JOIN inquiry_embeddings AS theirs "
+            "ON theirs.model = mine.model AND theirs.inquiry_id = $2 "
+            "WHERE mine.inquiry_id = $1",
+            sessions["chat"],
+            sessions["reference"],
+        )
+        await conn.execute(load_sql("schema.047"))
+        replayed = await _catalog_names_aside(conn)
+
+    assert migrated == fresh
+    assert replayed == fresh
+    assert [(row["id"], row["title"]) for row in titles] == [
+        (sessions["chat"], "Science chat"),
+        (sessions["other"], "my run"),
+    ]
+    assert logged is not None
+    assert (logged["old_title"], logged["new_title"]) == ("", "")
+    assert same is True
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 import { type CallOptions, client, send, TIMEOUT_MS } from "./client";
 import type { components } from "./generated/schema";
-import type { FeedFilters } from "./sessions";
+import { type FeedFilters, filterQuery } from "./sessions";
 
 /**
  * One histogram read: the feed's filters, a window within the last 7 days (ISO
@@ -20,18 +20,14 @@ export type Histogram = components["schemas"]["FeedHistogramResponse"];
 
 /** Fetch `GET /api/web/feed/histogram`: how many feed records fall in each bucket of a window, under the feed's filters. */
 export async function readHistogram(
-  { actor, room, cli, kind, station, since, until, buckets }: HistogramRead,
+  { since, until, buckets, ...filters }: HistogramRead,
   { signal }: CallOptions = {},
 ): Promise<Histogram> {
   return send(TIMEOUT_MS.read, signal, (signal) =>
     client.GET("/api/web/feed/histogram", {
       params: {
         query: {
-          ...(actor ? { actor: [...actor] } : {}),
-          ...(room ? { room: [...room] } : {}),
-          ...(cli ? { cli: [...cli] } : {}),
-          ...(kind ? { kind: [...kind] } : {}),
-          ...(station ? { station } : {}),
+          ...filterQuery(filters),
           ...(since ? { since } : {}),
           ...(until ? { until } : {}),
           ...(buckets ? { buckets } : {}),

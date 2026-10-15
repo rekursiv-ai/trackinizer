@@ -113,6 +113,7 @@ export function user(id: string, email: string, fields: Partial<User> = {}): Use
     status: "active",
     created_at: "2026-09-01T10:00:00+00:00",
     last_login: null,
+    staff: false,
     ...fields,
   };
 }

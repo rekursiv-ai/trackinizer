@@ -838,8 +838,8 @@ class TestCurrentUserNoAuth:
         identity = await current_user(
             _request_with(FakeEngine(), None, config=Config(auth_disabled=True)),
         )
-        assert identity.read_audiences == {"open", "staff"}
-        assert identity.open_audiences == {"open", "staff"}
+        assert identity.read_audiences == {"open", "private", "staff"}
+        assert identity.open_audiences == {"open", "private", "staff"}
         assert identity.pinned_audience is None
 
 
@@ -882,8 +882,8 @@ class TestBearerAudiences:
     @pytest.mark.asyncio
     async def test_unset_staff_means_nobody_holds_staff(self) -> None:
         identity = await _bearer_identity(email="ada@example.com")
-        assert identity.read_audiences == {"open"}
-        assert identity.open_audiences == {"open"}
+        assert identity.read_audiences == {"open", "private"}
+        assert identity.open_audiences == {"open", "private"}
         assert identity.pinned_audience is None
 
     @pytest.mark.asyncio
@@ -892,8 +892,8 @@ class TestBearerAudiences:
             email="ada@example.com",
             staff=("ada@example.com",),
         )
-        assert identity.read_audiences == {"open", "staff"}
-        assert identity.open_audiences == {"open", "staff"}
+        assert identity.read_audiences == {"open", "private", "staff"}
+        assert identity.open_audiences == {"open", "private", "staff"}
 
     @pytest.mark.asyncio
     async def test_a_domain_pattern_needs_the_hosted_domain_claim(self) -> None:
@@ -904,8 +904,8 @@ class TestBearerAudiences:
             staff=staff,
         )
         consumer = await _bearer_identity(email="ada@example.com", staff=staff)
-        assert member.read_audiences == {"open", "staff"}
-        assert consumer.read_audiences == {"open"}
+        assert member.read_audiences == {"open", "private", "staff"}
+        assert consumer.read_audiences == {"open", "private"}
 
     @pytest.mark.asyncio
     async def test_a_pinned_key_opens_only_its_pin(self) -> None:
@@ -914,7 +914,7 @@ class TestBearerAudiences:
             staff=("ada@example.com",),
             open_into="staff",
         )
-        assert identity.read_audiences == {"open", "staff"}
+        assert identity.read_audiences == {"open", "private", "staff"}
         assert identity.open_audiences == {"staff"}
         assert identity.pinned_audience == "staff"
 
@@ -947,7 +947,7 @@ class TestBearerAudiences:
         again = await current_user(request)
 
         assert again == first
-        assert again.read_audiences == {"open", "staff"}
+        assert again.read_audiences == {"open", "private", "staff"}
         assert engine.conn.fetch.await_count == 1
 
     @pytest.mark.asyncio
@@ -978,8 +978,8 @@ class TestBearerAudiences:
 
         after = await current_user(request)
 
-        assert before.read_audiences == {"open", "staff"}
-        assert after.read_audiences == {"open"}
+        assert before.read_audiences == {"open", "private", "staff"}
+        assert after.read_audiences == {"open", "private"}
 
 
 async def _session_identity(
@@ -1021,8 +1021,8 @@ class TestSessionAudiences:
             hosted_domain="example.com",
             staff=("*@example.com",),
         )
-        assert identity.read_audiences == {"open", "staff"}
-        assert identity.open_audiences == {"open", "staff"}
+        assert identity.read_audiences == {"open", "private", "staff"}
+        assert identity.open_audiences == {"open", "private", "staff"}
         assert identity.pinned_audience is None
 
     @pytest.mark.asyncio
@@ -1032,8 +1032,8 @@ class TestSessionAudiences:
             hosted_domain=None,
             staff=("*@example.com",),
         )
-        assert identity.read_audiences == {"open"}
-        assert identity.open_audiences == {"open"}
+        assert identity.read_audiences == {"open", "private"}
+        assert identity.open_audiences == {"open", "private"}
 
 
 # ---- service accounts -----------------------------------------------------

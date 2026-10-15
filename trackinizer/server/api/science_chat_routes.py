@@ -19,14 +19,18 @@ from trackinizer.server.api._deps import (
     get_chat_orgs,
     get_hub,
     get_inbound,
+    get_staff,
     get_store,
 )
 from trackinizer.server.api._routes_shared import engine_of, require_browser
 from trackinizer.server.api.locks import require_unlocked
+from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.audience import members_reader
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.chat_hub import WorkspaceFrame
 from trackinizer.server.inbound import IdempotencyReuseError
 from trackinizer.server.visuals.chat_forks import (
+    ChatClosedError,
     ChatRefusedError,
     ConversationTakenError,
     ForeignChatError,
@@ -70,12 +74,18 @@ async def post_chat_line_route(
 ) -> ChatSent:
     """Post a line to a science chat, or start one, and queue it for the assistant.
 
-    A chat's starter posts into it, as does each person it is shared with and anyone
-    the server's ``TRACKINIZER_CHAT_ORGS`` lets in; a viewer may not, and any other
-    writer is refused with 403 ``chat_not_shared`` and forks it instead (``fork``
-    names the line to start from), whether the chat is named by ``conversation_id``
-    or by the ``Idempotency-Key`` of a post that names none; a fork whose key names a
-    conversation someone else began is refused with 409. A line under the id of a
+    Whoever reads a chat posts into it: its starter, each person it is shared with
+    and anyone the server's ``TRACKINIZER_CHAT_ORGS`` lets in, holding its audience;
+    a viewer may not, and any other writer is refused with 403 ``chat_not_shared``,
+    whether the chat is named by ``conversation_id`` or by the ``Idempotency-Key`` of
+    a post that names none. A reader forks a chat from one of its lines (``fork``
+    names it); a fork from a line of a chat the poster does not read is 422, since it
+    would copy lines they may not read, a fork of a ``private`` or ``staff`` chat is
+    409 ``chat_fork_closed``, since its copies would not keep the audience, a fork
+    that the poster's organisation would read and the chat's readers do not
+    include is 409 ``chat_fork_wider``, and a fork whose key names a conversation
+    someone else began is refused with 409. A
+    line under the id of a
     deleted chat, named or as a fork's key, or a fork from a line of one, is refused
     with 410 ``chat_deleted``: no chat starts under that id again. A station holds one
     chat: its first line binds the station to the line's conversation, and a line
@@ -101,6 +111,7 @@ async def post_chat_line_route(
 
     """
     require_browser(identity)
+    assistant = get_assistant(request)
     try:
         sent = await send_chat_line(
             engine_of(request),
@@ -110,15 +121,21 @@ async def post_chat_line_route(
             source=identity.email,
             source_role=identity.role,
             inbound=get_inbound(request),
-            assistant=get_assistant(request),
-            orgs=get_chat_orgs(request),
-            audiences=identity.read_audiences,
+            assistant=assistant,
+            reader=session_reader(request, identity),
+            members=members_reader(
+                identity.email,
+                orgs=get_chat_orgs(request),
+                assistant="" if assistant is None else assistant.email,
+            ),
         )
     except ForeignChatError as error:
         raise HTTPException(
             status_code=403,
             detail={"code": "chat_not_shared", "message": str(error)},
         ) from error
+    except ChatClosedError as error:
+        raise HTTPException(status_code=409, detail={"code": error.code}) from error
     except (
         WorkspaceSessionUnavailableError,
         PartnerBusyError,
@@ -147,14 +164,15 @@ async def read_chat_route(
     Args:
       conversation_id: The conversation.
       request: Request carrying the database engine.
-      identity: The signed-in user; every chat of the assistant is open to every
-        user, and a chat of a user's own helper to that user.
+      identity: The signed-in user; the head of every chat of the assistant is found
+        for every user, and of a chat of a user's own helper for that user. Its
+        transcript is read by the chat's members alone.
 
     Returns:
       head: The session, its starter, whether the assistant still has it open, how
-        often it was forked, what it was forked from, whether the caller's typing
-        forks it, who it is shared with, and whether the caller may share or delete
-        it.
+        often it was forked, what it was forked from, its audience, whether the
+        caller does not read it, who it is shared with, and whether the caller may
+        hide, share or delete it.
 
     """
     head = await read_head(
@@ -162,7 +180,7 @@ async def read_chat_route(
         assistant=get_assistant(request),
         caller=identity,
         conversation_id=conversation_id,
-        orgs=get_chat_orgs(request),
+        reader=session_reader(request, identity),
     )
     if head is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -176,10 +194,12 @@ async def share_chat_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> list[str]:
-    """Share a chat with one person, who then posts into it as its starter does.
+    """Share a chat with one person, who then reads it and posts as its starter does.
 
-    Only the chat's starter or an admin shares it, from a browser: an API key is
-    403, and anyone else is 403 ``chat_not_starter``. Sharing again changes nothing.
+    Only the chat's starter shares it, from a browser: an API key is 403, and anyone
+    else, an admin included, is 403 ``chat_not_starter``, since a share lets its
+    person read the chat. A ``staff`` chat is shared only with a person who holds
+    ``staff`` now, else 409 ``chat_staff_only``. Sharing again changes nothing.
 
     Args:
       conversation_id: The chat.
@@ -207,7 +227,7 @@ async def unshare_chat_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> list[str]:
-    """Stop sharing a chat with one person: their next line forks it, their past stay.
+    """Stop sharing a chat with one person: they read none of it, their past lines stay.
 
     Only the chat's starter or an admin unshares it, from a browser: an API key is
     403, and anyone else is 403 ``chat_not_starter``. Unsharing a person it is not
@@ -301,7 +321,7 @@ async def _set_share(
     email: str,
     shared: bool,
 ) -> list[str]:
-    """Share a chat with ``email`` or stop, answering 403 and 404 as the routes do."""
+    """Share a chat with ``email`` or stop, answering 403, 404 and 409 as routes do."""
     require_browser(identity)
     try:
         shared_with = await set_share(
@@ -311,9 +331,12 @@ async def _set_share(
             conversation_id=conversation_id,
             email=email,
             shared=shared,
+            staff=get_staff(request),
         )
     except ChatRefusedError as error:
         raise HTTPException(status_code=403, detail={"code": error.code}) from error
+    except ChatClosedError as error:
+        raise HTTPException(status_code=409, detail={"code": error.code}) from error
     if shared_with is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return shared_with

@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -47,6 +48,7 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   localStorage.clear();
   // As the server's word, not the user's choice: a choice would be sent, and its answer outlive the test.
   receivePreferences({ ...preferences(), chat_side: "left" });
@@ -58,13 +60,16 @@ function Palette() {
   return <output aria-label="Palette">{useCommandList().filter((command) => command.section === "Chat").map((command) => command.title).join("|")}</output>;
 }
 
-async function show(state: WorkspaceState = workspace) {
+async function show(
+  state: WorkspaceState = workspace,
+  { rail = null, sheet = null }: { readonly rail?: ReactNode; readonly sheet?: ReactNode } = {},
+) {
   vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><CommandRegistryContext value={new CommandRegistry()}>
     <Shortcuts />
     <Palette />
-    <ChatColumn><main>Workbench</main></ChatColumn>
+    <ChatColumn rail={rail} sheet={sheet}><main>Workbench</main></ChatColumn>
   </CommandRegistryContext></QueryClientProvider>);
   await screen.findByText("w1");
   return {
@@ -93,6 +98,33 @@ test("on the right Chat stands after the workbench, with the divider between the
   expect(order(row)).toEqual(["chat-workbench", "chat-column-edge", "chat-column"]);
 });
 
+test("the sidebar rail stands at the workbench's left edge, inside it, whichever side Chat is on", async () => {
+  const { row } = await show(workspace, { rail: <nav className="rail" /> });
+  const workbench = () => document.querySelector<HTMLElement>(".chat-workbench")!;
+  expect(order(row)).toEqual(["chat-column", "chat-column-edge", "chat-workbench"]);
+  expect(order(workbench())).toEqual(["rail", "chat-stage"]);
+  act(() => receivePreferences({ ...preferences(), chat_side: "right" }));
+  expect(order(row)).toEqual(["chat-workbench", "chat-column-edge", "chat-column"]);
+  expect(order(workbench())).toEqual(["rail", "chat-stage"]);
+});
+
+test("a sheet opens in the stage, from the rail's edge; full screen, over the row", async () => {
+  const { row } = await show(workspace, { rail: <nav className="rail" />, sheet: <aside className="sheet" /> });
+  const stage = () => document.querySelector<HTMLElement>(".chat-stage")!;
+  expect(order(stage())).toEqual(["", "sheet"]);
+  act(() => setChatFullscreen(true));
+  expect(order(row)).toEqual(["chat-column", "chat-workbench", "sheet"]);
+});
+
+test("on a phone Chat is the whole app: shown even if hidden, the workbench hidden, and no strip or divider", async () => {
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(max-width: 760px)", addEventListener() {}, removeEventListener() {} }));
+  setChatHidden(true);
+  const { row, column, workbench } = await show(workspace, { rail: <nav className="rail" /> });
+  expect(order(row)).toEqual(["chat-column", "chat-workbench"]);
+  expect(column.hidden).toBe(false);
+  expect(workbench.hidden).toBe(true);
+});
+
 test("the divider resizes by pointer, never under 280 px or over seven tenths of the row, and the width is kept", async () => {
   const { row, column } = await show();
   vi.spyOn(row, "getBoundingClientRect").mockReturnValue({ left: 100, right: 1100, width: 1000 } as DOMRect);
@@ -112,10 +144,22 @@ test("the divider resizes by pointer, never under 280 px or over seven tenths of
   expect(edge.getAttribute("aria-valuenow")).toBe("440");
 });
 
+test("a press inside the divider's gap moves Chat's edge by as much as the pointer, with no jump", async () => {
+  const { row, column } = await show();
+  vi.spyOn(row, "getBoundingClientRect").mockReturnValue({ left: 100, right: 1100, width: 1000 } as DOMRect);
+  Object.defineProperty(column, "offsetWidth", { configurable: true, value: 400 });
+  const edge = screen.getByRole("separator", { name: "Resize Chat" });
+  // Chat ends at 500; the press lands 4 px into the gap beyond it.
+  fireEvent.pointerDown(edge, { pointerId: 1, clientX: 504, clientY: 300 });
+  fireEvent.pointerMove(edge, { pointerId: 1, clientX: 604, clientY: 300 });
+  expect(column.style.getPropertyValue("--chat-width")).toBe("500px");
+});
+
 test("on the right a drag toward the workbench widens Chat", async () => {
   receivePreferences({ ...preferences(), chat_side: "right" });
   const { row, column } = await show();
   vi.spyOn(row, "getBoundingClientRect").mockReturnValue({ left: 0, right: 1000, width: 1000 } as DOMRect);
+  Object.defineProperty(column, "offsetWidth", { configurable: true, value: 300 });
   const edge = screen.getByRole("separator", { name: "Resize Chat" });
   fireEvent.pointerDown(edge, { pointerId: 1, clientX: 700, clientY: 300 });
   fireEvent.pointerMove(edge, { pointerId: 1, clientX: 650, clientY: 300 });
@@ -283,6 +327,27 @@ test("the keyboard inside the opened Chat holds it open after the pointer has le
   act(() => (document.activeElement as HTMLElement).blur());
   wait(FOLD_AFTER_MS);
   expect(column.hidden).toBe(true);
+});
+
+test("a click anywhere in the opened Chat pins it beside the workbench, and it stays once the pointer leaves", async () => {
+  const { row, column, strip, wait } = await hidden();
+  fireEvent.pointerMove(strip);
+  wait(OPEN_AFTER_MS);
+  fireEvent.pointerMove(column);
+  fireEvent.click(screen.getByText("w1"));
+  expect(currentChatColumn().hidden).toBe(false);
+  expect(order(row)).toEqual(["chat-column", "chat-column-edge", "chat-workbench"]);
+  expect(column.classList).not.toContain("chat-column-peek");
+  fireEvent.pointerLeave(column);
+  wait(FOLD_AFTER_MS * 2);
+  expect(column.hidden).toBe(false);
+});
+
+test("a click in a shown Chat changes nothing", async () => {
+  const { column } = await show();
+  fireEvent.click(screen.getByText("w1"));
+  expect(currentChatColumn().hidden).toBe(false);
+  expect(column.hidden).toBe(false);
 });
 
 test("a click on the strip, or the hide key, stands Chat beside the workbench again, and hiding afterwards starts folded", async () => {

@@ -336,22 +336,23 @@ class TestParsers:
 class TestChatOrgs:
     """``$TRACKINIZER_CHAT_ORGS`` says who else continues a science chat."""
 
-    def test_a_server_groups_by_domain_unless_it_says_otherwise(
+    def test_a_server_is_individual_unless_it_says_otherwise(
         self,
     ) -> None:
-        assert parse_chat_orgs("") == "domain"
+        assert parse_chat_orgs("") == "individual"
         assert parse_chat_orgs(" single ") == "single"
         assert parse_chat_orgs("domain") == "domain"
         assert parse_chat_orgs("individual ") == "individual"
-        assert Config().chat_orgs == "domain"
+        assert Config().chat_orgs == "individual"
 
-    def test_a_server_without_the_variable_set_reads_domain(
+    def test_a_server_without_the_variable_set_reads_individual(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """The mode that reads least: a forgotten setting shares nothing."""
         monkeypatch.delenv("TRACKINIZER_CHAT_ORGS", raising=False)
-        assert Config.from_env().chat_orgs == "domain"
-        assert Config.from_args(_server_args(assistant="")).chat_orgs == "domain"
+        assert Config.from_env().chat_orgs == "individual"
+        assert Config.from_args(_server_args(assistant="")).chat_orgs == "individual"
 
     def test_anything_else_is_a_config_error(self) -> None:
         with pytest.raises(ConfigError, match="single, domain or individual"):

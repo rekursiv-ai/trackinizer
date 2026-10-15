@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import noAuth from "../../test/testdata/me/getProfile.json";
-import type { Profile } from "../api/me";
+import type { OrgMode, Profile } from "../api/me";
 import { LOGIN_URL } from "../app/session";
 import { DEFAULT_PREFERENCES, receivePreferences, sendWaiting } from "../preferences";
 import { startTrail } from "../router/trail";
@@ -176,8 +176,14 @@ test("Sign out posts to /auth/logout, then loads the login page", async () => {
 
 test("under --no-auth, where nobody signs in, the page offers no sign out", () => {
   // The fixture is the profile a server run with --no-auth answers; a JSON import
-  // widens its preferences' words to `string`, where they are the server's defaults.
-  const everyone: Profile = { ...noAuth.response.body, preferences: noAuth.response.body.preferences as Profile["preferences"] };
+  // widens its preferences' and org mode's words to `string`, where they are the
+  // server's own.
+  const body = noAuth.response.body;
+  const everyone: Profile = {
+    ...body,
+    preferences: body.preferences as Profile["preferences"],
+    org_mode: body.org_mode as OrgMode,
+  };
   serveAccount(everyone);
   renderScreen(<SettingsView assign={vi.fn()} />, everyone);
   expect(screen.getByRole("region", { name: "Profile" })).toBeTruthy();

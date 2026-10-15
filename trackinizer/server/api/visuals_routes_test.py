@@ -39,6 +39,7 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
         "trax.subgraph",
         "trax.timeline",
         "trax.summary",
+        "trax.files",
     }
     assert by_type["trax.browse"]["version"] == 1
     assert by_type["trax.artifact"]["requires"] == ["record"]
@@ -65,6 +66,20 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
     assert by_type["trax.subgraph"]["record_kinds"] is None
     assert by_type["trax.summary"]["requires"] == ["record"]
     assert by_type["trax.summary"]["record_kinds"] == ["Issue", "AgentSession"]
+    files = by_type["trax.files"]
+    assert (files["requires"], files["record_kinds"]) == (["record"], None)
+    string = {"type": "string", "default": "", "minimum": None, "maximum": None}
+    assert files["parameter_schema"] == {
+        "path": {**string, "max_length": 512},
+        "changed": {
+            "type": "boolean",
+            "default": False,
+            "minimum": None,
+            "maximum": None,
+            "max_length": None,
+        },
+        "file": {**string, "max_length": 512},
+    }
 
 
 def test_visual_config_composes_titles_and_rejects_invalid_identity() -> None:

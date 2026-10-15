@@ -55,6 +55,7 @@ from trackinizer.trax.run.redact import Redactor
 from trackinizer.trax.run.sink import (
     FileSink,
     LockedSink,
+    PrivateNotHeldError,
     ResilientSink,
     Sink,
     TrackinizerSink,
@@ -265,6 +266,9 @@ class _FakeClient:
         self.granted_actor: str | None = None
         self.start_seq = 0
         self._id = uuid4()
+        # How the server answers a start: what it was asked, or a fixed audience.
+        self.hides = True
+        self.audience: str | None = None
 
     def session_start(self, body: SessionStart) -> SessionStartResponse:
         self.started.append(body)
@@ -272,6 +276,9 @@ class _FakeClient:
             id=self._id,
             seq=self.start_seq,
             actor=self.granted_actor or body.actor,
+            audience=("private" if body.private else "open")
+            if self.hides
+            else self.audience,
         )
 
     def append_records(
@@ -622,6 +629,47 @@ class TestTrackinizerSink:
         body = client.end_bodies[0]
         assert body is not None
         assert body.ended is not None
+
+
+class TestAPrivateRun:
+    """``trax run --private`` sends nothing to a server that would not hide it."""
+
+    def test_a_server_that_hides_it_takes_the_run(self) -> None:
+        client = _FakeClient()
+        sink = TrackinizerSink(cast(Client, client), "claude", private=True)
+
+        sink.open()
+        sink.emit("claude", _event("hidden"))
+        sink.close()
+
+        assert [body.private for body in client.started] == [True]
+        assert len(client.appended) == 1
+
+    @pytest.mark.parametrize(
+        "answered",
+        [None, "open"],
+        ids=["an older server", "open"],
+    )
+    def test_a_private_run_refuses_a_server_that_does_not_hide(
+        self,
+        tmp_path: Path,
+        answered: str | None,
+    ) -> None:
+        """The session it opened anyway is ended; no later send opens another."""
+        client = _FakeClient()
+        client.hides, client.audience = False, answered
+        primary = TrackinizerSink(cast(Client, client), "claude", private=True)
+        sink = ResilientSink(primary, fallback_path=tmp_path / "fallback.jsonl")
+
+        with pytest.raises(PrivateNotHeldError):
+            _ = sink.open()
+        primary.emit("claude", _event("never sent"))
+        with pytest.raises(PrivateNotHeldError):
+            primary.sync()
+
+        assert len(client.started) == 1
+        assert len(client.ended) == 1
+        assert client.appended == []
 
 
 class TestTrackinizerSinkManifestMetadata:

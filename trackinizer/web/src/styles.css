@@ -126,6 +126,8 @@ kbd {
 .app { display: grid; grid-template-columns: 244px minmax(0, 1fr); height: 100%; position: relative; }
 /* The sidebar's place in the grid. A rail that opens leaves this cell its width, and the sidebar lies over the workbench from it. */
 .sidebar-dock { display: flex; flex-direction: column; min-height: 0; position: relative; }
+/* With the canvas, the rail stands at the canvas's left edge, inside the workbench (ChatColumn), and the grid has the page alone. */
+.app.rail-in-row { grid-template-columns: minmax(0, 1fr); }
 .sidebar-dock > .sidebar { flex: 1; }
 .sidebar {
   display: flex; flex-direction: column; gap: 2px;
@@ -219,6 +221,9 @@ a.ws-switch:hover { background: var(--surface-raised); }
    and then neither the rail nor the drawer would apply. */
 @media (width > 760px) {
   .app.sidebar-collapsed { grid-template-columns: 48px minmax(0, 1fr); }
+  .app.rail-in-row.sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
+  .app.rail-in-row .main { margin-left: 8px; }
+  .app.sidebar-collapsed .chat-workbench > .sidebar-dock { flex-basis: 48px; }
   .app.sidebar-collapsed:not(.sidebar-peek) .sidebar { padding: 10px 6px 12px; }
   .app.sidebar-collapsed:not(.sidebar-peek) .ws-row { flex-direction: column; }
   .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-tools { align-items: center; }

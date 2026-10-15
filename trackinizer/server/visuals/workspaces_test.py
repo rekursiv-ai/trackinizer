@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 
 from pydantic import ValidationError
@@ -24,7 +25,9 @@ from trackinizer.server.visuals.workspaces import (
     WorkspaceData,
     apply_operation,
     initial_data,
+    refuse_params,
     refuse_record,
+    restore_page,
 )
 
 
@@ -173,6 +176,68 @@ def test_recentring_the_context_graph_keeps_its_reach_and_highlight() -> None:
         second,
         {"hops": 3, "highlight": str(second)},
     )
+
+
+_NARROWED: dict[str, str | int | bool] = {
+    "path": "loop/foo/",
+    "changed": True,
+    "file": "bar.py",
+}
+
+
+def _files(data: WorkspaceData) -> tuple[uuid.UUID | None, dict[str, str | int | bool]]:
+    [files] = [visual for visual in data.visuals if visual.type == "trax.files"]
+    return files.record_id, files.params
+
+
+def test_showing_files_on_a_new_record_keeps_its_narrowing() -> None:
+    """A show naming only a new record moves the files view; its params stay."""
+    catalog = default_catalog()
+    first, second = uuid.uuid4(), uuid.uuid4()
+    shown = apply_operation(
+        initial_data(catalog),
+        ShowVisual(
+            kind="show",
+            visual_type="trax.files",
+            record_id=first,
+            params=_NARROWED,
+        ),
+        catalog,
+    )
+    moved = apply_operation(
+        shown,
+        ShowVisual(kind="show", visual_type="trax.files", record_id=second),
+        catalog,
+    )
+    assert _files(shown) == (first, _NARROWED)
+    assert _files(moved) == (second, _NARROWED)
+
+
+def test_any_param_sets_the_files_narrowing_anew() -> None:
+    """Each param a show leaves out goes back to its default."""
+    catalog = default_catalog()
+    record = uuid.uuid4()
+    shown = apply_operation(
+        initial_data(catalog),
+        ShowVisual(
+            kind="show",
+            visual_type="trax.files",
+            record_id=record,
+            params=_NARROWED,
+        ),
+        catalog,
+    )
+    again = apply_operation(
+        shown,
+        ShowVisual(
+            kind="show",
+            visual_type="trax.files",
+            record_id=record,
+            params={"file": "baz.py"},
+        ),
+        catalog,
+    )
+    assert _files(again) == (record, {"path": "", "changed": False, "file": "baz.py"})
 
 
 def test_show_uses_bounded_catalog_defaults_and_requires_record() -> None:
@@ -375,23 +440,43 @@ def test_highlight_refuses_too_many_ids_and_non_uuids(ids: object) -> None:
         )
 
 
-def test_the_default_visual_is_the_page_and_cannot_be_hidden() -> None:
-    """Another visual can be hidden; browse, the page itself, cannot."""
+def test_the_page_can_be_hidden_like_any_other_visual() -> None:
+    """Browse is the visual a canvas opens with, not one it must keep."""
     catalog = default_catalog()
     data = _with_graph(catalog)
     browse, graph = data.visuals
-    with pytest.raises(ValueError, match="cannot be hidden"):
-        apply_operation(
-            data,
-            HideVisual(kind="hide", instance_id=browse.id),
-            catalog,
-        )
+    hidden = apply_operation(
+        data,
+        HideVisual(kind="hide", instance_id=browse.id),
+        catalog,
+    )
+    assert [visual.type for visual in hidden.visuals] == ["trax.subgraph"]
     hidden = apply_operation(
         data,
         HideVisual(kind="hide", instance_id=graph.id),
         catalog,
     )
     assert [visual.type for visual in hidden.visuals] == ["trax.browse"]
+
+
+def test_restoring_the_page_shows_it_in_main_and_focuses_it() -> None:
+    """A canvas that holds no page gets it back; one that holds it is unchanged."""
+    catalog = default_catalog()
+    data = _with_graph(catalog)
+    browse, graph = data.visuals
+    assert restore_page(data, catalog=catalog) == data
+    without = apply_operation(
+        data,
+        HideVisual(kind="hide", instance_id=browse.id),
+        catalog,
+    )
+    restored = restore_page(without, catalog=catalog)
+    assert [(v.type, v.placement) for v in restored.visuals] == [
+        ("trax.subgraph", "main"),
+        ("trax.browse", "main"),
+    ]
+    assert restored.focused_instance == restored.visuals[-1].id
+    assert restored.visuals[0].id == graph.id
 
 
 def test_a_visual_that_takes_no_record_refuses_one() -> None:
@@ -477,6 +562,73 @@ def test_refuse_record_names_the_kinds_and_what_it_found() -> None:
         )
         == "Visual takes no record target."
     )
+
+
+@pytest.mark.parametrize(
+    ("visual", "params", "reason"),
+    [
+        (
+            "trax.files",
+            {"path": "", "depth": 1},
+            "Visual parameters do not match the catalog schema.",
+        ),
+        ("trax.files", {"path": 1}, "Parameter 'path' must be a string."),
+        ("trax.files", {"file": True}, "Parameter 'file' must be a string."),
+        (
+            "trax.files",
+            {"path": "x" * 513},
+            "Parameter 'path' exceeds maximum length of 512.",
+        ),
+        (
+            "trax.files",
+            {"file": "x" * 513},
+            "Parameter 'file' exceeds maximum length of 512.",
+        ),
+        ("trax.files", {"changed": "true"}, "Parameter 'changed' must be a boolean."),
+        ("trax.files", {"changed": 1}, "Parameter 'changed' must be a boolean."),
+        ("trax.subgraph", {"hops": "2"}, "Parameter 'hops' must be an integer."),
+        ("trax.subgraph", {"hops": True}, "Parameter 'hops' must be an integer."),
+        ("trax.subgraph", {"hops": 0}, "Parameter 'hops' is below its minimum of 1."),
+        ("trax.subgraph", {"hops": 4}, "Parameter 'hops' is above its maximum of 3."),
+    ],
+)
+def test_refuse_params_names_the_rule_a_show_breaks(
+    visual: str,
+    params: dict[str, str | int | bool],
+    reason: str,
+) -> None:
+    """The sentence names the param and the bound; the server raises the same."""
+    assert refuse_params(params, descriptor=_entry(visual)) == reason
+    catalog = default_catalog()
+    with pytest.raises(ValueError, match=re.escape(reason)):
+        apply_operation(
+            initial_data(catalog),
+            ShowVisual(
+                kind="show",
+                visual_type=visual,
+                record_id=uuid.uuid4(),
+                params=params,
+            ),
+            catalog,
+        )
+
+
+@pytest.mark.parametrize(
+    ("visual", "params"),
+    [
+        ("trax.files", {}),
+        ("trax.files", {"path": "x" * 512, "changed": True, "file": "x" * 512}),
+        ("trax.files", {"path": "**/*.py", "changed": False, "file": ""}),
+        ("trax.subgraph", {"hops": 1, "highlight": ""}),
+        ("trax.subgraph", {"hops": 3}),
+    ],
+)
+def test_refuse_params_accepts_params_within_bounds(
+    visual: str,
+    params: dict[str, str | int | bool],
+) -> None:
+    """A param at its bound is taken; one left out takes its default."""
+    assert refuse_params(params, descriptor=_entry(visual)) is None
 
 
 def test_a_show_without_a_record_is_never_refused_for_one() -> None:

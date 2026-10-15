@@ -14,6 +14,7 @@ import pytest
 
 from trackinizer.server.api.app import app
 from trackinizer.server.auth import AuthIdentity, current_user, generate_token
+from trackinizer.server.config import ChatOrgs, Config
 
 
 if TYPE_CHECKING:
@@ -579,6 +580,22 @@ class TestProfile:
         assert body["rules_issue_id"] is None
         assert body["acknowledged_at"] is None
         assert body["acknowledged_rules_version"] is None
+
+    @pytest.mark.parametrize("orgs", ["single", "domain", "individual"])
+    def test_profile_names_the_org_mode(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        orgs: ChatOrgs,
+    ) -> None:
+        """The page says who reads what its user makes, as the server sets it."""
+        client, _store, engine = route_client
+        engine.conn.fetchrow = AsyncMock(side_effect=[None, None])
+        monkeypatch.setattr(app.state, "config", Config(chat_orgs=orgs), raising=False)
+
+        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+
+        assert body["org_mode"] == orgs
 
 
 _EMPTY_USER_DATA: dict[str, object] = {

@@ -181,42 +181,44 @@ def format_table(
     """
     if not rows:
         return "(no rows)\n"
-    columns = _visible_table_columns(
-        rows,
-        (
-            ("ref", lambda r: f"{r.get('kind', '?')}#{r.get('seq', '?')}"),
-            ("status", lambda r: from_plain(r.get("status"), str, default="")),
-            ("title", lambda r: from_plain(r.get("title"), str, default="")),
-            ("priority", lambda r: _row_value(r.get("priority"))),
-            ("owner", lambda r: _row_value(r.get("owner"))),
-            ("kind", lambda r: _row_value(r.get("issue_kind"))),
-            ("labels", lambda r: _row_value(r.get("labels"))),
-            ("description", lambda r: _row_value(r.get("description"))),
-            ("validation", lambda r: _row_value(r.get("validation"))),
-            ("subscribers", lambda r: _row_value(r.get("subscribers"))),
-            ("judgement", lambda r: _row_value(r.get("judgement"))),
-            ("confidence", lambda r: _row_value(r.get("confidence"))),
-            ("outcome", lambda r: _row_value(r.get("outcome"))),
-            ("abstract", lambda r: _row_value(r.get("abstract"))),
-            ("authors", lambda r: _row_value(r.get("authors"))),
-            ("publication_type", lambda r: _row_value(r.get("publication_type"))),
-            ("venue", lambda r: _row_value(r.get("venue"))),
-            ("subvenue", lambda r: _row_value(r.get("subvenue"))),
-            ("publish_date", lambda r: _row_value(r.get("publish_date"))),
-            ("source", lambda r: _row_value(r.get("source"))),
-            ("sha", lambda r: _row_value(r.get("sha"))),
-            ("url", lambda r: _row_value(r.get("url"))),
-            ("query", lambda r: _row_value(r.get("query"))),
-            ("provider", lambda r: _row_value(r.get("provider"))),
-            ("cli", lambda r: _row_value(r.get("cli"))),
-            ("codechanges", lambda r: _row_value(r.get("codechanges"))),
-            ("edge-priority", lambda r: _row_value(r.get("edge_priority"))),
-            ("valence", lambda r: _row_value(r.get("edge_valence"))),
-            ("edge-labels", lambda r: _row_value(r.get("edge_labels"))),
-            ("note", lambda r: _row_value(r.get("edge_note"))),
-            ("agent-cost", lambda r: _row_cost(r, "agent_usd")),
-            ("resource-cost", lambda r: _row_cost(r, "resource_usd")),
-        ),
+    columns: tuple[tuple[str, _RowFn], ...] = (
+        ("ref", lambda r: f"{r.get('kind', '?')}#{r.get('seq', '?')}"),
+        ("status", lambda r: from_plain(r.get("status"), str, default="")),
+        ("title", lambda r: from_plain(r.get("title"), str, default="")),
+        ("priority", lambda r: _row_value(r.get("priority"))),
+        ("owner", lambda r: _row_value(r.get("owner"))),
+        ("kind", lambda r: _row_value(r.get("issue_kind"))),
+        ("labels", lambda r: _row_value(r.get("labels"))),
+        ("description", lambda r: _row_value(r.get("description"))),
+        ("validation", lambda r: _row_value(r.get("validation"))),
+        ("subscribers", lambda r: _row_value(r.get("subscribers"))),
+        ("judgement", lambda r: _row_value(r.get("judgement"))),
+        ("confidence", lambda r: _row_value(r.get("confidence"))),
+        ("outcome", lambda r: _row_value(r.get("outcome"))),
+        ("abstract", lambda r: _row_value(r.get("abstract"))),
+        ("authors", lambda r: _row_value(r.get("authors"))),
+        ("publication_type", lambda r: _row_value(r.get("publication_type"))),
+        ("venue", lambda r: _row_value(r.get("venue"))),
+        ("subvenue", lambda r: _row_value(r.get("subvenue"))),
+        ("publish_date", lambda r: _row_value(r.get("publish_date"))),
+        ("source", lambda r: _row_value(r.get("source"))),
+        ("sha", lambda r: _row_value(r.get("sha"))),
+        ("url", lambda r: _row_value(r.get("url"))),
+        ("query", lambda r: _row_value(r.get("query"))),
+        ("provider", lambda r: _row_value(r.get("provider"))),
+        ("cli", lambda r: _row_value(r.get("cli"))),
+        ("codechanges", lambda r: _row_value(r.get("codechanges"))),
+        ("edge-priority", lambda r: _row_value(r.get("edge_priority"))),
+        ("valence", lambda r: _row_value(r.get("edge_valence"))),
+        ("edge-labels", lambda r: _row_value(r.get("edge_labels"))),
+        ("note", lambda r: _row_value(r.get("edge_note"))),
+        ("agent-cost", lambda r: _row_cost(r, "agent_usd")),
+        ("resource-cost", lambda r: _row_cost(r, "resource_usd")),
+    )
+    columns = tuple(
+        column
+        for index, column in enumerate(columns)
+        if index < 3 or any(column[1](row) for row in rows)
     )
     columns = _columns_for_width(columns, width=_resolved_table_width(width))
     cells = [[_table_cell(fn(row)) for _, fn in columns] for row in rows]
@@ -411,7 +413,8 @@ def format_session_hits(body: Mapping[str, object]) -> str:
         requested but unavailable.
 
     """
-    hits = from_plain(body.get("hits"), list[dict[str, object]], default=[])
+    raw_hits = body.get("hits")
+    hits = from_plain([] if raw_hits is None else raw_hits, list[dict[str, object]])
     lines: list[str] = []
     if body.get("degraded"):
         lines.append("(semantic search unavailable; showing full-text results only)")
@@ -665,17 +668,6 @@ def _edge_annotation(peer: Mapping[str, object]) -> str:
     if note := peer.get("note"):
         parts.append(str(note))
     return f"  [{'; '.join(parts)}]" if parts else ""
-
-
-def _visible_table_columns(
-    rows: Sequence[Mapping[str, object]],
-    columns: Sequence[tuple[str, _RowFn]],
-) -> tuple[tuple[str, _RowFn], ...]:
-    return tuple(
-        column
-        for index, column in enumerate(columns)
-        if index < 3 or any(column[1](row) for row in rows)
-    )
 
 
 def _resolved_table_width(width: int | None) -> int:

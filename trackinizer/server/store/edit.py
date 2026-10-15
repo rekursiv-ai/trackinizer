@@ -13,6 +13,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
+import json
+
 from treekle import from_plain
 
 import asyncpg
@@ -995,6 +997,109 @@ class _EditMixin(_CascadeAuditMixin):
             actor=actor,
             reason=reason,
         )
+
+    async def set_app(
+        self,
+        target_id: UUID,
+        value: dict[str, object] | None,
+        *,
+        api_key_id: UUID | None = None,
+        actor: Inquiry.Actor,
+        reason: str = "",
+    ) -> UUID | None:
+        return await self._set_field(
+            target_id,
+            value,
+            column="app",
+            api_key_id=api_key_id,
+            actor=actor,
+            reason=reason,
+        )
+
+    async def transition_app(
+        self,
+        target_id: UUID,
+        *,
+        expected_from: dict[str, object] | None,
+        to: dict[str, object] | None,
+        api_key_id: UUID | None = None,
+        actor: Inquiry.Actor,
+        reason: str = "",
+    ) -> UUID | None:
+        """Compare-and-set a row's ``app``: refuse if current != ``expected_from``.
+
+        The ``app`` analogue of :meth:`transition_judgement`. A writer that changes
+        one field of ``app`` writes the whole object, so two writers racing on one
+        row -- a lead correcting its verdict while a meter files a patch --
+        would otherwise erase each other's field. Holding the row lock across the
+        read of ``app`` and the UPDATE makes the second writer observe the first
+        one's object and get a :class:`ConflictError`; it reads again and merges.
+
+        Args:
+          target_id: ID of the row to edit.
+          expected_from: The whole ``app`` that must be current, as JSON; ``None``
+            when it must be unset.
+          to: The whole new ``app``; ``None`` clears it.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
+          reason: Optional explanation of the change.
+
+        Returns:
+          change_id: Audit change identifier, or ``None`` for a no-op.
+
+        Raises:
+          ConflictError: The current ``app`` differs from ``expected_from``, or
+            ``to`` breaks the column's check.
+
+        """
+        async with (
+            notify_after_commit(),
+            self.engine.acquire() as conn,
+            tx(conn),
+        ):
+            replay = await self._replay_field_change(
+                conn,
+                target_id,
+                "app",
+                actor=actor,
+            )
+            if replay is not None:
+                return replay
+            row = await self._read_field(conn, target_id, "app")
+            replay = await self._replay_field_change(
+                conn,
+                target_id,
+                "app",
+                actor=actor,
+            )
+            if replay is not None:
+                return replay
+            current = cast(dict[str, object] | None, row["app"])
+            # The objects run to 64 KiB, so the refusal does not quote them.
+            if not _same_json(current, expected_from):
+                raise ConflictError(
+                    "app transition rejected: the app changed since it was read",
+                )
+            if _same_json(current, to):
+                return None
+            try:
+                await self._update_field(conn, target_id, "app", to)
+            except asyncpg.CheckViolationError as exc:
+                raise ConflictError(
+                    f"check constraint violated: {exc.detail or exc!s}",
+                ) from exc
+            change_id, _ = await self._emit_field_change(
+                conn,
+                target_id,
+                cast(Inquiry.InquiryKind, row["kind"]),
+                "app",
+                Snapshot(app=current),
+                new=Snapshot(app=to),
+                api_key_id=api_key_id,
+                actor=actor,
+                reason=reason,
+            )
+            return change_id
 
     async def set_abstract(
         self,
@@ -2113,3 +2218,10 @@ class _EditMixin(_CascadeAuditMixin):
                 reason=reason,
             )
             return change_id
+
+
+# Python's ``==`` holds ``True == 1`` and ``1 == 1.0``, which JSON tells apart, so a
+# guard compared that way would let a write through over a value that changed.
+def _same_json(left: object, right: object) -> bool:
+    """Whether two JSON values are the same value, key order aside."""
+    return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)

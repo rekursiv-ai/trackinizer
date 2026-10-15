@@ -6,7 +6,6 @@
   "response": {
     "body": {
       "abstract": "paper",
-      "audience": "agentsession",
       "authors": "paper",
       "cli": "agentsession",
       "cli_session_id": "agentsession",

@@ -13,8 +13,10 @@
       "name": "no-auth",
       "open_audiences": [
         "open",
+        "private",
         "staff"
       ],
+      "org_mode": "individual",
       "pinned_audience": null,
       "preferences": {
         "aliases": [],
@@ -38,6 +40,7 @@
       },
       "read_audiences": [
         "open",
+        "private",
         "staff"
       ],
       "role": "admin",

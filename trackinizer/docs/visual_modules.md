@@ -27,7 +27,11 @@ own beside the canvas.
    pass browser JSON to configgle `deserialize()`.
 4. Register a renderer for the type and version in the web client, loaded with
    a dynamic import. An unavailable renderer produces an error inside its
-   tile.
+   tile. The renderer draws rows: its record is the app's anchor row, it
+   gathers the app's other rows by labels and edges, and it reads what only
+   the app knows from each row's `app.<app>`, which the app's writers keep in
+   the shape it draws. A visual serves no data of its own: to change what it
+   shows, an agent writes the rows, and moves only attention on the canvas.
 5. Regenerate the client's catalog preview and the OpenAPI schema from the
    backend catalog so the snapshot tests and the client type check agree with
    it.
@@ -109,7 +113,8 @@ oldest first and at most 8; a malformed address, or a longer trail, returns
 carries each as a page with its route and, when it exists, that record.
 Any other address, or a record that does not exist, keeps its route and has
 no record. Each visible visual carries the record it shows the same way, so
-"this" means what the sender sees. The agent receives the
+"this" means what the sender sees, and its `params` as the canvas holds them,
+so an agent sees a narrowing the reader set in a pane. The agent receives the
 context beside the message and reads the cited graph rows through trax.
 The receipt names the conversation, and the session once the assistant has it
 open; it does not claim the agent answered. Retry the same draft with the
@@ -118,10 +123,10 @@ same key.
 A conversation is an AgentSession (label `science-chat`). Chat reads its
 records and refreshes when the canvas event stream says the session changed;
 a line by another poster shows its sender. The station menu lists the user's stations, each holding one chat; the
-composer says chats are public to every user and cannot be deleted. A science
+composer says a chat is read by its members alone. A science
 chat's session in the Console or on its detail page offers Continue in Chat.
-Subgraph, timeline, and Artifact visuals use the same catalog and operation
-path.
+Subgraph, timeline, Artifact and files visuals use the same catalog and
+operation path.
 
 ## Lineage and timeline
 
@@ -163,6 +168,66 @@ stored. A reader whose profile lists the `staff` audience also gets the
 transcript beside the steps (`/api/sessions/<id>/records`) and the numbers open
 it; the page only chooses what to show, and the server refuses the transcript to
 anyone else (`session_audience`).
+
+## Files
+
+`trax.files` shows a record's files and what changed in them, each change with
+its diff. It takes a record of any kind and reads the newest files document filed
+for it. No route reads a work tree or a file: the document is an Artifact, and the
+page opens and downloads nothing.
+
+The document is the Artifact's description, one compact JSON object
+(`wire/files_doc.py`, `FilesDoc`, `dump_files`, `load_files`):
+
+| Key | Meaning |
+|---|---|
+| `kind`, `version` | `"files"` and `1`; a reader drops any other version. |
+| `base` | What `changed` is measured against (`origin/main`, a sha); `""` when unknown. |
+| `files`, `more_files` | The tree's paths, sorted and possibly capped; whether more exist. |
+| `changed`, `more_changes` | Each file that differs from `base`, sorted by path; whether more exist. |
+| `changed[].change` | `added`, `modified` or `deleted`; a deleted file is never in `files`. |
+| `changed[].diff`, `note` | Git's diff of the one path, or `""` when `note` is `withheld` or `omitted`; `clipped` cuts it at a line end. |
+| `hidden` | Paths the source withheld from both lists by its own rule. |
+
+It holds no file content beyond diffs and no time, so an unchanged tree writes the
+same text. A producer labels the Artifact `files` and `files:of:<record id>` for
+each record it describes, may add labels of its own, and files a `produced_by`
+edge to each record so the document shows among its relations. A `files:of:` label
+is a link, never a row key: every source of a record's files writes it, so a
+producer that refreshes its row in place finds it by a label only it writes (the
+campaign summary service keys `files:campaign:<lead id>`), or it would overwrite
+another source's document. The shape names no source, so a campaign's work tree, a
+branch or a pull request is filed alike.
+
+The page reads `GET /api/inquiries` for kind Artifact with the labels `files` and
+`files:of:<record id>`, and keeps a row only when it was filed by one of the
+`summary_accounts` in `GET /api/me/profile` (the operator's service accounts) or
+by the account the record itself is filed under, read with
+`GET /api/inquiries/<record id>` only when some row is filed by another account.
+Any writer can put these labels on a row, so a third party's document on someone
+else's record is dropped, while a person's own source (a work tree they file on
+their own session or Issue) shows with no change to the page. Of those kept, the
+newest by `modified` shows, with a count when there are several. The list route
+applies the reader's audiences to every row, so a reader sees a document only
+where they may read that Artifact.
+
+Three bounded params narrow it, applied in order:
+
+- `path` (string, at most 512): `""` shows everything; with `*` or `?` it is a
+  glob over the whole path (`**/` zero or more directories, `*` any run without
+  `/`, `?` one character but `/`); otherwise a prefix (`src/foo/` is that
+  directory). Case is ignored. It narrows the tree and the changes.
+- `changed` (boolean): `true` hides the tree; only the changed files show.
+- `file` (string, at most 512): opens the diff of the changed file at that path,
+  else of every changed file ending in `/<file>`, among only those `path`
+  leaves; it never narrows the list.
+
+As with `trax.subgraph`, a show naming only a new record keeps the params, and a
+show with any param sets all three. The server refuses a param outside its bound
+with the sentence `refuse_params` (`server/visuals/workspaces.py`) writes, which the
+Chat assistant's `ShowFiles` also checks before it asks. `trax.campaign` embeds
+the same panel under the campaign's lineage, reading the brief's document with
+the extra label `campaign:<slug>`.
 
 ## Stations
 

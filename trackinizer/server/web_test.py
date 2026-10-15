@@ -43,6 +43,7 @@ from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server import web
 from trackinizer.server.api import auth_routes
 from trackinizer.server.api.query import get_inquiry_route
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
 from trackinizer.server.embedders.stub import StubEmbedder
@@ -89,6 +90,13 @@ _TEST_IDENTITY = AuthIdentity(
     api_key_id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
     email="webtest@example.com",
     role="viewer",
+)
+# How the transcript test reads ``_TEST_IDENTITY``'s listings on a server with no
+# configuration, where each person is an organisation of one.
+_TEST_READER = SessionReader(
+    audiences=frozenset({"open", "private"}),
+    email="webtest@example.com",
+    hidden=False,
 )
 
 # The relations ``GET /api/inquiries/{id}`` projects onto the row. The web detail
@@ -379,6 +387,13 @@ class TestSerialization:
         # JSONB is decoded to a dict by the codec; surfaced verbatim, not
         # ISO-formatted or stringified.
         assert out["config"] == cfg
+
+    def test_row_to_dict_surfaces_any_rows_app(self) -> None:
+        app = {"tracker": {"budget_usd": 20}}
+        out = web._row_to_dict(
+            cast("asyncpg.Record", _inquiry_row(kind="Issue", app=app)),
+        )
+        assert out["app"] == app
 
     def test_row_to_dict_surfaces_agentsession_fields(self) -> None:
         started = datetime(2026, 5, 18, 9, tzinfo=UTC)
@@ -877,6 +892,8 @@ class TestRoutes:
         self,
     ) -> None:
         engine = FakeEngine()
+        # The database says the viewer reads the session, once they hold its audience.
+        engine.conn.fetchval = AsyncMock(return_value=True)
         hidden, shown = new_uuid(), new_uuid()
         engine.listen_messages = [
             json.dumps({"id": str(hidden), "audience": "staff"}),
@@ -1094,14 +1111,16 @@ class TestFeedReads:
             rooms=("lab",),
             clis=("codex",),
             kinds=("ToolCall", "UserMessage"),
+            reader=_TEST_READER,
         )
         assert scope_of(("room", "lab"), ("actor", "eng")) == FeedScope(
             actors=("eng",),
             rooms=("lab",),
+            reader=_TEST_READER,
         )
-        assert scope_of() == WHOLE_FEED
+        assert scope_of() == replace(WHOLE_FEED, reader=_TEST_READER)
 
-    def test_each_read_is_scoped_to_the_audiences_of_its_caller(self) -> None:
+    def test_each_read_is_scoped_to_the_reader_its_caller_is(self) -> None:
         store = self._histogram_store()
         store.read_feed = AsyncMock(return_value=[])
         store.read_feed_facets = AsyncMock(
@@ -1118,7 +1137,10 @@ class TestFeedReads:
         web.attach(app)
         client = TestClient(app)
 
-        for audiences in (frozenset({"open"}), frozenset({"open", "staff"})):
+        for audiences in (
+            frozenset({"open", "private"}),
+            frozenset({"open", "private", "staff"}),
+        ):
             caller = replace(_TEST_IDENTITY, read_audiences=audiences)
 
             async def identity(caller: AuthIdentity = caller) -> AuthIdentity:
@@ -1128,7 +1150,72 @@ class TestFeedReads:
             for path, read in reads.items():
                 assert client.get(path).status_code == 200, path
                 scope = cast(FeedScope, read.call_args.kwargs["scope"])
-                assert scope.audiences == audiences, path
+                assert scope.reader == SessionReader(
+                    audiences=audiences,
+                    email=_TEST_IDENTITY.email,
+                    oversight="staff" in audiences,
+                    hidden=False,
+                ), path
+
+    def test_feed_whose_mine_keeps_the_callers_sessions(self) -> None:
+        """Every read narrows to the caller's own account, whatever else is named."""
+        scopes = self._scopes({"whose": "mine", "cli": "codex"})
+
+        assert (
+            scopes
+            == [
+                FeedScope(
+                    clis=("codex",),
+                    account=_TEST_IDENTITY.email,
+                    reader=_TEST_READER,
+                ),
+            ]
+            * 3
+        )
+
+    def test_feed_whose_campaigns_keeps_sessions_of_briefs_labelled_with_the_asker(
+        self,
+    ) -> None:
+        scopes = self._scopes({"whose": "campaigns"})
+
+        assert (
+            scopes == [FeedScope(asker=_TEST_IDENTITY.email, reader=_TEST_READER)] * 3
+        )
+
+    def test_feed_whose_everyone_is_the_default(self) -> None:
+        """Everyone is every session the caller reads; ``hidden`` keeps private ones."""
+        named = self._scopes({"whose": "everyone"})
+        hidden = self._scopes({"hidden": "true"})
+
+        assert named == self._scopes({}) == [FeedScope(reader=_TEST_READER)] * 3
+        assert hidden == [FeedScope(reader=replace(_TEST_READER, hidden=True))] * 3
+        assert (
+            self._client(AsyncMock())
+            .get(
+                "/api/web/feed",
+                params={"whose": "theirs"},
+            )
+            .status_code
+            == 422
+        )
+
+    def _scopes(self, params: dict[str, str]) -> list[FeedScope]:
+        """Return the scope each of the feed, its facets and histogram was read with."""
+        store = self._histogram_store()
+        store.read_feed = AsyncMock(return_value=[])
+        store.read_feed_facets = AsyncMock(
+            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        )
+        client = self._client(store)
+        scopes: list[FeedScope] = []
+        for path, read in (
+            ("/api/web/feed", store.read_feed),
+            ("/api/web/feed/facets", store.read_feed_facets),
+            ("/api/web/feed/histogram", store.read_feed_histogram),
+        ):
+            assert client.get(path, params=params).status_code == 200, path
+            scopes.append(cast(FeedScope, read.call_args.kwargs["scope"]))
+        return scopes
 
     def test_the_feed_keeps_only_conversation_when_asked(self) -> None:
         store = AsyncMock()
@@ -1151,6 +1238,7 @@ class TestFeedReads:
         wanted = FeedScope(
             station=StationAgents(workspace_id=station, user_id=_TEST_IDENTITY.user_id),
             kinds=("ToolCall",),
+            reader=_TEST_READER,
         )
 
         for path, read in (
@@ -1184,7 +1272,7 @@ class TestFeedReads:
         assert store.read_feed_facets.call_args.kwargs == {
             "since": datetime(2026, 10, 1, tzinfo=UTC),
             "until": datetime(2026, 10, 2, tzinfo=UTC),
-            "scope": FeedScope(clis=("codex",)),
+            "scope": FeedScope(clis=("codex",), reader=_TEST_READER),
         }
         backwards = (("since", window[1][1]), ("until", window[0][1]))
         assert client.get("/api/web/feed/facets", params=backwards).status_code == 400
@@ -1204,7 +1292,7 @@ class TestFeedReads:
             "since": None,
             "until": None,
             "buckets": 120,
-            "scope": FeedScope(kinds=("ToolCall",)),
+            "scope": FeedScope(kinds=("ToolCall",), reader=_TEST_READER),
         }
         for buckets, status in ((1, 400), (2, 200), (1_000, 200), (1_001, 400)):
             response = client.get(
@@ -1916,6 +2004,7 @@ async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -
                 title="filled",
                 outcome="ok",
                 config={"lr": 0.1, "nested": {"warmup": 100}},
+                app={"tracker": {"verdict": "works"}},
             ),
             SubmitPaper(
                 account=account,
@@ -1945,6 +2034,10 @@ async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -
         assert detail["self"] == {
             key: value for key, value in canonical.items() if key not in _EDGE_RELATIONS
         }
+    filled = await web.web_get(ids[10], request, identity=_TEST_IDENTITY)
+    assert from_plain(filled["self"], dict[str, object])["app"] == {
+        "tracker": {"verdict": "works"},
+    }
 
 
 @pytest.mark.db_pglite

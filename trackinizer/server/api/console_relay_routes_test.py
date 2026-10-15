@@ -35,6 +35,7 @@ from trackinizer.server.api.canvas_test_support import (
     seed_session,
 )
 from trackinizer.server.chat_hub import ChatHub
+from trackinizer.server.config import Config
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.wire.wire_science_chat import (
     CHAT_HELPER_CLI,
@@ -52,8 +53,8 @@ if TYPE_CHECKING:
 
     from trackinizer.conftest import FakeEngine
     from trackinizer.lib.postgres import DatabaseEngine
+    from trackinizer.server.audience import SessionReader
     from trackinizer.server.auth import Role
-    from trackinizer.server.config import ChatOrgs
     from trackinizer.server.store.core import Store
     from trackinizer.wire.wire_sessions import ConsoleRelay
 
@@ -71,7 +72,7 @@ class _Relayed:
     def __init__(self, monkeypatch: pytest.MonkeyPatch, *, answer: bool | None) -> None:
         self.calls: list[tuple[uuid.UUID, uuid.UUID, ConsoleRelay, uuid.UUID, str, str]]
         self.calls = []
-        self.orgs: list[ChatOrgs] = []
+        self.readers: list[SessionReader] = []
 
         async def relay_console_line(
             engine: DatabaseEngine,
@@ -84,13 +85,13 @@ class _Relayed:
             source_role: Role,
             inbound: InboundQueue,
             assistant: object,
-            orgs: ChatOrgs,
+            reader: SessionReader,
         ) -> bool | None:
             del engine, inbound, assistant
             self.calls.append(
                 (user_id, workspace_id, relay, key, source, source_role),
             )
-            self.orgs.append(orgs)
+            self.readers.append(reader)
             return answer
 
         monkeypatch.setattr(
@@ -104,7 +105,9 @@ def test_the_route_hands_the_owners_line_to_the_relay_under_the_request_key(
     route_client: tuple[TestClient, Store, FakeEngine],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """It reads for the owner as the server's organisation mode says: here, by domain."""
     client, _store, _engine = route_client
+    monkeypatch.setattr(app.state, "config", Config(chat_orgs="domain"), raising=False)
     browser()
     relayed = _Relayed(monkeypatch, answer=True)
     key = uuid.uuid4()
@@ -125,7 +128,9 @@ def test_the_route_hands_the_owners_line_to_the_relay_under_the_request_key(
         ("tiles-a", "ops"),
     ]
     assert (source, role) == ("test-user@example.com", "writer")
-    assert relayed.orgs == ["domain"]
+    assert [(each.email, each.org) for each in relayed.readers] == [
+        ("test-user@example.com", "example.com"),
+    ]
 
 
 def test_an_undelivered_relay_is_an_answer_and_a_stranger_s_station_is_not_found(

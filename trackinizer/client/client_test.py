@@ -1241,6 +1241,33 @@ class TestClientMethods:
             ),
         ]
 
+    def test_transition_app_dispatches_the_whole_expected_object(self) -> None:
+        """A row's ``app`` is compared and set whole, on the base fields' route."""
+        target_id = uuid.uuid4()
+        client = _ClientSpy(post_result={"ok": True})
+
+        client.transition_app(
+            target_id,
+            expected_from={"tracker": {"verdict": "works"}},
+            to={"tracker": {"verdict": "works", "patch": "p"}},
+            actor="meter",
+            reason="code change",
+        )
+
+        assert client.request_calls == [
+            (
+                "PUT",
+                f"/api/inquiries/{target_id}/app",
+                {
+                    "actor": "meter",
+                    "value": {"tracker": {"verdict": "works", "patch": "p"}},
+                    "mode": "cas",
+                    "expected": {"tracker": {"verdict": "works"}},
+                    "reason": "code change",
+                },
+            ),
+        ]
+
     def test_annotate_edge_is_best_effort_in_fixed_field_order(self) -> None:
         """``annotate_edge`` is documented best-effort: deterministic order, partial on failure.
 
@@ -2213,7 +2240,14 @@ class TestSessionMethods:
             "agent_instructions": "Trace the evidence.",
             "continuation_record_id": str(record_id),
             "visible_visuals": [
-                {"id": str(visual_id), "type": "trax.browse", "record": None},
+                # A server from before params sends none; the drain must still read
+                # the visual, as one with no narrowing, not drop the whole context.
+                {
+                    "id": str(visual_id),
+                    "type": "trax.browse",
+                    "record": None,
+                    "params": {},
+                },
             ],
             "conversation_id": None,
             "fork": None,

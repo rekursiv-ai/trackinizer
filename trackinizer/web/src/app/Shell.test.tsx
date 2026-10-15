@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { AGREED, stubFetch } from "../api/testing";
 import { FakeEventSource } from "../live/testing";
 import { setChatSide } from "../visuals/chatColumnState";
-import { FOLD_AFTER_MS, OPEN_AFTER_MS } from "../visuals/hoverOpen";
+import { FOLD_AFTER_MS, OPEN_AFTER_MS, RAIL_FOLD_AFTER_MS } from "../visuals/hoverOpen";
 import { Icon } from "../ui/icons";
 import { App } from "./App";
 import { LOGIN_URL } from "./session";
@@ -35,7 +35,11 @@ vi.mock("../visuals/Canvas", async () => {
 // Chat's column around the canvas, which the shell loads with it.
 vi.mock("../visuals/ChatColumn", () => {
   loaded.column += 1;
-  return { ChatColumn: ({ children }: { children: ReactNode }) => <div data-testid="chat-column">{children}</div> };
+  return {
+    ChatColumn: ({ children, rail, sheet }: { children: ReactNode; rail: ReactNode; sheet: ReactNode }) => (
+      <div data-testid="chat-column">{rail}{children}{sheet}</div>
+    ),
+  };
 });
 
 /** Serve boot for a user whose canvas is `enabled`, and an empty list; `logout` answers a sign-out. */
@@ -158,7 +162,7 @@ test("the sidebar starts as a rail of its entries, named, titled and in order; i
   expect(toggle().getAttribute("aria-label")).toBe("Expand sidebar");
 });
 
-test("the sidebar stands at the left whichever side Chat is on", async () => {
+test("with no canvas, the sidebar stands at the left whichever side Chat is on", async () => {
   serve(false);
   render(<App assign={vi.fn()} />);
   await screen.findByRole("heading", { level: 1 });
@@ -177,7 +181,7 @@ test("the sidebar stands at the left whichever side Chat is on", async () => {
   }
 });
 
-test("a rail opens over the workbench after the pointer rests on it, and folds after it leaves; pinned, it does not", async () => {
+test("a rail opens over the workbench after the pointer rests on it, and folds soon after it leaves; pinned, it does not", async () => {
   serve(false);
   render(<App assign={vi.fn()} />);
   await screen.findByRole("heading", { level: 1 });
@@ -189,8 +193,11 @@ test("a rail opens over the workbench after the pointer rests on it, and folds a
   expect(app.classList).not.toContain("sidebar-peek");
   act(() => { vi.advanceTimersByTime(1); });
   expect(app.classList).toContain("sidebar-peek");
+  // It folds sooner than Chat does: the opened rail touches the rail, so a pointer off it has left.
   fireEvent.pointerLeave(dock);
-  act(() => { vi.advanceTimersByTime(FOLD_AFTER_MS); });
+  act(() => { vi.advanceTimersByTime(RAIL_FOLD_AFTER_MS - 1); });
+  expect(app.classList).toContain("sidebar-peek");
+  act(() => { vi.advanceTimersByTime(1); });
   expect(app.classList).not.toContain("sidebar-peek");
   // Pinned open, there is nothing to peek at.
   fireEvent.click(within(dock as HTMLElement).getByRole("button", { name: "Expand sidebar" }));

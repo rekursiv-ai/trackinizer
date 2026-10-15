@@ -1,37 +1,57 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { cycleStation, newStation, openStation, setStationMenu, stationsQuery } from "../stations/actions";
 import { usePageSync } from "../stations/usePageSync";
 import { useStation } from "../stations/useStation";
 import { useCommands } from "../commands/registry";
+import { Icon } from "../ui/icons";
 import { Chat } from "./Chat";
 import { dropLegacySizes, fitWidth, heldWidth, MIN_CHAT, readLegacySizes } from "./canvasSizes";
-import { flipChatSide, setChatFullscreen, setChatHidden, toggleChatFullscreen, toggleChatHidden, useChatColumn } from "./chatColumnState";
+import { type ChatSide, flipChatSide, setChatFullscreen, setChatHidden, toggleChatFullscreen, toggleChatHidden, useChatColumn } from "./chatColumnState";
 import { useHoverOpen } from "./hoverOpen";
 import { useLayout } from "./stationLayout";
 import "./chatColumn.css";
 
-/** A press on the divider: the column it resizes, where the row stood then, and the width it has now. */
+/**
+ * A press on the divider: the column it resizes, where the row stood then, the
+ * width it has now, and how far into the divider the press landed, so the
+ * column keeps its width until the pointer moves.
+ */
 type Drag = {
   readonly pointerId: number;
   readonly column: HTMLElement;
   readonly row: DOMRect;
+  readonly grab: number;
   width: number;
 };
 
 /**
  * Chat as a column of its own beside the workbench (`children`: the bars, the
- * canvas and the page), on the side the user chose. A divider between them
+ * canvas and the page), on the side the user chose. The app's sidebar rail
+ * (`rail`) stands at the workbench's left edge, inside it: right of Chat when
+ * Chat is at the left, leftmost when it is at the right. A `sheet` (Settings,
+ * Admin) opens over the page from the rail's edge, or over the row where the
+ * workbench is hidden. A divider between Chat and the workbench
  * resizes it by pointer and by arrow keys; hidden, it leaves a strip at its
  * edge that shows it again, or opens it over the workbench while the pointer
- * rests on the strip; full screen, it takes the whole row and the
- * workbench stays mounted, hidden. On a phone it stands under the page.
+ * rests on the strip, and a click in it pins it there; full screen, it takes the whole row and the
+ * workbench stays mounted, hidden. On a phone Chat is the whole app, shown
+ * even if hidden elsewhere, and the workbench stays mounted, hidden.
  *
  * Chat stays mounted through all of it, so its draft, scroll and stream are
  * kept. It owns the column's commands, which exist only where Chat does.
  */
-export function ChatColumn({ children }: { readonly children: ReactNode }) {
+export function ChatColumn({
+  children,
+  rail = null,
+  sheet = null,
+}: {
+  readonly children: ReactNode;
+  readonly rail?: ReactNode;
+  readonly sheet?: ReactNode;
+}) {
   const { side, hidden, fullscreen } = useChatColumn();
+  const phone = usePhone();
   const queryClient = useQueryClient();
   const workspace = useStation().data ?? null;
   const stations = useQuery(stationsQuery).data ?? [];
@@ -104,7 +124,9 @@ export function ChatColumn({ children }: { readonly children: ReactNode }) {
   function startResize(event: PointerEvent<HTMLElement>) {
     const element = column.current;
     if (!row.current || !element || event.button !== 0) return;
-    drag.current = { pointerId: event.pointerId, column: element, row: row.current.getBoundingClientRect(), width: element.offsetWidth };
+    const bounds = row.current.getBoundingClientRect();
+    const grab = reach(event.clientX, { side, row: bounds }) - element.offsetWidth;
+    drag.current = { pointerId: event.pointerId, column: element, row: bounds, grab, width: element.offsetWidth };
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
   }
@@ -113,7 +135,7 @@ export function ChatColumn({ children }: { readonly children: ReactNode }) {
   function updateResize(event: PointerEvent<HTMLElement>) {
     const resize = drag.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
-    const dragged = side === "left" ? event.clientX - resize.row.left : resize.row.right - event.clientX;
+    const dragged = reach(event.clientX, { side, row: resize.row }) - resize.grab;
     resize.width = heldWidth(dragged, resize.row.width, MIN_CHAT);
     resize.column.style.setProperty("--chat-width", `${resize.width}px`);
   }
@@ -134,18 +156,24 @@ export function ChatColumn({ children }: { readonly children: ReactNode }) {
     keep(heldWidth(column.current.offsetWidth + wider * (event.shiftKey ? 48 : 16), row.current.clientWidth, MIN_CHAT));
   }
 
-  const strip = hidden && !fullscreen && (
+  const strip = hidden && !fullscreen && !phone && (
     <button key="strip" className="chat-strip" type="button" aria-label="Show Chat"
-      title="Show Chat" onClick={() => setChatHidden(false)} {...peek.handlers} />
+      title="Show Chat" onClick={() => setChatHidden(false)} {...peek.handlers}>
+      <Icon name="chat" />
+    </button>
   );
-  const shown = !hidden || fullscreen || peeking;
+  const shown = !hidden || fullscreen || peeking || phone;
   const parts = [
     <div key="column" ref={column} className={`chat-column${peeking ? " chat-column-peek" : ""}`} hidden={!shown}
       style={width ? { "--chat-width": `${width}px` } as CSSProperties : undefined}
+      // A click anywhere in the opened Chat pins it, where it was opened. The pin waits for the click to bubble up
+      // here, so what was clicked answers it first: React renders between the capture and the bubble, and a pin in
+      // the capture would turn the Pin button under the pointer into Hide before its own click came.
+      onClick={peeking ? () => setChatHidden(false) : undefined}
       onKeyDown={(event) => { if (event.key === "Escape" && fullscreen && !event.defaultPrevented) setChatFullscreen(false); }}>
       <Chat workspace={workspace} />
     </div>,
-    shown && !fullscreen && !peeking && (
+    shown && !fullscreen && !peeking && !phone && (
       <div key="edge" className="chat-column-edge" role="separator" aria-orientation="vertical" tabIndex={0}
         aria-label="Resize Chat" aria-valuemin={MIN_CHAT} aria-valuenow={width ?? drawn}
         title="Drag to resize; use the arrow keys to resize"
@@ -157,9 +185,37 @@ export function ChatColumn({ children }: { readonly children: ReactNode }) {
   return (
     <div ref={row} className={`chat-row chat-row-${side}${fullscreen ? " chat-row-fullscreen" : ""}`}>
       {side === "left" ? parts : null}
-      <div className="chat-workbench" hidden={fullscreen}>{children}</div>
+      <div className="chat-workbench" hidden={fullscreen || phone}>
+        {rail}
+        <div className="chat-stage">
+          {children}
+          {fullscreen || phone ? null : sheet}
+        </div>
+      </div>
       {side === "right" ? [...parts].reverse() : null}
+      {fullscreen || phone ? sheet : null}
     </div>
+  );
+}
+
+/** How far `x` lies from the row's edge on Chat's side: the width a column ending at `x` would have. */
+function reach(x: number, { side, row }: { readonly side: ChatSide; readonly row: DOMRect }): number {
+  return side === "left" ? x - row.left : row.right - x;
+}
+
+/** A phone's width: the stylesheet's breakpoint for the sidebar's drawer, where Chat is the whole app. */
+const PHONE = "(max-width: 760px)";
+
+/** Whether the window is a phone's width, followed as it changes; never where there is no `matchMedia`, as in a test. */
+function usePhone(): boolean {
+  return useSyncExternalStore(
+    (changed) => {
+      if (typeof matchMedia !== "function") return () => {};
+      const query = matchMedia(PHONE);
+      query.addEventListener("change", changed);
+      return () => query.removeEventListener("change", changed);
+    },
+    () => typeof matchMedia === "function" && matchMedia(PHONE).matches,
   );
 }
 

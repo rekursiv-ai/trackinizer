@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 type _Client = tuple[TestClient, Store, FakeEngine]
 
 _LOGGER = "trackinizer.server.api.service_account_routes"
-_BOTH = frozenset({"open", "staff"})
+_BOTH = frozenset({"open", "private", "staff"})
 _WHEN = datetime(2026, 10, 10, 9, 0, tzinfo=UTC)
 _ACCOUNT_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 _KEY_ID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")

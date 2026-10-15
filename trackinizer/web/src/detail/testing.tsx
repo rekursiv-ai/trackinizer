@@ -109,7 +109,7 @@ export function row(kind: string, seq: number, fields: { [field: string]: unknow
 const KIND_KEYS: { readonly [kind: string]: readonly string[] } = {
   Issue: ["issue_kind", "priority", "validation"],
   Artifact: [],
-  Experiment: ["codechanges", "config", "outcome"],
+  Experiment: ["app", "codechanges", "config", "outcome"],
   Paper: [
     "abstract",
     "authors",

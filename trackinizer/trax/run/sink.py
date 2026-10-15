@@ -49,6 +49,7 @@ from trackinizer.trax.run.redact import redact_body
 from trackinizer.trax.run.refusal import send_isolating
 from trackinizer.trax.run.truncate import bounded, encoded_size
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.audience import PRIVATE
 from trackinizer.wire.wire_session_ir import (
     MAX_RECORD_BATCH,
     ManifestBody,
@@ -404,6 +405,18 @@ class FileSink(Sink):
             self._closed = True
 
 
+class PrivateNotHeldError(RuntimeError):
+    """The server did not open a session asked to be ``private`` as ``private``.
+
+    A server that predates hiding a session ignores the request and opens it ``open``
+    instead, where every member of the organisation would read it. The session is
+    ended before a record is sent, and the run stops.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"{reason}; nothing was sent")
+
+
 class TrackinizerSink(Sink):
     """Open a Session, batch events to the ingest API, close on exit.
 
@@ -432,6 +445,11 @@ class TrackinizerSink(Sink):
     ``redactor`` masks secret values in every record and command before it is
     buffered, so neither a send, a retry nor the degrade seam's :meth:`pending`
     can carry one; ``None`` keeps them.
+
+    ``private`` asks the server to open the session hidden, and to hide the one it
+    resumes. One the server opens into any other audience is ended at once and
+    refused with :class:`PrivateNotHeldError`, and so is every later attempt, so not
+    a record reaches it.
     """
 
     def __init__(
@@ -441,6 +459,7 @@ class TrackinizerSink(Sink):
         *,
         actor: str | None = None,
         rooms: tuple[str, ...] = (),
+        private: bool = False,
         redactor: Redactor | None = None,
         batch_size: int = 50,
         batch_bytes: int = 4 << 20,
@@ -452,6 +471,10 @@ class TrackinizerSink(Sink):
         self._redactor = redactor
         self._actor = actor
         self._rooms = rooms
+        self._private = private
+        # Why the server would not hold a session asked to be private as private;
+        # set, no session is opened again.
+        self._refusal = ""
         self._batch_size = batch_size
         self._batch_bytes = batch_bytes
         self._flush_interval_sec = flush_interval_sec
@@ -575,6 +598,8 @@ class TrackinizerSink(Sink):
     def _ensure_session(self) -> None:
         if self._session_id is not None:
             return
+        if self._refusal:
+            raise PrivateNotHeldError(self._refusal)
         resp = self._client.session_start(
             SessionStart(
                 cli=self._cli,
@@ -587,8 +612,20 @@ class TrackinizerSink(Sink):
                 # (the CLI has not written its file), so this is null there
                 # and the id is backfilled at close instead.
                 cli_session_id=self._cli_session_id,
+                private=self._private,
             ),
         )
+        # A server that hides sessions opens a private run's session private, and
+        # hides the open one it resumes, or refuses; only one that predates hiding
+        # opens it into another audience. Ended before anything is sent, so none of
+        # the run reaches it.
+        if self._private and resp.audience != PRIVATE:
+            self._refusal = (
+                "the server predates hiding a session, so the session it opened for "
+                "this run was ended"
+            )
+            self._client.session_end(resp.id, SessionEnd(ended=datetime.now(UTC)))
+            raise PrivateNotHeldError(self._refusal)
         self._session_id = resp.id
         # ``resp.seq`` is deliberately unread. It continued the legacy event
         # log, which a resumed run had to seed from; a record's key is derived
@@ -827,11 +864,15 @@ class ResilientSink(Sink):
 
     # The runner opens the sink before spawning the child CLI, so an open failure
     # (server unreachable) must degrade like any other rather than abort the run. The
-    # session then opens when the server is back, on the first send.
+    # session then opens when the server is back, on the first send. A run asked to be
+    # private that the server would not hide is the exception: it stops before the CLI
+    # starts, rather than capture what its owner meant no one else to read.
     @override
     def open(self) -> str | None:
         try:
             return self._primary.open()
+        except PrivateNotHeldError:
+            raise
         except Exception as err:  # noqa: BLE001 -- an open failure degrades like an emit failure.
             _ = self._degrade(err)
             return None

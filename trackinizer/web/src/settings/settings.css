@@ -1,8 +1,9 @@
 /* Your settings and Admin, from the design mock ("settings: yours and
    admin", ".st"). The names list, the suggestions and the notes are ours. */
 .st { padding: 8px 24px 80px; display: flex; flex-direction: column; gap: 18px; }
-/* Settings and Admin open as a sheet over the page (Shell), half its width, from the sidebar's side: the
-   page stays in view beside it, and the sections take the sheet's width. Close stands at their edge. */
+/* Settings and Admin open as a sheet over the page (Shell, ChatColumn), half its width, from the
+   sidebar rail's edge: Chat and the page stay in view beside it, and the sections take the sheet's
+   width. Close stands at their edge. */
 .sheet {
   position: absolute; z-index: 25; top: 0; bottom: 0; left: 0; display: flex; flex-direction: column;
   width: min(100%, max(50%, 560px)); background: var(--bg); border-right: 1px solid var(--line); box-shadow: 0 8px 32px #0006;

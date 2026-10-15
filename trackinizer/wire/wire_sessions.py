@@ -19,7 +19,7 @@ not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final
+from typing import Final, Literal
 
 import uuid
 
@@ -52,12 +52,14 @@ def _reject_blank(value: str | None) -> str | None:
 
 
 __all__ = [
+    "CAMPAIGN_ASKER_INFIX",
     "CONSOLE_RELAY_MARK",
     "FEED_FACETS_PATH",
     "FEED_HISTOGRAM_PATH",
     "FEED_PATH",
     "SEND_MESSAGE_PATH",
     "SESSION_API_PATHS",
+    "SESSION_AUDIENCE_PATH",
     "SESSION_END_PATH",
     "SESSION_INBOUND_PATH",
     "SESSION_PARTS_PATH",
@@ -77,11 +79,14 @@ __all__ = [
     "FeedKindFacet",
     "FeedResponse",
     "FeedRoomFacet",
+    "FeedWhose",
     "InboundDrainItem",
     "InboundEnqueueRequest",
     "InboundEnqueueResponse",
     "SendMessage",
     "SendMessageResponse",
+    "SessionAudienceChange",
+    "SessionAudienceResponse",
     "SessionEnd",
     "SessionEndResponse",
     "SessionStart",
@@ -89,7 +94,35 @@ __all__ = [
     "WorkspaceMessageContext",
     "WorkspaceRecordContext",
     "WorkspaceVisibleVisual",
+    "campaign_asker_label",
+    "session_audience_path",
 ]
+
+
+CAMPAIGN_ASKER_INFIX: Final = ":asker:"
+"""What joins a campaign's slug and the email of the person who launched it, in the
+label ``<slug>:asker:<email>`` its brief carries: the feed's ``whose=campaigns`` keeps
+the sessions labelled with, or in a room named for, a slug so labelled with the
+caller."""
+
+
+type FeedWhose = Literal["mine", "campaigns", "everyone"]
+"""Whose sessions a feed read keeps: the caller's own, those of the campaigns the
+caller launched, or every one the caller reads."""
+
+
+def campaign_asker_label(slug: str, email: str) -> str:
+    """Return the label that names who launched a campaign, for its brief.
+
+    Args:
+      slug: The campaign's slug, which its lead's session carries as a label.
+      email: The launcher's account.
+
+    Returns:
+      label: ``<slug>:asker:<email>``, the email lowercase.
+
+    """
+    return f"{slug}{CAMPAIGN_ASKER_INFIX}{email.lower()}"
 
 
 class SessionStart(BaseModel):
@@ -122,6 +155,12 @@ class SessionStart(BaseModel):
     idempotency_key: uuid.UUID | None = None
     """Optional client-supplied key; a repeat ``start`` with the same key
     returns the original session id without minting a duplicate."""
+
+    private: bool = False
+    """Open the session hidden: ``private``, read only by its owner and the people who
+    oversee. A key pinned to another audience than ``open`` or ``private`` is refused
+    (403 ``audience_not_held``). A server that predates the field ignores it, which
+    :attr:`SessionStartResponse.audience` then shows."""
 
     _reject_blank_scalars = field_validator(
         "cli",
@@ -163,6 +202,10 @@ class SessionStartResponse(BaseModel):
     """The granted routing name. Equals the requested ``--as`` actor unless it
     collided with a live session, in which case the server appended a suffix
     (``scientist`` -> ``scientist#2``); the client adopts whatever is here."""
+
+    audience: str | None = None
+    """Who reads the session's transcript, as the server holds it; ``None`` from a
+    server that predates the field."""
 
 
 class FeedEvent(BaseModel):
@@ -272,6 +315,16 @@ class FeedActorFacet(BaseModel):
     ended: datetime | None
     """When the session ended; ``None`` while it is live."""
 
+    account: str = ""
+    """Who the session is held under."""
+
+    audience: str | None = None
+    """Who reads its transcript: ``open``, ``private`` or ``staff``."""
+
+    hideable: bool = False
+    """Whether the caller may hide the session, or show it again: its owner, while it
+    is not ``staff``. Never for a science chat, which is hidden from Chat."""
+
 
 class FeedRoomFacet(BaseModel):
     """One room's share of a feed window."""
@@ -372,6 +425,10 @@ class WorkspaceVisibleVisual(BaseModel):
     type: str
     record: WorkspaceRecordContext | None = None
     """The record the visual shows, when it shows one that exists."""
+
+    params: dict[str, str | int | bool] = Field(default_factory=dict)
+    """The visual's parameters as the canvas holds them, such as the narrowing a
+    reader set in the pane, so an agent that shows it again can keep them."""
 
 
 class WorkspacePage(BaseModel):
@@ -548,6 +605,25 @@ class SendMessageResponse(BaseModel):
     delivered: list[uuid.UUID]
 
 
+class SessionAudienceChange(BaseModel):
+    """Hide a session from everyone but its owner and those who oversee, or show it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    audience: Literal["open", "private"]
+    """``private`` hides the session; ``open`` shows it again."""
+
+
+class SessionAudienceResponse(BaseModel):
+    """The audience a session now has, and every session that moved with it."""
+
+    session_id: uuid.UUID
+    audience: Literal["open", "private"]
+    sessions: list[uuid.UUID]
+    """The sessions whose audience this changed: the one named, or for a science
+    chat every session under its id. Empty when it already had the audience."""
+
+
 class SessionEnd(BaseModel):
     """Mark a session closed, optionally backfilling late-known fields."""
 
@@ -574,6 +650,7 @@ SESSION_START_PATH: Final = "/api/sessions/start"
 SESSION_RECORDS_PATH: Final = "/api/sessions/{session_id}/records"
 SESSION_PARTS_PATH: Final = "/api/sessions/{session_id}/parts"
 SESSION_END_PATH: Final = "/api/sessions/{session_id}/end"
+SESSION_AUDIENCE_PATH: Final = "/api/sessions/{session_id}/audience"
 SESSION_INBOUND_PATH: Final = "/api/sessions/{session_id}/inbound"
 SEND_MESSAGE_PATH: Final = "/api/messages"
 VERSION_PATH: Final = "/api/version"
@@ -593,6 +670,7 @@ SESSION_API_PATHS: tuple[str, ...] = (
     SESSION_RECORDS_PATH,
     SESSION_PARTS_PATH,
     SESSION_END_PATH,
+    SESSION_AUDIENCE_PATH,
     SESSION_INBOUND_PATH,
     SEND_MESSAGE_PATH,
     VERSION_PATH,
@@ -610,6 +688,11 @@ def session_records_path(session_id: uuid.UUID) -> str:
 def session_end_path(session_id: uuid.UUID) -> str:
     """Return the end path for one session."""
     return SESSION_END_PATH.format(session_id=session_id)
+
+
+def session_audience_path(session_id: uuid.UUID) -> str:
+    """Return the path that hides one session or shows it again."""
+    return SESSION_AUDIENCE_PATH.format(session_id=session_id)
 
 
 def session_inbound_path(session_id: uuid.UUID) -> str:

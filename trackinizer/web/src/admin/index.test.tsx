@@ -58,6 +58,17 @@ test("the users list shows your own row read-only, and a disabled user dimmed wi
   expect(screen.getByText("intern@example.com", { selector: "td" }).closest("tr")!.className).toBe("dim");
 });
 
+test("a user the staff setting names carries a staff chip beside the role, and no one else does", async () => {
+  serveAccount(ADMIN, { users: [ME, { ...JOSH, staff: true }, MING] });
+  renderScreen(<AdminView />, ADMIN);
+  const josh = await shownRow("josh@example.com");
+  expect(josh.getByText("staff").getAttribute("title")).toBe(
+    "Staff: reads campaign transcripts. Set by the deployment's STAFF setting, not here.",
+  );
+  expect(rowOf("ming@example.com").queryByText("staff")).toBeNull();
+  expect(rowOf("ada@example.com").queryByText("staff")).toBeNull();
+});
+
 test("changing another user's role is one PUT", async () => {
   const server = serveAccount(ADMIN, { users: [ME, JOSH, MING, INTERN] });
   renderScreen(<AdminView />, ADMIN);

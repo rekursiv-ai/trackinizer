@@ -437,6 +437,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     "account": account,
                     "labels": canonical_strs(req.labels or ()),
                     "subscribers": canonical_strs(req.subscribers or ()),
+                    "app": req.app,
                     **(extras or {}),
                 },
             )

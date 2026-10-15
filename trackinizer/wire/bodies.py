@@ -108,6 +108,10 @@ class SubmitBase(_CostFields):
     and kind-specific lifecycle CHECKs still apply (an ``AgentSession`` cannot
     be born ``complete`` without ``ended``)."""
 
+    app: dict[str, object] | None = None
+    """App-layer fields as one JSON object keyed by app name; stored verbatim,
+    opaque to trackinizer. See :attr:`Inquiry.app`."""
+
     owner: Inquiry.Actor | None = None
     account: Inquiry.Actor | None = None
     """The active user this row is attributed to. ``None`` lets the server
@@ -694,8 +698,8 @@ class FieldSet[T](FieldMutation):
 
     * ``"set"`` (default) -- blind overwrite; ``expected`` must be absent.
     * ``"cas"`` -- compare-and-set; ``expected`` is required and the route
-      409s if the live value differs. Valid only on ``owner``, ``status``, and
-      ``judgement`` (the route 400s elsewhere).
+      409s if the live value differs. Valid only on ``owner``, ``status``,
+      ``judgement`` and ``app`` (the route 400s elsewhere).
 
     The discriminator is what makes a typo'd guard a hard error instead of
     a silent blind write: ``extra="forbid"`` 422s an unknown field (e.g. a

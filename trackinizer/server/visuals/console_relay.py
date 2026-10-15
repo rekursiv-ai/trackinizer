@@ -26,8 +26,9 @@ if TYPE_CHECKING:
     import uuid
 
     from trackinizer.lib.postgres import DatabaseEngine
+    from trackinizer.server.audience import SessionReader
     from trackinizer.server.auth import Role
-    from trackinizer.server.config import Assistant, ChatOrgs
+    from trackinizer.server.config import Assistant
     from trackinizer.server.inbound import InboundQueue
 
 
@@ -42,7 +43,7 @@ async def relay_console_line(
     source_role: Role,
     inbound: InboundQueue,
     assistant: Assistant | None,
-    orgs: ChatOrgs,
+    reader: SessionReader,
 ) -> bool | None:
     """Queue one Console relay for the partner of the owner's station.
 
@@ -65,8 +66,8 @@ async def relay_console_line(
       source_role: That principal's role.
       inbound: Session message queue.
       assistant: The configured assistant, if any.
-      orgs: Who besides a chat's starter and the people it is shared with continues
-        it.
+      reader: The sender, as the transcript test reads them: they post into a chat
+        they read.
 
     Returns:
       delivered: None when the station is not the owner's; False when it has no chat,
@@ -102,9 +103,9 @@ async def relay_console_line(
         ) or not await may_post(
             conn,
             poster=source,
+            reader=reader,
             conversation_id=state.conversation_id,
             assistant=assistant,
-            orgs=orgs,
             inbound=inbound,
         ):
             return False

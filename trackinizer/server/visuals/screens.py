@@ -104,6 +104,7 @@ async def read_screen(
                 id=v.id,
                 type=v.type,
                 record=None if v.record_id is None else found.get(v.record_id),
+                params=dict(v.params),
             )
             for v in visuals
         ],

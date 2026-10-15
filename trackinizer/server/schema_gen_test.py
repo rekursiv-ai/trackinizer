@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import fields
 from typing import Literal
 
+import re
+
 import pytest
 
 from trackinizer.server.schema_gen import (
@@ -226,6 +228,8 @@ class TestSchema:
             "schema.043.sql",
             "schema.044.sql",
             "schema.045.sql",
+            "schema.046.sql",
+            "schema.047.sql",
         ]
 
     def test_the_pin_check_spells_the_wire_shape(self) -> None:
@@ -251,6 +255,28 @@ class TestSchema:
         assert "new_webresult_url TEXT" in sql
         assert "kind = 'codechange_sha' OR old_codechange_sha IS NULL" in sql
         assert "kind = 'webresult_url' OR new_webresult_url IS NULL" in sql
+
+    def test_the_app_column_holds_one_bounded_json_object_on_both_sides(self) -> None:
+        """``Inquiry.app`` is an object of at most 64 KiB, and so is its audit."""
+        sql = substitute_schema_placeholders(load_sql("schema"))
+        for column in ("app", "old_app", "new_app"):
+            assert re.search(rf"\b{column} +JSONB", sql)
+            assert (
+                f"jsonb_typeof({column}) = 'object' "
+                f"AND octet_length({column}::text) <= 65536"
+            ) in sql
+        # Every kind carries it, so no change kind ties it to one.
+        assert "kind <> 'app'" not in sql
+
+    def test_a_sessions_audience_move_is_audited_on_both_sides(self) -> None:
+        """Each side holds an audience of the wire shape, on a session's move alone."""
+        sql = substitute_schema_placeholders(load_sql("schema"))
+        for side in ("old", "new"):
+            column = f"{side}_agentsession_audience"
+            assert re.search(rf"\b{column} +TEXT", sql)
+            assert f"({column} IS NOT NULL) = (kind = 'agentsession_audience')" in sql
+            assert f"{column} IS NULL OR {column} ~ '{AUDIENCE_SHAPE}'" in sql
+        assert "kind <> 'agentsession_audience' OR subject_kind = 'AgentSession'" in sql
 
 
 class TestCLIHelpers:

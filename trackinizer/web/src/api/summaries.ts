@@ -24,11 +24,11 @@ export async function loadCampaignSummary(
   accounts: readonly string[],
   { signal }: CallOptions = {},
 ): Promise<CampaignSummary | null> {
-  const byIssue = await labelled(`summary:issue:${recordId}`, accounts, signal);
+  const byIssue = await trustedRows([`summary:issue:${recordId}`], accounts, { signal });
   if (byIssue.length > 0) return assemble(byIssue);
-  const own = await labelled(`summary:session:${recordId}`, accounts, signal);
+  const own = await trustedRows([`summary:session:${recordId}`], accounts, { signal });
   const lead = own.flatMap((row) => row.labels).find((label) => label.startsWith("summary:lead:"));
-  return lead ? assemble(await labelled(lead, accounts, signal)) : null;
+  return lead ? assemble(await trustedRows([lead], accounts, { signal })) : null;
 }
 
 /**
@@ -44,23 +44,39 @@ export async function readTrust({ signal }: CallOptions = {}): Promise<Trust> {
   return { audiences: strings(profile.read_audiences), accounts: strings(profile.summary_accounts) };
 }
 
-type Row = { readonly labels: readonly string[]; readonly description: string | null };
+/** An Artifact found by its labels: the account that filed it, its labels, the document its description holds, and when it last changed. */
+export type FiledRow = {
+  readonly account: string;
+  readonly labels: readonly string[];
+  readonly description: string | null;
+  readonly modified: string;
+};
 
-async function labelled(label: string, accounts: readonly string[], signal: AbortSignal | undefined): Promise<Row[]> {
+/** The Artifacts that carry every one of `labels`, whoever filed them; the caller says whose it trusts. */
+export async function filedRows(labels: readonly string[], { signal }: CallOptions = {}): Promise<FiledRow[]> {
   const rows = await listInquiries({
     kinds: ["Artifact"],
-    filters: [{ field: "labels", op: "is", value: label }],
+    filters: labels.map((label) => ({ field: "labels", op: "is", value: label })),
     limit: ROWS,
     offset: 0,
   }, { signal });
   return rows.flatMap((row) => {
     const { description, account } = row as unknown as { readonly description?: unknown; readonly account?: unknown };
-    if (typeof account !== "string" || !accounts.includes(account)) return [];
-    return [{ labels: row.labels ?? [], description: typeof description === "string" ? description : null }];
+    if (typeof account !== "string") return [];
+    return [{ account, labels: row.labels ?? [], description: typeof description === "string" ? description : null, modified: row.modified }];
   });
 }
 
-function assemble(rows: readonly Row[]): CampaignSummary | null {
+/** The Artifacts that carry every one of `labels`, kept only when filed by one of `accounts`. */
+export async function trustedRows(
+  labels: readonly string[],
+  accounts: readonly string[],
+  { signal }: CallOptions = {},
+): Promise<FiledRow[]> {
+  return (await filedRows(labels, { signal })).filter(({ account }) => accounts.includes(account));
+}
+
+function assemble(rows: readonly FiledRow[]): CampaignSummary | null {
   let corpus: CorpusDoc | null = null;
   const sessions = new Map<string, SessionDoc>();
   for (const row of rows) {

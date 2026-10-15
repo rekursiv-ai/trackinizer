@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol, cast
 from unittest.mock import AsyncMock, _Call
+from uuid import UUID
 
 import asyncio
 
@@ -17,8 +19,11 @@ from trackinizer.conftest import (
     set_field_row,
 )
 from trackinizer.lib.postgres import Conn
+from trackinizer.server.setter_dispatch import COLUMN_SPECS
+from trackinizer.types.columns import storage_name
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ConflictError, NotFoundError
+from trackinizer.wire.routes import InquiryFieldRoute, inquiry_field_routes
 
 
 if TYPE_CHECKING:
@@ -530,6 +535,57 @@ class TestSetSourceWhitespace:
         assert update.args[1] is None
 
 
+class TestSettersForwardToThePipeline:
+    """Each field route's ``set_<field>`` hands its arguments to ``_set_field``."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "route",
+        # ``set_title`` re-embeds in its own transaction, and a cost axis writes
+        # through ``set_cost_axis``; every other field route's setter is a pipeline's.
+        [
+            pytest.param(route, id=route.column)
+            for route in inquiry_field_routes()
+            if route.set_method not in {None, "set_title"}
+        ],
+    )
+    async def test_a_setter_forwards_its_row_value_and_audit_unchanged(
+        self,
+        route: InquiryFieldRoute,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        assert route.set_method is not None
+        store, _engine = make_store()
+        spy = _SetFieldSpy()
+        monkeypatch.setattr(store, "_set_field", spy)
+        setter = cast(_Setter, getattr(store, route.set_method))
+        target_id, api_key_id = new_uuid(), new_uuid()
+        # A well-formed source and a non-blank account pass the setters that check.
+        value = "doi:10.1/x"
+
+        returned = [
+            await setter(target_id, value, api_key_id=api_key_id, actor="alice"),
+            await setter(
+                target_id,
+                value,
+                api_key_id=api_key_id,
+                actor="alice",
+                reason="why",
+            ),
+        ]
+
+        assert returned == [spy.change_id, spy.change_id]
+        assert [
+            (call.target_id, call.value, call.api_key_id, call.actor, call.reason)
+            for call in spy.calls
+        ] == [
+            (target_id, value, api_key_id, "alice", ""),
+            (target_id, value, api_key_id, "alice", "why"),
+        ]
+        column = spy.calls[0].column
+        assert storage_name(route.column, COLUMN_SPECS[column]) == column
+
+
 class TestAddCostZeroDelta:
     """``add_cost`` short-circuits a zero delta, matching ``set_cost_axis``."""
 
@@ -560,6 +616,64 @@ def _sql(call: _Call) -> str:
     sql = call.args[0]
     assert isinstance(sql, str)
     return sql
+
+
+class _Setter(Protocol):
+    """The signature every ``set_<field>`` shares."""
+
+    async def __call__(
+        self,
+        target_id: UUID,
+        value: object,
+        /,
+        *,
+        api_key_id: UUID | None = None,
+        actor: str,
+        reason: str = "",
+    ) -> UUID | None: ...
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _SetFieldCall:
+    """One call ``_SetFieldSpy`` recorded."""
+
+    target_id: UUID
+    value: object
+    column: str
+    api_key_id: UUID | None
+    actor: str
+    reason: str
+
+
+@dataclass(slots=True, kw_only=True)
+class _SetFieldSpy:
+    """Stands in for ``Store._set_field``: records each call, returns one change id."""
+
+    change_id: UUID = field(default_factory=new_uuid)
+    calls: list[_SetFieldCall] = field(default_factory=list[_SetFieldCall])
+
+    async def __call__(
+        self,
+        target_id: UUID,
+        value: object,
+        *,
+        column: str,
+        api_key_id: UUID | None,
+        actor: str,
+        reason: str = "",
+    ) -> UUID:
+        """Record the call and return the spy's change id."""
+        self.calls.append(
+            _SetFieldCall(
+                target_id=target_id,
+                value=value,
+                column=column,
+                api_key_id=api_key_id,
+                actor=actor,
+                reason=reason,
+            ),
+        )
+        return self.change_id
 
 
 if __name__ == "__main__":

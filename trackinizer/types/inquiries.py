@@ -26,6 +26,7 @@ everything above it::
     │   labels
     │   marginal_cost
     │   subscribers
+    │   app
     │   superseded_by
     │   supersedes
     │   produces
@@ -309,6 +310,25 @@ class Inquiry:
     """Actors notified on every change to this row. This column is the only
     storage -- there is no separate subscriptions table, and no open/close
     timestamps or explicit-vs-implicit distinction are kept."""
+
+    app: dict[str, object] | None = field(
+        default=None,
+        metadata=ColumnSpec(
+            sql_type="JSONB",
+            sql_check=(
+                "jsonb_typeof(app) = 'object' AND octet_length(app::text) <= 65536"
+            ),
+            compare_and_set=True,
+        ),
+    )
+    """What an application layered on trackinizer keeps on this row, as one JSON
+    object keyed by app name (``{"<app>": {...}}``), so two apps never collide.
+    An app's visual draws from it: the row is the app's anchor (a campaign's
+    brief Issue, a board's Artifact) or one of the rows the app gathers by its
+    labels and edges (a campaign's Experiments). Stored and returned verbatim and
+    never read by trackinizer; at most 64 KiB. A writer that changes one field of
+    it writes the whole object, so it compares and sets (``Store.transition_app``)
+    to keep a field another writer set meanwhile."""
 
     superseded_by: tuple[InquiryEdge, ...] = ()
     """Successor inquiries that replace or refine this one.
@@ -1234,16 +1254,22 @@ class AgentSession(Artifact):
             # ``wire/audience.py`` spells the same shape; ``types`` cannot import it.
             sql_check="audience ~ '^[a-z][a-z0-9_-]{0,31}$'",
             required=True,
-            immutable=True,
+            # Moved only by ``Store.set_session_audience``, which holds the rules a
+            # blind field write would skip: who may hide a session, and that a
+            # ``staff`` one is never lowered.
+            route_editable=False,
         ),
     )
-    """Who may read this session's transcript: ``open`` or ``staff``.
+    """Who may read this session's transcript: ``open``, ``private`` or ``staff``.
 
     Only the transcript is gated; the envelope (title, actor, times, cost, edges)
-    and the rows a session files stay open. Stamped once at submit and never
-    edited, so it carries no setter, route, or change_log mirror. The shape is
-    checked in SQL and the accepted set in code, so a new value is not a migration.
-    Required on every AgentSession and NULL on every other kind."""
+    and the rows a session files stay open. Stamped at submit; its owner moves it
+    between ``open`` and ``private``, and a chat whose assistant read a staff
+    session for an asker becomes ``staff``, each through
+    ``Store.set_session_audience``, audited in the change log. It has no field
+    route. The shape is checked in SQL and the accepted set in code, so a new value
+    is not a migration. Required on every AgentSession and NULL on every other
+    kind."""
 
 
 # Walks the ``Inquiry`` subclass tree so a new kind registers itself with no parallel

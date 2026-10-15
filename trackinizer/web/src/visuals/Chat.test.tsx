@@ -1,12 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { CHAT_DELETED, CHAT_NOT_SHARED, type ChatHead, deleteChat, getChatHead, sendChatLine, shareChat, unshareChat } from "../api/chats";
+import { CHAT_DELETED, CHAT_FORK_CLOSED, CHAT_FORK_WIDER, CHAT_NOT_SHARED, CHAT_STAFF_ONLY, type ChatHead, deleteChat, getChatHead, sendChatLine, shareChat, unshareChat } from "../api/chats";
 import { stationForChat } from "../api/stations";
 import { ApiError } from "../api/client";
 import { findRef, getDetail } from "../api/detail";
 import type { Profile } from "../api/me";
-import { listSessionParts, readSessionRecords, type SessionRecord } from "../api/sessions";
+import { listSessionParts, readSessionRecords, SESSION_NOT_OWNER, SESSION_STAFF, type SessionRecord, setSessionAudience } from "../api/sessions";
 import { getWorkspace, type WorkspaceState } from "../api/workspaces";
 import { MetaContext, ProfileContext } from "../app/boot";
 import { HighlightContext, HighlightStore } from "../app/highlights";
@@ -37,7 +37,12 @@ vi.mock("../api/chats", async (original) => ({
 }));
 vi.mock("../api/stations", () => ({ stationForChat: vi.fn() }));
 vi.mock("../api/workspaces", () => ({ getWorkspace: vi.fn() }));
-vi.mock("../api/sessions", () => ({ listSessionParts: vi.fn(), readSessionRecords: vi.fn() }));
+vi.mock("../api/sessions", async (original) => ({
+  ...(await original<typeof import("../api/sessions")>()),
+  listSessionParts: vi.fn(),
+  readSessionRecords: vi.fn(),
+  setSessionAudience: vi.fn(),
+}));
 vi.mock("../api/detail", () => ({ getDetail: vi.fn(), findRef: vi.fn() }));
 
 const WORKSPACE_ID = "c5286865-67b6-4bd8-ab51-e06e10c326c5";
@@ -85,7 +90,9 @@ afterEach(async () => {
   stopTrail = () => {};
   cleanup();
   vi.restoreAllMocks();
-  for (const mock of [getChatHead, sendChatLine, shareChat, unshareChat, deleteChat, stationForChat, getWorkspace, listSessionParts, readSessionRecords, getDetail, findRef]) vi.mocked(mock).mockReset();
+  for (const mock of [getChatHead, sendChatLine, shareChat, unshareChat, deleteChat, stationForChat, getWorkspace, listSessionParts, readSessionRecords, setSessionAudience, getDetail, findRef]) {
+    vi.mocked(mock).mockReset();
+  }
   sessions.clear();
   registered = [];
   localStorage.clear();
@@ -96,8 +103,8 @@ afterEach(async () => {
 });
 
 function head(conversation: string, account = ME, extra: Partial<ChatHead> = {}): ChatHead {
-  return { conversation_id: conversation, session_id: `s-${conversation}`, title: "t", account, live: true,
-    forks: 0, forked_from: null, forks_on_typing: false, shared_with: [], may_share: false, may_delete: false, ...extra };
+  return { conversation_id: conversation, session_id: `s-${conversation}`, title: "t", account, live: true, forks: 0, forked_from: null,
+    forks_on_typing: false, audience: "open", may_hide: false, shared_with: [], may_share: false, may_delete: false, ...extra };
 }
 function record(idx: number, kind: string, payload: { [field: string]: unknown }): SessionRecord {
   return { idx, kind, payload, text: "", context_id: null, timestamp: null, model: null, ciphertext: null } as unknown as SessionRecord;
@@ -240,13 +247,42 @@ test("Chat asks its partner: the box reads Ask <partner>", () => {
   expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toBe("Ask scout…");
 });
 
-test("the composer says what is true in every mode: public to read, and whoever may not post forks it", async () => {
+test("the composer says who reads the chat, as the server's org mode lets them in", async () => {
   open("c1");
   hold("c1", ...TALK);
+  const notice = () => document.querySelector(".chat-notice")!.textContent;
+  const { view } = shell(workspace, { profile: { org_mode: "single" } });
+  await screen.findByText("a2");
+  expect(notice()).toBe("Read by everyone signed in to this server. Do not type secrets here.");
+  expect(document.body.textContent).not.toMatch(/Public to read|forks it instead|cannot be deleted/);
+  view.unmount();
+  shell(workspace, { profile: { org_mode: "domain" } });
+  await screen.findByText("a2");
+  expect(notice()).toBe("Read by its starter, the people they share it with, and the starter's organisation. Do not type secrets here.");
+  cleanup();
+  shell(workspace, { profile: { org_mode: "individual" } });
+  await screen.findByText("a2");
+  expect(notice()).toBe("Read by its starter and the people they share it with. Do not type secrets here.");
+  cleanup();
+  // A server older than the org mode names none.
   shell();
   await screen.findByText("a2");
-  expect(screen.getByText(/Public to read\. Whoever may not post here forks it instead\./)).toBeTruthy();
-  expect(document.body.textContent).not.toContain("cannot be deleted");
+  expect(notice()).toMatch(/^Read by its starter, the people they share it with, and their organisation where this server lets it in\./);
+});
+
+test("the composer says a hidden chat is its starter's and their shares', and a staff-only one its staff readers'", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { audience: "private" }));
+  const notice = () => document.querySelector(".chat-notice")!.textContent;
+  shell(workspace, { profile: { org_mode: "single" } });
+  await screen.findByText("a2");
+  expect(notice()).toBe("Hidden: only its starter and the people they share it with read it. Do not type secrets here.");
+  cleanup();
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { audience: "staff" }));
+  shell(workspace, { profile: { org_mode: "single" } });
+  await screen.findByText("a2");
+  expect(notice()).toBe("Staff only: of everyone signed in to this server, only those who hold staff read it. Do not type secrets here.");
 });
 
 test("a chat I may neither share nor delete has neither button", async () => {
@@ -345,6 +381,19 @@ test("a share refused with chat_not_starter is said in words", async () => {
   fireEvent.change(screen.getByRole("textbox", { name: "Email to share with" }), { target: { value: "linus@example.com" } });
   fireEvent.click(screen.getByRole("button", { name: "Add" }));
   expect(await screen.findByText("Only the person who started this chat can do that.")).toBeTruthy();
+});
+
+test("a share of a staff-only chat with someone who holds no staff is refused in words", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_share: true, audience: "staff" }));
+  vi.mocked(shareChat).mockRejectedValue(new ApiError(409, "409 Conflict", CHAT_STAFF_ONLY));
+  shell();
+  await screen.findByText("a2");
+  fireEvent.click(await screen.findByRole("button", { name: "Share" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Email to share with" }), { target: { value: "linus@example.com" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(await screen.findByText("This chat is staff only, so it can be shared only with someone who holds staff.")).toBeTruthy();
 });
 
 test("a delete refused with chat_has_other_posters is said in words, and an unknown code keeps the server's detail", async () => {
@@ -856,13 +905,13 @@ test("Chat's reads use the app's read retry: a read that fails once is read agai
 const TALK = [said(0, ME, "q1"), answered(1, "a1"), said(2, GRACE, "q2"), answered(3, "a2")];
 const forkButton = (line: string) => within(screen.getByText(line).closest("article")!).getByRole("button", { name: "Fork from here" });
 
-test("typing in a chat of my own organisation joins it, and sends no fork", async () => {
+test("typing in a chat I read joins it, and sends no fork", async () => {
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
   shell();
   await screen.findByText("a2");
-  expect(screen.queryByText(/cannot post in this chat/)).toBeNull();
+  expect(screen.queryByText(/not shared with you/)).toBeNull();
   await type("and so?");
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
   expect(vi.mocked(sendChatLine).mock.calls[0]![0]).toMatchObject({ conversationId: "c1" });
@@ -928,32 +977,103 @@ test("Cancel fork goes back to posting into the chat", async () => {
   expect(vi.mocked(sendChatLine).mock.calls[0]![0]).not.toHaveProperty("fork");
 });
 
-test("typing in a chat started outside my organisation forks it at its latest line, and I land in the fork", async () => {
+test("a chat not shared with me says so, reads none of its lines and takes none of mine", async () => {
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(getChatHead).mockResolvedValue(head("c1", GRACE, { forks_on_typing: true }));
-  vi.mocked(sendChatLine).mockResolvedValue(FORKED);
   shell();
-  await screen.findByText("a2");
-  expect(screen.getByText(/cannot post in this chat/)).toBeTruthy();
-  await type("a question of my own");
-  await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
-  expect(vi.mocked(sendChatLine).mock.calls[0]![0]).toMatchObject({ conversationId: null, fork: { sessionId: "s-c1", part: 0, idx: 3 } });
-  await waitFor(() => expect(currentStation().id).toBe("w-fork"), { interval: 1 });
-  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("value", ""), { interval: 1 });
+  expect((await screen.findByText(/This chat is not shared with you/)).textContent).toBe(
+    "This chat is not shared with you, so you can neither read it nor post in it. Ask its starter to share it.");
+  const box = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  expect(box.placeholder).toBe("This chat is not shared with you");
+  expect(box.disabled).toBe(true);
+  expect(listSessionParts).not.toHaveBeenCalled();
+  expect(readSessionRecords).not.toHaveBeenCalled();
+  expect(screen.queryByText("a2")).toBeNull();
+  expect(screen.queryByText("Loading the conversation…")).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
-test("Fork from here in a chat outside my organisation forks after the line picked, not the latest", async () => {
+test("a staff-only chat says so in its header, offers no fork, and tells a reader without staff why it is closed", async () => {
   open("c1");
   hold("c1", ...TALK);
-  vi.mocked(getChatHead).mockResolvedValue(head("c1", GRACE, { forks_on_typing: true }));
-  vi.mocked(sendChatLine).mockResolvedValue(FORKED);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", GRACE, { audience: "staff" }));
+  const { view } = shell();
+  await screen.findByText("a2");
+  expect(within(document.querySelector<HTMLElement>(".chat-head")!).getByText("Staff only")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Fork from here" })).toBeNull();
+  view.unmount();
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", GRACE, { audience: "staff", forks_on_typing: true }));
+  shell();
+  expect((await screen.findByText(/staff only and you hold no staff/)).textContent).toBe(
+    "This chat is staff only and you hold no staff, so you can neither read it nor post in it.");
+  expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).placeholder).toBe("This chat is staff only");
+});
+
+test("a hidden chat says so in its header and offers no fork; an open one offers it and has no mark", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { audience: "private" }));
+  const { view } = shell();
+  await screen.findByText("a2");
+  expect(within(document.querySelector<HTMLElement>(".chat-head")!).getByText("Hidden")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Fork from here" })).toBeNull();
+  view.unmount();
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME));
   shell();
   await screen.findByText("a2");
-  fireEvent.click(forkButton("a1"));
-  await type("from the first answer");
-  await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
-  expect(vi.mocked(sendChatLine).mock.calls[0]![0]).toMatchObject({ fork: { part: 0, idx: 1 } });
+  expect(screen.getAllByRole("button", { name: "Fork from here" })).toHaveLength(2);
+  expect(document.querySelector(".chat-badge")).toBeNull();
+});
+
+test("lines read before the chat closed to me go with it", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  const { client } = shell();
+  await screen.findByText("a2");
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", GRACE, { audience: "staff", forks_on_typing: true }));
+  await act(() => client.invalidateQueries({ queryKey: ["chat", "head", "c1"] }));
+  await screen.findByText(/staff only and you hold no staff/);
+  expect(screen.queryByText("a2")).toBeNull();
+});
+
+test("the starter hides a chat and shows it again; nobody else is offered either", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  let audience = "open";
+  vi.mocked(getChatHead).mockImplementation(async () => head("c1", ME, { may_hide: true, audience }));
+  vi.mocked(setSessionAudience).mockImplementation(async (session, next) => {
+    audience = next;
+    return { session_id: session, audience: next, sessions: [session] };
+  });
+  const { view } = shell();
+  await screen.findByText("a2");
+  fireEvent.click(screen.getByRole("button", { name: "Hide this chat from others" }));
+  await within(document.querySelector<HTMLElement>(".chat-head")!).findByText("Hidden");
+  fireEvent.click(screen.getByRole("button", { name: "Unhide this chat" }));
+  await waitFor(() => expect(document.querySelector(".chat-badge")).toBeNull());
+  expect(vi.mocked(setSessionAudience).mock.calls.map(([session, next]) => [session, next])).toEqual([["s-c1", "private"], ["s-c1", "open"]]);
+  view.unmount();
+  vi.mocked(getChatHead).mockImplementation(async () => head("c1", GRACE));
+  shell();
+  await screen.findByText("a2");
+  expect(screen.queryByRole("button", { name: "Hide this chat from others" })).toBeNull();
+});
+
+test("a refused hide says why in a toast, in words for the server's code, and leaves the chat as it was", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_hide: true }));
+  vi.mocked(setSessionAudience)
+    .mockRejectedValueOnce(new ApiError(403, "403 Forbidden", SESSION_NOT_OWNER))
+    .mockRejectedValueOnce(new ApiError(409, "409 Conflict", SESSION_STAFF));
+  shell();
+  await screen.findByText("a2");
+  fireEvent.click(screen.getByRole("button", { name: "Hide this chat from others" }));
+  expect(await screen.findByText("Only the person who started this chat can hide it or show it again.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Hide this chat from others" }));
+  expect(await screen.findByText("This chat is staff only, so it is never hidden or opened again.")).toBeTruthy();
+  expect(document.querySelector(".chat-badge")).toBeNull();
 });
 
 test("a conversation cannot be typed into before its head says whose it is", async () => {
@@ -964,26 +1084,43 @@ test("a conversation cannot be typed into before its head says whose it is", asy
   shell();
   const box = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
   expect(box.disabled).toBe(true);
-  await act(async () => release(head("c1", GRACE, { forks_on_typing: true })));
+  await act(async () => release(head("c1", GRACE)));
   await screen.findByText("a2");
   await waitFor(() => expect(box.disabled).toBe(false), { interval: 1 });
   expect(sendChatLine).not.toHaveBeenCalled();
 });
 
-test("a post the server refuses as outside the chat's organisation is sent again as a fork at its latest line", async () => {
+test("a post the server refuses as not shared with me is shown, never sent again as a fork", async () => {
   open("c1");
   hold("c1", ...TALK);
-  vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(403, "403 Forbidden", CHAT_NOT_SHARED)).mockResolvedValue(FORKED);
+  vi.mocked(sendChatLine).mockRejectedValue(new ApiError(403, "This chat is not shared with you", CHAT_NOT_SHARED));
   shell();
   await screen.findByText("a2");
   await type("a question of my own");
-  await waitFor(() => expect(sendChatLine).toHaveBeenCalledTimes(2), { interval: 1 });
-  const [[first, firstKey], [second, secondKey]] = vi.mocked(sendChatLine).mock.calls as [[object, string], [object, string]];
-  expect(first).toMatchObject({ conversationId: "c1" });
-  expect(first).not.toHaveProperty("fork");
-  expect(second).toMatchObject({ conversationId: null, fork: { sessionId: "s-c1", part: 0, idx: 3 } });
-  expect(secondKey).not.toBe(firstKey);
-  await waitFor(() => expect(currentStation().id).toBe("w-fork"), { interval: 1 });
+  expect((await screen.findByRole("alert")).textContent).toContain("This chat is not shared with you");
+  expect(sendChatLine).toHaveBeenCalledOnce();
+  expect(vi.mocked(sendChatLine).mock.calls[0]![0]).not.toHaveProperty("fork");
+  expect(currentStation().id).toBe(WORKSPACE_ID);
+});
+
+test.each([
+  [CHAT_FORK_CLOSED, "This chat was hidden or made staff only, so it can no longer be forked."],
+  [CHAT_FORK_WIDER, "This chat is shared with you, not with your organisation, which would read a fork of it; post in it instead."],
+])("a fork the server refuses (%s) says why, drops the line it was to start from, keeps the draft, and reads the head again", async (code, why) => {
+  open("c1");
+  hold("c1", ...TALK);
+  // The server names the refusal by its code alone.
+  vi.mocked(sendChatLine).mockRejectedValue(new ApiError(409, "409 Conflict", code));
+  shell();
+  await screen.findByText("a2");
+  fireEvent.click(forkButton("a1"));
+  const heads = vi.mocked(getChatHead).mock.calls.length;
+  await type("a branch");
+  expect(await screen.findByText(why)).toBeTruthy();
+  expect(screen.queryByText(/Your next message starts a fork/)).toBeNull();
+  expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("value", "a branch");
+  await waitFor(() => expect(vi.mocked(getChatHead).mock.calls.length).toBeGreaterThan(heads));
+  expect(sendChatLine).toHaveBeenCalledOnce();
 });
 
 test("a 403 that is not the chat's refusal of the poster is shown, never sent as a fork", async () => {
@@ -997,7 +1134,7 @@ test("a 403 that is not the chat's refusal of the poster is shown, never sent as
   expect(sendChatLine).toHaveBeenCalledOnce();
 });
 
-test("the box waits for the chat's lines, since a fork starts from the latest of them", async () => {
+test("the box waits for the chat's lines, which a line sent counts its own among", async () => {
   open("c1");
   hold("c1", ...TALK);
   let release: (records: SessionRecord[]) => void = () => {};
@@ -1064,7 +1201,7 @@ test("a head read that says the chat is deleted (410) leaves the station on an e
   expect(screen.queryByText("a2")).toBeNull();
 });
 
-test("a refused post in a chat with no stored line to fork after says why and is not sent again", async () => {
+test("a refused post in a chat with no stored line says why and is not sent again", async () => {
   open("c1");
   hold("c1");
   vi.mocked(getChatHead).mockResolvedValue(head("c1", GRACE));

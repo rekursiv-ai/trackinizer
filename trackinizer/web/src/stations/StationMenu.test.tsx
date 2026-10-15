@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ApiError } from "../api/client";
-import { createStation, listStations, renameStation, type StationSummary } from "../api/stations";
+import { listStations, type StationSummary } from "../api/stations";
 import { getWorkspace, type WorkspaceState } from "../api/workspaces";
 import { setStationMenu } from "./actions";
 import { currentStation, setStation } from "./store";
@@ -37,7 +37,7 @@ afterEach(() => {
 
 function show() {
   render(<QueryClientProvider client={client}><StationMenu station={state("w1", "unnamed-workstream#1")} /></QueryClientProvider>);
-  return screen.getByRole("button", { name: "unnamed-workstream#1" });
+  return screen.getByRole("button", { name: "All stations" });
 }
 
 async function opened() {
@@ -47,7 +47,7 @@ async function opened() {
   return menu;
 }
 
-test("the station's name is a button that opens a menu with a search, every station, Rename and New station", async () => {
+test("All stations opens a menu with a search and every station; renaming and making one are the tabs' work", async () => {
   const button = show();
   expect(button.getAttribute("aria-expanded")).toBe("false");
   expect(screen.queryByRole("dialog", { name: "Stations" })).toBeNull();
@@ -58,8 +58,8 @@ test("the station's name is a button that opens a menu with a search, every stat
   await within(menu).findByRole("button", { name: "beta" });
   expect(within(menu).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["unnamed-workstream#1", "Alpha trial", "beta"]);
   expect(within(menu).getByRole("button", { name: "unnamed-workstream#1" }).getAttribute("aria-current")).toBe("true");
-  expect(within(menu).getByRole("button", { name: "Rename" })).toBeTruthy();
-  expect(within(menu).getByRole("button", { name: "New station" })).toBeTruthy();
+  expect(within(menu).queryByRole("button", { name: "Rename" })).toBeNull();
+  expect(within(menu).queryByRole("button", { name: "New station" })).toBeNull();
 });
 
 test("typing filters the list by name in any case, and Enter opens the first match", async () => {
@@ -101,61 +101,38 @@ test("a search that finds nothing says so, and Enter opens nothing", async () =>
   expect(getWorkspace).not.toHaveBeenCalled();
 });
 
-test("Esc closes the menu and returns the keyboard to the name, and it does not go further", async () => {
+test("Esc closes the menu and returns the keyboard to its button, and it does not go further", async () => {
   const outer = vi.fn();
   document.addEventListener("keydown", outer);
   const menu = await opened();
   fireEvent.keyDown(within(menu).getByRole("searchbox", { name: "Search stations" }), { key: "Escape" });
   expect(screen.queryByRole("dialog", { name: "Stations" })).toBeNull();
-  expect(document.activeElement).toBe(screen.getByRole("button", { name: "unnamed-workstream#1" }));
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "All stations" }));
   expect(outer).not.toHaveBeenCalled();
   document.removeEventListener("keydown", outer);
 });
 
-test("Rename edits the name in place: Enter saves, and the list and the cache follow", async () => {
-  vi.mocked(renameStation).mockResolvedValue(state("w1", "my work"));
+test("a blur that names no new focus keeps the menu, so Safari's click on a station still lands", async () => {
+  // Safari focuses no button that is clicked: the search blurs toward nothing before the click comes.
   const menu = await opened();
-  fireEvent.click(within(menu).getByRole("button", { name: "Rename" }));
-  const name = within(menu).getByRole("textbox", { name: "Station name" }) as HTMLInputElement;
-  expect(name.value).toBe("unnamed-workstream#1");
-  fireEvent.change(name, { target: { value: "my work" } });
-  fireEvent.submit(name.closest("form")!);
-  await waitFor(() => expect(renameStation).toHaveBeenCalledWith("w1", "my work"));
-  await waitFor(() => expect(within(menu).queryByRole("textbox", { name: "Station name" })).toBeNull());
-  expect(client.getQueryData<WorkspaceState>(["workspace", "w1"])?.name).toBe("my work");
-});
-
-test("a name that is taken says so and keeps the field open", async () => {
-  vi.mocked(renameStation).mockRejectedValue(new ApiError(409, "That name is taken"));
-  const menu = await opened();
-  fireEvent.click(within(menu).getByRole("button", { name: "Rename" }));
-  const name = within(menu).getByRole("textbox", { name: "Station name" });
-  fireEvent.change(name, { target: { value: "beta" } });
-  fireEvent.submit(name.closest("form")!);
-  expect((await within(menu).findByRole("alert")).textContent).toBe("That name is taken");
-  expect(within(menu).getByRole("textbox", { name: "Station name" })).toBeTruthy();
-  // Typing again clears the complaint; Esc leaves the field and not the menu.
-  fireEvent.change(name, { target: { value: "beta 2" } });
-  expect(within(menu).queryByRole("alert")).toBeNull();
-  fireEvent.keyDown(name, { key: "Escape" });
-  expect(within(menu).queryByRole("textbox", { name: "Station name" })).toBeNull();
+  fireEvent.blur(within(menu).getByRole("searchbox", { name: "Search stations" }), { relatedTarget: null });
   expect(screen.getByRole("dialog", { name: "Stations" })).toBeTruthy();
+  fireEvent.click(within(menu).getByRole("button", { name: "beta" }));
+  await waitFor(() => expect(currentStation().id).toBe("w3"));
 });
 
-test("a blank name cannot be saved", async () => {
-  const menu = await opened();
-  fireEvent.click(within(menu).getByRole("button", { name: "Rename" }));
-  fireEvent.change(within(menu).getByRole("textbox", { name: "Station name" }), { target: { value: "   " } });
-  expect(within(menu).getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
-});
-
-test("New station makes one, switches to it and closes the menu", async () => {
-  vi.mocked(createStation).mockResolvedValue(state("w4", "unnamed-workstream#2"));
-  const menu = await opened();
-  fireEvent.click(within(menu).getByRole("button", { name: "New station" }));
-  await waitFor(() => expect(currentStation().id).toBe("w4"));
+test("a press outside the menu closes it, and so does the keyboard leaving it; a press inside does not", async () => {
+  const outside = document.body.appendChild(document.createElement("button"));
+  let menu = await opened();
+  fireEvent.pointerDown(within(menu).getByRole("button", { name: "beta" }));
+  expect(screen.getByRole("dialog", { name: "Stations" })).toBeTruthy();
+  fireEvent.pointerDown(outside);
   expect(screen.queryByRole("dialog", { name: "Stations" })).toBeNull();
-  expect(client.getQueryData<WorkspaceState>(["workspace", "w4"])?.name).toBe("unnamed-workstream#2");
+  fireEvent.click(screen.getByRole("button", { name: "All stations" }));
+  menu = screen.getByRole("dialog", { name: "Stations" });
+  fireEvent.blur(within(menu).getByRole("searchbox", { name: "Search stations" }), { relatedTarget: outside });
+  expect(screen.queryByRole("dialog", { name: "Stations" })).toBeNull();
+  outside.remove();
 });
 
 test("a failed open says so and keeps the menu", async () => {

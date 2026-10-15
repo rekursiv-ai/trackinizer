@@ -9,6 +9,7 @@ matching, and the fused rank, none observable without the live index.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Final, Literal, cast
 from uuid import UUID, uuid4
 
@@ -16,10 +17,12 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, executed_sql, make_conn
+from trackinizer.server.audience import NOBODY, SessionReader, visible_sql
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_embed import sweep_session_embeddings
+from trackinizer.server.store.session_feed import FeedScope
 from trackinizer.server.store.session_search import (
     RRF_K,
     SessionSearchHit,
@@ -29,6 +32,8 @@ from trackinizer.server.store.session_search import (
     _semantic_arm,
     search_session_records,
 )
+from trackinizer.server.values import vetted_sql
+from trackinizer.wire.audience import AUDIENCES
 
 
 if TYPE_CHECKING:
@@ -38,6 +43,10 @@ if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn, DatabaseEngine, PostgresEngine
 
 
+# Reads every open session; the sessions these tests seed are all open.
+_ANYONE: Final = FeedScope(
+    reader=SessionReader(audiences=frozenset({"open"}), every_session=True),
+)
 _MAPPER = FootprintMapper().name
 _MODEL = StubEmbedder(dim=1024).name
 _DIM = StubEmbedder(dim=1024).dim
@@ -137,6 +146,7 @@ async def test_semantic_only_finds_the_nearest_unit(store: Store) -> None:
         mapper=_MAPPER,
         model=_MODEL,
         dim=_DIM,
+        scope=_ANYONE,
     )
 
     assert hits
@@ -160,6 +170,7 @@ async def test_fts_only_matches_the_term(store: Store) -> None:
         mapper=_MAPPER,
         model=_MODEL,
         dim=_DIM,
+        scope=_ANYONE,
     )
 
     assert [(h.session_id, h.idx) for h in hits] == [(session_id, 0)]
@@ -189,6 +200,7 @@ async def test_both_arms_rank_a_dual_match_first(store: Store) -> None:
         mapper=_MAPPER,
         model=_MODEL,
         dim=_DIM,
+        scope=_ANYONE,
     )
 
     by_idx = {h.idx: h for h in hits}
@@ -215,6 +227,7 @@ async def test_limit_is_respected(store: Store) -> None:
         model=_MODEL,
         dim=_DIM,
         limit=3,
+        scope=_ANYONE,
     )
 
     assert len(hits) == 3
@@ -248,6 +261,7 @@ async def test_dedup_keeps_one_hit_per_record(store: Store) -> None:
         mapper=_MAPPER,
         model=_MODEL,
         dim=_DIM,
+        scope=_ANYONE,
     )
 
     positions = [(h.session_id, h.part, h.idx) for h in hits]
@@ -393,6 +407,7 @@ async def test_search_excludes_the_stale_tail_after_a_compaction(
         mapper=_MAPPER,
         model=_MODEL,
         dim=_DIM,
+        scope=_ANYONE,
     )
     fts = await search_session_records(
         store.engine,
@@ -401,6 +416,7 @@ async def test_search_excludes_the_stale_tail_after_a_compaction(
         mapper=_MAPPER,
         model=_MODEL,
         dim=_DIM,
+        scope=_ANYONE,
     )
 
     live = {(session_id, 0)}
@@ -409,9 +425,9 @@ async def test_search_excludes_the_stale_tail_after_a_compaction(
     assert all((h.session_id, h.idx) != (session_id, 2) for h in fts)
 
 
-# The semantic arm's one statement for ``dim=2`` and ``audiences`` as ``$6``, as it ran
-# before a reader that lacks an audience got a scan of its own.
-_PLAIN_SQL: Final = (
+# The semantic arm's one statement for ``dim=2`` and its reader as ``$6`` to ``$13``, as
+# it ran before a reader who may not read every session got a scan of its own.
+_PLAIN_SQL: Final = vetted_sql(
     "SELECT e.session_id, e.part, e.idx, e.field, e.chunk, "
     "left(r.text, $5) AS snippet, i.title AS title "
     "FROM session_embeddings e "
@@ -419,13 +435,21 @@ _PLAIN_SQL: Final = (
     "  ON r.session_id = e.session_id AND r.part = e.part AND r.idx = e.idx "
     "JOIN inquiries i ON i.id = e.session_id "
     "JOIN session_manifests m ON m.session_id = r.session_id AND m.part = r.part "
-    "WHERE e.mapper = $2 AND e.model = $3 AND r.idx < m.records "
-    "AND i.agentsession_audience = ANY($6::text[]) "
-    "ORDER BY (e.embedding::halfvec(2)) <=> $1::halfvec(2) "
-    "LIMIT $4"
+    "WHERE e.mapper = $2 AND e.model = $3 AND r.idx < m.records AND ",
+    visible_sql("i", params=[None, None, None, None, None], reader=NOBODY),
+    " ORDER BY (e.embedding::halfvec(2)) <=> $1::halfvec(2) LIMIT $4",
 )
-_BOTH: Final = frozenset({"open", "staff"})
 _OPEN: Final = frozenset({"open"})
+_OPEN_READER: Final = SessionReader(audiences=_OPEN)
+_EVERYTHING: Final = SessionReader(
+    audiences=AUDIENCES,
+    every_session=True,
+    every_chat=True,
+    oversight=True,
+)
+_READER_VALUES: Final = ("", None, False, False, False, True, "")
+"""The values the open reader binds after its audiences: email, org, every session,
+every chat, oversight, hidden, assistant."""
 _SET_WIDTH: Final = "SELECT set_config('hnsw.ef_search', $1, true)"
 _ITERATE: Final = "SET LOCAL hnsw.iterative_scan = strict_order"
 _VERSION: Final = "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
@@ -456,7 +480,7 @@ async def _arm(
     conn: AsyncMock,
     *,
     scan: Literal["plain", "iterative", "widening"],
-    audiences: frozenset[str] = _OPEN,
+    reader: SessionReader = _OPEN_READER,
     limit: int = 3,
 ) -> list[_ArmHit]:
     """Run the semantic arm on a scripted connection, scanned as ``scan`` says."""
@@ -467,7 +491,7 @@ async def _arm(
         model="model-y",
         dim=2,
         limit=limit,
-        audiences=audiences,
+        scope=FeedScope(reader=reader),
         scan=scan,
     )
 
@@ -477,7 +501,7 @@ async def test_every_audience_reader_runs_the_one_statement_it_always_did() -> N
     conn = make_conn()
     conn.fetch.return_value = _unit_rows(2)
 
-    hits = await _arm(conn, scan="plain", audiences=_BOTH, limit=7)
+    hits = await _arm(conn, scan="plain", reader=_EVERYTHING, limit=7)
 
     assert executed_sql(conn) == [_PLAIN_SQL]
     assert conn.fetch.await_args is not None
@@ -487,7 +511,14 @@ async def test_every_audience_reader_runs_the_one_statement_it_always_did() -> N
         "model-y",
         7,
         200,
-        ["open", "staff"],
+        ["open", "private", "staff"],
+        "",
+        None,
+        True,
+        True,
+        True,
+        True,
+        "",
     )
     assert [hit.idx for hit in hits] == [0, 1]
 
@@ -509,6 +540,7 @@ async def test_the_iterative_scan_is_set_for_one_transaction() -> None:
         3,
         200,
         ["open"],
+        *_READER_VALUES,
     )
     assert [hit.idx for hit in hits] == [0, 1, 2]
 
@@ -551,7 +583,16 @@ async def test_widening_asks_for_more_candidates_until_the_limit_is_filled_or_th
     ] == widths
     # Every asking is the same query with the same values.
     assert [call.args for call in conn.fetch.await_args_list] == [
-        (_PLAIN_SQL, "[0.5,0.25]", "mapper-x", "model-y", 3, 200, ["open"]),
+        (
+            _PLAIN_SQL,
+            "[0.5,0.25]",
+            "mapper-x",
+            "model-y",
+            3,
+            200,
+            ["open"],
+            *_READER_VALUES,
+        ),
     ] * len(counts)
     # The offered width is read only once the first query has fallen short.
     if counts[0] < 3:
@@ -562,20 +603,38 @@ async def test_widening_asks_for_more_candidates_until_the_limit_is_filled_or_th
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("audiences", [_BOTH, frozenset({"open", "staff", "private"})])
-async def test_a_reader_of_every_audience_is_scanned_plain_without_asking_the_database(
-    audiences: frozenset[str],
+@pytest.mark.parametrize("extra", [frozenset[str](), frozenset({"partner"})])
+async def test_a_reader_of_every_session_is_scanned_plain_without_asking_the_database(
+    extra: frozenset[str],
 ) -> None:
     conn = make_conn()
+    reader = SessionReader(
+        audiences=AUDIENCES | extra,
+        every_session=True,
+        every_chat=True,
+        oversight=True,
+    )
 
-    scan = await _scan_for(_engine(conn), cast("Conn", conn), audiences)
+    scan = await _scan_for(_engine(conn), cast("Conn", conn), FeedScope(reader=reader))
 
     assert scan == "plain"
     conn.fetchval.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("audiences", [_OPEN, frozenset({"staff"}), frozenset[str]()])
+@pytest.mark.parametrize(
+    "scope",
+    [
+        FeedScope(reader=replace(_EVERYTHING, audiences=_OPEN)),
+        FeedScope(reader=replace(_EVERYTHING, every_session=False)),
+        FeedScope(reader=replace(_EVERYTHING, every_chat=False)),
+        FeedScope(reader=replace(_EVERYTHING, oversight=False)),
+        FeedScope(reader=replace(_EVERYTHING, hidden=False)),
+        # It reads every session, but keeps only the caller's own.
+        FeedScope(reader=_EVERYTHING, account="ann@lab.example"),
+    ],
+    ids=["open", "org", "no chats", "no oversight", "listing", "mine"],
+)
 @pytest.mark.parametrize(
     ("version", "scan"),
     [
@@ -589,15 +648,15 @@ async def test_a_reader_of_every_audience_is_scanned_plain_without_asking_the_da
         ("unreleased", "widening"),
     ],
 )
-async def test_a_reader_lacking_an_audience_is_scanned_as_the_installed_pgvector_allows(
-    audiences: frozenset[str],
+async def test_a_reader_of_fewer_sessions_is_scanned_as_the_installed_pgvector_allows(
+    scope: FeedScope,
     version: str | None,
     scan: str,
 ) -> None:
     conn = make_conn()
     conn.fetchval.return_value = version
 
-    chosen = await _scan_for(_engine(conn), cast("Conn", conn), audiences)
+    chosen = await _scan_for(_engine(conn), cast("Conn", conn), scope)
 
     assert chosen == scan
     conn.fetchval.assert_awaited_once_with(_VERSION)
@@ -611,7 +670,7 @@ async def test_the_installed_version_is_read_once_for_each_engine() -> None:
     asked = [(_engine(current), current), (_engine(older), older)]
 
     scans = [
-        await _scan_for(engine, cast("Conn", conn), _OPEN)
+        await _scan_for(engine, cast("Conn", conn), FeedScope(reader=_OPEN_READER))
         for engine, conn in (*asked, *asked)
     ]
 
@@ -621,18 +680,18 @@ async def test_the_installed_version_is_read_once_for_each_engine() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("audiences", "statements"),
+    ("reader", "statements"),
     [
-        pytest.param(_BOTH, [_PLAIN_SQL], id="every audience"),
+        pytest.param(_EVERYTHING, [_PLAIN_SQL], id="every session"),
         pytest.param(
-            _OPEN,
+            _OPEN_READER,
             ["BEGIN", _ITERATE, _PLAIN_SQL, "COMMIT"],
             id="lacking staff",
         ),
     ],
 )
-async def test_the_search_scans_each_reader_as_its_audiences_call_for(
-    audiences: frozenset[str],
+async def test_the_search_scans_each_reader_as_what_it_reads_calls_for(
+    reader: SessionReader,
     statements: list[str],
 ) -> None:
     conn = make_conn()
@@ -647,7 +706,7 @@ async def test_the_search_scans_each_reader_as_its_audiences_call_for(
         model="model-y",
         dim=2,
         limit=3,
-        audiences=audiences,
+        scope=FeedScope(reader=reader),
     )
 
     assert executed_sql(conn) == statements

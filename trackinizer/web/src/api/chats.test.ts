@@ -7,7 +7,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 const head = {
   conversation_id: "c1", session_id: "s1", title: "Hello", account: "ada@example.com", live: true,
-  forks: 2, forked_from: null, forks_on_typing: false, shared_with: [], may_share: true, may_delete: false,
+  forks: 2, forked_from: null, forks_on_typing: false, audience: "open", may_hide: true, shared_with: [], may_share: true, may_delete: false,
 };
 
 test("finds a conversation's session, and says nothing until the assistant has opened it", async () => {

@@ -168,31 +168,39 @@ async def test_unsharing_stops_the_next_line_and_keeps_the_ones_before(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_only_the_starter_and_an_admin_change_who_a_chat_is_shared_with(
+async def test_only_the_starter_shares_a_chat_and_an_admin_only_stops_sharing_it(
     pglite_route_client: _Client,
 ) -> None:
+    """A share lets its person read the chat, so an admin cannot grant one, itself."""
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
 
     browser(OTHER_USER_ID, email=BOB)
     stranger = await client.put(_share_path(chat, "jan@other.org"))
     _act_as_root()
-    by_admin = await client.put(_share_path(chat, "jan@other.org"))
+    by_admin = await client.put(_share_path(chat, ROOT))
+    admin_head = await client.get(f"/api/chats/{chat.conversation}")
     browser()
+    shared = await client.put(_share_path(chat, "jan@other.org"))
     again = await client.put(_share_path(chat, "Jan@Other.org"))
     second = await client.put(_share_path(chat, BOB))
+    _act_as_root()
+    unshared_by_admin = await client.delete(_share_path(chat, BOB))
+    browser()
     not_shared = await client.delete(_share_path(chat, "nobody@example.com"))
     unknown = await client.put(f"/api/chats/{uuid.uuid4()}/shares/{BOB}")
     malformed = await client.put(_share_path(chat, "not-an-email"))
 
-    assert stranger.status_code == 403
-    assert json_loads(stranger.content, dict[str, object])["detail"] == {
-        "code": "chat_not_starter",
-    }
-    assert json_loads(by_admin.content, list[str]) == ["jan@other.org"]
+    assert (_code(stranger), _code(by_admin)) == (
+        "chat_not_starter",
+        "chat_not_starter",
+    )
+    assert json_loads(admin_head.content, dict[str, object])["may_share"] is False
+    assert json_loads(shared.content, list[str]) == ["jan@other.org"]
     assert json_loads(again.content, list[str]) == ["jan@other.org"]
     assert json_loads(second.content, list[str]) == ["jan@other.org", BOB]
-    assert json_loads(not_shared.content, list[str]) == ["jan@other.org", BOB]
+    assert json_loads(unshared_by_admin.content, list[str]) == ["jan@other.org"]
+    assert json_loads(not_shared.content, list[str]) == ["jan@other.org"]
     assert (unknown.status_code, malformed.status_code) == (404, 422)
     async with store.engine.acquire() as conn:
         rows = await conn.fetch(
@@ -200,8 +208,7 @@ async def test_only_the_starter_and_an_admin_change_who_a_chat_is_shared_with(
             "ORDER BY shared_at, email",
         )
     assert [(row["email"], row["shared_by"]) for row in rows] == [
-        ("jan@other.org", ROOT),
-        (BOB, ADA),
+        ("jan@other.org", ADA),
     ]
 
 

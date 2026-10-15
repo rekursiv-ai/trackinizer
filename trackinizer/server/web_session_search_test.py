@@ -11,7 +11,7 @@ embedder is configured (a keyword search must never load an 8 GB model).
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 from unittest.mock import Mock
@@ -24,13 +24,15 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.server import web
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity
-from trackinizer.server.config import Config
+from trackinizer.server.config import Assistant, Config
 from trackinizer.server.embedders import registry
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_embed import sweep_session_embeddings
+from trackinizer.server.store.session_feed import FeedScope
 
 
 if TYPE_CHECKING:
@@ -38,6 +40,7 @@ if TYPE_CHECKING:
 
     from trackinizer.lib.postgres import PostgresEngine
     from trackinizer.server.store.session_search import SessionSearchHit
+    from trackinizer.wire.wire_sessions import FeedWhose
 
 
 _VIEWER = AuthIdentity(
@@ -92,15 +95,17 @@ async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
 
 
 async def _session(store: Store, *, title: str = "route search") -> UUID:
+    """Insert an open session of the viewer's, which a search finds by default."""
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO inquiries (id, kind, seq, status, account, title, "
             "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', $2, 'open')",
+            "$3, $2, 'open')",
             session_id,
             title,
+            _VIEWER.email,
         )
     return session_id
 
@@ -437,25 +442,15 @@ async def test_feed_rejects_reversed_window_before_reading_store() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_search_is_read_for_the_audiences_of_its_caller(
+async def test_the_search_is_read_for_the_reader_its_caller_is_of_their_own(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    asked: list[frozenset[str]] = []
-
-    async def search(
-        engine: object,
-        *,
-        audiences: frozenset[str],
-        **rest: object,
-    ) -> list[SessionSearchHit]:
-        del engine, rest
-        asked.append(audiences)
-        return []
-
+    search = _SearchSpy()
     monkeypatch.setattr(web, "search_session_records", search)
     request = _request(cast(Store, Mock()), session_embedder="")
 
-    for audiences in (frozenset({"open"}), frozenset({"open", "staff"})):
+    held = (frozenset({"open", "private"}), frozenset({"open", "private", "staff"}))
+    for audiences in held:
         _ = await web.web_search_sessions(
             request,
             q="x",
@@ -463,7 +458,92 @@ async def test_the_search_is_read_for_the_audiences_of_its_caller(
             semantic=False,
         )
 
-    assert asked == [frozenset({"open"}), frozenset({"open", "staff"})]
+    assert search.asked == [
+        FeedScope(
+            account=_VIEWER.email,
+            reader=SessionReader(
+                audiences=audiences,
+                email=_VIEWER.email,
+                oversight="staff" in audiences,
+                hidden=False,
+            ),
+        )
+        for audiences in held
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_sessions_takes_whose_and_hidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Search widens to every session the caller reads, or narrows to their campaigns."""
+    search = _SearchSpy()
+    monkeypatch.setattr(web, "search_session_records", search)
+    request = _request(cast(Store, Mock()), session_embedder="")
+    caller = replace(_VIEWER, read_audiences=frozenset({"open", "private"}))
+
+    cases: tuple[tuple[FeedWhose, bool], ...] = (
+        ("everyone", True),
+        ("campaigns", False),
+    )
+    for whose, hidden in cases:
+        _ = await web.web_search_sessions(
+            request,
+            q="x",
+            identity=caller,
+            semantic=False,
+            whose=whose,
+            hidden=hidden,
+        )
+
+    assert [
+        (each.account, each.asker, each.reader.hidden) for each in search.asked
+    ] == [
+        ("", "", True),
+        ("", _VIEWER.email, False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_assistant_searches_every_session_it_reads_unless_it_names_whose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It holds none of the sessions it is asked about, where a person searches theirs."""
+    search = _SearchSpy()
+    monkeypatch.setattr(web, "search_session_records", search)
+    state = _State(store=cast(Store, Mock()), session_embedder="")
+    state.config = Config(assistant=Assistant(actor="scout", email=_VIEWER.email))
+    request = cast(Request, _Request(_App(state)))
+
+    for whose in (None, "mine"):
+        _ = await web.web_search_sessions(
+            request,
+            q="x",
+            identity=_VIEWER,
+            semantic=False,
+            whose=whose,
+        )
+
+    assert [each.account for each in search.asked] == ["", _VIEWER.email]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _SearchSpy:
+    """Stand in for the session search, keeping each scope it is asked for."""
+
+    asked: list[FeedScope] = field(default_factory=list[FeedScope])
+
+    async def __call__(
+        self,
+        engine: object,
+        *,
+        scope: FeedScope,
+        **rest: object,
+    ) -> list[SessionSearchHit]:
+        """Keep ``scope`` and find nothing."""
+        del engine, rest
+        self.asked.append(scope)
+        return []
 
 
 if __name__ == "__main__":

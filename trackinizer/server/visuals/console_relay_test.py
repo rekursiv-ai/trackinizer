@@ -14,6 +14,7 @@ import uuid
 import pytest
 
 from trackinizer.conftest import FakeEngine
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.config import Assistant
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.visuals import console_relay
@@ -30,7 +31,6 @@ from trackinizer.wire.wire_sessions import ConsoleRelay, ConsoleTarget
 
 if TYPE_CHECKING:
     from trackinizer.lib.postgres import DatabaseEngine
-    from trackinizer.server.config import ChatOrgs
     from trackinizer.server.visuals.workspaces import PartnerChoice
 
 
@@ -41,6 +41,7 @@ _SERVICE = uuid.UUID(int=4)
 _CHAT = uuid.UUID(int=5)
 _KEY = uuid.UUID(int=6)
 _SCOUT = Assistant(actor="scout", email="scout@example.com")
+_READER = SessionReader(audiences=frozenset({"open"}), email="alice@example.com")
 _LIVE = WorkspacePartner(
     session_id=_SERVICE,
     actor="scout",
@@ -136,13 +137,13 @@ class _Station:
             conn: object,
             *,
             poster: str,
+            reader: SessionReader,
             conversation_id: uuid.UUID,
             assistant: Assistant | None,
-            orgs: ChatOrgs,
             inbound: InboundQueue,
         ) -> bool:
             assert conn is self.engine.conn
-            assert (assistant, orgs, inbound) == (_SCOUT, "individual", self.inbound)
+            assert (assistant, reader, inbound) == (_SCOUT, _READER, self.inbound)
             self.asked_to_post.append((poster, conversation_id))
             return may_post
 
@@ -164,7 +165,7 @@ class _Station:
             source_role="writer",
             inbound=self.inbound,
             assistant=_SCOUT,
-            orgs="individual",
+            reader=_READER,
         )
 
 

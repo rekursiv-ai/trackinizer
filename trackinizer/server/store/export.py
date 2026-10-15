@@ -15,10 +15,12 @@ Three choices worth knowing before changing this:
   single connection, so streaming the response straight off a cursor would
   hold it for as long as the slowest client takes to read the body, and every
   other request would wait behind it.
-* **A session's transcript is exported to a caller who reads its audience.** A
-  backup or mirror that must hold every transcript runs as a caller that reads
-  every audience. The header names the audiences the export was read for, so a
-  file taken by a caller that reads fewer does not pass for a whole backup.
+* **A session's transcript is exported to a caller who reads it.** The header
+  names the audiences the export was read for and counts the sessions whose
+  transcripts it left out, so a file that is not whole says so. A science chat's
+  transcript goes only to the chat's members, whatever their role, so on a server
+  with chats of more than one person no export holds them all: only a database
+  dump does.
 
 Columns come from the catalog rather than a list kept here, so a column added
 by a migration is exported without touching this file. A new TABLE is a
@@ -33,7 +35,12 @@ from typing import TYPE_CHECKING, Final, cast
 
 import json
 
-from trackinizer.server.audience import OPEN_ONLY, hidden_exists_sql
+from trackinizer.server.audience import (
+    NOBODY,
+    SessionReader,
+    hidden_exists_sql,
+    visible_sql,
+)
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import vetted_sql
@@ -80,6 +87,10 @@ class GraphExport:
       audiences: The audiences the export was read for, sorted. A session outside
         them has no transcript in ``tables``, so a file that names fewer audiences
         than the deployment has is not a whole backup.
+      withheld_sessions: How many sessions have no transcript in ``tables`` because
+        the reader may not read it, as the transcript test of
+        :mod:`~trackinizer.server.audience` says. A file that counts any is not a
+        whole backup.
       tables: ``(table, rows)`` in :data:`EXPORT_TABLES` order; each row maps
         column name to value in the table's column order.
 
@@ -87,6 +98,7 @@ class GraphExport:
 
     migrations: tuple[str, ...]
     audiences: tuple[str, ...]
+    withheld_sessions: int
     tables: tuple[tuple[str, tuple[dict[str, object], ...]], ...]
 
 
@@ -96,19 +108,20 @@ class _ExportMixin(_StoreShared):
     async def export_graph(
         self,
         *,
-        audiences: frozenset[str] = OPEN_ONLY,
+        reader: SessionReader = NOBODY,
     ) -> GraphExport:
         """Read the whole graph in one read-only snapshot.
 
-        Every table keyed by a session leaves out the rows of a session whose audience
-        is not in ``audiences``. The session's own row stays, as it does in the graph
-        a caller reads: only the transcript is gated.
+        Every table keyed by a session leaves out the rows of a session whose
+        transcript ``reader`` may not read. The session's own row stays, as it does in
+        the graph a caller reads: only the transcript is gated.
 
         Args:
-          audiences: What the caller reads.
+          reader: Who reads.
 
         Returns:
-          graph: The applied migrations and every exported table's rows.
+          graph: The applied migrations, every exported table's rows, and how many
+            sessions' transcripts it left out.
 
         """
         async with self.engine.acquire() as conn, tx(conn):
@@ -127,13 +140,23 @@ class _ExportMixin(_StoreShared):
             tables = [
                 (
                     table,
-                    await _read_table(conn, table, columns[table], audiences=audiences),
+                    await _read_table(conn, table, columns[table], reader=reader),
                 )
                 for table in EXPORT_TABLES
             ]
+            params: list[object] = []
+            withheld = await conn.fetchval(
+                vetted_sql(
+                    "SELECT count(*) FROM inquiries AS withheld "
+                    "WHERE withheld.kind = 'AgentSession' AND NOT ",
+                    visible_sql("withheld", params=params, reader=reader),
+                ),
+                *params,
+            )
         return GraphExport(
             migrations=tuple(cast(str, row["name"]) for row in migrations),
-            audiences=tuple(sorted(audiences)),
+            audiences=tuple(sorted(reader.audiences)),
+            withheld_sessions=cast(int, withheld),
             tables=tuple(tables),
         )
 
@@ -162,13 +185,13 @@ async def _read_table(
     table: str,
     columns: tuple[tuple[str, bool], ...],
     *,
-    audiences: frozenset[str],
+    reader: SessionReader,
 ) -> tuple[dict[str, object], ...]:
     """Every row of ``table`` the caller may read, in its export order, as plain values."""
     select = ", ".join(f'"{name}"' for name, _ in columns)
     params: list[object] = []
     # Audience: gated -- a table keyed by session leaves out the rows of a session
-    # outside ``audiences``. Found from the columns, so a session table the export
+    # ``reader`` may not read. Found from the columns, so a session table the export
     # gains is gated without an edit here.
     where = (
         vetted_sql(
@@ -176,7 +199,7 @@ async def _read_table(
             hidden_exists_sql(
                 f"{table}.session_id",
                 params=params,
-                audiences=audiences,
+                reader=reader,
             ),
         )
         if any(name == "session_id" for name, _ in columns)

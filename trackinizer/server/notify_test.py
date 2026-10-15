@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast, override
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Final, cast, override
+from uuid import UUID
 
 import asyncio
 import json
@@ -163,41 +165,29 @@ class TestPingAudience:
         ]
 
     @pytest.mark.asyncio
-    async def test_a_stream_drops_a_ping_for_a_session_its_viewer_may_not_read(
+    async def test_a_stream_relays_a_transcripts_ping_only_when_its_viewer_hears_it(
         self,
     ) -> None:
+        """Every ping that names no audience is relayed, and its viewer is not asked."""
         engine = FakeEngine()
         hidden, shown, plain = new_uuid(), new_uuid(), new_uuid()
         engine.listen_messages = [
-            json.dumps({"id": str(hidden), "audience": "staff"}),
+            json.dumps({"id": str(hidden), "audience": "private"}),
             json.dumps({"id": str(shown), "audience": "open"}),
             json.dumps({"id": str(plain)}),
         ]
+        hearing = _Hearing(heard=frozenset({shown}))
 
-        async def relayed(audiences: frozenset[str]) -> list[bytes]:
-            stream = iter_sse_events(cast(DatabaseEngine, engine), audiences=audiences)
-            return [frame async for frame in stream]
+        relayed = [
+            frame
+            async for frame in iter_sse_events(
+                cast(DatabaseEngine, engine),
+                hears=hearing.hears,
+            )
+        ]
 
-        def frame(subject: object) -> bytes:
-            return f'data: {{"id": "{subject}"}}\n\n'.encode()
-
-        assert await relayed(frozenset({"open"})) == [
-            b": open\n\n",
-            frame(shown),
-            frame(plain),
-        ]
-        assert await relayed(frozenset({"open", "staff"})) == [
-            b": open\n\n",
-            frame(hidden),
-            frame(shown),
-            frame(plain),
-        ]
-        assert await relayed(frozenset()) == [b": open\n\n", frame(plain)]
-        # A stream told nothing of its viewer relays what an ordinary viewer sees.
-        by_default = [
-            each async for each in iter_sse_events(cast(DatabaseEngine, engine))
-        ]
-        assert by_default == await relayed(frozenset({"open"}))
+        assert relayed == [b": open\n\n", _frame(shown), _frame(plain)]
+        assert hearing.asked == [(hidden, "private"), (shown, "open")]
 
     @pytest.mark.asyncio
     async def test_the_canvas_stream_drops_it_too(self) -> None:
@@ -208,35 +198,41 @@ class TestPingAudience:
             json.dumps({"id": str(shown)}),
         ]
 
-        async def changed(audiences: frozenset[str]) -> list[str]:
-            return [
-                subject
-                async for subject in iter_changed_ids(
-                    cast(DatabaseEngine, engine),
-                    audiences=audiences,
-                )
-            ]
+        changed = [
+            subject
+            async for subject in iter_changed_ids(
+                cast(DatabaseEngine, engine),
+                hears=_Hearing(heard=frozenset()).hears,
+            )
+        ]
 
-        assert await changed(frozenset({"open"})) == [str(shown)]
-        assert await changed(frozenset({"open", "staff"})) == [str(hidden), str(shown)]
+        assert changed == [str(shown)]
 
     @pytest.mark.asyncio
-    async def test_a_ping_whose_audience_is_no_name_is_logged_and_dropped(
+    @pytest.mark.parametrize(
+        "payload",
+        ['{"id": "abc-123", "audience": 5}', '{"id": "abc-123", "audience": "open"}'],
+        ids=["audience no name", "session no uuid"],
+    )
+    async def test_a_transcripts_ping_that_names_no_session_is_logged_and_dropped(
         self,
+        payload: str,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         engine = FakeEngine()
-        engine.listen_messages = ['{"id": "abc-123", "audience": 5}']
+        engine.listen_messages = [payload]
+        hearing = _Hearing(heard=frozenset())
         with caplog.at_level("WARNING"):
             frames = [
                 frame
                 async for frame in iter_sse_events(
                     cast(DatabaseEngine, engine),
-                    audiences=frozenset({"open", "staff"}),
+                    hears=hearing.hears,
                 )
             ]
         assert frames == [b": open\n\n"]
         assert [r.levelname for r in caplog.records] == ["WARNING"]
+        assert hearing.asked == []
 
 
 class TestSseEvents:
@@ -256,7 +252,11 @@ class TestSseEvents:
         ]
         with caplog.at_level("WARNING"):
             frames = [
-                frame async for frame in iter_sse_events(cast(DatabaseEngine, engine))
+                frame
+                async for frame in iter_sse_events(
+                    cast(DatabaseEngine, engine),
+                    hears=_DEAF.hears,
+                )
             ]
         # Only the well-formed payload yields a frame.
         assert frames == [b": open\n\n", b'data: {"id": "abc-123"}\n\n']
@@ -277,7 +277,7 @@ class TestSseEvents:
         # A proxy in front of production holds response headers until the first
         # body byte; a stream with no change never opened and got a 524 at 125 s.
         engine = _QueueEngine()
-        stream = iter_sse_events(cast(DatabaseEngine, engine))
+        stream = iter_sse_events(cast(DatabaseEngine, engine), hears=_DEAF.hears)
         async with asyncio.timeout(1):
             assert await anext(stream) == b": open\n\n"
         await stream.aclose()
@@ -287,7 +287,11 @@ class TestSseEvents:
         # A keep-alive must not end the subscription: cancelling a pending
         # ``anext`` would close the engine's listen generator.
         engine = _QueueEngine()
-        stream = iter_sse_events(cast(DatabaseEngine, engine), keepalive_sec=0.01)
+        stream = iter_sse_events(
+            cast(DatabaseEngine, engine),
+            hears=_DEAF.hears,
+            keepalive_sec=0.01,
+        )
         async with asyncio.timeout(1):
             assert await anext(stream) == b": open\n\n"
             assert await anext(stream) == b": keepalive\n\n"
@@ -307,7 +311,11 @@ class TestSseEvents:
         # said ``open``, so a change in between reached neither: the client had
         # to read everything again on every open.
         engine = _QueueEngine()
-        stream = iter_sse_events(cast(DatabaseEngine, engine), keepalive_sec=0.01)
+        stream = iter_sse_events(
+            cast(DatabaseEngine, engine),
+            hears=_DEAF.hears,
+            keepalive_sec=0.01,
+        )
         async with asyncio.timeout(1):
             assert await anext(stream) == b": open\n\n"
             engine.publish('{"id": "abc-123"}')
@@ -321,13 +329,38 @@ class TestSseEvents:
     async def test_closing_the_stream_ends_the_subscription(self) -> None:
         # A client that disconnects must not leave its queue on the bus.
         engine = _QueueEngine()
-        stream = iter_sse_events(cast(DatabaseEngine, engine), keepalive_sec=0.01)
+        stream = iter_sse_events(
+            cast(DatabaseEngine, engine),
+            hears=_DEAF.hears,
+            keepalive_sec=0.01,
+        )
         async with asyncio.timeout(1):
             await anext(stream)
             await anext(stream)
         assert engine.listening == 1
         await stream.aclose()
         assert engine.listening == 0
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Hearing:
+    """A viewer who hears of the writes to these sessions' transcripts alone."""
+
+    heard: frozenset[UUID]
+    asked: list[tuple[UUID, str]] = field(default_factory=list)
+
+    async def hears(self, session_id: UUID, audience: str) -> bool:
+        """Note what was asked, and hear it when the session is one of ``heard``."""
+        self.asked.append((session_id, audience))
+        return session_id in self.heard
+
+
+_DEAF: Final = _Hearing(heard=frozenset())
+"""A viewer who hears of no transcript's write."""
+
+
+def _frame(subject: object) -> bytes:
+    return f'data: {{"id": "{subject}"}}\n\n'.encode()
 
 
 class _QueueEngine(FakeEngine):

@@ -58,7 +58,7 @@ for (const theme of ["dark", "light"] as const) {
         await page.route(`**/api/sessions/${session}/records**`, (route) => route.fulfill({ json: { records } }));
         await page.route(`**/api/chats/${chat}`, (route) => route.fulfill({ json: {
           conversation_id: chat, session_id: session, title: "What changed", account: "ada@example.com", live: true,
-          forks: 0, forked_from: null, forks_on_typing: false, shared_with: [], may_share: false, may_delete: false,
+          forks: 0, forked_from: null, forks_on_typing: false, audience: "open", may_hide: false, shared_with: [], may_share: false, may_delete: false,
         } }));
         // The user's station for that chat. Finding it again changes nothing, so writing its page makes
         // it the one changed last, which a tab with no station asks the server for.
@@ -85,7 +85,7 @@ for (const theme of ["dark", "light"] as const) {
         await page.goto(`/app/#/lookup/${issue}`);
         await expect(page.getByText("Two things:")).toBeVisible();
         await audit(page, theme, `a conversation, ${size.width} px`);
-        await page.locator(".station-name").click();
+        await page.getByRole("button", { name: "All stations" }).click();
         await expect(page.getByRole("dialog", { name: "Stations" }).getByRole("button", { name: /unnamed-workstream/ }).first()).toBeVisible();
         await audit(page, theme, `the station menu, ${size.width} px`);
       });

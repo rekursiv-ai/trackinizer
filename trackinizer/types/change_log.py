@@ -64,6 +64,9 @@ class Snapshot:
     not an ``account`` edit; the field is required on the row but a snapshot
     side is populated only for the matching change kind."""
 
+    app: dict[str, object] | None = None
+    """Mirrors :attr:`Inquiry.app`."""
+
     peer_id: UUID | None = None
     """The edge neighbor's id, on edge and dependency events."""
 
@@ -118,6 +121,7 @@ class Snapshot:
     agentsession_started: datetime | None = None
     agentsession_ended: datetime | None = None
     agentsession_rooms: tuple[str, ...] | None = None
+    agentsession_audience: str | None = None
 
     subscribers: tuple[Inquiry.Actor, ...] | None = None
     """Mirrors :attr:`Inquiry.subscribers`."""
@@ -206,6 +210,7 @@ class Change:
         "account",
         "subscribers",
         "marginal_cost",
+        "app",
         # Issue-only.
         "issue_kind",
         "issue_validation",
@@ -240,6 +245,7 @@ class Change:
         "agentsession_started",
         "agentsession_ended",
         "agentsession_rooms",
+        "agentsession_audience",
         # Edge-table mutations (decomposition, sequencing, provenance,
         # citations, supersedes); the peer triple rides on the Snapshot's
         # peer_* fields. These name an event, not a column, so they keep their
@@ -349,6 +355,7 @@ class _SnapshotKwargs(TypedDict, total=False):
     labels: tuple[str, ...] | None
     owner: Inquiry.Actor | None
     account: Inquiry.Actor | None
+    app: dict[str, object] | None
     peer_id: UUID | None
     peer_kind: Inquiry.InquiryKind | None
     peer_edge_kind: Edge.Kind | None
@@ -383,6 +390,7 @@ class _SnapshotKwargs(TypedDict, total=False):
     agentsession_started: datetime | None
     agentsession_ended: datetime | None
     agentsession_rooms: tuple[str, ...] | None
+    agentsession_audience: str | None
     subscribers: tuple[Inquiry.Actor, ...] | None
     marginal_cost: Cost | None
 

@@ -1272,6 +1272,41 @@ class Client:
             },
         )
 
+    def transition_app(
+        self,
+        target_id: uuid.UUID,
+        *,
+        expected_from: dict[str, object] | None,
+        to: dict[str, object] | None,
+        actor: Inquiry.Actor,
+        reason: str = "",
+    ) -> None:
+        """Compare-and-set a row's ``app``; 409s if it isn't ``expected_from``.
+
+        Sent as a PUT on the ``app`` field with ``mode='cas'`` and the whole
+        object read before as the ``expected`` guard, so a field another writer
+        set since is never overwritten: a 409 means read again and merge.
+
+        Args:
+          target_id: ID of the row to rewrite.
+          expected_from: The whole ``app`` read before (guard, raises 409 if
+            mismatch); ``None`` when it was unset.
+          to: The whole new ``app``.
+          actor: Change actor for audit log.
+          reason: Optional audit note.
+
+        """
+        self.put(
+            _field_path(target_id, "app"),
+            body={
+                "actor": actor,
+                "value": to,
+                "mode": "cas",
+                "expected": expected_from,
+                "reason": reason,
+            },
+        )
+
     def purge(
         self,
         target_id: uuid.UUID,

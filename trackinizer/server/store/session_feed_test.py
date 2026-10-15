@@ -25,6 +25,7 @@ from trackinizer.lib.agent.types.sessions import (
     Attachment,
     UserMessage,
 )
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     BucketGrid,
@@ -34,6 +35,7 @@ from trackinizer.server.store.session_feed import (
 )
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.audience import AUDIENCES
 from trackinizer.wire.wire_sessions import (
     FeedActorFacet,
     FeedBucket,
@@ -48,6 +50,10 @@ if TYPE_CHECKING:
     from trackinizer.server.store.core import Store
 
 
+# Reads every session that is not a chat, whoever holds it: these tests are of what a
+# scope keeps, not of who reads.
+_ANYONE = SessionReader(audiences=AUDIENCES, every_session=True, oversight=True)
+_ALL_SESSIONS = replace(WHOLE_FEED, reader=_ANYONE)
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 # A UTC midnight, so a day's bucket starts on it.
 _T0 = datetime(2026, 9, 1, tzinfo=UTC)
@@ -234,7 +240,13 @@ async def test_a_scope_keeps_any_value_of_a_field_and_every_named_field(
         clis: tuple[str, ...] = (),
         kinds: tuple[str, ...] = (),
     ) -> set[tuple[str, str]]:
-        scope = replace(WHOLE_FEED, actors=actors, rooms=rooms, clis=clis, kinds=kinds)
+        scope = replace(
+            _ALL_SESSIONS,
+            actors=actors,
+            rooms=rooms,
+            clis=clis,
+            kinds=kinds,
+        )
         events = await integ_store.read_feed(scope=scope)
         return {(event.actor, event.kind) for event in events}
 
@@ -285,22 +297,26 @@ def test_a_station_scope_binds_its_owner_and_the_bounds_of_the_walk() -> None:
     alone: list[object] = []
     beside: list[object] = []
 
-    assert FeedScope(station=_STATION).clauses(alone, kind="e.kind") == [_walk(0)]
-    assert FeedScope(actors=("a",), station=_STATION).clauses(
+    assert FeedScope(reader=_ANYONE, station=_STATION).clauses(
+        alone,
+        kind="e.kind",
+    ) == [_walk(0)]
+    assert FeedScope(reader=_ANYONE, actors=("a",), station=_STATION).clauses(
         beside,
         kind="e.kind",
     ) == ["i.owner = ANY($1::text[])", _walk(1)]
 
     assert alone == _STATION_VALUES
     assert beside == [["a"], *_STATION_VALUES]
-    assert FeedScope(station=_STATION).names_sessions
-    assert not WHOLE_FEED.names_sessions
+    assert FeedScope(reader=_ANYONE, station=_STATION).names_sessions
+    assert not _ALL_SESSIONS.names_sessions
 
 
 def test_each_field_of_a_scope_binds_one_array_in_the_order_the_sql_tests_it() -> None:
     params: list[object] = []
 
     clauses = FeedScope(
+        reader=_ANYONE,
         actors=("a",),
         rooms=("r",),
         clis=("c",),
@@ -338,7 +354,10 @@ async def test_a_station_keeps_the_agents_its_chat_produced_in_every_read(
     )
     for session in (chat, lead, worker, outsider, other_lead):
         await _records(integ_store, session, [("ToolCall", _T0, "{}")])
-    scope = FeedScope(station=StationAgents(workspace_id=station, user_id=_OWNER))
+    scope = FeedScope(
+        reader=_ANYONE,
+        station=StationAgents(workspace_id=station, user_id=_OWNER),
+    )
 
     feed = await integ_store.read_feed(scope=scope)
     facets = await integ_store.read_feed_facets(since=None, until=None, scope=scope)
@@ -379,7 +398,10 @@ async def test_a_station_walks_four_produced_by_edges_and_survives_a_cycle(
         await _records(integ_store, session, [("ToolCall", _T0, "{}")])
 
     feed = await integ_store.read_feed(
-        scope=FeedScope(station=StationAgents(workspace_id=station, user_id=_OWNER)),
+        scope=FeedScope(
+            reader=_ANYONE,
+            station=StationAgents(workspace_id=station, user_id=_OWNER),
+        ),
     )
 
     assert {event.actor for event in feed} == {f"depth-{n}" for n in range(1, 5)}
@@ -396,7 +418,10 @@ async def test_a_station_reads_at_most_500_agents(integ_store: Store) -> None:
     facets = await integ_store.read_feed_facets(
         since=None,
         until=None,
-        scope=FeedScope(station=StationAgents(workspace_id=station, user_id=_OWNER)),
+        scope=FeedScope(
+            reader=_ANYONE,
+            station=StationAgents(workspace_id=station, user_id=_OWNER),
+        ),
     )
 
     assert len(facets.actors) == 500
@@ -417,6 +442,7 @@ async def test_a_station_without_a_chat_or_of_another_owner_matches_nothing(
 
     async def kept(workspace_id: UUID, user_id: UUID) -> int:
         scope = FeedScope(
+            reader=_ANYONE,
             station=StationAgents(workspace_id=workspace_id, user_id=user_id),
         )
         return len(await integ_store.read_feed(scope=scope))
@@ -483,7 +509,7 @@ async def test_facets_count_a_window_by_session_room_and_kind(
     facets = await integ_store.read_feed_facets(
         since=_T0,
         until=_T0 + hour,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
 
     assert facets.actors == [
@@ -496,6 +522,8 @@ async def test_facets_count_a_window_by_session_room_and_kind(
             conversation=1,
             last=_T0 + 12 * minute,
             ended=ended,
+            account="tester@example.com",
+            audience="open",
         ),
         FeedActorFacet(
             actor="talker",
@@ -506,6 +534,8 @@ async def test_facets_count_a_window_by_session_room_and_kind(
             conversation=4,
             last=_T0 + 9 * minute,
             ended=None,
+            account="tester@example.com",
+            audience="open",
         ),
     ]
     assert facets.rooms == [
@@ -523,7 +553,7 @@ async def test_facets_count_a_window_by_session_room_and_kind(
     everything = await integ_store.read_feed_facets(
         since=None,
         until=None,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
     assert [(a.actor, a.count) for a in everything.actors] == [
         ("worker", 3),
@@ -533,7 +563,7 @@ async def test_facets_count_a_window_by_session_room_and_kind(
     said = await integ_store.read_feed_facets(
         since=_T0,
         until=_T0 + hour,
-        scope=FeedScope(rooms=("ops",), kinds=("AssistantMessage",)),
+        scope=FeedScope(reader=_ANYONE, rooms=("ops",), kinds=("AssistantMessage",)),
     )
     assert [(a.actor, a.count, a.conversation) for a in said.actors] == [
         ("worker", 1, 1),
@@ -573,7 +603,7 @@ async def test_facets_hold_one_snapshot_while_a_session_is_purged(
     facets = await integ_store.read_feed_facets(
         since=None,
         until=None,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
 
     assert [(actor.actor, actor.count) for actor in facets.actors] == [("gone", 1)]
@@ -617,7 +647,7 @@ async def test_the_conversation_feed_keeps_what_the_facets_count(
         [(kind, _T0 + i * minute, payload) for i, (kind, payload) in enumerate(turns)],
     )
     await _records(integ_store, other, [("ContextState", _T0, _QUEUED % "human")])
-    talker = FeedScope(actors=("talker",))
+    talker = FeedScope(reader=_ANYONE, actors=("talker",))
 
     said = await integ_store.read_feed(scope=talker, conversation=True)
     newest = await integ_store.read_feed(
@@ -667,7 +697,7 @@ async def test_the_facets_count_no_record_with_nothing_to_read(
     facets = await integ_store.read_feed_facets(
         since=None,
         until=None,
-        scope=FeedScope(actors=("thinker",)),
+        scope=FeedScope(reader=_ANYONE, actors=("thinker",)),
     )
 
     assert [(actor.count, actor.conversation) for actor in facets.actors] == [(2, 1)]
@@ -701,11 +731,11 @@ async def test_every_feed_read_shows_only_each_part_s_live_prefix(
         )
 
     reads = (
-        await integ_store.read_feed(),
-        await integ_store.read_feed(tail=True),
-        await integ_store.read_feed(conversation=True),
+        await integ_store.read_feed(scope=_ALL_SESSIONS),
+        await integ_store.read_feed(scope=_ALL_SESSIONS, tail=True),
+        await integ_store.read_feed(scope=_ALL_SESSIONS, conversation=True),
         await integ_store.read_feed(
-            scope=FeedScope(kinds=("AssistantMessage",)),
+            scope=FeedScope(reader=_ANYONE, kinds=("AssistantMessage",)),
             tail=True,
         ),
     )
@@ -743,7 +773,7 @@ async def test_a_histogram_counts_records_in_each_bucket(integ_store: Store) -> 
         until=_T0 + 3 * day - timedelta(seconds=1),
         earliest=_T0,
         buckets=3,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
     assert (days.start, days.end, days.bucket_seconds) == (_T0, _T0 + 3 * day, 86_400)
     assert days.counts == [
@@ -757,9 +787,13 @@ async def test_a_histogram_counts_records_in_each_bucket(integ_store: Store) -> 
     morning = (_T0 + 10 * hour, _T0 + 12 * hour - timedelta(seconds=1))
     assert await _counts(integ_store, *morning, buckets=4) == [1, 1, 0, 1]
     for scope, by_day, by_half_hour in (
-        (FeedScope(clis=("codex",)), [1, 0, 0], [0, 0, 0, 1]),
-        (FeedScope(kinds=("ToolCall",)), [2, 1, 1], [1, 0, 0, 1]),
-        (FeedScope(actors=("first",), kinds=("ToolCall",)), [1, 1, 1], [1, 0, 0, 0]),
+        (FeedScope(reader=_ANYONE, clis=("codex",)), [1, 0, 0], [0, 0, 0, 1]),
+        (FeedScope(reader=_ANYONE, kinds=("ToolCall",)), [2, 1, 1], [1, 0, 0, 1]),
+        (
+            FeedScope(reader=_ANYONE, actors=("first",), kinds=("ToolCall",)),
+            [1, 1, 1],
+            [1, 0, 0, 0],
+        ),
     ):
         assert await _counts(integ_store, *whole, buckets=3, scope=scope) == by_day, (
             scope
@@ -790,7 +824,7 @@ async def test_a_histogram_without_since_starts_at_the_first_record(
         until=_T0 + 7 * hour,
         earliest=_T0,
         buckets=2,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
 
     assert histogram.counts == [
@@ -825,7 +859,7 @@ async def test_a_histogram_starts_no_earlier_than_earliest(integ_store: Store) -
             until=_T0 + hour,
             earliest=_T0 + 20 * minute,
             buckets=2,
-            scope=WHOLE_FEED,
+            scope=_ALL_SESSIONS,
         )
         assert histogram.counts == [
             FeedBucket(start=first, count=1),
@@ -841,7 +875,7 @@ async def test_an_empty_feed_is_one_empty_bucket(integ_store: Store) -> None:
         until=_T0,
         earliest=_T0 - timedelta(days=7),
         buckets=120,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
     assert histogram.counts == [FeedBucket(start=_T0, count=0)]
 
@@ -872,10 +906,10 @@ async def test_typed_attachment_only_messages_are_conversation(
     facets = await integ_store.read_feed_facets(
         since=None,
         until=None,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
     assert [(actor.count, actor.conversation) for actor in facets.actors] == [(1, 1)]
-    events = await integ_store.read_feed(conversation=True)
+    events = await integ_store.read_feed(scope=_ALL_SESSIONS, conversation=True)
     assert [(event.session_id, event.kind) for event in events] == [
         (session_id, row.kind),
     ]
@@ -886,10 +920,10 @@ async def test_typed_attachment_only_messages_are_conversation(
 @pytest.mark.parametrize(
     "scope",
     [
-        FeedScope(actors=("picked",)),
-        FeedScope(clis=("codex",)),
-        FeedScope(kinds=("UserMessage",)),
-        FeedScope(rooms=("picked-room",)),
+        FeedScope(reader=_ANYONE, actors=("picked",)),
+        FeedScope(reader=_ANYONE, clis=("codex",)),
+        FeedScope(reader=_ANYONE, kinds=("UserMessage",)),
+        FeedScope(reader=_ANYONE, rooms=("picked-room",)),
     ],
 )
 async def test_histogram_without_since_uses_scoped_first_record(
@@ -1056,7 +1090,7 @@ async def _counts(
     until: datetime,
     *,
     buckets: int,
-    scope: FeedScope = WHOLE_FEED,
+    scope: FeedScope = _ALL_SESSIONS,
 ) -> list[int]:
     """Read a histogram that may start at ``_T0``, as its bucket counts."""
     histogram = await store.read_feed_histogram(
