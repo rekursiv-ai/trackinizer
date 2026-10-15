@@ -110,6 +110,14 @@ class TestShouldDelegate:
         """``trax helper`` serves until stopped, spawning a CLI per turn, in this process."""
         assert not should_delegate(["helper", "claude"])
 
+    def test_refuses_export_which_outgrows_a_frame(self) -> None:
+        """Keep ``export`` here: the whole graph outgrew the daemon's 64 MB frame."""
+        assert not should_delegate(["export"])
+        assert not should_delegate(["--profile", "admin", "export"])
+
+    def test_delegates_a_row_whose_value_is_the_word_export(self) -> None:
+        assert should_delegate(["issue", "title", "to", "export", "now"])
+
     def test_refuses_a_stdin_sentinel(self) -> None:
         """``field to -`` reads this process's stdin, which the daemon lacks."""
         assert not should_delegate(["issue", "7", "description", "to", "-"])

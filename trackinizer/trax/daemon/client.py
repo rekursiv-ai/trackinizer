@@ -69,6 +69,12 @@ _LOCAL_ONLY_VERBS: Final[frozenset[str]] = frozenset({"run", "helper"})
 # The verbs after ``machine NAME`` that must run in the calling process.
 _MACHINE_HOST_VERBS: Final[frozenset[str]] = frozenset({"enroll", "connect"})
 
+# These verbs print output that grows with the graph. The daemon answers with a verb's
+# whole output in one frame, which ``protocol`` caps, so ``export`` runs in this process
+# and writes each line as it comes. They are judged in verb position only, so ``title to
+# export`` still delegates.
+_STREAMING_VERBS: Final[frozenset[str]] = frozenset({"export"})
+
 # Global flags that take a separate value token, so the scan for the verb
 # knows to skip past it. Mirrors ``cli._VALUE_FLAGS``.
 _VALUE_FLAGS: Final[frozenset[str]] = frozenset({"--profile", "--host", "--port"})
@@ -88,8 +94,9 @@ def should_delegate(argv: Sequence[str]) -> bool:
     """Whether ``argv`` may run in the daemon rather than this process.
 
     Refuses the daemon's own serve flag, anything that SPAWNS a CLI on a PTY,
-    any command whose value is the ``-`` stdin sentinel, and ``machine NAME
-    enroll`` / ``machine NAME connect``. Each is judged by POSITION rather than
+    any command whose value is the ``-`` stdin sentinel, ``machine NAME
+    enroll`` / ``machine NAME connect``, and ``export``, whose output outgrows
+    a frame. Each is judged by POSITION rather than
     by presence, so a row whose title happens to be "run" still gets the
     daemon. An invocation with both ``TRACKINIZER_TOKEN`` and
     ``TRACKINIZER_URL`` non-empty runs in this process: the key must not cross
@@ -110,6 +117,8 @@ def should_delegate(argv: Sequence[str]) -> bool:
     if os.getenv(KEY_ENV, default="") and os.getenv("TRACKINIZER_URL", default=""):
         return False
     if _spawns_a_terminal(argv) or _hosts_a_machine(argv):
+        return False
+    if _verb(argv) in _STREAMING_VERBS:
         return False
     return not any(
         token == _STDIN_SENTINEL and argv[index - 1].lower() in _VALUE_OPERATORS
