@@ -103,16 +103,32 @@ export async function choosePreferences(change: Partial<Preferences>, { keepaliv
   sending += 1;
   const turn = last.then(() => setPreferences(change, { keepalive }));
   last = turn.catch(() => undefined);
+  const keys = Object.keys(change) as (keyof Preferences)[];
   try {
     const saved = await turn;
     sending -= 1;
+    markUnsaved(keys, false);
     if (sending === 0) show({ ...DEFAULT_PREFERENCES, ...saved });
     return true;
   } catch (error) {
     sending -= 1;
-    log("warn", "preferences.not_kept", { keys: Object.keys(change).join(","), error: String(error) });
+    log("warn", "preferences.not_kept", { keys: keys.join(","), error: String(error) });
+    markUnsaved(keys, true);
     return false;
   }
+}
+
+let unsaved: ReadonlySet<keyof Preferences> = new Set();
+
+/** The keys whose last send the server did not take; one it takes later clears its key. Subscribers are told. */
+export function unsavedKeys(): ReadonlySet<keyof Preferences> {
+  return unsaved;
+}
+
+function markUnsaved(keys: readonly (keyof Preferences)[], failed: boolean): void {
+  if (keys.every((key) => unsaved.has(key) === failed)) return;
+  unsaved = new Set(failed ? [...unsaved, ...keys] : [...unsaved].filter((key) => !keys.includes(key)));
+  for (const listener of [...listeners]) listener();
 }
 
 /** How long typing pauses before a change made with `choosePreferencesSoon` is sent. */

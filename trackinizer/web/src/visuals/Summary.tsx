@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { loadCampaignSummary, readTrust } from "../api/summaries";
+import { loadCampaignSummary } from "../api/summaries";
+import { trustQuery } from "../api/trusted";
 import { useVisualMark } from "./marks";
 import type { RendererProps } from "./registry";
 import { SummaryCorpus } from "./SummaryCorpus";
@@ -23,7 +24,7 @@ const REFRESH_MS = 60_000;
  */
 export function Summary({ instance, workspace }: RendererProps) {
   const recordId = instance.record_id;
-  const trust = useQuery({ queryKey: ["me", "trust"], queryFn: ({ signal }) => readTrust({ signal }), staleTime: 300_000, retry: false });
+  const trust = useQuery({ ...trustQuery, retry: false });
   const accounts = trust.data?.accounts;
   const query = useQuery({
     queryKey: ["visual", "summary", recordId, accounts],

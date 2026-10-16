@@ -12,7 +12,7 @@ import { listSessionParts, readSessionRecords, SESSION_NOT_OWNER, SESSION_STAFF,
 import { getWorkspace, type WorkspaceState } from "../api/workspaces";
 import { MetaContext, ProfileContext } from "../app/boot";
 import { HighlightContext, HighlightStore } from "../app/highlights";
-import { META } from "../detail/testing";
+import { META, uuid } from "../detail/testing";
 import { LiveContext } from "../live";
 import type { LiveHub } from "../live/hub";
 import type { LiveQuery } from "../live/serial";
@@ -27,7 +27,8 @@ import { ChatFeed, ChatFeedContext } from "./chatFeed";
 import { FOLLOW_UP_ASK } from "./chatFollowUp";
 import { OPENING } from "./chatRecords";
 import { ToastProvider } from "../ui/toast";
-import { AGREED } from "../api/testing";
+import { AGREED, stubFetch } from "../api/testing";
+import { Session, SessionContext } from "../app/session";
 
 vi.mock("../api/chats", async (original) => ({
   ...(await original<typeof import("../api/chats")>()),
@@ -73,6 +74,10 @@ const sessions = new Map<string, SessionRecord[]>();
 let registered: LiveQuery[] = [];
 
 beforeEach(() => {
+  // jsdom has no ResizeObserver, which the composer's open list uses.
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  stubFetch(async (request) => request.method === "PATCH"
+    ? Response.json({ ...preferences(), ...await request.json() }) : Response.json({}));
   vi.mocked(listStations).mockResolvedValue([]);
   vi.mocked(listWorkstreams).mockResolvedValue([]);
   vi.mocked(getWorkspace).mockResolvedValue({ ...workspace, id: "w-fork", name: "unnamed-workstream#2", conversation_id: "f1" });
@@ -80,6 +85,8 @@ beforeEach(() => {
   OPENING.giveUpMs = 150;
   // A cited row resolves to an id unless a test says otherwise, as the server's route answers.
   vi.mocked(findRef).mockImplementation(async (kind, seq) => `id-${kind}-${seq}`);
+  // A detail no test names is missing, as the server answers.
+  vi.mocked(getDetail).mockRejectedValue(new ApiError(404, "not found"));
   vi.mocked(listSessionParts).mockImplementation(async (id) => {
     const held = sessions.get(id) ?? [];
     return [{ part: 0, name: "chat.jsonl", format: "sagent", records: held.length, metadata: {}, ir_id: "i" }];
@@ -135,7 +142,7 @@ afterEach(async () => {
   localStorage.clear();
   // A save still on its way (a flip of Chat's side, a style) would make the page ignore the next test's preferences.
   await sendWaiting();
-  receivePreferences({ ...preferences(), highlight_mentions: true });
+  receivePreferences({ ...preferences(), drafts: {}, highlight_mentions: true });
   history.replaceState(null, "", "#/");
 });
 
@@ -167,6 +174,7 @@ function shell(
   options: { profile?: Partial<Profile>; queries?: { retry: number | false; retryDelay?: number } } = {},
 ) {
   const feed = new ChatFeed();
+  const session = new Session(() => {});
   const highlights = new HighlightStore();
   const client = new QueryClient({ defaultOptions: { queries: options.queries ?? { retry: false } } });
   client.setQueryData(["stations"], []);
@@ -178,11 +186,11 @@ function shell(
   const held = (next: WorkspaceState) => (opened ? { ...next, conversation_id: opened } : next);
   setStation(state.id);
   client.setQueryData(["workspace", state.id], held(state));
-  const ui = (pinned?: WorkspaceState) => <ToastProvider><QueryClientProvider client={client}><MetaContext value={META}>
+  const ui = (pinned?: WorkspaceState) => <SessionContext value={session}><ToastProvider><QueryClientProvider client={client}><MetaContext value={META}>
     <ProfileContext value={{ ...PROFILE, ...options.profile }}><LiveContext value={live}>
       <ChatFeedContext value={feed}><HighlightContext value={highlights}>
         <Station pinned={pinned} />
-      </HighlightContext></ChatFeedContext></LiveContext></ProfileContext></MetaContext></QueryClientProvider></ToastProvider>;
+      </HighlightContext></ChatFeedContext></LiveContext></ProfileContext></MetaContext></QueryClientProvider></ToastProvider></SessionContext>;
   const view = render(ui());
   return {
     feed, client, view, highlights,
@@ -210,6 +218,88 @@ const open = (id: string) => { opened = id; };
 const articles = () => screen.getAllByRole("article").map((line) => [...line.children].filter((child) => child.tagName !== "BUTTON")
   .map((child) => child.textContent).join(""));
 const openMore = () => fireEvent.click(screen.getByRole("button", { name: "More chat actions" }));
+
+test("input history recalls only my questions, not replies, relays or another poster", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "My first"), answered(1, "Reply"), said(2, GRACE, "Someone else"),
+    said(3, ME, "My latest"), said(4, ME, "→ agent: relay"), said(5, "", "Unknown sender"));
+  shell();
+  await screen.findByText("Unknown sender");
+  const box = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  fireEvent.keyDown(box, { key: "ArrowUp" });
+  expect(box.value).toBe("My latest");
+  fireEvent.keyDown(box, { key: "ArrowUp" });
+  expect(box.value).toBe("My first");
+});
+
+test("@ record suggestions take the arrows and Enter before history and send; Shift, Alt and IME keys pass", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "My first"));
+  const { client } = shell();
+  client.setQueryData(["inquiries", "list", [], "Issue", 50, 0], [
+    { id: uuid(1), kind: "Issue", seq: 1, title: "Upload", status: "active", modified: "2026-09-21T00:00:00+00:00" },
+    { id: uuid(2), kind: "Issue", seq: 2, title: "Retry", status: "active", modified: "2026-09-22T00:00:00+00:00" },
+  ]);
+  await screen.findByText("My first");
+  const box = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  box.focus();
+  fireEvent.change(box, { target: { value: "@" } });
+  box.setSelectionRange(1, 1);
+  fireEvent.keyUp(box, { key: "ArrowLeft" });
+  expect(screen.getAllByRole("option").map((option) => option.title)).toEqual(["Issue#2", "Issue#1"]);
+  // Shift+Up selects text natively: the open list does not take it, and history does not either.
+  expect(fireEvent.keyDown(box, { key: "ArrowUp", shiftKey: true })).toBe(true);
+  expect(box.value).toBe("@");
+  expect(screen.getByRole("option", { selected: true }).title).toBe("Issue#2");
+  expect(fireEvent.keyDown(box, { key: "ArrowUp" })).toBe(false);
+  expect(box.value).toBe("@");
+  expect(screen.getByRole("option", { selected: true }).title).toBe("Issue#1");
+  fireEvent.keyDown(box, { key: "Enter", isComposing: true });
+  fireEvent.keyDown(box, { key: "Enter", altKey: true });
+  expect(box.value).toBe("@");
+  fireEvent.keyDown(box, { key: "Enter" });
+  expect(box.value).toBe("Issue#1 ");
+  expect(sendChatLine).not.toHaveBeenCalled();
+});
+
+test("chat drafts follow their station across switches, partner changes and remounts", () => {
+  const { again, mount } = shell();
+  const box = () => screen.getByRole("textbox", { name: "Message" });
+  fireEvent.change(box(), { target: { value: "Draft A" } });
+  again({ ...workspace, id: "station-b" });
+  expect(box()).toHaveProperty("value", "");
+  fireEvent.change(box(), { target: { value: "Draft B" } });
+  again({ ...workspace, partner: { ...SCOUT, session_id: "restarted" } });
+  expect(box()).toHaveProperty("value", "Draft A");
+  mount();
+  expect(box()).toHaveProperty("value", "Draft A");
+});
+
+test("a send finishing after a station switch clears only its original unchanged draft", async () => {
+  let finish = (_value: { conversation_id: string; session_id: string | null; workspace_id: string }) => {};
+  vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  const { again } = shell();
+  await type("Sent from A");
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce());
+  again({ ...workspace, id: "station-b" });
+  const box = screen.getByRole("textbox", { name: "Message" });
+  fireEvent.change(box, { target: { value: "Draft B" } });
+  await act(async () => finish({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID }));
+  expect(box).toHaveProperty("value", "Draft B");
+  again();
+  expect(box).toHaveProperty("value", "");
+});
+
+test("a successfully delivered question is recallable before its transcript arrives", async () => {
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID });
+  shell();
+  await type("Just delivered");
+  const box = screen.getByRole("textbox", { name: "Message" });
+  await waitFor(() => expect(box).toHaveProperty("value", ""));
+  await waitFor(() => expect(box).toHaveProperty("disabled", false));
+  fireEvent.keyDown(box, { key: "ArrowUp" });
+  expect(box).toHaveProperty("value", "Just delivered");
+});
 
 test("scout is the partner with no pairing, and Chat is ready to send", () => {
   shell();
@@ -286,7 +376,7 @@ test("clicking outside the chat name field saves the name", async () => {
   fireEvent.change(screen.getByRole("textbox", { name: "Chat name" }), { target: { value: "Kept name" } });
   await act(async () => fireEvent.pointerDown(document.body));
   expect(renameStation).toHaveBeenCalledWith(WORKSPACE_ID, "Kept name");
-  expect(screen.getByRole("button", { name: "Kept name" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Kept name" })).toBeTruthy();
 });
 
 test("the chat title and workstream menus close each other in both directions", () => {
@@ -947,6 +1037,24 @@ test("a failed send keeps the draft for a retry under one key, and shows no pend
   await waitFor(() => expect(screen.queryByText("Sending…")).toBeNull(), { interval: 1 });
 });
 
+test("recalling identical history after a failed send keeps retry identity and clears on success", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "same"), answered(1, "answer"));
+  vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
+    .mockResolvedValueOnce({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  shell();
+  await screen.findByText("answer");
+  await type("same");
+  await screen.findByRole("button", { name: "Retry message" });
+  const box = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  box.setSelectionRange(0, 0);
+  fireEvent.keyDown(box, { key: "ArrowUp" });
+  fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
+  await waitFor(() => expect(box.value).toBe(""));
+  expect(vi.mocked(sendChatLine).mock.calls[1]![1]).toBe(vi.mocked(sendChatLine).mock.calls[0]![1]);
+  expect(preferences().drafts[`chat:${WORKSPACE_ID}`]).toBeUndefined();
+});
+
 test("a refusal shows the server's reason and offers no retry, while a server fault does", async () => {
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(409, "The assistant is not running"));
   shell();
@@ -961,7 +1069,19 @@ test("a refusal shows the server's reason and offers no retry, while a server fa
   expect(await screen.findByRole("button", { name: "Retry message" })).toBeTruthy();
 });
 
-test("the composer refuses a blank or too long message before sending it", async () => {
+test("a message's length counts characters as the server does, so 16,384 emoji send and one more is refused", async () => {
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID });
+  shell();
+  const box = screen.getByRole("textbox", { name: "Message" });
+  fireEvent.change(box, { target: { value: "\u{1F600}".repeat(16_385) } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  expect((await screen.findByRole("alert")).textContent).toContain("this one has 16,385");
+  fireEvent.change(box, { target: { value: "\u{1F600}".repeat(16_384) } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
+});
+
+test("the composer refuses a too long message before sending it", async () => {
   shell();
   const box = screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(box, { target: { value: "x".repeat(16_385) } });
@@ -1051,10 +1171,10 @@ test("a request waits for Chat to mount: a Chat shown later takes it", async () 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   setStation(workspace.id);
   client.setQueryData(["workspace", workspace.id], workspace);
-  render(<QueryClientProvider client={client}><MetaContext value={META}><ProfileContext value={PROFILE}>
+  render(<SessionContext value={new Session(() => {})}><QueryClientProvider client={client}><MetaContext value={META}><ProfileContext value={PROFILE}>
     <ChatFeedContext value={feed}>
       <Station />
-    </ChatFeedContext></ProfileContext></MetaContext></QueryClientProvider>);
+    </ChatFeedContext></ProfileContext></MetaContext></QueryClientProvider></SessionContext>);
   expect(await screen.findByText("waiting for you")).toBeTruthy();
 });
 
@@ -1541,7 +1661,7 @@ test("a fork of a deleted chat's line lets the chat go and starts a new chat wit
 });
 
 test("opening a deleted chat by link says it was deleted", async () => {
-  vi.mocked(getDetail).mockResolvedValue({ self: { cli_session_id: "chat:c9", labels: ["science-chat"] } } as never);
+  vi.mocked(getDetail).mockResolvedValue({ self: { cli_session_id: "chat:c9", labels: ["science-chat"] }, edges: {}, backlinks: {}, changes: [] } as never);
   vi.mocked(stationForChat).mockRejectedValue(new ApiError(410, "This chat was deleted; start a new one", CHAT_DELETED));
   const { feed } = shell();
   act(() => feed.continueIn("s9"));
@@ -1789,6 +1909,65 @@ test("a recap whose last answer proposes a next experiment offers to launch it, 
   fireEvent.click(launch);
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
   expect(vi.mocked(sendChatLine).mock.calls[0]![0].text).toBe(FOLLOW_UP_ASK);
+});
+
+test("a refused follow-up says why and is not an unhandled rejection; it waits like the composer", async () => {
+  vi.mocked(sendChatLine).mockRejectedValue(new ApiError(400, "Too many lines"));
+  open("c1");
+  hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nok\n\n## Next experiment\nRaise it."));
+  shell();
+  fireEvent.click(await screen.findByRole("button", { name: "Launch the follow-up" }));
+  expect(await screen.findByText("Too many lines")).toBeTruthy();
+  expect(sendChatLine).toHaveBeenCalledOnce();
+});
+
+test("a follow-up whose answer was lost resends under its key, and leaves the typed draft alone", async () => {
+  vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
+    .mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  open("c1");
+  hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nok\n\n## Next experiment\nRaise it."));
+  shell();
+  const box = screen.getByRole("textbox", { name: "Message" });
+  fireEvent.change(box, { target: { value: "my own draft" } });
+  fireEvent.click(await screen.findByRole("button", { name: "Launch the follow-up" }));
+  await screen.findByText("Could not send this message. Retry to send the same draft safely.");
+  fireEvent.click(await screen.findByRole("button", { name: "Launch the follow-up" }));
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledTimes(2));
+  const [first, second] = vi.mocked(sendChatLine).mock.calls;
+  expect(second![1]).toBe(first![1]);
+  expect(box).toHaveProperty("value", "my own draft");
+});
+
+test("a follow-up whose answer was lost takes a fresh key once it goes to another target", async () => {
+  vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
+    .mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  open("c1");
+  hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nok\n\n## Next experiment\nRaise it."));
+  const { again } = shell();
+  fireEvent.click(await screen.findByRole("button", { name: "Launch the follow-up" }));
+  await screen.findByText("Could not send this message. Retry to send the same draft safely.");
+  again({ ...workspace, partner: { ...SCOUT, session_id: "restarted" } });
+  fireEvent.click(await screen.findByRole("button", { name: "Launch the follow-up" }));
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledTimes(2));
+  const [first, second] = vi.mocked(sendChatLine).mock.calls;
+  expect(second![1]).not.toBe(first![1]);
+});
+
+test("while a follow-up is on its way, Enter sends no second line, and the box stays editable", async () => {
+  let finish = (_value: { conversation_id: string; session_id: string | null; workspace_id: string }) => {};
+  vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+  open("c1");
+  hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nok\n\n## Next experiment\nRaise it."));
+  shell();
+  fireEvent.click(await screen.findByRole("button", { name: "Launch the follow-up" }));
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce());
+  const box = screen.getByRole("textbox", { name: "Message" });
+  fireEvent.change(box, { target: { value: "also this" } });
+  fireEvent.keyDown(box, { key: "Enter" });
+  expect(box).toHaveProperty("disabled", false);
+  expect(sendChatLine).toHaveBeenCalledOnce();
+  await act(async () => finish({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID }));
+  expect(box).toHaveProperty("value", "also this");
 });
 
 test("a plain last answer offers no follow-up", async () => {

@@ -1,0 +1,3 @@
+/* A composer box's completions (CompletionField.tsx): a menu (lists.css) just above the caret, placed by script. */
+.completion-field { position: relative; }
+.completion-list { position: absolute; left: 0; bottom: calc(100% + 4px); width: 320px; max-width: calc(100vw - 16px); margin: 0; }

@@ -1,10 +1,14 @@
 import { useMutation } from "@tanstack/react-query";
 import { type ChangeEvent, type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
 import { newUuid } from "../api/idempotency";
+import { type InputHistory, useInputHistory } from "./history";
 import "./composer.css";
 
 /** A draft as sent: its text, the idempotency key it went under, and where it went. */
-type Sent = { readonly text: string; readonly key: string; readonly target: string };
+type Sent = { readonly text: string; readonly key: string; readonly target: string; readonly clear: () => void };
+
+/** An externally kept draft; clear belongs to this text's edit revision, not the latest render. */
+export type ComposerDraft = { readonly text: string; readonly edit: (text: string) => void; readonly clear: () => void };
 
 /** The textarea as the composer sets it up, for a `field` that draws it. */
 export type FieldProps = {
@@ -29,9 +33,12 @@ export type FieldProps = {
  * (composer.css): with a keyboard, Enter is the way to send. A failure keeps the
  * draft and says `failure(error)`; a success empties the box and shows what
  * `send` resolved with. A draft `check` finds wrong (it names the problem, or
- * returns `""`) is not sent: the composer says why until the draft changes. Under a new `target`, the old key, failure and receipt
- * no longer apply, though a draft sent before the move still leaves the box. `field` draws the textarea from the props the composer gives
- * it, and may change the draft with `edit` as typing does (the console's adds
+ * returns `""`) is not sent: the composer says why until the draft changes.
+ * Under a new `target`, the old key, failure and receipt no longer apply.
+ * An external `draft` owns persistence and snapshot-safe clearing; otherwise
+ * the local draft stays across targets. `history` enables recall at text boundaries.
+ * `field` draws the textarea from the props the composer gives it, and may
+ * change the draft with `edit` as typing does (the console's adds
  * its @ suggestions); by default it is the plain textarea.
  *
  * By default the box is locked while a draft is sending. `editable` keeps it
@@ -39,6 +46,7 @@ export type FieldProps = {
  * and Retry shows only for a failure `retryable` says a resend can mend (all of
  * them by default), since a refusal sent again is refused again. A send that
  * resolves with `""` shows no receipt, for a caller that shows its own.
+ * `pending` also blocks sending while the caller delivers a message elsewhere.
  */
 export function Composer({
   send,
@@ -49,7 +57,10 @@ export function Composer({
   check = () => "",
   field = plainField,
   editable = false,
+  pending = false,
   retryable = () => true,
+  draft: kept,
+  history,
 }: {
   send: (text: string, key: string) => Promise<string>;
   target: string;
@@ -59,13 +70,20 @@ export function Composer({
   check?: (text: string) => string;
   field?: (props: FieldProps, edit: (text: string) => void) => ReactNode;
   editable?: boolean;
+  pending?: boolean;
   retryable?: (error: Error) => boolean;
+  draft?: ComposerDraft;
+  history?: InputHistory;
 }) {
   const id = useId();
-  const [draft, setDraft] = useState("");
+  const [localDraft, setDraft] = useState("");
+  const localRevision = useRef(0);
+  const inFlight = useRef(false);
+  const draft = kept?.text ?? localDraft;
   const [sent, setSent] = useState<Sent | null>(null);
   const [receipt, setReceipt] = useState<{ readonly text: string; readonly target: string } | null>(null);
-  const [refused, setRefused] = useState<{ readonly problem: string; readonly draft: string } | null>(null);
+  const [refused, setRefused] = useState<{ readonly problem: string; readonly draft: string; readonly target: string } | null>(null);
+  if (refused && (refused.draft !== draft || refused.target !== target)) setRefused(null);
   const currentTarget = useRef(target);
   currentTarget.current = target;
   const sending = useMutation({
@@ -73,20 +91,26 @@ export function Composer({
     onSuccess: (text, message) => {
       // Sent, the draft leaves the box even if the box moved meanwhile, as Chat's does to a fork it
       // started; a draft typed while this one was on its way stays.
-      setDraft((current) => (current === message.text ? "" : current));
+      message.clear();
       setSent((current) => (current?.key === message.key ? null : current));
       if (message.target === currentTarget.current) setReceipt({ text, target: message.target });
     },
+    onSettled: () => { inFlight.current = false; },
   });
   /** Change the draft as typing does: a changed draft goes under a new key, and the receipt goes. */
   const edit = (text: string) => {
-    setDraft(text);
+    if (text === draft) return;
+    localRevision.current += 1;
+    if (kept) kept.edit(text);
+    else setDraft(text);
     if (sent?.text !== text) {
       setSent(null);
-      sending.reset();
+      if (!inFlight.current) sending.reset();
     }
     setReceipt(null);
   };
+  // Typing into a recalled message keeps the recall, so ↓ past the newest still brings back the draft it began from.
+  const recall = useInputHistory(history, draft, edit);
   // The sent draft and the receipt name their target, so neither applies to another.
   const failed = sending.isError && sent?.text === draft && sent.target === target;
   return (
@@ -94,13 +118,19 @@ export function Composer({
       className="composer"
       onSubmit={(event) => {
         event.preventDefault();
-        if (!enabled || !draft.trim() || sending.isPending) return;
+        if (!enabled || !draft.trim() || pending || inFlight.current) return;
         const problem = check(draft);
-        setRefused(problem ? { problem, draft } : null);
+        setRefused(problem ? { problem, draft, target } : null);
         if (problem) return;
-        const message = sent?.text === draft && sent.target === target ? sent : { text: draft, key: newUuid(), target };
+        const revision = localRevision.current;
+        const clear = kept?.clear ?? (() => {
+          if (localRevision.current === revision) setDraft("");
+        });
+        const message = sent?.text === draft && sent.target === target ? sent : { text: draft, key: newUuid(), target, clear };
+        recall.reset();
         setSent(message);
         setReceipt(null);
+        inFlight.current = true;
         sending.mutate(message);
       }}
     >
@@ -110,10 +140,11 @@ export function Composer({
           id,
           value: draft,
           placeholder,
-          disabled: !enabled || (sending.isPending && !editable),
+          disabled: !enabled || ((sending.isPending || pending) && !editable),
           rows: 3,
           onChange: (event) => edit(event.currentTarget.value),
           onKeyDown: (event) => {
+            if (event.defaultPrevented || recall.take(event)) return;
             if (event.key !== "Enter" || event.shiftKey || event.altKey || event.nativeEvent.isComposing) return;
             event.preventDefault();
             event.currentTarget.form?.requestSubmit();
@@ -122,23 +153,25 @@ export function Composer({
         edit,
       )}
       <div className="composer-actions">
-        <button className="btn composer-send" type="submit" disabled={!enabled || !draft.trim() || sending.isPending}>
+        <button className="btn composer-send" type="submit" disabled={!enabled || !draft.trim() || sending.isPending || pending}>
           Send message
         </button>
-        {failed && sending.error && retryable(sending.error) ? (
+        {failed && retryable(sending.error) ? (
           <button
             className="btn ghost"
             type="button"
-            disabled={!enabled || sending.isPending}
+            disabled={!enabled || pending}
             onClick={() => {
-              if (sent) sending.mutate(sent);
+              if (pending || inFlight.current) return;
+              inFlight.current = true;
+              sending.mutate(sent);
             }}
           >
             Retry message
           </button>
         ) : null}
       </div>
-      {failed && sending.error ? <p role="alert">{failure(sending.error)}</p> : null}
+      {failed ? <p role="alert">{failure(sending.error)}</p> : null}
       {refused?.draft === draft ? <p role="alert">{refused.problem}</p> : null}
       {receipt?.target === target && receipt.text ? (
         <p className="composer-receipt" role="status">

@@ -23,6 +23,24 @@ export function keepFieldDraftHere(email: string, key: string, draft: Draft): vo
   }
 }
 
+/**
+ * Forget the copy held here of draft `key`: the user has edited it since, so it
+ * is older than what they now see, and the next boot must not bring it back.
+ */
+export function forgetFieldDraftHere(email: string, key: string): void {
+  try {
+    const held = localStorage.getItem(draftsKey(email));
+    if (held === null) return;
+    const drafts = heldDraftsIn(held);
+    if (!(key in drafts)) return;
+    const left = Object.fromEntries(Object.entries(drafts).filter(([other]) => other !== key));
+    if (Object.keys(left).length === 0) localStorage.removeItem(draftsKey(email));
+    else localStorage.setItem(draftsKey(email), JSON.stringify(left));
+  } catch {
+    // Storage off: there is nothing held.
+  }
+}
+
 /** Keep `draft`, the create form's, here for `adoptLocalUserData`. */
 export function keepCreateDraftHere(email: string, draft: CreateDraft): void {
   try {

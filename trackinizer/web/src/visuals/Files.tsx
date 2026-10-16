@@ -1,15 +1,14 @@
 // `trax.files`: a record's files and how they differ from a base, each change with its diff, from the
 // files document a trusted account filed for the record (`filesDoc.ts`, `api/files.ts`).
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { type FilesFound, loadFiles } from "../api/files";
-import { readTrust } from "../api/summaries";
+import { useTrustedRead } from "../api/trusted";
 import { CopyDetails } from "../debug/CopyDetails";
 import { languageOf } from "../detail/transcript/steps";
 import { ReadFailure } from "../ui/failure";
 import { type ChangedFile, type DiffNote, type FileChange, type FileNode, type FilesDoc, fileTree, openedPaths, pathMatcher } from "./filesDoc";
 import { useVisualMark } from "./marks";
-import { type DiffMode, DiffModeToggle, FileDiff, useDiffMode } from "./SplitDiff";
+import { type DiffMode, DiffModeToggle, FileDiff, useDiffMode } from "./SplitDiff.tsx";
 import { patchFiles } from "./splitDiff";
 import type { RendererProps } from "./registry";
 import { useWorkspaceActions } from "./workspaceActions";
@@ -108,25 +107,11 @@ export function useFiles(
   record: string | null,
   { labels = NO_LABELS, refreshMs = REFRESH_MS }: { readonly labels?: readonly string[]; readonly refreshMs?: number | false } = {},
 ): FilesRead {
-  const trust = useQuery({
-    queryKey: ["me", "trust"],
-    queryFn: ({ signal }) => readTrust({ signal }),
-    staleTime: 300_000,
-    enabled: record !== null,
-  });
-  const accounts = trust.data?.accounts;
-  const read = useQuery({
+  return useTrustedRead(record !== null, (accounts) => ({
     queryKey: ["visual", "files", record, labels, accounts],
-    queryFn: ({ signal }) => loadFiles(record!, accounts!, { labels, signal }),
-    enabled: record !== null && accounts !== undefined,
+    queryFn: ({ signal }) => loadFiles(record!, accounts, { labels, signal }),
     refetchInterval: refreshMs,
-  });
-  return {
-    data: read.data,
-    error: trust.error ?? read.error,
-    refetch: () => void (trust.error ? trust.refetch() : read.refetch()),
-    isSuccess: read.isSuccess,
-  };
+  }));
 }
 
 /** A pane's narrowing from its instance's parameters: each one missing or of another type is its default. */

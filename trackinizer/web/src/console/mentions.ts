@@ -80,18 +80,6 @@ export function suggest(context: Context, { query, whole }: Pick<Mention, "query
 }
 
 /**
- * `line` with `mention` replaced by `@name`, and where the caret goes: past a
- * space after it, which is added at the end of the line so the message can
- * follow, or before the comma that goes on to the next target.
- */
-export function complete(line: string, mention: Mention, name: string): { text: string; caret: number } {
-  const after = line.slice(mention.end);
-  const target = `@${name}${after ? "" : " "}`;
-  const caret = mention.start + target.length + (/^\s/.test(after) ? 1 : 0);
-  return { text: line.slice(0, mention.start) + target + after, caret };
-}
-
-/**
  * `line` addressed to `name` too, as a click on a line's agent asks: `@name`
  * before a line that has no address, or added to the list it opens with, unless
  * the list has it already.

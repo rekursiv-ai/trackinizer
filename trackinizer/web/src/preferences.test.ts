@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { stubFetch } from "./api/testing";
-import { adoptLegacyPreferences, choosePreferences, choosePreferencesSoon, DEFAULT_PREFERENCES, PAUSE_MS, type Preferences, preferences, receivePreferences, sendWaiting, subscribePreferences } from "./preferences";
+import { adoptLegacyPreferences, choosePreferences, choosePreferencesSoon, DEFAULT_PREFERENCES, PAUSE_MS, type Preferences, preferences, receivePreferences, sendWaiting, subscribePreferences, unsavedKeys } from "./preferences";
 
 const DEFAULTS = DEFAULT_PREFERENCES;
 
@@ -156,6 +156,23 @@ describe("a change made as the user types", () => {
     await vi.advanceTimersByTimeAsync(PAUSE_MS);
     await sendWaiting();
     expect(preferences().lens).toBe("graph");
+  });
+
+  test("a send the server does not take marks its keys unsaved until one it takes", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(async () => Response.json({ detail: "down" }, { status: 503 }));
+    const told = vi.fn();
+    const stop = subscribePreferences(told);
+    choosePreferencesSoon({ drafts: { a: { text: "x", base: null } } });
+    expect(unsavedKeys().has("drafts")).toBe(false);
+    await sendWaiting();
+    expect(unsavedKeys().has("drafts")).toBe(true);
+    expect(told).toHaveBeenCalled();
+    server();
+    choosePreferencesSoon({ drafts: { a: { text: "xy", base: null } } });
+    await sendWaiting();
+    expect(unsavedKeys().has("drafts")).toBe(false);
+    stop();
   });
 
   test("a change that leaves things as they are sends nothing", async () => {

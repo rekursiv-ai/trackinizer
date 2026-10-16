@@ -24,7 +24,9 @@ import { FOLLOW_UP_ASK, followUpSuggested } from "./chatFollowUp";
 import { useAnswerHighlights } from "./chatHighlights";
 import { useChatPartial } from "./chatPartial";
 import { ChatPrompt } from "./ChatPrompt";
+import { useChatDraft } from "./chatDraft";
 import { ChatWorkstreamHeader } from "./ChatWorkstreamHeader";
+import { RecordField } from "./RecordField";
 
 /** The most characters one message may have, as the server holds it. */
 const MAX_TEXT = 16_384;
@@ -88,6 +90,7 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   const writing = useWriteMode() === "enabled";
   const { feed, state } = useChatFeed();
   const workspaceId = workspace?.id ?? null;
+  const draft = useChatDraft(workspaceId);
   const partner = workspace?.partner ?? null;
   // The station's chat: bound by its first line, and the same however Chat is mounted again.
   const conversationId = workspace?.conversation_id ?? null;
@@ -144,10 +147,24 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   // second press while the first is on its way.
   const sendRef = useRef<(text: string, key: string) => Promise<string>>(() => Promise.resolve(""));
   const launching = useRef(false);
+  // The key a follow-up went under and where it went, as the composer keeps a draft's: a resend reuses it only to the same target.
+  const followUpKeyRef = useRef<{ readonly key: string; readonly target: string } | null>(null);
+  const targetRef = useRef("");
   const launchFollowUp = useCallback(async () => {
     if (launching.current) return;
     launching.current = true;
-    try { await sendRef.current(FOLLOW_UP_ASK, newUuid()); } finally { launching.current = false; }
+    // A press after a lost answer resends under the same key, so the ask reaches the assistant once.
+    const to = targetRef.current;
+    if (followUpKeyRef.current?.target !== to) followUpKeyRef.current = { key: newUuid(), target: to };
+    try {
+      await sendRef.current(FOLLOW_UP_ASK, followUpKeyRef.current.key);
+      followUpKeyRef.current = null;
+    } catch (error) {
+      if (!(error instanceof Error && resendable(error))) followUpKeyRef.current = null;
+      if (mounted.current) setNotice(failureText(error));
+    } finally {
+      launching.current = false;
+    }
   }, []);
   // The line a message sent now would fork after: the one "Fork from here" picked.
   const fork: ChatFork | null = session && forkAt ? { sessionId: session, part: forkAt.part, idx: forkAt.idx } : null;
@@ -336,8 +353,10 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   }
 
   sendRef.current = send;
+  targetRef.current = target;
   // The last line, when it is a stored recap and posting is open, may carry a "keep going" button.
-  const followUpKey = live && last && !last.pending && last.role === "assistant" ? last.key : null;
+  // The same gate as the composer's: no follow-up while the chat is read, closed to me, or a line is on its way.
+  const followUpKey = live && !reading && !loading && !outsider && sending.size === 0 && last && !last.pending && last.role === "assistant" ? last.key : null;
 
   return (
     <section className="chat-panel" aria-label="Chat">
@@ -383,12 +402,16 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
         <button className="btn ghost" type="button" onClick={() => setForkAt(null)}>Cancel fork</button>
       </p>}
       <p className="chat-notice">{chatNotice(head.data?.audience ?? "open", orgMode)}</p>
-      <Composer send={send} target={target} enabled={live && !reading && !loading && !outsider} editable
+      {draft.problem && <p role="status" className="chat-note">{draft.problem}</p>}
+      <Composer send={send} target={target} draft={draft} field={(props, edit) => <RecordField field={props} edit={edit} />}
+        history={{ key: JSON.stringify([me, workspaceId, conversationId]), entries: lines
+          .filter((line) => line.role === "user" && line.author === me && (!line.pending || !sending.has(line.key.slice(PENDING.length))))
+          .map((line) => line.text) }}
+        enabled={live && !reading && !loading && !outsider} editable pending={sending.size > 0}
         placeholder={reading ? "Loading the conversation…" : outsider ? closedTo(head.data!.audience)
           : live ? `Ask ${partner?.actor ?? "your partner"}…` : readOnly(partner?.status, writing)}
         check={checkText} retryable={resendable}
-        failure={(error) => error instanceof ApiError && error.status >= 400 && error.status < 500 && error.detail
-          ? error.detail : "Could not send this message. Retry to send the same draft safely."} />
+        failure={failureText} />
     </section>
   );
 }
@@ -405,9 +428,11 @@ function resendable(error: Error): boolean {
   return !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
 }
 
+/** Why a draft is refused before sending: one too long. The composer sends no blank draft. */
 function checkText(text: string): string {
-  if (!text.trim()) return "Write a message first.";
-  return text.length > MAX_TEXT ? `A message holds at most ${MAX_TEXT.toLocaleString("en")} characters; this one has ${text.length.toLocaleString("en")}.` : "";
+  // The server's `max_length` counts code points; `.length` would count an emoji twice.
+  const length = [...text].length;
+  return length > MAX_TEXT ? `A message holds at most ${MAX_TEXT.toLocaleString("en")} characters; this one has ${length.toLocaleString("en")}.` : "";
 }
 
 function partnerGone(partner: WorkspacePartner): string {
@@ -476,6 +501,12 @@ const ChatLine = memo(function ChatLine({ line, me, station, kinds, onFork, onFo
     {onFork && at && line.role === "assistant" && <button className="btn ghost chat-line-fork" type="button" onClick={() => onFork(at, quoted(line.text))}>Fork from here</button>}
   </article>;
 });
+
+/** What a failed send says: a refusal's own reason, or that a retry is safe. */
+function failureText(error: unknown): string {
+  return error instanceof ApiError && error.status >= 400 && error.status < 500 && error.detail
+    ? error.detail : "Could not send this message. Retry to send the same draft safely.";
+}
 
 /** When a line was sent, in the reader's own time zone, for the hover title; "" for a time that will not parse. */
 function sentWhen(iso: string): string {

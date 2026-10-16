@@ -1,12 +1,20 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { FeedActorFacet, FeedEvent } from "../api/sessions";
 import { Composer } from "../composer/Composer";
 import type { Context } from "./mentions";
 import { MentionField } from "./MentionField";
 
-afterEach(cleanup);
+beforeEach(() => {
+  // jsdom has no ResizeObserver, which the open list uses.
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 /** `actor`'s session, heard from at 10:MM, in no room. */
 function agent(actor: string, last: string): FeedActorFacet {

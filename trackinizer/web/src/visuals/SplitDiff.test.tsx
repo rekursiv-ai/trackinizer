@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import { type DiffMode, FileDiff, PatchView } from "./SplitDiff";
+import { type DiffMode, FileDiff, PatchView } from "./SplitDiff.tsx";
 import { patchFiles } from "./splitDiff";
 import { THIRTY, TWO_HUNKS } from "./testing";
 
