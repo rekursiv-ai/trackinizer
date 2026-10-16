@@ -33,9 +33,17 @@ export function CanvasBar({ tabs, open, back, forward, moving, home, canAdd, act
 }) {
   const [naming, setNaming] = useState<{ readonly id: string; readonly value: string } | null>(null);
   const strip = useRef<HTMLElement>(null);
+  const adding = useRef<ReadonlySet<string> | null>(null);
   useEffect(() => {
     strip.current?.querySelector('[aria-current="true"]')?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }, [open, tabs.length]);
+  useEffect(() => {
+    if (!adding.current) return;
+    const added = tabs.find((tab) => !adding.current!.has(tab.id));
+    if (!added) return;
+    adding.current = null;
+    setNaming({ id: added.id, value: added.name });
+  }, [tabs]);
 
   function keep() {
     if (!naming) return;
@@ -45,6 +53,7 @@ export function CanvasBar({ tabs, open, back, forward, moving, home, canAdd, act
   }
 
   function onNameKey(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter") { event.preventDefault(); keep(); }
     else if (event.key === "Escape") { event.stopPropagation(); setNaming(null); }
   }
@@ -58,26 +67,9 @@ export function CanvasBar({ tabs, open, back, forward, moving, home, canAdd, act
       <button className="canvas-bar-button" type="button" aria-label="Home"
         title={home === "empty" ? "Home: an empty canvas (Settings, home)" : "Home: the graph (Settings, home)"}
         disabled={moving} onClick={actions.home}><Icon name="home" size={15} /></button>
-      <nav ref={strip} className="canvas-tabs" aria-label="Canvas tabs">
-        {tabs.map((tab) => tab.id === naming?.id ? (
-          <input key={tab.id} className="canvas-tab canvas-tab-name" aria-label="Tab name" maxLength={MAX_NAME}
-            value={naming.value} autoFocus onFocus={(event) => event.currentTarget.select()}
-            onChange={(event) => setNaming({ id: tab.id, value: event.target.value })} onKeyDown={onNameKey} onBlur={keep} />
-        ) : (
-          <span key={tab.id} className="canvas-tab" aria-current={tab.id === open ? "true" : undefined}>
-            <button className="canvas-tab-open" type="button" title={`${tab.name} (double-click to rename)`}
-              disabled={moving && tab.id !== open} onClick={() => { if (tab.id !== open) actions.open(tab.id); }}
-              onDoubleClick={() => setNaming({ id: tab.id, value: tab.name })}>{tab.name}</button>
-            {tabs.length > 1 && <button className="canvas-tab-close" type="button" aria-label={`Close ${tab.name}`}
-              title="Close this tab" disabled={moving} onClick={() => actions.close(tab.id)}><Icon name="x" size={12} /></button>}
-          </span>
-        ))}
-      </nav>
-      <button className="canvas-bar-button canvas-tab-new" type="button" aria-label="New tab" title="New tab"
-        disabled={moving || !canAdd} onClick={actions.add}><Icon name="plus" size={15} /></button>
       <AlertDialog.Root>
         <AlertDialog.Trigger asChild>
-          <button className="btn ghost danger canvas-clear" type="button" aria-label="Clear canvas"
+          <button className="canvas-bar-button danger canvas-clear" type="button" aria-label="Clear canvas"
             title="Clear the canvas and close its other tabs" disabled={moving}>
             <Icon name="trash" size={14} />
           </button>
@@ -104,6 +96,26 @@ export function CanvasBar({ tabs, open, back, forward, moving, home, canAdd, act
           </AlertDialog.Content>
         </AlertDialog.Portal>
       </AlertDialog.Root>
+      <nav ref={strip} className="canvas-tabs" aria-label="Canvas tabs">
+        {tabs.map((tab) => tab.id === naming?.id ? (
+          <input key={tab.id} className="canvas-tab canvas-tab-name" aria-label="Tab name" maxLength={MAX_NAME}
+            value={naming.value} autoFocus onFocus={(event) => event.currentTarget.select()}
+            onChange={(event) => setNaming({ id: tab.id, value: event.target.value })} onKeyDown={onNameKey} onBlur={keep} />
+        ) : (
+          <span key={tab.id} className="canvas-tab" aria-current={tab.id === open ? "true" : undefined}>
+            <button className="canvas-tab-open" type="button" title={`${tab.name} (double-click to rename)`}
+              disabled={moving && tab.id !== open} onClick={() => { if (tab.id !== open) actions.open(tab.id); }}
+              onDoubleClick={() => setNaming({ id: tab.id, value: tab.name })}>{tab.name}</button>
+            {tabs.length > 1 && <button className="canvas-tab-close" type="button" aria-label={`Close ${tab.name}`}
+              title="Close this tab" disabled={moving} onClick={() => actions.close(tab.id)}><Icon name="x" size={12} /></button>}
+          </span>
+        ))}
+      </nav>
+      <button className="canvas-bar-button canvas-tab-new" type="button" aria-label="New tab" title="New tab"
+        disabled={moving || !canAdd} onClick={() => {
+          adding.current = new Set(tabs.map((tab) => tab.id));
+          actions.add();
+        }}><Icon name="plus" size={15} /></button>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render as renderBare, screen, waitFor, within } from "@testing-library/react";
 import { Profiler, useEffect, useLayoutEffect, useRef, type ReactElement, type ReactNode } from "react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { getVisualCatalog } from "../api/visuals";
 import { findRef } from "../api/detail";
 import {
@@ -39,6 +39,10 @@ vi.mock("../api/detail", () => ({
     edges: {}, backlinks: {}, changes: [],
   }),
 }));
+
+beforeAll(async () => {
+  await Promise.all([import("./Timeline"), import("./ContextGraph")]);
+});
 
 /** The canvas shows the signed-in user's state, so every render has a profile above it; its controls stand in the sidebar's slot, beside it. */
 function render(ui: ReactElement) {
@@ -231,8 +235,9 @@ test("the page has the close control the other tiles have, and closing it hides 
   const tiles = [...document.querySelectorAll<HTMLElement>(".visual-tile[data-visual-instance]")];
   expect(tiles).toHaveLength(2);
   expect(tiles.map((tile) => within(tile).queryAllByTitle("Dismiss visual").length)).toEqual([1, 1]);
-  expect(screen.getByRole("checkbox", { name: /Browse/ })).toHaveProperty("disabled", false);
-  expect(screen.getByRole("checkbox", { name: /Browse/ })).toHaveProperty("checked", true);
+  const browseOption = screen.getByLabelText(/Browse/);
+  expect(browseOption).toHaveProperty("disabled", false);
+  expect(browseOption).toHaveProperty("checked", true);
 
   fireEvent.click(within(document.querySelector<HTMLElement>(BROWSE_TILE)!).getByTitle("Dismiss visual"));
 

@@ -176,7 +176,7 @@
 .canvas-bar-button { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; margin-bottom: 3px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
 .canvas-bar-button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
 .canvas-bar-button:disabled { opacity: .4; cursor: default; }
-.canvas-tabs { display: flex; flex: 1 1 auto; align-items: flex-end; gap: 2px; min-width: 0; height: 32px; overflow-x: auto; scrollbar-width: none; }
+.canvas-tabs { display: flex; flex: 0 1 auto; align-items: flex-end; gap: 2px; min-width: 0; height: 32px; overflow-x: auto; scrollbar-width: none; }
 .canvas-tabs::-webkit-scrollbar { display: none; }
 .canvas-tab { display: flex; flex: none; align-items: center; max-width: min(180px, 28vw); height: 28px; margin-bottom: 2px; padding: 0 2px; border-radius: 6px 6px 0 0; color: var(--ink-muted); }
 .canvas-tab[aria-current="true"] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
@@ -187,6 +187,7 @@
 .canvas-tab:hover .canvas-tab-close, .canvas-tab[aria-current="true"] .canvas-tab-close, .canvas-tab-close:focus-visible { opacity: 1; }
 .canvas-tab-close:hover { background: var(--surface-overlay); color: var(--text); }
 .canvas-tab-name { width: min(180px, 28vw); height: 26px; margin-bottom: 3px; padding: 0 7px; border: 1px solid var(--accent); border-radius: 6px 6px 0 0; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
+.canvas-clear, .canvas-clear:hover:not(:disabled) { color: var(--error-text); }
 .canvas-tab-new, .canvas-clear { opacity: 0; transition: opacity .12s; }
 .canvas-bar:hover .canvas-tab-new, .canvas-bar:focus-within .canvas-tab-new, .canvas-bar:hover .canvas-clear, .canvas-bar:focus-within .canvas-clear { opacity: 1; }
 @media (hover: none) { .canvas-tab-close, .canvas-tab-new, .canvas-clear { opacity: 1; } }

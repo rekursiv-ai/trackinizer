@@ -1,7 +1,7 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render as renderBare, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement, ReactNode } from "react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { listStations, setStationLayout } from "../api/stations";
 import { getVisualCatalog } from "../api/visuals";
 import { applyWorkspaceOperation, createDefaultWorkspace, getWorkspace, type WorkspaceOperation, type WorkspaceState } from "../api/workspaces";
@@ -59,6 +59,8 @@ function apply(state: WorkspaceState, operation: WorkspaceOperation): WorkspaceS
       return next;
   }
 }
+
+beforeAll(() => import("./Timeline"));
 
 beforeEach(() => {
   served = START;
@@ -138,7 +140,50 @@ function written(): Layout {
   return Object.assign({}, ...vi.mocked(setStationLayout).mock.calls.map(([, patch]) => patch)) as Layout;
 }
 
-const button = (name: string) => screen.getByRole<HTMLButtonElement>("button", { name });
+const button = (name: string) => within(screen.getByRole("toolbar", { name: "Canvas" })).getByRole<HTMLButtonElement>("button", { name });
+
+async function addTab() {
+  fireEvent.click(button("New tab"));
+  const name = await screen.findByRole("textbox", { name: "Tab name" });
+  fireEvent.keyDown(name, { key: "Enter" });
+}
+
+test("a new canvas tab starts with its name selected and saves the typed name", async () => {
+  await mount();
+  fireEvent.click(button("New tab"));
+  const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Tab name" });
+  expect(document.activeElement).toBe(name);
+  expect(name.value.slice(name.selectionStart!, name.selectionEnd!)).toBe("Tab 2");
+  fireEvent.change(name, { target: { value: "Results" } });
+  fireEvent.keyDown(name, { key: "Enter" });
+  expect(written().tabs?.map((tab) => tab.name)).toEqual(["Tab 1", "Results"]);
+});
+
+test("Escape keeps a new tab's default name; existing tabs save names on blur", async () => {
+  await mount();
+  fireEvent.click(button("New tab"));
+  const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Tab name" });
+  fireEvent.change(name, { target: { value: "Cancelled" } });
+  fireEvent.keyDown(name, { key: "Escape" });
+  expect(written().tabs?.map((tab) => tab.name)).toEqual(["Tab 1", "Tab 2"]);
+  fireEvent.doubleClick(button("Tab 2"));
+  const renamed = screen.getByRole("textbox", { name: "Tab name" });
+  fireEvent.change(renamed, { target: { value: "Results" } });
+  fireEvent.blur(renamed);
+  expect(written().tabs?.map((tab) => tab.name)).toEqual(["Tab 1", "Results"]);
+});
+
+test("Enter while composing a canvas tab name leaves the editor open", async () => {
+  await mount();
+  fireEvent.doubleClick(button("Tab 1"));
+  const name = screen.getByRole("textbox", { name: "Tab name" });
+  fireEvent.change(name, { target: { value: "研究" } });
+  fireEvent.keyDown(name, { key: "Enter", isComposing: true });
+  expect(written().tabs).toBeUndefined();
+  expect(document.activeElement).toBe(name);
+  fireEvent.keyDown(name, { key: "Enter" });
+  expect(written().tabs?.map((tab) => tab.name)).toEqual(["研究"]);
+});
 
 test("page routes form one-step Back and Forward history", () => {
   const key = `${STATION}/1`;
@@ -228,7 +273,7 @@ test("clearing a canvas tab closes the other tab and Back restores Browse", asyn
 
   userNavigates("#/activity");
   await waitFor(() => expect(location.hash).toBe("#/activity"), { interval: 1 });
-  fireEvent.click(button("New tab"));
+  await addTab();
   await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
   const otherTab = written().tabs![1]!.id;
 
@@ -285,7 +330,7 @@ test("Clear canvas is danger-styled and Cancel or Escape leave the action alone"
 
 test("a new tab opens home and keeps the tab left; opening that tab again shows it as it was left", async () => {
   await mount();
-  fireEvent.click(button("New tab"));
+  await addTab();
   await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
   await waitFor(() => expect(document.querySelector('[data-visual-type="trax.timeline"]')).toBeNull(), { interval: 1 });
   const layout = written();
@@ -307,7 +352,7 @@ test("a new tab opens home and keeps the tab left; opening that tab again shows 
 
 test("closing the open tab opens its neighbour; a tab renamed in place keeps its name", async () => {
   await mount();
-  fireEvent.click(button("New tab"));
+  await addTab();
   await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
   await waitFor(() => expect(button("Close Tab 2").disabled).toBe(false), { interval: 1 });
 
@@ -329,7 +374,7 @@ test("closing the open tab opens its neighbour; a tab renamed in place keeps its
 
 test("a station opened while a tab's steps are on their way gets none of them: not its visuals, not its page", async () => {
   await mount();
-  fireEvent.click(button("New tab"));
+  await addTab();
   await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Tab 1" }).disabled).toBe(false), { interval: 1 });
   // Another station, on Papers with the page alone; and the next step to the server held back, as a slow network holds it.
@@ -361,7 +406,7 @@ test("a station opened while a tab's steps are on their way gets none of them: n
 
 test("coming back to a station left while a tab's steps were on their way finishes them, so the tab is whole and keeps what it shows", async () => {
   await mount();
-  fireEvent.click(button("New tab"));
+  await addTab();
   await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Tab 1" }).disabled).toBe(false), { interval: 1 });
   const home = served;

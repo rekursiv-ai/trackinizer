@@ -18,19 +18,22 @@ type Props = {
   readonly onDeleted: (conversation: string) => void;
 };
 
+type HeaderMenu = "name" | "workstream" | "more" | "info";
+
 /** Chat naming, switching, workstream placement, and its compact header controls. */
 export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDeleted }: Props) {
   const queryClient = useQueryClient();
   const { side, hidden } = useChatColumn();
-  const [nameOpen, setNameOpen] = useState(false);
+  const [menu, setMenu] = useState<HeaderMenu | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [nameProblem, setNameProblem] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [workstreamOpen, setWorkstreamOpen] = useState(false);
   const [workstreamQuery, setWorkstreamQuery] = useState("");
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [infoOpen, setInfoOpen] = useState(false);
   const [dismissedSuggestion, setDismissedSuggestion] = useState(false);
+  const nameOpen = menu === "name";
+  const workstreamOpen = menu === "workstream";
+  const moreOpen = menu === "more";
+  const infoOpen = menu === "info";
   const root = useRef<HTMLDivElement>(null);
   const renameInput = useRef<HTMLInputElement>(null);
   const workstreamInput = useRef<HTMLInputElement>(null);
@@ -61,13 +64,15 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
     const outside = (event: PointerEvent) => {
       if (event.target instanceof Node && root.current?.contains(event.target)) return;
       if (nameOpen) void saveName();
-      setWorkstreamOpen(false);
-      setMoreOpen(false);
-      setInfoOpen(false);
+      else setMenu(null);
     };
     document.addEventListener("pointerdown", outside, true);
     return () => document.removeEventListener("pointerdown", outside, true);
-  }, [infoOpen, moreOpen, nameOpen, workstreamOpen, nameDraft]);
+  }, [menu, nameDraft]);
+
+  function closeMenu(closing: HeaderMenu) {
+    setMenu((current) => current === closing ? null : current);
+  }
 
   async function saveName(): Promise<void> {
     if (!workspace) return;
@@ -76,7 +81,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
     try {
       await nameStation(queryClient, workspace.id, name);
       setNameProblem(null);
-      setNameOpen(false);
+      closeMenu("name");
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) setNameProblem("You already have a chat with that name");
       else setNameProblem("Could not rename this chat.");
@@ -90,7 +95,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
         showStation(queryClient, restored);
         void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
       } else await openStation(queryClient, station.id);
-      setNameOpen(false);
+      closeMenu("name");
     } catch {
       setNameProblem("Could not open this chat.");
     }
@@ -112,7 +117,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
     const state = await createStationInWorkstream(currentGroupId);
     showStation(queryClient, state);
     void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
-    setNameOpen(false);
+    closeMenu("name");
   }
 
   async function placeIn(group: Workstream): Promise<void> {
@@ -120,7 +125,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
     const state = await moveStation(workspace.id, group.id);
     showStation(queryClient, state);
     void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
-    setWorkstreamOpen(false);
+    closeMenu("workstream");
     setDismissedSuggestion(true);
   }
 
@@ -145,7 +150,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
     if (target) await placeIn(target);
     else {
       setWorkstreamQuery(suggestion.title);
-      setWorkstreamOpen(true);
+      setMenu("workstream");
     }
   }
 
@@ -169,11 +174,11 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
           onChange={(event) => { setNameDraft(event.target.value); setNameProblem(null); }}
           onKeyDown={(event) => {
             if (event.key === "Enter") { event.preventDefault(); void saveName(); }
-            if (event.key === "Escape") { event.preventDefault(); setNameOpen(false); setNameProblem(null); }
+            if (event.key === "Escape") { event.preventDefault(); setMenu(null); setNameProblem(null); }
             if (event.key === "ArrowDown") { event.preventDefault(); (root.current?.querySelector<HTMLInputElement>(".chat-name-search"))?.focus(); }
           }} />
           : <button type="button" className="chat-name-button" title="Rename, switch chats or search" aria-label={shownName}
-            onClick={() => { setNameDraft(workspace?.name ?? ""); setNameProblem(null); setNameOpen(true); }}>{shownName}<span className="chat-name-caret hover-only">▾</span></button>}
+            onClick={() => { setNameDraft(workspace?.name ?? ""); setNameProblem(null); setMenu("name"); }}>{shownName}<span className="chat-name-caret hover-only">▾</span></button>}
         {nameOpen && <div className="station-menu chat-name-menu" role="dialog" aria-label="Chats">
           {nameProblem && <p className="station-problem" role="status">{nameProblem}</p>}
           <p className="chat-menu-label">Chats in {currentGroup?.title ?? "Scratch"}</p>
@@ -206,7 +211,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
       {workstreamOpen ? <div className="chat-workstream-menu">
         <input ref={workstreamInput} aria-label="Workstream" placeholder="Move to workstream…" value={workstreamQuery}
           onChange={(event) => setWorkstreamQuery(event.target.value)}
-          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void chooseWorkstream(); } if (event.key === "Escape") setWorkstreamOpen(false); }} />
+          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void chooseWorkstream(); } if (event.key === "Escape") setMenu(null); }} />
         <ul className="station-list" aria-label="Workstreams">
           {workstreamMatches.map((group) => <li key={group.id}><button type="button" className="station-option" onClick={() => void placeIn(group)}>{group.title}</button></li>)}
           {workstreamQuery.trim() && !workstreamMatches.some((each) => each.title.toLocaleLowerCase() === workstreamQuery.trim().toLocaleLowerCase())
@@ -214,34 +219,28 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
         </ul>
       </div>
         : <button type="button" className="chat-workstream-chip hover-only" aria-label={`Workstream: ${currentGroup?.title ?? "Scratch"}`}
-          onClick={() => { setWorkstreamQuery(""); setWorkstreamOpen(true); }}>{currentGroup?.title ?? "Scratch"} ▾</button>}
+          onClick={() => { setWorkstreamQuery(""); setMenu("workstream"); }}>{currentGroup?.title ?? "Scratch"} ▾</button>}
       {suggestion && <span className="chat-suggestion-chip">
         <button type="button" aria-label={`Move to suggested workstream ${suggestion.title}`} onClick={() => void followSuggestion()}>{suggestion.title}?</button>
         <button type="button" aria-label="Dismiss workstream suggestion" onClick={() => setDismissedSuggestion(true)}>×</button>
       </span>}
     </div>
     <div className="chat-head-actions" role="toolbar" aria-label="Chat controls">
-      {workspace && <button className={`btn ghost hover-only${workspace.pinned ? " on" : ""}`} type="button" aria-label={workspace.pinned ? "Unpin chat" : "Pin chat"}
-        onClick={() => void pinStation(workspace.id, !workspace.pinned).then((state) => {
-          queryClient.setQueryData(["workspace", workspace.id], state);
-          return queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
-        })}>{workspace.pinned ? "📌" : "Pin"}</button>}
-      {hidden
-        ? <button className="btn ghost hover-only" type="button" aria-label="Pin Chat beside the page" title="Pin Chat beside the page" onClick={() => setChatHidden(false)}>Pin panel</button>
-        : <button className="btn ghost hover-only" type="button" aria-label="Hide Chat" title="Hide the chat panel" onClick={() => setChatHidden(true)}>Hide panel</button>}
       <button className="btn ghost hover-only" type="button" aria-label={`Move Chat to the ${side === "left" ? "right" : "left"}`}
         title="Dock on the other side" onClick={() => setChatSide(side === "left" ? "right" : "left")}>{side === "left" ? "▷" : "◁"}</button>
-      <button className="btn ghost hover-only" type="button" aria-label="More chat actions" aria-expanded={moreOpen} onClick={() => setMoreOpen(!moreOpen)}>⋯</button>
+      <button className="btn ghost hover-only" type="button" aria-label="More chat actions" aria-expanded={moreOpen} onClick={() => setMenu(moreOpen ? null : "more")}>⋯</button>
       {moreOpen && <div className="chat-more-menu" aria-label="Chat actions">
-        <button type="button" title="New chat, same canvas" onClick={() => { setMoreOpen(false); void onClear(); }}>Clear chat</button>
-        <button type="button" onClick={() => { setMoreOpen(false); void onHide(); }}>Hide from bar</button>
+        <button type="button" title="New chat, same canvas" onClick={() => { setMenu(null); void onClear(); }}>Clear chat</button>
+        {hidden
+          ? <button type="button" aria-label="Pin Chat beside the page" title="Pin Chat beside the page" onClick={() => { setMenu(null); setChatHidden(false); }}>Pin panel</button>
+          : <button type="button" aria-label="Hide Chat" title="Hide the chat panel" onClick={() => { setMenu(null); setChatHidden(true); }}>Hide panel</button>}
         {head?.may_delete && <DeleteChat head={head} onDeleted={onDelete} />}
-        <button type="button" onClick={() => { setMoreOpen(false); setInfoOpen(true); }}>Info</button>
+        <button type="button" onClick={() => setMenu("info")}>Info</button>
         {head?.may_hide && <PrivacySwitch head={head} />}
         {head?.may_share && <ShareChat head={head} />}
       </div>}
       {infoOpen && <div className="chat-info-menu" role="dialog" aria-label="Chat info">
-        <button type="button" className="btn ghost" onClick={() => setInfoOpen(false)}>Close</button>
+        <button type="button" className="btn ghost" onClick={() => setMenu(null)}>Close</button>
         <strong>{shownName}</strong>
         <span>Chat ID: {workspace?.id ?? "—"}</span>
         <span>Conversation: {head?.conversation_id ?? "—"}</span>

@@ -64,3 +64,58 @@ test("Back, Forward and Home move the canvas, and each tab keeps its own", async
   await expect(bar.locator('.canvas-tab[aria-current="true"]')).toHaveText("Tab 1");
   await expect(graph).toBeVisible();
 });
+
+test("tab controls stay beside their tabs and new names are edited inline", async ({ page, request }) => {
+  await pageAndGraph(request);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/app/#/list/Issue");
+  const bar = page.getByRole("toolbar", { name: "Canvas" });
+  await expect(bar).toBeVisible();
+  await expect(page.locator(".topbar")).toHaveClass(/topbar-auto-hidden/);
+  const main = await page.locator(".main").boundingBox();
+  expect(main!.y).toBeCloseTo(900 - main!.y - main!.height, 0);
+  const tabs = bar.getByRole("navigation", { name: "Canvas tabs" });
+  const add = bar.getByRole("button", { name: "New tab" });
+  const clear = bar.getByRole("button", { name: "Clear canvas" });
+  const home = bar.getByRole("button", { name: "Home" });
+  for (const width of [1440, 800]) {
+    await page.setViewportSize({ width, height: 900 });
+    const strip = await tabs.boundingBox();
+    const plus = await add.boundingBox();
+    const trash = await clear.boundingBox();
+    const house = await home.boundingBox();
+    expect(strip).not.toBeNull();
+    expect(plus).not.toBeNull();
+    expect(trash).not.toBeNull();
+    expect(plus!.x - (strip!.x + strip!.width)).toBeLessThan(8);
+    expect(trash!.x - (house!.x + house!.width)).toBeGreaterThanOrEqual(0);
+    expect(trash!.x - (house!.x + house!.width)).toBeLessThan(8);
+    expect(strip!.x).toBeGreaterThanOrEqual(trash!.x + trash!.width);
+    expect(Math.abs(plus!.y + plus!.height / 2 - trash!.y - trash!.height / 2)).toBeLessThan(1);
+  }
+  await add.click();
+  const name = bar.getByRole("textbox", { name: "Tab name" });
+  await expect(name).toBeFocused();
+  await name.fill("Results");
+  const saved = page.waitForResponse((response) => response.url().endsWith("/layout") && response.request().method() === "PUT"
+    && response.request().postData()?.includes('"Results"') === true && response.ok());
+  await name.press("Enter");
+  await saved;
+  await expect(bar.getByRole("button", { name: "Results", exact: true })).toBeVisible();
+  await page.reload();
+  await expect(bar.getByRole("button", { name: "Results", exact: true })).toBeVisible();
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByRole("button", { name: "Open app bar" }).click();
+  const streams = page.getByRole("navigation", { name: "Workstreams" });
+  const newStream = page.getByRole("button", { name: "New workstream" });
+  const strip = await streams.boundingBox();
+  const plus = await newStream.boundingBox();
+  expect(plus!.x - (strip!.x + strip!.width)).toBeLessThan(8);
+  await newStream.click();
+  const streamName = streams.getByRole("textbox", { name: "Workstream name" });
+  await expect(streamName).toBeFocused();
+  await streamName.fill("Review work");
+  await streamName.press("Enter");
+  await expect(streams.getByRole("button", { name: "Review work", exact: true })).toBeVisible();
+});

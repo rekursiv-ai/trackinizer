@@ -215,16 +215,23 @@ test("scout is the partner with no pairing, and Chat is ready to send", () => {
   shell();
   expect(within(screen.getByLabelText("Chat partner")).getByText("scout")).toBeTruthy();
   expect(screen.getByText("Say something to scout.")).toBeTruthy();
-  expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", false);
+  expect(screen.getByLabelText("Message")).toHaveProperty("disabled", false);
   expect(getChatHead).not.toHaveBeenCalled();
 });
 
-test("a button in the header hides Chat, where Pin stands while it is hidden", () => {
+test("the chat menu hides the panel without hiding its station", () => {
   setChatHidden(false);
   shell();
+  expect(screen.queryByRole("button", { name: "Hide Chat" })).toBeNull();
+  openMore();
+  expect(screen.queryByRole("button", { name: "Hide from bar" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Hide Chat" }));
   expect(currentChatColumn().hidden).toBe(true);
+  expect(currentStation().id).toBe(WORKSPACE_ID);
+  expect(restoreStation).not.toHaveBeenCalled();
   expect(screen.queryByRole("button", { name: "Hide Chat" })).toBeNull();
+  expect(screen.getByRole("button", { name: "More chat actions" }).getAttribute("aria-expanded")).toBe("false");
+  openMore();
   expect(screen.getByRole("button", { name: "Pin Chat beside the page" })).toBeTruthy();
   setChatHidden(false);
 });
@@ -238,11 +245,12 @@ test("a button in the header moves Chat to the other side, and says which way", 
   expect(currentChatColumn().side).toBe("left");
 });
 
-test("a Chat open over the page by its strip has a Pin that stands it beside the page, and a column has none", () => {
+test("a Chat open over the page can be pinned beside it from the menu", () => {
   setChatHidden(false);
   shell();
   expect(screen.queryByRole("button", { name: "Pin Chat beside the page" })).toBeNull();
   act(() => setChatHidden(true));
+  openMore();
   fireEvent.click(screen.getByRole("button", { name: "Pin Chat beside the page" }));
   expect(currentChatColumn().hidden).toBe(false);
   expect(screen.queryByRole("button", { name: "Pin Chat beside the page" })).toBeNull();
@@ -279,6 +287,37 @@ test("clicking outside the chat name field saves the name", async () => {
   await act(async () => fireEvent.pointerDown(document.body));
   expect(renameStation).toHaveBeenCalledWith(WORKSPACE_ID, "Kept name");
   expect(screen.getByRole("button", { name: "Kept name" })).toBeTruthy();
+});
+
+test("the chat title and workstream menus close each other in both directions", () => {
+  shell();
+  fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
+  expect(screen.getByRole("dialog", { name: "Chats" })).toBeTruthy();
+
+  fireEvent.click(screen.getByRole("button", { name: "Workstream: Scratch" }));
+  expect(screen.queryByRole("dialog", { name: "Chats" })).toBeNull();
+  expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Workstream" }));
+
+  fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
+  expect(screen.queryByRole("textbox", { name: "Workstream" })).toBeNull();
+  expect(screen.getByRole("dialog", { name: "Chats" })).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Chat name" }));
+});
+
+test("a chat name save finishing after switching menus leaves the workstream picker open", async () => {
+  let finish: (state: WorkspaceState) => void = () => {};
+  vi.mocked(renameStation).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  shell();
+  fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
+  const field = screen.getByRole("textbox", { name: "Chat name" });
+  fireEvent.change(field, { target: { value: "Kept name" } });
+  fireEvent.keyDown(field, { key: "Enter" });
+  fireEvent.click(screen.getByRole("button", { name: "Workstream: Scratch" }));
+  expect(screen.queryByRole("dialog", { name: "Chats" })).toBeNull();
+
+  await act(async () => finish({ ...workspace, name: "Kept name" }));
+  expect(await screen.findByRole("button", { name: "Kept name" })).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Workstream" }));
 });
 
 test("global chat search includes hidden chats and restores one when opened", async () => {
@@ -346,10 +385,13 @@ test("the workstream picker creates a missing workstream and moves the chat", as
   expect(createWorkstream).toHaveBeenCalledWith("New work");
 });
 
-test("the station pin control updates the current station", async () => {
+test("the chat pin control stays in the name picker instead of the header", async () => {
   vi.mocked(pinStation).mockResolvedValue({ ...workspace, pinned: true });
-  shell();
-  fireEvent.click(screen.getByRole("button", { name: "Pin chat" }));
+  const { client } = shell();
+  expect(screen.queryByRole("button", { name: "Pin chat" })).toBeNull();
+  client.setQueryData(["stations"], [{ ...workspace, created_at: "2026-10-01T00:00:00Z" }]);
+  fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
+  fireEvent.click(screen.getByRole("button", { name: `Pin ${workspace.name}` }));
   await waitFor(() => expect(pinStation).toHaveBeenCalledWith(WORKSPACE_ID, true));
 });
 
@@ -509,21 +551,6 @@ test("a refused share says why in one toast line and keeps the address in the fi
   fireEvent.click(screen.getByRole("button", { name: "Add" }));
   expect(await screen.findByText("Only the starter shares a chat")).toBeTruthy();
   expect((field as HTMLInputElement).value).toBe("linus@example.com");
-});
-
-test("Hide from bar hides the station immediately and leaves its chat alone", async () => {
-  vi.mocked(restoreStation).mockResolvedValue({ ...workspace, hidden: true });
-  vi.mocked(getWorkspace).mockResolvedValue({ ...workspace, id: "w-beta", name: "beta" });
-  const { client } = shell();
-  client.setQueryData(["stations"], [
-    { id: WORKSPACE_ID, name: "alpha", conversation_id: null, created_at: "2026-10-01T00:00:00Z" },
-    { id: "w-beta", name: "beta", conversation_id: "c2", created_at: "2026-10-02T00:00:00Z" },
-  ]);
-  openMore();
-  fireEvent.click(await screen.findByRole("button", { name: "Hide from bar" }));
-  await waitFor(() => expect(currentStation().id).toBe("w-beta"));
-  expect(restoreStation).toHaveBeenCalledWith(WORKSPACE_ID);
-  expect(deleteChat).not.toHaveBeenCalled();
 });
 
 test("Clear chat opens the server's new workspace with a fresh idempotency key", async () => {

@@ -4,10 +4,10 @@
   padding: 0 10px; padding-top: env(safe-area-inset-top, 0px); position: relative; z-index: 45;
   transition: transform .16s ease, margin-bottom .16s ease;
 }
-.topbar-auto-hidden { transform: translateY(calc(-100% + 2px)); margin-bottom: -44px; }
+.topbar-auto-hidden { transform: translateY(calc(-100% + 2px)); margin-bottom: calc(8px - 44px); }
 .topbar-auto-open { transform: none; margin-bottom: 0; }
 .topbar-edge { position: fixed; z-index: 46; inset: 0 0 auto; width: 100%; height: 8px; border: 0; padding: 0; background: transparent; }
-.topbar-edge::after { content: ""; position: absolute; left: 50%; top: 2px; width: 42px; height: 4px; margin-left: -21px; border-radius: 4px; background: var(--line-strong); }
+.topbar-edge::after { content: ""; position: absolute; left: 50%; top: 1px; width: 50vw; height: 6px; transform: translateX(-50%); border-radius: 4px; background: var(--line-strong); }
 .topbar-edge[hidden] { display: none; }
 .topbar-logo { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--radius); flex: none; }
 .topbar-logo:hover { background: var(--surface-hover); }
@@ -36,7 +36,7 @@
 
 /* ---- Workstreams in the bar (WorkstreamBar.tsx) ---- */
 .workstream-bar-wrap { position: relative; display: flex; flex: 1; min-width: 0; align-items: center; gap: 4px; }
-.workstream-bar { display: flex; flex: 1; min-width: 0; align-items: center; gap: 3px; overflow-x: auto; scrollbar-width: none; }
+.workstream-bar { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 3px; overflow-x: auto; scrollbar-width: none; }
 .workstream-bar::-webkit-scrollbar { display: none; }
 .workstream-slot { display: contents; }
 .workstream-title { --group: var(--accent); display: flex; flex: none; align-items: center; gap: 5px; height: 28px; max-width: 20em; padding: 0 9px; border: 1px solid transparent; border-radius: 7px; color: var(--ink-muted); font-size: 13px; white-space: nowrap; }
@@ -45,7 +45,8 @@
 .workstream-title[draggable="true"] { cursor: grab; }
 .workstream-title.is-dragged { opacity: .45; }
 .workstream-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.workstream-pin { font-size: 11px; }
+.workstream-name { width: 160px; border-color: var(--accent); background: var(--bg); color: var(--text); font: inherit; }
+.workstream-pin { display: inline-flex; flex: none; align-items: center; }
 .workstream-divider { flex: none; width: 1px; height: 20px; margin: 0 5px; background: var(--line-strong); }
 .workstream-new { display: flex; flex: none; align-items: center; gap: 4px; height: 28px; padding: 0 8px; border: 1px dashed var(--line-strong); border-radius: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .workstream-new:hover { color: var(--text); }

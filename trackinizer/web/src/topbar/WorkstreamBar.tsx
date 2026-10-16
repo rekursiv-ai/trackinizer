@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type DragEvent, useEffect, useMemo, useState } from "react";
+import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createWorkstream, createStation, listWorkstreams, setWorkstreamOrder, updateWorkstream, workstreamInfo, type Workstream, type WorkstreamInfo } from "../api/workstreams";
 import type { StationSummary } from "../api/stations";
 import { openStation, stationsQuery } from "../stations/actions";
@@ -19,6 +19,9 @@ export function WorkstreamBar() {
   const [infoId, setInfoId] = useState<string | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [naming, setNaming] = useState<{ readonly id: string; readonly value: string } | null>(null);
+  const [creating, setCreating] = useState(false);
+  const picking = useRef(new Set<string>());
   const info = useQuery({
     queryKey: ["workstream-info", infoId], queryFn: () => workstreamInfo(infoId!), enabled: infoId !== null, staleTime: 30_000,
   });
@@ -52,10 +55,13 @@ export function WorkstreamBar() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: WORKSTREAMS_KEY }),
       queryClient.invalidateQueries({ queryKey: stationsQuery.queryKey }),
+      queryClient.invalidateQueries({ queryKey: ["workstream-info"] }),
     ]);
   }
 
   async function pick(stream: Workstream): Promise<void> {
+    if (picking.current.has(stream.id)) return;
+    picking.current.add(stream.id);
     const inStream = stations.filter((each) => belongs(each, stream) && !each.hidden);
     const pinned = inStream.filter((each) => each.pinned).sort(byRecent)[0];
     const chosen = pinned ?? [...inStream].sort(byRecent)[0];
@@ -63,9 +69,11 @@ export function WorkstreamBar() {
       setProblem(null);
       if (chosen) await openStation(queryClient, chosen.id);
       else showStation(queryClient, await createStation(stream.id));
-      void refresh();
+      await refresh();
     } catch {
       setProblem("Could not open that workstream.");
+    } finally {
+      picking.current.delete(stream.id);
     }
   }
 
@@ -96,7 +104,7 @@ export function WorkstreamBar() {
   function move(id: string, step: -1 | 1): void {
     const at = ordered.findIndex((each) => each.id === id);
     const neighbour = ordered[at + step];
-    if (!neighbour) return;
+    if (!neighbour || neighbour.scratch) return;
     const placed = placeRelative(workstreams, id, neighbour.id, step > 0);
     void persistPosition(id, placed, neighbour.pinned);
     setMenu(null);
@@ -111,28 +119,44 @@ export function WorkstreamBar() {
   function drop(event: DragEvent<HTMLButtonElement>, target: Workstream): void {
     event.preventDefault();
     const id = event.dataTransfer?.getData("text/plain") || draggedId;
-    if (!id || id === target.id) return;
+    if (!id || id === target.id || target.scratch || workstreams.find((stream) => stream.id === id)?.scratch) return;
     const after = event.clientX > event.currentTarget.getBoundingClientRect().left + event.currentTarget.getBoundingClientRect().width / 2;
     void persistPosition(id, placeRelative(workstreams, id, target.id, after), target.pinned);
     setDraggedId(null);
   }
 
   async function create(): Promise<void> {
-    const title = window.prompt("New workstream name");
-    if (!title?.trim()) return;
+    if (creating) return;
+    setCreating(true);
+    setProblem(null);
     try {
-      await createWorkstream(title.trim());
-      await refresh();
-      setProblem(null);
+      const names = new Set(workstreams.map((stream) => stream.title));
+      let number = 1;
+      while (names.has(`Workstream ${number}`)) number += 1;
+      const stream = await createWorkstream(`Workstream ${number}`);
+      await queryClient.cancelQueries({ queryKey: WORKSTREAMS_KEY });
+      queryClient.setQueryData<Workstream[]>(WORKSTREAMS_KEY, (previous = []) => [...previous, stream]);
+      setNaming({ id: stream.id, value: stream.title });
+      await pick(stream);
     } catch {
       setProblem("Could not create that workstream.");
+    } finally {
+      setCreating(false);
     }
   }
 
   function rename(stream: Workstream): void {
     setMenu(null);
-    const title = window.prompt("Workstream name", stream.title);
-    if (title?.trim()) void patch(stream.id, { title: title.trim() });
+    setNaming({ id: stream.id, value: stream.title });
+  }
+
+  function keepName(): void {
+    if (!naming) return;
+    const title = naming.value.trim();
+    setNaming(null);
+    if (title && title !== workstreams.find((stream) => stream.id === naming.id)?.title) {
+      void patch(naming.id, { title });
+    }
   }
 
   async function openInfo(stream: Workstream): Promise<void> {
@@ -151,19 +175,34 @@ export function WorkstreamBar() {
         {ordered.map((stream, index) => (
           <span key={stream.id} className="workstream-slot">
             {index === boundary && boundary > 0 && boundary < ordered.length && <span className="workstream-divider" aria-hidden="true" />}
+          {stream.id === naming?.id ? (
+            <input className="workstream-title workstream-name" aria-label="Workstream name" maxLength={120}
+              value={naming.value} autoFocus onFocus={(event) => {
+                event.currentTarget.select();
+                event.currentTarget.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+              }}
+              onChange={(event) => setNaming({ id: stream.id, value: event.target.value })}
+              onBlur={keepName} onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return;
+                if (event.key === "Enter") { event.preventDefault(); keepName(); }
+                else if (event.key === "Escape") { event.stopPropagation(); setNaming(null); }
+              }} />
+          ) : (
           <button type="button" className={`workstream-title${current && belongs(current, stream) ? " is-current" : ""}${draggedId === stream.id ? " is-dragged" : ""}`}
-              aria-label={stream.title} title={stream.title} draggable
+              aria-label={stream.title} title={`${stream.title} (double-click to rename)`} draggable={!stream.scratch}
               onClick={() => void pick(stream)}
+              onDoubleClick={() => rename(stream)}
               onContextMenu={(event) => { event.preventDefault(); setMenu({ id: stream.id, x: event.clientX, y: event.clientY }); }}
               onDragStart={(event) => dragStart(event, stream.id)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => drop(event, stream)}
               onDragEnd={() => setDraggedId(null)}>
-              {stream.pinned && <span className="workstream-pin" aria-hidden="true">📌</span>}
+              {stream.pinned && <span className="workstream-pin" title="Pinned workstream" aria-hidden="true"><Icon name="bookmark" size={12} /></span>}
               <span className="workstream-title-text">{stream.title}</span>
             </button>
+          )}
           </span>
         ))}
       </nav>
-      <button type="button" className="workstream-new" aria-label="New workstream" title="New workstream" onClick={() => void create()}>
+      <button type="button" className="workstream-new" aria-label="New workstream" title="New workstream" disabled={creating} onClick={() => void create()}>
         <Icon name="plus" size={13} /><span>Workstream</span>
       </button>
       {menu && workstreams.find((each) => each.id === menu.id) && (() => {
@@ -172,9 +211,11 @@ export function WorkstreamBar() {
         return <div className="topbar-pop workstream-pop workstream-menu" role="menu" aria-label={`${stream.title} actions`}
           style={{ left: menu.x, top: menu.y }}>
           <button type="button" role="menuitem" className="topbar-item" onClick={() => void openInfo(stream)}>Info</button>
-          <button type="button" role="menuitem" className="topbar-item" onClick={() => { setMenu(null); void patch(stream.id, { pinned: !stream.pinned }); }}>{stream.pinned ? "Unpin" : "Pin"}</button>
-          <button type="button" role="menuitem" className="topbar-item" disabled={at === 0} onClick={() => move(stream.id, -1)}>Move left</button>
-          <button type="button" role="menuitem" className="topbar-item" disabled={at < 0 || at === ordered.length - 1} onClick={() => move(stream.id, 1)}>Move right</button>
+          {!stream.scratch && <>
+            <button type="button" role="menuitem" className="topbar-item" onClick={() => { setMenu(null); void patch(stream.id, { pinned: !stream.pinned }); }}>{stream.pinned ? "Unpin" : "Pin"}</button>
+            <button type="button" role="menuitem" className="topbar-item" disabled={at === 0 || ordered[at - 1]?.scratch} onClick={() => move(stream.id, -1)}>Move left</button>
+            <button type="button" role="menuitem" className="topbar-item" disabled={at < 0 || at === ordered.length - 1} onClick={() => move(stream.id, 1)}>Move right</button>
+          </>}
           <button type="button" role="menuitem" className="topbar-item" onClick={() => rename(stream)}>Rename</button>
           {!stream.scratch && <button type="button" role="menuitem" className="topbar-item" onClick={() => { setMenu(null); void patch(stream.id, { hidden: true }); }}>Hide</button>}
         </div>;
