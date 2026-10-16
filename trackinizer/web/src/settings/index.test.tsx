@@ -202,7 +202,7 @@ test("under --no-auth, where nobody signs in, the page offers no sign out", () =
   const body = noAuth.response.body;
   const everyone: Profile = {
     ...body,
-    preferences: body.preferences as Profile["preferences"],
+    preferences: { ...body.preferences, workstreams: DEFAULT_PREFERENCES.workstreams } as Profile["preferences"],
     org_mode: body.org_mode as OrgMode,
   };
   serveAccount(everyone);

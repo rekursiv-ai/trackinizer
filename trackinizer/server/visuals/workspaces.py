@@ -289,6 +289,24 @@ class CampaignSetup(BaseModel):
         return value
 
 
+class WorkstreamSuggestion(BaseModel):
+    """A workstream the assistant suggests for a station, without creating it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workstream_id: uuid.UUID | None = None
+    title: str = Field(min_length=1, max_length=120)
+
+    @field_validator("title")
+    @classmethod
+    def _trimmed_title(cls, title: str) -> str:
+        """Reject blank suggestions and trim the displayed title."""
+        title = title.strip()
+        if not title:
+            raise ValueError("A suggested workstream title is 1 to 120 characters.")
+        return title
+
+
 class StationData(BaseModel):
     """A canvas's station fields: the optional ``station`` JSON only the workbench reads.
 
@@ -305,6 +323,13 @@ class StationData(BaseModel):
     layout: StationLayout | None = None
     campaign: CampaignSetup | None = None
     """The default campaign settings a launch from this station's chat takes."""
+
+    hidden: bool = False
+    pinned: bool = False
+    workstream_id: uuid.UUID | None = None
+    suggestion: WorkstreamSuggestion | None = None
+    clear_key: uuid.UUID | None = None
+    """Internal idempotency key for a cleared station; not exposed in workspace state."""
 
 
 class WorkspacePartner(BaseModel):
@@ -346,6 +371,11 @@ class WorkspaceState(WorkspaceData):
     campaign: CampaignSetup | None = None
     """The default campaign settings a launch from this station's chat takes, or None."""
 
+    hidden: bool = False
+    pinned: bool = False
+    workstream_id: uuid.UUID | None = None
+    suggestion: WorkstreamSuggestion | None = None
+
     assistant: str | None = None
     """The configured assistant's actor, or None when the server has none."""
 
@@ -371,6 +401,11 @@ class WorkspaceSummary(BaseModel):
     conversation_id: uuid.UUID | None
     page: str | None
     created_at: datetime
+    modified_at: datetime
+    hidden: bool = False
+    pinned: bool = False
+    workstream_id: uuid.UUID | None = None
+    suggestion: WorkstreamSuggestion | None = None
     tabs: list[TabName] = Field(default_factory=list)
     """The station's canvas tabs, in order; none until a second one is made."""
 
@@ -384,6 +419,7 @@ class WorkspaceSummary(BaseModel):
         *,
         workspace_id: uuid.UUID,
         created_at: datetime,
+        modified_at: datetime,
     ) -> Self:
         """Summarize station ``data``, its layout's tabs by id and name.
 
@@ -391,6 +427,7 @@ class WorkspaceSummary(BaseModel):
           data: The station's stored fields.
           workspace_id: The station's id.
           created_at: When the station was made.
+          modified_at: When the station was last changed.
 
         Returns:
           summary: The station as the list shows it; a layout with no tabs lists
@@ -404,22 +441,54 @@ class WorkspaceSummary(BaseModel):
             conversation_id=data.conversation_id,
             page=data.page,
             created_at=created_at,
+            modified_at=modified_at,
+            hidden=data.hidden,
+            pinned=data.pinned,
+            workstream_id=data.workstream_id,
+            suggestion=data.suggestion,
             tabs=[TabName(id=tab.id, name=tab.name) for tab in layout.tabs or []],
             tab=layout.tab,
         )
 
 
-class RenameWorkspace(BaseModel):
-    """A station's new name, which must be free among its owner's."""
+class UpdateWorkspace(BaseModel):
+    """A station's name or visibility and pin flags."""
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(max_length=1_000)
+    name: str | None = Field(default=None, max_length=1_000)
+    hidden: bool | None = None
+    pinned: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _trimmed_and_bounded(cls, name: str | None) -> str | None:
+        """Trim a supplied name and hold it to 1 to 120 characters."""
+        if name is None:
+            return None
+        name = name.strip()
+        if not name or len(name) > 120:
+            raise ValueError("A station name is 1 to 120 characters.")
+        return name
+
+    @model_validator(mode="after")
+    def _requires_update(self) -> Self:
+        """Require at least one name or flag value."""
+        if self.name is None and self.hidden is None and self.pinned is None:
+            raise ValueError("At least one of name, hidden, or pinned is required.")
+        return self
+
+
+class NameChat(BaseModel):
+    """A name the assistant suggests for an unnamed chat station."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
 
     @field_validator("name")
     @classmethod
     def _trimmed_and_bounded(cls, name: str) -> str:
-        """Trim the name and hold it to 1 to 120 characters."""
         name = name.strip()
         if not name or len(name) > 120:
             raise ValueError("A station name is 1 to 120 characters.")

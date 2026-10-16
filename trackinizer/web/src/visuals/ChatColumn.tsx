@@ -1,6 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { cycleStation, newStation, openStation, setStationMenu, stationsQuery } from "../stations/actions";
+import { newChat } from "../stations/actions";
 import { usePageSync } from "../stations/usePageSync";
 import { useStation } from "../stations/useStation";
 import { useCommands } from "../commands/registry";
@@ -50,7 +50,6 @@ export function ChatColumn({
   const phone = usePhone();
   const queryClient = useQueryClient();
   const workspace = useStation().data ?? null;
-  const stations = useQuery(stationsQuery).data ?? [];
   usePageSync();
   // The tab is titled by its station, as a terminal's is by its directory.
   useEffect(() => {
@@ -106,11 +105,7 @@ export function ChatColumn({
     { id: "chat.toggle", title: hidden ? "Show Chat" : "Hide Chat", keys: ["$mod+\\"], section: "Chat", global: true, run: toggleChatHidden },
     { id: "chat.fullscreen", title: fullscreen ? "Leave full screen Chat" : "Chat full screen", keys: ["Alt+Enter"], section: "Chat", global: true, run: toggleChatFullscreen },
     { id: "chat.side", title: "Move Chat to the other side", section: "Chat", run: flipChatSide },
-    { id: "station.next", title: "Next renamed station", keys: ["g ]"], section: "Stations", run: () => void cycleStation(queryClient, 1) },
-    { id: "station.previous", title: "Previous renamed station", keys: ["g ["], section: "Stations", run: () => void cycleStation(queryClient, -1) },
-    { id: "station.search", title: "Search stations", keys: ["g s"], section: "Stations", run: () => setStationMenu(true) },
-    { id: "station.new", title: "New station", section: "Stations", run: () => void newStation(queryClient) },
-    ...stations.map((each) => ({ id: `station.open.${each.id}`, title: `Open station ${each.name}`, section: "Stations", run: () => void openStation(queryClient, each.id) })),
+    { id: "chat.new", title: "New chat", section: "Chat", run: () => void newChat(queryClient) },
     ...(fullscreen ? [{ id: "chat.fullscreen.exit", title: "Leave full screen Chat", keys: ["Escape"], run: () => setChatFullscreen(false) }] : []),
   ]);
 

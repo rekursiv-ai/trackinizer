@@ -13,7 +13,8 @@ const FIRST: CanvasTab = { id: "1", name: "Tab 1" };
 
 /** A station's canvas tabs, in order: the one it has before a second is made, if its layout keeps none. */
 export function tabsOf(layout: Layout): readonly CanvasTab[] {
-  return layout.tabs?.length ? layout.tabs : [FIRST];
+  if (layout.tabs?.length) return layout.tabs;
+  return layout.tabs ? [{ ...FIRST, id: layout.tab ?? FIRST.id }] : [FIRST];
 }
 
 /** The id of the open tab: the layout's, if it names one it keeps, else the first. */

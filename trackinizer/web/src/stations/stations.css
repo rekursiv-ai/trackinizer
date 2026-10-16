@@ -1,4 +1,4 @@
-/* All stations, at the end of the top bar's station groups, and the search it opens (StationMenu.tsx). */
+/* Shared chat and workstream pickers. */
 .station-all { padding: 4px 6px; }
 .station { position: relative; flex: none; }
 /* The menu opens leftwards from All stations, so it stays on screen. */

@@ -174,6 +174,14 @@ class ReadState(_Strict):
     marks: Annotated[list[_Id], Field(max_length=5_000)]
 
 
+class WorkstreamsPreference(_Strict):
+    """The user's workstream bar state."""
+
+    order: Annotated[list[_Id], Field(max_length=500)] = []
+    pinned: Annotated[list[_Id], Field(max_length=500)] = []
+    hidden: Annotated[list[_Id], Field(max_length=500)] = []
+
+
 class FieldDraft(_Strict):
     """The unsent text of one field's editor, and the value editing began from."""
 
@@ -307,6 +315,10 @@ class Preferences(_Strict):
     create_draft: CreateDraft | None = Field(
         default=None,
         description="The inquiry you started on the create form and have not created.",
+    )
+    workstreams: WorkstreamsPreference = Field(
+        default_factory=WorkstreamsPreference,
+        description="Your workstream bar order, pins, and hidden items.",
     )
 
 

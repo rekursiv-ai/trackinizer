@@ -66,11 +66,25 @@ export async function stationForChat(conversationId: string): Promise<WorkspaceS
   })));
 }
 
-/** Delete one of the user's stations, once its chat is gone; a station that still holds a chat is a 409. */
-export async function deleteStation(id: string): Promise<void> {
-  await send(TIMEOUT_MS.write, undefined, (signal) => client.DELETE("/api/workspaces/{workspace_id}", {
-    params: { path: { workspace_id: id } }, signal,
-  }));
+/** Hide or restore one of the user's stations in the bar. */
+export async function hideStation(id: string, hidden = true): Promise<WorkspaceState> {
+  return valid(await send(TIMEOUT_MS.write, undefined, (signal) => client.PATCH("/api/workspaces/{workspace_id}", {
+    params: { path: { workspace_id: id } }, body: { hidden }, signal,
+  })));
+}
+
+/** Pin or unpin one of the user's stations. */
+export async function pinStation(id: string, pinned: boolean): Promise<WorkspaceState> {
+  return valid(await send(TIMEOUT_MS.write, undefined, (signal) => client.PATCH("/api/workspaces/{workspace_id}", {
+    params: { path: { workspace_id: id } }, body: { pinned }, signal,
+  })));
+}
+
+/** Clear a station's chat and return the server-created station with its copied canvas. */
+export async function clearChat(id: string, key: string): Promise<WorkspaceState> {
+  return valid(await send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/workspaces/{workspace_id}/clear-chat", {
+    params: { path: { workspace_id: id }, header: { "Idempotency-Key": key } }, signal,
+  })));
 }
 
 /** The Console agents a line was sent to directly, as the relay names them. */

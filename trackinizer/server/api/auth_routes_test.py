@@ -611,6 +611,7 @@ _EMPTY_USER_DATA: dict[str, object] = {
     "lens": None,
     "drafts": {},
     "create_draft": None,
+    "workstreams": {"order": [], "pinned": [], "hidden": []},
 }
 
 

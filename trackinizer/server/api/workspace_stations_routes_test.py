@@ -29,7 +29,7 @@ from trackinizer.server.api.canvas_test_support import (
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.visuals.workspace_store import next_station_name
-from trackinizer.server.visuals.workspaces import RenameWorkspace
+from trackinizer.server.visuals.workspaces import UpdateWorkspace
 
 
 if TYPE_CHECKING:
@@ -161,6 +161,11 @@ async def test_a_list_holds_only_the_callers_stations_with_their_fields(
         "conversation_id",
         "page",
         "created_at",
+        "modified_at",
+        "hidden",
+        "pinned",
+        "workstream_id",
+        "suggestion",
         "tabs",
         "tab",
     }
@@ -169,6 +174,7 @@ async def test_a_list_holds_only_the_callers_stations_with_their_fields(
         None,
         None,
     )
+    assert (only["hidden"], only["pinned"]) == (False, False)
 
 
 @pytest.mark.db_pglite
@@ -536,10 +542,13 @@ def test_a_new_station_takes_the_lowest_free_number() -> None:
 
 def test_a_rename_is_trimmed_and_bounded() -> None:
     """The body holds a name of 1 to 120 characters once trimmed."""
-    assert RenameWorkspace(name=" a ").name == "a"
+    assert UpdateWorkspace(name=" a ").name == "a"
+    assert UpdateWorkspace(hidden=False).hidden is False
+    with pytest.raises(ValueError, match="At least one"):
+        _ = UpdateWorkspace()
     for bad in ("", "   ", "x" * 121):
         with pytest.raises(ValueError, match="1 to 120"):
-            _ = RenameWorkspace(name=bad)
+            _ = UpdateWorkspace(name=bad)
 
 
 if __name__ == "__main__":

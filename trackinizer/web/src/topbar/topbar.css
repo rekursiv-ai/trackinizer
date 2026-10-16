@@ -2,7 +2,13 @@
 .topbar {
   display: flex; flex: 0 0 auto; align-items: center; gap: 4px; height: 44px; min-width: 0;
   padding: 0 10px; padding-top: env(safe-area-inset-top, 0px); position: relative; z-index: 45;
+  transition: transform .16s ease, margin-bottom .16s ease;
 }
+.topbar-auto-hidden { transform: translateY(calc(-100% + 2px)); margin-bottom: -44px; }
+.topbar-auto-open { transform: none; margin-bottom: 0; }
+.topbar-edge { position: fixed; z-index: 46; inset: 0 0 auto; width: 100%; height: 8px; border: 0; padding: 0; background: transparent; }
+.topbar-edge::after { content: ""; position: absolute; left: 50%; top: 2px; width: 42px; height: 4px; margin-left: -21px; border-radius: 4px; background: var(--line-strong); }
+.topbar-edge[hidden] { display: none; }
 .topbar-logo { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--radius); flex: none; }
 .topbar-logo:hover { background: var(--surface-hover); }
 .topbar-rule { flex: none; width: 1px; height: 18px; margin: 0 6px; background: var(--line-strong); }
@@ -28,63 +34,30 @@
 .topbar-item > .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workbench-menu { left: auto; right: 0; width: 300px; }
 
-/* ---- Stations as tab groups (StationGroups.tsx) ---- */
-/* Positioned so the delete confirm drops below the bar, clear of the strip's overflow. */
-.station-groups { position: relative; display: flex; flex: 1; min-width: 0; align-items: center; gap: 4px; }
-.station-groups-strip { display: flex; flex: 0 1 auto; align-items: center; gap: 2px; min-width: 0; padding: 4px 0; overflow-x: auto; scrollbar-width: none; }
-.station-groups-strip::-webkit-scrollbar { display: none; }
-.station-group { display: flex; flex: none; align-items: center; border-radius: 8px; transition: box-shadow .2s; }
-.station-group.is-open { box-shadow: inset 0 -2px 0 var(--group); border-radius: 8px 8px 0 0; }
-.station-group-title {
-  display: flex; align-items: center; gap: 6px; height: 26px; max-width: 22em; padding: 0 10px; border-radius: 7px;
-  background: color-mix(in srgb, var(--group) 16%, transparent); color: var(--text);
-  font-size: 13px; font-weight: 600; white-space: nowrap; transition: background .15s, color .15s;
-}
-.station-group-title:hover { background: color-mix(in srgb, var(--group) 26%, transparent); }
-.station-group.is-current .station-group-title { background: var(--group); color: var(--on-group); }
-/* The dot and the tint carry the group's colour; its text stays the theme's, which reads on any tint. */
-.station-group-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--group); }
-.station-group.is-current .station-group-dot { background: currentColor; }
-.station-group-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.station-group-count { font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.station-group-here { max-width: 12em; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
-.station-group-name { width: 14em; height: 26px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; outline: 0; }
-/* The tabs behind a title: the width springs open to what they need (set in GroupTabs), each tab following a beat behind the one before, as macOS's toolbar does. */
-.station-group-tabs { width: 0; overflow: hidden; transition: width .34s cubic-bezier(.22, 1, .36, 1); }
-.station-group-tabs-inner { display: flex; align-items: center; width: max-content; padding-right: 2px; }
-.station-tab, .station-tab-new, .station-tab-slot {
-  opacity: 0; transform: translateX(-10px) scale(.94); transform-origin: left center;
-  transition: opacity .18s ease, transform .3s cubic-bezier(.22, 1, .36, 1), background .12s;
-}
-.station-group.is-open :is(.station-tab, .station-tab-new, .station-tab-slot) { opacity: 1; transform: none; transition-delay: calc(var(--i, 0) * 30ms); }
-.station-tab-slot { display: flex; margin-left: 2px; }
-.station-tab { display: flex; align-items: center; height: 28px; margin-left: 2px; padding: 0 2px 0 0; border-radius: 6px; color: var(--ink-muted); }
-.station-tab:hover { background: var(--surface-hover); color: var(--text); }
-.station-tab[aria-current="true"] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
-.station-tab-open { max-width: 14em; padding: 0 6px 0 10px; overflow: hidden; color: inherit; font-size: 13px; line-height: 28px; text-overflow: ellipsis; white-space: nowrap; }
-.station-tab-open:disabled { opacity: .5; cursor: default; }
-.station-tab-close { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; color: var(--muted); opacity: 0; }
-.station-tab:hover .station-tab-close, .station-tab[aria-current="true"] .station-tab-close, .station-tab-close:focus-visible { opacity: 1; }
-.station-tab-close:hover { background: var(--surface-overlay); color: var(--text); }
-@media (hover: none) { .station-tab-close { opacity: 1; } }
-.station-tab-new { display: grid; place-items: center; width: 26px; height: 26px; margin-left: 2px; border-radius: 6px; color: var(--muted); }
-.station-tab-new:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
-.station-tab-new:disabled { opacity: .4; cursor: default; }
-.station-group-new {
-  display: flex; flex: none; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border: 1px dashed var(--line-strong); border-radius: 7px;
-  color: var(--muted); font-size: 12px; white-space: nowrap;
-}
-.station-group-new:hover { border-color: var(--muted); color: var(--text); }
-/* Delete a workspace, by its title: out of the way until the group is hovered or holds focus, like a tab's close. */
-.station-group-del { display: grid; place-items: center; width: 20px; height: 26px; margin-left: 1px; border-radius: 6px; color: var(--muted); opacity: 0; flex: none; transition: opacity .12s, color .12s, background .12s; }
-.station-group:hover .station-group-del, .station-group:focus-within .station-group-del, .station-group-del:focus-visible { opacity: 1; }
-.station-group-del:hover { background: var(--surface-hover); color: var(--error-text); }
-@media (hover: none) { .station-group-del { opacity: 1; } }
-/* The delete confirm: below the bar, clear of the strip's overflow (the groups are positioned for it). */
-.station-delete { position: absolute; z-index: 50; top: calc(100% + 4px); left: 0; display: flex; flex-direction: column; gap: 10px; width: min(300px, 90vw); padding: 12px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
-.station-delete-note { margin: 0; font-size: 13px; line-height: 1.4; color: var(--text); }
-.station-delete-actions { display: flex; justify-content: flex-end; gap: 6px; }
-.station-groups > .station-problem { flex: none; max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ---- Workstreams in the bar (WorkstreamBar.tsx) ---- */
+.workstream-bar-wrap { position: relative; display: flex; flex: 1; min-width: 0; align-items: center; gap: 4px; }
+.workstream-bar { display: flex; flex: 1; min-width: 0; align-items: center; gap: 3px; overflow-x: auto; scrollbar-width: none; }
+.workstream-bar::-webkit-scrollbar { display: none; }
+.workstream-slot { display: contents; }
+.workstream-title { --group: var(--accent); display: flex; flex: none; align-items: center; gap: 5px; height: 28px; max-width: 20em; padding: 0 9px; border: 1px solid transparent; border-radius: 7px; color: var(--ink-muted); font-size: 13px; white-space: nowrap; }
+.workstream-title:hover, .workstream-title:focus-visible { background: var(--surface-hover); color: var(--text); }
+.workstream-title.is-current { border-color: var(--line-strong); background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.workstream-title[draggable="true"] { cursor: grab; }
+.workstream-title.is-dragged { opacity: .45; }
+.workstream-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.workstream-pin { font-size: 11px; }
+.workstream-divider { flex: none; width: 1px; height: 20px; margin: 0 5px; background: var(--line-strong); }
+.workstream-new { display: flex; flex: none; align-items: center; gap: 4px; height: 28px; padding: 0 8px; border: 1px dashed var(--line-strong); border-radius: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.workstream-new:hover { color: var(--text); }
+.workstream-pop { position: absolute; z-index: 55; }
+.workstream-menu { position: fixed; min-width: 190px; width: 210px; }
+.workstream-drawer { position: fixed; z-index: 60; top: 52px; right: 12px; display: flex; flex-direction: column; gap: 10px; width: min(360px, calc(100vw - 24px)); max-height: calc(100vh - 64px); padding: 14px; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface-overlay); box-shadow: 0 16px 48px #0008; }
+.workstream-drawer-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.workstream-drawer h2, .workstream-drawer h3 { margin: 0; font-size: 15px; }
+.workstream-drawer ul { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 18px; }
+.workstream-drawer li { display: flex; flex-direction: column; gap: 2px; }
+.workstream-session { color: var(--muted); font: 11px ui-monospace, monospace; }
+.workstream-problem { position: absolute; top: calc(100% + 4px); left: 0; z-index: 60; margin: 0; padding: 5px 8px; border-radius: 5px; background: var(--surface-raised); color: var(--error-text); font-size: 12px; }
 
 /* ---- The account (AccountMenu.tsx) ---- */
 .account { margin-left: 4px; }
@@ -118,10 +91,10 @@
 
 @media (max-width: 760px) {
   .topbar { padding-left: max(8px, env(safe-area-inset-left, 0px)); padding-right: max(8px, env(safe-area-inset-right, 0px)); }
-  .station-group-here, .station-group-new > span { display: none; }
+  .workstream-new > span { display: none; }
   .account-button:hover:not([aria-expanded="true"]) { padding-right: 2px; background: none; }
   .account-button:hover:not([aria-expanded="true"]) .account-reveal { max-width: 0; opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .station-group-tabs, .station-tab, .station-tab-new, .station-tab-slot, .station-group-del, .account-reveal, .account-button { transition: none; }
+  .account-reveal, .account-button { transition: none; }
 }

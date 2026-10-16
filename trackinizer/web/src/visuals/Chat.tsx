@@ -7,7 +7,6 @@ import type { OrgMode } from "../api/me";
 import { getWorkspace } from "../api/workspaces";
 import type { WorkspacePartner, WorkspaceState } from "../api/workspaces";
 import { MetaContext, useProfile, useWriteMode } from "../app/boot";
-import { keyCaps } from "../commands/registry";
 import { Composer } from "../composer/Composer";
 import { detailQueries } from "../detail/queries";
 import { useLiveDetail } from "../live";
@@ -16,18 +15,16 @@ import { parseHash } from "../router/route";
 import { useHash, validHash, visited } from "../router/trail";
 import { HelperCommands } from "../settings/ChatPartner";
 import { stationForChat, type StationSummary } from "../api/stations";
-import { closeStation, STATIONS_KEY } from "../stations/actions";
+import { clearChat as clearStationChat, hideStation, STATIONS_KEY } from "../stations/actions";
 import { showStation } from "../stations/useStation";
-import { Icon } from "../ui/icons";
 import { type ChatPart, type Line, type LineAt, linesThrough, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
 import { chatRecordsKey, OPENING, readChatParts, useLiveChat } from "./chatRecords";
 import { useChatFeed } from "./chatFeed";
 import { FOLLOW_UP_ASK, followUpSuggested } from "./chatFollowUp";
-import { flipChatSide, setChatHidden, useChatColumn } from "./chatColumnState";
 import { useAnswerHighlights } from "./chatHighlights";
 import { useChatPartial } from "./chatPartial";
 import { ChatPrompt } from "./ChatPrompt";
-import { DeleteChat, PrivacySwitch, ShareChat } from "./ChatSharing";
+import { ChatWorkstreamHeader } from "./ChatWorkstreamHeader";
 
 /** The most characters one message may have, as the server holds it. */
 const MAX_TEXT = 16_384;
@@ -90,7 +87,6 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   const { email: me, org_mode: orgMode } = useProfile();
   const writing = useWriteMode() === "enabled";
   const { feed, state } = useChatFeed();
-  const { side, hidden } = useChatColumn();
   const workspaceId = workspace?.id ?? null;
   const partner = workspace?.partner ?? null;
   // The station's chat: bound by its first line, and the same however Chat is mounted again.
@@ -240,6 +236,24 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
     void queryClient.invalidateQueries({ queryKey: ["stations"] });
   }
 
+  async function hideCurrentStation() {
+    if (!workspaceId) return;
+    try {
+      await hideStation(queryClient, workspaceId);
+    } catch {
+      setNotice("Could not hide this chat.");
+    }
+  }
+
+  async function clearCurrentChat() {
+    if (!workspaceId) return;
+    try {
+      await clearStationChat(queryClient, workspaceId, newUuid());
+    } catch {
+      setNotice("Could not clear this chat.");
+    }
+  }
+
   // A station that loses its conversation (deleted here or, by the stream, in another tab) shows an
   // empty chat: what belonged to the conversation goes with it.
   const heldConversation = useRef(conversationId);
@@ -327,37 +341,9 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
 
   return (
     <section className="chat-panel" aria-label="Chat">
-      <header className="chat-head">
-        {head.data && head.data.audience !== "open" && !(head.data.may_hide && head.data.audience === "private")
-          && <ChatBadge audience={head.data.audience} />}
-        <div className="chat-partner" role="group" aria-label="Chat partner">
-          {partner && <>
-            <strong>{partnerName(partner)}</strong>
-            <span className="chat-partner-note">{partnerNote(partner)}</span>
-          </>}
-          {/* The station's tabs stand in the top bar now; its name stays here, so Chat says whose it is. */}
-          {workspace && <span className="chat-station" title={workspace.name}>{workspace.name}</span>}
-        </div>
-        <div className="chat-head-actions" role="toolbar" aria-label="Chat controls">
-          {head.data?.may_hide && <PrivacySwitch head={head.data} />}
-          {head.data?.may_share && <ShareChat head={head.data} />}
-          {head.data?.may_delete && <DeleteChat head={head.data} onDeleted={() => {
-            chatDeleted(head.data!.conversation_id);
-            // Deleting a chat closes its station tab, as closing any tab does, moving to the one beside it.
-            if (workspaceId) void closeStation(queryClient, workspaceId);
-          }} />}
-          {/* Hidden, Chat is open over the page by hovering its strip; pinning stands it beside the page again. */}
-          {hidden
-            ? <button className="btn ghost" type="button" title="Pin Chat beside the page"
-                aria-label="Pin Chat beside the page" onClick={() => setChatHidden(false)}>Pin</button>
-            : <button className="btn ghost" type="button" title={`Hide Chat (${keyCaps("$mod+\\").join(" ")})`}
-                aria-label="Hide Chat" onClick={() => setChatHidden(true)}>
-                <Icon name={side === "left" ? "panelLeftClose" : "panelRightClose"} size={14} />
-              </button>}
-          <button className="btn ghost" type="button" title={`Move Chat to the ${side === "left" ? "right" : "left"}`}
-            aria-label={`Move Chat to the ${side === "left" ? "right" : "left"}`} onClick={flipChatSide}>{side === "left" ? "▷" : "◁"}</button>
-        </div>
-      </header>
+      <ChatWorkstreamHeader workspace={workspace} head={head.data ?? undefined}
+        onHide={hideCurrentStation} onClear={clearCurrentChat}
+        onDeleted={(conversation) => chatDeleted(conversation)} />
       {screen.name === "lookup" && <ChatScreenContext id={screen.id} label={screen.id} />}
       {screen.name === "ref" && <ChatScreenRef kind={screen.kind} seq={screen.seq} />}
       <div className="chat-lines" ref={stage} role="log" aria-label="Messages" aria-live="polite"
@@ -424,17 +410,6 @@ function checkText(text: string): string {
   return text.length > MAX_TEXT ? `A message holds at most ${MAX_TEXT.toLocaleString("en")} characters; this one has ${text.length.toLocaleString("en")}.` : "";
 }
 
-/** The name a partner goes by in the header: a local helper is the user's own, named once it runs. */
-function partnerName(partner: WorkspacePartner): string {
-  if (partner.kind === "shared") return partner.actor ?? "assistant";
-  return partner.actor ? `your local helper (${partner.actor})` : "your local helper";
-}
-
-function partnerNote(partner: WorkspacePartner): string {
-  const state = partner.status === "live" ? "" : ` · ${partner.status}`;
-  return `${partner.cli ?? "agent"}${state}`;
-}
-
 function partnerGone(partner: WorkspacePartner): string {
   return `${partner.actor ?? "The partner"} is unavailable.`;
 }
@@ -453,18 +428,6 @@ function outsiderNote(audience: string): string {
 /** The box's placeholder in a chat I do not read. */
 function closedTo(audience: string): string {
   return audience === "staff" ? "This chat is staff only" : "This chat is not shared with you";
-}
-
-/**
- * A chat that is not open to whom the org mode lets in says so in its header:
- * made private by its starter, or staff only. The starter's own Public/Private
- * switch says it for them.
- */
-function ChatBadge({ audience }: { readonly audience: string }) {
-  const staff = audience === "staff";
-  return <span className="chat-badge" title={staff
-    ? "The assistant read a staff session into this chat, so only its readers who hold staff read it"
-    : "Its starter made it private: only they and the people they share it with read it"}>{staff ? "Staff only" : "Private"}</span>;
 }
 
 /** What to do when no partner is live: two lines, then the commands that start a local helper. */

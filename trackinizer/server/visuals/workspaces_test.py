@@ -22,6 +22,7 @@ from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
     CampaignSetup,
     HideVisual,
+    NameChat,
     Placement,
     PlaceVisual,
     ShowVisual,
@@ -30,6 +31,7 @@ from trackinizer.server.visuals.workspaces import (
     TabVisual,
     WorkspaceData,
     WorkspaceSummary,
+    WorkstreamSuggestion,
     apply_operation,
     initial_data,
     refuse_params,
@@ -753,10 +755,16 @@ def test_canvas_tabs_out_of_bounds_are_refused(tabs: list[dict[str, object]]) ->
 
 
 def test_a_summary_names_each_tab_and_the_open_one_and_a_station_without_none() -> None:
-    """The station list carries tab names and the open tab, never what tabs show."""
+    """The station list carries flags, row time, and tab names, never tab contents."""
     made = datetime(2026, 10, 15, tzinfo=UTC)
+    modified = datetime(2026, 10, 16, 9, 30, tzinfo=UTC)
     station = uuid.uuid4()
     chat = uuid.uuid4()
+    workstream_id = uuid.uuid4()
+    suggestion = WorkstreamSuggestion(
+        workstream_id=uuid.uuid4(),
+        title="Possible workstream",
+    )
     layout = StationLayout.model_validate(
         {
             "tabs": [
@@ -767,14 +775,25 @@ def test_a_summary_names_each_tab_and_the_open_one_and_a_station_without_none() 
         },
     )
     tabbed = WorkspaceSummary.of(
-        StationData(name="beta", conversation_id=chat, page="#/graph", layout=layout),
+        StationData(
+            name="beta",
+            conversation_id=chat,
+            page="#/graph",
+            layout=layout,
+            hidden=True,
+            pinned=True,
+            workstream_id=workstream_id,
+            suggestion=suggestion,
+        ),
         workspace_id=station,
         created_at=made,
+        modified_at=modified,
     )
     plain = WorkspaceSummary.of(
         StationData(name="alpha"),
         workspace_id=station,
         created_at=made,
+        modified_at=modified,
     )
     assert tabbed.model_dump(mode="json") == {
         "id": str(station),
@@ -782,10 +801,42 @@ def test_a_summary_names_each_tab_and_the_open_one_and_a_station_without_none() 
         "conversation_id": str(chat),
         "page": "#/graph",
         "created_at": "2026-10-15T00:00:00Z",
+        "modified_at": "2026-10-16T09:30:00Z",
+        "hidden": True,
+        "pinned": True,
+        "workstream_id": str(workstream_id),
+        "suggestion": {
+            "workstream_id": str(suggestion.workstream_id),
+            "title": "Possible workstream",
+        },
         "tabs": [{"id": "a", "name": "Graph"}, {"id": "b", "name": "Issue#7"}],
         "tab": "b",
     }
     assert (plain.tabs, plain.tab, plain.name, plain.page) == ([], None, "alpha", None)
+    assert (plain.hidden, plain.pinned, plain.modified_at) == (False, False, modified)
+
+
+def test_a_workstream_suggestion_has_a_bounded_title_and_optional_target() -> None:
+    suggestion = WorkstreamSuggestion(title="A possible stream")
+    assert suggestion.workstream_id is None
+    assert (
+        WorkstreamSuggestion.model_validate(
+            {"workstream_id": str(uuid.uuid4()), "title": "A"},
+        ).title
+        == "A"
+    )
+    with pytest.raises(ValidationError):
+        WorkstreamSuggestion(title=" ")
+    with pytest.raises(ValidationError):
+        WorkstreamSuggestion(title="x" * 121)
+
+
+def test_a_chat_name_is_trimmed_and_bounded() -> None:
+    assert NameChat(name="  Project title  ").name == "Project title"
+    with pytest.raises(ValidationError):
+        NameChat(name=" ")
+    with pytest.raises(ValidationError):
+        NameChat(name="x" * 121)
 
 
 if __name__ == "__main__":

@@ -38,7 +38,12 @@
         "stars": [],
         "terminal_font_size": "13px",
         "theme": "dark",
-        "views": []
+        "views": [],
+        "workstreams": {
+          "hidden": [],
+          "order": [],
+          "pinned": []
+        }
       },
       "read_audiences": [
         "open",

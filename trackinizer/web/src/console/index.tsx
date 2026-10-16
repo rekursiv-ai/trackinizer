@@ -52,7 +52,7 @@ import { MentionField } from "./MentionField";
 import { Minimap } from "./Minimap";
 import { parseLine, receipt, targetName } from "./send";
 import { useViews } from "./views";
-import { UNNAMED } from "../stations/cycle";
+import { UNNAMED } from "../stations/names";
 import { useStation } from "../stations/useStation";
 import { useContinueInChat } from "../visuals/continueChat";
 import { ViewsSection } from "./ViewsRail";

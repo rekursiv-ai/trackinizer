@@ -140,8 +140,8 @@ export function DeleteChat({ head, onDeleted }: { readonly head: ChatHead; reado
   return (
     <div className="station chat-head-pop" ref={root}>
       <button className="btn ghost" type="button" aria-haspopup="dialog" aria-expanded={confirming}
-        title="Delete this chat" onClick={() => setConfirming(!confirming)}>Delete</button>
-      {confirming && <div className="station-menu" role="alertdialog" aria-label="Delete this chat"
+        title="Delete chat forever" onClick={() => setConfirming(!confirming)}>Delete chat forever</button>
+      {confirming && <div className="station-menu" role="alertdialog" aria-label="Delete chat forever"
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setConfirming(false); } }}>
         <p className="chat-note">Delete this chat? Its forks keep their copies.</p>
         <div className="station-actions">

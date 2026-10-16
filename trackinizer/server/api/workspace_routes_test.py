@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Final, cast
+from unittest.mock import MagicMock
 
 import asyncio
 import json
@@ -49,6 +50,7 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
+from trackinizer.server.api.session_access import Asker
 from trackinizer.server.api.workspace_routes import _current_state
 from trackinizer.server.chat_hub import (
     ChatHub,
@@ -57,9 +59,20 @@ from trackinizer.server.chat_hub import (
     iter_workspace_events,
 )
 from trackinizer.server.config import Assistant, Config
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.primitives import insert_inquiry
-from trackinizer.server.visuals.catalog import StaticVisual, Workspace
+from trackinizer.server.store.core import Store
+from trackinizer.server.visuals.catalog import (
+    StaticVisual,
+    Workspace,
+    default_workspace,
+)
+from trackinizer.server.visuals.workspaces import NameChat, WorkspaceState
+from trackinizer.server.visuals.workstreams import (
+    NewWorkspace,
+    SetStationWorkstream,
+)
 
 
 if TYPE_CHECKING:
@@ -67,9 +80,95 @@ if TYPE_CHECKING:
 
     import httpx2
 
-    from trackinizer.lib.postgres import Conn
+    from trackinizer.lib.postgres import Conn, DatabaseEngine, PGliteEngine
+    from trackinizer.server.auth import AuthIdentity
     from trackinizer.server.chat_hub import Frame, Subscription
-    from trackinizer.server.store.core import Store
+    from trackinizer.server.visuals.catalog import VisualCatalogBody
+
+
+async def _clear_chat_fake(
+    engine: object,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    key: uuid.UUID,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+    seen: list[tuple[object, dict[str, object]]],
+    results: list[WorkspaceState | None],
+) -> WorkspaceState | None:
+    seen.append(
+        (
+            engine,
+            {
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+                "key": key,
+                "inbound": inbound,
+                "assistant": assistant,
+            },
+        ),
+    )
+    return results.pop(0)
+
+
+async def _open_scratch_fake(
+    engine: DatabaseEngine,
+    *,
+    store: Store,
+    user_id: uuid.UUID,
+    email: str,
+    calls: list[tuple[str, object]],
+    scratch_id: uuid.UUID,
+) -> uuid.UUID:
+    del engine, store, user_id, email
+    calls.append(("scratch", None))
+    return scratch_id
+
+
+async def _check_workstream_fake(
+    engine: DatabaseEngine,
+    *,
+    email: str,
+    workstream_id: uuid.UUID,
+    calls: list[tuple[str, object]],
+    result: bool = True,
+) -> bool:
+    del engine, email, workstream_id
+    calls.append(("check", None))
+    return result
+
+
+async def _new_workspace_fake(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    catalog: VisualCatalogBody,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+    workstream_id: uuid.UUID | None = None,
+    calls: list[tuple[str, object]],
+    state: WorkspaceState,
+) -> WorkspaceState:
+    del engine, user_id, catalog, inbound, assistant
+    calls.append(("new", workstream_id))
+    return state
+
+
+async def _name_station_fake(
+    engine: DatabaseEngine,
+    *,
+    email: str,
+    conversation_id: uuid.UUID,
+    name: str,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+    sent: dict[str, object],
+    state: WorkspaceState,
+) -> WorkspaceState:
+    del engine, inbound, assistant
+    sent.update(email=email, conversation_id=conversation_id, name=name)
+    return state
 
 
 @pytest.mark.db_pglite
@@ -384,42 +483,127 @@ def test_current_state_reads_the_canvas_with_its_ids_or_raises_not_found(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_station_is_deleted_once_its_chat_is_gone_and_a_held_chat_is_refused(
+async def test_workspace_patch_hides_pins_and_updates_atomically_with_its_name(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """DELETE removes an emptied station; a held chat is 409, an unknown id 404."""
+    """Flags update with a rename; a duplicate name leaves both flags unchanged."""
     client, store = pglite_route_client
     workspace_id = await _canvas(client, store)
+    browser()
 
-    assert (await client.delete(f"/api/workspaces/{uuid.uuid4()}")).status_code == 404
+    second_id = await open_workspace(client, new=True)
+    second = await client.patch(
+        f"/api/workspaces/{second_id}",
+        json={"hidden": True, "pinned": True},
+    )
+    assert second.status_code == 200
+    second_state = json_loads(second.content, dict[str, object])
+    assert (second_state["hidden"], second_state["pinned"]) == (True, True)
 
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "UPDATE visual_workspaces SET station = station || "
-            "jsonb_build_object('conversation_id', $2::text) WHERE id = $1",
-            uuid.UUID(workspace_id),
-            str(uuid.uuid4()),
-        )
-    held = await client.delete(f"/api/workspaces/{workspace_id}")
-    assert held.status_code == 409, held.text
-    async with store.engine.acquire() as conn:
-        assert (
-            await conn.fetchval(
-                "SELECT 1 FROM visual_workspaces WHERE id = $1",
-                uuid.UUID(workspace_id),
-            )
-            is not None
-        )
+    duplicate = await client.patch(
+        f"/api/workspaces/{workspace_id}",
+        json={"name": second_state["name"], "hidden": True, "pinned": True},
+    )
+    assert duplicate.status_code == 409
+    unchanged = json_loads(
+        (await client.get(f"/api/workspaces/{workspace_id}")).content,
+        dict[str, object],
+    )
+    assert (unchanged["hidden"], unchanged["pinned"]) == (False, False)
 
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "UPDATE visual_workspaces SET station = station - 'conversation_id' "
-            "WHERE id = $1",
-            uuid.UUID(workspace_id),
+    unhidden = await client.patch(
+        f"/api/workspaces/{second_id}",
+        json={"hidden": False},
+    )
+    assert unhidden.status_code == 200
+    pinned = json_loads(unhidden.content, dict[str, object])
+    assert (pinned["hidden"], pinned["pinned"]) == (False, True)
+    assert (
+        await client.patch(f"/api/workspaces/{workspace_id}", json={})
+    ).status_code == 422
+
+    browser(OTHER_USER_ID, email=OTHER_EMAIL)
+    foreign = await client.patch(
+        f"/api/workspaces/{second_id}",
+        json={"hidden": True},
+    )
+    assert foreign.status_code == 404
+
+
+def test_clear_chat_route_passes_owner_and_key_and_returns_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The route forwards its owner and key, and maps a missing station to 404."""
+    request = cast(Request, object())
+    identity = make_test_identity(api_key_id=None)
+    workspace_id, key = uuid.uuid4(), uuid.uuid4()
+    state = WorkspaceState(
+        id=workspace_id,
+        revision=0,
+        name="unnamed-workstream#1",
+        conversation_id=None,
+        page=None,
+        visuals=[],
+    )
+    engine, inbound, assistant = object(), object(), object()
+    seen: list[tuple[object, dict[str, object]]] = []
+    results: list[WorkspaceState | None] = [state, None]
+
+    def require_browser(identity: object) -> None:
+        del identity
+
+    def give_engine(got: Request) -> object:
+        assert got is request
+        return engine
+
+    def give_inbound(got: Request) -> object:
+        assert got is request
+        return inbound
+
+    def give_assistant(got: Request) -> object:
+        assert got is request
+        return assistant
+
+    monkeypatch.setattr(workspace_routes, "require_browser", require_browser)
+    monkeypatch.setattr(workspace_routes, "engine_of", give_engine)
+    monkeypatch.setattr(workspace_routes, "get_inbound", give_inbound)
+    monkeypatch.setattr(workspace_routes, "get_assistant", give_assistant)
+    monkeypatch.setattr(
+        workspace_routes,
+        "clear_chat_station",
+        partial(_clear_chat_fake, seen=seen, results=results),
+    )
+
+    opened = asyncio.run(
+        workspace_routes.clear_chat_route(
+            workspace_id=workspace_id,
+            request=request,
+            identity=identity,
+            key=key,
+        ),
+    )
+    assert opened is state
+    assert seen[0] == (
+        engine,
+        {
+            "user_id": identity.user_id,
+            "workspace_id": workspace_id,
+            "key": key,
+            "inbound": inbound,
+            "assistant": assistant,
+        },
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            workspace_routes.clear_chat_route(
+                workspace_id=workspace_id,
+                request=request,
+                identity=identity,
+                key=key,
+            ),
         )
-    gone = await client.delete(f"/api/workspaces/{workspace_id}")
-    assert gone.status_code == 204, gone.text
-    assert (await client.get(f"/api/workspaces/{workspace_id}")).status_code == 404
+    assert caught.value.status_code == 404
 
 
 async def _canvas(client: httpx2.AsyncClient, store: Store) -> str:
@@ -2045,6 +2229,323 @@ async def _bind_campaign(
                 str(conversation_id),
                 hours,
             )
+
+
+def _patch_workspace_route_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    engine: PGliteEngine,
+    store: Store,
+) -> None:
+    def require_browser(identity: AuthIdentity) -> None:
+        del identity
+
+    def engine_of(request: Request) -> DatabaseEngine:
+        del request
+        return engine
+
+    def get_store(request: Request) -> Store:
+        del request
+        return store
+
+    def get_inbound(request: Request) -> InboundQueue:
+        del request
+        return InboundQueue()
+
+    def get_assistant(request: Request) -> None:
+        del request
+
+    monkeypatch.setattr(workspace_routes, "require_browser", require_browser)
+    monkeypatch.setattr(workspace_routes, "engine_of", engine_of)
+    monkeypatch.setattr(workspace_routes, "get_store", get_store)
+    monkeypatch.setattr(workspace_routes, "get_inbound", get_inbound)
+    monkeypatch.setattr(workspace_routes, "get_assistant", get_assistant)
+    monkeypatch.setattr(workspace_routes, "visual_catalog", _fake_visual_catalog)
+
+
+def _fake_visual_catalog(request: Request) -> Workspace:
+    """Return the default visual catalog for a direct route call."""
+    del request
+    return default_workspace()
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_new_station_selects_a_workstream_after_opening_scratch(
+    monkeypatch: pytest.MonkeyPatch,
+    pglite_engine: PGliteEngine,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    scratch_id, chosen_id = uuid.uuid4(), uuid.uuid4()
+    store = Store(pglite_engine, embed=StubEmbedder())
+    _patch_workspace_route_dependencies(
+        monkeypatch,
+        engine=pglite_engine,
+        store=store,
+    )
+    state = WorkspaceState(
+        id=uuid.uuid4(),
+        revision=0,
+        name="unnamed-workstream#1",
+        conversation_id=None,
+        page=None,
+        visuals=[],
+    )
+
+    monkeypatch.setattr(
+        workspace_routes,
+        "open_scratch",
+        partial(_open_scratch_fake, calls=calls, scratch_id=scratch_id),
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "check_workstream",
+        partial(_check_workstream_fake, calls=calls),
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "new_workspace",
+        partial(_new_workspace_fake, calls=calls, state=state),
+    )
+
+    made = await workspace_routes.new_workspace_route(
+        request=cast("Request", MagicMock()),
+        identity=make_test_identity(api_key_id=None),
+        body=NewWorkspace(workstream_id=chosen_id),
+    )
+
+    assert made == state
+    assert calls == [("scratch", None), ("check", None), ("new", chosen_id)]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_new_station_defaults_to_the_scratch_workstream(
+    monkeypatch: pytest.MonkeyPatch,
+    pglite_engine: PGliteEngine,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    scratch_id = uuid.uuid4()
+    store = Store(pglite_engine, embed=StubEmbedder())
+    _patch_workspace_route_dependencies(
+        monkeypatch,
+        engine=pglite_engine,
+        store=store,
+    )
+
+    state = WorkspaceState(
+        id=uuid.uuid4(),
+        revision=0,
+        name="unnamed-workstream#1",
+        conversation_id=None,
+        page=None,
+        visuals=[],
+    )
+
+    monkeypatch.setattr(
+        workspace_routes,
+        "open_scratch",
+        partial(_open_scratch_fake, calls=[], scratch_id=scratch_id),
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "new_workspace",
+        partial(_new_workspace_fake, calls=calls, state=state),
+    )
+
+    await workspace_routes.new_workspace_route(
+        request=cast("Request", MagicMock()),
+        identity=make_test_identity(api_key_id=None),
+    )
+
+    assert calls == [("new", scratch_id)]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_moving_a_station_to_an_unknown_workstream_is_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+    pglite_engine: PGliteEngine,
+) -> None:
+    store = Store(pglite_engine, embed=StubEmbedder())
+    _patch_workspace_route_dependencies(
+        monkeypatch,
+        engine=pglite_engine,
+        store=store,
+    )
+
+    async def missing(
+        engine: DatabaseEngine,
+        *,
+        user_id: uuid.UUID,
+        email: str,
+        workspace_id: uuid.UUID,
+        workstream_id: uuid.UUID,
+        inbound: InboundQueue,
+        assistant: Assistant | None,
+    ) -> WorkspaceState | None:
+        del engine, user_id, email, workspace_id, workstream_id, inbound, assistant
+        return None
+
+    monkeypatch.setattr(workspace_routes, "set_station_workstream", missing)
+    with pytest.raises(HTTPException) as error:
+        await workspace_routes.set_station_workstream_route(
+            workspace_id=uuid.uuid4(),
+            body=SetStationWorkstream(workstream_id=uuid.uuid4()),
+            request=cast("Request", MagicMock()),
+            identity=make_test_identity(api_key_id=None),
+        )
+    assert error.value.status_code == 404
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_assistant_name_route_forwards_suggestion_to_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation_id = uuid.uuid4()
+    workspace_id = uuid.uuid4()
+    request = cast("Request", MagicMock())
+    identity = make_test_identity(api_key_id=uuid.uuid4())
+    state = WorkspaceState(
+        id=workspace_id,
+        revision=0,
+        name="Chosen by the user",
+        conversation_id=conversation_id,
+        page=None,
+        visuals=[],
+    )
+    hub = MagicMock()
+
+    async def resolve(
+        request: Request,
+        identity: AuthIdentity,
+        *,
+        email: str | None,
+    ) -> Asker | None:
+        del request, identity
+        assert email == TEST_USER_EMAIL
+        return Asker(email=TEST_USER_EMAIL, role="writer", read_audiences=frozenset())
+
+    sent: dict[str, object] = {}
+
+    def engine_for(request: Request) -> DatabaseEngine:
+        del request
+        return cast("DatabaseEngine", object())
+
+    def inbound_for(request: Request) -> InboundQueue:
+        del request
+        return InboundQueue()
+
+    def assistant_for(request: Request) -> Assistant | None:
+        del request
+        return None
+
+    def hub_for(request: Request) -> ChatHub:
+        del request
+        return cast("ChatHub", hub)
+
+    monkeypatch.setattr(workspace_routes, "resolve_asker", resolve)
+    monkeypatch.setattr(workspace_routes, "engine_of", engine_for)
+    monkeypatch.setattr(workspace_routes, "get_inbound", inbound_for)
+    monkeypatch.setattr(workspace_routes, "get_assistant", assistant_for)
+    monkeypatch.setattr(workspace_routes, "get_hub", hub_for)
+    monkeypatch.setattr(
+        workspace_routes,
+        "name_unnamed_station",
+        partial(_name_station_fake, sent=sent, state=state),
+    )
+
+    _ = await workspace_routes.name_for_chat_route(
+        conversation_id=conversation_id,
+        body=NameChat(name="Assistant's idea"),
+        request=request,
+        identity=identity,
+        asker=TEST_USER_EMAIL,
+    )
+
+    assert sent == {
+        "email": TEST_USER_EMAIL,
+        "conversation_id": conversation_id,
+        "name": "Assistant's idea",
+    }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_assistant_suggestion_updates_station_without_creating_an_issue(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    assistant_served: ChatHub,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    conversation_id = uuid.uuid4()
+    workspace_id = await _bind_station(
+        store,
+        user_id=TEST_USER_ID,
+        conversation_id=conversation_id,
+        name="Current name",
+    )
+    async with store.engine.acquire() as conn:
+        issue_ids_before = {
+            from_plain(row["id"], uuid.UUID)
+            for row in await conn.fetch("SELECT id FROM inquiries WHERE kind = 'Issue'")
+        }
+    act_as_assistant("writer")
+
+    response = await client.post(
+        f"/api/workspaces/for-chat/{conversation_id}/suggestion",
+        params={"asker": TEST_USER_EMAIL},
+        json={"title": "Possible group"},
+    )
+
+    assert response.status_code == 200, response.text
+    result = json_loads(response.content, dict[str, object])
+    assert result["suggestion"] == {
+        "workstream_id": None,
+        "title": "Possible group",
+    }
+    assert (await _station_json(store, workspace_id))["suggestion"] == result[
+        "suggestion"
+    ]
+    async with store.engine.acquire() as conn:
+        issue_ids_after = {
+            from_plain(row["id"], uuid.UUID)
+            for row in await conn.fetch("SELECT id FROM inquiries WHERE kind = 'Issue'")
+        }
+    assert issue_ids_after == issue_ids_before
+    _ = assistant_served
+
+
+async def _bind_station(
+    store: Store,
+    *,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    name: str,
+) -> uuid.UUID:
+    """Insert a station bound to a chat and return its id."""
+    workspace_id = uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO visual_workspaces (id, user_id, state, station) VALUES ("
+            '$1, $2, \'{"visuals": [], "focused_instance": null}\'::jsonb, '
+            "jsonb_build_object('name', $3::text, 'conversation_id', $4::text))",
+            workspace_id,
+            user_id,
+            name,
+            str(conversation_id),
+        )
+    return workspace_id
+
+
+async def _station_json(store: Store, workspace_id: uuid.UUID) -> dict[str, object]:
+    """Read a station JSON object for a route assertion."""
+    async with store.engine.acquire() as conn:
+        station = await conn.fetchval(
+            "SELECT station FROM visual_workspaces WHERE id = $1",
+            workspace_id,
+        )
+    return from_plain(station, dict[str, object])
 
 
 if __name__ == "__main__":

@@ -35,6 +35,35 @@
 .chat-badge { padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font-size: 11px; line-height: 18px; }
 .chat-head-actions { display: flex; align-items: center; gap: 4px; }
 .chat-head-actions .btn:disabled { opacity: .5; }
+.chat-head { position: relative; }
+.chat-partner-context { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.chat-name-pick { position: relative; min-width: 0; flex: 0 1 auto; }
+.chat-name-button { max-width: 180px; min-width: 48px; overflow: hidden; padding: 2px 4px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: 15px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.chat-name-button:hover { background: var(--surface-hover); }
+.chat-name-caret { margin-left: 4px; color: var(--muted); font-size: 11px; }
+.chat-name-input { width: 180px; padding: 2px 4px; border: 1px solid var(--accent); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; font-weight: 650; }
+.chat-name-menu { left: 0; right: auto; width: min(320px, 90vw); }
+.chat-menu-label { margin: 2px 6px; color: var(--muted); font-size: 11px; }
+.chat-name-row { display: flex; align-items: center; min-width: 0; }
+.chat-name-row .station-option { flex: 1; min-width: 0; }
+.chat-name-row-actions { display: flex; gap: 2px; opacity: 0; }
+.chat-name-row:hover .chat-name-row-actions, .chat-name-row:focus-within .chat-name-row-actions { opacity: 1; }
+.chat-name-row-actions .btn { padding: 2px 5px; font-size: 11px; }
+.chat-name-search { padding-top: 4px; border-top: 1px solid var(--line); }
+.chat-workstream-pick { position: relative; display: flex; align-items: center; min-width: 0; flex: 1; gap: 5px; }
+.chat-workstream-chip { max-width: 150px; overflow: hidden; padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-raised); color: var(--ink-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.chat-workstream-menu { position: absolute; z-index: 42; top: calc(100% + 4px); left: 0; display: flex; flex-direction: column; gap: 5px; width: min(280px, 90vw); padding: 8px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
+.chat-workstream-menu input { width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.chat-suggestion-chip { display: inline-flex; flex: none; align-items: center; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent-soft); font-size: 12px; }
+.chat-suggestion-chip button { padding: 2px 7px; border: 0; background: transparent; color: var(--accent-hover); }
+.chat-more-menu, .chat-info-menu { position: absolute; z-index: 42; top: calc(100% + 4px); right: 8px; display: flex; flex-direction: column; gap: 4px; min-width: 220px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
+.chat-more-menu > button { padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; text-align: left; }
+.chat-more-menu > button:hover { background: var(--surface-overlay); }
+.chat-info-menu { top: calc(100% + 4px); max-width: min(320px, 90vw); overflow-wrap: anywhere; }
+.chat-info-menu span { color: var(--muted); font-size: 12px; }
+.hover-only { opacity: 0; transition: opacity .12s; }
+.chat-head:hover .hover-only, .chat-head:focus-within .hover-only { opacity: 1; }
+@media (hover: none) { .hover-only, .chat-name-row-actions { opacity: 1; } }
 /* A header pop-over opens away from the screen's edge Chat stands at: leftwards from Chat at the
    right, rightwards, over the workbench, from Chat at the left, where leftwards would run off the page. */
 .chat-head-pop .station-menu { left: auto; right: 0; }
@@ -147,10 +176,19 @@
 .canvas-bar-button { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; margin-bottom: 3px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
 .canvas-bar-button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
 .canvas-bar-button:disabled { opacity: .4; cursor: default; }
-/* The station and tab on show, the station in its group's colour (the top bar's). */
-.canvas-crumbs { display: flex; align-items: center; gap: 6px; min-width: 0; margin: 0 0 3px 8px; height: 28px; color: var(--muted); white-space: nowrap; }
-.canvas-crumbs > span { overflow: hidden; text-overflow: ellipsis; }
-.canvas-crumb-station { font-weight: 600; color: var(--group, var(--ink-muted)); }
-.canvas-crumb-tab { color: var(--text); }
+.canvas-tabs { display: flex; flex: 1 1 auto; align-items: flex-end; gap: 2px; min-width: 0; height: 32px; overflow-x: auto; scrollbar-width: none; }
+.canvas-tabs::-webkit-scrollbar { display: none; }
+.canvas-tab { display: flex; flex: none; align-items: center; max-width: min(180px, 28vw); height: 28px; margin-bottom: 2px; padding: 0 2px; border-radius: 6px 6px 0 0; color: var(--ink-muted); }
+.canvas-tab[aria-current="true"] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
+.canvas-tab-open { max-width: 150px; overflow: hidden; padding: 0 7px; color: inherit; font-size: 13px; line-height: 28px; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-tab-open:hover { background: var(--surface-hover); }
+.canvas-tab-open:disabled { opacity: .5; cursor: default; }
+.canvas-tab-close { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; color: var(--muted); opacity: 0; }
+.canvas-tab:hover .canvas-tab-close, .canvas-tab[aria-current="true"] .canvas-tab-close, .canvas-tab-close:focus-visible { opacity: 1; }
+.canvas-tab-close:hover { background: var(--surface-overlay); color: var(--text); }
+.canvas-tab-name { width: min(180px, 28vw); height: 26px; margin-bottom: 3px; padding: 0 7px; border: 1px solid var(--accent); border-radius: 6px 6px 0 0; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
+.canvas-tab-new, .canvas-clear { opacity: 0; transition: opacity .12s; }
+.canvas-bar:hover .canvas-tab-new, .canvas-bar:focus-within .canvas-tab-new, .canvas-bar:hover .canvas-clear, .canvas-bar:focus-within .canvas-clear { opacity: 1; }
+@media (hover: none) { .canvas-tab-close, .canvas-tab-new, .canvas-clear { opacity: 1; } }
 /* A canvas with nothing on it, as an empty Home leaves it. */
 .visual-empty { margin: auto; padding: 24px; color: var(--muted); font-size: 13px; text-align: center; }

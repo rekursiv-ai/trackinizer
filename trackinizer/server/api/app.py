@@ -56,6 +56,7 @@ from trackinizer.server.api import (
     variables_routes,
     visuals_routes,
     workspace_routes,
+    workstream_routes,
 )
 from trackinizer.server.api.addons_routes import deployment_of
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
@@ -345,6 +346,7 @@ ROUTERS: Final = (
     timeline_routes.router,
     variables_routes.router,
     visuals_routes.router,
+    workstream_routes.router,
     workspace_routes.router,
 )
 

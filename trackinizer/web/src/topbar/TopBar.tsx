@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePalette } from "../commands/palette";
 import { keyCaps } from "../commands/registry";
 import { ComposeButton } from "../create/ComposeButton";
@@ -7,22 +7,38 @@ import { Icon, Logo } from "../ui/icons";
 import { useWorkbenchPresent, WorkbenchSlot } from "../app/workbenchSlot";
 import { AccountMenu } from "./AccountMenu";
 import { GoMenu } from "./GoMenu";
-import { StationGroups } from "./StationGroups";
+import { WorkstreamBar } from "./WorkstreamBar";
 import { useDismiss } from "./useDismiss";
+import { useHoverOpen } from "../visuals/hoverOpen";
 import "./topbar.css";
 
 /**
  * The app's one bar, along the top: the logo (home, the graph), Go (the pages),
- * Search, New, then the user's stations as tab groups, each holding its canvas
- * tabs (`stations`, with the canvas only), the Workbench's visuals while a
+ * Search, New, then the user's workstreams, the Workbench's visuals while a
  * canvas is mounted, and the account at the end.
  */
 export function TopBar({ stations }: { readonly stations: boolean }) {
   const palette = usePalette();
   const [goOpen, setGoOpen] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const header = useRef<HTMLElement>(null);
+  const peek = useHoverOpen(header);
+  const shown = pinned || peek.open;
   const closeGo = useCallback(() => setGoOpen(false), []);
+  useEffect(() => {
+    const outside = (event: PointerEvent) => {
+      if (typeof window.matchMedia === "function" && window.matchMedia("(hover: none)").matches && event.target instanceof Element
+        && !event.target.closest(".topbar, .topbar-edge")) peek.set(false);
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [peek.set]);
   return (
-    <header className="topbar" aria-label="App">
+    <>
+    <button type="button" className="topbar-edge" aria-label="Open app bar" hidden={shown}
+      onPointerMove={peek.handlers.onPointerMove} onPointerLeave={peek.handlers.onPointerLeave} onClick={() => peek.set(true)} />
+    <header ref={header} className={`topbar${shown ? " topbar-auto-open" : " topbar-auto-hidden"}`} aria-label="App"
+      onPointerMove={peek.handlers.onPointerMove} onPointerLeave={peek.handlers.onPointerLeave} onBlurCapture={peek.handlers.onBlur}>
       <a className="topbar-logo" href={formatRoute({ name: "graph" })} aria-label="Trackinizer, the graph" title="Trackinizer">
         <Logo />
       </a>
@@ -33,10 +49,13 @@ export function TopBar({ stations }: { readonly stations: boolean }) {
       </button>
       <ComposeButton onNavigate={closeGo} />
       <span className="topbar-rule" aria-hidden="true" />
-      <div className="topbar-stations">{stations && <StationGroups />}</div>
+      <div className="topbar-stations">{stations && <WorkstreamBar />}</div>
+      <button type="button" className="icon-btn topbar-pin" aria-label={pinned ? "Unpin app bar" : "Keep app bar open"}
+        title="Keep the bar open" aria-pressed={pinned} onClick={() => setPinned((value) => !value)}><span aria-hidden="true">📌</span></button>
       <WorkbenchMenu />
       <AccountMenu onNavigate={closeGo} />
     </header>
+    </>
   );
 }
 

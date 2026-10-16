@@ -74,6 +74,19 @@ async def _change_log_count(store: Store, *, subject_id: uuid.UUID) -> int:
     return cast(int, row["n"])
 
 
+@pytest_asyncio.fixture(loop_scope="session")
+async def workstream_issue(store: Store) -> uuid.UUID:
+    """Submit one owned workstream Issue before measuring its claim attempt."""
+    return await store.submit_issue(
+        SubmitIssue(
+            account="tester@example.com",
+            owner="tester@example.com",
+            title="Workstream",
+            labels=["workstream"],
+        ),
+    )
+
+
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_concurrent_claimants_never_double_claim_an_issue(
@@ -126,6 +139,18 @@ async def test_already_owned_issue_is_never_claimed(store: Store) -> None:
     await _submit_issue(store, "Pre-owned", owner="someone-else")
     claimed = await store.claim_next_issue(owner="worker-1", actor="worker-1")
     assert claimed is None
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_claim_never_returns_a_workstream_issue(
+    store: Store,
+    workstream_issue: uuid.UUID,
+) -> None:
+    """The trax next claim path excludes owner-attributed workstreams."""
+    claimed = await store.claim_next_issue(owner="worker-1", actor="worker-1")
+
+    assert claimed is None or claimed.id != workstream_issue
 
 
 @pytest.mark.db_pglite

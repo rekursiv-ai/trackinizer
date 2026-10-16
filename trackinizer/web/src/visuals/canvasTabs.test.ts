@@ -10,6 +10,11 @@ test("a station keeping no tabs has one, open", () => {
   expect(openTabOf({ tab: "gone" })).toBe("1");
 });
 
+test("an explicitly empty tab list keeps its selected tab as Tab 1", () => {
+  expect(tabsOf({ tabs: [], tab: "b" })).toEqual([{ id: "b", name: "Tab 1" }]);
+  expect(openTabOf({ tabs: [], tab: "b" })).toBe("b");
+});
+
 test("the open tab is the one the layout names, if it keeps it", () => {
   expect(openTabOf({ tabs, tab: "b" })).toBe("b");
   expect(openTabOf({ tabs, tab: "gone" })).toBe("a");

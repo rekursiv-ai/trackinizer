@@ -33,6 +33,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   lens: null,
   drafts: {},
   create_draft: null,
+  workstreams: { order: [], pinned: [], hidden: [] },
 };
 
 /** The keys this browser kept before they moved to the server, read once and then removed. */

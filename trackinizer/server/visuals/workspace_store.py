@@ -53,6 +53,7 @@ from trackinizer.server.visuals.workspaces import (
     ChatWindow,
     ChoosePartner,
     Highlight,
+    NameChat,
     Navigate,
     SetPreferences,
     ShowVisual,
@@ -61,11 +62,13 @@ from trackinizer.server.visuals.workspaces import (
     WorkspaceData,
     WorkspaceState,
     WorkspaceSummary,
+    WorkstreamSuggestion,
     apply_operation,
     initial_data,
     refuse_record,
     restore_page,
 )
+from trackinizer.server.visuals.workstreams import check_workstream
 from trackinizer.types.errors import ChatDeletedError
 from trackinizer.wire.audience import OPEN
 from trackinizer.wire.wire_science_chat import ChatSend, ChatSent
@@ -139,10 +142,6 @@ class StationChatError(Exception):
 
 class StationNameTakenError(Exception):
     """The station's owner already has a station of that name."""
-
-
-class StationHoldsChatError(Exception):
-    """The station still holds a chat, which must be deleted before the station."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -410,11 +409,12 @@ async def open_latest_workspace(
     catalog: VisualCatalogBody,
     inbound: InboundQueue,
     assistant: Assistant | None,
+    workstream_id: uuid.UUID | None = None,
 ) -> WorkspaceState:
     """Return the station the user changed last, creating the first once.
 
-    Two first requests that race create one station between them: the loser's insert
-    finds the name taken and reads the winner's.
+    Hidden stations do not reopen from the station list. If none remain visible, a
+    new station is made. Two first requests that race read the visible winner.
 
     Args:
       engine: Database connection source.
@@ -422,6 +422,7 @@ async def open_latest_workspace(
       catalog: Trusted visual definitions and the initial selection.
       inbound: In-process poller leases.
       assistant: The configured assistant, if any.
+      workstream_id: Workstream for a newly created first station, if set.
 
     Returns:
       state: The existing or newly created station, with its partner.
@@ -430,17 +431,29 @@ async def open_latest_workspace(
     async with engine.acquire() as conn:
         latest = vetted_sql(
             _SELECT_STATION,
-            "WHERE user_id = $1 ORDER BY modified_at DESC, id DESC LIMIT 1",
+            "WHERE user_id = $1 AND coalesce((station->>'hidden')::boolean, FALSE) "
+            "= FALSE ORDER BY modified_at DESC, id DESC LIMIT 1",
         )
         row = await conn.fetchrow(latest, user_id)
         if row is None:
-            _ = await _insert_station(
-                conn,
-                user_id=user_id,
-                name=next_station_name(()),
-                data=initial_data(catalog),
+            names = await conn.fetch(
+                "SELECT station->>'name' AS name FROM visual_workspaces "
+                "WHERE user_id = $1 AND station->>'name' LIKE $2",
+                user_id,
+                f"{UNNAMED_PREFIX}%",
             )
+            # Another first-open may have inserted a visible station during the
+            # names query; reuse it instead of creating a second station.
             row = await conn.fetchrow(latest, user_id)
+            if row is None:
+                _ = await _insert_station(
+                    conn,
+                    user_id=user_id,
+                    name=next_station_name(from_plain(r["name"], str) for r in names),
+                    data=initial_data(catalog),
+                    workstream_id=workstream_id,
+                )
+                row = await conn.fetchrow(latest, user_id)
         if row is None:
             raise RuntimeError("first workspace insert was not visible")
         return await attach_partner(
@@ -459,6 +472,7 @@ async def new_workspace(
     catalog: VisualCatalogBody,
     inbound: InboundQueue,
     assistant: Assistant | None,
+    workstream_id: uuid.UUID | None = None,
 ) -> WorkspaceState:
     """Create a station named with the lowest free ``unnamed-workstream#N``.
 
@@ -468,19 +482,100 @@ async def new_workspace(
       catalog: Trusted visual definitions and the initial selection.
       inbound: In-process poller leases.
       assistant: The configured assistant, if any.
+      workstream_id: Workstream assigned to the new station, if set.
 
     Returns:
       state: The new station, with its partner.
 
     """
     async with engine.acquire() as conn:
-        row = await _new_station(conn, user_id=user_id, data=initial_data(catalog))
+        row = await _new_station(
+            conn,
+            user_id=user_id,
+            data=initial_data(catalog),
+            workstream_id=workstream_id,
+        )
         if row is None:
             raise RuntimeError("no free station name")
         return await attach_partner(
             conn,
             state=state_from_row(cast("Mapping[str, object]", row)),
             owner_id=user_id,
+            inbound=inbound,
+            assistant=assistant,
+        )
+
+
+async def clear_chat_station(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    key: uuid.UUID,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> WorkspaceState | None:
+    """Make or return one cleared copy of an owned station.
+
+    The source row lock serializes clears of the same station. A retry checks its
+    owner-scoped key only after acquiring that lock, so it returns the first copy.
+
+    Args:
+      engine: Database connection source.
+      user_id: Owner of the source station.
+      workspace_id: Station whose canvas is copied.
+      key: Retry-safe idempotency key.
+      inbound: In-process poller leases.
+      assistant: The configured assistant, if any.
+
+    Returns:
+      state: The copied station, or None when the source is absent or foreign.
+
+    """
+    async with engine.acquire() as conn, tx(conn):
+        source = await conn.fetchrow(
+            vetted_sql(
+                _SELECT_STATION,
+                "WHERE id = $1 AND user_id = $2 FOR UPDATE",
+            ),
+            workspace_id,
+            user_id,
+        )
+        if source is None:
+            return None
+        existing = await conn.fetchrow(
+            vetted_sql(
+                _SELECT_STATION,
+                "WHERE user_id = $1 AND station->>'clear_key' = $2 LIMIT 1",
+            ),
+            user_id,
+            str(key),
+        )
+        if existing is not None:
+            return await _with_partner(
+                conn,
+                row=existing,
+                user_id=user_id,
+                inbound=inbound,
+                assistant=assistant,
+            )
+        source_state = state_from_row(cast("Mapping[str, object]", source))
+        row = await _new_station(
+            conn,
+            user_id=user_id,
+            data=WorkspaceData.model_validate(source["state"]),
+            page=source_state.page,
+            layout=source_state.layout,
+            campaign=source_state.campaign,
+            clear_key=key,
+            workstream_id=source_state.workstream_id,
+        )
+        if row is None:
+            raise RuntimeError("clear station insert was not visible")
+        return await _with_partner(
+            conn,
+            row=row,
+            user_id=user_id,
             inbound=inbound,
             assistant=assistant,
         )
@@ -494,6 +589,7 @@ async def workspace_for_chat(
     catalog: VisualCatalogBody,
     inbound: InboundQueue,
     assistant: Assistant | None,
+    workstream_id: uuid.UUID | None = None,
 ) -> WorkspaceState:
     """Find the user's station that holds a conversation, or make one bound to it.
 
@@ -504,6 +600,7 @@ async def workspace_for_chat(
       catalog: Trusted visual definitions and the initial selection.
       inbound: In-process poller leases.
       assistant: The configured assistant, if any.
+      workstream_id: Workstream for a newly created chat station, if set.
 
     Returns:
       state: The station that holds the conversation, with its partner.
@@ -525,6 +622,7 @@ async def workspace_for_chat(
                 user_id=user_id,
                 data=initial_data(catalog),
                 conversation_id=conversation_id,
+                workstream_id=workstream_id,
             )
         if row is None:
             # A racing request bound the conversation to a station first.
@@ -535,6 +633,19 @@ async def workspace_for_chat(
             )
         if row is None:
             raise RuntimeError("no free station name")
+        if StationData.model_validate(row["station"]).hidden:
+            row = await conn.fetchrow(
+                vetted_sql(
+                    "UPDATE visual_workspaces SET station = coalesce(station, '{}') || ",
+                    "jsonb_build_object('hidden', FALSE), "
+                    "modified_at = clock_timestamp() WHERE id = $1 AND user_id = $2",
+                    _RETURNING_STATION,
+                ),
+                row["id"],
+                user_id,
+            )
+            if row is None:
+                raise RuntimeError("chat station disappeared while it was unhidden")
         return await attach_partner(
             conn,
             state=state_from_row(cast("Mapping[str, object]", row)),
@@ -561,7 +672,7 @@ async def list_workspaces(
     """
     async with engine.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, station, created_at FROM visual_workspaces "
+            "SELECT id, station, created_at, modified_at FROM visual_workspaces "
             "WHERE user_id = $1 ORDER BY modified_at DESC, id DESC",
             user_id,
         )
@@ -570,6 +681,7 @@ async def list_workspaces(
             StationData.model_validate(row["station"]),
             workspace_id=cast("uuid.UUID", row["id"]),
             created_at=cast("datetime", row["created_at"]),
+            modified_at=cast("datetime", row["modified_at"]),
         )
         for row in rows
     ]
@@ -631,52 +743,260 @@ async def rename_workspace(
         )
 
 
-async def delete_workspace(
+async def name_unnamed_station(
+    engine: DatabaseEngine,
+    *,
+    email: str,
+    conversation_id: uuid.UUID,
+    name: str,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> WorkspaceState | None:
+    """Name the asker's station for a chat, only while its placeholder remains.
+
+    Existing names are returned unchanged. A conflicting requested name receives
+    the first available numeric suffix, so the assistant never displaces a station.
+
+    Args:
+      engine: Database connection source.
+      email: The station owner, as resolved for the assistant.
+      conversation_id: The chat held by the station.
+      name: Suggested station name.
+      inbound: In-process poller leases.
+      assistant: The configured assistant, if any.
+
+    Returns:
+      state: The named or already-named station, or None when the asker has no
+        station for this chat.
+
+    """
+    checked = NameChat(name=name)
+    async with engine.acquire() as conn, tx(conn):
+        user = await conn.fetchrow(
+            "SELECT id FROM users WHERE email = $1 FOR UPDATE",
+            email.lower(),
+        )
+        if user is None:
+            return None
+        user_id = from_plain(user["id"], uuid.UUID)
+        row = await conn.fetchrow(
+            "SELECT vw.id, vw.revision, vw.state, vw.station "
+            "FROM visual_workspaces vw WHERE vw.user_id = $1 "
+            "AND vw.station->>'conversation_id' = $2 FOR UPDATE",
+            user_id,
+            str(conversation_id),
+        )
+        if row is None:
+            return None
+        station = StationData.model_validate(row["station"])
+        if _UNNAMED.fullmatch(station.name) is None:
+            return await _with_partner(
+                conn,
+                row=row,
+                user_id=user_id,
+                inbound=inbound,
+                assistant=assistant,
+            )
+        rows = await conn.fetch(
+            "SELECT station->>'name' AS name FROM visual_workspaces "
+            "WHERE user_id = $1 AND id <> $2",
+            user_id,
+            from_plain(row["id"], uuid.UUID),
+        )
+        unique_name = _unique_station_name(
+            checked.name,
+            names=[from_plain(item["name"], str) for item in rows],
+        )
+        updated = await conn.fetchrow(
+            vetted_sql(
+                "UPDATE visual_workspaces SET station = coalesce(station, '{}') || ",
+                "jsonb_build_object('name', $3::text), modified_at = clock_timestamp() ",
+                "WHERE id = $1 AND user_id = $2 AND station->>'name' ~ $4",
+                _RETURNING_STATION,
+            ),
+            from_plain(row["id"], uuid.UUID),
+            user_id,
+            unique_name,
+            _UNNAMED.pattern,
+        )
+        return await _with_partner(
+            conn,
+            row=updated,
+            user_id=user_id,
+            inbound=inbound,
+            assistant=assistant,
+        )
+
+
+async def suggest_workstream_for_chat(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    email: str,
+    conversation_id: uuid.UUID,
+    suggestion: WorkstreamSuggestion,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> WorkspaceState | None:
+    """Store a workstream suggestion on the asker's station for a chat.
+
+    This writes station JSON only; it never creates a workstream Issue.
+
+    Args:
+      engine: Database connection source.
+      user_id: The asker whose station holds the chat.
+      email: The asker's Issue owner.
+      conversation_id: The chat held by the station.
+      suggestion: Suggested title and optional owned workstream.
+      inbound: In-process poller leases.
+      assistant: The configured assistant, if any.
+
+    Returns:
+      state: The updated station, or None when the station or target is unavailable.
+
+    """
+    if suggestion.workstream_id is not None and not await check_workstream(
+        engine,
+        email=email,
+        workstream_id=suggestion.workstream_id,
+    ):
+        return None
+    async with engine.acquire() as conn, tx(conn):
+        row = await conn.fetchrow(
+            vetted_sql(
+                "SELECT ",
+                _STATION,
+                " FROM visual_workspaces WHERE user_id = $1 "
+                "AND station->>'conversation_id' = $2 FOR UPDATE",
+            ),
+            user_id,
+            str(conversation_id),
+        )
+        if row is None:
+            return None
+        updated = await conn.fetchrow(
+            vetted_sql(
+                "UPDATE visual_workspaces SET station = coalesce(station, '{}') || ",
+                "jsonb_build_object('suggestion', $3::jsonb), ",
+                "modified_at = clock_timestamp() WHERE id = $1 AND user_id = $2",
+                _RETURNING_STATION,
+            ),
+            from_plain(row["id"], uuid.UUID),
+            user_id,
+            suggestion.model_dump(mode="json"),
+        )
+        return await _with_partner(
+            conn,
+            row=updated,
+            user_id=user_id,
+            inbound=inbound,
+            assistant=assistant,
+        )
+
+
+async def set_station_flags(
     engine: DatabaseEngine,
     *,
     user_id: uuid.UUID,
     workspace_id: uuid.UUID,
-) -> bool:
-    """Delete one of the owner's stations, once its chat is gone.
+    hidden: bool | None = None,
+    pinned: bool | None = None,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> WorkspaceState | None:
+    """Set supplied station flags and return the updated state.
 
-    The browser calls this right after it deletes a station's chat, to close the
-    station's tab. A station that still holds a chat is refused, so a tab can never
-    drop a live chat: delete the chat first, which unbinds it. Only the owner reaches
-    it (the ``user_id`` guard), so another's station is simply not found. The row and
-    its operation keys go (``ON DELETE CASCADE``); nothing is published, and a tab
-    still on the station reads 404.
+    Only supplied flags change. The station row lock and write share one transaction
+    so a concurrent canvas operation cannot erase the flags.
 
     Args:
       engine: Database connection source.
       user_id: Owner of the station.
-      workspace_id: The station to delete.
+      workspace_id: The station to update.
+      hidden: Whether to hide the station, or None to leave it unchanged.
+      pinned: Whether to pin the station, or None to leave it unchanged.
+      inbound: In-process poller leases.
+      assistant: The configured assistant, if any.
 
     Returns:
-      found: Whether the owner had such a station to delete.
-
-    Raises:
-      StationHoldsChatError: The station still holds a chat.
+      state: The updated station with its partner, or None when not owned.
 
     """
+    if hidden is None and pinned is None:
+        raise ValueError("At least one station flag is required.")
+    changes = {
+        name: value
+        for name, value in (("hidden", hidden), ("pinned", pinned))
+        if value is not None
+    }
     async with engine.acquire() as conn, tx(conn):
         row = await conn.fetchrow(
-            "SELECT station->>'conversation_id' AS conversation_id "
-            "FROM visual_workspaces WHERE id = $1 AND user_id = $2 FOR UPDATE",
+            vetted_sql(
+                "UPDATE visual_workspaces SET station = coalesce(station, '{}') || ",
+                "$3::jsonb, modified_at = clock_timestamp() ",
+                "WHERE id = $1 AND user_id = $2",
+                _RETURNING_STATION,
+            ),
             workspace_id,
             user_id,
+            changes,
         )
-        if row is None:
-            return False
-        if row["conversation_id"] is not None:
-            raise StationHoldsChatError(
-                "Delete this station's chat before the station.",
-            )
-        await conn.execute(
-            "DELETE FROM visual_workspaces WHERE id = $1 AND user_id = $2",
+        return await _with_partner(
+            conn,
+            row=row,
+            user_id=user_id,
+            inbound=inbound,
+            assistant=assistant,
+        )
+
+
+async def set_station_workstream(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    email: str,
+    workspace_id: uuid.UUID,
+    workstream_id: uuid.UUID,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> WorkspaceState | None:
+    """Move an owned station after checking its destination workstream.
+
+    Args:
+      engine: Database connection source.
+      user_id: Station owner.
+      email: The owner's Issue identity.
+      workspace_id: Station to move.
+      workstream_id: Owned workstream Issue to attach.
+      inbound: In-process poller leases.
+      assistant: The configured assistant, if any.
+
+    Returns:
+      state: The updated station, or None when either id is unavailable.
+
+    """
+    if not await check_workstream(engine, email=email, workstream_id=workstream_id):
+        return None
+    async with engine.acquire() as conn, tx(conn):
+        row = await conn.fetchrow(
+            vetted_sql(
+                "UPDATE visual_workspaces SET station = ",
+                "(coalesce(station, '{}'::jsonb) - 'suggestion') || ",
+                "jsonb_build_object('workstream_id', $3::text), ",
+                "modified_at = clock_timestamp() WHERE id = $1 AND user_id = $2",
+                _RETURNING_STATION,
+            ),
             workspace_id,
             user_id,
+            str(workstream_id),
         )
-        return True
+        return await _with_partner(
+            conn,
+            row=row,
+            user_id=user_id,
+            inbound=inbound,
+            assistant=assistant,
+        )
 
 
 async def set_workspace_page(
@@ -998,6 +1318,10 @@ async def apply_workspace_operation(
                         "name": current.name,
                         "conversation_id": current.conversation_id,
                         "page": current.page,
+                        "layout": current.layout,
+                        "campaign": current.campaign,
+                        "hidden": current.hidden,
+                        "pinned": current.pinned,
                     },
                 ).model_copy(update={"partner_choice": current.partner_choice})
             )
@@ -1115,6 +1439,10 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
         page=station.page,
         layout=station.layout,
         campaign=station.campaign,
+        hidden=station.hidden,
+        pinned=station.pinned,
+        workstream_id=station.workstream_id,
+        suggestion=station.suggestion,
         visuals=data.visuals,
         focused_instance=data.focused_instance,
         agent_instructions=data.agent_instructions,
@@ -1131,9 +1459,21 @@ async def _insert_station(
     data: WorkspaceData,
     conversation_id: uuid.UUID | None = None,
     page: str | None = None,
+    layout: StationLayout | None = None,
+    campaign: CampaignSetup | None = None,
+    clear_key: uuid.UUID | None = None,
+    workstream_id: uuid.UUID | None = None,
 ) -> Record | None:
     """Insert a station, or return None when its name or chat is taken."""
-    station = StationData(name=name, conversation_id=conversation_id, page=page)
+    station = StationData(
+        name=name,
+        conversation_id=conversation_id,
+        page=page,
+        layout=layout,
+        campaign=campaign,
+        workstream_id=workstream_id,
+        clear_key=clear_key,
+    )
     return await conn.fetchrow(
         vetted_sql(
             "INSERT INTO visual_workspaces (id, user_id, station, state) "
@@ -1157,6 +1497,10 @@ async def _new_station(
     data: WorkspaceData,
     conversation_id: uuid.UUID | None = None,
     page: str | None = None,
+    layout: StationLayout | None = None,
+    campaign: CampaignSetup | None = None,
+    clear_key: uuid.UUID | None = None,
+    workstream_id: uuid.UUID | None = None,
 ) -> Record | None:
     """Insert a station under the lowest free unnamed name, or None if its chat is taken."""
     for _ in range(_NAME_ATTEMPTS):
@@ -1173,6 +1517,10 @@ async def _new_station(
             data=data,
             conversation_id=conversation_id,
             page=page,
+            layout=layout,
+            campaign=campaign,
+            clear_key=clear_key,
+            workstream_id=workstream_id,
         )
         if row is not None:
             return row
@@ -1245,12 +1593,16 @@ async def _fork_station(
         conversation_id=conversation_id,
     )
     if made is None:
+        source_state = state_from_row(cast("Mapping[str, object]", source))
         row = await _new_station(
             conn,
             user_id=user_id,
             data=WorkspaceData.model_validate(source["state"]),
             conversation_id=conversation_id,
-            page=state_from_row(cast("Mapping[str, object]", source)).page,
+            page=source_state.page,
+            layout=source_state.layout,
+            campaign=source_state.campaign,
+            workstream_id=source_state.workstream_id,
         )
         made = (
             await _station_of_chat(
@@ -1508,6 +1860,12 @@ async def _write_data(
         name=current.name,
         conversation_id=current.conversation_id,
         page=current.page,
+        layout=current.layout,
+        campaign=current.campaign,
+        hidden=current.hidden,
+        pinned=current.pinned,
+        workstream_id=current.workstream_id,
+        suggestion=current.suggestion,
         visuals=data.visuals,
         focused_instance=data.focused_instance,
         agent_instructions=data.agent_instructions,
@@ -1522,3 +1880,17 @@ async def _write_data(
         data.model_dump(mode="json"),
     )
     return updated
+
+
+def _unique_station_name(name: str, *, names: Iterable[str]) -> str:
+    """Append the first free numeric suffix when ``name`` is already used."""
+    taken = set(names)
+    if name not in taken:
+        return name
+    suffix = 2
+    candidate = name
+    while candidate in taken:
+        suffix_text = f" ({suffix})"
+        candidate = f"{name[: 120 - len(suffix_text)].rstrip()}{suffix_text}"
+        suffix += 1
+    return candidate

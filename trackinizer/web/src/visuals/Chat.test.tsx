@@ -3,7 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CHAT_DELETED, CHAT_FORK_CLOSED, CHAT_FORK_WIDER, CHAT_NOT_SHARED, CHAT_STAFF_ONLY, type ChatHead, type ChatPartial, type ChatPartialState, deleteChat, getChatHead,
   readChatPartial, sendChatLine, shareChat, unshareChat } from "../api/chats";
-import { deleteStation, stationForChat } from "../api/stations";
+import { clearChat, hideStation as restoreStation, listStations, pinStation, renameStation, stationForChat } from "../api/stations";
+import { createStation as createStationInWorkstream, createWorkstream, listWorkstreams, moveStation } from "../api/workstreams";
 import { ApiError, type CallOptions } from "../api/client";
 import { findRef, getDetail } from "../api/detail";
 import type { Profile } from "../api/me";
@@ -37,7 +38,14 @@ vi.mock("../api/chats", async (original) => ({
   unshareChat: vi.fn(),
   deleteChat: vi.fn(),
 }));
-vi.mock("../api/stations", () => ({ stationForChat: vi.fn(), deleteStation: vi.fn() }));
+vi.mock("../api/stations", async (original) => ({
+  ...(await original<typeof import("../api/stations")>()),
+  clearChat: vi.fn(), stationForChat: vi.fn(), hideStation: vi.fn(), createStation: vi.fn(), listStations: vi.fn(),
+  pinStation: vi.fn(), renameStation: vi.fn(),
+}));
+vi.mock("../api/workstreams", () => ({
+  createStation: vi.fn(), createWorkstream: vi.fn(), listWorkstreams: vi.fn(), moveStation: vi.fn(), updateWorkstream: vi.fn(),
+}));
 vi.mock("../api/workspaces", () => ({ getWorkspace: vi.fn() }));
 vi.mock("../api/sessions", async (original) => ({
   ...(await original<typeof import("../api/sessions")>()),
@@ -65,6 +73,8 @@ const sessions = new Map<string, SessionRecord[]>();
 let registered: LiveQuery[] = [];
 
 beforeEach(() => {
+  vi.mocked(listStations).mockResolvedValue([]);
+  vi.mocked(listWorkstreams).mockResolvedValue([]);
   vi.mocked(getWorkspace).mockResolvedValue({ ...workspace, id: "w-fork", name: "unnamed-workstream#2", conversation_id: "f1" });
   OPENING.everyMs = 5;
   OPENING.giveUpMs = 150;
@@ -117,7 +127,7 @@ afterEach(async () => {
   stopTrail = () => {};
   cleanup();
   vi.restoreAllMocks();
-  for (const mock of [getChatHead, readChatPartial, sendChatLine, shareChat, unshareChat, deleteChat, stationForChat, deleteStation, getWorkspace, listSessionParts, readSessionRecords, setSessionAudience, getDetail, findRef]) {
+  for (const mock of [getChatHead, readChatPartial, sendChatLine, shareChat, unshareChat, deleteChat, stationForChat, restoreStation, pinStation, listStations, listWorkstreams, moveStation, createWorkstream, createStationInWorkstream, clearChat, getWorkspace, listSessionParts, readSessionRecords, setSessionAudience, getDetail, findRef]) {
     vi.mocked(mock).mockReset();
   }
   sessions.clear();
@@ -159,6 +169,8 @@ function shell(
   const feed = new ChatFeed();
   const highlights = new HighlightStore();
   const client = new QueryClient({ defaultOptions: { queries: options.queries ?? { retry: false } } });
+  client.setQueryData(["stations"], []);
+  client.setQueryData(["workstreams"], []);
   const live = { register: (query: LiveQuery) => {
     registered.push(query);
     return { push: () => {}, dispose: () => { registered = registered.filter((each) => each !== query); } };
@@ -197,6 +209,7 @@ const open = (id: string) => { opened = id; };
 /** The words of each line, without its "Fork from here" button. */
 const articles = () => screen.getAllByRole("article").map((line) => [...line.children].filter((child) => child.tagName !== "BUTTON")
   .map((child) => child.textContent).join(""));
+const openMore = () => fireEvent.click(screen.getByRole("button", { name: "More chat actions" }));
 
 test("scout is the partner with no pairing, and Chat is ready to send", () => {
   shell();
@@ -235,12 +248,129 @@ test("a Chat open over the page by its strip has a Pin that stands it beside the
   expect(screen.queryByRole("button", { name: "Pin Chat beside the page" })).toBeNull();
 });
 
-test("Chat's header names the station, and has neither History nor Clear chat", () => {
+test("Chat's header names the station and offers Clear chat without History", () => {
   shell();
   const partner = screen.getByRole("group", { name: "Chat partner" });
-  expect(within(partner).getByText("unnamed-workstream#1")).toBeTruthy();
+  expect(within(partner).getByRole("button", { name: "Scratch chat" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "History" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Clear chat" })).toBeNull();
+  openMore();
+  expect(screen.getByRole("button", { name: "Clear chat" }).getAttribute("title")).toBe("New chat, same canvas");
+});
+
+test("renaming a chat to a name already in use keeps the field open and explains the conflict", async () => {
+  const named = { ...workspace, name: "Original name" };
+  vi.mocked(renameStation).mockRejectedValue(new ApiError(409, "Conflict"));
+  shell(named);
+  fireEvent.click(screen.getByRole("button", { name: "Original name" }));
+  const field = screen.getByRole("textbox", { name: "Chat name" });
+  fireEvent.change(field, { target: { value: "Existing name" } });
+  await act(async () => fireEvent.keyDown(field, { key: "Enter" }));
+  expect(screen.getByText("You already have a chat with that name")).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Chat name" })).toHaveProperty("value", "Existing name");
+  expect(renameStation).toHaveBeenCalledWith(WORKSPACE_ID, "Existing name");
+});
+
+test("clicking outside the chat name field saves the name", async () => {
+  const named = { ...workspace, name: "Original name" };
+  vi.mocked(renameStation).mockResolvedValue({ ...named, name: "Kept name" });
+  shell(named);
+  fireEvent.click(screen.getByRole("button", { name: "Original name" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Chat name" }), { target: { value: "Kept name" } });
+  await act(async () => fireEvent.pointerDown(document.body));
+  expect(renameStation).toHaveBeenCalledWith(WORKSPACE_ID, "Kept name");
+  expect(screen.getByRole("button", { name: "Kept name" })).toBeTruthy();
+});
+
+test("global chat search includes hidden chats and restores one when opened", async () => {
+  const hidden = { id: "w-hidden", name: "Secret notes", conversation_id: null, page: null, created_at: "2026-10-02T00:00:00Z",
+    modified_at: "2026-10-02T00:00:00Z", hidden: true, pinned: false, workstream_id: null };
+  vi.mocked(restoreStation).mockResolvedValue({ ...workspace, ...hidden, id: hidden.id, hidden: false });
+  const { client } = shell();
+  client.setQueryData(["stations"], [hidden]);
+  fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
+  const search = screen.getByRole("textbox", { name: "Search chats" });
+  fireEvent.change(search, { target: { value: "Secret" } });
+  expect(screen.getByRole("button", { name: "Secret notes · hidden" })).toBeTruthy();
+  fireEvent.keyDown(search, { key: "Enter" });
+  await waitFor(() => expect(currentStation().id).toBe("w-hidden"));
+  expect(restoreStation).toHaveBeenCalledWith("w-hidden", false);
+});
+
+test("the workstream chip moves this chat to the selected workstream", async () => {
+  const destination = { id: "workstream-2", title: "Training", hidden: false, pinned: false, scratch: false, seq: 2 };
+  vi.mocked(moveStation).mockResolvedValue({ ...workspace, workstream_id: destination.id });
+  const { client } = shell();
+  client.setQueryData(["workstreams"], [{ id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 }, destination]);
+  fireEvent.click(screen.getByRole("button", { name: "Workstream: Scratch" }));
+  fireEvent.click(screen.getByRole("button", { name: "Training" }));
+  await waitFor(() => expect(moveStation).toHaveBeenCalledWith(WORKSPACE_ID, destination.id));
+});
+
+test("the chat menu lists pinned then recent visible chats and creates in the current workstream", async () => {
+  const row = (id: string, name: string, modified_at: string, extra: { hidden?: boolean; pinned?: boolean } = {}) => ({
+    id, name, conversation_id: null, page: null, created_at: modified_at, modified_at, hidden: extra.hidden ?? false,
+    pinned: extra.pinned ?? false, workstream_id: null,
+  });
+  const scratch = { id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 };
+  const next = { ...workspace, id: "new-chat", name: "unnamed-workstream#2" };
+  vi.mocked(createStationInWorkstream).mockResolvedValue(next);
+  const { client } = shell();
+  client.setQueryData(["stations"], [
+    row("current", "Current", "2026-10-01T00:00:00Z"), row("pinned", "Pinned", "2026-10-02T00:00:00Z", { pinned: true }),
+    row("recent", "Recent", "2026-10-03T00:00:00Z"), row("hidden", "Hidden", "2026-10-04T00:00:00Z", { hidden: true }),
+  ]);
+  client.setQueryData(["workstreams"], [scratch]);
+  fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
+  const chats = within(screen.getByRole("list", { name: "Chats in this workstream" }));
+  expect(chats.getAllByRole("button").filter((button) => button.classList.contains("station-option"))
+    .map((button) => button.textContent)).toEqual(["Pinned", "Recent", "Current"]);
+  expect(chats.getByRole("button", { name: "Pin Recent" })).toBeTruthy();
+  expect(chats.getByRole("button", { name: "Hide Recent" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "+ New chat" }));
+  await waitFor(() => expect(currentStation().id).toBe("new-chat"));
+  expect(createStationInWorkstream).toHaveBeenCalledWith("scratch");
+});
+
+test("the workstream picker creates a missing workstream and moves the chat", async () => {
+  const scratch = { id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 };
+  const created = { id: "new-workstream", title: "New work", hidden: false, pinned: false, scratch: false, seq: 2 };
+  vi.mocked(createWorkstream).mockResolvedValue(created);
+  vi.mocked(moveStation).mockResolvedValue({ ...workspace, workstream_id: created.id });
+  const { client } = shell();
+  client.setQueryData(["workstreams"], [scratch]);
+  fireEvent.click(screen.getByRole("button", { name: "Workstream: Scratch" }));
+  const picker = screen.getByRole("textbox", { name: "Workstream" });
+  fireEvent.change(picker, { target: { value: "New work" } });
+  fireEvent.keyDown(picker, { key: "Enter" });
+  await waitFor(() => expect(moveStation).toHaveBeenCalledWith(WORKSPACE_ID, created.id));
+  expect(createWorkstream).toHaveBeenCalledWith("New work");
+});
+
+test("the station pin control updates the current station", async () => {
+  vi.mocked(pinStation).mockResolvedValue({ ...workspace, pinned: true });
+  shell();
+  fireEvent.click(screen.getByRole("button", { name: "Pin chat" }));
+  await waitFor(() => expect(pinStation).toHaveBeenCalledWith(WORKSPACE_ID, true));
+});
+
+test("clicking a workstream suggestion moves the chat there", async () => {
+  const target = { id: "workstream-craftax", title: "Craftax", hidden: false, pinned: false, scratch: false, seq: 2 };
+  const suggested = { ...workspace, suggestion: { title: target.title, workstream_id: target.id } };
+  vi.mocked(listWorkstreams).mockResolvedValue([
+    { id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 }, target,
+  ]);
+  vi.mocked(moveStation).mockResolvedValue({ ...workspace, workstream_id: target.id });
+  const { view } = shell(suggested);
+  fireEvent.click(screen.getByRole("button", { name: "Move to suggested workstream Craftax" }));
+  await waitFor(() => expect(moveStation).toHaveBeenCalledWith(WORKSPACE_ID, target.id));
+  view.unmount();
+});
+
+test("a workstream suggestion can be dismissed for this view", () => {
+  const suggested = { ...workspace, suggestion: { title: "Craftax", workstream_id: "workstream-craftax" } };
+  shell(suggested);
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss workstream suggestion" }));
+  expect(screen.queryByRole("button", { name: "Move to suggested workstream Craftax" })).toBeNull();
 });
 
 test("Chat shows the conversation its station holds, and none for a station without a chat", async () => {
@@ -332,6 +462,7 @@ test("Share lists who has the chat, adds an address, removes one, and reads the 
   vi.mocked(unshareChat).mockImplementation(async (_, who) => { shared = shared.filter((each) => each !== who); });
   shell();
   await screen.findByText("a2");
+  openMore();
   fireEvent.click(await screen.findByRole("button", { name: "Share" }));
   const panel = screen.getByRole("dialog", { name: "Share chat" });
   expect(within(panel).getByText(GRACE)).toBeTruthy();
@@ -350,17 +481,18 @@ test("a header pop-over closes on a press anywhere else, so Share and Delete nev
   vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_share: true, may_delete: true }));
   shell();
   await screen.findByText("a2");
+  openMore();
   fireEvent.click(await screen.findByRole("button", { name: "Share" }));
   // A press inside it keeps it.
   fireEvent.pointerDown(screen.getByRole("textbox", { name: "Email to share with" }));
   expect(screen.getByRole("dialog", { name: "Share chat" })).toBeTruthy();
-  const remove = screen.getByRole("button", { name: "Delete" });
+  const remove = screen.getByRole("button", { name: "Delete chat forever" });
   fireEvent.pointerDown(remove);
   fireEvent.click(remove);
   expect(screen.queryByRole("dialog", { name: "Share chat" })).toBeNull();
-  expect(screen.getByRole("alertdialog", { name: "Delete this chat" })).toBeTruthy();
+  expect(screen.getByRole("alertdialog", { name: "Delete chat forever" })).toBeTruthy();
   fireEvent.pointerDown(document.body);
-  expect(screen.queryByRole("alertdialog", { name: "Delete this chat" })).toBeNull();
+  expect(screen.queryByRole("alertdialog", { name: "Delete chat forever" })).toBeNull();
 });
 
 test("a refused share says why in one toast line and keeps the address in the field", async () => {
@@ -370,6 +502,7 @@ test("a refused share says why in one toast line and keeps the address in the fi
   vi.mocked(shareChat).mockRejectedValue(new ApiError(403, "Only the starter shares a chat"));
   shell();
   await screen.findByText("a2");
+  openMore();
   fireEvent.click(await screen.findByRole("button", { name: "Share" }));
   const field = screen.getByRole("textbox", { name: "Email to share with" });
   fireEvent.change(field, { target: { value: "linus@example.com" } });
@@ -378,32 +511,62 @@ test("a refused share says why in one toast line and keeps the address in the fi
   expect((field as HTMLInputElement).value).toBe("linus@example.com");
 });
 
-test("Delete asks first, Cancel deletes nothing, and Delete chat leaves the station with an empty chat", async () => {
+test("Hide from bar hides the station immediately and leaves its chat alone", async () => {
+  vi.mocked(restoreStation).mockResolvedValue({ ...workspace, hidden: true });
+  vi.mocked(getWorkspace).mockResolvedValue({ ...workspace, id: "w-beta", name: "beta" });
+  const { client } = shell();
+  client.setQueryData(["stations"], [
+    { id: WORKSPACE_ID, name: "alpha", conversation_id: null, created_at: "2026-10-01T00:00:00Z" },
+    { id: "w-beta", name: "beta", conversation_id: "c2", created_at: "2026-10-02T00:00:00Z" },
+  ]);
+  openMore();
+  fireEvent.click(await screen.findByRole("button", { name: "Hide from bar" }));
+  await waitFor(() => expect(currentStation().id).toBe("w-beta"));
+  expect(restoreStation).toHaveBeenCalledWith(WORKSPACE_ID);
+  expect(deleteChat).not.toHaveBeenCalled();
+});
+
+test("Clear chat opens the server's new workspace with a fresh idempotency key", async () => {
+  const next = { ...workspace, id: "w-cleared", name: "unnamed-workstream#2", conversation_id: null };
+  vi.mocked(clearChat).mockResolvedValue(next);
+  const { client } = shell();
+  openMore();
+  fireEvent.click(await screen.findByRole("button", { name: "Clear chat" }));
+  await waitFor(() => expect(currentStation().id).toBe("w-cleared"));
+  expect(clearChat).toHaveBeenCalledWith(WORKSPACE_ID, expect.any(String));
+  expect(client.getQueryData<WorkspaceState>(["workspace", "w-cleared"])).toEqual(next);
+});
+
+test("Delete chat forever asks first, Cancel does nothing, then deletes only the chat", async () => {
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_delete: true }));
   vi.mocked(deleteChat).mockResolvedValue();
   const { client } = shell();
   await screen.findByText("a2");
-  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  openMore();
+  fireEvent.click(await screen.findByRole("button", { name: "Delete chat forever" }));
+  expect(screen.getByRole("alertdialog", { name: "Delete chat forever" })).toBeTruthy();
   expect(screen.getByText("Delete this chat? Its forks keep their copies.")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.queryByText(/Its forks keep their copies/)).toBeNull();
   expect(deleteChat).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  vi.mocked(restoreStation).mockResolvedValue({ ...workspace, conversation_id: null, hidden: true });
+  fireEvent.click(screen.getByRole("button", { name: "Delete chat forever" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
   await waitFor(() => expect(screen.queryByText("a2")).toBeNull());
   expect(deleteChat).toHaveBeenCalledWith("c1");
+  expect(restoreStation).toHaveBeenCalledWith(WORKSPACE_ID);
   expect(client.getQueryData<WorkspaceState>(["workspace", WORKSPACE_ID])?.conversation_id).toBeNull();
-  expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Delete chat forever" })).toBeNull();
 });
 
-test("Delete chat deletes the emptied station and opens the station beside it", async () => {
+test("Delete chat forever hides the emptied station and opens the station beside it", async () => {
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_delete: true }));
   vi.mocked(deleteChat).mockResolvedValue();
-  vi.mocked(deleteStation).mockResolvedValue();
+  vi.mocked(restoreStation).mockResolvedValue({ ...workspace, conversation_id: null, hidden: true });
   vi.mocked(getWorkspace).mockResolvedValue({ ...workspace, id: "w-beta", name: "beta", conversation_id: "c2" });
   const { client } = shell();
   client.setQueryData(["stations"], [
@@ -411,12 +574,14 @@ test("Delete chat deletes the emptied station and opens the station beside it", 
     { id: "w-beta", name: "beta", conversation_id: "c2", page: null, created_at: "2026-10-02T10:00:00Z" },
   ]);
   await screen.findByText("a2");
-  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  openMore();
+  fireEvent.click(await screen.findByRole("button", { name: "Delete chat forever" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
   await waitFor(() => expect(currentStation().id).toBe("w-beta"));
   expect(deleteChat).toHaveBeenCalledWith("c1");
-  expect(deleteStation).toHaveBeenCalledWith(WORKSPACE_ID);
-  expect(client.getQueryData<{ id: string }[]>(["stations"])?.map((each) => each.id)).toEqual(["w-beta"]);
+  expect(restoreStation).toHaveBeenCalledWith(WORKSPACE_ID);
+  expect(client.getQueryData<{ id: string; hidden?: boolean; conversation_id: string | null }[]>(["stations"])
+    ?.find((each) => each.id === WORKSPACE_ID)).toMatchObject({ hidden: true, conversation_id: null });
 });
 
 test("a share refused with chat_not_starter is said in words", async () => {
@@ -426,6 +591,7 @@ test("a share refused with chat_not_starter is said in words", async () => {
   vi.mocked(shareChat).mockRejectedValue(new ApiError(403, "403 Forbidden", "chat_not_starter"));
   shell();
   await screen.findByText("a2");
+  openMore();
   fireEvent.click(await screen.findByRole("button", { name: "Share" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Email to share with" }), { target: { value: "linus@example.com" } });
   fireEvent.click(screen.getByRole("button", { name: "Add" }));
@@ -439,6 +605,7 @@ test("a share of a staff-only chat with someone who holds no staff is refused in
   vi.mocked(shareChat).mockRejectedValue(new ApiError(409, "409 Conflict", CHAT_STAFF_ONLY));
   shell();
   await screen.findByText("a2");
+  openMore();
   fireEvent.click(await screen.findByRole("button", { name: "Share" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Email to share with" }), { target: { value: "linus@example.com" } });
   fireEvent.click(screen.getByRole("button", { name: "Add" }));
@@ -453,7 +620,8 @@ test("a delete refused with chat_has_other_posters is said in words, and an unkn
     .mockRejectedValueOnce(new ApiError(403, "Locked by an admin", "locked"));
   shell();
   await screen.findByText("a2");
-  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  openMore();
+  fireEvent.click(await screen.findByRole("button", { name: "Delete chat forever" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
   expect(await screen.findByText("Others have posted in this chat, so only an admin can delete it.")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
@@ -479,7 +647,8 @@ test("a refused delete says why in a toast and keeps the chat", async () => {
   vi.mocked(deleteChat).mockRejectedValue(new ApiError(403, "Someone else has posted in this chat"));
   shell();
   await screen.findByText("a2");
-  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  openMore();
+  fireEvent.click(await screen.findByRole("button", { name: "Delete chat forever" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
   expect(await screen.findByText("Someone else has posted in this chat")).toBeTruthy();
   expect(screen.getByText("a2")).toBeTruthy();
@@ -1205,6 +1374,7 @@ test("the starter's switch says Public or Private and a click flips it; nobody e
   const { view } = shell();
   await screen.findByText("a2");
   const controls = () => within(screen.getByRole("toolbar", { name: "Chat controls" }));
+  openMore();
   fireEvent.click(controls().getByRole("button", { name: "Public chat: make it private" }));
   expect((await controls().findByRole("button", { name: "Private chat: make it public" })).textContent).toBe("Private");
   // The switch says it for the starter: no badge besides.
@@ -1228,6 +1398,7 @@ test("a refused flip says why in a toast, in words for the server's code, and le
     .mockRejectedValueOnce(new ApiError(409, "409 Conflict", SESSION_STAFF));
   shell();
   await screen.findByText("a2");
+  openMore();
   fireEvent.click(screen.getByRole("button", { name: "Public chat: make it private" }));
   expect(await screen.findByText("Only the person who started this chat can make it public or private.")).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Public chat: make it private" }));

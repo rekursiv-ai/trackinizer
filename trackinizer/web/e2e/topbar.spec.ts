@@ -16,6 +16,8 @@ async function open(page: Page, width = 1280): Promise<{ bar: Locator; chat: Loc
   await page.setViewportSize({ width, height: 800 });
   await page.goto("/app/#/list/Issue");
   await expect(page.locator(".chat-column").getByRole("region", { name: "Chat" })).toBeVisible();
+  await page.mouse.move(640, 1);
+  await expect(page.getByRole("banner", { name: "App" })).toHaveClass(/topbar-auto-open/);
   return { bar: page.getByRole("banner", { name: "App" }), chat: page.locator(".chat-column"), stage: page.locator(".chat-stage") };
 }
 
@@ -23,11 +25,6 @@ async function box(locator: Locator) {
   const found = await locator.boundingBox();
   expect(found).not.toBeNull();
   return found!;
-}
-
-/** The name of the station on show, as its group's title holds it. */
-async function current(bar: Locator): Promise<string> {
-  return (await bar.locator(".station-group.is-current").getAttribute("aria-label"))!;
 }
 
 test("the bar spans the top over Chat, at the left, and the canvas; nothing is left of Chat", async ({ page }) => {
@@ -39,7 +36,8 @@ test("the bar spans the top over Chat, at the left, and the canvas; nothing is l
   expect(column.x + column.width).toBeLessThanOrEqual(canvas.x + 1);
   expect(column.x).toBeLessThan(16);
   await expect(page.getByRole("navigation", { name: "Sidebar" })).toHaveCount(0);
-  await expect(page.locator(".canvas-tabs")).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Workstreams" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Canvas tabs" })).toBeVisible();
 });
 
 test("the account is its avatar at rest; the pointer on it slides out the email and role, and a click opens its menu", async ({ page }) => {
@@ -60,48 +58,6 @@ test("the account is its avatar at rest; the pointer on it slides out the email 
   await page.keyboard.press("Escape");
   await expect(menu).toHaveCount(0);
   await expect(account).toBeFocused();
-});
-
-test("a station's tabs slide out gradually while the pointer rests on its group, and fold once it leaves the bar", async ({ page }) => {
-  const { bar } = await open(page);
-  const group = bar.locator(".station-group.is-current");
-  const tabs = group.locator(".station-group-tabs");
-  await page.mouse.move(640, 500);
-  await expect.poll(async () => (await box(tabs)).width).toBe(0);
-  await group.locator(".station-group-title").hover();
-  // The width springs open over a few frames, not at once.
-  const early = (await box(tabs)).width;
-  await expect.poll(async () => (await box(tabs)).width).toBeGreaterThan(early);
-  const full = await tabs.evaluate((element) => element.firstElementChild!.scrollWidth);
-  await expect.poll(async () => Math.round((await box(tabs)).width)).toBe(full);
-  await page.mouse.move(640, 500);
-  await expect.poll(async () => (await box(tabs)).width).toBe(0);
-});
-
-test("a tab of another station opens that station with its own tabs, and the canvas row names it", async ({ page, request }) => {
-  const { bar } = await open(page);
-  const before = await current(bar);
-  // Another station, made with two tabs: the second open is what the list names.
-  const made = await (await request.post("/api/workspaces/new")).json() as { id: string; name: string };
-  await request.put(`/api/workspaces/${made.id}/layout`, { data: { tabs: [{ id: "a", name: "Graph", page: "#/graph" }, { id: "b", name: "Issues", page: "#/list/Issue" }], tab: "a" } });
-  await page.reload();
-  const other = bar.getByRole("group", { name: made.name });
-  await other.locator(".station-group-title").hover();
-  await other.getByRole("button", { name: "Issues", exact: true }).click();
-  await expect.poll(() => current(bar)).toBe(made.name);
-  await expect(page.getByRole("group", { name: "On show" })).toHaveText(`${made.name}/Issues`);
-  await expect(bar.getByRole("group", { name: before }).locator(".station-group-title")).not.toHaveAttribute("aria-current", "true");
-});
-
-test("the open station's + makes a tab in its group, and × closes it", async ({ page }) => {
-  const { bar } = await open(page);
-  const group = bar.locator(".station-group.is-current");
-  await group.locator(".station-group-title").click();
-  await group.getByRole("button", { name: /^New tab in / }).click();
-  await expect(group.getByRole("button", { name: "Tab 2", exact: true })).toBeVisible();
-  await expect(page.getByRole("group", { name: "On show" })).toContainText("/Tab 2");
-  await group.getByRole("button", { name: "Close Tab 2" }).click();
-  await expect(group.getByRole("button", { name: "Tab 2", exact: true })).toHaveCount(0);
 });
 
 test("the Workbench menu opens on the canvas's visual toggles, and they work", async ({ page }) => {
@@ -144,11 +100,10 @@ test("on a phone the bar fits the width, its controls each take a press, and Go 
   await page.goto("/app/#/list/Issue");
   const bar = page.getByRole("banner", { name: "App" });
   await expect(bar).toBeVisible();
+  await page.getByRole("button", { name: "Open app bar" }).click();
+  await expect(bar).toHaveClass(/topbar-auto-open/);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-  // Every control of the bar takes its own press: none lies under another.
-  await bar.getByRole("button", { name: "All stations" }).click();
-  await expect(page.getByRole("dialog", { name: "Stations" })).toBeVisible();
-  await page.keyboard.press("Escape");
+  await bar.getByRole("navigation", { name: "Workstreams" }).getByRole("button", { name: "Scratch" }).click();
   await bar.getByRole("button", { name: "Go to" }).click();
   const go = page.getByRole("navigation", { name: "Go to" });
   await go.getByRole("link", { name: /^Activity/ }).click();

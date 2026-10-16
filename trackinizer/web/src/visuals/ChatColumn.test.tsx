@@ -3,11 +3,10 @@ import type { ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { listStations, setStationLayout, setStationPage, type StationSummary } from "../api/stations";
-import { createDefaultWorkspace, getWorkspace, type WorkspaceState } from "../api/workspaces";
+import { listStations, setStationLayout, setStationPage } from "../api/stations";
+import { createDefaultWorkspace, type WorkspaceState } from "../api/workspaces";
 import { CommandRegistry, CommandRegistryContext, Shortcuts, useCommandList } from "../commands/registry";
-import { setStationMenu, useStationMenu } from "../stations/actions";
-import { currentStation, setStation } from "../stations/store";
+import { setStation } from "../stations/store";
 import { ChatColumn } from "./ChatColumn";
 import { preferences, receivePreferences } from "../preferences";
 import { currentChatColumn, setChatFullscreen, setChatHidden } from "./chatColumnState";
@@ -43,7 +42,6 @@ beforeEach(() => {
 afterEach(() => {
   setStation(null);
   forgetLayouts();
-  setStationMenu(false);
   history.replaceState(null, "", "#/");
   cleanup();
   vi.useRealTimers();
@@ -272,9 +270,9 @@ test("Esc returns from full screen when the keyboard is outside Chat's box, and 
 
 test("the palette lists Chat's commands, and a hidden Chat offers to show it", async () => {
   await show();
-  expect(screen.getByLabelText("Palette").textContent).toBe("Hide Chat|Chat full screen|Move Chat to the other side");
+  expect(screen.getByLabelText("Palette").textContent).toBe("Hide Chat|Chat full screen|Move Chat to the other side|New chat");
   act(() => setChatHidden(true));
-  expect(screen.getByLabelText("Palette").textContent).toBe("Show Chat|Chat full screen|Move Chat to the other side");
+  expect(screen.getByLabelText("Palette").textContent).toBe("Show Chat|Chat full screen|Move Chat to the other side|New chat");
 });
 
 test("the divider tells the width the stylesheet gave Chat before the user sets one", async () => {
@@ -377,63 +375,4 @@ test("full screen Chat is never a peek, and hidden Chat that a frame shows is a 
   expect(column.hidden).toBe(false);
   act(() => setChatHidden(false));
   expect(column.classList).not.toContain("chat-column-peek");
-});
-
-const summary = (id: string, name: string, created: number): StationSummary => ({
-  id, name, conversation_id: null, page: null, created_at: `2026-10-0${created}T10:00:00Z`,
-});
-const STATIONS = [summary("w1", "unnamed-workstream#1", 1), summary("w2", "alpha", 2), summary("w3", "beta", 3)];
-
-test("the tab is titled by its station", async () => {
-  await show();
-  expect(document.title).toBe("unnamed-workstream#1 · Trackinizer");
-});
-
-test("g ] and g [ open the renamed stations in the order they were made, wrapping, and nothing else", async () => {
-  vi.mocked(listStations).mockResolvedValue(STATIONS);
-  vi.mocked(getWorkspace).mockImplementation(async (id) => ({ ...workspace, id, name: STATIONS.find((each) => each.id === id)!.name }));
-  const { user } = await show();
-  await user.keyboard("g]");
-  await vi.waitFor(() => expect(currentStation().id).toBe("w2"));
-  await user.keyboard("g]");
-  await vi.waitFor(() => expect(currentStation().id).toBe("w3"));
-  await user.keyboard("g]");
-  await vi.waitFor(() => expect(currentStation().id).toBe("w2"));
-  await user.keyboard("g[[");
-  await vi.waitFor(() => expect(currentStation().id).toBe("w3"));
-  // The station that was never renamed is in no cycle, whatever opened it.
-  expect(vi.mocked(getWorkspace).mock.calls.map(([id]) => id)).toEqual(["w2", "w3", "w2", "w3"]);
-});
-
-test("g s opens the station menu in the top bar, and leaves a hidden Chat hidden", async () => {
-  function Menu() {
-    return <output aria-label="Menu">{String(useStationMenu())}</output>;
-  }
-  setChatHidden(true);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const { user } = await (async () => {
-    render(<QueryClientProvider client={client}><CommandRegistryContext value={new CommandRegistry()}>
-      <Shortcuts /><Menu /><ChatColumn><main>Workbench</main></ChatColumn>
-    </CommandRegistryContext></QueryClientProvider>);
-    await screen.findByText("w1");
-    return { user: userEvent.setup() };
-  })();
-  expect(screen.getByLabelText("Menu").textContent).toBe("false");
-  await user.keyboard("gs");
-  expect(screen.getByLabelText("Menu").textContent).toBe("true");
-  expect(currentChatColumn().hidden).toBe(true);
-});
-
-test("the palette lists each station as Open station <name>, and New station", async () => {
-  vi.mocked(listStations).mockResolvedValue(STATIONS);
-  function Titles() {
-    return <output aria-label="Stations">{useCommandList().filter((command) => command.section === "Stations").map((command) => command.title).join("|")}</output>;
-  }
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={client}><CommandRegistryContext value={new CommandRegistry()}>
-    <Titles /><ChatColumn><main>Workbench</main></ChatColumn>
-  </CommandRegistryContext></QueryClientProvider>);
-  await vi.waitFor(() => expect(screen.getByLabelText("Stations").textContent).toContain("Open station beta"));
-  expect(screen.getByLabelText("Stations").textContent).toBe(
-    "Next renamed station|Previous renamed station|Search stations|New station|Open station unnamed-workstream#1|Open station alpha|Open station beta");
 });

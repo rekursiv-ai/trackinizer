@@ -2362,6 +2362,23 @@
         "title": "CreateTokenBody",
         "type": "object"
       },
+      "CreateWorkstream": {
+        "additionalProperties": false,
+        "description": "A new workstream's title.",
+        "properties": {
+          "title": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "CreateWorkstream",
+        "type": "object"
+      },
       "DraftRelation": {
         "additionalProperties": false,
         "description": "One relation picked on the create form: the option's key, and its target.",
@@ -5249,6 +5266,23 @@
           }
         ]
       },
+      "NameChat": {
+        "additionalProperties": false,
+        "description": "A name the assistant suggests for an unnamed chat station.",
+        "properties": {
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "NameChat",
+        "type": "object"
+      },
       "Navigate": {
         "additionalProperties": false,
         "description": "Move the browser's page. An event: no visual and no revision changes.",
@@ -5270,6 +5304,26 @@
           "route"
         ],
         "title": "Navigate",
+        "type": "object"
+      },
+      "NewWorkspace": {
+        "additionalProperties": false,
+        "description": "Optional workstream for a newly opened station.",
+        "properties": {
+          "workstream_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workstream Id"
+          }
+        },
+        "title": "NewWorkspace",
         "type": "object"
       },
       "Operation": {
@@ -5687,6 +5741,10 @@
             "maxItems": 200,
             "title": "Views",
             "type": "array"
+          },
+          "workstreams": {
+            "$ref": "#/components/schemas/WorkstreamsPreference",
+            "description": "Your workstream bar order, pins, and hidden items."
           }
         },
         "title": "Preferences",
@@ -6146,22 +6204,6 @@
           "seq"
         ],
         "title": "RelationTarget",
-        "type": "object"
-      },
-      "RenameWorkspace": {
-        "additionalProperties": false,
-        "description": "A station's new name, which must be free among its owner's.",
-        "properties": {
-          "name": {
-            "maxLength": 1000,
-            "title": "Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "title": "RenameWorkspace",
         "type": "object"
       },
       "RoleChangeBody": {
@@ -6878,6 +6920,22 @@
           "change"
         ],
         "title": "SetPreferences",
+        "type": "object"
+      },
+      "SetStationWorkstream": {
+        "additionalProperties": false,
+        "description": "The workstream a station is moved to.",
+        "properties": {
+          "workstream_id": {
+            "format": "uuid",
+            "title": "Workstream Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workstream_id"
+        ],
+        "title": "SetStationWorkstream",
         "type": "object"
       },
       "ShowVisual": {
@@ -9457,6 +9515,91 @@
         "title": "TokenRoleChangeBody",
         "type": "object"
       },
+      "UpdateWorkspace": {
+        "additionalProperties": false,
+        "description": "A station's name or visibility and pin flags.",
+        "properties": {
+          "hidden": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hidden"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "pinned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pinned"
+          }
+        },
+        "title": "UpdateWorkspace",
+        "type": "object"
+      },
+      "UpdateWorkstream": {
+        "additionalProperties": false,
+        "description": "Fields a user may change on a workstream.",
+        "properties": {
+          "hidden": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hidden"
+          },
+          "pinned": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pinned"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "UpdateWorkstream",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -10162,6 +10305,11 @@
             ],
             "title": "Focused Instance"
           },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -10206,6 +10354,11 @@
             "$ref": "#/components/schemas/PartnerChoice",
             "default": "shared"
           },
+          "pinned": {
+            "default": false,
+            "title": "Pinned",
+            "type": "boolean"
+          },
           "preferences": {
             "anyOf": [
               {
@@ -10225,12 +10378,34 @@
             "title": "Revision",
             "type": "integer"
           },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkstreamSuggestion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "visuals": {
             "items": {
               "$ref": "#/components/schemas/VisualInstance"
             },
             "title": "Visuals",
             "type": "array"
+          },
+          "workstream_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workstream Id"
           }
         },
         "required": [
@@ -10264,9 +10439,19 @@
             "title": "Created At",
             "type": "string"
           },
+          "hidden": {
+            "default": false,
+            "title": "Hidden",
+            "type": "boolean"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
+            "type": "string"
+          },
+          "modified_at": {
+            "format": "date-time",
+            "title": "Modified At",
             "type": "string"
           },
           "name": {
@@ -10283,6 +10468,21 @@
               }
             ],
             "title": "Page"
+          },
+          "pinned": {
+            "default": false,
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkstreamSuggestion"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "tab": {
             "anyOf": [
@@ -10301,6 +10501,18 @@
             },
             "title": "Tabs",
             "type": "array"
+          },
+          "workstream_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workstream Id"
           }
         },
         "required": [
@@ -10308,7 +10520,8 @@
           "name",
           "conversation_id",
           "page",
-          "created_at"
+          "created_at",
+          "modified_at"
         ],
         "title": "WorkspaceSummary",
         "type": "object"
@@ -10358,6 +10571,233 @@
           "type"
         ],
         "title": "WorkspaceVisibleVisual",
+        "type": "object"
+      },
+      "WorkstreamInfo": {
+        "description": "A workstream and its attached stations.",
+        "properties": {
+          "hidden": {
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "pinned": {
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "scratch": {
+            "title": "Scratch",
+            "type": "boolean"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "stations": {
+            "items": {
+              "$ref": "#/components/schemas/WorkstreamStation"
+            },
+            "title": "Stations",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "title",
+          "scratch",
+          "hidden",
+          "pinned",
+          "stations"
+        ],
+        "title": "WorkstreamInfo",
+        "type": "object"
+      },
+      "WorkstreamOrder": {
+        "additionalProperties": false,
+        "description": "The ids in their chosen workstream bar order.",
+        "properties": {
+          "ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "title": "WorkstreamOrder",
+        "type": "object"
+      },
+      "WorkstreamStation": {
+        "description": "A station attached to one workstream.",
+        "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "hidden": {
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "pinned": {
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "session_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Session Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "hidden",
+          "pinned",
+          "conversation_id",
+          "session_ids"
+        ],
+        "title": "WorkstreamStation",
+        "type": "object"
+      },
+      "WorkstreamSuggestion": {
+        "additionalProperties": false,
+        "description": "A workstream the assistant suggests for a station, without creating it.",
+        "properties": {
+          "title": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "workstream_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workstream Id"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "WorkstreamSuggestion",
+        "type": "object"
+      },
+      "WorkstreamSummary": {
+        "description": "One workstream in the user's bar.",
+        "properties": {
+          "hidden": {
+            "title": "Hidden",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "pinned": {
+            "title": "Pinned",
+            "type": "boolean"
+          },
+          "scratch": {
+            "title": "Scratch",
+            "type": "boolean"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "title",
+          "scratch",
+          "hidden",
+          "pinned"
+        ],
+        "title": "WorkstreamSummary",
+        "type": "object"
+      },
+      "WorkstreamsPreference": {
+        "additionalProperties": false,
+        "description": "The user's workstream bar state.",
+        "properties": {
+          "hidden": {
+            "default": [],
+            "items": {
+              "maxLength": 100,
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Hidden",
+            "type": "array"
+          },
+          "order": {
+            "default": [],
+            "items": {
+              "maxLength": 100,
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Order",
+            "type": "array"
+          },
+          "pinned": {
+            "default": [],
+            "items": {
+              "maxLength": 100,
+              "type": "string"
+            },
+            "maxItems": 500,
+            "title": "Pinned",
+            "type": "array"
+          }
+        },
+        "title": "WorkstreamsPreference",
         "type": "object"
       },
       "_Columns": {
@@ -20832,10 +21272,48 @@
         "summary": "Campaign For Chat Route"
       }
     },
-    "/api/workspaces/new": {
+    "/api/workspaces/for-chat/{conversation_id}/name": {
       "post": {
-        "description": "Make a station named with the lowest free ``unnamed-workstream#N``.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: The new station.",
-        "operationId": "new_workspace_route_api_workspaces_new_post",
+        "description": "Name an unnamed station, or return its existing name unchanged.\n\nOnly the configured assistant may name for an ``asker``. A user's name wins\nover a late suggestion; the server returns that station unchanged.\n\nArgs:\n  conversation_id: The science chat the station holds.\n  body: Suggested name, trimmed and bounded to 120 characters.\n  request: Request carrying the database engine and event hub.\n  identity: The assistant's agent key.\n  asker: The account the assistant names for.\n\nReturns:\n  state: The named station, or its unchanged state when already named.",
+        "operationId": "name_for_chat_route_api_workspaces_for_chat__conversation_id__name_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asker",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asker"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NameChat"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -20846,33 +21324,6 @@
               }
             },
             "description": "Successful Response"
-          }
-        },
-        "summary": "New Workspace Route"
-      }
-    },
-    "/api/workspaces/{workspace_id}": {
-      "delete": {
-        "description": "Delete one of the principal's stations, once its chat is gone.\n\nThe browser calls this right after it deletes a station's chat, to close the\nstation's tab. A station that still holds a chat is 409, so delete the chat\nfirst; another person's station, or none, is 404.\n\nArgs:\n  workspace_id: The station to delete.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n\nReturns:\n  response: Empty.",
-        "operationId": "delete_workspace_route_api_workspaces__workspace_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Workspace Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Successful Response"
-          },
-          "409": {
-            "description": "The station still holds a chat."
           },
           "422": {
             "content": {
@@ -20885,8 +21336,123 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Delete Workspace Route"
-      },
+        "summary": "Name For Chat Route"
+      }
+    },
+    "/api/workspaces/for-chat/{conversation_id}/suggestion": {
+      "post": {
+        "description": "Store the assistant's workstream suggestion on the asker's chat station.\n\nArgs:\n  conversation_id: The science chat the station holds.\n  body: Suggested title and optional owned workstream id.\n  request: Request carrying the database engine and event hub.\n  identity: The assistant's agent key.\n  asker: The account the assistant suggests for.\n\nReturns:\n  state: The updated station.",
+        "operationId": "suggest_workstream_for_chat_route_api_workspaces_for_chat__conversation_id__suggestion_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asker",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asker"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkstreamSuggestion"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Suggest Workstream For Chat Route"
+      }
+    },
+    "/api/workspaces/new": {
+      "post": {
+        "description": "Make a station named with the lowest free ``unnamed-workstream#N``.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n  body: Optional workstream selection; omission selects Scratch.\n\nReturns:\n  state: The new station.",
+        "operationId": "new_workspace_route_api_workspaces_new_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/NewWorkspace"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "New Workspace Route"
+      }
+    },
+    "/api/workspaces/{workspace_id}": {
       "get": {
         "description": "Read the principal's own workspace, or an assistant's partner canvas.\n\nArgs:\n  workspace_id: Requested canvas.\n  request: FastAPI request with a database engine.\n  identity: Authenticated workspace owner, or the assistant's agent key.\n\nReturns:\n  state: The canvas and its current revision.",
         "operationId": "read_workspace_route_api_workspaces__workspace_id__get",
@@ -20927,7 +21493,7 @@
         "summary": "Read Workspace Route"
       },
       "patch": {
-        "description": "Rename one of the principal's stations.\n\nArgs:\n  workspace_id: The station.\n  body: The new name, 1 to 120 characters once trimmed.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n\nReturns:\n  state: The renamed station.",
+        "description": "Rename or change flags on one of the principal's stations.\n\nArgs:\n  workspace_id: The station.\n  body: A new name and/or the hidden and pinned flags.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n\nReturns:\n  state: The updated station.",
         "operationId": "rename_workspace_route_api_workspaces__workspace_id__patch",
         "parameters": [
           {
@@ -20945,7 +21511,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RenameWorkspace"
+                "$ref": "#/components/schemas/UpdateWorkspace"
               }
             }
           },
@@ -21028,6 +21594,57 @@
           }
         },
         "summary": "Set Workspace Campaign Route"
+      }
+    },
+    "/api/workspaces/{workspace_id}/clear-chat": {
+      "post": {
+        "description": "Copy a station's canvas into a fresh, chatless station.\n\nArgs:\n  workspace_id: Station to clear.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n  key: Retry-safe idempotency key.\n\nReturns:\n  state: The new station, or the same station for a retry.",
+        "operationId": "clear_chat_route_api_workspaces__workspace_id__clear_chat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Chat Route"
       }
     },
     "/api/workspaces/{workspace_id}/events": {
@@ -21287,6 +21904,307 @@
           }
         },
         "summary": "Console Relay Route"
+      }
+    },
+    "/api/workspaces/{workspace_id}/workstream": {
+      "put": {
+        "description": "Move an owned station to one of the caller's workstreams.\n\nArgs:\n  workspace_id: Station to move.\n  body: Destination workstream Issue id.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: The station after it moves.",
+        "operationId": "set_station_workstream_route_api_workspaces__workspace_id__workstream_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetStationWorkstream"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Station Workstream Route"
+      }
+    },
+    "/api/workstreams": {
+      "get": {
+        "description": "List the caller's workstreams, optionally searching and including hidden.\n\nArgs:\n  request: Request carrying the database engine and store.\n  identity: Authenticated browser account.\n  q: Optional title substring.\n  hidden: Whether to include hidden workstreams.\n  asker: The account the assistant reads for, when supplied.\n\nReturns:\n  workstreams: Matching workstreams in bar order.",
+        "operationId": "list_workstreams_route_api_workstreams_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hidden",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Hidden",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asker",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asker"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WorkstreamSummary"
+                  },
+                  "title": "Response List Workstreams Route Api Workstreams Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Workstreams Route"
+      },
+      "post": {
+        "description": "Create an owned workstream Issue.\n\nArgs:\n  body: Workstream title.\n  request: Request carrying the database engine and store.\n  identity: Authenticated browser account.\n\nReturns:\n  workstream: The created Issue summary.",
+        "operationId": "create_workstream_route_api_workstreams_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkstream"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkstreamSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Workstream Route"
+      }
+    },
+    "/api/workstreams/order": {
+      "put": {
+        "description": "Save the caller's workstream bar order.\n\nArgs:\n  body: Workstream ids in the desired order.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  workstreams: The updated list.",
+        "operationId": "set_workstream_order_route_api_workstreams_order_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkstreamOrder"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WorkstreamSummary"
+                  },
+                  "title": "Response Set Workstream Order Route Api Workstreams Order Put",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Workstream Order Route"
+      }
+    },
+    "/api/workstreams/{workstream_id}": {
+      "get": {
+        "description": "Read an owned workstream and its stations.\n\nArgs:\n  workstream_id: Issue to read.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  info: The Issue summary and attached stations.",
+        "operationId": "workstream_info_route_api_workstreams__workstream_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workstream_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Workstream Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkstreamInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Workstream Info Route"
+      },
+      "patch": {
+        "description": "Rename or change visibility and pin state on an owned workstream.\n\nArgs:\n  workstream_id: Issue to update.\n  body: Title and/or hidden and pinned changes.\n  request: Request carrying the database engine and store.\n  identity: Authenticated browser account.\n\nReturns:\n  workstream: The updated Issue summary.",
+        "operationId": "update_workstream_route_api_workstreams__workstream_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workstream_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Workstream Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWorkstream"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkstreamSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Scratch cannot be hidden."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Workstream Route"
       }
     },
     "/auth/logout": {

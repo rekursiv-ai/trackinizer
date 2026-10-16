@@ -18,6 +18,7 @@ import { newerWorkspace } from "../stations/cache";
 import { setStation } from "../stations/store";
 import { setStationLayout } from "../api/stations";
 import { Canvas } from "./Canvas";
+import { forgetHistories } from "./canvasHistory";
 import { currentChatColumn, setChatHidden } from "./chatColumnState";
 import { CLICK_SLOP, rememberedTile, SNAP_SIDE, SNAP_TOP, TEAR_SLOP } from "./floatingTile";
 import { flushLayouts, forgetLayouts, LAYOUT_EVERY_MS, type Layout } from "./stationLayout";
@@ -58,6 +59,7 @@ const workspace: WorkspaceState = {
 afterEach(() => {
   setStation(null);
   forgetLayouts();
+  forgetHistories();
   cleanup();
   vi.clearAllMocks();
   vi.mocked(setStationLayout).mockResolvedValue(undefined);

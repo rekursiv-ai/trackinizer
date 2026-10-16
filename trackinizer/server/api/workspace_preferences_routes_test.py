@@ -154,12 +154,14 @@ async def test_the_stations_agent_sets_its_owners_preferences_and_every_station_
 
     assert (first.status_code, replay.status_code) == (200, 200)
     state = json_loads(first.content, dict[str, object])
+    preferences = from_plain(state["preferences"], dict[str, object])
     assert state["revision"] == revision
-    assert state["preferences"] == {
+    assert preferences == {
         **_DEFAULTS,
         "theme": "light",
         "chat_style": "terminal",
     }
+    assert "workstreams" not in preferences
     stored = await _stored(store, TEST_USER_ID)
     assert stored == {"theme": "light", "chat_style": "terminal"}
     for frames in told:
@@ -167,10 +169,7 @@ async def test_the_stations_agent_sets_its_owners_preferences_and_every_station_
         # The owner's browser is sent every key, its own data too; the agent, the UI's.
         assert isinstance(frame, PreferencesFrame)
         assert frame.preferences == stored_preferences(stored)
-        assert (
-            frame.preferences.model_dump(include=set(ASSISTANT_KEYS))
-            == state["preferences"]
-        )
+        assert frame.preferences.model_dump(include=set(ASSISTANT_KEYS)) == preferences
     # The assistant's own account is untouched: it works for the station's owner.
     assert await _stored(store, KB_USER_ID) is None
     browser()
@@ -185,6 +184,7 @@ async def test_the_stations_agent_sets_its_owners_preferences_and_every_station_
     ("change", "named"),
     [
         ({"colour": "red"}, "colour"),
+        ({"workstreams": {"order": [], "pinned": [], "hidden": []}}, "workstreams"),
         ({"theme": "blue"}, "theme"),
         ({"theme": "light", "chat_side": "up"}, "chat_side"),
     ],

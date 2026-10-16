@@ -43,6 +43,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "lens": None,
     "drafts": {},
     "create_draft": None,
+    "workstreams": {"order": [], "pinned": [], "hidden": []},
 }
 
 _VIEW_REQUEST: dict[str, JsonValue] = {
@@ -109,6 +110,18 @@ def test_a_skin_is_one_of_the_named_looks() -> None:
     assert Preferences.model_validate({"skin": "dos"}).skin == "dos"
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"skin": "cyber"})
+
+
+def test_workstream_preferences_keep_order_pin_and_visibility() -> None:
+    saved = {
+        "order": ["22222222-2222-2222-2222-222222222222"],
+        "pinned": ["22222222-2222-2222-2222-222222222222"],
+        "hidden": ["33333333-3333-3333-3333-333333333333"],
+    }
+    assert (
+        Preferences.model_validate({"workstreams": saved}).workstreams.model_dump()
+        == saved
+    )
 
 
 def test_the_assistants_keys_are_exactly_the_settings_the_document_shows() -> None:
