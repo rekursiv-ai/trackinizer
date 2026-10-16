@@ -19,6 +19,7 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
+from trackinizer.server.api.export_routes import export_lines
 from trackinizer.server.store.export import GraphExport
 from trackinizer.wire.wire_export import (
     EXPORT_API_PATH,
@@ -144,6 +145,21 @@ def test_every_line_ends_in_a_newline(export_client: TestClient) -> None:
 
     assert r.text.endswith("\n")
     assert r.text.count("\n") == 3
+
+
+def test_a_row_line_is_compact_utf8() -> None:
+    graph = replace(_graph(), tables=(("inquiries", ({"title": "café", "n": 1},)),))
+
+    _header, line = export_lines(graph)
+
+    assert line == '{"table":"inquiries","row":{"title":"café","n":1}}\n'.encode()
+
+
+def test_a_non_finite_float_is_refused() -> None:
+    graph = replace(_graph(), tables=(("inquiries", ({"n": float("nan")},)),))
+
+    with pytest.raises(ValueError, match="not JSON compliant"):
+        list(export_lines(graph))
 
 
 def test_a_viewer_may_export(export_client: TestClient) -> None:

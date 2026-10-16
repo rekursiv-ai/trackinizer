@@ -92,6 +92,60 @@ async def export_route(
     return StreamingResponse(export_lines(graph), media_type=EXPORT_MEDIA_TYPE)
 
 
+def export_lines(graph: GraphExport) -> Iterator[bytes]:
+    """Serialize ``graph`` into the export's lines, header first.
+
+    Args:
+      graph: What :meth:`export_graph` read.
+
+    Yields:
+      line: One UTF-8 JSON object with its trailing newline.
+
+    """
+    header: dict[str, object] = {
+        "format": EXPORT_FORMAT,
+        "version": EXPORT_VERSION,
+        "migrations": list(graph.migrations),
+        "audiences": list(graph.audiences),
+        "withheld_sessions": graph.withheld_sessions,
+    }
+    # Absent rather than empty on a whole-graph export, so those stay
+    # byte-identical to the ones written before selectors existed.
+    if graph.selector:
+        header["selector"] = [
+            {"field": f.field, "op": f.op, "value": f.value} for f in graph.selector
+        ]
+    yield _line(header)
+    for table, rows in graph.tables:
+        for row in rows:
+            yield _line({"table": table, "row": row})
+
+
+# ``allow_nan=False`` because the output must parse anywhere: a non-finite float is a
+# bug to surface here, not a bare ``NaN`` a strict reader rejects.
+def _line(value: object) -> bytes:
+    """One compact JSON object and its newline."""
+    # pragma: no mutate start -- ensure_ascii/allow_nan=None are falsy too.
+    text = json.dumps(
+        value,
+        default=_as_json,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    # pragma: no mutate end
+    return f"{text}\n".encode()
+
+
+def _as_json(value: object) -> str:
+    """Spell the column types JSON has no literal for."""
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, date):
+        return value.isoformat()
+    raise TypeError(f"no JSON form for {type(value).__name__}: {value!r}")
+
+
 # Deliberately NOT ``query._parse_filter_param``: that one validates the field against
 # one kind's columns, and an export spans every kind. The clause rules it enforces are
 # the wire type's, which ``Filter`` runs in its own ``__post_init__``, so they are not
@@ -136,55 +190,3 @@ def _parse_selector_param(raw: str) -> Filter:
         return Filter(field=canonical, op=cast(FilterOp, op), value=value)
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
-
-
-def export_lines(graph: GraphExport) -> Iterator[bytes]:
-    """Serialize ``graph`` into the export's lines, header first.
-
-    Args:
-      graph: What :meth:`export_graph` read.
-
-    Yields:
-      line: One UTF-8 JSON object with its trailing newline.
-
-    """
-    header: dict[str, object] = {
-        "format": EXPORT_FORMAT,
-        "version": EXPORT_VERSION,
-        "migrations": list(graph.migrations),
-        "audiences": list(graph.audiences),
-        "withheld_sessions": graph.withheld_sessions,
-    }
-    # Absent rather than empty on a whole-graph export, so those stay
-    # byte-identical to the ones written before selectors existed.
-    if graph.selector:
-        header["selector"] = [
-            {"field": f.field, "op": f.op, "value": f.value} for f in graph.selector
-        ]
-    yield _line(header)
-    for table, rows in graph.tables:
-        for row in rows:
-            yield _line({"table": table, "row": row})
-
-
-# ``allow_nan=False`` because the output must parse anywhere: a non-finite float is a
-# bug to surface here, not a bare ``NaN`` a strict reader rejects.
-def _line(value: object) -> bytes:
-    """One compact JSON object and its newline."""
-    text = json.dumps(
-        value,
-        default=_as_json,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    return f"{text}\n".encode()
-
-
-def _as_json(value: object) -> str:
-    """Spell the column types JSON has no literal for."""
-    if isinstance(value, UUID):
-        return str(value)
-    if isinstance(value, date):
-        return value.isoformat()
-    raise TypeError(f"no JSON form for {type(value).__name__}: {value!r}")

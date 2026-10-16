@@ -10,6 +10,7 @@ import pytest
 from trackinizer.conftest import executed_sql, make_store
 from trackinizer.server.regex_timeout import STATEMENT_TIMEOUT_MS
 from trackinizer.wire.filters import Filter
+from trackinizer.wire.wire_export import EXPORT_TABLES
 
 
 @pytest.mark.asyncio
@@ -83,6 +84,35 @@ async def test_store_preserves_selected_rows_external_references() -> None:
     assert tables["change_log"] == (
         {"id": audit_id, "subject_id": inquiry_id, "caused_by": cause_id},
     )
+
+
+@pytest.mark.asyncio
+async def test_the_catalog_drops_derived_columns_and_decodes_json_ones() -> None:
+    """``search`` is skipped wherever it falls; a ``json`` column arrives decoded."""
+    store, engine = make_store()
+    catalog = [
+        {"table_name": "inquiries", "column_name": "id", "data_type": "uuid"},
+        {"table_name": "inquiries", "column_name": "meta", "data_type": "json"},
+        {"table_name": "session_records", "column_name": "search", "data_type": "x"},
+        {"table_name": "session_records", "column_name": "text", "data_type": "text"},
+        {"table_name": "session_records", "column_name": "idx", "data_type": "int"},
+    ]
+    rows = {
+        "inquiries": [{"id": "i", "meta": '{"k":1}'}],
+        "session_records": [{"text": "t", "idx": 0}],
+    }
+    engine.conn.fetch.side_effect = [
+        [{"name": "schema.sql"}],
+        catalog,
+        *(rows.get(table, []) for table in EXPORT_TABLES),
+    ]
+    engine.conn.fetchval.return_value = 0
+
+    graph = await store.export_graph()
+
+    tables = dict(graph.tables)
+    assert tables["inquiries"] == ({"id": "i", "meta": {"k": 1}},)
+    assert tables["session_records"] == ({"text": "t", "idx": 0},)
 
 
 if __name__ == "__main__":

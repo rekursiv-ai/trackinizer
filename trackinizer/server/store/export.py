@@ -220,6 +220,7 @@ class _ExportMixin(_StoreShared):
 
 async def _exported_columns(conn: Conn) -> dict[str, tuple[tuple[str, bool], ...]]:
     """Each exported table's columns in order, flagged when stored as ``json``."""
+    # pragma: no mutate start -- SQL is judged by a database: export_pglite_test.
     rows = await conn.fetch(
         "SELECT table_name, column_name, data_type "
         "FROM information_schema.columns "
@@ -227,6 +228,7 @@ async def _exported_columns(conn: Conn) -> dict[str, tuple[tuple[str, bool], ...
         "ORDER BY table_name, ordinal_position",
         list(EXPORT_TABLES),
     )
+    # pragma: no mutate end
     columns: dict[str, list[tuple[str, bool]]] = {table: [] for table in EXPORT_TABLES}
     for row in rows:
         table = cast(str, row["table_name"])
@@ -258,14 +260,6 @@ def _scope(selector: Sequence[Filter]) -> tuple[str, list[object]]:
     return vetted_sql("SELECT id FROM inquiries WHERE ", " AND ".join(clauses)), params
 
 
-def _scope_tests(table: str, scope: str) -> str:
-    """Render the test keeping only ``table``'s rows inside ``scope``."""
-    return " AND ".join(
-        vetted_sql('"', column, '" IN (', scope, ")")
-        for column in _SCOPE_COLUMNS[table]
-    )
-
-
 async def _read_table(
     conn: Conn,
     table: str,
@@ -282,7 +276,12 @@ async def _read_table(
     params: list[object] = list(scope_params)
     conditions: list[str] = []
     if scope:
-        conditions.append(_scope_tests(table, scope))
+        conditions.append(
+            " AND ".join(
+                vetted_sql('"', column, '" IN (', scope, ")")
+                for column in _SCOPE_COLUMNS[table]
+            ),
+        )
     # Audience: gated -- a table keyed by session leaves out the rows of a session
     # ``reader`` may not read. Found from the columns, so a session table the export
     # gains is gated without an edit here.
