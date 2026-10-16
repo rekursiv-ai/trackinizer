@@ -373,9 +373,12 @@ async function screenOf(page: Page, id: string): Promise<{ x: number; y: number 
   }, id);
 }
 
-/** Click the sidebar's entry `label`, gliding to it first. */
+/** Open the top bar's Go menu and click its entry `label`, gliding to each first. */
 async function clickNav(page: Page, label: string): Promise<void> {
-  const entry = page.getByRole("navigation", { name: "Sidebar" }).getByRole("link", { name: label, exact: true });
+  const go = page.getByRole("banner", { name: "App" }).getByRole("button", { name: "Go to" });
+  await glideTo(page, go);
+  await go.click();
+  const entry = page.getByRole("navigation", { name: "Go to" }).getByRole("link").filter({ has: page.locator(".label", { hasText: new RegExp(`^${label}$`) }) });
   await glideTo(page, entry);
   await entry.click();
 }

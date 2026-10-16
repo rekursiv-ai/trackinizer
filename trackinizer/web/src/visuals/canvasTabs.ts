@@ -30,8 +30,8 @@ export function newTabName(tabs: readonly CanvasTab[]): string {
   return `Tab ${n}`;
 }
 
-/** The tab that stays open when `id` closes: the one after it, or before it when it was last. */
-export function neighbourOf(tabs: readonly CanvasTab[], id: string): CanvasTab | null {
+/** The item that takes `id`'s place when it closes: the one after it, or before it when it was last. */
+export function neighbourOf<T extends { readonly id: string }>(tabs: readonly T[], id: string): T | null {
   const at = tabs.findIndex((tab) => tab.id === id);
   return tabs[at + 1] ?? tabs[at - 1] ?? null;
 }

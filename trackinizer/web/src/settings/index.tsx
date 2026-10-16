@@ -8,7 +8,8 @@ import { useOnline } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { ViewHeader } from "../ui/view";
 import { type ChatStyle, chooseChatStyle, useChatStyle } from "../chatStyle";
-import { chooseTheme, type ThemePreference, useTheme } from "../theme";
+import { usePreferences } from "../preferences";
+import { chooseSkin, chooseTheme, type Skin, SKINS, type ThemePreference, useTheme } from "../theme";
 import { KeyValue, ReadError, Section } from "./account";
 import { AliasesSection } from "./Aliases";
 import { CloseSheet } from "./CloseSheet";
@@ -98,18 +99,31 @@ function VisualWorkspaceSection() {
 
 function ThemeSection() {
   const { choice: theme } = useTheme();
+  const { skin } = usePreferences();
   const chatStyle = useChatStyle();
+  // A fixed skin sets every colour itself (skins.css), so the theme has nothing to colour under it.
+  const fixed = skin !== "default";
   return (
     <Section title="Appearance">
       <div className="st-row">
-        <label htmlFor="appearance-theme">Theme</label>
-        <select id="appearance-theme" className="st-theme" value={theme} onChange={(event) => {
-          chooseTheme(event.target.value as ThemePreference);
+        <label htmlFor="appearance-skin">Skin</label>
+        <select id="appearance-skin" className="st-theme" value={skin} onChange={(event) => {
+          chooseSkin(event.target.value as Skin);
         }}>
+          {SKINS.map((each) => <option key={each.skin} value={each.skin}>{each.label}</option>)}
+        </select>
+      </div>
+      <div className="st-row">
+        <label htmlFor="appearance-theme">Theme</label>
+        <select id="appearance-theme" className="st-theme" value={theme} disabled={fixed}
+          aria-describedby={fixed ? "appearance-theme-note" : undefined} onChange={(event) => {
+            chooseTheme(event.target.value as ThemePreference);
+          }}>
           <option value="dark">Dark</option>
           <option value="light">Light</option>
           <option value="system">System</option>
         </select>
+        {fixed && <span id="appearance-theme-note" className="muted">The theme colours the Default skin only.</span>}
       </div>
       {/* One of the user's preferences, like the theme: how the Chat panel looks, not what it holds. */}
       <div className="st-row">
@@ -125,7 +139,7 @@ function ThemeSection() {
   );
 }
 
-/** Sign out, here or from the sidebar's foot (`useSignOut`), with its progress and failure in the row. */
+/** Sign out, here or from the account menu (`useSignOut`), with its progress and failure in the row. */
 function SessionSection({ assign }: { assign: (url: string) => void }) {
   const online = useOnline();
   const { pending, failure, leave } = useSignOut({ assign });

@@ -4,8 +4,8 @@ import { type Palette, readPalette } from "./encode";
 import "./tokens.css";
 
 /**
- * The palette the current theme's tokens give, read again whenever the theme
- * changes: the graph's and the detail's graph preview's, which draw alike.
+ * The palette the current theme's and skin's tokens give, read again whenever
+ * either changes: the graph's and the detail's graph preview's, which draw alike.
  */
 export function useThemePalette(meta: Meta): Palette {
   const read = useMemo(() => {
@@ -14,9 +14,9 @@ export function useThemePalette(meta: Meta): Palette {
   }, [meta]);
   const [palette, setPalette] = useState(read);
   useEffect(() => {
-    // `applyTheme` (src/theme.ts) switches the theme by this attribute alone.
+    // `applyTheme` and `applySkin` (src/theme.ts) switch the look by these attributes alone.
     const observer = new MutationObserver(() => setPalette(read()));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-skin"] });
     return () => observer.disconnect();
   }, [read]);
   return palette;

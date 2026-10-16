@@ -2,8 +2,9 @@ import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
-// The canvas's top bar: Back and Forward walk what the open tab showed, Home
-// shows the graph, and each tab keeps a canvas of its own, on the server.
+// The canvas's row: Back and Forward walk what the open tab showed, Home
+// shows the graph. Each tab, in its station's group in the app's top bar,
+// keeps a canvas of its own, on the server.
 
 test.use({ canvas: true });
 
@@ -50,17 +51,20 @@ test("Back, Forward and Home move the canvas, and each tab keeps its own", async
   await expect(graph).toBeVisible();
   await expect(page).toHaveURL(/#\/activity$/);
 
-  await bar.getByRole("button", { name: "New tab" }).click();
+  const group = page.getByRole("banner", { name: "App" }).locator(".station-group.is-current");
+  await group.locator(".station-group-title").click();
+  await group.getByRole("button", { name: /^New tab in / }).click();
   await expect(page).toHaveURL(/#\/graph$/);
   await expect(graph).toHaveCount(0);
   await expect(back).toBeDisabled();
-  await bar.getByRole("button", { name: /^Tab 1/ }).click();
+  await group.getByRole("button", { name: "Tab 1", exact: true }).click();
   await expect(graph).toBeVisible();
   await expect(page).toHaveURL(/#\/activity$/);
 
   // The tabs are the station's: a reload finds them, the one left open still open.
   await page.reload();
-  await expect(bar.getByRole("button", { name: /^Tab 2/ })).toBeVisible();
-  await expect(bar.locator('.canvas-tab[aria-current="true"]')).toHaveText("Tab 1");
+  await expect(group.getByRole("button", { name: "Tab 2", exact: true })).toBeAttached();
+  await expect(group.locator('.station-tab[aria-current="true"]')).toHaveText("Tab 1");
+  await expect(bar.getByRole("group", { name: "On show" })).toContainText("/Tab 1");
   await expect(graph).toBeVisible();
 });

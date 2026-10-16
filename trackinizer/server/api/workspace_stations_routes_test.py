@@ -161,6 +161,8 @@ async def test_a_list_holds_only_the_callers_stations_with_their_fields(
         "conversation_id",
         "page",
         "created_at",
+        "tabs",
+        "tab",
     }
     assert (only["id"], only["conversation_id"], only["page"]) == (
         made["id"],
@@ -321,6 +323,41 @@ async def test_the_layout_merges_by_key_with_no_revision_and_no_frame(
     }
     foreign = f"/api/workspaces/{other_station}/layout"
     assert (await client.put(foreign, json={"chat_ch": 80})).status_code == 404
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_list_names_each_stations_tabs_and_the_open_one(
+    pglite_route_client: _Client,
+) -> None:
+    """The top bar shows every station's tabs without reading each station."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    browser()
+    plain = await _station(client, "POST", "/api/workspaces")
+    tabbed = await _station(client, "POST", "/api/workspaces/new")
+    response = await client.put(
+        f"/api/workspaces/{from_plain(tabbed['id'], str)}/layout",
+        json={
+            "tabs": [
+                {"id": "a", "name": "Graph", "page": "#/graph"},
+                {"id": "b", "name": "Issue#7", "page": "#/issues/7"},
+            ],
+            "tab": "b",
+        },
+    )
+    assert response.status_code == 204, response.text
+
+    listed = {from_plain(each["id"], str): each for each in await _listed(client)}
+
+    assert listed[from_plain(tabbed["id"], str)]["tabs"] == [
+        {"id": "a", "name": "Graph"},
+        {"id": "b", "name": "Issue#7"},
+    ]
+    assert listed[from_plain(tabbed["id"], str)]["tab"] == "b"
+    assert listed[from_plain(plain["id"], str)]["tabs"] == []
+    assert listed[from_plain(plain["id"], str)]["tab"] is None
 
 
 @pytest.mark.db_pglite

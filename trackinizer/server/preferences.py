@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 ASSISTANT_KEYS: Final = frozenset(
     {
         "theme",
+        "skin",
         "chat_style",
         "chat_side",
         "highlight_mentions",
@@ -217,6 +218,23 @@ class Preferences(_Strict):
     theme: Literal["dark", "light", "system"] = Field(
         default="dark",
         description="The app's colours: dark, light, or whichever the system uses.",
+        json_schema_extra=SETTING,
+    )
+    skin: Literal[
+        "default",
+        "retro",
+        "scifi",
+        "dos",
+        "console",
+        "matrix",
+        "hacker",
+        "minimal",
+        "brutal",
+    ] = Field(
+        default="default",
+        description=(
+            "The app's look: default, or one of the fixed skins, which ignore theme."
+        ),
         json_schema_extra=SETTING,
     )
     chat_style: Literal["default", "terminal"] = Field(

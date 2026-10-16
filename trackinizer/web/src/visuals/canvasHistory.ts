@@ -29,6 +29,14 @@ type Pending = { readonly key: string; readonly target: Snapshot };
  */
 const histories = new Map<string, Steps>();
 let pending: Pending | null = null;
+
+/**
+ * The restore each station was left in the middle of, by station: its tab and
+ * target, which the canvas finishes when the station is on show again. Until
+ * then the canvas shows the tab half restored, which leaving it would keep as
+ * the tab's own and so lose what the tab showed.
+ */
+const interrupted = new Map<string, Pending>();
 let version = 0;
 const listeners = new Set<() => void>();
 
@@ -105,14 +113,33 @@ export function settle(key: string, target: Snapshot, snapshot: Snapshot | null)
   arrive(key, snapshot ?? target);
 }
 
-/** Forget tab `key`'s steps, as closing it does. */
+/** Forget tab `key`'s steps, as closing it does, and a restore of it left unfinished. */
 export function forget(key: string): void {
+  for (const [station, left] of interrupted) if (left.key === key) interrupted.delete(station);
   if (histories.delete(key)) changed();
+}
+
+/** Station `station` was left while the restore of tab `key` to `target` was on its way: finish it on coming back. */
+export function interrupt(station: string, key: string, target: Snapshot): void {
+  interrupted.set(station, { key, target });
+}
+
+/** The restore station `station` was left in the middle of, taken to finish now, or null. */
+export function takeInterrupted(station: string): Pending | null {
+  const left = interrupted.get(station) ?? null;
+  interrupted.delete(station);
+  return left;
+}
+
+/** Whether a restore is on its way now, for what reads it outside a render. */
+export function restoring(): boolean {
+  return pending !== null;
 }
 
 /** Forget every tab's steps; for a test's start. */
 export function forgetHistories(): void {
   histories.clear();
+  interrupted.clear();
   pending = null;
   changed();
 }

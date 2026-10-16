@@ -42,7 +42,7 @@ async function floatGraph(request: APIRequestContext): Promise<{ readonly worksp
 
 async function open(page: Page, theme: "dark" | "light" = "dark"): Promise<{ tile: Locator; bar: Locator }> {
   await setPreferences(page.request, { theme });
-  // Wide enough that the stage, beside the sidebar and the Chat column, is as wide as the specs assume.
+  // Wide enough that the stage, beside the Chat column, is as wide as the specs assume.
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.goto("/app/#/list/Issue");
   const tile = page.locator(".visual-tile-floating");

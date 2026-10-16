@@ -66,9 +66,8 @@ async function readAs(page: Page, audiences: string[]) {
 
 async function open(page: Page, seq: number) {
   await page.goto(`/app/#/ref/Issue/${seq}`);
-  const sidebar = page.getByRole("navigation", { name: "Sidebar" });
-  await sidebar.getByRole("button", { name: "Workbench", exact: true }).and(page.locator(".workbench-rail")).click();
-  const option = sidebar.getByRole("checkbox", { name: /Campaign summary/ });
+  await page.getByRole("banner", { name: "App" }).getByRole("button", { name: "Workbench", exact: true }).click();
+  const option = page.locator(".workbench-menu").getByRole("checkbox", { name: /Campaign summary/ });
   // Showing a visual is a write to the station; the box checks when the server's canvas comes back.
   await option.click();
   await expect(option).toBeChecked();

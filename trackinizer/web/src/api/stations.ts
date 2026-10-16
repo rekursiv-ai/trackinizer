@@ -66,6 +66,13 @@ export async function stationForChat(conversationId: string): Promise<WorkspaceS
   })));
 }
 
+/** Delete one of the user's stations, once its chat is gone; a station that still holds a chat is a 409. */
+export async function deleteStation(id: string): Promise<void> {
+  await send(TIMEOUT_MS.write, undefined, (signal) => client.DELETE("/api/workspaces/{workspace_id}", {
+    params: { path: { workspace_id: id } }, signal,
+  }));
+}
+
 /** The Console agents a line was sent to directly, as the relay names them. */
 export type RelayTarget = { readonly actor: string; readonly room: string | null };
 

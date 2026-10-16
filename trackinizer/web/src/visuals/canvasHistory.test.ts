@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { COALESCE_MS, forget, forgetHistories, go, KEPT_STEPS, observe, settle, step, useCanvasHistory } from "./canvasHistory";
+import { COALESCE_MS, forget, forgetHistories, go, interrupt, KEPT_STEPS, observe, restoring, settle, step, takeInterrupted, useCanvasHistory } from "./canvasHistory";
 import type { Snapshot } from "./canvasSnapshot";
 
 afterEach(forgetHistories);
@@ -114,4 +114,23 @@ test("the hook says whether Back and Forward go anywhere, and whether a step is 
   expect(result.current).toEqual({ back: false, forward: true, moving: true });
   rerender({ snapshot: at("#/a") });
   expect(result.current).toEqual({ back: false, forward: true, moving: false });
+});
+
+test("a restore a station was left in the middle of is taken once, on coming back; closing its tab forgets it", () => {
+  interrupt("s", "s/1", at("#/a"));
+  expect(takeInterrupted("t")).toBeNull();
+  expect(takeInterrupted("s")).toEqual({ key: "s/1", target: at("#/a") });
+  expect(takeInterrupted("s")).toBeNull();
+  interrupt("s", "s/2", at("#/b"));
+  forget("s/2");
+  expect(takeInterrupted("s")).toBeNull();
+});
+
+test("whether a restore is on its way reads the same outside a render as in one", () => {
+  expect(restoring()).toBe(false);
+  const target = at("#/b");
+  go("s/1", target);
+  expect(restoring()).toBe(true);
+  settle("s/1", target, null);
+  expect(restoring()).toBe(false);
 });

@@ -85,7 +85,7 @@ test("the keyboard inside the opened Chat holds it open until it leaves", async 
   await strip.hover();
   await expect(column).toBeVisible();
   // The suite's server has no assistant, so the message box is off; a button takes the keyboard.
-  await column.locator(".station-name").focus();
+  await column.getByRole("button", { name: "Move Chat to the right" }).focus();
   await leave(page);
   await page.waitForTimeout(700);
   await expect(column).toBeVisible();
@@ -94,25 +94,20 @@ test("the keyboard inside the opened Chat holds it open until it leaves", async 
   await expect(column).toBeHidden();
 });
 
-test("the opened Chat lies over the folded sidebar rail, so no rail icon shows through it", async ({ page }) => {
+test("the opened Chat lies under the top bar, which stays whole above it", async ({ page }) => {
   const { column, strip } = await open(page);
-  await expect(page.locator(".app")).toHaveClass(/sidebar-collapsed/);
   await pushChat(page, true);
   await strip.hover();
   await expect(column).toBeVisible();
-  const rail = await box(page.locator(".sidebar-dock"));
-  const columnBox = await box(column);
-  expect(columnBox.x + columnBox.width).toBeGreaterThan(rail.x + rail.width);
-  // Down the middle of the rail, every point is Chat's.
-  const owners = await page.evaluate(({ x, top, bottom }) => {
+  const bar = await box(page.getByRole("banner", { name: "App" }));
+  expect((await box(column)).y).toBeGreaterThanOrEqual(bar.y + bar.height - 1);
+  // Across the bar, every point is the bar's.
+  const owners = await page.evaluate(({ y, left, right }) => {
     const found: string[] = [];
-    for (let y = top + 20; y < bottom - 20; y += 40) {
-      const at = document.elementFromPoint(x, y);
-      found.push(at?.closest(".chat-column") ? "chat" : at?.closest(".sidebar-dock") ? "rail" : "other");
-    }
+    for (let x = left + 20; x < right - 20; x += 60) found.push(document.elementFromPoint(x, y)?.closest(".topbar") ? "bar" : "other");
     return found;
-  }, { x: rail.x + rail.width / 2, top: rail.y, bottom: rail.y + rail.height });
-  expect(new Set(owners)).toEqual(new Set(["chat"]));
+  }, { y: bar.y + bar.height / 2, left: bar.x, right: bar.x + bar.width });
+  expect(new Set(owners)).toEqual(new Set(["bar"]));
 });
 
 test("a click anywhere in the opened Chat pins it beside the workbench, and it stays when the pointer leaves", async ({ page }) => {

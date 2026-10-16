@@ -1,15 +1,7 @@
-/* The stations as tabs along Chat's top, a browser's tab strip: the tabs scroll sideways, then +, then All stations. */
-.station-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px 8px 0; border-bottom: 1px solid var(--line); background: var(--surface); }
-/* The strip's width is fractional and its scroll whole pixels: the end padding keeps the last tab whole when scrolled to the end. */
-.station-strip { display: flex; flex: 1 1 0; gap: 2px; min-width: 0; padding-inline-end: 2px; overflow-x: auto; scroll-padding-inline: 8px; scrollbar-width: none; }
-.station-tab { flex: 0 1 auto; min-width: 6em; max-width: 14em; padding: 6px 10px; border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0; background: transparent; color: var(--muted); font: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
-.station-tab:hover { background: var(--surface-hover); color: var(--text); }
-.station-tab[aria-current="true"] { border-color: var(--line); background: var(--bg); color: var(--text); font-weight: 600; cursor: text; }
-.station-tab-name { flex: 0 0 14em; border-color: var(--accent); background: var(--bg); color: var(--text); cursor: text; outline: 0; }
-.station-new, .station-all { padding: 4px 6px; }
-.station-tabs > .station-problem { flex: 1 0 100%; padding: 0 4px 6px; }
-.station { position: relative; min-width: 0; }
-/* The menu opens leftwards from All stations, at Chat's right edge, so it stays inside Chat. */
+/* All stations, at the end of the top bar's station groups, and the search it opens (StationMenu.tsx). */
+.station-all { padding: 4px 6px; }
+.station { position: relative; flex: none; }
+/* The menu opens leftwards from All stations, so it stays on screen. */
 .station-menu { position: absolute; z-index: 40; top: calc(100% + 4px); right: 0; display: flex; flex-direction: column; gap: 6px; width: min(320px, 90vw); padding: 8px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
 .station-menu input { width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
 .station-list { display: flex; flex-direction: column; max-height: 240px; margin: 0; padding: 0; overflow: auto; list-style: none; }

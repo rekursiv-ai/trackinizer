@@ -5629,6 +5629,24 @@
             "$ref": "#/components/schemas/ReadState",
             "description": "The notifications you have read: a boundary time, and changes marked one by one after it."
           },
+          "skin": {
+            "default": "default",
+            "description": "The app's look: default, or one of the fixed skins, which ignore theme.",
+            "enum": [
+              "default",
+              "retro",
+              "scifi",
+              "dos",
+              "console",
+              "matrix",
+              "hacker",
+              "minimal",
+              "brutal"
+            ],
+            "title": "Skin",
+            "type": "string",
+            "x-setting": true
+          },
           "stars": {
             "default": [],
             "description": "The inquiries you starred, by id: your bookmarks, never a label.",
@@ -9149,6 +9167,25 @@
         "title": "SubmitWebSearch",
         "type": "object"
       },
+      "TabName": {
+        "description": "A canvas tab as the station list names it: enough to show and open it.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "TabName",
+        "type": "object"
+      },
       "TabVisual": {
         "additionalProperties": false,
         "description": "A visual a canvas tab shows, kept while another tab is open.",
@@ -10246,6 +10283,24 @@
               }
             ],
             "title": "Page"
+          },
+          "tab": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tab"
+          },
+          "tabs": {
+            "items": {
+              "$ref": "#/components/schemas/TabName"
+            },
+            "title": "Tabs",
+            "type": "array"
           }
         },
         "required": [
@@ -20797,6 +20852,41 @@
       }
     },
     "/api/workspaces/{workspace_id}": {
+      "delete": {
+        "description": "Delete one of the principal's stations, once its chat is gone.\n\nThe browser calls this right after it deletes a station's chat, to close the\nstation's tab. A station that still holds a chat is 409, so delete the chat\nfirst; another person's station, or none, is 404.\n\nArgs:\n  workspace_id: The station to delete.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n\nReturns:\n  response: Empty.",
+        "operationId": "delete_workspace_route_api_workspaces__workspace_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "The station still holds a chat."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Workspace Route"
+      },
       "get": {
         "description": "Read the principal's own workspace, or an assistant's partner canvas.\n\nArgs:\n  workspace_id: Requested canvas.\n  request: FastAPI request with a database engine.\n  identity: Authenticated workspace owner, or the assistant's agent key.\n\nReturns:\n  state: The canvas and its current revision.",
         "operationId": "read_workspace_route_api_workspaces__workspace_id__get",

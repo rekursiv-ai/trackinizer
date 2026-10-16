@@ -17,23 +17,23 @@ async function open(page: Page): Promise<void> {
   await page.addInitScript(exposeEventSources);
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/app/#/list/Issue");
-  await expect(page.locator(".station-name")).toBeVisible();
+  await expect(page.locator(".station-group.is-current .station-group-label")).toBeVisible();
 }
 
-/** Rename the station on show in place: a click on its tab, the new name, Enter. */
+/** Rename the station on show in place: a double click on its group's title, the new name, Enter. */
 async function rename(page: Page, name: string): Promise<void> {
-  await page.locator(".station-name").click();
-  const field = page.getByRole("navigation", { name: "Station tabs" }).getByRole("textbox", { name: "Station name" });
+  await page.locator(".station-group.is-current .station-group-title").dblclick();
+  const field = page.getByRole("navigation", { name: "Stations" }).getByRole("textbox", { name: "Station name" });
   await field.fill(name);
   await field.press("Enter");
   await expect(field).toBeHidden();
-  await expect(page.locator(".station-name")).toHaveText(name);
+  await expect(page.locator(".station-group.is-current .station-group-label")).toHaveText(name);
 }
 
-/** Make a fresh station with + and wait for its tab. */
+/** Make a fresh station with + Station and wait for its group. */
 async function newStation(page: Page): Promise<void> {
   await page.getByRole("button", { name: "New station", exact: true }).click();
-  await expect(page.locator(".station-name")).toHaveText(/^unnamed-workstream#\d+$/);
+  await expect(page.locator(".station-group.is-current .station-group-label")).toHaveText(/^unnamed-workstream#\d+$/);
 }
 
 /** The page the server holds for the station named `name`, once it is `route`. */
@@ -79,16 +79,16 @@ test("two stations keep their own pages and visuals, and the tab cycles, searche
   await pageOf(request, "beta", "#/list/Issue");
   await expect(page).toHaveTitle("beta · Trackinizer");
 
-  // Each station is a tab, in the order they were made; a click on one opens it, and opening moves no tab.
-  const tabs = page.getByRole("navigation", { name: "Station tabs" });
-  const order = await tabs.getByRole("button").allTextContents();
+  // Each station is a group, in the order they were made; a click on its title opens it, and opening moves no group.
+  const tabs = page.getByRole("navigation", { name: "Stations" });
+  const order = await tabs.locator(".station-group-label").allTextContents();
   expect(order.indexOf("alpha")).toBeLessThan(order.indexOf("beta"));
-  await tabs.getByRole("button", { name: "alpha", exact: true }).click();
-  await expect(page.locator(".station-name")).toHaveText("alpha");
+  await tabs.getByRole("group", { name: "alpha", exact: true }).locator(".station-group-title").click();
+  await expect(page.locator(".station-group.is-current .station-group-label")).toHaveText("alpha");
   await expect(page).toHaveURL(/#\/activity$/);
-  expect(await tabs.getByRole("button").allTextContents()).toEqual(order);
-  await tabs.getByRole("button", { name: "beta", exact: true }).click();
-  await expect(page.locator(".station-name")).toHaveText("beta");
+  expect(await tabs.locator(".station-group-label").allTextContents()).toEqual(order);
+  await tabs.getByRole("group", { name: "beta", exact: true }).locator(".station-group-title").click();
+  await expect(page.locator(".station-group.is-current .station-group-label")).toHaveText("beta");
   await expect(page).toHaveURL(/#\/list\/Issue$/);
 
   // g ] goes to the next renamed station, wrapping, and each shows what it kept.
@@ -96,13 +96,13 @@ test("two stations keep their own pages and visuals, and the tab cycles, searche
   await page.locator(".visual-canvas").click({ position: { x: 4, y: 4 } });
   await page.keyboard.press("g");
   await page.keyboard.press("]");
-  await expect(page.locator(".station-name")).toHaveText("alpha");
+  await expect(page.locator(".station-group.is-current .station-group-label")).toHaveText("alpha");
   await expect(page).toHaveURL(/#\/activity$/);
   await expect(timeline).toBeVisible();
   await expect(page).toHaveTitle("alpha · Trackinizer");
   await page.keyboard.press("g");
   await page.keyboard.press("]");
-  await expect(page.locator(".station-name")).toHaveText("beta");
+  await expect(page.locator(".station-group.is-current .station-group-label")).toHaveText("beta");
   await expect(page).toHaveURL(/#\/list\/Issue$/);
   await expect(timeline).toHaveCount(0);
 
@@ -114,32 +114,32 @@ test("two stations keep their own pages and visuals, and the tab cycles, searche
   await search.fill("ALP");
   await expect(page.getByRole("dialog", { name: "Stations" }).getByRole("listitem")).toHaveCount(1);
   await search.press("Enter");
-  await expect(page.locator(".station-name")).toHaveText("alpha");
+  await expect(page.locator(".station-group.is-current .station-group-label")).toHaveText("alpha");
   await expect(timeline).toBeVisible();
 
   // A reload keeps the tab's station, on its page; a new tab has none and opens the one changed last.
   await page.reload();
-  await expect(page.locator(".station-name")).toHaveText("alpha");
+  await expect(page.locator(".station-group.is-current .station-group-label")).toHaveText("alpha");
   await expect(timeline).toBeVisible();
   // Writing beta's page makes it the station changed last.
   const beta = ((await (await request.get("/api/workspaces")).json()) as { id: string; name: string }[]).find((each) => each.name === "beta")!;
   expect((await request.put(`/api/workspaces/${beta.id}/page`, { data: { route: "#/list/Issue" } })).ok()).toBe(true);
   const another = await page.context().newPage();
   await another.goto("/app/");
-  await expect(another.locator(".station-name")).toHaveText("beta");
+  await expect(another.locator(".station-group.is-current .station-group-label")).toHaveText("beta");
   await another.close();
 });
 
-test("a name the user already has is refused, and the tabs say so", async ({ page, allowErrors }) => {
+test("a name the user already has is refused, and the top bar says so", async ({ page, allowErrors }) => {
   allowErrors(failedResource("/api/workspaces/", 409));
   await open(page);
   await rename(page, "taken");
   await newStation(page);
-  await page.locator(".station-name").click();
+  await page.locator(".station-group.is-current .station-group-title").dblclick();
   const field = page.getByRole("textbox", { name: "Station name" });
   await field.fill("taken");
   await field.press("Enter");
-  await expect(page.locator(".station-tabs").getByRole("alert")).toHaveText("That name is taken");
+  await expect(page.locator(".station-groups").getByRole("alert")).toHaveText("That name is taken");
   await expect(field).toBeVisible();
 });
 
@@ -161,7 +161,7 @@ test("after a click on a list row, which opens its page, g ] still switches stat
   await page.keyboard.press("g");
   await page.keyboard.press("]");
   // The stations earlier cases renamed are in the cycle too, so the next one is not the second's.
-  await expect(page.locator(".station-name")).not.toHaveText(`row-b-${tag}`);
+  await expect(page.locator(".station-group.is-current .station-group-label")).not.toHaveText(`row-b-${tag}`);
   for (const [chord, route] of [["a", /#\/activity$/], ["c", /#\/console$/], ["g", /#\/graph$/]] as const) {
     await page.goto("/app/#/list/Issue");
     await page.locator("a.row").first().click();

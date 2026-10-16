@@ -871,7 +871,10 @@ stored canvas that still holds a `trax.chat` visual reads without it. The respon
 has `id`, `revision`, `name`, `conversation_id`, `page`, `layout`, `visuals`,
 `focused_instance`, `assistant`, and `partner`.
 `GET /api/workspaces` lists the stations, the one changed last first, as
-`{id, name, conversation_id, page, created_at}`.
+`{id, name, conversation_id, page, created_at, tabs, tab}`: `tabs` names each
+canvas tab in order as `{id, name}` (none until a second one is made) and `tab` is
+the open one's id or null, so the top bar shows every station's tabs without
+reading each station.
 `POST /api/workspaces/new` makes a station.
 `PATCH /api/workspaces/<uuid>` with `{"name"}` renames it: the name is trimmed
 and must then be 1 to 120 characters (else 422); a name the user already has is

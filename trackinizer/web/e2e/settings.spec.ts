@@ -116,22 +116,21 @@ test("the user's own data follows them to a fresh browser: names, stars, saved v
   await fresh.close();
 });
 
-test("Settings opens as half a page over the page, from the sidebar's side, and Close takes the tab back", async ({ page }) => {
+test("Settings opens as half a page over the page, from its left edge, and Close takes the tab back", async ({ page }) => {
   await page.goto("/app/#/list/Issue");
   const list = page.getByRole("heading", { level: 1, name: "Issues" });
   await expect(list).toBeVisible();
-  await page.getByRole("navigation", { name: "Sidebar" }).getByRole("link", { name: "Your settings" }).click();
+  await page.getByRole("banner", { name: "App" }).getByRole("button", { name: /^Account: / }).click();
+  await page.getByRole("dialog", { name: "Account" }).getByRole("link", { name: "Your settings" }).click();
   await expect(sheet(page).getByRole("heading", { level: 1 })).toHaveText("Your settings");
   // The list stays under it, mounted, its other half in view.
   await expect(list).toBeAttached();
   const main = (await page.locator("main.main").boundingBox())!;
   const half = (await sheet(page).boundingBox())!;
-  const sidebar = (await page.getByRole("navigation", { name: "Sidebar" }).boundingBox())!;
   // Half the main area inside its 1 px border, and no narrower than 560 px.
   const inner = main.width - 2;
   expect(Math.round(half.width)).toBe(Math.round(Math.min(inner, Math.max(inner / 2, 560))));
-  // Against the main area's left edge, beside the sidebar, which stands at the left.
-  expect(sidebar.x).toBeLessThan(main.x);
+  // Against the main area's left edge.
   expect(Math.round(half.x)).toBe(Math.round(main.x + 1));
   // The sections take the sheet's width, so Close stands at their right edge.
   const close = (await page.getByRole("link", { name: "Close settings" }).boundingBox())!;

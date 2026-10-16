@@ -549,6 +549,7 @@ class TestProfile:
         # The stored choice, the defaults for the rest; a key no longer known is dropped.
         assert body["preferences"] == {
             "theme": "light",
+            "skin": "default",
             "chat_style": "default",
             "chat_side": "left",
             "highlight_mentions": True,
@@ -629,6 +630,7 @@ class TestPreferences:
         assert r.status_code == 200, r.text
         assert from_plain(r.json(), dict[str, object]) == {
             "theme": "light",
+            "skin": "default",
             "chat_style": "default",
             "chat_side": "left",
             "highlight_mentions": True,

@@ -226,6 +226,6 @@ test("on a phone only Chat shows, at full width, with no sideways scroll", async
   const chat = await box(column);
   expect(Math.round(chat.width)).toBe(390);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
-  await expect(column.locator(".station-name")).toBeInViewport();
+  await expect(column.locator(".chat-station")).toBeInViewport();
   await expect(page.getByRole("separator", { name: "Resize Chat" })).toBeHidden();
 });

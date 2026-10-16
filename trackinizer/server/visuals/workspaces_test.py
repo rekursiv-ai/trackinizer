@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import re
 import uuid
 
@@ -23,9 +25,11 @@ from trackinizer.server.visuals.workspaces import (
     Placement,
     PlaceVisual,
     ShowVisual,
+    StationData,
     StationLayout,
     TabVisual,
     WorkspaceData,
+    WorkspaceSummary,
     apply_operation,
     initial_data,
     refuse_params,
@@ -746,6 +750,42 @@ def test_canvas_tabs_out_of_bounds_are_refused(tabs: list[dict[str, object]]) ->
     """Tabs keep distinct ids, short names, clean pages, and bounded visuals."""
     with pytest.raises(ValidationError):
         StationLayout.model_validate({"tabs": tabs})
+
+
+def test_a_summary_names_each_tab_and_the_open_one_and_a_station_without_none() -> None:
+    """The station list carries tab names and the open tab, never what tabs show."""
+    made = datetime(2026, 10, 15, tzinfo=UTC)
+    station = uuid.uuid4()
+    chat = uuid.uuid4()
+    layout = StationLayout.model_validate(
+        {
+            "tabs": [
+                {"id": "a", "name": "Graph", "page": "#/graph"},
+                {"id": "b", "name": "Issue#7"},
+            ],
+            "tab": "b",
+        },
+    )
+    tabbed = WorkspaceSummary.of(
+        StationData(name="beta", conversation_id=chat, page="#/graph", layout=layout),
+        workspace_id=station,
+        created_at=made,
+    )
+    plain = WorkspaceSummary.of(
+        StationData(name="alpha"),
+        workspace_id=station,
+        created_at=made,
+    )
+    assert tabbed.model_dump(mode="json") == {
+        "id": str(station),
+        "name": "beta",
+        "conversation_id": str(chat),
+        "page": "#/graph",
+        "created_at": "2026-10-15T00:00:00Z",
+        "tabs": [{"id": "a", "name": "Graph"}, {"id": "b", "name": "Issue#7"}],
+        "tab": "b",
+    }
+    assert (plain.tabs, plain.tab, plain.name, plain.page) == ([], None, "alpha", None)
 
 
 if __name__ == "__main__":

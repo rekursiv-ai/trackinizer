@@ -180,7 +180,7 @@ with one response shape, so the fixtures take one per verb.
 ## Rendering rules
 
 - Nothing is hard-coded. Kinds, enums, field owners and edge topology come from
-  `/api/meta/*` at boot. The sidebar lists kinds in the server's order
+  `/api/meta/*` at boot. The top bar's Go menu lists kinds in the server's order
   (`inquiry_kind_all`); a kind the app has no name or icon for shows its own
   name.
 - A viewer sees no write controls; while offline, write controls are disabled.
@@ -285,7 +285,7 @@ with one response shape, so the fixtures take one per verb.
 - The workbench (the canvas) is on for everyone (`visual_workspace_enabled`
   defaults true; Settings' Agent workspace opts out, "Enable agent-guided
   workbench"). It has no toolbar row: its visual toggles and Artifact link are
-  the sidebar's Workbench section (see the sidebar below). It wraps every view
+  the top bar's Workbench menu (see the top bar below). It wraps every view
   but Settings and Admin, so Chat stays while an agent moves the page. Its chunk
   loads only for a
   user who has it on, together with Chat's column (`src/visuals/ChatColumn.tsx`),
@@ -326,7 +326,7 @@ with one response shape, so the fixtures take one per verb.
   graph's nodes and the timeline's only set the address, and write nothing to
   the canvas. Panes share the stage and shrink to a floor (a page or main visual
   300 px, a side visual 260 px, the side's share 30% up to 360 px), so three of
-  them fit 1280 px beside the sidebar with no sideways scroll; at 900 px and
+  them fit 1280 px beside Chat with no sideways scroll; at 900 px and
   narrower they stack, each 400 px or 48% of the screen high, and the stage
   scrolls up and down.
 - Chat is a column of its own beside the canvas (`ChatColumn`), not a visual in
@@ -346,7 +346,7 @@ with one response shape, so the fixtures take one per verb.
   (`{type: "chat", hidden, t}`, routed to the store by `CanvasStream`; a hide leaves
   full screen, a show keeps the side, and a reload shows Chat). Resting the pointer
   on the strip for 120 ms opens Chat over the canvas at its column width, with no
-  reflow, over the folded sidebar rail and anything else the workbench draws; it
+  reflow, under the top bar and over anything else the workbench draws; it
   folds 300 ms after the pointer and the keyboard have left (`hoverOpen.ts`), and a
   click anywhere in it, its Pin button, a click on the strip or the hide key stand
   it beside the canvas again. Alt+Enter makes it fill the main area, the canvas kept
@@ -367,20 +367,43 @@ with one response shape, so the fixtures take one per verb.
   by `usePageSync` at most once every 500 ms, and not for a switch until the
   address is where the switch sent it. The tab's title is `<station name> ·
   Trackinizer`.
-- Chat's top is a strip of tabs (`StationTabs`), one per station, in the order
-  they were made, as a browser's: a click on a tab opens its station, and opening
-  one moves no tab. A click on the current tab, or a double click on any, edits its
-  name in place: Enter or leaving the field saves, Esc keeps the old name, a blank
-  or unchanged name sends nothing, and a taken name says "That name is taken" and
-  keeps the field. `+` makes a fresh station (`unnamed-workstream#N`, no chat yet)
-  and opens it. All stations opens the station menu (`StationMenu`): a search by
-  name (any case), every station newest opened first, Enter or a click to open one,
-  Esc to close. A press outside the menu, or the keyboard leaving it, closes it; a
-  blur alone does not, since Safari focuses no clicked button. `g ]` and `g [` walk
-  the renamed stations (names that are not `unnamed-workstream#N`) in the order they
-  were made, wrapping; `g s` opens the menu with the search focused; each station is
-  a palette command, "Open station <name>". There is no History and no Clear chat:
-  the tabs and search replace the first, `+` the second.
+- The stations stand in the app's top bar as a browser's tab groups
+  (`src/topbar/StationGroups.tsx`), one per station in the order they were made,
+  each a coloured title (`--group-1` to `--group-4`, in turn) with its canvas tabs
+  folded behind it; opening one moves no group. Folded, a title counts its tabs,
+  and the open station's names its open tab. The pointer resting on a group, or
+  the keyboard in it, slides its tabs out: the width springs to what they need
+  and each tab follows a beat behind the one before; leaving the bar folds them
+  140 ms later (`FOLD_AFTER_MS`). Folded tabs are inert. A click on another
+  station's title opens it and keeps its tabs out; a click on the open station's
+  keeps them out, and a second folds them. Only the open station's group stays
+  out: one left for another station folds, however the switch came. Another station's tabs come from the
+  station list (`GET /api/workspaces` names each station's tabs and its open one);
+  a click on one asks for that tab (`requestTab` in `src/stations/canvasTabs.ts`)
+  and opens the station, and its canvas opens the tab once the station is on show,
+  since a station's canvas is its open tab and only it knows what that shows. Opening
+  it ends the switch for `usePageSync`, which otherwise waits for the address to
+  show the station's own page, which the tab moves past: every page after would go
+  unwritten, and lost on coming back. A station left while a tab's steps are
+  on their way gets none of the rest: they stay its own, and the canvas finishes them
+  when the station is on show again, before anything can keep the half-restored
+  canvas as the tab's (`interrupt` in `src/visuals/canvasHistory.ts`). The
+  open station's tabs come from its canvas (`publishCanvasTabs`), which makes
+  every change: a click opens one, × closes one while another is left, + makes
+  one, and a double click renames one in place. A double click on the open
+  station's title edits its name in place: Enter or leaving the field saves, Esc
+  keeps the old name, a blank or unchanged name sends nothing, and a taken name
+  says "That name is taken" and keeps the field. `+ Station` makes a fresh station
+  (`unnamed-workstream#N`, no chat yet) and opens it. The chevron opens the
+  station menu (`StationMenu`): a search by name (any case), every station newest
+  opened first, Enter or a click to open one, Esc to close. A press outside the
+  menu, or the keyboard leaving it, closes it; a blur alone does not, since Safari
+  focuses no clicked button. `g ]` and `g [` walk the renamed stations (names that
+  are not `unnamed-workstream#N`) in the order they were made, wrapping; `g s`
+  opens the menu with the search focused; each station is a palette command,
+  "Open station <name>". Chat's header names the station it belongs to. There is
+  no History and no Clear chat: the groups and search replace the first, `+
+  Station` the second.
 - Chat talks to the server's assistant (`src/visuals/Chat.tsx`). A conversation is
   a science chat: an AgentSession (label `science-chat`, `cli_session_id`
   `chat:<conversation id>`) that the assistant opens. Chat reads the session's
@@ -477,9 +500,12 @@ with one response shape, so the fixtures take one per verb.
   /api/chats/<id>/shares/<email>`, after which the head is read again, since it
   is the list. Delete (`DeleteChat`) asks "Delete this chat? Its forks keep
   their copies." first; once the server has deleted it the station holds no
-  conversation (its cached `conversation_id` is null) and shows an empty chat,
-  whose next line starts a new one. A refused share or delete is one toast
-  line:
+  conversation (its cached `conversation_id` is null), and Chat closes its tab the
+  way closing any tab does (`closeStation`): it deletes the now-empty station
+  (`DELETE /api/workspaces/<id>`, refused 409 while a chat is still held) and opens
+  the station beside it (`neighbourOf`). When it was the only station it stays, on
+  an empty chat whose next line starts a new one. A refused share or delete is one
+  toast line:
   `chat_not_starter`, `chat_has_other_posters` and `chat_staff_only` (a share of a
   staff chat with someone who holds no staff; the code is the error's `code`, which
   `ApiError.code` reads) have their own sentences, any other refusal shows the
@@ -616,35 +642,43 @@ with one response shape, so the fixtures take one per verb.
   do: only its button, `]`, or Space in a list expands it. Peek's detail shows
   its rail whatever the detail page chose, with no button for it. Collapsing
   or expanding one frames the graph again.
-- The app's sidebar folds away and stands on one side only, opposite Chat, so
-  flipping Chat's side moves both (`src/app/Shell.tsx`). It starts as a 48 px
-  rail of its icons, as VS Code's activity bar is: the button that pins it open
-  on top, then Search, New and every entry in its order, each a link named and
-  titled by its label, the current one marked; at the foot Your settings,
-  Admin, the theme and the user's avatar. A rule stands in each section
-  heading's place, and every row is as tall as opened, so each icon stands
-  exactly where it does with the sidebar open: 24 px from the outer edge. At
-  the right the open sidebar's rows turn over, icon outermost, to keep that.
-  Resting the pointer on the
-  rail for 120 ms opens it over the workbench, which keeps its width; it folds
-  100 ms after the pointer and the keyboard have left it, sooner than Chat's
-  300 ms since the opened rail touches the rail (`useHoverOpen`,
-  `RAIL_FOLD_AFTER_MS`), and a link followed folds it at once. The
-  button beside the logo, or ⌘B (Ctrl+B), as VS Code's primary side bar does,
-  pins it open, taking room from the workbench. It stands at the sidebar's outer
-  edge, so it stays put as the rail opens and folds, over Search and then New,
-  each a row of its own with its key; `[` and `]` stay each view's own. The
-  graph frames again in the width a pin gives. While a workbench is mounted the
-  sidebar has a Workbench section, folded at first: the visual toggles and the
-  Artifact link (the section's body is a slot, `src/app/workbenchSlot.tsx`, that
-  the canvas draws into). In the rail it is one icon, which opens the sidebar on
-  its controls, unfolded. Settings has a Close link in its header, back to the
-  last page before Settings or Admin, or the graph; the page is as wide as its
-  sections, so Close stands at their edge. Narrow, the sidebar is the drawer,
-  whole, whether collapsed or not, and has no collapse button.
-- The sun or moon over the user, in the sidebar or its rail, switches the
-  theme to light or dark; Settings' Appearance also offers System, and shows
-  a switch made here at once (`useTheme` in `src/theme.ts`).
+- The app has one bar, along the top over Chat and the canvas
+  (`src/topbar/TopBar.tsx`), and no sidebar: the logo (home, the graph), Go,
+  Search (⌘K), New for the kind on screen (its icon alone), the stations as tab
+  groups (with the canvas only), the Workbench and the account. Go is a menu of
+  the pages: Graph, Console, Activity, then each kind, the page on show marked,
+  each with its `g` keys where it has them; a link followed closes it, and so do
+  a press outside and Esc, which gives focus back to its button. While a
+  workbench is mounted, the sliders button opens the Workbench menu: the visual
+  toggles and the Artifact link, focus on the first (the menu's body is a slot,
+  `src/app/workbenchSlot.tsx`, that the canvas draws into, mounted while the
+  menu is closed). Settings has a Close link in its header, back to the last page
+  before Settings or Admin, or the graph; the page is as wide as its sections, so
+  Close stands at their edge. On a phone the bar keeps the width, the open
+  station's tab name and the account's email are left out, and Go reaches every
+  page.
+- The account stands at the bar's end, as Google's does (`AccountMenu.tsx`): the
+  avatar alone at rest, which the pointer resting on it widens to show the email
+  and the role. A click opens the menu: the account, Your settings, Admin (for
+  admins), Appearance, the other accounts this browser has signed in as, Add
+  another account, and Sign out last. Appearance picks the skin, the user's
+  `skin` preference: Default, which the theme colours (Light, Dark or System,
+  offered beside it), or one of the fixed skins (Retro 70s, Sci-fi, DOS 80s,
+  8-bit Console, Matrix, Hacker, Minimalist, Brutalist), the root's `data-skin`,
+  which `src/skins.css` colours over any theme from system fonts alone; the graph
+  takes the light or dark set by the skin's ground (`src/graph/tokens.css`), and
+  redraws as the skin changes. Settings' Appearance offers the skin and the theme
+  too, the theme disabled under a fixed skin, and shows a choice made here at once
+  (`useTheme` in `src/theme.ts`).
+  The other accounts are this browser's alone, kept in `localStorage`
+  (`trackinizer.v2.accounts`, at most 8, the one signed in last first), since the
+  server knows each account alone: each shows its role, its organisation's domain
+  or Personal (a mail host anyone joins), and Work or Personal. A press on one
+  sends any waiting draft, then opens Google's sign-in with it picked
+  (`/auth/login?login_hint=<email>`); Add another account opens Google's chooser;
+  × forgets one in this browser only; Sign out keeps the account in the list.
+  A server run with `--no-auth` has no one to sign in as: the accounts and Sign
+  out are left out there, and none is remembered.
 - Search in the palette answers while you type from what the app has loaded:
   list rows and recent details. After a 300 ms pause, or on Enter, it asks the
   server one kind at a time, Issues first, 5 rows each. A `Kind#seq` or a UUID
@@ -895,9 +929,8 @@ with one response shape, so the fixtures take one per verb.
   grouping live in the hash: they say what is looked at, and a link carries
   them; whether a panel shows is the tab's preference, as the key's is.
 - So is whether each panel that collapses is collapsed, in `sessionStorage`
-  under `trackinizer.v2.panel.<id>`: `app.sidebar`, `peek`, `graph.results`,
-  `detail.rail` and `console.rail`. A new tab starts with each expanded, but
-  the sidebar, which starts as a rail.
+  under `trackinizer.v2.panel.<id>`: `peek`, `graph.results`, `detail.rail` and
+  `console.rail`. A new tab starts with each expanded.
 - Drafts live in their editor's state, never in a cached row, so a refetch
   leaves them alone.
 - The canvas's state is `["workspace", id]` in the cache, filled by the shell's

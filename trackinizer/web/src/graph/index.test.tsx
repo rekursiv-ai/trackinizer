@@ -11,8 +11,7 @@ import { LiveContext } from "../live";
 import { LiveHub } from "../live/hub";
 import { testClient } from "../live/testing";
 import { RouterProvider } from "../router/router";
-import { SIDEBAR } from "../app/Sidebar";
-import { type Panel, usePanel } from "../ui/panel";
+import type { Panel } from "../ui/panel";
 import { GraphView } from ".";
 import { graphQuery } from "./live";
 import { edge, FakeRenderer, META, node, uuid } from "./testing";
@@ -1087,22 +1086,4 @@ test("beside a collapsed Peek, the roots list keeps its width", async () => {
   expect(panel().classList.contains("is-compact")).toBe(true);
   await user.click(screen.getByRole("button", { name: "Collapse Peek" }));
   expect(panel().classList.contains("is-compact")).toBe(false);
-});
-
-/** The app's sidebar button, as the shell holds it. */
-function SidebarButton() {
-  return (
-    <button type="button" onClick={usePanel(SIDEBAR).toggle}>
-      Sidebar
-    </button>
-  );
-}
-
-test("collapsing or expanding the app's sidebar frames the graph again in the width it changes", async () => {
-  const { user } = await shown();
-  render(<SidebarButton />);
-  await user.click(screen.getByRole("button", { name: "Sidebar" }));
-  expect(renderer.refits).toHaveLength(1);
-  await user.click(screen.getByRole("button", { name: "Sidebar" }));
-  expect(renderer.refits).toHaveLength(2);
 });

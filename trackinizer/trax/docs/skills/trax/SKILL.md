@@ -402,7 +402,7 @@ it is not replayed to a tab that was not listening.
 so they can look at what you showed; hide it when they should look at the page
 and show it when you want them to read your answer. It is an event too: no revision
 is read or changed, only an agent key may send it, and a reloaded tab shows Chat.
-`KEY to VALUE` changes one of the user's preferences (`theme`, `chat_style`,
+`KEY to VALUE` changes one of the user's preferences (`theme`, `skin`, `chat_style`,
 `chat_side`, `highlight_mentions`, `terminal_font_size`, `home`): theirs, not your
 account's, and every tab of theirs shows it at once. VALUE reads as JSON when it
 parses (`false`, `null`), else as text; `null` puts the key back to its default.

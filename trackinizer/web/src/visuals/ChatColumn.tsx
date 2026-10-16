@@ -27,10 +27,8 @@ type Drag = {
 
 /**
  * Chat as a column of its own beside the workbench (`children`: the bars, the
- * canvas and the page), on the side the user chose. The app's sidebar rail
- * (`rail`) stands at the workbench's left edge, inside it: right of Chat when
- * Chat is at the left, leftmost when it is at the right. A `sheet` (Settings,
- * Admin) opens over the page from the rail's edge, or over the row where the
+ * canvas and the page), on the side the user chose. A `sheet` (Settings,
+ * Admin) opens over the page from its left edge, or over the row where the
  * workbench is hidden. A divider between Chat and the workbench
  * resizes it by pointer and by arrow keys; hidden, it leaves a strip at its
  * edge that shows it again, or opens it over the workbench while the pointer
@@ -43,11 +41,9 @@ type Drag = {
  */
 export function ChatColumn({
   children,
-  rail = null,
   sheet = null,
 }: {
   readonly children: ReactNode;
-  readonly rail?: ReactNode;
   readonly sheet?: ReactNode;
 }) {
   const { side, hidden, fullscreen } = useChatColumn();
@@ -112,7 +108,7 @@ export function ChatColumn({
     { id: "chat.side", title: "Move Chat to the other side", section: "Chat", run: flipChatSide },
     { id: "station.next", title: "Next renamed station", keys: ["g ]"], section: "Stations", run: () => void cycleStation(queryClient, 1) },
     { id: "station.previous", title: "Previous renamed station", keys: ["g ["], section: "Stations", run: () => void cycleStation(queryClient, -1) },
-    { id: "station.search", title: "Search stations", keys: ["g s"], section: "Stations", run: () => { setChatHidden(false); setStationMenu(true); } },
+    { id: "station.search", title: "Search stations", keys: ["g s"], section: "Stations", run: () => setStationMenu(true) },
     { id: "station.new", title: "New station", section: "Stations", run: () => void newStation(queryClient) },
     ...stations.map((each) => ({ id: `station.open.${each.id}`, title: `Open station ${each.name}`, section: "Stations", run: () => void openStation(queryClient, each.id) })),
     ...(fullscreen ? [{ id: "chat.fullscreen.exit", title: "Leave full screen Chat", keys: ["Escape"], run: () => setChatFullscreen(false) }] : []),
@@ -187,7 +183,6 @@ export function ChatColumn({
     <div ref={row} className={`chat-row chat-row-${side}${fullscreen ? " chat-row-fullscreen" : ""}`}>
       {side === "left" ? parts : null}
       <div className="chat-workbench" hidden={fullscreen || phone}>
-        {rail}
         <div className="chat-stage">
           {children}
           {fullscreen || phone ? null : sheet}

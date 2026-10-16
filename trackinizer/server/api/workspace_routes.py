@@ -28,10 +28,12 @@ from trackinizer.server.notify import iter_changed_ids
 from trackinizer.server.visuals.workspace_store import (
     ReplayConflictError,
     RevisionConflictError,
+    StationHoldsChatError,
     StationNameTakenError,
     WorkspaceKeyRefusedError,
     apply_workspace_operation,
     campaign_for_chat,
+    delete_workspace,
     list_workspaces,
     new_workspace,
     open_latest_workspace,
@@ -433,6 +435,45 @@ async def read_workspace_route(
     if state is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return state
+
+
+@router.delete(
+    "/api/workspaces/{workspace_id}",
+    status_code=204,
+    responses={409: {"description": "The station still holds a chat."}},
+)
+async def delete_workspace_route(
+    workspace_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> Response:
+    """Delete one of the principal's stations, once its chat is gone.
+
+    The browser calls this right after it deletes a station's chat, to close the
+    station's tab. A station that still holds a chat is 409, so delete the chat
+    first; another person's station, or none, is 404.
+
+    Args:
+      workspace_id: The station to delete.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account, which must own the station.
+
+    Returns:
+      response: Empty.
+
+    """
+    require_browser(identity)
+    try:
+        found = await delete_workspace(
+            engine_of(request),
+            user_id=identity.user_id,
+            workspace_id=workspace_id,
+        )
+    except StationHoldsChatError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if not found:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return Response(status_code=204)
 
 
 @router.post(

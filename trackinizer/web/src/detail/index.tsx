@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { lazy, Suspense, type ReactNode, startTransition, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, type ReactNode, startTransition, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { markPageDrawn } from "../debug/timings";
 import { setInquiryLock } from "../api/admin";
 import { ApiError } from "../api/client";
@@ -24,7 +24,7 @@ import { Icon } from "../ui/icons";
 import { KindIcon, kindLook } from "../ui/kinds";
 import { type PanelSpec, PanelToggle, panelCommand, usePanel } from "../ui/panel";
 import { useToast } from "../ui/toast";
-import { EmptyState, OpenDrawerContext } from "../ui/view";
+import { EmptyState } from "../ui/view";
 import { Activity } from "./Activity";
 import { type Field, kindFields, usd } from "./fields";
 import { GraphPreview } from "./GraphPreview";
@@ -406,7 +406,6 @@ function Frame({
   children: ReactNode;
 }) {
   const { navigate } = useRouter();
-  const openDrawer = useContext(OpenDrawerContext);
   useCommands(
     kind
       ? [{ id: "detail.back", title: `Back to ${kindLook(kind).plural}`, keys: ["Escape"], run: () => navigate({ name: "list", kind }) }]
@@ -415,9 +414,6 @@ function Frame({
   return (
     <div className="view detail" aria-busy={busy}>
       <div className="detail-top">
-        <button type="button" className="icon-btn only-mobile" onClick={openDrawer} aria-label="Open navigation">
-          <Icon name="menu" />
-        </button>
         <nav className="crumbs" aria-label="Breadcrumb">
           {kind ? (
             <>

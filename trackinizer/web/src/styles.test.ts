@@ -169,3 +169,12 @@ test("every var(--token) a stylesheet or a component uses is a token some styles
   );
   expect([...new Set(undefinedUses)]).toEqual([]);
 });
+
+test("a danger button draws from the theme's tokens, and the light theme's own shade never reaches a fixed skin", () => {
+  const danger = declarations(".btn.danger");
+  expect(danger.get("color")).toBe("var(--error-text)");
+  for (const property of ["background", "border-color"]) expect(danger.get(property)).toMatch(/var\(--red\)/);
+  // The light theme's shade is for the default skin alone: a skin sets its own red, which the rule above takes.
+  expect(css).not.toContain(':root[data-theme="light"] .btn.danger');
+  expect(declarations(':root[data-theme="light"]:not([data-skin]) .btn.danger').get("color")).toBe("var(--red)");
+});

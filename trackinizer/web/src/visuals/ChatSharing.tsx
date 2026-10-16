@@ -1,27 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useEffect, useRef, useState } from "react";
-import { ApiError } from "../api/client";
-import { CHAT_STAFF_ONLY, type ChatHead, deleteChat, shareChat, unshareChat } from "../api/chats";
+import { chatRefusalMessage } from "../api/chatRefusals";
+import { type ChatHead, deleteChat, shareChat, unshareChat } from "../api/chats";
 import { newUuid } from "../api/idempotency";
-import { SESSION_NOT_OWNER, SESSION_STAFF, setSessionAudience } from "../api/sessions";
+import { setSessionAudience } from "../api/sessions";
 import { useToast } from "../ui/toast";
 import "../stations/stations.css";
-
-/** What the server's refusal codes say to the person. */
-const REFUSALS: { readonly [code: string]: string } = {
-  chat_not_starter: "Only the person who started this chat can do that.",
-  chat_has_other_posters: "Others have posted in this chat, so only an admin can delete it.",
-  [CHAT_STAFF_ONLY]: "This chat is staff only, so it can be shared only with someone who holds staff.",
-  [SESSION_NOT_OWNER]: "Only the person who started this chat can make it public or private.",
-  [SESSION_STAFF]: "This chat is staff only, so it is never made public or private.",
-};
-
-/** What a toast says of a refused or failed change: the words for its code, else the server's reason when it gave one. */
-function reason(error: unknown, fallback: string): string {
-  if (!(error instanceof ApiError)) return fallback;
-  const known = error.code === null ? undefined : REFUSALS[error.code];
-  return known ?? (error.status >= 400 && error.status < 500 && error.detail ? error.detail : fallback);
-}
 
 /**
  * Close an open pop-over when a press lands outside `root`: anywhere else on the
@@ -59,7 +43,7 @@ export function ShareChat({ head }: { readonly head: ChatHead }) {
       await queryClient.invalidateQueries({ queryKey: ["chat", "head", head.conversation_id] });
       return true;
     } catch (error) {
-      toast(reason(error, failure), { failed: true, error });
+      toast(chatRefusalMessage(error, failure), { failed: true, error });
       return false;
     } finally {
       setBusy(false);
@@ -113,7 +97,7 @@ export function PrivacySwitch({ head }: { readonly head: ChatHead }) {
       await setSessionAudience(head.session_id, isPrivate ? "open" : "private", newUuid());
       await queryClient.invalidateQueries({ queryKey: ["chat", "head", head.conversation_id] });
     } catch (error) {
-      toast(reason(error, isPrivate ? "Could not make this chat public." : "Could not make this chat private."), { failed: true, error });
+      toast(chatRefusalMessage(error, isPrivate ? "Could not make this chat public." : "Could not make this chat private."), { failed: true, error });
     } finally {
       setBusy(false);
     }
@@ -147,7 +131,7 @@ export function DeleteChat({ head, onDeleted }: { readonly head: ChatHead; reado
       setConfirming(false);
       onDeleted();
     } catch (error) {
-      toast(reason(error, "Could not delete this chat."), { failed: true, error });
+      toast(chatRefusalMessage(error, "Could not delete this chat."), { failed: true, error });
     } finally {
       setBusy(false);
     }

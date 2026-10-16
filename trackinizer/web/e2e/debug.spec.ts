@@ -66,7 +66,7 @@ test("a render crash shows what happened, with Copy details and Reload; the deta
 
   await page.unroute("**/api/meta/enums");
   await page.getByRole("button", { name: "Reload" }).click();
-  await expect(page.getByLabel("Signed in")).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Account: / })).toBeVisible();
 });
 
 test("a read the server refuses shows Copy details with the id it echoed", async ({ page, allowErrors }) => {
@@ -126,7 +126,7 @@ test("a write the server refuses shows Copy details with the id it echoed", asyn
 test("the error guard fails a test whose page throws, unless the test allowed it", async ({ page, context }) => {
   test.fail();
   await page.goto("/app/");
-  await expect(page.getByLabel("Signed in")).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Account: / })).toBeVisible();
   const thrown = context.waitForEvent("weberror");
   await page.evaluate(() => {
     setTimeout(() => {

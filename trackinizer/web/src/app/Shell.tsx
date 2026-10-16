@@ -1,4 +1,4 @@
-import { Suspense, useCallback, useRef, useState } from "react";
+import { Suspense, useState } from "react";
 import { createCommands } from "../commands/create";
 import { PaletteContext, usePaletteState } from "../commands/palette";
 import { useCommands } from "../commands/registry";
@@ -13,11 +13,9 @@ import { ActivityView, AdminView, ConsoleView, CreateView, DetailView, GraphView
 import { BarStack, OfflineBar, PausedBar } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { kindLook } from "../ui/kinds";
-import { panelCommand, usePanel } from "../ui/panel";
-import { RAIL_FOLD_AFTER_MS, useHoverOpen } from "../visuals/hoverOpen";
-import { EmptyState, OpenDrawerContext, ViewHeader } from "../ui/view";
+import { EmptyState, ViewHeader } from "../ui/view";
 import { useMeta, useProfile, useWriteMode } from "./boot";
-import { SIDEBAR, Sidebar } from "./Sidebar";
+import { TopBar } from "../topbar/TopBar";
 
 /**
  * The agent canvas around the views, for users who have not opted out
@@ -41,16 +39,14 @@ const ChatColumn = lazyView(() => import("../visuals/ChatColumn"), (module) => m
 /** A route that shows a page; a new inquiry's form, Settings and Admin show over one. */
 type ViewRoute = Exclude<Route, { name: "new" | "settings" | "admin" }>;
 
-/** Settings and Admin: a sheet over the page, half its width, from the sidebar's rail. */
+/** Settings and Admin: a sheet over the page, half its width, from its left edge. */
 type SheetRoute = Extract<Route, { name: "settings" | "admin" }>;
 
 /**
- * The signed-in app: the sidebar, the bars, the current route's view, and the
- * palette and the create form, with the shell's own commands. The sidebar
- * stands at the canvas's left edge: right of Chat when Chat is at the left,
- * leftmost when Chat is at the right, and leftmost too with no canvas. It is a
- * rail of its icons that opens over the workbench while hovered, or pinned
- * open; narrow, it is a drawer whether collapsed or not.
+ * The signed-in app: the top bar, the bars, the current route's view, and the
+ * palette and the create form, with the shell's own commands. The top bar
+ * stands over everything; under it, Chat's column and the canvas around the
+ * page, or the page alone with no canvas.
  */
 export function Shell() {
   const { route, navigate } = useRouter();
@@ -67,22 +63,6 @@ export function Shell() {
   // No route opens the palette: a search link opens the search page.
   const palette = usePaletteState(null, () => {});
   const canvasLoaded = useLoaded(Canvas, visualWorkspaceEnabled);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const openDrawer = useCallback(() => setDrawerOpen(true), []);
-  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
-  const sidebar = usePanel(SIDEBAR);
-  // A rail opens over the workbench while the pointer rests on it or the keyboard is in it, and folds soon after both leave.
-  const dock = useRef<HTMLDivElement>(null);
-  const peek = useHoverOpen(dock, { foldAfterMs: RAIL_FOLD_AFTER_MS });
-  const peeking = sidebar.collapsed && peek.open;
-  const navigated = () => {
-    closeDrawer();
-    peek.set(false);
-  };
-  const openWorkbench = () => {
-    peek.set(true);
-    requestAnimationFrame(() => dock.current?.querySelector<HTMLElement>(".workbench-slot input:not(:disabled), .workbench-slot button:not(:disabled)")?.focus());
-  };
 
   useCommands([
     {
@@ -123,17 +103,10 @@ export function Shell() {
     ...(writable
       ? createCommands(creatable, createKindFor(background, creatable), (kind) => navigate({ name: "new", kind }))
       : []),
-    panelCommand(sidebar),
   ]);
 
-  // With the canvas, Chat's row holds the rail, beside the canvas; without it, the app's grid does.
-  const chatRow = visualWorkspaceEnabled && canvasLoaded;
-  const rail = (
-    <div ref={dock} className="sidebar-dock">
-      <Sidebar onNavigate={navigated} onWorkbench={openWorkbench} panel={sidebar} />
-    </div>
-  );
-  // With the canvas, the sheet opens over the canvas's page from the rail's edge (ChatColumn); without it, over the main area.
+  const withCanvas = visualWorkspaceEnabled && canvasLoaded;
+  // With the canvas, the sheet opens over the canvas's page (ChatColumn); without it, over the main area.
   const sheetView = sheet ? (
     <aside className="sheet" aria-label={sheet.name === "settings" ? "Your settings" : "Admin"}>
       <Suspense fallback={<div className="view" aria-busy="true" />}>
@@ -144,10 +117,8 @@ export function Shell() {
 
   return (
     <PaletteContext value={palette}>
-      <OpenDrawerContext value={openDrawer}>
-        <div className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}${peeking ? " sidebar-peek" : ""}${chatRow ? " rail-in-row" : ""}`}>
-          {chatRow ? null : rail}
-          <div className="drawer-scrim" onClick={closeDrawer} />
+        <div className={withCanvas ? "app with-canvas" : "app"}>
+          <TopBar stations={withCanvas} />
           <main className="main">
             <BarStack>
               <OfflineBar />
@@ -157,7 +128,7 @@ export function Shell() {
                 {/* The canvas holds the shell's busy frame until its chunk is in, then mounts the page once, inside it. */}
                 {visualWorkspaceEnabled ? (
                   canvasLoaded ? (
-                    <ChatColumn rail={rail} sheet={sheetView}><Canvas><RouteView route={view ?? background} /></Canvas></ChatColumn>
+                    <ChatColumn sheet={sheetView}><Canvas><RouteView route={view ?? background} /></Canvas></ChatColumn>
                   ) : (
                     <div className="view" aria-busy="true" />
                   )
@@ -165,7 +136,7 @@ export function Shell() {
                   <RouteView route={view ?? background} />
                 )}
               </Suspense>
-              {chatRow ? null : sheetView}
+              {visualWorkspaceEnabled ? null : sheetView}
             </BarStack>
           </main>
         </div>
@@ -175,7 +146,6 @@ export function Shell() {
           </Suspense>
         ) : null}
         <PaletteView />
-      </OpenDrawerContext>
     </PaletteContext>
   );
 }

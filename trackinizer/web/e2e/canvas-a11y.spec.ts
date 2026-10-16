@@ -5,7 +5,7 @@ import { expect, setPreferences, test } from "./fixtures";
 
 // axe's WCAG 2.0 and 2.1 A and AA rules (the a11y spec's) on the default layout:
 // the canvas, with Chat beside a list and a detail, with a conversation open and
-// its station menu open, and with the partner picker open, at 1280 and 390 px,
+// the top bar's station menu open, and with the partner picker open, at 1280 and 390 px,
 // in both themes. The conversation and the sessions are served by the test, since
 // no partner runs on the e2e server.
 
@@ -80,7 +80,7 @@ for (const theme of ["dark", "light"] as const) {
         await audit(page, theme, `a detail with Chat, ${size.width} px`);
       });
 
-      test("Chat with a conversation open, and its station menu open", async ({ page, request }) => {
+      test("Chat with a conversation open, and the station menu open", async ({ page, request }) => {
         const { issue } = await seed(page, request);
         await page.goto(`/app/#/lookup/${issue}`);
         await expect(page.getByText("Two things:")).toBeVisible();

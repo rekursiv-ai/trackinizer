@@ -67,8 +67,6 @@ test("the Terminal style draws Chat at the user's font size, 16pt as in the prof
 });
 
 test("the Terminal style draws Chat as the GNOME terminal profile, from the palette", async ({ page }) => {
-  // A second station, older than the chat's, for the menu's highlight to move to.
-  expect((await page.request.post("/api/workspaces/new")).ok()).toBe(true);
   const panel = await open(page, "terminal");
   expect(await colour(panel)).toBe("rgb(0, 255, 0)");
   expect(await colour(panel, "background-color")).toBe("rgb(0, 0, 0)");
@@ -98,17 +96,6 @@ test("the Terminal style draws Chat as the GNOME terminal profile, from the pale
   expect(await colour(panel.locator(".md pre .hljs-keyword").first())).toBe("rgb(246, 97, 81)");
   expect(await colour(panel.locator(".md-copy").first(), "display")).toBe("none");
   expect(await colour(panel.locator(".chat-line-assistant"), "border-radius")).toBe("0px");
-  // The station menu lies over the conversation, so it keeps the terminal's black, and the open station reads in yellow.
-  await panel.getByRole("button", { name: "All stations" }).click();
-  const menu = panel.locator(".station-menu");
-  expect(await colour(menu, "background-color")).toBe("rgb(0, 0, 0)");
-  // The menu opens on the open station: highlighted, it reads black on green.
-  const current = menu.locator(".station-option[aria-current=\"true\"]");
-  expect([await colour(current), await colour(current, "background-color")]).toEqual(["rgb(0, 0, 0)", "rgb(0, 255, 0)"]);
-  // With the highlight moved off it, the open station reads in yellow.
-  await page.keyboard.press("ArrowDown");
-  await expect(current).not.toHaveClass(/station-option-active/);
-  expect(await colour(current)).toBe("rgb(233, 173, 12)");
 });
 
 test("the Default style draws Chat as it always has: no prompt, no terminal colours", async ({ page }) => {

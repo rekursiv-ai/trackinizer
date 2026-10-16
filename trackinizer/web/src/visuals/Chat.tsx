@@ -15,8 +15,8 @@ import { Markdown } from "../markdown/Markdown";
 import { parseHash } from "../router/route";
 import { useHash, validHash, visited } from "../router/trail";
 import { HelperCommands } from "../settings/ChatPartner";
-import { stationForChat } from "../api/stations";
-import { StationTabs } from "../stations/StationTabs";
+import { stationForChat, type StationSummary } from "../api/stations";
+import { closeStation, STATIONS_KEY } from "../stations/actions";
 import { showStation } from "../stations/useStation";
 import { Icon } from "../ui/icons";
 import { type ChatPart, type Line, type LineAt, linesThrough, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
@@ -234,6 +234,8 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   /** The chat is gone: the station holds no conversation, and the stream says so to every tab. */
   function chatDeleted(conversation: string) {
     queryClient.setQueryData<WorkspaceState>(["workspace", workspaceId], (held) => held && { ...held, conversation_id: null });
+    queryClient.setQueryData<StationSummary[]>(STATIONS_KEY, (held) =>
+      held?.map((each) => (each.conversation_id === conversation ? { ...each, conversation_id: null } : each)));
     queryClient.removeQueries({ queryKey: ["chat", "head", conversation] });
     void queryClient.invalidateQueries({ queryKey: ["stations"] });
   }
@@ -325,7 +327,6 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
 
   return (
     <section className="chat-panel" aria-label="Chat">
-      {workspace && <StationTabs station={workspace} />}
       <header className="chat-head">
         {head.data && head.data.audience !== "open" && !(head.data.may_hide && head.data.audience === "private")
           && <ChatBadge audience={head.data.audience} />}
@@ -334,11 +335,17 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
             <strong>{partnerName(partner)}</strong>
             <span className="chat-partner-note">{partnerNote(partner)}</span>
           </>}
+          {/* The station's tabs stand in the top bar now; its name stays here, so Chat says whose it is. */}
+          {workspace && <span className="chat-station" title={workspace.name}>{workspace.name}</span>}
         </div>
         <div className="chat-head-actions" role="toolbar" aria-label="Chat controls">
           {head.data?.may_hide && <PrivacySwitch head={head.data} />}
           {head.data?.may_share && <ShareChat head={head.data} />}
-          {head.data?.may_delete && <DeleteChat head={head.data} onDeleted={() => chatDeleted(head.data!.conversation_id)} />}
+          {head.data?.may_delete && <DeleteChat head={head.data} onDeleted={() => {
+            chatDeleted(head.data!.conversation_id);
+            // Deleting a chat closes its station tab, as closing any tab does, moving to the one beside it.
+            if (workspaceId) void closeStation(queryClient, workspaceId);
+          }} />}
           {/* Hidden, Chat is open over the page by hovering its strip; pinning stands it beside the page again. */}
           {hidden
             ? <button className="btn ghost" type="button" title="Pin Chat beside the page"

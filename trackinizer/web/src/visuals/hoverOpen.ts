@@ -7,17 +7,9 @@ export const OPEN_AFTER_MS = 120;
 export const FOLD_AFTER_MS = 300;
 
 /**
- * How long the sidebar's opened rail stays open once both have left. The opened rail
- * touches the rail, with no gap a pointer must cross, so a pointer off it has left
- * it: the wait only forgives an overshoot of the edge.
- */
-export const RAIL_FOLD_AFTER_MS = 100;
-
-/**
  * Whether something that folds on its own stands open: while the pointer is over
  * the tile (or over the strip that opens it, which takes `handlers`) or the
- * keyboard is in its contents, and until `foldAfterMs` (`FOLD_AFTER_MS` unless
- * given) after both have left.
+ * keyboard is in its contents, and until `FOLD_AFTER_MS` after both have left.
  * What holds it open is read when the wait ends, not when it starts, so a
  * pointer that left and came back, or a focus that moved within it, folds
  * nothing. A touch has no hover: it opens and folds by `set`.
@@ -29,13 +21,13 @@ export const RAIL_FOLD_AFTER_MS = 100;
  *
  * The tile is watched by the page's own pointer and focus events, not React's.
  * React tells an element of these by the component tree, where what a portal
- * draws into the tile (the canvas's controls, in the sidebar) is not in it, so
+ * draws into the tile (a canvas's controls, say) is not in it, so
  * the pointer resting on those would fold the tile. While `enabled` is false the
  * tile is not watched: the pointer on it holds nothing open.
  */
 export function useHoverOpen(
   tile: RefObject<HTMLElement | null>,
-  { enabled = true, foldAfterMs = FOLD_AFTER_MS }: { readonly enabled?: boolean; readonly foldAfterMs?: number } = {},
+  { enabled = true }: { readonly enabled?: boolean } = {},
 ): {
   readonly open: boolean;
   /** Open or fold at once. Folding takes the keyboard out of the tile; what was typed in it stays. */
@@ -51,8 +43,6 @@ export function useHoverOpen(
   const hovered = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // A ref, as the tile's listeners keep the first render's handlers.
-  const foldAfter = useRef(foldAfterMs);
-  foldAfter.current = foldAfterMs;
   useEffect(() => () => clearTimeout(timer.current), []);
   // These read only refs and `setOpen`, so the tile's listeners may keep the first render's.
   const settle = (afterMs: number) => {
@@ -62,14 +52,14 @@ export function useHoverOpen(
   const hover = (on: boolean, pointerType: string) => {
     if (pointerType === "touch") return;
     hovered.current = on;
-    settle(on ? OPEN_AFTER_MS : foldAfter.current);
+    settle(on ? OPEN_AFTER_MS : FOLD_AFTER_MS);
   };
   // Only the first move counts: the rest would put off the opening, or open again what `set` folded.
   const moved = (pointerType: string) => {
     if (!hovered.current) hover(true, pointerType);
   };
   // The tile's element, followed after each commit: a tile mounted again elsewhere,
-  // as the sidebar's rail is when the canvas comes, is watched where it now stands.
+  // as Chat's column is when the canvas comes, is watched where it now stands.
   const [element, setElement] = useState<HTMLElement | null>(null);
   useLayoutEffect(() => {
     if (tile.current !== element) setElement(tile.current);
@@ -78,7 +68,7 @@ export function useHoverOpen(
     if (!enabled || !element) return;
     const move = (event: globalThis.PointerEvent) => moved(event.pointerType);
     const leave = (event: globalThis.PointerEvent) => hover(false, event.pointerType);
-    const blur = () => settle(foldAfter.current);
+    const blur = () => settle(FOLD_AFTER_MS);
     element.addEventListener("pointermove", move);
     element.addEventListener("pointerleave", leave);
     element.addEventListener("focusout", blur);
@@ -102,7 +92,7 @@ export function useHoverOpen(
     handlers: {
       onPointerMove: (event) => moved(event.pointerType),
       onPointerLeave: (event) => hover(false, event.pointerType),
-      onBlur: () => settle(foldAfter.current),
+      onBlur: () => settle(FOLD_AFTER_MS),
     },
   };
 }

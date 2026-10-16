@@ -6,12 +6,13 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 import asyncio
 import json
 import uuid
 
+from fastapi import HTTPException
 from starlette.requests import Request
 from treekle import from_plain, json_loads
 
@@ -48,6 +49,7 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
+from trackinizer.server.api.workspace_routes import _current_state
 from trackinizer.server.chat_hub import (
     ChatHub,
     HighlightFrame,
@@ -324,6 +326,100 @@ async def test_an_assistant_that_stops_polling_is_not_messageable(
             headers={"Idempotency-Key": str(uuid.uuid4())},
         )
     ).status_code == 409
+
+
+def test_current_state_reads_the_canvas_with_its_ids_or_raises_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fast read of ``_current_state``: it passes the owner and ids through, or 404s.
+
+    No marker, so this runs under the mutation gate, where the route tests (db_pglite)
+    are deselected.
+    """
+    engine, inbound, assistant, state = object(), object(), object(), object()
+    owner, found, missing = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    request = cast(Request, object())
+    seen: list[tuple[object, dict[str, object]]] = []
+
+    # Each reader is passed the request, so a mutant that drops or swaps that argument
+    # is caught here rather than slipping through a fake that ignores it.
+    def give_engine(got: Request) -> object:
+        assert got is request
+        return engine
+
+    def give_inbound(got: Request) -> object:
+        assert got is request
+        return inbound
+
+    def give_assistant(got: Request) -> object:
+        assert got is request
+        return assistant
+
+    async def read(engine_arg: object, **kwargs: object) -> object:
+        seen.append((engine_arg, kwargs))
+        return state if kwargs["workspace_id"] == found else None
+
+    monkeypatch.setattr(workspace_routes, "engine_of", give_engine)
+    monkeypatch.setattr(workspace_routes, "get_inbound", give_inbound)
+    monkeypatch.setattr(workspace_routes, "get_assistant", give_assistant)
+    monkeypatch.setattr(workspace_routes, "read_workspace", read)
+
+    got = asyncio.run(_current_state(request, user_id=owner, workspace_id=found))
+    assert got is state
+    assert seen[-1] == (
+        engine,
+        {
+            "user_id": owner,
+            "workspace_id": found,
+            "inbound": inbound,
+            "assistant": assistant,
+        },
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(_current_state(request, user_id=owner, workspace_id=missing))
+    assert caught.value.status_code == 404
+    assert caught.value.detail == "Workspace not found"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_station_is_deleted_once_its_chat_is_gone_and_a_held_chat_is_refused(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """DELETE removes an emptied station; a held chat is 409, an unknown id 404."""
+    client, store = pglite_route_client
+    workspace_id = await _canvas(client, store)
+
+    assert (await client.delete(f"/api/workspaces/{uuid.uuid4()}")).status_code == 404
+
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE visual_workspaces SET station = station || "
+            "jsonb_build_object('conversation_id', $2::text) WHERE id = $1",
+            uuid.UUID(workspace_id),
+            str(uuid.uuid4()),
+        )
+    held = await client.delete(f"/api/workspaces/{workspace_id}")
+    assert held.status_code == 409, held.text
+    async with store.engine.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT 1 FROM visual_workspaces WHERE id = $1",
+                uuid.UUID(workspace_id),
+            )
+            is not None
+        )
+
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE visual_workspaces SET station = station - 'conversation_id' "
+            "WHERE id = $1",
+            uuid.UUID(workspace_id),
+        )
+    gone = await client.delete(f"/api/workspaces/{workspace_id}")
+    assert gone.status_code == 204, gone.text
+    assert (await client.get(f"/api/workspaces/{workspace_id}")).status_code == 404
 
 
 async def _canvas(client: httpx2.AsyncClient, store: Store) -> str:

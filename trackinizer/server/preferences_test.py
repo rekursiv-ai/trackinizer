@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 _DEFAULTS: dict[str, JsonValue] = {
     "theme": "dark",
+    "skin": "default",
     "chat_style": "default",
     "chat_side": "left",
     "highlight_mentions": True,
@@ -102,6 +103,12 @@ def test_the_keys_set_override_their_defaults_and_unknown_ones_are_dropped() -> 
 def test_a_value_its_key_does_not_take_is_refused() -> None:
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"chat_side": "middle"})
+
+
+def test_a_skin_is_one_of_the_named_looks() -> None:
+    assert Preferences.model_validate({"skin": "dos"}).skin == "dos"
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"skin": "cyber"})
 
 
 def test_the_assistants_keys_are_exactly_the_settings_the_document_shows() -> None:

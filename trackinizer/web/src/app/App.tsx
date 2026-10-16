@@ -120,18 +120,15 @@ function Boot() {
   );
 }
 
-/** The app's frame before boot: the logo in the sidebar and an empty panel. */
+/** The app's frame before boot: the logo in the top bar and an empty panel. */
 function Frame({ busy = false, children }: { busy?: boolean; children?: ReactNode }) {
   return (
     <div className="app" aria-busy={busy}>
-      <nav className="sidebar" aria-label="Sidebar">
-        <div className="ws-row">
-          <span className="ws-switch">
-            <Logo />
-            Trackinizer
-          </span>
-        </div>
-      </nav>
+      <div className="topbar">
+        <span className="topbar-logo" title="Trackinizer">
+          <Logo />
+        </span>
+      </div>
       <main className="main">{children}</main>
     </div>
   );

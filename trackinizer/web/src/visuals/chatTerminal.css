@@ -27,11 +27,8 @@
 :root[data-chat-style="terminal"] .chat-panel .btn, :root[data-chat-style="terminal"] .chat-panel .icon-btn { border: 1px solid var(--t-fg); }
 :root[data-chat-style="terminal"] .chat-panel ::placeholder { color: var(--t-bright-black); opacity: 1; }
 :root[data-chat-style="terminal"] .chat-panel a { color: var(--t-bright-blue); text-decoration: underline; }
+/* Share and Delete open over the conversation in the menu's frame, so they keep the terminal's black. */
 :root[data-chat-style="terminal"] .chat-panel .station-menu { background: var(--t-bg); border: 1px solid var(--t-fg); }
-/* The station the arrow keys are on reads in reverse video; the open one in the yellow of the prompt's [station]. */
-:root[data-chat-style="terminal"] .chat-panel .station-option[aria-current="true"] { color: var(--t-bright-yellow); font-weight: bold; }
-/* After the open one's yellow, so the highlight stays black on green where both are the same row. */
-:root[data-chat-style="terminal"] .chat-panel .station-option.station-option-active { background: var(--t-fg); color: var(--t-bg); }
 :root[data-chat-style="terminal"] .chat-panel .chat-lines { gap: 1lh; }
 :root[data-chat-style="terminal"] .chat-panel .chat-line { align-self: stretch; max-width: none; padding: 0; border: 0; }
 :root[data-chat-style="terminal"] .chat-panel .chat-line-author { display: none; }

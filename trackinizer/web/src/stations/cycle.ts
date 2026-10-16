@@ -4,10 +4,14 @@ export type Cyclable = { readonly id: string; readonly name: string; readonly cr
 /** The name a station gets until the user renames it. */
 export const UNNAMED = /^unnamed-workstream#\d+$/;
 
+/** The stations in the order their tabs stand: as they were made (by id when made together), so opening one reorders nothing. */
+export function inTabOrder<T extends { readonly id: string; readonly created_at: string }>(stations: readonly T[]): T[] {
+  return stations.toSorted((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+}
+
 /** The stations the user renamed, in the order they were made (by id when made together), so opening one reorders nothing. */
 export function renamed<T extends Cyclable>(stations: readonly T[]): T[] {
-  return stations.filter((each) => !UNNAMED.test(each.name))
-    .toSorted((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  return inTabOrder(stations.filter((each) => !UNNAMED.test(each.name)));
 }
 
 /**

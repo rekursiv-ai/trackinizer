@@ -1,0 +1,127 @@
+/* The app's one bar (TopBar.tsx), over the main area: the logo, Go, Search and New, the stations as tab groups, then the Workbench and the account. */
+.topbar {
+  display: flex; flex: 0 0 auto; align-items: center; gap: 4px; height: 44px; min-width: 0;
+  padding: 0 10px; padding-top: env(safe-area-inset-top, 0px); position: relative; z-index: 45;
+}
+.topbar-logo { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--radius); flex: none; }
+.topbar-logo:hover { background: var(--surface-hover); }
+.topbar-rule { flex: none; width: 1px; height: 18px; margin: 0 6px; background: var(--line-strong); }
+.topbar-stations { display: flex; flex: 1; min-width: 0; align-items: center; }
+
+/* A menu from a button of the bar: under it, over the main area. */
+.topbar-pop-root { position: relative; flex: none; }
+.topbar-pop {
+  position: absolute; z-index: 50; top: calc(100% + 6px); left: 0; display: flex; flex-direction: column; gap: 1px;
+  width: 248px; max-height: calc(100vh - 64px); padding: 6px; overflow-y: auto;
+  border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface-overlay); box-shadow: 0 16px 48px #0008;
+}
+.topbar-pop[hidden] { display: none; }
+.topbar-pop-label { padding: 8px 8px 2px; font-size: 11px; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.topbar-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; min-height: 30px; padding: 4px 8px; border-radius: var(--radius);
+  font-size: 13px; font-weight: 500; color: var(--ink-muted); text-align: left;
+}
+.topbar-item .ic { color: var(--muted); }
+.topbar-item:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+.topbar-item.is-current { background: var(--accent-soft); color: var(--text); }
+.topbar-item:disabled { opacity: .45; cursor: default; }
+.topbar-item > .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workbench-menu { left: auto; right: 0; width: 300px; }
+
+/* ---- Stations as tab groups (StationGroups.tsx) ---- */
+/* Positioned so the delete confirm drops below the bar, clear of the strip's overflow. */
+.station-groups { position: relative; display: flex; flex: 1; min-width: 0; align-items: center; gap: 4px; }
+.station-groups-strip { display: flex; flex: 0 1 auto; align-items: center; gap: 2px; min-width: 0; padding: 4px 0; overflow-x: auto; scrollbar-width: none; }
+.station-groups-strip::-webkit-scrollbar { display: none; }
+.station-group { display: flex; flex: none; align-items: center; border-radius: 8px; transition: box-shadow .2s; }
+.station-group.is-open { box-shadow: inset 0 -2px 0 var(--group); border-radius: 8px 8px 0 0; }
+.station-group-title {
+  display: flex; align-items: center; gap: 6px; height: 26px; max-width: 22em; padding: 0 10px; border-radius: 7px;
+  background: color-mix(in srgb, var(--group) 16%, transparent); color: var(--text);
+  font-size: 13px; font-weight: 600; white-space: nowrap; transition: background .15s, color .15s;
+}
+.station-group-title:hover { background: color-mix(in srgb, var(--group) 26%, transparent); }
+.station-group.is-current .station-group-title { background: var(--group); color: var(--on-group); }
+/* The dot and the tint carry the group's colour; its text stays the theme's, which reads on any tint. */
+.station-group-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--group); }
+.station-group.is-current .station-group-dot { background: currentColor; }
+.station-group-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.station-group-count { font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.station-group-here { max-width: 12em; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.station-group-name { width: 14em; height: 26px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; outline: 0; }
+/* The tabs behind a title: the width springs open to what they need (set in GroupTabs), each tab following a beat behind the one before, as macOS's toolbar does. */
+.station-group-tabs { width: 0; overflow: hidden; transition: width .34s cubic-bezier(.22, 1, .36, 1); }
+.station-group-tabs-inner { display: flex; align-items: center; width: max-content; padding-right: 2px; }
+.station-tab, .station-tab-new, .station-tab-slot {
+  opacity: 0; transform: translateX(-10px) scale(.94); transform-origin: left center;
+  transition: opacity .18s ease, transform .3s cubic-bezier(.22, 1, .36, 1), background .12s;
+}
+.station-group.is-open :is(.station-tab, .station-tab-new, .station-tab-slot) { opacity: 1; transform: none; transition-delay: calc(var(--i, 0) * 30ms); }
+.station-tab-slot { display: flex; margin-left: 2px; }
+.station-tab { display: flex; align-items: center; height: 28px; margin-left: 2px; padding: 0 2px 0 0; border-radius: 6px; color: var(--ink-muted); }
+.station-tab:hover { background: var(--surface-hover); color: var(--text); }
+.station-tab[aria-current="true"] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
+.station-tab-open { max-width: 14em; padding: 0 6px 0 10px; overflow: hidden; color: inherit; font-size: 13px; line-height: 28px; text-overflow: ellipsis; white-space: nowrap; }
+.station-tab-open:disabled { opacity: .5; cursor: default; }
+.station-tab-close { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; color: var(--muted); opacity: 0; }
+.station-tab:hover .station-tab-close, .station-tab[aria-current="true"] .station-tab-close, .station-tab-close:focus-visible { opacity: 1; }
+.station-tab-close:hover { background: var(--surface-overlay); color: var(--text); }
+@media (hover: none) { .station-tab-close { opacity: 1; } }
+.station-tab-new { display: grid; place-items: center; width: 26px; height: 26px; margin-left: 2px; border-radius: 6px; color: var(--muted); }
+.station-tab-new:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+.station-tab-new:disabled { opacity: .4; cursor: default; }
+.station-group-new {
+  display: flex; flex: none; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border: 1px dashed var(--line-strong); border-radius: 7px;
+  color: var(--muted); font-size: 12px; white-space: nowrap;
+}
+.station-group-new:hover { border-color: var(--muted); color: var(--text); }
+/* Delete a workspace, by its title: out of the way until the group is hovered or holds focus, like a tab's close. */
+.station-group-del { display: grid; place-items: center; width: 20px; height: 26px; margin-left: 1px; border-radius: 6px; color: var(--muted); opacity: 0; flex: none; transition: opacity .12s, color .12s, background .12s; }
+.station-group:hover .station-group-del, .station-group:focus-within .station-group-del, .station-group-del:focus-visible { opacity: 1; }
+.station-group-del:hover { background: var(--surface-hover); color: var(--error-text); }
+@media (hover: none) { .station-group-del { opacity: 1; } }
+/* The delete confirm: below the bar, clear of the strip's overflow (the groups are positioned for it). */
+.station-delete { position: absolute; z-index: 50; top: calc(100% + 4px); left: 0; display: flex; flex-direction: column; gap: 10px; width: min(300px, 90vw); padding: 12px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
+.station-delete-note { margin: 0; font-size: 13px; line-height: 1.4; color: var(--text); }
+.station-delete-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.station-groups > .station-problem { flex: none; max-width: 16em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- The account (AccountMenu.tsx) ---- */
+.account { margin-left: 4px; }
+.account-button { display: flex; align-items: center; gap: 8px; height: 32px; padding: 2px; border-radius: 16px; transition: background .15s, padding .22s; }
+.account-button .avatar { width: 28px; height: 28px; font-size: 13px; }
+/* The email and role slide out while the pointer rests on the avatar or the menu is open. */
+.account-reveal { display: flex; align-items: center; gap: 8px; max-width: 0; overflow: hidden; opacity: 0; white-space: nowrap; font-size: 13px; color: var(--ink-muted); transition: max-width .26s cubic-bezier(.22, 1, .36, 1), opacity .18s; }
+.account-button:hover, .account-button:focus-visible, .account-button[aria-expanded="true"] { background: var(--surface-hover); padding-right: 10px; }
+.account-button:is(:hover, :focus-visible, [aria-expanded="true"]) .account-reveal { max-width: 320px; opacity: 1; }
+.account-menu { left: auto; right: 0; width: 320px; max-width: calc(100vw - 20px); border-radius: 16px; padding: 8px; }
+.account-head { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 8px 10px; text-align: center; }
+.avatar-large { width: 56px; height: 56px; font-size: 24px; }
+.account-head-email { margin-top: 4px; font-size: 14px; overflow-wrap: anywhere; }
+.account-head-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.account-section { display: flex; flex-direction: column; gap: 1px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.skin-grid, .theme-choice { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px 8px 6px; }
+.skin-option { padding: 5px 4px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; color: var(--ink-muted); }
+.skin-option:hover { background: var(--surface-hover); color: var(--text); }
+.skin-option[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.account-other { display: flex; align-items: center; }
+.account-other > .topbar-item { flex: 1; min-width: 0; }
+.account-other .avatar { width: 26px; height: 26px; font-size: 12px; }
+.account-other .label { display: flex; flex-direction: column; line-height: 1.3; }
+.account-other-email { overflow: hidden; text-overflow: ellipsis; }
+.account-other-meta { font-size: 11.5px; font-weight: 400; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.account-kind { flex: none; padding: 1px 6px; border: 1px solid var(--line-strong); border-radius: 4px; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.account-forget { opacity: 0; }
+.account-other:hover .account-forget, .account-forget:focus-visible { opacity: 1; }
+@media (hover: none) { .account-forget { opacity: 1; } }
+.account-sign-out, .account-sign-out .ic { color: var(--error-text); }
+
+@media (max-width: 760px) {
+  .topbar { padding-left: max(8px, env(safe-area-inset-left, 0px)); padding-right: max(8px, env(safe-area-inset-right, 0px)); }
+  .station-group-here, .station-group-new > span { display: none; }
+  .account-button:hover:not([aria-expanded="true"]) { padding-right: 2px; background: none; }
+  .account-button:hover:not([aria-expanded="true"]) .account-reveal { max-width: 0; opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .station-group-tabs, .station-tab, .station-tab-new, .station-tab-slot, .station-group-del, .account-reveal, .account-button { transition: none; }
+}

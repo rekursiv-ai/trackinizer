@@ -47,6 +47,7 @@ pytestmark = [
 
 _DEFAULTS = {
     "theme": "dark",
+    "skin": "default",
     "chat_style": "default",
     "chat_side": "left",
     "highlight_mentions": True,

@@ -130,7 +130,7 @@ for (const screen of [{ width: 1280, height: 800 }, { width: 1440, height: 900 }
     await page.waitForTimeout(500);
     await page.screenshot({ path: `${SHOTS}/five-${screen.width}.png` });
     expect(await overflow(page)).toEqual([]);
-    await expect(page.locator(".station-name"), "Chat's station name").toBeInViewport({ ratio: 1 });
+    await expect(page.locator(".chat-station"), "Chat's station name").toBeInViewport({ ratio: 1 });
     await expect(page.getByRole("button", { name: "Move Chat to the right" }), "Chat's side button").toBeInViewport({ ratio: 1 });
     await expect(page.getByRole("textbox", { name: "Message" })).toBeInViewport({ ratio: 1 });
   });

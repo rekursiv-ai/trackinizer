@@ -8,8 +8,8 @@ import { type LiveQuery, Serial } from "./serial";
 
 /** A query's place in the hub: push ids to it directly, or leave. */
 export type Registration = {
-  /** Queue `ids` for this query alone, such as stale rows that came on screen. */
-  readonly push: (ids: Iterable<string>) => void;
+  /** Queue `ids` for this query alone; `gap` catches up on changes it missed. */
+  readonly push: (ids: Iterable<string>, gap?: boolean) => void;
   readonly dispose: () => void;
 };
 

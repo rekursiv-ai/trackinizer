@@ -65,12 +65,13 @@ test("a viewer sees no Admin entry or command, a link to Admin is refused, and n
     if (new URL(sent.url()).pathname.startsWith("/api/admin/")) admin.push(sent);
   });
   await page.goto("/app/#/list/Issue");
-  const sidebar = page.getByRole("navigation", { name: "Sidebar" });
-  // The sidebar is a rail until it is opened, and the role is not shown on a rail.
-  await sidebar.getByRole("button", { name: "Expand sidebar" }).click();
-  await expect(sidebar.getByText("viewer")).toBeVisible();
-  await expect(sidebar.getByRole("link", { name: "Your settings" })).toBeVisible();
-  await expect(sidebar.getByRole("link", { name: "Admin" })).toHaveCount(0);
+  // The account names the role; its menu has Your settings and, for a viewer, no Admin.
+  await page.getByRole("banner", { name: "App" }).getByRole("button", { name: /^Account: .*, viewer$/ }).click();
+  const account = page.getByRole("dialog", { name: "Account" });
+  await expect(account.getByText("viewer")).toBeVisible();
+  await expect(account.getByRole("link", { name: "Your settings" })).toBeVisible();
+  await expect(account.getByRole("link", { name: "Admin" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
   await page.keyboard.press("ControlOrMeta+k");
   const palette = page.getByRole("dialog", { name: "Command menu" });

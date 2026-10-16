@@ -113,6 +113,27 @@ test("a theme chosen updates the page at once and is kept in the user's preferen
   expect(localStorage.getItem("trackinizer.theme")).toBeNull();
 });
 
+test("a skin chosen in Appearance shows at once and is kept; under a fixed skin the theme waits, as it changes nothing", async () => {
+  const server = serveAccount(ADA);
+  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
+  const appearance = within(screen.getByRole("region", { name: "Appearance" }));
+  const skin = appearance.getByRole<HTMLSelectElement>("combobox", { name: "Skin" });
+  const theme = appearance.getByRole<HTMLSelectElement>("combobox", { name: "Theme" });
+  expect(skin.value).toBe("default");
+  expect(theme.disabled).toBe(false);
+  expect(Array.from(skin.options, (option) => option.textContent)).toEqual([
+    "Default", "Retro 70s", "Sci-fi", "DOS 80s", "8-bit Console", "Matrix", "Hacker", "Minimalist", "Brutalist",
+  ]);
+  fireEvent.change(skin, { target: { value: "dos" } });
+  expect(document.documentElement.dataset.skin).toBe("dos");
+  expect(theme.disabled).toBe(true);
+  expect(appearance.getByText("The theme colours the Default skin only.")).toBeTruthy();
+  await waitFor(() => expect(preferenceWrites(server)).toEqual([["PATCH", { skin: "dos" }]]));
+  fireEvent.change(skin, { target: { value: "default" } });
+  expect(document.documentElement.dataset.skin).toBeUndefined();
+  expect(theme.disabled).toBe(false);
+});
+
 test("Chat style is Default until Terminal is picked, which marks the page and is kept in the user's preferences", async () => {
   const server = serveAccount(ADA);
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);

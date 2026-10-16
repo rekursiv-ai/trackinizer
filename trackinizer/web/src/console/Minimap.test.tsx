@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Histogram } from "../api/histogram";
 import type { FeedFilters } from "../api/sessions";
@@ -114,6 +115,7 @@ async function settled(act_: () => void) {
   vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], now: Date.now(), shouldClearNativeTimers: true });
   act_();
   await act(() => vi.advanceTimersByTimeAsync(500));
+  await act(() => vi.advanceTimersByTimeAsync(0));
   vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
 }
 
@@ -264,6 +266,32 @@ test("a band read that fails says why, with Retry", async () => {
   show();
   expect((await screen.findByRole("alert")).textContent).toContain("The database is down.");
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+});
+
+test.each(["Retry", "Copy details"])("the failure's %s button acts without seeking or selecting a window", async (label) => {
+  const fetch = vi.fn(async () => Response.json({ detail: "The database is down." }, { status: 503 }));
+  vi.stubGlobal("fetch", fetch);
+  const user = userEvent.setup();
+  const { onSeek, onWindow } = show();
+  await user.click(await screen.findByRole("button", { name: label }));
+  if (label === "Retry") await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+  else await screen.findByRole("button", { name: "Details copied" });
+  expect(onSeek).not.toHaveBeenCalled();
+  expect(onWindow).not.toHaveBeenCalled();
+});
+
+test("returning to Now catches up on changes received while scrolled back, without another event", async () => {
+  const hub = new LiveHub(testClient());
+  show({ hub });
+  await waitFor(() => expect(bars()).toHaveLength(3));
+  await settled(() => fireEvent.wheel(band(), { deltaY: -WIDTH }));
+  counts.set(minute(NOW - 30 * MINUTE), 7);
+  act(() => hub.open());
+  await act(() => Promise.resolve());
+  await settled(() => fireEvent.click(screen.getByRole("button", { name: "Now" })));
+  expect(bandReads()).toEqual([LAST_HOUR, spanRead(minute(NOW - 2 * HOUR), minute(NOW - HOUR) + MINUTE, MINUTE), LAST_HOUR]);
+  await waitFor(() => expect(bars().map((bar) => Number(bar.getAttribute("height")))).toEqual([88 / 7, 44, 44 / 7]));
+  hub.stop();
 });
 
 test("Home takes a narrow band to the 7-day mark; its read starts after the mark and still asks for 2 buckets", async () => {

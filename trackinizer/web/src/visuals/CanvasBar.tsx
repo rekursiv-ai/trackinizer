@@ -1,61 +1,28 @@
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icons";
-import type { CanvasTab } from "./canvasTabs";
 
 /** What the bar does; the canvas does each. */
 export type CanvasBarActions = {
   readonly back: () => void;
   readonly forward: () => void;
   readonly home: () => void;
-  readonly open: (id: string) => void;
-  readonly add: () => void;
-  readonly close: (id: string) => void;
-  readonly rename: (id: string, name: string) => void;
 };
 
 /**
- * The canvas's top bar, as a browser's: Back and Forward step through what the
+ * The canvas's top row, as a browser's: Back and Forward step through what the
  * open tab showed, Home shows what the user's `home` setting names (the graph,
- * or nothing), and the tabs each hold a canvas of their own, + making a new
- * one. A double click on a tab names it in place (Enter or leaving the field
- * keeps the name, Esc the old one); × closes a tab while another is left.
- * Everything waits while a step is on its way (`moving`).
+ * or nothing), and the station and tab on show stand beside them. The tabs
+ * themselves stand in the app's top bar, in the station's group. Everything
+ * waits while a step is on its way (`moving`).
  */
-export function CanvasBar({ tabs, open, back, forward, moving, home, canAdd, actions }: {
-  readonly tabs: readonly CanvasTab[];
-  readonly open: string;
+export function CanvasBar({ station, tab, back, forward, moving, home, actions }: {
+  readonly station: string;
+  readonly tab: string;
   readonly back: boolean;
   readonly forward: boolean;
   readonly moving: boolean;
   readonly home: "graph" | "empty";
-  readonly canAdd: boolean;
   readonly actions: CanvasBarActions;
 }) {
-  const [naming, setNaming] = useState<{ readonly id: string; readonly value: string } | null>(null);
-  const strip = useRef<HTMLElement>(null);
-
-  // The open tab stays in sight as the strip scrolls.
-  useEffect(() => {
-    strip.current?.querySelector('[aria-current="true"]')?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-  }, [open, tabs.length]);
-
-  function keep() {
-    if (!naming) return;
-    const name = naming.value.trim();
-    setNaming(null);
-    if (name && name !== tabs.find((tab) => tab.id === naming.id)?.name) actions.rename(naming.id, name.slice(0, MAX_NAME));
-  }
-
-  function onNameKey(event: KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      keep();
-    } else if (event.key === "Escape") {
-      event.stopPropagation();
-      setNaming(null);
-    }
-  }
-
   return (
     <div className="canvas-bar" role="toolbar" aria-label="Canvas">
       <button className="canvas-bar-button" type="button" aria-label="Back" title="Back to what this tab showed before"
@@ -65,28 +32,11 @@ export function CanvasBar({ tabs, open, back, forward, moving, home, canAdd, act
       <button className="canvas-bar-button" type="button" aria-label="Home"
         title={home === "empty" ? "Home: an empty canvas (Settings, home)" : "Home: the graph (Settings, home)"}
         disabled={moving} onClick={actions.home}><Icon name="home" size={15} /></button>
-      <nav ref={strip} className="canvas-tabs" aria-label="Canvas tabs">
-        {tabs.map((tab) => tab.id === naming?.id ? (
-          <input key={tab.id} className="canvas-tab canvas-tab-name" aria-label="Tab name" maxLength={MAX_NAME}
-            value={naming.value} autoFocus onFocus={(event) => event.currentTarget.select()}
-            onChange={(event) => setNaming({ id: tab.id, value: event.target.value })}
-            onKeyDown={onNameKey} onBlur={keep} />
-        ) : (
-          <span key={tab.id} className="canvas-tab" aria-current={tab.id === open ? "true" : undefined}>
-            <button className="canvas-tab-open" type="button" title={`${tab.name} (double-click to rename)`}
-              disabled={moving && tab.id !== open}
-              onClick={() => { if (tab.id !== open) actions.open(tab.id); }}
-              onDoubleClick={() => setNaming({ id: tab.id, value: tab.name })}>{tab.name}</button>
-            {tabs.length > 1 && <button className="canvas-tab-close" type="button" aria-label={`Close ${tab.name}`}
-              title="Close this tab" disabled={moving} onClick={() => actions.close(tab.id)}><Icon name="x" size={12} /></button>}
-          </span>
-        ))}
-      </nav>
-      <button className="canvas-bar-button" type="button" aria-label="New tab" title="New tab"
-        disabled={moving || !canAdd} onClick={actions.add}><Icon name="plus" size={15} /></button>
+      <div className="canvas-crumbs" role="group" aria-label="On show">
+        <span className="canvas-crumb-station">{station}</span>
+        <span aria-hidden="true">/</span>
+        <span className="canvas-crumb-tab">{tab}</span>
+      </div>
     </div>
   );
 }
-
-/** The longest name a tab keeps (`server/visuals/workspaces.py`). */
-const MAX_NAME = 60;

@@ -33,7 +33,7 @@ export type Panel = PanelSpec & {
  * for this tab in `sessionStorage`, as the graph keeps whether its key shows: a
  * reload or Back finds the panel as it was left, and a new tab starts each panel
  * as it starts. Every view holding the panel sees a change at once, as the graph
- * frames itself again when the app's sidebar collapses.
+ * frames itself again when one collapses.
  */
 export function usePanel(spec: PanelSpec): Panel {
   const key = `trackinizer.v2.panel.${spec.id}`;

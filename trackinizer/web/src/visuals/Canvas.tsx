@@ -11,6 +11,8 @@ import {
   type WorkspaceState,
 } from "../api/workspaces";
 import { acceptWorkspace as cacheWorkspace, newerWorkspace } from "../stations/cache";
+import { type CanvasTabActions, publishCanvasTabs, requestTab, useRequestedTab } from "../stations/canvasTabs";
+import { setStation } from "../stations/store";
 import { useStation } from "../stations/useStation";
 import { CrashBoundary } from "../app/CrashBoundary";
 import { useWorkbenchMounted, useWorkbenchSlot } from "../app/workbenchSlot";
@@ -19,7 +21,7 @@ import { parseHash } from "../router/route";
 import { useHash } from "../router/trail";
 import { useBrowserState } from "../state/store";
 import { CanvasBar } from "./CanvasBar";
-import { forget, go, settle, step, useCanvasHistory } from "./canvasHistory";
+import { forget, go, interrupt, restoring, settle, step, takeInterrupted, useCanvasHistory } from "./canvasHistory";
 import { type Size, dropLegacySizes, fitSizes, heldWidth, legacyLayout, MIN_COLUMN, MIN_FLOAT, readLegacySizes, toFraction } from "./canvasSizes";
 import { HOME_ROUTE, homeSnapshot, PAGE, planRestore, type Snapshot, snapshotOf } from "./canvasSnapshot";
 import { type CanvasTab, leftTab, MAX_TABS, neighbourOf, newTabName, openTabOf, sizesOf, tabSnapshot, tabsOf } from "./canvasTabs";
@@ -265,8 +267,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     },
   });
 
-  async function write(operation: WorkspaceOperation): Promise<boolean> {
-    const id = latestWorkspace.current?.id;
+  /** Apply `operation` to station `id`, the one on show unless named. */
+  async function write(operation: WorkspaceOperation, id = latestWorkspace.current?.id): Promise<boolean> {
     if (!id) return false;
     try {
       await change.mutateAsync({ id, operation });
@@ -279,11 +281,22 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   /**
    * Show `target` on the canvas, a step tab `key` has already taken: its
    * visuals by the canvas's own operations, one after another, then its page.
-   * The tab then stands where the canvas got to, there or short of it.
+   * The tab then stands where the canvas got to, there or short of it. Every
+   * step is the station's it began on: one opened while they are on their way
+   * (the top bar puts every station a click away) is not this tab's, so the
+   * rest are dropped and its page left alone, and the restore is finished when
+   * the station is on show again (`interrupt`).
    */
   async function restore(key: string, target: Snapshot): Promise<void> {
+    const station = latestWorkspace.current?.id;
+    const here = () => latestWorkspace.current?.id === station;
     for (const operation of planRestore(latestWorkspace.current?.visuals ?? [], target)) {
-      if (!(await write(operation))) break;
+      if (!here() || !(await write(operation, station))) break;
+    }
+    if (!here()) {
+      settle(key, target, null);
+      if (station) interrupt(station, key, target);
+      return;
     }
     if (target.page !== null && window.location.hash !== target.page) window.location.hash = target.page;
     settle(key, target, snapshotOf(latestWorkspace.current?.visuals ?? [], window.location.hash));
@@ -332,6 +345,52 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     else changeLayout({ tabs: kept });
     forget(tabKey(workspaceId, id));
   }
+
+  // The top bar draws the tabs and asks for each change; the canvas makes it, as
+  // only it knows what the open tab shows. The actions read this render's.
+  const tabActions = useRef<CanvasTabActions | null>(null);
+  tabActions.current = {
+    open: (id) => { if (id !== openTab) switchTab(id, leaving()); },
+    add: addTab,
+    close: closeTab,
+    rename: (id, name) => changeLayout({ tabs: tabs.map((tab) => (tab.id === id ? { ...tab, name } : tab)) }),
+  };
+  const stableTabActions = useMemo<CanvasTabActions>(() => ({
+    open: (id) => tabActions.current?.open(id),
+    add: () => tabActions.current?.add(),
+    close: (id) => tabActions.current?.close(id),
+    rename: (id, name) => tabActions.current?.rename(id, name),
+  }), []);
+  useEffect(() => {
+    publishCanvasTabs(workspaceId ? {
+      station: workspaceId, tabs, open: openTab, moving: history.moving, canAdd: tabs.length < MAX_TABS, actions: stableTabActions,
+    } : null);
+  }, [workspaceId, tabs, openTab, history.moving, stableTabActions]);
+  useEffect(() => () => publishCanvasTabs(null), []);
+  // A restore this station was left in the middle of: finish it as the station comes back, before
+  // a tab switch or a step takes the half-restored canvas for the open tab's own. It moves the page,
+  // so the switch that brought the station here is over (as for a tab asked for, below).
+  useEffect(() => {
+    if (!workspaceId) return;
+    const left = takeInterrupted(workspaceId);
+    if (!left || left.key !== tabKey(workspaceId, openTab)) return;
+    setStation(workspaceId, null);
+    go(left.key, left.target);
+    void restore(left.key, left.target);
+  }, [workspaceId]);
+  // A tab of this station the top bar asked for while opening it: open it once the station is here,
+  // and after any restore the station is finishing (read now: this render's `moving` may predate it).
+  const requested = useRequestedTab();
+  useEffect(() => {
+    if (!requested || requested.station !== workspaceId || history.moving || restoring()) return;
+    requestTab(null);
+    if (requested.tab === openTab || !tabs.some((tab) => tab.id === requested.tab)) return;
+    // The switch that brought the station here holds the page back until the address shows the
+    // station's own page (usePageSync), which this tab moves past at once: the address may never show
+    // it, and every page after would go unwritten, lost on coming back. The switch is over here.
+    setStation(workspaceId, null);
+    tabActions.current?.open(requested.tab);
+  }, [requested, workspaceId, openTab, history.moving, tabs]);
 
   function openArtifact(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -798,12 +857,9 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       visualTypes,
     } : null}>
     <div className="visual-canvas">
-      {workspace && <CanvasBar tabs={tabs} open={openTab} back={history.back} forward={history.forward}
-        moving={history.moving} home={home} canAdd={tabs.length < MAX_TABS}
-        actions={{
-          back: () => stepBy(-1), forward: () => stepBy(1), home: goHome, open: (id) => switchTab(id, leaving()),
-          add: addTab, close: closeTab, rename: (id, name) => changeLayout({ tabs: tabs.map((tab) => (tab.id === id ? { ...tab, name } : tab)) }),
-        }} />}
+      {workspace && <CanvasBar station={workspace.name} tab={tabs.find((tab) => tab.id === openTab)?.name ?? ""}
+        back={history.back} forward={history.forward} moving={history.moving} home={home}
+        actions={{ back: () => stepBy(-1), forward: () => stepBy(1), home: goHome }} />}
       {writeError && <p className="visual-write-error" role="alert">{writeError}</p>}
       {controlsSlot && createPortal(
         <div className="workbench-controls" role="group" aria-label="Workbench visuals">

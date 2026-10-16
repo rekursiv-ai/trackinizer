@@ -18,7 +18,9 @@ from trackinizer.server.store.core import Store
 from trackinizer.server.visuals.catalog import default_catalog
 from trackinizer.server.visuals.workspace_store import (
     AppliedOperation,
+    StationHoldsChatError,
     apply_workspace_operation,
+    delete_workspace,
     open_latest_workspace,
     read_workspace,
 )
@@ -134,6 +136,96 @@ async def test_the_partner_choice_is_stored_and_a_replay_answers_with_the_curren
     )
     assert read is not None
     assert (read.partner_choice, read.revision) == ("shared", 2)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_emptied_station_is_deleted_but_a_chat_or_anothers_station_is_not(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """It drops the owner's chatless station; a held chat or another owner stops it."""
+    await _seed(pglite_engine)
+    other = uuid.UUID("99999999-9999-9999-9999-999999999999")
+
+    # Another user's station is simply not found.
+    assert not await delete_workspace(
+        pglite_engine,
+        user_id=other,
+        workspace_id=_WORKSPACE,
+    )
+
+    # A station that still holds a chat is refused until the chat is deleted.
+    async with pglite_engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE visual_workspaces SET station = station || "
+            "jsonb_build_object('conversation_id', $2::text) WHERE id = $1",
+            _WORKSPACE,
+            str(uuid.uuid4()),
+        )
+    with pytest.raises(StationHoldsChatError):
+        await delete_workspace(
+            pglite_engine,
+            user_id=_USER,
+            workspace_id=_WORKSPACE,
+        )
+
+    # Once the chat is unbound, the owner's station is deleted and gone for good.
+    async with pglite_engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE visual_workspaces SET station = station - 'conversation_id' "
+            "WHERE id = $1",
+            _WORKSPACE,
+        )
+    assert await delete_workspace(
+        pglite_engine,
+        user_id=_USER,
+        workspace_id=_WORKSPACE,
+    )
+    async with pglite_engine.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT 1 FROM visual_workspaces WHERE id = $1",
+                _WORKSPACE,
+            )
+            is None
+        )
+    assert not await delete_workspace(
+        pglite_engine,
+        user_id=_USER,
+        workspace_id=_WORKSPACE,
+    )
+
+
+def test_delete_workspace_deletes_a_chatless_station_not_one_with_a_chat() -> None:
+    """DELETE runs only for a found, chatless station; a held chat raises instead."""
+    deleted, sql = _delete_station({"conversation_id": None})
+    assert deleted
+    assert any(line.startswith("DELETE FROM visual_workspaces") for line in sql)
+
+    missing, sql = _delete_station(None)
+    assert not missing
+    assert not any(line.startswith("DELETE FROM visual_workspaces") for line in sql)
+
+    with pytest.raises(StationHoldsChatError):
+        _delete_station({"conversation_id": "c1"})
+
+
+def _delete_station(row: object) -> tuple[bool, list[str]]:
+    """Run ``delete_workspace`` on a FakeEngine whose station read returns ``row``."""
+    conn = make_conn()
+
+    async def fetchrow(*_args: object, **_kwargs: object) -> object:
+        return row
+
+    conn.fetchrow.side_effect = fetchrow
+    deleted = asyncio.run(
+        delete_workspace(
+            cast("DatabaseEngine", FakeEngine(conn)),
+            user_id=_USER,
+            workspace_id=_WORKSPACE,
+        ),
+    )
+    return deleted, executed_sql(conn)
 
 
 _STATION: Final = uuid.UUID("22222222-2222-2222-2222-222222222222")

@@ -99,11 +99,13 @@ test("scrolled back, a batch reads nothing; a gap reads the whole band again at 
   live.follow(null);
   expect(await live.update(batch)).toBeNull();
   expect(reads()).toEqual([]);
-  live.follow(READ);
+  counts.set(T0, 6);
+  expect(live.follow(READ)).toBe(true);
   await live.update(batch);
+  expect(held()).toEqual([6, 2, 3, 4, 0]);
   counts.set(T0, 7);
   expect(await live.update({ ids: new Set(), gap: true })).toBeNull();
-  expect(reads().map(({ buckets }) => buckets)).toEqual(["3", "5"]);
+  expect(reads().map(({ buckets }) => buckets)).toEqual(["5", "5"]);
   expect(held()).toEqual([7, 2, 3, 4, 0]);
 });
 

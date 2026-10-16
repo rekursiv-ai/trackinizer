@@ -17,6 +17,7 @@ export type Preferences = Required<components["schemas"]["Preferences"]>;
 /** What the page shows until the profile brings the user's own: the server's defaults. */
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: "dark",
+  skin: "default",
   chat_style: "default",
   chat_side: "left",
   highlight_mentions: true,

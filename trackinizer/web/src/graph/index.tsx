@@ -13,7 +13,6 @@ import {
 import type { Graph, GraphNode } from "../api/graph";
 import { type Meta, useMeta } from "../app/boot";
 import { useHighlighted } from "../app/highlights";
-import { SIDEBAR } from "../app/Sidebar";
 import { isStrings, useTabState } from "../app/tabState";
 import { useCommands } from "../commands/registry";
 import "../lists/lists.css";
@@ -91,7 +90,6 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
   const [view, setView] = useTabState(STATE_KEY, readViewState, initialState);
   const peek = usePanel(PEEK);
   const results = usePanel(RESULTS);
-  const sidebar = usePanel(SIDEBAR);
   const graph = useQuery(graphQuery(view.limit));
   const failure = useLiveGraph(view.limit);
   const data = graph.data;
@@ -216,9 +214,9 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
     if (focusKey !== null) frameFocus();
   }, [focusKey, renderer]);
   // Showing or hiding the key, or collapsing Peek, changes what covers the
-  // canvas, and the roots list, the search results or the app's sidebar how
-  // wide it is: frame again once it has rendered.
-  const panels = `${view.key} ${view.roots} ${peek.collapsed} ${results.collapsed} ${sidebar.collapsed}`;
+  // canvas, and the roots list or the search results how wide it is: frame
+  // again once it has rendered.
+  const panels = `${view.key} ${view.roots} ${peek.collapsed} ${results.collapsed}`;
   const panelsShown = useRef(panels);
   useLayoutEffect(() => {
     if (panelsShown.current === panels) return;

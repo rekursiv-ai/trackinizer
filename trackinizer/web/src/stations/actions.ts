@@ -1,9 +1,10 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { createStation, listStations, renameStation, type StationSummary } from "../api/stations";
+import { createStation, deleteStation, listStations, renameStation, type StationSummary } from "../api/stations";
 import { getWorkspace } from "../api/workspaces";
+import { neighbourOf } from "../visuals/canvasTabs";
 import { useSyncExternalStore } from "react";
 import { acceptWorkspace } from "./cache";
-import { stepStation } from "./cycle";
+import { inTabOrder, stepStation } from "./cycle";
 import { currentStation } from "./store";
 import { showStation } from "./useStation";
 
@@ -37,6 +38,29 @@ export async function cycleStation(queryClient: QueryClient, step: 1 | -1): Prom
   const stations: StationSummary[] = await queryClient.fetchQuery(stationsQuery);
   const next = stepStation(stations, currentStation().id, step);
   if (next) await openStation(queryClient, next.id);
+}
+
+/**
+ * Close station `id`, whose chat was just deleted: delete the now-empty station on
+ * the server and, when it was the one on show, open its neighbour in the tab order,
+ * as closing a tab moves to the one beside it. A station closed from the background
+ * stays unshown, so the tab keeps the station it was on. The last station on show
+ * stays, on an empty chat, since there is nowhere to move. A delete the server
+ * refuses (it still holds a chat) leaves the station in place, emptied.
+ */
+export async function closeStation(queryClient: QueryClient, id: string): Promise<void> {
+  const onShow = currentStation().id === id;
+  const neighbour = neighbourOf(inTabOrder(queryClient.getQueryData<StationSummary[]>(STATIONS_KEY) ?? []), id);
+  // The one on show with no neighbour is the user's last station: it stays rather than leave the tab empty.
+  if (onShow && (!neighbour || neighbour.id === id)) return;
+  try {
+    await deleteStation(id);
+  } catch {
+    return;
+  }
+  queryClient.setQueryData<StationSummary[]>(STATIONS_KEY, (held) => held?.filter((each) => each.id !== id));
+  // Only a close of the shown station moves the tab; a background close leaves it where it is.
+  if (onShow && neighbour) await openStation(queryClient, neighbour.id);
 }
 
 let menuOpen = false;

@@ -62,14 +62,14 @@ function Palette() {
 
 async function show(
   state: WorkspaceState = workspace,
-  { rail = null, sheet = null }: { readonly rail?: ReactNode; readonly sheet?: ReactNode } = {},
+  { sheet = null }: { readonly sheet?: ReactNode } = {},
 ) {
   vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><CommandRegistryContext value={new CommandRegistry()}>
     <Shortcuts />
     <Palette />
-    <ChatColumn rail={rail} sheet={sheet}><main>Workbench</main></ChatColumn>
+    <ChatColumn sheet={sheet}><main>Workbench</main></ChatColumn>
   </CommandRegistryContext></QueryClientProvider>);
   await screen.findByText("w1");
   return {
@@ -98,18 +98,8 @@ test("on the right Chat stands after the workbench, with the divider between the
   expect(order(row)).toEqual(["chat-workbench", "chat-column-edge", "chat-column"]);
 });
 
-test("the sidebar rail stands at the workbench's left edge, inside it, whichever side Chat is on", async () => {
-  const { row } = await show(workspace, { rail: <nav className="rail" /> });
-  const workbench = () => document.querySelector<HTMLElement>(".chat-workbench")!;
-  expect(order(row)).toEqual(["chat-column", "chat-column-edge", "chat-workbench"]);
-  expect(order(workbench())).toEqual(["rail", "chat-stage"]);
-  act(() => receivePreferences({ ...preferences(), chat_side: "right" }));
-  expect(order(row)).toEqual(["chat-workbench", "chat-column-edge", "chat-column"]);
-  expect(order(workbench())).toEqual(["rail", "chat-stage"]);
-});
-
-test("a sheet opens in the stage, from the rail's edge; full screen, over the row", async () => {
-  const { row } = await show(workspace, { rail: <nav className="rail" />, sheet: <aside className="sheet" /> });
+test("a sheet opens in the stage, beside the page; full screen, over the row", async () => {
+  const { row } = await show(workspace, { sheet: <aside className="sheet" /> });
   const stage = () => document.querySelector<HTMLElement>(".chat-stage")!;
   expect(order(stage())).toEqual(["", "sheet"]);
   act(() => setChatFullscreen(true));
@@ -119,7 +109,7 @@ test("a sheet opens in the stage, from the rail's edge; full screen, over the ro
 test("on a phone Chat is the whole app: shown even if hidden, the workbench hidden, and no strip or divider", async () => {
   vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(max-width: 760px)", addEventListener() {}, removeEventListener() {} }));
   setChatHidden(true);
-  const { row, column, workbench } = await show(workspace, { rail: <nav className="rail" /> });
+  const { row, column, workbench } = await show(workspace);
   expect(order(row)).toEqual(["chat-column", "chat-workbench"]);
   expect(column.hidden).toBe(false);
   expect(workbench.hidden).toBe(true);
@@ -415,7 +405,7 @@ test("g ] and g [ open the renamed stations in the order they were made, wrappin
   expect(vi.mocked(getWorkspace).mock.calls.map(([id]) => id)).toEqual(["w2", "w3", "w2", "w3"]);
 });
 
-test("g s shows Chat and opens the station menu", async () => {
+test("g s opens the station menu in the top bar, and leaves a hidden Chat hidden", async () => {
   function Menu() {
     return <output aria-label="Menu">{String(useStationMenu())}</output>;
   }
@@ -431,7 +421,7 @@ test("g s shows Chat and opens the station menu", async () => {
   expect(screen.getByLabelText("Menu").textContent).toBe("false");
   await user.keyboard("gs");
   expect(screen.getByLabelText("Menu").textContent).toBe("true");
-  expect(currentChatColumn().hidden).toBe(false);
+  expect(currentChatColumn().hidden).toBe(true);
 });
 
 test("the palette lists each station as Open station <name>, and New station", async () => {

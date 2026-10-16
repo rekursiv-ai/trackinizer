@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Annotated, Final, Literal
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
 import math
 import uuid
@@ -356,6 +356,13 @@ class WorkspaceState(WorkspaceData):
     it can say what is set; computed on each read, never stored with the canvas."""
 
 
+class TabName(BaseModel):
+    """A canvas tab as the station list names it: enough to show and open it."""
+
+    id: str
+    name: str
+
+
 class WorkspaceSummary(BaseModel):
     """One of a user's stations, as the station list shows it."""
 
@@ -364,6 +371,42 @@ class WorkspaceSummary(BaseModel):
     conversation_id: uuid.UUID | None
     page: str | None
     created_at: datetime
+    tabs: list[TabName] = Field(default_factory=list)
+    """The station's canvas tabs, in order; none until a second one is made."""
+
+    tab: str | None = None
+    """The id of the station's open canvas tab, once its layout names one."""
+
+    @classmethod
+    def of(
+        cls,
+        data: StationData,
+        *,
+        workspace_id: uuid.UUID,
+        created_at: datetime,
+    ) -> Self:
+        """Summarize station ``data``, its layout's tabs by id and name.
+
+        Args:
+          data: The station's stored fields.
+          workspace_id: The station's id.
+          created_at: When the station was made.
+
+        Returns:
+          summary: The station as the list shows it; a layout with no tabs lists
+            none, and the browser shows its first.
+
+        """
+        layout = data.layout or StationLayout()
+        return cls(
+            id=workspace_id,
+            name=data.name,
+            conversation_id=data.conversation_id,
+            page=data.page,
+            created_at=created_at,
+            tabs=[TabName(id=tab.id, name=tab.name) for tab in layout.tabs or []],
+            tab=layout.tab,
+        )
 
 
 class RenameWorkspace(BaseModel):

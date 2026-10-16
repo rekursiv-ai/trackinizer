@@ -74,6 +74,7 @@ from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
+    from datetime import datetime
 
     from asyncpg import Record
 
@@ -138,6 +139,10 @@ class StationChatError(Exception):
 
 class StationNameTakenError(Exception):
     """The station's owner already has a station of that name."""
+
+
+class StationHoldsChatError(Exception):
+    """The station still holds a chat, which must be deleted before the station."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -561,9 +566,10 @@ async def list_workspaces(
             user_id,
         )
     return [
-        WorkspaceSummary.model_validate(
-            StationData.model_validate(row["station"]).model_dump()
-            | {"id": row["id"], "created_at": row["created_at"]},
+        WorkspaceSummary.of(
+            StationData.model_validate(row["station"]),
+            workspace_id=cast("uuid.UUID", row["id"]),
+            created_at=cast("datetime", row["created_at"]),
         )
         for row in rows
     ]
@@ -623,6 +629,54 @@ async def rename_workspace(
             inbound=inbound,
             assistant=assistant,
         )
+
+
+async def delete_workspace(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+) -> bool:
+    """Delete one of the owner's stations, once its chat is gone.
+
+    The browser calls this right after it deletes a station's chat, to close the
+    station's tab. A station that still holds a chat is refused, so a tab can never
+    drop a live chat: delete the chat first, which unbinds it. Only the owner reaches
+    it (the ``user_id`` guard), so another's station is simply not found. The row and
+    its operation keys go (``ON DELETE CASCADE``); nothing is published, and a tab
+    still on the station reads 404.
+
+    Args:
+      engine: Database connection source.
+      user_id: Owner of the station.
+      workspace_id: The station to delete.
+
+    Returns:
+      found: Whether the owner had such a station to delete.
+
+    Raises:
+      StationHoldsChatError: The station still holds a chat.
+
+    """
+    async with engine.acquire() as conn, tx(conn):
+        row = await conn.fetchrow(
+            "SELECT station->>'conversation_id' AS conversation_id "
+            "FROM visual_workspaces WHERE id = $1 AND user_id = $2 FOR UPDATE",
+            workspace_id,
+            user_id,
+        )
+        if row is None:
+            return False
+        if row["conversation_id"] is not None:
+            raise StationHoldsChatError(
+                "Delete this station's chat before the station.",
+            )
+        await conn.execute(
+            "DELETE FROM visual_workspaces WHERE id = $1 AND user_id = $2",
+            workspace_id,
+            user_id,
+        )
+        return True
 
 
 async def set_workspace_page(

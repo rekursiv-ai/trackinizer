@@ -4,9 +4,9 @@ import { expect, failedResource, test } from "./fixtures";
 test("the shell boots and shows the signed-in profile", async ({ page }) => {
   await page.goto("/app/");
   await expect(page).toHaveTitle("Trackinizer");
-  // The sidebar is a rail until it is opened, and the address is not shown on a rail.
-  await page.getByRole("navigation", { name: "Sidebar" }).getByRole("button", { name: "Expand sidebar" }).click();
-  const me = page.getByLabel("Signed in");
+  // The account is its avatar until the pointer rests on it; then the address and the role show.
+  const me = page.getByRole("button", { name: "Account: no-auth@localhost, admin" });
+  await me.hover();
   await expect(me.getByText("no-auth@localhost")).toBeVisible();
   await expect(me.getByText("admin", { exact: true })).toBeVisible();
   const favicon = await page.locator('link[rel="icon"]').getAttribute("href");

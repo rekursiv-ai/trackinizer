@@ -259,6 +259,7 @@ async def _profile(client: httpx2.AsyncClient) -> dict[str, object]:
 
 _DEFAULTS: dict[str, object] = {
     "theme": "dark",
+    "skin": "default",
     "chat_style": "default",
     "chat_side": "left",
     "highlight_mentions": True,

@@ -1,9 +1,7 @@
 /* Chat beside the workbench: a column of its own, on either side of it. */
 .chat-row { position: relative; display: flex; flex: 1; min-height: 0; min-width: 0; }
 .chat-workbench { display: flex; flex: 1 1 0; min-width: 0; min-height: 0; }
-/* The app's sidebar rail stands inside the workbench at its left edge (Shell), a rule between it and the stage, which holds the bars, the canvas and the page; the rule is a shadow, so the rail keeps its whole width. */
-.chat-workbench > .sidebar-dock { flex: 0 0 244px; min-width: 0; box-shadow: inset -1px 0 var(--line); }
-/* The stage is where a sheet (Settings, Admin) opens, from its left edge: the rail's. */
+/* The stage is where a sheet (Settings, Admin) opens, from its left edge. */
 .chat-stage { position: relative; display: flex; flex: 1 1 0; flex-direction: column; min-width: 0; min-height: 0; }
 .chat-workbench[hidden], .chat-column[hidden] { display: none; }
 /* A third of the screen or 80 characters, whichever is less. The characters are Chat's own, so the font is set on the column: `ch` is measured where the width is used. The 24 px is the padding of Chat's lines. */
@@ -18,9 +16,9 @@
 .chat-row-left .chat-strip { border-right: 2px solid var(--accent); }
 .chat-row-right .chat-strip { border-left: 2px solid var(--accent); }
 .chat-strip:hover, .chat-strip:focus-visible { background: var(--surface-hover); color: var(--text); outline: 0; }
-/* Wide, Chat and the workbench, its rail inside it, are two panels a small gap apart: the edge is the gap, and still the handle. */
+/* Wide, Chat and the workbench are two panels a small gap apart: the edge is the gap, and still the handle. */
 @media (width > 900px) {
-  .app.rail-in-row .main { background: none; border: 0; border-radius: 0; }
+  .app.with-canvas .main { background: none; border: 0; border-radius: 0; }
   .chat-column, .chat-workbench { background: var(--bg); border: 1px solid var(--line); border-radius: var(--panel-radius); overflow: hidden; }
   .chat-row-right .chat-column, .chat-row-fullscreen .chat-column { border: 1px solid var(--line); }
   .chat-column-edge { flex-basis: 8px; margin: 0; border-radius: 4px; }
@@ -28,7 +26,7 @@
   .chat-row-right .chat-strip { margin-left: 8px; border-radius: 0 var(--panel-radius) var(--panel-radius) 0; }
 }
 /* Hidden, hovering the strip opens Chat over the workbench at its column width, which the workbench does not give way to.
-   It lies over all the workbench holds, which shares its stacking context: the folded sidebar rail (40), the bars (30),
+   It lies over all the workbench holds, which shares its stacking context: the bars (30),
    the canvas's snap and drag ghost (40, 45). It lies under what covers the whole app: the drawer (54, 55), dialogs (60 up). */
 .chat-column-peek { position: absolute; z-index: 50; top: 0; bottom: 0; width: var(--chat-width, min(33.333vw, calc(80ch + 24px))); background: var(--bg); box-shadow: 0 16px 48px #0008; }
 .chat-row-left .chat-column-peek { left: 0; }

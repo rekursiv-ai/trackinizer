@@ -6,12 +6,14 @@ purpose: holding those imports resident is the daemon's entire job.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast, override
 
 import contextlib
 import contextvars
 import io
 import os
+import select
 import socket
 import socketserver
 import threading
@@ -44,7 +46,6 @@ from trackinizer.trax.render import TERMINAL_WIDTH
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
-    from pathlib import Path
 
 
 _IDLE_TIMEOUT_SEC: Final = 30 * 60
@@ -107,18 +108,30 @@ def handle(
     return Response(stdout=out.getvalue(), stderr=err.getvalue(), exit_code=exit_code)
 
 
-def serve(path: Path | None = None, *, version: str) -> None:
+def serve(
+    path: Path | None = None,
+    *,
+    version: str,
+    poll_interval_sec: float = 1.0,
+) -> None:
     """Run the daemon until it is idle for :data:`_IDLE_TIMEOUT_SEC`.
 
     Binding is the arbiter for the spawn race: several clients missing a
     daemon at once all try to start one, and every loser gets ``EADDRINUSE``
     and simply connects to the winner instead.
 
+    On the way out the daemon answers every request it took and every
+    connection still queued for it before it exits. A caller whose request
+    was delivered cannot tell a reset from a verb that ran, so it reports the
+    command lost rather than retrying it.
+
     Args:
       path: Socket path for the daemon; uses socket_path() if None.
       version: Source fingerprint the spawning caller took before this
         process imported anything; a request carrying another is answered
         stale.
+      poll_interval_sec: How often the accept loop checks for a shutdown or
+        the idle timeout; injected by tests.
 
     """
     sock = socket_address(path) if path is not None else socket_path()
@@ -126,15 +139,14 @@ def serve(path: Path | None = None, *, version: str) -> None:
     server = _bind(sock, version)
     if server is None:
         return
-    # The inode this daemon owns. Checked before unlinking on the way out: a
-    # racing daemon may have replaced the file, and removing ITS socket would
-    # take a live daemon off the air.
-    owned_inode = sock.stat().st_ino
     try:
-        server.serve_forever(poll_interval=1.0)
+        server.serve_forever(poll_interval=poll_interval_sec)
     finally:
+        server.retire()
+        server.drain()
+        # Joins every handler thread: an exit with one still running would
+        # reset its caller's connection.
         server.server_close()
-        _unlink_if_owned(sock, owned_inode)
 
 
 class _Handler(socketserver.BaseRequestHandler):
@@ -184,12 +196,20 @@ class _Server(socketserver.ThreadingUnixStreamServer):
     daemon would serialize a swarm behind that.
     """
 
-    daemon_threads = True
+    # Not daemon threads, so ``server_close`` joins them: the process exits after
+    # it, and a daemon thread still running then dies with its caller's
+    # connection reset.
+    daemon_threads = False
     request_queue_size = 128
 
     def __init__(self, path: str, version: str) -> None:
         super().__init__(path, _Handler)
         self.version = version
+        self._path = Path(path)
+        # The inode this daemon owns. Checked before unlinking: a racing daemon
+        # may have replaced the file, and removing ITS socket would take a live
+        # daemon off the air.
+        self._inode = self._path.stat().st_ino
         self._last_seen = time.monotonic()
         self._shutting_down = False
 
@@ -207,7 +227,26 @@ class _Server(socketserver.ThreadingUnixStreamServer):
         if self._shutting_down:
             return
         self._shutting_down = True
+        # Off the air first: a caller from now on finds no socket and starts a
+        # fresh daemon, rather than queuing on one that is leaving.
+        self.retire()
         threading.Thread(target=self.shutdown, daemon=True).start()
+
+    def retire(self) -> None:
+        """Remove the socket file, if it is still the one this daemon bound."""
+        _unlink_if_owned(self._path, inode=self._inode)
+
+    def drain(self) -> None:
+        """Serve every connection still queued, so closing resets none.
+
+        Call once the accept loop has stopped and the socket file is gone, so
+        no caller can join the queue while it empties.
+        """
+        # The listening socket reads ready while a connection waits to be accepted, and
+        # a zero timeout keeps ``handle_request`` from waiting for one that is not.
+        self.timeout = 0
+        while select.select([self], [], [], 0)[0]:
+            self.handle_request()
 
     @override
     def service_actions(self) -> None:
@@ -312,7 +351,7 @@ def _is_live(sock: Path) -> bool:
         probe.close()
 
 
-def _unlink_if_owned(sock: Path, inode: int) -> None:
+def _unlink_if_owned(sock: Path, *, inode: int) -> None:
     """Remove the socket only if it is still the one this daemon bound."""
     try:
         if sock.stat().st_ino == inode:

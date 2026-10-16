@@ -13,7 +13,7 @@ export const NO_AUTH_EMAIL = "no-auth@localhost";
 export type SignOutFailure = { readonly message: string; readonly error: unknown };
 
 /**
- * Sign out, from Settings or the sidebar: the server clears the session cookie,
+ * Sign out, from Settings or the account menu: the server clears the session cookie,
  * then the login page loads, by `assign` or else the app's own (`Session`).
  * `failed` hears of a failure, which the state holds as well.
  *

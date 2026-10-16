@@ -5,7 +5,7 @@
   --surface-raised: #191a1b;
   --surface-hover: #222325;
   --surface-overlay: #1d1e20;
-  --sidebar: #090a0b;
+  --frame: #090a0b;
   --text: #f7f8f8;
   --ink-muted: #d0d6e0;
   --muted: #8a8f98;
@@ -22,6 +22,12 @@
   --red: #d14545;
   --urgent: #f2994a;
   --violet: #9d8cf0;
+  /* The top bar's station groups take these in turn; --on-group is text on one. */
+  --group-1: #6ea8ee;
+  --group-2: #4cb782;
+  --group-3: #c99d55;
+  --group-4: #9d8cf0;
+  --on-group: #0b0c0d;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   --sans: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --l-provenance: #7b808a;
@@ -54,7 +60,7 @@
   line-height: 1.5;
   letter-spacing: -0.05px;
   color: var(--text);
-  background: var(--sidebar);
+  background: var(--frame);
   -webkit-font-smoothing: antialiased;
 }
 :root[data-theme="light"] {
@@ -63,7 +69,7 @@
   --surface-raised: #edf1f5;
   --surface-hover: #e5ebf1;
   --surface-overlay: #ffffff;
-  --sidebar: #edf1f5;
+  --frame: #edf1f5;
   --text: #17212d;
   --ink-muted: #344255;
   /* Over 4.5:1 on a selected row's tint, --accent-soft, too (styles.test.ts). */
@@ -79,6 +85,11 @@
   --red: #b62f36;
   --urgent: #ae5717;
   --violet: #694fb0;
+  --group-1: #286fc5;
+  --group-2: #187c39;
+  --group-3: #9c651d;
+  --group-4: #694fb0;
+  --on-group: #ffffff;
   --l-provenance: #657487;
   --l-work: #657487;
   /* Text too: an agent's name in the console, a diff's added lines. */
@@ -102,7 +113,7 @@
 }
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; }
-body { margin: 0; background: var(--sidebar); color: var(--text); overflow: hidden; }
+body { margin: 0; background: var(--frame); color: var(--text); overflow: hidden; }
 button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; border: 0; background: none; padding: 0; }
 a { color: inherit; text-decoration: none; }
@@ -123,86 +134,19 @@ kbd {
 }
 
 /* shell */
-.app { display: grid; grid-template-columns: 244px minmax(0, 1fr); height: 100%; position: relative; }
-/* The sidebar's place in the grid. A rail that opens leaves this cell its width, and the sidebar lies over the workbench from it. */
-.sidebar-dock { display: flex; flex-direction: column; min-height: 0; position: relative; }
-/* With the canvas, the rail stands at the canvas's left edge, inside the workbench (ChatColumn), and the grid has the page alone. */
-.app.rail-in-row { grid-template-columns: minmax(0, 1fr); }
-.sidebar-dock > .sidebar { flex: 1; }
-.sidebar {
-  display: flex; flex-direction: column; gap: 2px;
-  padding: 10px 10px 12px; overflow-y: auto; min-height: 0;
-  scrollbar-width: thin;
-}
+/* The top bar over everything (topbar/topbar.css), the main area under it. */
+.app { display: flex; flex-direction: column; height: 100%; position: relative; }
 .main {
-  margin: 8px 8px 8px 0; min-width: 0; min-height: 0;
+  flex: 1; margin: 0 8px 8px; min-width: 0; min-height: 0;
   background: var(--bg); border: 1px solid var(--line); border-radius: var(--panel-radius);
   overflow: hidden; display: flex; flex-direction: column; position: relative;
 }
-
-/* sidebar */
-/* The logo and the pin button. The logo is the button's 28 px tall, so the button
-   sits where the rail's does, and the rail opening or folding leaves it in place. */
-.ws-row { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
-.ws-switch {
-  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
-  padding: 3px 6px; border-radius: var(--radius); font-weight: 600; font-size: 13.5px;
-}
-a.ws-switch:hover { background: var(--surface-raised); }
-/* Search, then New, each a row of its own under the logo's, each with its keys at its end, and a
-   rule under them. Every icon of the sidebar has its middle 24 px from the outer edge, as the
-   rail's 48 px centre it: the 10 px of padding, then the row's own. */
-.sidebar-tools {
-  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
-  margin-bottom: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line);
-}
-.sidebar-search, .sidebar-new {
-  display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; padding: 0 4px 0 5px;
-  border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface-raised);
-  font-size: 13px; color: var(--muted); text-align: left;
-}
-.sidebar-search:hover, .sidebar-new:hover:not(:disabled) { color: var(--text); }
-.sidebar-search > .label, .sidebar-new > .label { flex: 1; }
-.ws-mark { width: 22px; height: 22px; flex-shrink: 0; color: var(--accent); }
-.ws-mark .ws-filament { color: var(--text); }
-/* The sidebar's New row: here, not in create.css, which loads with the create form's chunk. */
-.sidebar-new:disabled { opacity: .45; cursor: default; }
 .icon-btn {
   width: 28px; height: 28px; border-radius: var(--radius); display: inline-grid; place-items: center;
   color: var(--muted); flex-shrink: 0;
 }
-.icon-btn:hover { background: var(--surface-hover); color: var(--text); }
-.nav-item {
-  display: flex; align-items: center; gap: 9px; width: 100%;
-  min-height: 28px; padding: 4px 6px; border-radius: var(--radius);
-  font-size: 13px; font-weight: 500; color: var(--ink-muted); text-align: left;
-}
-.nav-item .ic { color: var(--muted); }
-.nav-item:hover { background: var(--surface-raised); }
-.nav-item.is-current { background: var(--surface-hover); color: var(--text); }
-.nav-item.is-current .ic { color: var(--ink-muted); }
-.nav-item > .label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nav-badge {
-  font-size: 11px; font-weight: 500; color: var(--ink-muted); background: var(--surface-hover);
-  border-radius: 999px; padding: 0 6px; line-height: 18px; font-variant-numeric: tabular-nums;
-}
-.nav-section { margin-top: 14px; }
-.nav-section-h {
-  display: flex; align-items: center; gap: 4px; width: 100%; height: 20px;
-  padding: 0 6px; font-size: 12px; font-weight: 500; color: var(--muted); border-radius: var(--radius);
-}
-.nav-section-h:hover { color: var(--ink-muted); }
-.nav-section-h .ic { transition: transform .12s; }
-.nav-section.is-collapsed .nav-section-h .ic { transform: rotate(-90deg); }
-.nav-section.is-collapsed .nav-section-body { display: none; }
-.nav-section-body { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; }
-/* Settings, Admin, the theme and the user, a row each, from the bottom up. */
-.sidebar-foot { margin-top: auto; padding-top: 14px; display: flex; flex-direction: column; gap: 2px; }
-.me-row {
-  display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 4px;
-  font-size: 12.5px; color: var(--ink-muted);
-}
-.me-email { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.icon-btn:hover:not(:disabled), .icon-btn[aria-expanded="true"] { background: var(--surface-hover); color: var(--text); }
+.icon-btn:disabled { opacity: .45; cursor: default; }
 .avatar {
   display: inline-grid; place-items: center; flex-shrink: 0; border-radius: 50%;
   width: 20px; height: 20px; font-size: 10px;
@@ -212,41 +156,10 @@ a.ws-switch:hover { background: var(--surface-raised); }
   font-size: 11px; font-weight: 500; color: var(--ink-muted); background: var(--surface-hover);
   border-radius: 999px; padding: 0 6px; line-height: 18px;
 }
-
-/* Collapsed (Sidebar.tsx), the sidebar is a rail of its icons, VS Code's
-   activity bar's 48 px wide: the labels, the logo and the section headings
-   hide, and a rule parts each group. A link keeps its label as its name and
-   tooltip, the user's row the email. Narrow, it is the drawer, whole, either
-   way (below). Not `min-width: 761px`: a zoomed window can be 760.5 px wide,
-   and then neither the rail nor the drawer would apply. */
-@media (width > 760px) {
-  .app.sidebar-collapsed { grid-template-columns: 48px minmax(0, 1fr); }
-  .app.rail-in-row.sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
-  .app.rail-in-row .main { margin-left: 8px; }
-  .app.sidebar-collapsed .chat-workbench > .sidebar-dock { flex-basis: 48px; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .sidebar { padding: 10px 6px 12px; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .ws-row { flex-direction: column; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-tools { align-items: center; }
-  .app.sidebar-collapsed:not(.sidebar-peek) :is(.sidebar-search, .sidebar-new) { width: 28px; padding: 0; justify-content: center; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-search { border: 0; background: none; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-search:hover { background: var(--surface-hover); }
-  .app.sidebar-collapsed:not(.sidebar-peek) :is(.ws-switch, .sidebar-search > .label, .sidebar-search > kbd, .sidebar-new > .label, .sidebar-new > kbd, .nav-item > .label, .me-email, .role-chip) { display: none; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .nav-item { justify-content: center; padding: 6px 0; }
-  /* A heading keeps its place, a rule drawn across it, so each icon below stands where it does opened. */
-  .app.sidebar-collapsed:not(.sidebar-peek) .nav-section-h { visibility: hidden; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .nav-section { background: linear-gradient(var(--line), var(--line)) 0 10px / 100% 1px no-repeat; }
-  /* A section its heading folded shows its entries all the same: the heading
-     is hidden here, and nothing else could unfold them. */
-  .app.sidebar-collapsed:not(.sidebar-peek) .nav-section .nav-section-body { display: flex; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .me-row { justify-content: center; padding: 4px 0; }
-  /* The Workbench section's controls need room: the rail shows the icon that opens the sidebar on them. */
-  .app.sidebar-collapsed:not(.sidebar-peek) .workbench-slot { display: none; }
-  /* A rail opened by hover lies over the workbench from its own edge, the rail's cell unchanged. */
-  .app.sidebar-collapsed .sidebar-dock { z-index: 40; }
-  .app.sidebar-peek .sidebar { position: absolute; top: 0; bottom: 0; left: 0; width: 244px; background: var(--sidebar); border-right: 1px solid var(--line); box-shadow: 0 8px 32px #0006; }
-}
-.workbench-rail { display: none; width: 100%; }
-@media (width > 760px) { .app.sidebar-collapsed:not(.sidebar-peek) .workbench-rail { display: flex; } }
+.role-chip.is-admin { color: var(--accent-hover); background: var(--accent-soft); font-weight: 600; }
+/* The logo, in the top bar and on the welcome page. */
+.ws-mark { width: 22px; height: 22px; flex-shrink: 0; color: var(--accent); }
+.ws-mark .ws-filament { color: var(--text); }
 
 /* view chrome */
 .view { display: flex; flex-direction: column; min-height: 0; flex: 1; position: relative; }
@@ -258,7 +171,6 @@ a.ws-switch:hover { background: var(--surface-raised); }
 .view-h .ttl .ic { color: var(--muted); }
 .view-h .ttl span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .spacer { flex: 1; }
-.only-mobile { display: none; }
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   min-height: 28px; padding: 3px 10px; border-radius: var(--radius);
@@ -272,10 +184,11 @@ a.ws-switch:hover { background: var(--surface-raised); }
 .btn.primary { background: var(--accent); border-color: transparent; color: #fff; }
 /* Darker, not --accent-hover: that is a link's colour, and white on it is 2.5:1. */
 .btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
-.btn.danger { background: #d1454522; border-color: #d1454555; color: #ff8a8a; }
-.btn.danger:hover { background: #d1454540; }
-:root[data-theme="light"] .btn.danger { background: #b62f3615; border-color: #b62f3666; color: var(--red); }
-:root[data-theme="light"] .btn.danger:hover { background: #b62f3624; }
+/* From the tokens, so a skin's red is its own: in the dark theme these are #d1454522, #d1454555 and #ff8a8a. */
+.btn.danger { background: color-mix(in srgb, var(--red) 13%, transparent); border-color: color-mix(in srgb, var(--red) 33%, transparent); color: var(--error-text); }
+.btn.danger:hover { background: color-mix(in srgb, var(--red) 25%, transparent); }
+:root[data-theme="light"]:not([data-skin]) .btn.danger { background: #b62f3615; border-color: #b62f3666; color: var(--red); }
+:root[data-theme="light"]:not([data-skin]) .btn.danger:hover { background: #b62f3624; }
 .btn:disabled { opacity: .45; cursor: default; }
 .btn kbd { margin-left: 2px; background: transparent; border-color: var(--btn-kbd-line); color: inherit; opacity: .8; }
 .scroll { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; }
@@ -340,26 +253,8 @@ body:has(.bulk) .toast-viewport { bottom: calc(18px + 9px + 40px + 8px + env(saf
 .toast button { color: var(--accent-hover); font-weight: 500; font-size: 12.5px; padding: 3px 6px; border-radius: 5px; }
 .toast button:hover { background: var(--surface-hover); }
 
-.drawer-scrim { display: none; }
-
 @media (max-width: 760px) {
-  .app { grid-template-columns: minmax(0, 1fr); }
-  /* The drawer opens whole, collapsed or not, and has no collapse button. */
-  .sidebar .panel-toggle { display: none; }
-  .sidebar-dock { display: contents; }
-  /* Closed, the drawer is hidden as well as moved off screen: moved alone, its
-     links stay in the Tab order and the accessibility tree. Visibility waits for
-     the slide out before it hides, and shows at once on the way in. */
-  .sidebar {
-    position: fixed; z-index: 55; top: 0; bottom: 0; left: 0; width: 272px;
-    padding-top: calc(10px + env(safe-area-inset-top, 0px));
-    background: var(--sidebar); border-right: 1px solid var(--line);
-    transform: translateX(-100%); visibility: hidden; transition: transform .18s ease, visibility 0s linear .18s;
-  }
-  .app.drawer-open .sidebar { transform: none; visibility: visible; transition: transform .18s ease; }
-  .app.drawer-open .drawer-scrim { display: block; position: fixed; inset: 0; z-index: 54; background: #0009; }
   .main { margin: 0; border: 0; border-radius: 0; }
-  .only-mobile { display: inline-grid; }
   .view-h { padding-left: 10px; padding-right: 10px; }
   .toast-viewport { left: 16px; right: 16px; max-width: none; }
 }

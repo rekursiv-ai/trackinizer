@@ -1,0 +1,451 @@
+/* The fixed skins (theme.ts SKINS): the root's `data-skin`, which the account
+   menu's Appearance sets. Each redefines every colour token styles.css's :root
+   does, so it reads the same over the dark or the light theme; skins.test.ts
+   holds each to that and to its contrast. Loaded after styles.css, so a skin
+   wins over `data-theme` at the same specificity. Fonts are system stacks: the
+   app loads no font from another host. A few rules per skin shape the top bar;
+   the rest of the app follows the tokens. */
+
+/* Retro: a 1970s kitchen. Cream, burnt orange, mustard, avocado and brown; round groups; three stripes under the bar. */
+:root[data-skin="retro"] {
+  --bg: #f6ead0;
+  --surface: #fbf3e1;
+  --surface-raised: #efdfbd;
+  --surface-hover: #e6d1a6;
+  --surface-overlay: #fbf3e1;
+  --frame: #e9d3a3;
+  --text: #3a2212;
+  --ink-muted: #5a3a20;
+  --muted: #6e4d2e;
+  --ink-tertiary: #8c6a48;
+  --line: #dcc390;
+  --line-strong: #b8935a;
+  --accent: #b4461a;
+  --accent-hover: #8f3510;
+  --accent-soft: #b4461a22;
+  --green: #5e6e12;
+  --amber: #8a5c00;
+  --red: #a8321e;
+  --urgent: #b4461a;
+  --violet: #7a3f6a;
+  --group-1: #b4461a;
+  --group-2: #5e6e12;
+  --group-3: #8a5c00;
+  --group-4: #7a3f1d;
+  --on-group: #fff8ea;
+  --l-provenance: #7a6048;
+  --l-work: #7a6048;
+  --l-evidence: #4f6010;
+  --l-against: #a8321e;
+  --l-lineage: #7a6048;
+  --l-citations: #7a6048;
+  --l-mentions: #7a6048;
+  --row-divider: #e3cc9c;
+  --btn-kbd-line: #b8935a;
+  --error-text: #a3311d;
+  --code-key: #1f5f8b;
+  --code-string: #4f6010;
+  --code-number: #9a4a00;
+  --code-literal: #7a3f6a;
+  --code-keyword: #a8321e;
+  --diff-add: #e2ecc0;
+  --diff-del: #f4d4c4;
+  --sans: Futura, "Century Gothic", "Trebuchet MS", sans-serif;
+  --radius: 10px;
+  --panel-radius: 16px;
+  color-scheme: light;
+}
+:root[data-skin="retro"] .topbar { margin-bottom: 9px; box-shadow: 0 3px 0 #d49a16, 0 6px 0 #b4461a, 0 9px 0 #7a3f1d; }
+:root[data-skin="retro"] :is(.station-group-title, .station-tab, .skin-option) { border-radius: 999px; }
+
+/* Sci-fi: a starship console. Deep navy, cyan hairlines, square corners, uppercase spaced labels. */
+:root[data-skin="scifi"] {
+  --bg: #07101c;
+  --surface: #0a1626;
+  --surface-raised: #0d1b2e;
+  --surface-hover: #13263f;
+  --surface-overlay: #0e1d31;
+  --frame: #050b14;
+  --text: #dff6ff;
+  --ink-muted: #a9d6ea;
+  --muted: #7fa4b8;
+  --ink-tertiary: #4f7186;
+  --line: #18324b;
+  --line-strong: #2a5677;
+  --accent: #17759b;
+  --accent-hover: #5fd3ff;
+  --accent-soft: #2fb8e62b;
+  --green: #5fe0a0;
+  --amber: #ffc857;
+  --red: #ff6b7f;
+  --urgent: #ff9f4a;
+  --violet: #b29cff;
+  --group-1: #38d6ff;
+  --group-2: #7dffb2;
+  --group-3: #ffc857;
+  --group-4: #b18cff;
+  --on-group: #04101c;
+  --l-provenance: #6f97ad;
+  --l-work: #6f97ad;
+  --l-evidence: #5fe0a0;
+  --l-against: #ff6b7f;
+  --l-lineage: #6f97ad;
+  --l-citations: #6f97ad;
+  --l-mentions: #7fa4b8;
+  --row-divider: #ffffff0a;
+  --btn-kbd-line: #ffffff30;
+  --error-text: #ff8a99;
+  --code-key: #79d8ff;
+  --code-string: #7dffb2;
+  --code-number: #ffc857;
+  --code-literal: #c9b2ff;
+  --code-keyword: #ff7b9c;
+  --diff-add: #2ea04326;
+  --diff-del: #f8514926;
+  --sans: Eurostile, "Bank Gothic", "Segoe UI", system-ui, sans-serif;
+  --radius: 2px;
+  --panel-radius: 4px;
+  color-scheme: dark;
+}
+:root[data-skin="scifi"] .topbar { border-bottom: 1px solid var(--accent-hover); box-shadow: 0 1px 14px #38d6ff40; }
+:root[data-skin="scifi"] :is(.station-group-title, .view-h .ttl, .topbar-pop-label) { letter-spacing: .1em; text-transform: uppercase; }
+:root[data-skin="scifi"] .station-group-title { font-size: 11px; border: 1px solid var(--group); }
+
+/* DOS: an 80s text-mode program. Blue panels, a grey menu bar and dialogs, bright CGA colours, hard black shadows, no curves. */
+:root[data-skin="dos"] {
+  --bg: #0000aa;
+  --surface: #0000aa;
+  --surface-raised: #0000c0;
+  --surface-hover: #000080;
+  --surface-overlay: #0000aa;
+  --frame: #000000;
+  --text: #ffffff;
+  --ink-muted: #55ffff;
+  --muted: #aaaaaa;
+  --ink-tertiary: #5555ff;
+  --line: #5555ff;
+  --line-strong: #55ffff;
+  --accent: #aa0000;
+  --accent-hover: #ffff55;
+  --accent-soft: #ffff5526;
+  --green: #55ff55;
+  --amber: #ffff55;
+  --red: #ff5555;
+  --urgent: #ffaa00;
+  --violet: #ff55ff;
+  --group-1: #55ffff;
+  --group-2: #55ff55;
+  --group-3: #ffff55;
+  --group-4: #ff55ff;
+  --on-group: #000000;
+  --l-provenance: #aaaaaa;
+  --l-work: #aaaaaa;
+  --l-evidence: #55ff55;
+  --l-against: #ff5555;
+  --l-lineage: #aaaaaa;
+  --l-citations: #aaaaaa;
+  --l-mentions: #aaaaaa;
+  --row-divider: #5555ff;
+  --btn-kbd-line: #aaaaaa;
+  --error-text: #ff7777;
+  --code-key: #55ffff;
+  --code-string: #55ff55;
+  --code-number: #ffff55;
+  --code-literal: #ff55ff;
+  --code-keyword: #ff5555;
+  --diff-add: #00aa0040;
+  --diff-del: #aa000060;
+  --sans: "Px437 IBM VGA 8x16", "Perfect DOS VGA 437", "Lucida Console", ui-monospace, "Courier New", monospace;
+  --mono: var(--sans);
+  --radius: 0;
+  --panel-radius: 0;
+  color-scheme: dark;
+}
+/* The menu bar and its menus are DOS's grey dialogs: black ink, a cyan highlight. */
+:root[data-skin="dos"] .topbar {
+  --text: #000000; --ink-muted: #000000; --muted: #222222; --surface-hover: #00aaaa; --surface-overlay: #aaaaaa;
+  --line: #000000; --line-strong: #000000; --accent-soft: #00aaaa; --error-text: #600000;
+  background: #aaaaaa; color: #000000;
+}
+:root[data-skin="dos"] .station-group-title { background: color-mix(in srgb, var(--group) 55%, #aaaaaa); color: #000000; }
+:root[data-skin="dos"] .station-group.is-current .station-group-title { background: #000000; color: var(--group); }
+:root[data-skin="dos"] .topbar-pop { border: 3px double #000000; box-shadow: 8px 8px 0 #000000; }
+
+/* 8-bit console: a late-80s home console. Grey plastic, a charcoal bar with a red stripe, thick black outlines, hard pixel shadows. */
+:root[data-skin="console"] {
+  --bg: #e4e4e4;
+  --surface: #f2f2f2;
+  --surface-raised: #d6d6d6;
+  --surface-hover: #c8c8c8;
+  --surface-overlay: #f2f2f2;
+  --frame: #2b2b2b;
+  --text: #111111;
+  --ink-muted: #2b2b2b;
+  --muted: #4a4a4a;
+  --ink-tertiary: #6a6a6a;
+  --line: #8a8a8a;
+  --line-strong: #111111;
+  --accent: #c8102e;
+  --accent-hover: #9c0b22;
+  --accent-soft: #c8102e1f;
+  --green: #0b7a26;
+  --amber: #8a5a00;
+  --red: #c8102e;
+  --urgent: #c8501e;
+  --violet: #5a2ea6;
+  --group-1: #c8102e;
+  --group-2: #2038ec;
+  --group-3: #0b7a26;
+  --group-4: #8a4a00;
+  --on-group: #ffffff;
+  --l-provenance: #555555;
+  --l-work: #555555;
+  --l-evidence: #0b7a26;
+  --l-against: #c8102e;
+  --l-lineage: #555555;
+  --l-citations: #555555;
+  --l-mentions: #555555;
+  --row-divider: #c8c8c8;
+  --btn-kbd-line: #111111;
+  --error-text: #a9001f;
+  --code-key: #2038ec;
+  --code-string: #0b7a26;
+  --code-number: #8a4a00;
+  --code-literal: #5a2ea6;
+  --code-keyword: #c8102e;
+  --diff-add: #c9ecd0;
+  --diff-del: #f6c9cf;
+  --sans: "Press Start 2P", ui-monospace, "Courier New", monospace;
+  --mono: var(--sans);
+  --radius: 0;
+  --panel-radius: 0;
+  color-scheme: light;
+}
+:root[data-skin="console"] .topbar {
+  --text: #ffffff; --ink-muted: #e4e4e4; --muted: #c8c8c8; --surface-hover: #444444; --line-strong: #8a8a8a; --error-text: #ff8a8a;
+  border-bottom: 4px solid #c8102e; margin-bottom: 8px;
+}
+:root[data-skin="console"] .topbar-pop { --text: #111111; --ink-muted: #2b2b2b; --muted: #4a4a4a; --surface-hover: #c8c8c8; --line: #8a8a8a; --line-strong: #111111; --error-text: #a9001f; border: 3px solid #111111; box-shadow: 4px 4px 0 #111111; }
+:root[data-skin="console"] .station-group-title { border: 2px solid #111111; background: color-mix(in srgb, var(--group) 70%, #111111); color: #ffffff; box-shadow: 2px 2px 0 #000000; }
+:root[data-skin="console"] .station-group-title:active { transform: translate(2px, 2px); box-shadow: none; }
+:root[data-skin="console"] :is(.view-h .ttl, .station-group-title) { text-transform: uppercase; }
+
+/* Matrix: black glass and code green. */
+:root[data-skin="matrix"] {
+  --bg: #000000;
+  --surface: #020a04;
+  --surface-raised: #041208;
+  --surface-hover: #08240f;
+  --surface-overlay: #031006;
+  --frame: #000000;
+  --text: #b8ffc9;
+  --ink-muted: #6dff9a;
+  --muted: #3ccf68;
+  --ink-tertiary: #1f7a3a;
+  --line: #0b3d1a;
+  --line-strong: #13702c;
+  --accent: #0a7a2a;
+  --accent-hover: #00ff41;
+  --accent-soft: #00ff411f;
+  --green: #00ff41;
+  --amber: #d4ff3b;
+  --red: #ff4141;
+  --urgent: #ffb641;
+  --violet: #7dffd8;
+  --group-1: #00ff41;
+  --group-2: #7dff9e;
+  --group-3: #d4ffdf;
+  --group-4: #00c83a;
+  --on-group: #001a07;
+  --l-provenance: #2fbf5a;
+  --l-work: #2fbf5a;
+  --l-evidence: #00ff41;
+  --l-against: #ff6b6b;
+  --l-lineage: #2fbf5a;
+  --l-citations: #2fbf5a;
+  --l-mentions: #3ccf68;
+  --row-divider: #0b3d1a;
+  --btn-kbd-line: #13702c;
+  --error-text: #ff6b6b;
+  --code-key: #7dffd8;
+  --code-string: #00ff41;
+  --code-number: #d4ff3b;
+  --code-literal: #9dffb8;
+  --code-keyword: #ff7b7b;
+  --diff-add: #00ff4122;
+  --diff-del: #ff414128;
+  --sans: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius: 2px;
+  --panel-radius: 4px;
+  color-scheme: dark;
+}
+:root[data-skin="matrix"] .topbar { border-bottom: 1px solid var(--line-strong); }
+:root[data-skin="matrix"] .station-group-title { border: 1px solid var(--group); background: #000000; text-shadow: 0 0 6px var(--group); }
+:root[data-skin="matrix"] .station-group.is-current .station-group-title { background: var(--group); text-shadow: none; }
+:root[data-skin="matrix"] .view-h .ttl { text-shadow: 0 0 8px #00ff4180; }
+
+/* Hacker: a tmux and vim session in Tomorrow Night. Groups are numbered powerline segments. */
+:root[data-skin="hacker"] {
+  --bg: #1d1f21;
+  --surface: #1d1f21;
+  --surface-raised: #282a2e;
+  --surface-hover: #373b41;
+  --surface-overlay: #282a2e;
+  --frame: #161719;
+  --text: #c5c8c6;
+  --ink-muted: #b4b7b4;
+  --muted: #a3a6a4;
+  --ink-tertiary: #707880;
+  --line: #373b41;
+  --line-strong: #4d5057;
+  --accent: #4a6e8a;
+  --accent-hover: #81a2be;
+  --accent-soft: #81a2be26;
+  --green: #b5bd68;
+  --amber: #f0c674;
+  --red: #cc6666;
+  --urgent: #de935f;
+  --violet: #b294bb;
+  --group-1: #81a2be;
+  --group-2: #b5bd68;
+  --group-3: #f0c674;
+  --group-4: #b294bb;
+  --on-group: #1d1f21;
+  --l-provenance: #969896;
+  --l-work: #969896;
+  --l-evidence: #b5bd68;
+  --l-against: #cc6666;
+  --l-lineage: #969896;
+  --l-citations: #969896;
+  --l-mentions: #a3a6a4;
+  --row-divider: #ffffff08;
+  --btn-kbd-line: #ffffff30;
+  --error-text: #e48f8f;
+  --code-key: #81a2be;
+  --code-string: #b5bd68;
+  --code-number: #de935f;
+  --code-literal: #b294bb;
+  --code-keyword: #cc6666;
+  --diff-add: #b5bd6826;
+  --diff-del: #cc666626;
+  --sans: "JetBrains Mono", "SF Mono", Menlo, ui-monospace, monospace;
+  --radius: 0;
+  --panel-radius: 0;
+  color-scheme: dark;
+}
+:root[data-skin="hacker"] .topbar { background: #282a2e; }
+:root[data-skin="hacker"] .station-groups-strip { counter-reset: window; gap: 0; }
+:root[data-skin="hacker"] .station-group-title { padding: 0 18px 0 10px; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%); }
+:root[data-skin="hacker"] .station-group-title::before { counter-increment: window; content: counter(window) ":"; opacity: .7; }
+:root[data-skin="hacker"] .station-group-dot { display: none; }
+:root[data-skin="hacker"] .station-group.is-current .station-group-title::after { content: "*"; }
+
+/* Minimalist: paper and ink, greys alone, groups set as text with an underline. */
+:root[data-skin="minimal"] {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-raised: #f6f6f5;
+  --surface-hover: #efefee;
+  --surface-overlay: #ffffff;
+  --frame: #ffffff;
+  --text: #111111;
+  --ink-muted: #333333;
+  --muted: #6b6b6b;
+  --ink-tertiary: #9a9a9a;
+  --line: #ececec;
+  --line-strong: #d6d6d6;
+  --accent: #111111;
+  --accent-hover: #444444;
+  --accent-soft: #1111110d;
+  --green: #2f7d32;
+  --amber: #8a6100;
+  --red: #b3261e;
+  --urgent: #a85a00;
+  --violet: #5b4a9e;
+  --group-1: #111111;
+  --group-2: #4a4a4a;
+  --group-3: #5e5e5e;
+  --group-4: #6e6e6e;
+  --on-group: #ffffff;
+  --l-provenance: #6b6b6b;
+  --l-work: #6b6b6b;
+  --l-evidence: #2f7d32;
+  --l-against: #b3261e;
+  --l-lineage: #6b6b6b;
+  --l-citations: #6b6b6b;
+  --l-mentions: #6b6b6b;
+  --row-divider: #f0f0f0;
+  --btn-kbd-line: #d6d6d6;
+  --error-text: #b3261e;
+  --code-key: #333333;
+  --code-string: #2f7d32;
+  --code-number: #8a6100;
+  --code-literal: #5b4a9e;
+  --code-keyword: #b3261e;
+  --diff-add: #e9f5ea;
+  --diff-del: #fbeaea;
+  --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --radius: 6px;
+  --panel-radius: 8px;
+  color-scheme: light;
+}
+:root[data-skin="minimal"] .topbar { border-bottom: 1px solid var(--line); }
+:root[data-skin="minimal"] .station-group-title { background: transparent; color: var(--muted); font-weight: 500; border-radius: 0; }
+:root[data-skin="minimal"] .station-group.is-current .station-group-title { background: transparent; color: var(--text); box-shadow: inset 0 -2px 0 var(--text); }
+:root[data-skin="minimal"] .station-group-dot { width: 5px; height: 5px; }
+:root[data-skin="minimal"] .topbar-rule { background: transparent; }
+
+/* Brutalist: the raw web. White, black rules, a yellow frame, blue links, hard offset shadows, no curves. */
+:root[data-skin="brutal"] {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --surface-raised: #ffeb00;
+  --surface-hover: #ffd400;
+  --surface-overlay: #ffffff;
+  --frame: #ffeb00;
+  --text: #000000;
+  --ink-muted: #000000;
+  --muted: #333333;
+  --ink-tertiary: #555555;
+  --line: #000000;
+  --line-strong: #000000;
+  --accent: #0000ee;
+  --accent-hover: #0000aa;
+  --accent-soft: #0000ee1a;
+  --green: #00752e;
+  --amber: #8a5a00;
+  --red: #d10000;
+  --urgent: #d14a00;
+  --violet: #6a00d1;
+  --group-1: #000000;
+  --group-2: #0000ee;
+  --group-3: #d1004f;
+  --group-4: #00752e;
+  --on-group: #ffffff;
+  --l-provenance: #333333;
+  --l-work: #333333;
+  --l-evidence: #00752e;
+  --l-against: #d10000;
+  --l-lineage: #333333;
+  --l-citations: #333333;
+  --l-mentions: #333333;
+  --row-divider: #000000;
+  --btn-kbd-line: #000000;
+  --error-text: #bc0000;
+  --code-key: #0000ee;
+  --code-string: #00752e;
+  --code-number: #8a5a00;
+  --code-literal: #6a00d1;
+  --code-keyword: #d10000;
+  --diff-add: #c8f7d0;
+  --diff-del: #ffd0d0;
+  --sans: "Courier New", ui-monospace, monospace;
+  --radius: 0;
+  --panel-radius: 0;
+  color-scheme: light;
+}
+:root[data-skin="brutal"] .main { border: 3px solid #000000; }
+:root[data-skin="brutal"] .station-group-title { border: 3px solid var(--group); background: #ffffff; text-transform: uppercase; }
+:root[data-skin="brutal"] .station-group.is-current .station-group-title { background: var(--group); }
+:root[data-skin="brutal"] .topbar-pop { border: 3px solid #000000; box-shadow: 6px 6px 0 #000000; }
+:root[data-skin="brutal"] .view-h .ttl { font-family: "Arial Black", Impact, sans-serif; text-transform: uppercase; }

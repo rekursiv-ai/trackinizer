@@ -31,7 +31,7 @@ export function PaletteView() {
           className="palette"
           aria-describedby={undefined}
           // Radix returns focus only to a Dialog.Trigger, and the palette has
-          // none: ⌘K, the sidebar and search links all open it. So it keeps the
+          // none: ⌘K, the top bar and search links all open it. So it keeps the
           // element that had focus and returns focus there itself.
           onOpenAutoFocus={(event) => {
             event.preventDefault();

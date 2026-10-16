@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CHAT_DELETED, CHAT_FORK_CLOSED, CHAT_FORK_WIDER, CHAT_NOT_SHARED, CHAT_STAFF_ONLY, type ChatHead, type ChatPartial, type ChatPartialState, deleteChat, getChatHead,
   readChatPartial, sendChatLine, shareChat, unshareChat } from "../api/chats";
-import { stationForChat } from "../api/stations";
+import { deleteStation, stationForChat } from "../api/stations";
 import { ApiError, type CallOptions } from "../api/client";
 import { findRef, getDetail } from "../api/detail";
 import type { Profile } from "../api/me";
@@ -37,7 +37,7 @@ vi.mock("../api/chats", async (original) => ({
   unshareChat: vi.fn(),
   deleteChat: vi.fn(),
 }));
-vi.mock("../api/stations", () => ({ stationForChat: vi.fn() }));
+vi.mock("../api/stations", () => ({ stationForChat: vi.fn(), deleteStation: vi.fn() }));
 vi.mock("../api/workspaces", () => ({ getWorkspace: vi.fn() }));
 vi.mock("../api/sessions", async (original) => ({
   ...(await original<typeof import("../api/sessions")>()),
@@ -117,7 +117,7 @@ afterEach(async () => {
   stopTrail = () => {};
   cleanup();
   vi.restoreAllMocks();
-  for (const mock of [getChatHead, readChatPartial, sendChatLine, shareChat, unshareChat, deleteChat, stationForChat, getWorkspace, listSessionParts, readSessionRecords, setSessionAudience, getDetail, findRef]) {
+  for (const mock of [getChatHead, readChatPartial, sendChatLine, shareChat, unshareChat, deleteChat, stationForChat, deleteStation, getWorkspace, listSessionParts, readSessionRecords, setSessionAudience, getDetail, findRef]) {
     vi.mocked(mock).mockReset();
   }
   sessions.clear();
@@ -237,7 +237,8 @@ test("a Chat open over the page by its strip has a Pin that stands it beside the
 
 test("Chat's header names the station, and has neither History nor Clear chat", () => {
   shell();
-  expect(screen.getByRole("button", { name: "unnamed-workstream#1" })).toBeTruthy();
+  const partner = screen.getByRole("group", { name: "Chat partner" });
+  expect(within(partner).getByText("unnamed-workstream#1")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "History" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Clear chat" })).toBeNull();
 });
@@ -395,6 +396,27 @@ test("Delete asks first, Cancel deletes nothing, and Delete chat leaves the stat
   expect(deleteChat).toHaveBeenCalledWith("c1");
   expect(client.getQueryData<WorkspaceState>(["workspace", WORKSPACE_ID])?.conversation_id).toBeNull();
   expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+});
+
+test("Delete chat deletes the emptied station and opens the station beside it", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_delete: true }));
+  vi.mocked(deleteChat).mockResolvedValue();
+  vi.mocked(deleteStation).mockResolvedValue();
+  vi.mocked(getWorkspace).mockResolvedValue({ ...workspace, id: "w-beta", name: "beta", conversation_id: "c2" });
+  const { client } = shell();
+  client.setQueryData(["stations"], [
+    { id: WORKSPACE_ID, name: "unnamed-workstream#1", conversation_id: "c1", page: null, created_at: "2026-10-01T10:00:00Z" },
+    { id: "w-beta", name: "beta", conversation_id: "c2", page: null, created_at: "2026-10-02T10:00:00Z" },
+  ]);
+  await screen.findByText("a2");
+  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+  fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
+  await waitFor(() => expect(currentStation().id).toBe("w-beta"));
+  expect(deleteChat).toHaveBeenCalledWith("c1");
+  expect(deleteStation).toHaveBeenCalledWith(WORKSPACE_ID);
+  expect(client.getQueryData<{ id: string }[]>(["stations"])?.map((each) => each.id)).toEqual(["w-beta"]);
 });
 
 test("a share refused with chat_not_starter is said in words", async () => {

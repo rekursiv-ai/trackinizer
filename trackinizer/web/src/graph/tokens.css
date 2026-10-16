@@ -3,7 +3,10 @@
    at even brightness; edges are quiet slates, so structure recedes behind the
    nodes; status rings are neutrals and one alert, none of them a node hue, so the
    key shows each ring beside the app's status glyph. A file of their own, loaded
-   by palette.ts, so the detail's graph preview has them without the graph's chunk. */
+   by palette.ts, so the detail's graph preview has them without the graph's chunk.
+   A fixed skin (skins.css) ignores the theme: one on a light ground takes the
+   light set, one on a dark ground the dark one, and each its own where its
+   ground would fade a node or a ring (tokens.test.ts). */
 :root {
   --g-kind-Issue: #5e8cf0;
   --g-kind-Belief: #a98cf0;
@@ -29,7 +32,11 @@
   /* --ink-tertiary at 15%. */
   --g-faint: rgba(98, 102, 109, 0.15);
 }
-:root[data-theme="light"] {
+:root[data-theme="light"]:not([data-skin]),
+:root[data-skin="retro"],
+:root[data-skin="console"],
+:root[data-skin="minimal"],
+:root[data-skin="brutal"] {
   --g-kind-Issue: #2f6fd6;
   --g-kind-Belief: #7b5fd8;
   --g-kind-Experiment: #2f9d5a;
@@ -52,4 +59,28 @@
   --g-status-invalid: #c27a12;
   --g-fallback: var(--ink-tertiary);
   --g-faint: rgba(108, 120, 134, 0.15);
+}
+/* The skins whose ground fades a colour of their set: each that colour a step stronger. */
+:root[data-skin="retro"] {
+  --g-kind-Experiment: #2e9857;
+  --g-kind-Paper: #1e92a1;
+  --g-kind-WebResult: #a0831b;
+  --g-status-complete: #7f8b9b;
+  --g-status-abandoned: #b3bcc5;
+  --g-status-invalid: #bc7611;
+}
+:root[data-skin="console"] {
+  --g-kind-Experiment: #2c9254;
+  --g-kind-Paper: #1d8e9c;
+  --g-kind-CodeChange: #bf6c29;
+  --g-kind-WebResult: #997e19;
+  --g-status-complete: #7b8696;
+  --g-status-abandoned: #aeb6be;
+  --g-status-invalid: #b47111;
+}
+:root[data-skin="dos"] {
+  --g-status-abandoned: #5e6482;
+}
+:root[data-skin="hacker"] {
+  --g-status-abandoned: #4f5677;
 }
