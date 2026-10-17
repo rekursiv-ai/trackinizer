@@ -238,10 +238,11 @@ function WorkstreamInfoDrawer({
     <aside className="workstream-drawer workstream-pop" role="dialog" aria-label={`${info.title} info`}>
       <div className="workstream-drawer-head"><h2>{info.title}</h2><button type="button" aria-label="Close info" onClick={onClose}><Icon name="x" /></button></div>
       <a href={`#/lookup/${info.id}`}>Issue {info.seq}</a>
+      <a href={`#/lookup/${info.id}`}>Workstream settings</a>
       <h3>Chats</h3>
       {info.stations.length ? <ul>{info.stations.map((each) => <li key={each.id}>
         <span>{each.name}{each.hidden ? " · hidden" : ""}</span>
-        {each.session_ids.map((session) => <span className="workstream-session" key={session}>{session}</span>)}
+        {each.session_ids.map((session) => <a className="workstream-session" href={`#/lookup/${session}`} key={session}>{session}</a>)}
       </li>)}</ul> : <p>No chats in this workstream.</p>}
     </aside>
   );

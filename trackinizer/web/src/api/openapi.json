@@ -5683,6 +5683,19 @@
             "$ref": "#/components/schemas/ReadState",
             "description": "The notifications you have read: a boundary time, and changes marked one by one after it."
           },
+          "settings_artifact_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Your personal settings Artifact id, pinned when first opened.",
+            "title": "Settings Artifact Id"
+          },
           "skin": {
             "default": "default",
             "description": "The app's look: default, or one of the fixed skins, which ignore theme.",
@@ -6654,6 +6667,24 @@
         "title": "SessionAudienceResponse",
         "type": "object"
       },
+      "SessionCampaign": {
+        "additionalProperties": false,
+        "description": "Campaign settings stored on a chat's head AgentSession.\n\nThe whole setup, or ``None`` to clear it.",
+        "properties": {
+          "campaign": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CampaignSetup"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "SessionCampaign",
+        "type": "object"
+      },
       "SessionEnd": {
         "description": "Mark a session closed, optionally backfilling late-known fields.",
         "properties": {
@@ -6936,6 +6967,22 @@
           "workstream_id"
         ],
         "title": "SetStationWorkstream",
+        "type": "object"
+      },
+      "SettingsArtifact": {
+        "additionalProperties": false,
+        "description": "The id of the principal's pinned personal settings Artifact.",
+        "properties": {
+          "artifact_id": {
+            "format": "uuid",
+            "title": "Artifact Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id"
+        ],
+        "title": "SettingsArtifact",
         "type": "object"
       },
       "ShowVisual": {
@@ -9987,24 +10034,6 @@
         "additionalProperties": true,
         "type": "object"
       },
-      "WorkspaceCampaign": {
-        "additionalProperties": false,
-        "description": "A station's campaign setup, as its owner writes it and the assistant reads it.\n\nThe whole setup, or ``None`` to clear it on a write and for a station that holds\nnone on a read.",
-        "properties": {
-          "campaign": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CampaignSetup"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "title": "WorkspaceCampaign",
-        "type": "object"
-      },
       "WorkspaceConflict": {
         "description": "A stale operation's conflict response, including live state.",
         "properties": {
@@ -10233,6 +10262,71 @@
         "title": "WorkspaceRecordContext",
         "type": "object"
       },
+      "WorkspaceSettingsRefs": {
+        "additionalProperties": false,
+        "description": "Settings rows and station metadata the assistant uses for a chat.",
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "personal_artifact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Personal Artifact Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkstreamSuggestion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workstream_issue_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workstream Issue Id"
+          }
+        },
+        "title": "WorkspaceSettingsRefs",
+        "type": "object"
+      },
       "WorkspaceState": {
         "description": "A revisioned station state returned to browser and agent clients.",
         "properties": {
@@ -10258,16 +10352,6 @@
               }
             ],
             "title": "Assistant"
-          },
-          "campaign": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CampaignSetup"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "continuation_record_id": {
             "anyOf": [
@@ -17339,6 +17423,25 @@
         "summary": "Profile Route"
       }
     },
+    "/api/me/settings-artifact": {
+      "post": {
+        "description": "Get or create the principal's pinned personal settings Artifact.",
+        "operationId": "open_personal_settings_route_api_me_settings_artifact_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsArtifact"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Open Personal Settings Route"
+      }
+    },
     "/api/me/tokens": {
       "get": {
         "description": "List the authenticated user's API keys.\n\nHashes and secrets are never returned; ``prefix`` is the only field a\ncaller can use to recognize a specific key.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with a \"tokens\" array of key metadata.",
@@ -21247,63 +21350,6 @@
         "summary": "Workspace For Chat Route"
       }
     },
-    "/api/workspaces/for-chat/{conversation_id}/campaign": {
-      "get": {
-        "description": "Read the campaign setup of the asker's station that holds a chat.\n\nOnly the configured assistant may read for an ``asker``, and it reads the asker's\nown station, so one writer's setup never governs another's launch from a shared\nchat. A launch takes this setup where the asker's line leaves a field unset.\n\nArgs:\n  conversation_id: The science chat the station holds.\n  request: Request carrying the database engine and the configuration.\n  identity: The assistant's agent key.\n  asker: The account the assistant reads for.\n\nReturns:\n  setup: The station's setup, or a null ``campaign`` when there is none.",
-        "operationId": "campaign_for_chat_route_api_workspaces_for_chat__conversation_id__campaign_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "conversation_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Conversation Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "asker",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Asker"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkspaceCampaign"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Campaign For Chat Route"
-      }
-    },
     "/api/workspaces/for-chat/{conversation_id}/name": {
       "post": {
         "description": "Name an unnamed station, or return its existing name unchanged.\n\nOnly the configured assistant may name for an ``asker``. A user's name wins\nover a late suggestion; the server returns that station unchanged.\n\nArgs:\n  conversation_id: The science chat the station holds.\n  body: Suggested name, trimmed and bounded to 120 characters.\n  request: Request carrying the database engine and event hub.\n  identity: The assistant's agent key.\n  asker: The account the assistant names for.\n\nReturns:\n  state: The named station, or its unchanged state when already named.",
@@ -21369,6 +21415,63 @@
           }
         },
         "summary": "Name For Chat Route"
+      }
+    },
+    "/api/workspaces/for-chat/{conversation_id}/settings": {
+      "get": {
+        "description": "Resolve the asker's settings rows and head session for a chat.\n\nOnly the configured assistant may read for an ``asker``, and it reads the asker's\nown station, so one writer's setup never governs another's launch from a shared\nchat. A launch takes this setup where the asker's line leaves a field unset.\n\nArgs:\n  conversation_id: The science chat the station holds.\n  request: Request carrying the database engine and the configuration.\n  identity: The assistant's agent key.\n  asker: The account the assistant reads for.\n\nReturns:\n  setup: The station's setup, or a null ``campaign`` when there is none.",
+        "operationId": "settings_refs_for_chat_route_api_workspaces_for_chat__conversation_id__settings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asker",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asker"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceSettingsRefs"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Settings Refs For Chat Route"
       }
     },
     "/api/workspaces/for-chat/{conversation_id}/suggestion": {
@@ -21575,57 +21678,6 @@
           }
         },
         "summary": "Rename Workspace Route"
-      }
-    },
-    "/api/workspaces/{workspace_id}/campaign": {
-      "put": {
-        "description": "Store the default campaign setup of one of the principal's stations.\n\nThe whole setup replaces what was stored, and a null ``campaign`` clears it. Only\nthe station's owner may write it; a launch from its chat takes the setup where the\nasker's line leaves a field unset. No revision changes and nothing is published.\n\nArgs:\n  workspace_id: The station.\n  body: The setup to store, or a null ``campaign`` to clear it.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n\nReturns:\n  state: The station with its setup as stored.",
-        "operationId": "set_workspace_campaign_route_api_workspaces__workspace_id__campaign_put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Workspace Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WorkspaceCampaign"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkspaceState"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Set Workspace Campaign Route"
       }
     },
     "/api/workspaces/{workspace_id}/clear-chat": {
@@ -21936,6 +21988,57 @@
           }
         },
         "summary": "Console Relay Route"
+      }
+    },
+    "/api/workspaces/{workspace_id}/session-settings": {
+      "put": {
+        "description": "Store campaign settings on the current head session of an owned station.\n\nOnly the station owner may write. Other session app keys survive this update.\n\nArgs:\n  workspace_id: The station.\n  body: The campaign setup to store, or ``None`` to clear it.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n\nReturns:\n  settings: The stored session campaign.",
+        "operationId": "set_session_settings_route_api_workspaces__workspace_id__session_settings_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionCampaign"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCampaign"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Session Settings Route"
       }
     },
     "/api/workspaces/{workspace_id}/workstream": {

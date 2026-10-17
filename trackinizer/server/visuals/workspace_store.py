@@ -20,6 +20,7 @@ from trackinizer.server.notify import tx
 from trackinizer.server.preferences import (
     ASSISTANT_KEYS,
     Preferences,
+    stored_preferences,
     write_preferences,
 )
 from trackinizer.server.store.deleted_chats import (
@@ -49,7 +50,6 @@ from trackinizer.server.visuals.science_chats import (
 from trackinizer.server.visuals.screens import read_screen
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
-    CampaignSetup,
     ChatWindow,
     ChoosePartner,
     Highlight,
@@ -60,6 +60,7 @@ from trackinizer.server.visuals.workspaces import (
     StationData,
     StationLayout,
     WorkspaceData,
+    WorkspaceSettingsRefs,
     WorkspaceState,
     WorkspaceSummary,
     WorkstreamSuggestion,
@@ -68,9 +69,10 @@ from trackinizer.server.visuals.workspaces import (
     refuse_record,
     restore_page,
 )
-from trackinizer.server.visuals.workstreams import check_workstream
-from trackinizer.types.errors import ChatDeletedError
+from trackinizer.server.visuals.workstreams import check_workstream, open_scratch
+from trackinizer.types.errors import ChatDeletedError, ConflictError
 from trackinizer.wire.audience import OPEN
+from trackinizer.wire.bodies import SubmitArtifact
 from trackinizer.wire.wire_science_chat import ChatSend, ChatSent
 from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
@@ -85,6 +87,7 @@ if TYPE_CHECKING:
     from trackinizer.server.audience import SessionReader
     from trackinizer.server.auth import Role
     from trackinizer.server.config import Assistant
+    from trackinizer.server.store.core import Store
     from trackinizer.server.visuals.catalog import VisualCatalogBody
     from trackinizer.server.visuals.workspaces import PartnerChoice
 
@@ -102,6 +105,8 @@ _RETURNING_STATION: Final = vetted_sql(" RETURNING ", _STATION)
 
 _NAME_ATTEMPTS: Final = 8
 """Tries at a free name before a station gives up: another create took it each time."""
+
+PERSONAL_SETTINGS_LABEL: Final = "personal-settings"
 
 
 class RevisionConflictError(Exception):
@@ -566,7 +571,6 @@ async def clear_chat_station(
             data=WorkspaceData.model_validate(source["state"]),
             page=source_state.page,
             layout=source_state.layout,
-            campaign=source_state.campaign,
             clear_key=key,
             workstream_id=source_state.workstream_id,
         )
@@ -1073,84 +1077,176 @@ async def set_workspace_layout(
         )
 
 
-async def set_workspace_campaign(
-    engine: DatabaseEngine,
+async def open_personal_settings(store: Store, *, email: str) -> uuid.UUID | None:
+    """Return the user's pinned settings Artifact, creating it when missing.
+
+    Args:
+      store: The server store.
+      email: The active user's email.
+
+    Returns:
+      artifact_id: The pinned Artifact id, or None when the user is not active.
+
+    """
+    async with store.engine.acquire() as conn, tx(conn):
+        user = await conn.fetchrow(
+            "SELECT id, preferences FROM users "
+            "WHERE email = $1 AND status = 'active' FOR UPDATE",
+            email.lower(),
+        )
+        if user is None:
+            return None
+        pinned = stored_preferences(user["preferences"]).settings_artifact_id
+        if pinned is not None:
+            return uuid.UUID(pinned)
+        artifact_id = await _make_settings_artifact(
+            store,
+            conn=conn,
+            owner=email.lower(),
+            title=f"Settings: {email.lower()}",
+            description="Your personal campaign defaults, edited here.",
+            app=None,
+        )
+        _ = await write_preferences(
+            conn,
+            user_id=from_plain(user["id"], uuid.UUID),
+            change={"settings_artifact_id": str(artifact_id)},
+        )
+        return artifact_id
+
+
+async def set_session_campaign(
+    store: Store,
+    *,
+    session_id: uuid.UUID,
+    email: str,
+    campaign: dict[str, object] | None,
+) -> bool:
+    """Compare-and-set the campaign on a head session, preserving its other app.
+
+    Args:
+      store: The server store.
+      session_id: The AgentSession to update.
+      email: The person attributed to the change.
+      campaign: The campaign value, or None to remove it.
+
+    Returns:
+      written: Whether the update landed before the retry limit.
+
+    """
+    for _ in range(4):
+        async with store.engine.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT app FROM inquiries WHERE id = $1 AND kind = 'AgentSession'",
+                session_id,
+            )
+        if row is None:
+            return False
+        current = from_plain(row["app"], dict[str, object], default=None)
+        updated = {} if current is None else dict(current)
+        settings = from_plain(updated.get("settings"), dict[str, object], default={})
+        if campaign is None:
+            settings.pop("campaign", None)
+        else:
+            settings["campaign"] = campaign
+        if settings:
+            updated["settings"] = settings
+        else:
+            updated.pop("settings", None)
+        target = updated or None
+        try:
+            await store.transition_app(
+                session_id,
+                expected_from=current,
+                to=target,
+                actor=email.lower(),
+                reason="Update chat campaign settings.",
+            )
+        except ConflictError:
+            continue
+        return True
+    return False
+
+
+async def settings_refs_for_chat(
+    store: Store,
     *,
     user_id: uuid.UUID,
-    workspace_id: uuid.UUID,
-    campaign: CampaignSetup | None,
-) -> bool:
-    """Store a station's default campaign setup, or clear it when ``campaign`` is None.
-
-    The whole setup replaces what was stored; ``None`` removes the ``campaign`` key.
-    Only the station's owner reaches it (the ``user_id`` guard), so no one edits
-    another's defaults. No revision changes and nothing is published.
-
-    Args:
-      engine: Database connection source.
-      user_id: Owner of the station.
-      workspace_id: The station.
-      campaign: The validated setup to store, or None to clear it.
-
-    Returns:
-      found: Whether the user has such a station.
-
-    """
-    async with engine.acquire() as conn:
-        if campaign is None:
-            cleared = await conn.fetchval(
-                "UPDATE visual_workspaces SET station = coalesce(station, '{}') - "
-                "'campaign', modified_at = clock_timestamp() "
-                "WHERE id = $1 AND user_id = $2 RETURNING 1",
-                workspace_id,
-                user_id,
-            )
-            return cleared is not None
-        return (
-            await conn.fetchval(
-                "UPDATE visual_workspaces SET station = coalesce(station, '{}') || "
-                "jsonb_build_object('campaign', $3::jsonb), "
-                "modified_at = clock_timestamp() "
-                "WHERE id = $1 AND user_id = $2 RETURNING 1",
-                workspace_id,
-                user_id,
-                campaign.model_dump(mode="json", exclude_none=True),
-            )
-            is not None
-        )
-
-
-async def campaign_for_chat(
-    engine: DatabaseEngine,
-    *,
     email: str,
     conversation_id: uuid.UUID,
-) -> CampaignSetup | None:
-    """Return the campaign setup of ``email``'s station that holds a chat, if any.
-
-    The assistant reads this for the asker it answers: the station is the asker's own,
-    found by its owner and the conversation it holds, so one writer's setup never
-    governs another's launch from a shared chat.
+    session_id: uuid.UUID | None,
+) -> WorkspaceSettingsRefs:
+    """Resolve a chat's station workstream and campaign settings rows.
 
     Args:
-      engine: Database connection source.
-      email: The owner, as the assistant attested the asker.
-      conversation_id: The science chat the station holds.
+      store: The server store.
+      user_id: The asker's user id.
+      email: The asker's email.
+      conversation_id: The science chat.
+      session_id: Its head AgentSession, if it has one.
 
     Returns:
-      setup: The station's validated setup, or None when there is no such station,
-        or it holds none.
+      refs: The workstream, session, personal Artifact and station metadata.
 
     """
-    async with engine.acquire() as conn:
-        stored = await conn.fetchval(
-            "SELECT vw.station->'campaign' FROM visual_workspaces vw "
-            "JOIN users u ON u.id = vw.user_id "
-            "WHERE u.email = $1 AND vw.station->>'conversation_id' = $2",
-            email.lower(),
+    async with store.engine.acquire() as conn:
+        station = await conn.fetchrow(
+            "SELECT id, station->>'name' AS name, station->>'workstream_id' "
+            "AS workstream_id, station->'suggestion' AS suggestion, "
+            "station->'campaign' AS campaign FROM visual_workspaces "
+            "WHERE user_id = $1 AND station->>'conversation_id' = $2",
+            user_id,
             str(conversation_id),
         )
-    return None if stored is None else CampaignSetup.model_validate(stored)
+    if station is None:
+        workstream_id = await open_scratch(
+            store.engine,
+            store=store,
+            user_id=user_id,
+            email=email,
+        )
+        return WorkspaceSettingsRefs(
+            session_id=session_id,
+            workstream_issue_id=workstream_id,
+            personal_artifact_id=await open_personal_settings(store, email=email),
+        )
+    legacy = from_plain(station["campaign"], dict[str, object], default=None)
+    station_id = from_plain(station["id"], uuid.UUID)
+    if legacy is not None and session_id is not None:
+        moved = await _seed_legacy_campaign(
+            store,
+            session_id=session_id,
+            email=email,
+            campaign=legacy,
+        )
+        if moved:
+            async with store.engine.acquire() as conn:
+                await conn.execute(
+                    "UPDATE visual_workspaces SET station = station - 'campaign' "
+                    "WHERE id = $1 AND user_id = $2 AND station ? 'campaign'",
+                    station_id,
+                    user_id,
+                )
+    workstream_id = from_plain(station["workstream_id"], uuid.UUID, default=None)
+    if workstream_id is None:
+        workstream_id = await open_scratch(
+            store.engine,
+            store=store,
+            user_id=user_id,
+            email=email,
+        )
+    suggestion = from_plain(
+        station["suggestion"],
+        WorkstreamSuggestion,
+        default=None,
+    )
+    return WorkspaceSettingsRefs(
+        workstream_issue_id=workstream_id,
+        session_id=session_id,
+        personal_artifact_id=await open_personal_settings(store, email=email),
+        name=from_plain(station["name"], str, default=None),
+        suggestion=suggestion,
+    )
 
 
 def next_station_name(names: Iterable[str]) -> str:
@@ -1319,7 +1415,6 @@ async def apply_workspace_operation(
                         "conversation_id": current.conversation_id,
                         "page": current.page,
                         "layout": current.layout,
-                        "campaign": current.campaign,
                         "hidden": current.hidden,
                         "pinned": current.pinned,
                     },
@@ -1430,7 +1525,9 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
 
     """
     data = WorkspaceData.model_validate(row["state"])
-    station = StationData.model_validate(row["station"])
+    stored_station = dict(from_plain(row["station"], dict[str, object]))
+    stored_station.pop("campaign", None)
+    station = StationData.model_validate(stored_station)
     return WorkspaceState(
         id=cast(uuid.UUID, row["id"]),
         revision=from_plain(row.get("revision"), int),
@@ -1438,7 +1535,6 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
         conversation_id=station.conversation_id,
         page=station.page,
         layout=station.layout,
-        campaign=station.campaign,
         hidden=station.hidden,
         pinned=station.pinned,
         workstream_id=station.workstream_id,
@@ -1460,7 +1556,6 @@ async def _insert_station(
     conversation_id: uuid.UUID | None = None,
     page: str | None = None,
     layout: StationLayout | None = None,
-    campaign: CampaignSetup | None = None,
     clear_key: uuid.UUID | None = None,
     workstream_id: uuid.UUID | None = None,
 ) -> Record | None:
@@ -1470,7 +1565,6 @@ async def _insert_station(
         conversation_id=conversation_id,
         page=page,
         layout=layout,
-        campaign=campaign,
         workstream_id=workstream_id,
         clear_key=clear_key,
     )
@@ -1498,7 +1592,6 @@ async def _new_station(
     conversation_id: uuid.UUID | None = None,
     page: str | None = None,
     layout: StationLayout | None = None,
-    campaign: CampaignSetup | None = None,
     clear_key: uuid.UUID | None = None,
     workstream_id: uuid.UUID | None = None,
 ) -> Record | None:
@@ -1518,7 +1611,6 @@ async def _new_station(
             conversation_id=conversation_id,
             page=page,
             layout=layout,
-            campaign=campaign,
             clear_key=clear_key,
             workstream_id=workstream_id,
         )
@@ -1601,7 +1693,6 @@ async def _fork_station(
             conversation_id=conversation_id,
             page=source_state.page,
             layout=source_state.layout,
-            campaign=source_state.campaign,
             workstream_id=source_state.workstream_id,
         )
         made = (
@@ -1861,7 +1952,6 @@ async def _write_data(
         conversation_id=current.conversation_id,
         page=current.page,
         layout=current.layout,
-        campaign=current.campaign,
         hidden=current.hidden,
         pinned=current.pinned,
         workstream_id=current.workstream_id,
@@ -1894,3 +1984,64 @@ def _unique_station_name(name: str, *, names: Iterable[str]) -> str:
         candidate = f"{name[: 120 - len(suffix_text)].rstrip()}{suffix_text}"
         suffix += 1
     return candidate
+
+
+async def _seed_legacy_campaign(
+    store: Store,
+    *,
+    session_id: uuid.UUID,
+    email: str,
+    campaign: dict[str, object],
+) -> bool:
+    """Move a legacy station campaign to the session if it has no value yet."""
+    for _ in range(4):
+        async with store.engine.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT app FROM inquiries WHERE id = $1 AND kind = 'AgentSession'",
+                session_id,
+            )
+        if row is None:
+            return False
+        current = from_plain(row["app"], dict[str, object], default=None)
+        updated = {} if current is None else dict(current)
+        settings = from_plain(updated.get("settings"), dict[str, object], default={})
+        if "campaign" in settings:
+            return True
+        settings["campaign"] = campaign
+        updated["settings"] = settings
+        try:
+            await store.transition_app(
+                session_id,
+                expected_from=current,
+                to=updated,
+                actor=email,
+                reason="Move legacy station campaign to its chat session.",
+            )
+        except ConflictError:
+            continue
+        return True
+    return False
+
+
+async def _make_settings_artifact(
+    store: Store,
+    *,
+    conn: Conn,
+    owner: str,
+    title: str,
+    description: str,
+    app: dict[str, object] | None,
+) -> uuid.UUID:
+    """Create an owner-pinned settings Artifact inside ``conn``."""
+    return await store.submit_artifact(
+        SubmitArtifact(
+            title=title,
+            description=description,
+            owner=owner,
+            account=owner,
+            labels=[PERSONAL_SETTINGS_LABEL],
+            app=app,
+        ),
+        actor=owner,
+        conn=conn,
+    )

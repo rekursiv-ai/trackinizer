@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
 from typing import TYPE_CHECKING, Final, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncio
 import json
@@ -17,8 +17,11 @@ from fastapi import HTTPException
 from starlette.requests import Request
 from treekle import from_plain, json_loads
 
+import httpx2
 import pytest
+import pytest_asyncio
 
+from trackinizer.conftest import FakeEngine, make_conn
 from trackinizer.server.api import workspace_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
@@ -68,17 +71,27 @@ from trackinizer.server.visuals.catalog import (
     Workspace,
     default_workspace,
 )
-from trackinizer.server.visuals.workspaces import NameChat, WorkspaceState
+from trackinizer.server.visuals.workspace_store import (
+    open_personal_settings,
+    settings_refs_for_chat,
+)
+from trackinizer.server.visuals.workspaces import (
+    CampaignSetup,
+    NameChat,
+    SessionCampaign,
+    WorkspaceSettingsRefs,
+    WorkspaceState,
+)
 from trackinizer.server.visuals.workstreams import (
     NewWorkspace,
     SetStationWorkstream,
+    open_scratch,
 )
+from trackinizer.wire.wire_science_chat import ChatHead
 
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Mapping
-
-    import httpx2
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine, PGliteEngine
     from trackinizer.server.auth import AuthIdentity
@@ -2051,184 +2064,379 @@ async def _partner(
     return from_plain(state["partner"], dict[str, object])
 
 
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_only_the_owner_writes_a_stations_campaign_setup(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """The owner stores a setup; another account's write is a 404 and changes nothing."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    workspace_id = await open_workspace(client)
-
-    browser()
-    stored = await client.put(
-        f"/api/workspaces/{workspace_id}/campaign",
-        json={"campaign": {"hours": 2, "scientists": 3}},
-    )
-    assert stored.status_code == 200
-    setup = from_plain(
-        json_loads(stored.content, dict[str, object])["campaign"],
-        dict[str, object],
-    )
-    assert (setup["hours"], setup["scientists"]) == (2.0, 3)
-
-    browser(OTHER_USER_ID, email=OTHER_EMAIL)
-    denied = await client.put(
-        f"/api/workspaces/{workspace_id}/campaign",
-        json={"campaign": {"hours": 9}},
-    )
-    assert denied.status_code == 404
-
-    browser()
-    state = await client.get(f"/api/workspaces/{workspace_id}")
-    kept = from_plain(
-        json_loads(state.content, dict[str, object])["campaign"],
-        dict[str, object],
-    )
-    assert kept["hours"] == 2.0
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _SettingsChat:
+    client: httpx2.AsyncClient
+    store: Store
+    conversation_id: uuid.UUID
+    session_id: uuid.UUID
+    workspace_id: uuid.UUID
 
 
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_null_campaign_clears_a_stations_setup(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """Writing a null setup removes it, leaving the station with none."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    workspace_id = await open_workspace(client)
-
-    browser()
-    _ = await client.put(
-        f"/api/workspaces/{workspace_id}/campaign",
-        json={"campaign": {"hours": 2}},
-    )
-    cleared = await client.put(
-        f"/api/workspaces/{workspace_id}/campaign",
-        json={"campaign": None},
-    )
-
-    assert cleared.status_code == 200
-    assert json_loads(cleared.content, dict[str, object])["campaign"] is None
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_the_assistant_reads_only_the_askers_own_station_campaign(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+async def _seed_settings_chat(
+    client: httpx2.AsyncClient,
+    *,
+    store: Store,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Each asker's setup is their own station's, and a non-assistant key is refused."""
-    client, store = pglite_route_client
+    legacy: bool,
+) -> _SettingsChat:
+    """Prepare a chat with its Scratch and personal settings rows already pinned."""
     monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
     await seed_accounts(store)
     conversation_id = uuid.uuid4()
-    await _bind_campaign(
+    session_id = await seed_science_chat(store, conversation_id=conversation_id)
+    workspace_id = await _bind_chat_station(
         store,
         user_id=TEST_USER_ID,
         conversation_id=conversation_id,
-        hours=2.0,
     )
-    await _bind_campaign(
-        store,
-        user_id=OTHER_USER_ID,
+    await open_scratch(
+        store.engine,
+        store=store,
+        user_id=TEST_USER_ID,
+        email=TEST_USER_EMAIL,
+    )
+    await open_personal_settings(store, email=TEST_USER_EMAIL)
+    if legacy:
+        async with store.engine.acquire() as conn:
+            await conn.execute(
+                "UPDATE visual_workspaces SET station = station || "
+                "jsonb_build_object('campaign', jsonb_build_object('hours', 2)) "
+                "WHERE id = $1",
+                workspace_id,
+            )
+    return _SettingsChat(
+        client=client,
+        store=store,
         conversation_id=conversation_id,
-        hours=9.0,
+        session_id=session_id,
+        workspace_id=workspace_id,
     )
 
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def settings_chat(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+) -> _SettingsChat:
+    client, store = pglite_route_client
+    return await _seed_settings_chat(
+        client,
+        store=store,
+        monkeypatch=monkeypatch,
+        legacy=False,
+    )
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def legacy_settings_chat(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+) -> _SettingsChat:
+    client, store = pglite_route_client
+    chat = await _seed_settings_chat(
+        client,
+        store=store,
+        monkeypatch=monkeypatch,
+        legacy=True,
+    )
     act_as_assistant("writer")
-    mine = await client.get(
-        f"/api/workspaces/for-chat/{conversation_id}/campaign",
+    response = await client.get(
+        f"/api/workspaces/for-chat/{chat.conversation_id}/settings",
         params={"asker": TEST_USER_EMAIL},
     )
-    others = await client.get(
-        f"/api/workspaces/for-chat/{conversation_id}/campaign",
-        params={"asker": OTHER_EMAIL},
-    )
-    assert mine.status_code == 200
-    assert _campaign_hours(mine) == 2.0
-    assert _campaign_hours(others) == 9.0
+    assert response.status_code == 200
+    return chat
 
-    act_as_user_agent("writer")
-    denied = await client.get(
-        f"/api/workspaces/for-chat/{conversation_id}/campaign",
-        params={"asker": OTHER_EMAIL},
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_only_the_owner_writes_campaign_on_the_head_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owner's route writes the exact campaign to the resolved head session."""
+    conn = make_conn()
+    engine = FakeEngine(conn)
+    conversation_id, session_id, workspace_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    identity = make_test_identity(api_key_id=None)
+    body = SessionCampaign(campaign=CampaignSetup(hours=2, scientists=3))
+    store = Store(cast("DatabaseEngine", engine), embed=StubEmbedder())
+    conn.fetchval.return_value = str(conversation_id)
+    head = ChatHead(
+        conversation_id=conversation_id,
+        session_id=session_id,
+        title="Chat",
+        account=TEST_USER_EMAIL,
+        live=True,
+        forks=0,
+        forked_from=None,
+        forks_on_typing=False,
+        audience="open",
+        may_hide=True,
+        shared_with=[],
+        may_share=True,
+        may_delete=True,
     )
-    assert denied.status_code == 403
+    request = MagicMock()
+    request.app.state.config = ASSISTANT_CONFIG
+    campaign_writer = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        workspace_routes,
+        "engine_of",
+        MagicMock(return_value=cast("DatabaseEngine", engine)),
+    )
+    monkeypatch.setattr(
+        workspace_routes,
+        "get_assistant",
+        MagicMock(return_value=ASSISTANT_CONFIG.assistant),
+    )
+    monkeypatch.setattr(workspace_routes, "get_store", MagicMock(return_value=store))
+    monkeypatch.setattr(workspace_routes, "read_head", AsyncMock(return_value=head))
+    monkeypatch.setattr(workspace_routes, "set_session_campaign", campaign_writer)
+
+    stored = await workspace_routes.set_session_settings_route(
+        workspace_id=workspace_id,
+        body=body,
+        request=cast("Request", request),
+        identity=identity,
+    )
+
+    assert stored == body
+    assert campaign_writer.await_args is not None
+    assert campaign_writer.await_args.args == (store,)
+    assert campaign_writer.await_args.kwargs == {
+        "session_id": session_id,
+        "email": identity.email,
+        "campaign": {"hours": 2.0, "scientists": 3},
+    }
+    assert conn.fetchval.await_args is not None
+    query = from_plain(conn.fetchval.await_args.args[0], str)
+    assert "WHERE id = $1 AND user_id = $2" in query
+    assert conn.fetchval.await_args.args[1:] == (workspace_id, identity.user_id)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_another_user_cannot_write_campaign_to_the_owner_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The station lookup scopes session-settings writes to its owner."""
+    conn = make_conn()
+    engine = FakeEngine(conn)
+    workspace_id = uuid.uuid4()
+    identity = make_test_identity(user_id=OTHER_USER_ID, api_key_id=None)
+    conn.fetchval.return_value = None
+    request = MagicMock()
+    request.app.state.config = ASSISTANT_CONFIG
+    monkeypatch.setattr(
+        workspace_routes,
+        "engine_of",
+        MagicMock(return_value=cast("DatabaseEngine", engine)),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        await workspace_routes.set_session_settings_route(
+            workspace_id=workspace_id,
+            body=SessionCampaign(campaign=CampaignSetup(hours=9)),
+            request=cast("Request", request),
+            identity=identity,
+        )
+
+    assert error.value.status_code == 404
+    assert conn.fetchval.await_args is not None
+    query = from_plain(conn.fetchval.await_args.args[0], str)
+    assert "WHERE id = $1 AND user_id = $2" in query
+    assert conn.fetchval.await_args.args[1:] == (workspace_id, OTHER_USER_ID)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_assistant_settings_refs_include_the_head_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The route resolves the asker's session and returns the settings refs."""
+    request = MagicMock()
+    request.app.state.config = ASSISTANT_CONFIG
+    identity = make_test_identity(api_key_id=KB_KEY_ID)
+    engine = FakeEngine(make_conn())
+    store = cast("Store", object())
+    conversation_id, session_id = uuid.uuid4(), uuid.uuid4()
+    asker = Asker(
+        email=TEST_USER_EMAIL,
+        role="writer",
+        read_audiences=frozenset({"open", "private"}),
+    )
+    head = ChatHead(
+        conversation_id=conversation_id,
+        session_id=session_id,
+        title="Chat",
+        account=TEST_USER_EMAIL,
+        live=True,
+        forks=0,
+        forked_from=None,
+        forks_on_typing=False,
+        audience="open",
+        may_hide=True,
+        shared_with=[],
+        may_share=True,
+        may_delete=True,
+    )
+    refs = WorkspaceSettingsRefs(
+        workstream_issue_id=uuid.uuid4(),
+        session_id=session_id,
+        personal_artifact_id=uuid.uuid4(),
+    )
+    resolve = AsyncMock(return_value=asker)
+    head_reader = AsyncMock(return_value=head)
+    user_lookup = AsyncMock(return_value=TEST_USER_ID)
+    settings_lookup = AsyncMock(return_value=refs)
+    monkeypatch.setattr(
+        workspace_routes,
+        "engine_of",
+        MagicMock(return_value=cast("DatabaseEngine", engine)),
+    )
+    monkeypatch.setattr(workspace_routes, "get_store", MagicMock(return_value=store))
+    monkeypatch.setattr(workspace_routes, "resolve_asker", resolve)
+    monkeypatch.setattr(workspace_routes, "read_head", head_reader)
+    monkeypatch.setattr(workspace_routes, "_user_id_for_email", user_lookup)
+    monkeypatch.setattr(workspace_routes, "settings_refs_for_chat", settings_lookup)
+
+    response = await workspace_routes.settings_refs_for_chat_route(
+        conversation_id=conversation_id,
+        request=cast("Request", request),
+        identity=identity,
+        asker=TEST_USER_EMAIL,
+    )
+
+    assert response == refs
+    assert resolve.await_args is not None
+    assert resolve.await_args.kwargs == {"identity": identity, "email": TEST_USER_EMAIL}
+    assert head_reader.await_args is not None
+    assert head_reader.await_args.kwargs["conversation_id"] == conversation_id
+    assert user_lookup.await_args is not None
+    assert user_lookup.await_args.kwargs == {"email": TEST_USER_EMAIL}
+    assert settings_lookup.await_args is not None
+    assert settings_lookup.await_args.args == (store,)
+    assert settings_lookup.await_args.kwargs == {
+        "user_id": TEST_USER_ID,
+        "email": TEST_USER_EMAIL,
+        "conversation_id": conversation_id,
+        "session_id": session_id,
+    }
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_chat_with_no_setup_reads_a_null_campaign(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+async def test_settings_refs_for_chat_return_the_pinned_rows(
+    settings_chat: _SettingsChat,
+) -> None:
+    """The store resolves Scratch, the chat session, and personal settings."""
+    refs = await settings_refs_for_chat(
+        settings_chat.store,
+        user_id=TEST_USER_ID,
+        email=TEST_USER_EMAIL,
+        conversation_id=settings_chat.conversation_id,
+        session_id=settings_chat.session_id,
+    )
+
+    assert refs.workstream_issue_id is not None
+    assert refs.session_id == settings_chat.session_id
+    assert refs.personal_artifact_id is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_assistant_settings_refs_reject_another_asker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A station that holds the chat but set no campaign reads a null setup."""
-    client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    await seed_accounts(store)
-    conversation_id = uuid.uuid4()
-    await _bind_campaign(
-        store,
-        user_id=TEST_USER_ID,
-        conversation_id=conversation_id,
-        hours=None,
-    )
+    """The assistant cannot request settings for a different person."""
+    request = MagicMock()
+    identity = make_test_identity(api_key_id=KB_KEY_ID)
+    resolve = AsyncMock(return_value=None)
+    monkeypatch.setattr(workspace_routes, "resolve_asker", resolve)
 
+    with pytest.raises(HTTPException) as error:
+        await workspace_routes.settings_refs_for_chat_route(
+            conversation_id=uuid.uuid4(),
+            request=cast("Request", request),
+            identity=identity,
+            asker=OTHER_EMAIL,
+        )
+
+    assert error.value.status_code == 403
+    assert resolve.await_args is not None
+    assert resolve.await_args.kwargs == {"identity": identity, "email": OTHER_EMAIL}
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_legacy_station_campaign_moves_to_the_head_session_once(
+    legacy_settings_chat: _SettingsChat,
+) -> None:
+    """A legacy campaign moves once and is removed from station JSON."""
+    client, store = legacy_settings_chat.client, legacy_settings_chat.store
     act_as_assistant("writer")
-    read = await client.get(
-        f"/api/workspaces/for-chat/{conversation_id}/campaign",
-        params={"asker": TEST_USER_EMAIL},
+    route = f"/api/workspaces/for-chat/{legacy_settings_chat.conversation_id}/settings"
+    response = await client.get(route, params={"asker": TEST_USER_EMAIL})
+
+    assert response.status_code == 200
+    async with store.engine.acquire() as conn:
+        app_value = await conn.fetchval(
+            "SELECT app FROM inquiries WHERE id = $1",
+            legacy_settings_chat.session_id,
+        )
+        station = await conn.fetchval(
+            "SELECT station FROM visual_workspaces WHERE id = $1",
+            legacy_settings_chat.workspace_id,
+        )
+    settings = from_plain(
+        from_plain(app_value, dict[str, object])["settings"],
+        dict[str, object],
     )
+    assert settings["campaign"] == {"hours": 2.0}
+    assert "campaign" not in from_plain(station, dict[str, object])
 
-    assert read.status_code == 200
-    assert json_loads(read.content, dict[str, object])["campaign"] is None
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_browser_gets_one_pinned_personal_settings_artifact(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The settings artifact route returns the same owner-pinned row each time."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    browser()
 
-def _campaign_hours(response: httpx2.Response) -> float:
-    """Return the ``hours`` of a campaign-setup response."""
-    return from_plain(
-        from_plain(
-            json_loads(response.content, dict[str, object])["campaign"],
+    first = await client.post("/api/me/settings-artifact")
+    again = await client.post("/api/me/settings-artifact")
+
+    assert first.status_code == 200
+    assert (
+        json_loads(first.content, dict[str, object])["artifact_id"]
+        == json_loads(
+            again.content,
             dict[str, object],
-        )["hours"],
-        float,
+        )["artifact_id"]
     )
 
 
-async def _bind_campaign(
+async def _bind_chat_station(
     store: Store,
     *,
     user_id: uuid.UUID,
     conversation_id: uuid.UUID,
-    hours: float | None,
-) -> None:
-    """Insert a station for ``user_id`` bound to a chat, with an hours setup or none."""
-    name = f"station-{user_id.hex[:6]}"
+) -> uuid.UUID:
+    """Insert a lean owner station bound to ``conversation_id``."""
+    workspace_id = uuid.uuid4()
     async with store.engine.acquire() as conn:
-        if hours is None:
-            await conn.execute(
-                "INSERT INTO visual_workspaces (id, user_id, state, station) VALUES ("
-                "$1, $2, '{}'::jsonb, jsonb_build_object("
-                "'name', $3::text, 'conversation_id', $4::text))",
-                uuid.uuid4(),
-                user_id,
-                name,
-                str(conversation_id),
-            )
-        else:
-            await conn.execute(
-                "INSERT INTO visual_workspaces (id, user_id, state, station) VALUES ("
-                "$1, $2, '{}'::jsonb, jsonb_build_object("
-                "'name', $3::text, 'conversation_id', $4::text, "
-                "'campaign', jsonb_build_object('hours', $5::double precision)))",
-                uuid.uuid4(),
-                user_id,
-                name,
-                str(conversation_id),
-                hours,
-            )
+        await conn.execute(
+            "INSERT INTO visual_workspaces (id, user_id, state, station) VALUES ("
+            "$1, $2, '{}'::jsonb, jsonb_build_object('name', $3::text, "
+            "'conversation_id', $4::text))",
+            workspace_id,
+            user_id,
+            f"station-{workspace_id.hex[:6]}",
+            str(conversation_id),
+        )
+    return workspace_id
 
 
 def _patch_workspace_route_dependencies(

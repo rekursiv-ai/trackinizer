@@ -44,6 +44,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "drafts": {},
     "create_draft": None,
     "workstreams": {"order": [], "pinned": [], "hidden": []},
+    "settings_artifact_id": None,
 }
 
 _VIEW_REQUEST: dict[str, JsonValue] = {

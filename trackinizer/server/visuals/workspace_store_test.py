@@ -17,6 +17,7 @@ from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.config import Assistant
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.primitives import insert_inquiry
 from trackinizer.server.store.core import Store
 from trackinizer.server.visuals import workspace_store
 from trackinizer.server.visuals.catalog import default_catalog
@@ -27,6 +28,7 @@ from trackinizer.server.visuals.workspace_store import (
     name_unnamed_station,
     open_latest_workspace,
     read_workspace,
+    set_session_campaign,
     set_station_flags,
     set_station_workstream,
     suggest_workstream_for_chat,
@@ -457,7 +459,6 @@ async def test_clear_chat_copies_source_state_and_station_fields(
             "columns": {"left": 0.3},
         },
     ).model_dump(mode="json", exclude_none=True)
-    campaign = {"hours": 2.0, "budget_usd": 15.0, "repo": "rekursiv-ai/loop"}
     source_state = WorkspaceData.model_validate(
         {
             "visuals": [
@@ -472,7 +473,6 @@ async def test_clear_chat_copies_source_state_and_station_fields(
         "conversation_id": str(conversation_id),
         "page": "#/source",
         "layout": layout,
-        "campaign": campaign,
         "hidden": True,
         "pinned": True,
         "workstream_id": str(workstream_id),
@@ -508,7 +508,6 @@ async def test_clear_chat_copies_source_state_and_station_fields(
     assert state == source_state
     assert station["layout"] == layout
     assert station["page"] == "#/source"
-    assert station["campaign"] == campaign
     assert station["workstream_id"] == str(workstream_id)
     assert "conversation_id" not in station
     assert station["hidden"] is False
@@ -656,8 +655,55 @@ async def test_clear_chat_returns_none_for_another_users_source(
     assert count == 1
 
 
-def test_a_fork_copies_every_layout_tab_page_and_campaign() -> None:
-    """A fork writes a complete station layout and campaign into its new row."""
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_session_campaign_keeps_other_app_settings(
+    empty_workspace_schema: PGliteEngine,
+) -> None:
+    """Campaign writes preserve notes and other keys in the session app."""
+    session_id = uuid.uuid4()
+    conversation_id = uuid.uuid4()
+    async with empty_workspace_schema.acquire() as conn:
+        await insert_inquiry(
+            conn,
+            session_id,
+            "AgentSession",
+            values={
+                "title": "Chat",
+                "owner": "user@example.com",
+                "account": "user@example.com",
+                "labels": ["science-chat", f"chat:{conversation_id}"],
+                "subscribers": [],
+                "app": {"settings": {"notes": "keep these"}},
+                "agentsession_audience": "open",
+                "agentsession_cli": "codex",
+                "agentsession_cli_session_id": f"chat:{conversation_id}",
+                "agentsession_rooms": [],
+                "agentsession_opened_by_api_key_id": None,
+            },
+        )
+    store = Store(empty_workspace_schema, embed=StubEmbedder())
+
+    written = await set_session_campaign(
+        store,
+        session_id=session_id,
+        email="user@example.com",
+        campaign={"hours": 2.0, "scientists": 3},
+    )
+
+    async with empty_workspace_schema.acquire() as conn:
+        app = await conn.fetchval("SELECT app FROM inquiries WHERE id = $1", session_id)
+    assert written
+    assert app == {
+        "settings": {
+            "notes": "keep these",
+            "campaign": {"hours": 2.0, "scientists": 3},
+        },
+    }
+
+
+def test_a_fork_copies_every_layout_tab_and_page() -> None:
+    """A fork writes the complete station layout and page into its new row."""
     conversation_id = uuid.uuid4()
     layout = {
         "tabs": [
@@ -667,13 +713,11 @@ def test_a_fork_copies_every_layout_tab_page_and_campaign() -> None:
         "tab": "issue",
         "chat_ch": 96,
     }
-    campaign = {"hours": 2.0}
     source = _ROW | {
         "station": {
             "name": "source",
             "page": "#/source",
             "layout": layout,
-            "campaign": campaign,
             "workstream_id": str(uuid.uuid4()),
         },
     }
@@ -706,8 +750,6 @@ def test_a_fork_copies_every_layout_tab_page_and_campaign() -> None:
     assert [tab.id for tab in copied.layout.tabs or []] == ["graph", "issue"]
     assert copied.layout.tab == "issue"
     assert copied.layout.chat_ch == 96
-    assert copied.campaign is not None
-    assert copied.campaign.hours == 2.0
     source_station = from_plain(source["station"], dict[str, object])
     source_workstream = from_plain(source_station["workstream_id"], str)
     assert copied.workstream_id == uuid.UUID(source_workstream)

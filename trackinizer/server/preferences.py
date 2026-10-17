@@ -320,6 +320,10 @@ class Preferences(_Strict):
         default_factory=WorkstreamsPreference,
         description="Your workstream bar order, pins, and hidden items.",
     )
+    settings_artifact_id: _Id | None = Field(
+        default=None,
+        description="Your personal settings Artifact id, pinned when first opened.",
+    )
 
 
 def stored_preferences(stored: object) -> Preferences:

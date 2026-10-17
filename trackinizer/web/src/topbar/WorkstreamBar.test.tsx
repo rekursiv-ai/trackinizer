@@ -105,7 +105,8 @@ test("Info shows the Issue link and each chat session from the info route", asyn
   const drawer = await screen.findByRole("dialog", { name: "Alpha info" });
   expect(mocks.workstreamInfo).toHaveBeenCalledWith("ws-a");
   expect(within(drawer).getByRole("link", { name: "Issue 1" }).getAttribute("href")).toBe("#/lookup/ws-a");
-  expect(drawer.textContent).toContain("session-1");
+  expect(within(drawer).getByRole("link", { name: "Workstream settings" }).getAttribute("href")).toBe("#/lookup/ws-a");
+  expect(within(drawer).getByRole("link", { name: "session-1" }).getAttribute("href")).toBe("#/lookup/session-1");
 });
 
 test("Scratch has no Hide action; other workstreams hide without confirmation", async () => {

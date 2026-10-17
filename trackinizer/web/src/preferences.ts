@@ -34,6 +34,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   drafts: {},
   create_draft: null,
   workstreams: { order: [], pinned: [], hidden: [] },
+  settings_artifact_id: null,
 };
 
 /** The keys this browser kept before they moved to the server, read once and then removed. */

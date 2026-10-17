@@ -321,8 +321,6 @@ class StationData(BaseModel):
     conversation_id: uuid.UUID | None = None
     page: str | None = None
     layout: StationLayout | None = None
-    campaign: CampaignSetup | None = None
-    """The default campaign settings a launch from this station's chat takes."""
 
     hidden: bool = False
     pinned: bool = False
@@ -367,9 +365,6 @@ class WorkspaceState(WorkspaceData):
 
     layout: StationLayout | None = None
     """How the station's columns and windows were left, once they were."""
-
-    campaign: CampaignSetup | None = None
-    """The default campaign settings a launch from this station's chat takes, or None."""
 
     hidden: bool = False
     pinned: bool = False
@@ -504,16 +499,35 @@ class SetPage(BaseModel):
     """A `#/...` hash with no space or control character, as a navigation's."""
 
 
-class WorkspaceCampaign(BaseModel):
-    """A station's campaign setup, as its owner writes it and the assistant reads it.
+class SessionCampaign(BaseModel):
+    """Campaign settings stored on a chat's head AgentSession.
 
-    The whole setup, or ``None`` to clear it on a write and for a station that holds
-    none on a read.
+    The whole setup, or ``None`` to clear it.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     campaign: CampaignSetup | None = None
+
+
+class SettingsArtifact(BaseModel):
+    """The id of the principal's pinned personal settings Artifact."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_id: uuid.UUID
+
+
+class WorkspaceSettingsRefs(BaseModel):
+    """Settings rows and station metadata the assistant uses for a chat."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workstream_issue_id: uuid.UUID | None = None
+    session_id: uuid.UUID | None = None
+    personal_artifact_id: uuid.UUID | None = None
+    name: str | None = None
+    suggestion: WorkstreamSuggestion | None = None
 
 
 class OperationModel(BaseModel):

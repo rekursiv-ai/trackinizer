@@ -31,25 +31,27 @@ from trackinizer.server.chat_hub import (
     iter_workspace_events,
 )
 from trackinizer.server.notify import iter_changed_ids
+from trackinizer.server.visuals.science_chats import read_head
 from trackinizer.server.visuals.workspace_store import (
     ReplayConflictError,
     RevisionConflictError,
     StationNameTakenError,
     WorkspaceKeyRefusedError,
     apply_workspace_operation,
-    campaign_for_chat,
     clear_chat_station,
     list_workspaces,
     name_unnamed_station,
     new_workspace,
     open_latest_workspace,
+    open_personal_settings,
     read_workspace,
     rename_workspace,
+    set_session_campaign,
     set_station_flags,
     set_station_workstream,
-    set_workspace_campaign,
     set_workspace_layout,
     set_workspace_page,
+    settings_refs_for_chat,
     suggest_workstream_for_chat,
     workspace_for_chat,
 )
@@ -59,12 +61,14 @@ from trackinizer.server.visuals.workspaces import (
     Highlight,
     NameChat,
     Navigate,
+    SessionCampaign,
     SetPage,
     SetPreferences,
+    SettingsArtifact,
     StationLayout,
     UpdateWorkspace,
-    WorkspaceCampaign,
     WorkspaceConflict,
+    WorkspaceSettingsRefs,
     WorkspaceState,
     WorkspaceSummary,
     WorkstreamSuggestion,
@@ -436,16 +440,17 @@ async def set_station_workstream_route(
 
 
 @router.get(
-    "/api/workspaces/for-chat/{conversation_id}/campaign",
-    response_model=WorkspaceCampaign,
+    "/api/workspaces/for-chat/{conversation_id}/settings",
+    response_model=WorkspaceSettingsRefs,
 )
-async def campaign_for_chat_route(
+async def settings_refs_for_chat_route(
     conversation_id: uuid.UUID,
+    *,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     asker: str | None = None,
-) -> WorkspaceCampaign:
-    """Read the campaign setup of the asker's station that holds a chat.
+) -> WorkspaceSettingsRefs:
+    """Resolve the asker's settings rows and head session for a chat.
 
     Only the configured assistant may read for an ``asker``, and it reads the asker's
     own station, so one writer's setup never governs another's launch from a shared
@@ -467,12 +472,19 @@ async def campaign_for_chat_route(
             status_code=403,
             detail="Only the assistant may read a campaign setup for an asker.",
         )
-    return WorkspaceCampaign(
-        campaign=await campaign_for_chat(
-            engine_of(request),
-            email=found.email,
-            conversation_id=conversation_id,
-        ),
+    head = await read_head(
+        engine_of(request),
+        assistant=get_assistant(request),
+        caller=identity,
+        conversation_id=conversation_id,
+        reader=session_reader(request, identity),
+    )
+    return await settings_refs_for_chat(
+        get_store(request),
+        user_id=await _user_id_for_email(request, email=found.email),
+        email=found.email,
+        conversation_id=conversation_id,
+        session_id=None if head is None else head.session_id,
     )
 
 
@@ -599,42 +611,77 @@ async def set_workspace_layout_route(
     return Response(status_code=204)
 
 
-@router.put("/api/workspaces/{workspace_id}/campaign", response_model=WorkspaceState)
-async def set_workspace_campaign_route(
+@router.put(
+    "/api/workspaces/{workspace_id}/session-settings",
+    response_model=SessionCampaign,
+)
+async def set_session_settings_route(
     workspace_id: uuid.UUID,
-    body: WorkspaceCampaign,
+    *,
+    body: SessionCampaign,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
-) -> WorkspaceState:
-    """Store the default campaign setup of one of the principal's stations.
+) -> SessionCampaign:
+    """Store campaign settings on the current head session of an owned station.
 
-    The whole setup replaces what was stored, and a null ``campaign`` clears it. Only
-    the station's owner may write it; a launch from its chat takes the setup where the
-    asker's line leaves a field unset. No revision changes and nothing is published.
+    Only the station owner may write. Other session app keys survive this update.
 
     Args:
       workspace_id: The station.
-      body: The setup to store, or a null ``campaign`` to clear it.
+      body: The campaign setup to store, or ``None`` to clear it.
       request: Request carrying the database engine.
       identity: Authenticated browser account, which must own the station.
 
     Returns:
-      state: The station with its setup as stored.
+      settings: The stored session campaign.
 
     """
     require_browser(identity)
-    if not await set_workspace_campaign(
-        engine_of(request),
-        user_id=identity.user_id,
-        workspace_id=workspace_id,
-        campaign=body.campaign,
-    ):
+    async with engine_of(request).acquire() as conn:
+        conversation_id = await conn.fetchval(
+            "SELECT station->>'conversation_id' FROM visual_workspaces "
+            "WHERE id = $1 AND user_id = $2",
+            workspace_id,
+            identity.user_id,
+        )
+    if conversation_id is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
-    return await _current_state(
-        request,
-        user_id=identity.user_id,
-        workspace_id=workspace_id,
+    chat_id = uuid.UUID(from_plain(conversation_id, str))
+    head = await read_head(
+        engine_of(request),
+        assistant=get_assistant(request),
+        caller=identity,
+        conversation_id=chat_id,
+        reader=session_reader(request, identity),
     )
+    if head is None:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    if not await set_session_campaign(
+        get_store(request),
+        session_id=head.session_id,
+        email=identity.email,
+        campaign=(
+            None
+            if body.campaign is None
+            else body.campaign.model_dump(mode="json", exclude_none=True)
+        ),
+    ):
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    return body
+
+
+@router.post("/api/me/settings-artifact", response_model=SettingsArtifact)
+async def open_personal_settings_route(
+    request: Request,
+    *,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> SettingsArtifact:
+    """Get or create the principal's pinned personal settings Artifact."""
+    require_browser(identity)
+    artifact_id = await open_personal_settings(get_store(request), email=identity.email)
+    if artifact_id is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return SettingsArtifact(artifact_id=artifact_id)
 
 
 @router.get("/api/workspaces/{workspace_id}", response_model=WorkspaceState)
@@ -778,6 +825,18 @@ async def _current_state(
     return state
 
 
+async def _user_id_for_email(request: Request, *, email: str) -> uuid.UUID:
+    """Look up an active user's id after ``resolve_asker`` validated the account."""
+    async with engine_of(request).acquire() as conn:
+        user_id = await conn.fetchval(
+            "SELECT id FROM users WHERE email = $1 AND status = 'active'",
+            email.lower(),
+        )
+    if user_id is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return from_plain(user_id, uuid.UUID)
+
+
 async def _owner_is_active(request: Request, *, user_id: uuid.UUID) -> bool:
     """Say whether the canvas's owner is still an active user."""
     async with engine_of(request).acquire() as conn:
@@ -786,15 +845,3 @@ async def _owner_is_active(request: Request, *, user_id: uuid.UUID) -> bool:
             user_id,
         )
     return active is not None
-
-
-async def _user_id_for_email(request: Request, *, email: str) -> uuid.UUID:
-    """Return the active user's id for an assistant-resolved asker."""
-    async with engine_of(request).acquire() as conn:
-        user_id = await conn.fetchval(
-            "SELECT id FROM users WHERE email = $1 AND status = 'active'",
-            email.lower(),
-        )
-    if user_id is None:
-        raise HTTPException(status_code=404, detail="Asker not found")
-    return from_plain(user_id, uuid.UUID)

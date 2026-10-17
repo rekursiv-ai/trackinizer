@@ -9,6 +9,8 @@ export type WorkspaceState = components["schemas"]["WorkspaceState"];
 /** Who a canvas talks to: the assistant's newest live session. */
 export type WorkspacePartner = NonNullable<WorkspaceState["partner"]>;
 export type WorkspaceOperation = components["schemas"]["Operation"];
+export type CampaignSetup = components["schemas"]["CampaignSetup"];
+export type SessionCampaign = components["schemas"]["SessionCampaign"];
 
 /** The station the signed-in user changed last, or their first, made if there is none. */
 export async function createDefaultWorkspace({ signal }: CallOptions = {}): Promise<WorkspaceState> {
@@ -33,6 +35,13 @@ export async function applyWorkspaceOperation(
     params: { path: { workspace_id: id }, header: { "Idempotency-Key": key } },
     body: { revision, operation }, signal,
   })));
+}
+
+/** Store or clear campaign defaults on the current chat-head session. */
+export async function setSessionSettings(workspaceId: string, campaign: components["schemas"]["CampaignSetup"] | null): Promise<SessionCampaign> {
+  return send(TIMEOUT_MS.write, undefined, (signal) => client.PUT("/api/workspaces/{workspace_id}/session-settings", {
+    params: { path: { workspace_id: workspaceId } }, body: { campaign }, signal,
+  }));
 }
 
 export function valid(state: WorkspaceState): WorkspaceState {

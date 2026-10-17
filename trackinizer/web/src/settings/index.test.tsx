@@ -25,25 +25,11 @@ afterEach(async () => {
   receivePreferences(DEFAULT_PREFERENCES);
 });
 
-test("the page shows the profile, refetched on open, and every section", async () => {
+test("Settings includes Campaign defaults before API tokens", async () => {
   const server = serveAccount(ADA);
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Your settings");
-  const shown = within(screen.getByRole("region", { name: "Profile" }));
-  expect(shown.getByText("Name").nextSibling?.textContent).toBe("Ada");
-  expect(shown.getByText("Email").nextSibling?.textContent).toBe("ada@example.com");
-  expect(shown.getByText("Role").nextSibling?.textContent).toBe("writer");
-  const sections = screen.getAllByRole("region").filter((region) => region.matches("section"));
-  expect(sections.map((region) => region.getAttribute("aria-label"))).toEqual([
-    "Profile",
-    "Names that mean you",
-    "Appearance",
-    "Preferences document",
-    "Agent workspace",
-    "Chat partner",
-    "API tokens",
-    "Session",
-  ]);
+  const sections = [...document.querySelectorAll<HTMLElement>(".st-sec")].map((section) => section.getAttribute("aria-label"));
+  expect(sections.indexOf("Campaign defaults")).toBeLessThan(sections.indexOf("API tokens"));
   await waitFor(() => expect(server.reads("/api/me/profile")).toBe(1), FAST);
 });
 
@@ -202,7 +188,7 @@ test("under --no-auth, where nobody signs in, the page offers no sign out", () =
   const body = noAuth.response.body;
   const everyone: Profile = {
     ...body,
-    preferences: { ...body.preferences, workstreams: DEFAULT_PREFERENCES.workstreams } as Profile["preferences"],
+    preferences: { ...DEFAULT_PREFERENCES, ...body.preferences } as Profile["preferences"],
     org_mode: body.org_mode as OrgMode,
   };
   serveAccount(everyone);

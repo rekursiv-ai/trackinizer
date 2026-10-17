@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { stubFetch } from "./testing";
 import { FakeEventSource } from "../live/testing";
-import { openWorkspaceEvents, type WorkspaceEventListener } from "./workspaces";
+import { openWorkspaceEvents, setSessionSettings, type WorkspaceEventListener } from "./workspaces";
 
 beforeEach(() => FakeEventSource.reset());
 afterEach(() => vi.unstubAllGlobals());
@@ -26,6 +27,16 @@ function recorder(): { heard: unknown[][]; listener: WorkspaceEventListener } {
 }
 
 const connect = (url: string) => new FakeEventSource(url);
+
+test("session settings use the owned workspace route and campaign body", async () => {
+  const sent = stubFetch(() => Response.json({ campaign: { hours: 2 } }));
+  await setSessionSettings("workspace-id", { hours: 2 });
+  expect(sent).toMatchObject([{
+    method: "PUT",
+    path: "/api/workspaces/workspace-id/session-settings",
+    body: { campaign: { hours: 2 } },
+  }]);
+});
 
 test("the events stream opens on the workspace's route and passes on each kind of frame", () => {
   const { heard, listener } = recorder();

@@ -5,9 +5,6 @@ import { valid, type WorkspaceState } from "./workspaces";
 /** One station in the user's list: its name, its chat's conversation and the page it last showed. */
 export type StationSummary = components["schemas"]["WorkspaceSummary"];
 
-/** A station's default campaign settings; any subset, bounded and defaulted at launch. */
-export type CampaignSetup = components["schemas"]["CampaignSetup"];
-
 /** The user's stations, the one changed last first. */
 export async function listStations({ signal }: CallOptions = {}): Promise<StationSummary[]> {
   const stations = await send(TIMEOUT_MS.read, signal, (signal) => client.GET("/api/workspaces", { signal }));
@@ -47,16 +44,11 @@ export async function setStationLayout(id: string, layout: components["schemas"]
   }));
 }
 
-/**
- * Store a station's default campaign setup, or clear it with null. The whole setup
- * replaces what was stored; a launch from the station's chat takes it where the
- * asker's line leaves a field unset. The server validates the shape and returns the
- * station with its setup as stored.
- */
-export async function setStationCampaign(id: string, campaign: CampaignSetup | null): Promise<WorkspaceState> {
-  return valid(await send(TIMEOUT_MS.write, undefined, (signal) => client.PUT("/api/workspaces/{workspace_id}/campaign", {
-    params: { path: { workspace_id: id } }, body: { campaign }, signal,
-  })));
+/** Get or create the caller's personal settings Artifact. */
+export async function openPersonalSettings(): Promise<string> {
+  const settings = await send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/me/settings-artifact", { signal }));
+  if (!settings || typeof settings.artifact_id !== "string") throw new Error("Invalid settings artifact");
+  return settings.artifact_id;
 }
 
 /** Open the user's station that holds a chat, or make one bound to it. */

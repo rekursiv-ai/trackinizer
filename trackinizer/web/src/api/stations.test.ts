@@ -1,10 +1,16 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { clearChat, hideStation, pinStation } from "./stations";
+import { clearChat, hideStation, openPersonalSettings, pinStation } from "./stations";
 import { stubFetch } from "./testing";
 
 afterEach(() => vi.unstubAllGlobals());
 
 const state = { id: "w1", name: "alpha", conversation_id: null, page: null, revision: 1, focused_instance: null, visuals: [] };
+
+test("opening personal settings gets the caller's Artifact id", async () => {
+  const sent = stubFetch(() => Response.json({ artifact_id: "artifact-id" }));
+  await expect(openPersonalSettings()).resolves.toBe("artifact-id");
+  expect(sent).toMatchObject([{ method: "POST", path: "/api/me/settings-artifact" }]);
+});
 
 test("hide and pin patch their flags and return the workspace", async () => {
   const sent = stubFetch(() => Response.json(state));
