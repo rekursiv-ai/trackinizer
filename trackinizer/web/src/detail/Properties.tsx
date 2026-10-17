@@ -20,7 +20,8 @@ import { calendarDate, dateTime } from "./time";
  * Properties holds status, the Belief's judgement and the author's confidence,
  * with the server's evidence confidence under its own name beside it, priority,
  * type, owner, subscribers and labels; Details holds the rest, then the row's
- * identity.
+ * identity. An Issue's open folded, as its description is what a reader came
+ * for; every other kind's open unfolded.
  */
 export function Properties({ detail, fields }: { detail: Detail; fields: readonly Field[] }) {
   const { edges } = useMeta();
@@ -35,39 +36,42 @@ export function Properties({ detail, fields }: { detail: Detail; fields: readonl
   const id = useId();
   return (
     <aside className="props" aria-label="Properties">
-      <section className="props-group" aria-labelledby={`${id}p`}>
-        <h2 id={`${id}p`}>Properties</h2>
-        <dl>
-          {evidenceAfter < 0 ? evidence : null}
-          {properties.map((field) => (
-            <Fragment key={field.name}>
-              <Prop detail={detail} field={field} />
-              {field.name === "confidence" ? evidence : null}
-            </Fragment>
-          ))}
-        </dl>
-      </section>
-      <section className="props-group" aria-labelledby={`${id}d`}>
-        <h2 id={`${id}d`}>Details</h2>
-        <dl>
-          {fields
-            .filter((field) => field.look.place === "details")
-            .map((field) => (
-              <Prop key={field.name} detail={detail} field={field} />
+      <details className="props-fold" open={row.kind !== "Issue"}>
+        <summary className="props-summary">Properties and details</summary>
+        <section className="props-group" aria-labelledby={`${id}p`}>
+          <h2 id={`${id}p`}>Properties</h2>
+          <dl>
+            {evidenceAfter < 0 ? evidence : null}
+            {properties.map((field) => (
+              <Fragment key={field.name}>
+                <Prop detail={detail} field={field} />
+                {field.name === "confidence" ? evidence : null}
+              </Fragment>
             ))}
-          <PropRow label="ID">
-            <span className="mono t select-all" title={row.id}>
-              {row.id}
-            </span>
-          </PropRow>
-          <PropRow label="Created">
-            <span className="t">{dateTime(row.created)}</span>
-          </PropRow>
-          <PropRow label="Updated">
-            <span className="t">{dateTime(row.modified)}</span>
-          </PropRow>
-        </dl>
-      </section>
+          </dl>
+        </section>
+        <section className="props-group" aria-labelledby={`${id}d`}>
+          <h2 id={`${id}d`}>Details</h2>
+          <dl>
+            {fields
+              .filter((field) => field.look.place === "details")
+              .map((field) => (
+                <Prop key={field.name} detail={detail} field={field} />
+              ))}
+            <PropRow label="ID">
+              <span className="mono t select-all" title={row.id}>
+                {row.id}
+              </span>
+            </PropRow>
+            <PropRow label="Created">
+              <span className="t">{dateTime(row.created)}</span>
+            </PropRow>
+            <PropRow label="Updated">
+              <span className="t">{dateTime(row.modified)}</span>
+            </PropRow>
+          </dl>
+        </section>
+      </details>
     </aside>
   );
 }

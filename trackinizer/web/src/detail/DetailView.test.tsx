@@ -55,6 +55,20 @@ function rail(name: string): [string | null, (string | null)[]][] {
   ]);
 }
 
+test("an Issue's properties open folded, under a summary that unfolds them; other kinds' open unfolded", async () => {
+  serveDetails([detail(row("Issue", 1)), detail(row("Belief", 2))]);
+  renderDetail({ kind: "Issue", seq: 1 });
+  await screen.findByRole("heading", { level: 1 });
+  const fold = screen.getByLabelText("Properties", { selector: "aside" }).querySelector("details")!;
+  expect(fold.open).toBe(false);
+  await userEvent.click(within(fold).getByText("Properties and details", { selector: "summary" }));
+  expect(fold.open).toBe(true);
+  cleanup();
+  renderDetail({ kind: "Belief", seq: 2 });
+  await screen.findByRole("heading", { level: 1 });
+  expect(screen.getByLabelText("Properties", { selector: "aside" }).querySelector("details")!.open).toBe(true);
+});
+
 test("a Kind#seq link resolves its id, then shows the inquiry", async () => {
   const root = row("Issue", 1, { description: "See Belief#2 and [the plan](https://example.com/p)." });
   const sent = serveDetails([detail(root)]);
