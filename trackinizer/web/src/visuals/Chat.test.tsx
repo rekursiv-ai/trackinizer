@@ -627,6 +627,19 @@ test("a header pop-over closes on a press anywhere else, so Share and Delete nev
   expect(screen.queryByRole("alertdialog", { name: "Delete chat forever" })).toBeNull();
 });
 
+test("every ⋯ item wears the one menu style, Share, Delete and Public among them", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_share: true, may_delete: true, may_hide: true }));
+  shell();
+  await screen.findByText("a2");
+  openMore();
+  await screen.findByRole("button", { name: "Share" });
+  const items = within(screen.getByLabelText("Chat actions")).getAllByRole("button");
+  expect(items.map((item) => [item.textContent, item.className])).toEqual(
+    ["Clear chat", "Hide panel", "Delete chat forever", "Info", "Public", "Share"].map((name) => [name, "chat-menu-item"]));
+});
+
 test("a refused share says why in one toast line and keeps the address in the field", async () => {
   open("c1");
   hold("c1", ...TALK);

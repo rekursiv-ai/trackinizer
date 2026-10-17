@@ -57,8 +57,10 @@
 .chat-suggestion-chip { display: inline-flex; flex: none; align-items: center; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent-soft); font-size: 12px; }
 .chat-suggestion-chip button { padding: 2px 7px; border: 0; background: transparent; color: var(--accent-hover); }
 .chat-more-menu, .chat-info-menu { position: absolute; z-index: 42; top: calc(100% + 4px); right: 8px; display: flex; flex-direction: column; gap: 4px; min-width: 220px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
-.chat-more-menu > button { padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; text-align: left; }
-.chat-more-menu > button:hover { background: var(--surface-overlay); }
+/* Every ⋯ item wears this, the Share, Delete and Public/Private controls too, so the list reads as one. */
+.chat-menu-item { width: 100%; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; text-align: left; }
+.chat-menu-item:hover { background: var(--surface-overlay); }
+.chat-menu-item:disabled { opacity: .45; cursor: default; }
 .chat-info-menu { top: calc(100% + 4px); max-width: min(320px, 90vw); overflow-wrap: anywhere; }
 .chat-info-menu span { color: var(--muted); font-size: 12px; }
 .hover-only { opacity: 0; transition: opacity .12s; }

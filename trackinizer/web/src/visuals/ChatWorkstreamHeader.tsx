@@ -230,12 +230,12 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
         title="Dock on the other side" onClick={() => setChatSide(side === "left" ? "right" : "left")}>{side === "left" ? "▷" : "◁"}</button>
       <button className="btn ghost hover-only" type="button" aria-label="More chat actions" aria-expanded={moreOpen} onClick={() => setMenu(moreOpen ? null : "more")}>⋯</button>
       {moreOpen && <div className="chat-more-menu" aria-label="Chat actions">
-        <button type="button" title="New chat, same canvas" onClick={() => { setMenu(null); void onClear(); }}>Clear chat</button>
+        <button className="chat-menu-item" type="button" title="New chat, same canvas" onClick={() => { setMenu(null); void onClear(); }}>Clear chat</button>
         {hidden
-          ? <button type="button" aria-label="Pin Chat beside the page" title="Pin Chat beside the page" onClick={() => { setMenu(null); setChatHidden(false); }}>Pin panel</button>
-          : <button type="button" aria-label="Hide Chat" title="Hide the chat panel" onClick={() => { setMenu(null); setChatHidden(true); }}>Hide panel</button>}
+          ? <button className="chat-menu-item" type="button" aria-label="Pin Chat beside the page" title="Pin Chat beside the page" onClick={() => { setMenu(null); setChatHidden(false); }}>Pin panel</button>
+          : <button className="chat-menu-item" type="button" aria-label="Hide Chat" title="Hide the chat panel" onClick={() => { setMenu(null); setChatHidden(true); }}>Hide panel</button>}
         {head?.may_delete && <DeleteChat head={head} onDeleted={onDelete} />}
-        <button type="button" onClick={() => setMenu("info")}>Info</button>
+        <button className="chat-menu-item" type="button" onClick={() => setMenu("info")}>Info</button>
         {head?.may_hide && <PrivacySwitch head={head} />}
         {head?.may_share && <ShareChat head={head} />}
       </div>}

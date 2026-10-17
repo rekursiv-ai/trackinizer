@@ -52,7 +52,7 @@ export function ShareChat({ head }: { readonly head: ChatHead }) {
 
   return (
     <div className="station chat-head-pop" ref={root}>
-      <button className="btn ghost" type="button" aria-haspopup="dialog" aria-expanded={open}
+      <button className="chat-menu-item" type="button" aria-haspopup="dialog" aria-expanded={open}
         title="Share this chat" onClick={() => setOpen(!open)}>Share</button>
       {open && <div className="station-menu" role="dialog" aria-label="Share chat"
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setOpen(false); } }}>
@@ -104,7 +104,7 @@ export function PrivacySwitch({ head }: { readonly head: ChatHead }) {
   }
 
   return (
-    <button className="btn ghost" type="button" disabled={busy}
+    <button className="chat-menu-item" type="button" disabled={busy}
       aria-label={isPrivate ? "Private chat: make it public" : "Public chat: make it private"}
       title={isPrivate
         ? "Private: only you and the people you share it with read it. Click to let whoever this server lets in read it."
@@ -139,7 +139,7 @@ export function DeleteChat({ head, onDeleted }: { readonly head: ChatHead; reado
 
   return (
     <div className="station chat-head-pop" ref={root}>
-      <button className="btn ghost" type="button" aria-haspopup="dialog" aria-expanded={confirming}
+      <button className="chat-menu-item" type="button" aria-haspopup="dialog" aria-expanded={confirming}
         title="Delete chat forever" onClick={() => setConfirming(!confirming)}>Delete chat forever</button>
       {confirming && <div className="station-menu" role="alertdialog" aria-label="Delete chat forever"
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setConfirming(false); } }}>
