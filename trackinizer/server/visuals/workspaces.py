@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from functools import partial
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
 import math
@@ -69,33 +68,11 @@ RETIRED_VISUAL_TYPES: frozenset[str] = frozenset({"trax.chat"})
 """Visual types a canvas once held and no catalog offers now. Chat is a column of its
 own beside the canvas, so a stored canvas that still holds it reads without it."""
 
-MAX_WORKED: Final = 24
-"""The most records a canvas remembers having worked on; the oldest drop off."""
-
-MAX_RECORD_PANES: Final = 3
-"""The most docked panes showing a record a canvas holds; a show past it replaces the
-pane worked on least recently, in its place."""
-
-
-class WorkedRecord(BaseModel):
-    """A record a canvas worked on, and the visual that showed it."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    record_id: uuid.UUID
-    visual_type: str
-
 
 class WorkspaceData(BaseModel):
     """The portion of workspace state stored as one JSONB value."""
 
     visuals: list[VisualInstance]
-    worked: Annotated[list[WorkedRecord], Field(max_length=MAX_WORKED)] = Field(
-        default_factory=list,
-    )
-    """The records shown or focused on this canvas, the latest first, each once per
-    visual: the browser's strip of what the chat worked on, closed ones included."""
-
     focused_instance: uuid.UUID | None = None
     agent_instructions: str | None = Field(default=None, max_length=8_192)
     continuation_record_id: uuid.UUID | None = None
@@ -574,9 +551,6 @@ class ShowVisual(OperationModel):
     placement: Placement | None = None
     record_id: uuid.UUID | None = None
     params: dict[str, str | int | bool] = Field(default_factory=dict)
-    beside: bool = False
-    """Show the record in a pane of its own, beside any of this visual already up,
-    rather than moving that pane to it; the page closes for it."""
 
 
 class HideVisual(OperationModel):
@@ -828,7 +802,10 @@ def apply_operation(
             name: schema.default for name, schema in descriptor.parameter_schema.items()
         }
         params.update(operation.params)
-        existing = _pane_for(updated, operation=operation)
+        existing = next(
+            (visual for visual in updated.visuals if visual.type == descriptor.type),
+            None,
+        )
         if existing is not None:
             existing.version = descriptor.version
             if operation.placement is not None:
@@ -840,7 +817,6 @@ def apply_operation(
             if "params" in operation.model_fields_set:
                 existing.params = params
             updated.focused_instance = existing.id
-            _work_on(updated, visual=existing)
             return updated
         if len(updated.visuals) >= 12:
             raise ValueError("A workspace can show at most 12 visuals.")
@@ -853,115 +829,39 @@ def apply_operation(
             record_id=operation.record_id,
             params=params,
         )
-        _add_pane(updated, instance=instance, beside=operation.beside, catalog=catalog)
+        updated.visuals.append(instance)
         updated.focused_instance = instance.id
-        _work_on(updated, visual=instance)
     elif isinstance(operation, Navigate | Highlight | ChatWindow | SetPreferences):
         pass
     elif isinstance(operation, ChoosePartner):
         updated.partner_choice = operation.choice
     elif isinstance(operation, HideVisual):
-        hidden = _instance(updated, instance_id=operation.instance_id)
+        if not any(visual.id == operation.instance_id for visual in updated.visuals):
+            raise ValueError("Visual instance not found.")
         updated.visuals = [
             visual for visual in updated.visuals if visual.id != operation.instance_id
         ]
         if updated.focused_instance == operation.instance_id:
             updated.focused_instance = None
-        # Closing the last thing a canvas worked on brings back its default view,
-        # the page, so a canvas is never left blank. Closing the page itself stays
-        # closed, or the page could never be closed at all.
-        if not updated.visuals and hidden.type != catalog.default_visual:
-            return restore_page(updated, catalog=catalog)
     elif isinstance(operation, FocusVisual):
-        focused = _instance(updated, instance_id=operation.instance_id)
+        if not any(visual.id == operation.instance_id for visual in updated.visuals):
+            raise ValueError("Visual instance not found.")
         updated.focused_instance = operation.instance_id
-        _work_on(updated, visual=focused)
     else:
-        instance = _instance(updated, instance_id=operation.instance_id)
+        instance = next(
+            (
+                visual
+                for visual in updated.visuals
+                if visual.id == operation.instance_id
+            ),
+            None,
+        )
+        if instance is None:
+            raise ValueError("Visual instance not found.")
         instance.placement = operation.placement
         if operation.placement != "floating":
             instance.floating_rect = None
     return updated
-
-
-def _pane_for(data: WorkspaceData, *, operation: ShowVisual) -> VisualInstance | None:
-    """Return the pane a show lands on: its record's, else its visual's to move."""
-    same = [visual for visual in data.visuals if visual.type == operation.visual_type]
-    on_record = next(
-        (
-            visual
-            for visual in same
-            if operation.record_id is not None
-            and visual.record_id == operation.record_id
-        ),
-        None,
-    )
-    if on_record is not None or operation.beside:
-        return on_record
-    return same[0] if same else None
-
-
-# A record pane past the bound takes the place (the slot) of the record pane worked on
-# least recently, which closes. A pane asked for beside the others closes the page: the
-# page is the default view, shown while no record is.
-def _add_pane(
-    data: WorkspaceData,
-    *,
-    instance: VisualInstance,
-    beside: bool,
-    catalog: VisualCatalogBody,
-) -> None:
-    """Put ``instance`` on ``data``, within ``MAX_RECORD_PANES``."""
-    if beside:
-        data.visuals = [v for v in data.visuals if v.type != catalog.default_visual]
-    slot = len(data.visuals)
-    panes = _record_panes(data)
-    if _is_record_pane(instance) and len(panes) >= MAX_RECORD_PANES:
-        oldest = max(panes, key=partial(_age, worked=data.worked))
-        slot = data.visuals.index(oldest)
-        data.visuals.remove(oldest)
-        if data.focused_instance == oldest.id:
-            data.focused_instance = None
-    data.visuals.insert(slot, instance)
-
-
-def _age(pane: VisualInstance, *, worked: list[WorkedRecord]) -> int:
-    """How long ago ``pane`` was worked on: its place in ``worked``, or past its end."""
-    return next(
-        (
-            index
-            for index, each in enumerate(worked)
-            if (each.visual_type, each.record_id) == (pane.type, pane.record_id)
-        ),
-        len(worked),
-    )
-
-
-def _record_panes(data: WorkspaceData) -> list[VisualInstance]:
-    """Return the docked panes that show a record, in the order they stand."""
-    return [visual for visual in data.visuals if _is_record_pane(visual)]
-
-
-def _is_record_pane(visual: VisualInstance) -> bool:
-    return visual.record_id is not None and visual.placement != "floating"
-
-
-def _work_on(data: WorkspaceData, *, visual: VisualInstance) -> None:
-    """Put the record ``visual`` draws first among what ``data`` worked on, if any."""
-    if visual.record_id is None:
-        return
-    worked = WorkedRecord(record_id=visual.record_id, visual_type=visual.type)
-    data.worked = [worked, *(each for each in data.worked if each != worked)][
-        :MAX_WORKED
-    ]
-
-
-def _instance(data: WorkspaceData, *, instance_id: uuid.UUID) -> VisualInstance:
-    """Return the visual instance ``instance_id`` names on ``data``."""
-    found = next((visual for visual in data.visuals if visual.id == instance_id), None)
-    if found is None:
-        raise ValueError("Visual instance not found.")
-    return found
 
 
 def _refuse_value(

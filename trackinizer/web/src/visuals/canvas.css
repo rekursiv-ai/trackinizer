@@ -40,12 +40,16 @@
 .chat-name-pick { position: relative; min-width: 0; flex: 0 1 auto; }
 .chat-name-button { max-width: 180px; min-width: 48px; overflow: hidden; padding: 2px 4px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font-size: 15px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .chat-name-button:hover { background: var(--surface-hover); }
-.chat-name-input { width: 15ch; padding: 2px 4px; border: 1px solid var(--accent); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; font-weight: 650; }
-.chat-name-problem { position: absolute; z-index: 42; top: calc(100% + 4px); left: 0; margin: 0; white-space: nowrap; }
-.chat-find-menu { width: min(300px, 90vw); }
-.chat-name-menu { left: 0; right: auto; width: min(260px, 90vw); }
-.chat-name-menu .station-option[aria-current="true"] { font-weight: 600; }
-.chat-name-search { width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.chat-name-caret { margin-left: 4px; color: var(--muted); font-size: 11px; }
+.chat-name-input { width: 180px; padding: 2px 4px; border: 1px solid var(--accent); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; font-weight: 650; }
+.chat-name-menu { left: 0; right: auto; width: min(320px, 90vw); }
+.chat-menu-label { margin: 2px 6px; color: var(--muted); font-size: 11px; }
+.chat-name-row { display: flex; align-items: center; min-width: 0; }
+.chat-name-row .station-option { flex: 1; min-width: 0; }
+.chat-name-row-actions { display: flex; gap: 2px; opacity: 0; }
+.chat-name-row:hover .chat-name-row-actions, .chat-name-row:focus-within .chat-name-row-actions { opacity: 1; }
+.chat-name-row-actions .btn { padding: 2px 5px; font-size: 11px; }
+.chat-name-search { padding-top: 4px; border-top: 1px solid var(--line); }
 .chat-workstream-pick { position: relative; display: flex; align-items: center; min-width: 0; flex: 1; gap: 5px; }
 .chat-workstream-chip { max-width: 150px; overflow: hidden; padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-raised); color: var(--ink-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .chat-workstream-menu { position: absolute; z-index: 42; top: calc(100% + 4px); left: 0; display: flex; flex-direction: column; gap: 5px; width: min(280px, 90vw); padding: 8px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
@@ -61,7 +65,7 @@
 .chat-info-menu span { color: var(--muted); font-size: 12px; }
 .hover-only { opacity: 0; transition: opacity .12s; }
 .chat-head:hover .hover-only, .chat-head:focus-within .hover-only { opacity: 1; }
-@media (hover: none) { .hover-only { opacity: 1; } }
+@media (hover: none) { .hover-only, .chat-name-row-actions { opacity: 1; } }
 /* A header pop-over opens away from the screen's edge Chat stands at: leftwards from Chat at the
    right, rightwards, over the workbench, from Chat at the left, where leftwards would run off the page. */
 .chat-head-pop .station-menu { left: auto; right: 0; }
@@ -109,12 +113,6 @@
 .visual-side-column > .visual-tile { flex: var(--tile-share, 1) 1 0; min-height: 280px; }
 .visual-side-column > .visual-tile + .visual-tile, .visual-side-column > .visual-divider + .visual-tile { border-top: 1px solid var(--line); }
 .visual-side-column-left { border-left: 0; border-right: 1px solid var(--line); }
-/* Record panes alone on the canvas (arrangeRecordPanes): each a card of its own, apart from the others, the focused one ringed. */
-/* A narrow seam between panes: the resize handle lies over it, so 2px each side of it leaves 4px. */
-.visual-stage-panes { gap: 2px; padding: 4px; background: var(--frame); }
-.visual-stage-panes .visual-side-column { gap: 2px; border: 0; }
-.visual-stage-panes :is(.visual-main-strip, .visual-side-column) > .visual-tile { border: 1px solid var(--line-strong); border-radius: var(--panel-radius); overflow: hidden; }
-.visual-stage-panes .visual-tile-focused { outline: 2px solid var(--accent); outline-offset: -2px; }
 @media (max-width: 900px) {
   .visual-stage { flex-direction: column; }
   /* A phone has no left: both columns come under the page. */
@@ -180,20 +178,20 @@
 .canvas-bar-button { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; margin-bottom: 3px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
 .canvas-bar-button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
 .canvas-bar-button:disabled { opacity: .4; cursor: default; }
-/* What the canvas worked on (WorkedStrip.tsx): a chip per record, filled while it is on the canvas. */
-.canvas-worked { display: flex; flex: 0 1 auto; align-items: center; gap: 4px; min-width: 0; height: 32px; margin-left: 6px; overflow-x: auto; scrollbar-width: none; }
-.canvas-worked::-webkit-scrollbar { display: none; }
-.canvas-worked-chip { flex: none; max-width: min(260px, 32vw); height: 24px; padding: 0 9px; overflow: hidden; border: 1px dashed var(--line-strong); border-radius: 6px; color: var(--ink-muted); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
-.canvas-worked-chip:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
-.canvas-worked-chip[aria-pressed="true"] { border-style: solid; background: var(--bg); color: var(--text); }
-.canvas-worked-chip:disabled { opacity: .5; cursor: default; }
-.canvas-worked-view { color: var(--muted); font-size: 11.5px; }
-/* The record a pane shows, after its view's name in the pane's bar. */
-.visual-tile-record { color: var(--text); font-weight: 600; }
-.visual-tile-record::before { content: " · "; color: var(--muted); font-weight: 400; }
+.canvas-tabs { display: flex; flex: 0 1 auto; align-items: flex-end; gap: 2px; min-width: 0; height: 32px; overflow-x: auto; scrollbar-width: none; }
+.canvas-tabs::-webkit-scrollbar { display: none; }
+.canvas-tab { display: flex; flex: none; align-items: center; max-width: min(180px, 28vw); height: 28px; margin-bottom: 2px; padding: 0 2px; border-radius: 6px 6px 0 0; color: var(--ink-muted); }
+.canvas-tab[aria-current="true"] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
+.canvas-tab-open { max-width: 150px; overflow: hidden; padding: 0 7px; color: inherit; font-size: 13px; line-height: 28px; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-tab-open:hover { background: var(--surface-hover); }
+.canvas-tab-open:disabled { opacity: .5; cursor: default; }
+.canvas-tab-close { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; color: var(--muted); opacity: 0; }
+.canvas-tab:hover .canvas-tab-close, .canvas-tab[aria-current="true"] .canvas-tab-close, .canvas-tab-close:focus-visible { opacity: 1; }
+.canvas-tab-close:hover { background: var(--surface-overlay); color: var(--text); }
+.canvas-tab-name { width: min(180px, 28vw); height: 26px; margin-bottom: 3px; padding: 0 7px; border: 1px solid var(--accent); border-radius: 6px 6px 0 0; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
 .canvas-clear, .canvas-clear:hover:not(:disabled) { color: var(--error-text); }
-.canvas-clear { opacity: 0; transition: opacity .12s; }
-.canvas-bar:hover .canvas-clear, .canvas-bar:focus-within .canvas-clear { opacity: 1; }
-@media (hover: none) { .canvas-clear { opacity: 1; } }
+.canvas-tab-new, .canvas-clear { opacity: 0; transition: opacity .12s; }
+.canvas-bar:hover .canvas-tab-new, .canvas-bar:focus-within .canvas-tab-new, .canvas-bar:hover .canvas-clear, .canvas-bar:focus-within .canvas-clear { opacity: 1; }
+@media (hover: none) { .canvas-tab-close, .canvas-tab-new, .canvas-clear { opacity: 1; } }
 /* A canvas with nothing on it, as an empty Home leaves it. */
 .visual-empty { margin: auto; padding: 24px; color: var(--muted); font-size: 13px; text-align: center; }

@@ -69,9 +69,8 @@ async function open(page: Page, station: Station): Promise<Locator> {
 }
 
 async function switchChat(page: Page, name: string): Promise<void> {
-  await page.getByRole("button", { name: "More chat actions" }).click();
-  await page.getByRole("button", { name: "Find a chat…" }).click();
-  const dialog = page.getByRole("dialog", { name: "Find a chat" });
+  await page.locator(".chat-name-button").click();
+  const dialog = page.getByRole("dialog", { name: "Chats" });
   const search = dialog.getByRole("textbox", { name: "Search chats" });
   await search.fill(name);
   await dialog.getByRole("button", { name, exact: true }).last().click();

@@ -1,16 +1,14 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/client";
-import { createStation, createWorkstream, listWorkstreams, moveStation, type Workstream } from "../api/workstreams";
+import { createStation as createStationInWorkstream, createWorkstream, listWorkstreams, moveStation, type Workstream } from "../api/workstreams";
 import { hideStation as setStationHidden, listStations, pinStation, type StationSummary } from "../api/stations";
 import type { ChatHead } from "../api/chats";
 import { getInquiry } from "../api/inquiries";
 import type { WorkspaceState } from "../api/workspaces";
 import { hideStation, nameStation, openStation, STATIONS_KEY } from "../stations/actions";
 import { showStation } from "../stations/useStation";
-import { chatsIn } from "../stations/workstreamChats";
 import { setChatHidden, setChatSide, useChatColumn } from "./chatColumnState";
-import { useHoverOpen } from "./hoverOpen";
 import { DeleteChat, PrivacySwitch, ShareChat } from "./ChatSharing";
 
 type Props = {
@@ -21,15 +19,9 @@ type Props = {
   readonly onDeleted: (conversation: string) => void;
 };
 
-type HeaderMenu = "name" | "workstream" | "more" | "info" | "find";
+type HeaderMenu = "name" | "workstream" | "more" | "info";
 
-/**
- * Chat naming, workstream placement, and its compact header controls. A click
- * on the name renames it in place; the pointer resting on it drops down the
- * workstream's chats and + for a new one, the list the top bar folds behind the
- * workstream's title (`chatsIn`). ⋯ holds the rest: pin or hide this chat, find
- * any chat (hidden ones too), clear, the panel, delete, info, privacy, sharing.
- */
+/** Chat naming, switching, workstream placement, and its compact header controls. */
 export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDeleted }: Props) {
   const queryClient = useQueryClient();
   const { side, hidden } = useChatColumn();
@@ -43,17 +35,12 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
   const workstreamOpen = menu === "workstream";
   const moreOpen = menu === "more";
   const infoOpen = menu === "info";
-  const findOpen = menu === "find";
   const root = useRef<HTMLDivElement>(null);
   const renameInput = useRef<HTMLInputElement>(null);
   const workstreamInput = useRef<HTMLInputElement>(null);
-  const findInput = useRef<HTMLInputElement>(null);
-  const namePick = useRef<HTMLDivElement>(null);
-  const chatList = useHoverOpen(namePick, { enabled: !nameOpen });
-  const listing = chatList.open && !nameOpen;
-  const stations = useQuery({ queryKey: STATIONS_KEY, queryFn: ({ signal }) => listStations({ signal }), enabled: findOpen || listing, staleTime: 2_000 });
+  const stations = useQuery({ queryKey: STATIONS_KEY, queryFn: ({ signal }) => listStations({ signal }), enabled: nameOpen, staleTime: 2_000 });
   const workstreams = useQuery({ queryKey: ["workstreams"], queryFn: ({ signal }) => listWorkstreams({}, { signal }),
-    enabled: workstreamOpen || listing || workspace?.suggestion != null, staleTime: 2_000 });
+    enabled: workstreamOpen || workspace?.suggestion != null, staleTime: 2_000 });
   const madeFor = workspace?.session_id ?? null;
   const madeForSession = useQuery({ queryKey: ["inquiry", madeFor], queryFn: ({ signal }) => getInquiry(madeFor ?? "", { signal }),
     enabled: infoOpen && madeFor !== null, staleTime: 5_000 });
@@ -64,9 +51,12 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
   const groups = workstreams.data ?? [];
   const currentGroup = groups.find((each) => each.id === workspace?.workstream_id)
     ?? groups.find((each) => each.scratch);
+  const currentGroupId = currentGroup?.id;
   const suggestion = workspace?.suggestion && !dismissedSuggestion ? workspace.suggestion : null;
   const shownName = workspace?.name && /^unnamed-workstream#\d+$/.test(workspace.name) ? "Scratch chat" : workspace?.name ?? "Chat";
-  const listed = currentGroup ? chatsIn(rows, currentGroup, workspace) : [];
+  const inGroup = rows.filter((each) => (workspace?.workstream_id ? each.workstream_id === workspace.workstream_id : !each.workstream_id) && !each.hidden);
+  const recent = inGroup.toSorted((a, b) => (b.modified_at ?? "").localeCompare(a.modified_at ?? ""));
+  const chatRows = [...recent.filter((each) => each.pinned), ...recent.filter((each) => !each.pinned).slice(0, 5)];
   const searchedRows = rows.filter((each) => each.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   const workstreamMatches = groups.filter((each) => !each.hidden && each.title.toLocaleLowerCase().includes(workstreamQuery.trim().toLocaleLowerCase()));
 
@@ -77,10 +67,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
     if (workstreamOpen) workstreamInput.current?.focus();
   }, [workstreamOpen]);
   useEffect(() => {
-    if (findOpen) findInput.current?.focus();
-  }, [findOpen]);
-  useEffect(() => {
-    if (!nameOpen && !workstreamOpen && !moreOpen && !infoOpen && !findOpen) return;
+    if (!nameOpen && !workstreamOpen && !moreOpen && !infoOpen) return;
     const outside = (event: PointerEvent) => {
       if (event.target instanceof Node && root.current?.contains(event.target)) return;
       if (nameOpen) void saveName();
@@ -115,46 +102,29 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
         showStation(queryClient, restored);
         void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
       } else await openStation(queryClient, station.id);
-      closeMenu("find");
+      closeMenu("name");
     } catch {
       setNameProblem("Could not open this chat.");
     }
   }
 
-  async function switchTo(id: string): Promise<void> {
-    chatList.set(false);
-    try {
-      await openStation(queryClient, id);
-    } catch {
-      setNameProblem("Could not open this chat.");
-    }
-  }
-
-  /** Make a chat in this workstream and open it with its name ready to type, as the top bar's + does. */
-  async function newChat(): Promise<void> {
-    chatList.set(false);
-    try {
-      const state = await createStation(currentGroup?.id);
-      showStation(queryClient, state);
-      void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
-      setNameDraft(state.name);
-      setMenu("name");
-    } catch {
-      setNameProblem("Could not make a chat.");
-    }
-  }
-
-  async function pinChat(): Promise<void> {
-    if (!workspace) return;
-    const state = await pinStation(workspace.id, !workspace.pinned);
-    queryClient.setQueryData(["workspace", workspace.id], state);
+  async function pinChat(station: StationSummary): Promise<void> {
+    const state = await pinStation(station.id, !station.pinned);
+    if (station.id === workspace?.id) queryClient.setQueryData(["workspace", station.id], state);
     void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
   }
 
-  async function hideChat(): Promise<void> {
-    if (!workspace) return;
-    await hideStation(queryClient, workspace.id);
+  async function hideChat(station: StationSummary): Promise<void> {
+    await hideStation(queryClient, station.id);
     void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
+  }
+
+  async function createChat(): Promise<void> {
+    if (!workspace) return;
+    const state = await createStationInWorkstream(currentGroupId);
+    showStation(queryClient, state);
+    void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
+    closeMenu("name");
   }
 
   async function placeIn(group: Workstream): Promise<void> {
@@ -206,25 +176,41 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
         {head?.audience === "staff" && <span>Staff only</span>}
         {head?.audience === "private" && <span>Private</span>}
       </span>
-      <div className="chat-name-pick" ref={namePick}>
+      <div className="chat-name-pick">
         {nameOpen ? <input ref={renameInput} className="chat-name-input" aria-label="Chat name" value={nameDraft}
           onChange={(event) => { setNameDraft(event.target.value); setNameProblem(null); }}
           onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing) return;
             if (event.key === "Enter") { event.preventDefault(); void saveName(); }
             if (event.key === "Escape") { event.preventDefault(); setMenu(null); setNameProblem(null); }
+            if (event.key === "ArrowDown") { event.preventDefault(); (root.current?.querySelector<HTMLInputElement>(".chat-name-search"))?.focus(); }
           }} />
-          : <button type="button" className="chat-name-button" title="Rename this chat" aria-label={shownName}
-            onClick={() => { setNameDraft(workspace?.name ?? ""); setNameProblem(null); setMenu("name"); }}>{shownName}</button>}
-        {nameProblem && <p className="station-problem chat-name-problem" role="status">{nameProblem}</p>}
-        {listing && <div className="station-menu chat-name-menu" role="dialog" aria-label={`Chats in ${currentGroup?.title ?? "Scratch"}`}>
-          <ul className="station-list">
-            {listed.map((chat) => <li key={chat.id}>
-              <button type="button" className="station-option" aria-current={chat.id === workspace?.id ? "true" : undefined}
-                onClick={() => void (chat.id === workspace?.id ? chatList.set(false) : switchTo(chat.id))}>{chat.name}</button>
+          : <button type="button" className="chat-name-button" title="Rename, switch chats or search" aria-label={shownName}
+            onClick={() => { setNameDraft(workspace?.name ?? ""); setNameProblem(null); setMenu("name"); }}>{shownName}<span className="chat-name-caret hover-only">▾</span></button>}
+        {nameOpen && <div className="station-menu chat-name-menu" role="dialog" aria-label="Chats">
+          {nameProblem && <p className="station-problem" role="status">{nameProblem}</p>}
+          <p className="chat-menu-label">Chats in {currentGroup?.title ?? "Scratch"}</p>
+          <ul className="station-list" aria-label="Chats in this workstream">
+            {chatRows.map((station) => <li key={station.id} className="chat-name-row">
+              <button type="button" className="station-option" aria-current={station.id === workspace?.id} onClick={() => void openChat(station)}>{station.name}</button>
+              <span className="chat-name-row-actions">
+                <button type="button" className="btn ghost" aria-label={`${station.pinned ? "Unpin" : "Pin"} ${station.name}`} onClick={() => void pinChat(station)}>{station.pinned ? "📌" : "Pin"}</button>
+                <button type="button" className="btn ghost" aria-label={`Hide ${station.name}`} onClick={() => void hideChat(station)}>Hide</button>
+              </span>
             </li>)}
+            {chatRows.length === 0 && <li className="muted">No chats yet.</li>}
           </ul>
-          <button type="button" className="station-option" onClick={() => void newChat()}>+ New chat</button>
+          <button type="button" className="station-option" onClick={() => void createChat()}>+ New chat</button>
+          <div className="chat-name-search">
+            <input className="chat-name-search" aria-label="Search chats" placeholder="Search all chats…" value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter" && searchedRows[0]) void openChat(searchedRows[0]); }} />
+            {search && <ul className="station-list" aria-label="Search results">
+              {searchedRows.map((station) => <li key={station.id}>
+                <button type="button" className="station-option" onClick={() => void openChat(station)}>{station.name}{station.hidden ? " · hidden" : ""}</button>
+              </li>)}
+              {searchedRows.length === 0 && <li className="muted">No matches.</li>}
+            </ul>}
+          </div>
         </div>}
       </div>
     </div>
@@ -252,9 +238,6 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
       <button className="btn ghost hover-only" type="button" aria-label="More chat actions" aria-expanded={moreOpen} onClick={() => setMenu(moreOpen ? null : "more")}>⋯</button>
       {moreOpen && <div className="chat-more-menu" aria-label="Chat actions">
         <button className="chat-menu-item" type="button" title="New chat, same canvas" onClick={() => { setMenu(null); void onClear(); }}>Clear chat</button>
-        {workspace && <button className="chat-menu-item" type="button" onClick={() => { setMenu(null); void pinChat(); }}>{workspace.pinned ? "Unpin chat" : "Pin chat"}</button>}
-        {workspace && <button className="chat-menu-item" type="button" title="Hide this chat from the bar; Find a chat brings it back" onClick={() => { setMenu(null); void hideChat(); }}>Hide chat</button>}
-        <button className="chat-menu-item" type="button" onClick={() => { setSearch(""); setMenu("find"); }}>Find a chat…</button>
         {hidden
           ? <button className="chat-menu-item" type="button" aria-label="Pin Chat beside the page" title="Pin Chat beside the page" onClick={() => { setMenu(null); setChatHidden(false); }}>Pin panel</button>
           : <button className="chat-menu-item" type="button" aria-label="Hide Chat" title="Hide the chat panel" onClick={() => { setMenu(null); setChatHidden(true); }}>Hide panel</button>}
@@ -262,20 +245,6 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
         <button className="chat-menu-item" type="button" onClick={() => setMenu("info")}>Info</button>
         {head?.may_hide && <PrivacySwitch head={head} />}
         {head?.may_share && <ShareChat head={head} />}
-      </div>}
-      {findOpen && <div className="chat-more-menu chat-find-menu" role="dialog" aria-label="Find a chat">
-        <input ref={findInput} className="chat-name-search" aria-label="Search chats" placeholder="Search all chats…" value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && searchedRows[0]) void openChat(searchedRows[0]);
-            if (event.key === "Escape") setMenu(null);
-          }} />
-        {search && <ul className="station-list" aria-label="Search results">
-          {searchedRows.map((station) => <li key={station.id}>
-            <button type="button" className="station-option" onClick={() => void openChat(station)}>{station.name}{station.hidden ? " · hidden" : ""}</button>
-          </li>)}
-          {searchedRows.length === 0 && <li className="muted">No matches.</li>}
-        </ul>}
       </div>}
       {infoOpen && <div className="chat-info-menu" role="dialog" aria-label="Chat info">
         <button type="button" className="btn ghost" onClick={() => setMenu(null)}>Close</button>

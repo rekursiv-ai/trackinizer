@@ -146,7 +146,7 @@ test("the top bar holds the logo, Go, Search, New, its pin and the account in or
   const bar = screen.getByRole("banner", { name: "App" });
   const named = [...bar.querySelectorAll<HTMLElement>("a, button")].filter((each) => !each.closest("[hidden]"))
     .map((each) => each.getAttribute("aria-label"));
-  expect(named).toEqual(["Trackinizer, the graph", "Go to", "Search", "New issue", "Account: ada@example.com, writer"]);
+  expect(named).toEqual(["Trackinizer, the graph", "Go to", "Search", "New issue", "Keep app bar open", "Account: ada@example.com, writer"]);
   expect(within(bar).queryByRole("navigation", { name: "Workstreams" })).toBeNull();
   expect(document.querySelector(".app")!.classList).not.toContain("with-canvas");
 });

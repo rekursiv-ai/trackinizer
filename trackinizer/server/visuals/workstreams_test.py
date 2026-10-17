@@ -246,32 +246,6 @@ async def test_scratch_cannot_be_hidden_but_can_be_pinned(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_scratch_leads_until_the_saved_order_places_it(
-    context: tuple[PGliteEngine, Store],
-) -> None:
-    engine, store = context
-    scratch = await open_scratch(engine, store=store, user_id=_USER, email=_EMAIL)
-    alpha = await create_workstream(
-        engine,
-        store=store,
-        user_id=_USER,
-        email=_EMAIL,
-        title="Alpha",
-    )
-    listed = await list_workstreams(engine, user_id=_USER, email=_EMAIL)
-    assert [item.id for item in listed] == [scratch, alpha.id]
-    ordered = await set_workstream_order(
-        engine,
-        user_id=_USER,
-        email=_EMAIL,
-        ids=[alpha.id, scratch],
-    )
-    assert ordered is not None
-    assert [item.id for item in ordered] == [alpha.id, scratch]
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
 async def test_order_is_saved_and_foreign_or_duplicate_ids_are_refused(
     context: tuple[PGliteEngine, Store],
 ) -> None:

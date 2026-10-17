@@ -1,15 +1,11 @@
-/* The app's one bar (TopBar.tsx), over the main area: the logo, Go, Search and New, the workstreams with their chats folded behind them, then the Workbench and the account. */
+/* The app's one bar (TopBar.tsx), over the main area: the logo, Go, Search and New, the stations as tab groups, then the Workbench and the account. */
 .topbar {
   display: flex; flex: 0 0 auto; align-items: center; gap: 4px; height: 44px; min-width: 0;
   padding: 0 10px; padding-top: env(safe-area-inset-top, 0px); position: relative; z-index: 45;
-  /* Opaque: the bar stands over the page while open, and what lies under it must not show through. */
-  background: var(--surface);
   transition: transform .16s ease, margin-bottom .16s ease;
 }
 .topbar-auto-hidden { transform: translateY(calc(-100% + 2px)); margin-bottom: calc(8px - 44px); }
 .topbar-auto-open { transform: none; margin-bottom: 0; }
-/* Pinned by a click on the bar: a line under it says it stays. */
-.topbar-pinned { box-shadow: inset 0 -1px 0 var(--accent); }
 .topbar-edge { position: fixed; z-index: 46; inset: 0 0 auto; width: 100%; height: 8px; border: 0; padding: 0; background: transparent; }
 .topbar-edge::after { content: ""; position: absolute; left: 50%; top: 1px; width: 50vw; height: 6px; transform: translateX(-50%); border-radius: 4px; background: var(--line-strong); }
 .topbar-edge[hidden] { display: none; }
@@ -43,35 +39,15 @@
 .workstream-bar { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 3px; overflow-x: auto; scrollbar-width: none; }
 .workstream-bar::-webkit-scrollbar { display: none; }
 .workstream-slot { display: contents; }
-/* A workstream's title wears its group's colour (WorkstreamBar.tsx sets --group), so it reads apart from the plain chats it folds. */
-.workstream-title { display: flex; flex: none; align-items: center; gap: 5px; height: 28px; max-width: 20em; padding: 0 9px; border: 1px solid color-mix(in srgb, var(--group, var(--accent)) 45%, var(--surface)); border-radius: 7px; background: color-mix(in srgb, var(--group, var(--accent)) 22%, var(--surface)); color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; }
-.workstream-title:hover, .workstream-title:focus-visible { background: color-mix(in srgb, var(--group, var(--accent)) 34%, var(--surface)); }
-.workstream-title.is-current { border-color: var(--group, var(--accent)); background: var(--group, var(--accent)); color: var(--on-group); }
-.workstream-mark { display: inline-flex; flex: none; align-items: center; opacity: .8; }
+.workstream-title { --group: var(--accent); display: flex; flex: none; align-items: center; gap: 5px; height: 28px; max-width: 20em; padding: 0 9px; border: 1px solid transparent; border-radius: 7px; color: var(--ink-muted); font-size: 13px; white-space: nowrap; }
+.workstream-title:hover, .workstream-title:focus-visible { background: var(--surface-hover); color: var(--text); }
+.workstream-title.is-current { border-color: var(--line-strong); background: var(--accent-soft); color: var(--text); font-weight: 600; }
 .workstream-title[draggable="true"] { cursor: grab; }
 .workstream-title.is-dragged { opacity: .45; }
 .workstream-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-/* The chat on show, after a folded current title: in the title's own colour, which reads on its fill. */
-.workstream-here { max-width: 12em; overflow: hidden; text-overflow: ellipsis; font-weight: 500; color: inherit; opacity: .85; }
-/* A workstream and its chats (WorkstreamBar.tsx, GroupChats): open, a line under the group joins them. */
-.workstream-group { display: flex; flex: none; align-items: center; border-radius: 8px; transition: box-shadow .2s; }
-.workstream-group.is-open { box-shadow: inset 0 -2px 0 var(--group, var(--accent)); border-radius: 8px 8px 0 0; }
-/* The chats behind a title: the width springs open to what they need (set in GroupChats), each chat following a beat behind the one before, as macOS's toolbar does. */
-.workstream-chats { width: 0; overflow: hidden; transition: width .34s cubic-bezier(.22, 1, .36, 1); }
-.workstream-chats-inner { display: flex; align-items: center; width: max-content; padding-right: 2px; }
-.workstream-chat, .workstream-chat-new, .workstream-chat-slot {
-  opacity: 0; transform: translateX(-10px) scale(.94); transform-origin: left center;
-  transition: opacity .18s ease, transform .3s cubic-bezier(.22, 1, .36, 1), background .12s;
-}
-.workstream-group.is-open :is(.workstream-chat, .workstream-chat-new, .workstream-chat-slot) { opacity: 1; transform: none; transition-delay: calc(var(--i, 0) * 30ms); }
-.workstream-chat-slot { display: flex; margin-left: 2px; }
-.workstream-chat { max-width: 14em; height: 28px; margin-left: 2px; padding: 0 10px; overflow: hidden; border-radius: 6px; color: var(--ink-muted); font-size: 13px; line-height: 28px; text-overflow: ellipsis; white-space: nowrap; }
-.workstream-chat:hover { background: var(--surface-hover); color: var(--text); }
-.workstream-chat[aria-current="true"] { background: var(--bg); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
-.workstream-chat-name { width: 15ch; height: 26px; padding: 0 8px; border: 1px solid var(--accent); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; outline: 0; }
-.workstream-chat-new { display: grid; place-items: center; width: 26px; height: 26px; margin-left: 2px; border-radius: 6px; color: var(--muted); }
-.workstream-chat-new:hover { background: var(--surface-hover); color: var(--text); }
-.workstream-name { width: 15ch; border-color: var(--accent); background: var(--bg); color: var(--text); font: inherit; }
+.workstream-name { width: 160px; border-color: var(--accent); background: var(--bg); color: var(--text); font: inherit; }
+.workstream-pin { display: inline-flex; flex: none; align-items: center; }
+.workstream-divider { flex: none; width: 1px; height: 20px; margin: 0 5px; background: var(--line-strong); }
 .workstream-new { display: flex; flex: none; align-items: center; gap: 4px; height: 28px; padding: 0 8px; border: 1px dashed var(--line-strong); border-radius: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .workstream-new:hover { color: var(--text); }
 .workstream-pop { position: absolute; z-index: 55; }
@@ -116,10 +92,10 @@
 
 @media (max-width: 760px) {
   .topbar { padding-left: max(8px, env(safe-area-inset-left, 0px)); padding-right: max(8px, env(safe-area-inset-right, 0px)); }
-  .workstream-new > span, .workstream-here { display: none; }
+  .workstream-new > span { display: none; }
   .account-button:hover:not([aria-expanded="true"]) { padding-right: 2px; background: none; }
   .account-button:hover:not([aria-expanded="true"]) .account-reveal { max-width: 0; opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .workstream-chats, .workstream-chat, .workstream-chat-new, .workstream-chat-slot, .account-reveal, .account-button { transition: none; }
+  .account-reveal, .account-button { transition: none; }
 }

@@ -14,16 +14,12 @@ import { setStation } from "../stations/store";
 import { Canvas } from "./Canvas";
 import { forgetHistories, observe, settle, step } from "./canvasHistory";
 import { snapshotOf } from "./canvasSnapshot";
-import { forgetLayouts } from "./stationLayout";
+import { flushLayouts, forgetLayouts, type Layout } from "./stationLayout";
 import { CanvasBar } from "./CanvasBar";
 
 vi.mock("../api/visuals", () => ({ getVisualCatalog: vi.fn() }));
 vi.mock("../api/stations", () => ({ setStationLayout: vi.fn().mockResolvedValue(undefined), listStations: vi.fn().mockResolvedValue([]) }));
 vi.mock("../api/workspaces", () => ({ createDefaultWorkspace: vi.fn(), getWorkspace: vi.fn(), applyWorkspaceOperation: vi.fn() }));
-vi.mock("../api/detail", async (original) => ({
-  ...(await original<typeof import("../api/detail")>()),
-  getDetail: vi.fn(async (id: string) => ({ self: { kind: "Issue", seq: id === "r1" ? 1 : 2, title: id === "r1" ? "One" : "Two" } })),
-}));
 
 const STATION = "c5286865-67b6-4bd8-ab51-e06e10c326c5";
 
@@ -48,28 +44,17 @@ let clock: { mockRestore(): void } | null = null;
 function apply(state: WorkspaceState, operation: WorkspaceOperation): WorkspaceState {
   const next = { ...state, revision: state.revision + 1 };
   switch (operation.kind) {
-    case "hide": {
-      const hidden = state.visuals.find((visual) => visual.id === operation.instance_id);
-      const visuals = state.visuals.filter((visual) => visual !== hidden);
-      // Closing the last record brings the page back; closing the page alone does not.
-      if (!visuals.length && hidden?.type !== "trax.browse") {
-        made += 1;
-        return { ...next, visuals: [{ id: `made-${made}`, type: "trax.browse", version: 1, placement: "main", record_id: null, params: {} }] };
-      }
-      return { ...next, visuals };
-    }
+    case "hide":
+      return { ...next, visuals: state.visuals.filter((visual) => visual.id !== operation.instance_id) };
     case "place":
       return { ...next, visuals: state.visuals.map((visual) => (visual.id === operation.instance_id ? { ...visual, placement: operation.placement } : visual)) };
     case "show": {
       const shown = { type: operation.visual_type, placement: operation.placement ?? "main", record_id: operation.record_id ?? null, params: operation.params ?? {} };
-      const existing = state.visuals.find((visual) => visual.type === operation.visual_type
-        && (!operation.beside || visual.record_id === (operation.record_id ?? null)));
+      const existing = state.visuals.find((visual) => visual.type === operation.visual_type);
       if (existing) return { ...next, visuals: state.visuals.map((visual) => (visual === existing ? { ...visual, ...shown } : visual)) };
       made += 1;
       return { ...next, visuals: [...state.visuals, { id: `made-${made}`, version: 1, ...shown }] };
     }
-    case "focus":
-      return { ...next, focused_instance: operation.instance_id };
     default:
       return next;
   }
@@ -117,10 +102,17 @@ function render(ui: ReactElement) {
   return renderBare(ui, { wrapper: ({ children }: { children: ReactNode }) => <ProfileContext value={PROFILE}>{children}<WorkbenchSlot /></ProfileContext> });
 }
 
-/** The canvas, with its bar. */
+/** The canvas draws its own tabs. */
 async function mount() {
   render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Page</div></Canvas></QueryClientProvider>);
   await waitFor(() => expect(document.querySelector('[data-visual-type="trax.timeline"]')).not.toBeNull(), { interval: 1 });
+}
+
+/** Mount the lightweight one-visual station used to measure tab clearing. */
+async function mountBrowseOnly() {
+  served = { ...START, visuals: [START.visuals[0]!] };
+  render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Page</div></Canvas></QueryClientProvider>);
+  await waitFor(() => expect(document.querySelector('[data-visual-type="trax.browse"]')).not.toBeNull(), { interval: 1 });
 }
 
 /** A person's next action comes this much later: never part of the step before. */
@@ -128,13 +120,70 @@ function later() {
   skew += 1_000;
 }
 
+/** Move the address as a link does, a person's action: a new entry and one hashchange. */
+function userNavigates(hash: string) {
+  later();
+  act(() => {
+    history.pushState(null, "", hash);
+    dispatchEvent(new HashChangeEvent("hashchange"));
+  });
+}
+
 /** The operations the canvas sent, in order. */
 function sent(): WorkspaceOperation[] {
   return vi.mocked(applyWorkspaceOperation).mock.calls.map(([, , operation]) => operation);
 }
 
+/** The layout keys written so far, later writes over earlier ones. */
+function written(): Layout {
+  flushLayouts();
+  return Object.assign({}, ...vi.mocked(setStationLayout).mock.calls.map(([, patch]) => patch)) as Layout;
+}
+
 const button = (name: string) => within(screen.getByRole("toolbar", { name: "Canvas" })).getByRole<HTMLButtonElement>("button", { name });
 
+async function addTab() {
+  fireEvent.click(button("New tab"));
+  const name = await screen.findByRole("textbox", { name: "Tab name" });
+  fireEvent.keyDown(name, { key: "Enter" });
+}
+
+test("a new canvas tab starts with its name selected and saves the typed name", async () => {
+  await mount();
+  fireEvent.click(button("New tab"));
+  const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Tab name" });
+  expect(document.activeElement).toBe(name);
+  expect(name.value.slice(name.selectionStart!, name.selectionEnd!)).toBe("Tab 2");
+  fireEvent.change(name, { target: { value: "Results" } });
+  fireEvent.keyDown(name, { key: "Enter" });
+  expect(written().tabs?.map((tab) => tab.name)).toEqual(["Tab 1", "Results"]);
+});
+
+test("Escape keeps a new tab's default name; existing tabs save names on blur", async () => {
+  await mount();
+  fireEvent.click(button("New tab"));
+  const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Tab name" });
+  fireEvent.change(name, { target: { value: "Cancelled" } });
+  fireEvent.keyDown(name, { key: "Escape" });
+  expect(written().tabs?.map((tab) => tab.name)).toEqual(["Tab 1", "Tab 2"]);
+  fireEvent.doubleClick(button("Tab 2"));
+  const renamed = screen.getByRole("textbox", { name: "Tab name" });
+  fireEvent.change(renamed, { target: { value: "Results" } });
+  fireEvent.blur(renamed);
+  expect(written().tabs?.map((tab) => tab.name)).toEqual(["Tab 1", "Results"]);
+});
+
+test("Enter while composing a canvas tab name leaves the editor open", async () => {
+  await mount();
+  fireEvent.doubleClick(button("Tab 1"));
+  const name = screen.getByRole("textbox", { name: "Tab name" });
+  fireEvent.change(name, { target: { value: "研究" } });
+  fireEvent.keyDown(name, { key: "Enter", isComposing: true });
+  expect(written().tabs).toBeUndefined();
+  expect(document.activeElement).toBe(name);
+  fireEvent.keyDown(name, { key: "Enter" });
+  expect(written().tabs?.map((tab) => tab.name)).toEqual(["研究"]);
+});
 
 test("page routes form one-step Back and Forward history", () => {
   const key = `${STATION}/1`;
@@ -156,8 +205,8 @@ test("Forward control walks to the next page route", () => {
   expect(step(key, -1)).toEqual(issue);
   settle(key, issue, issue);
   const forward = vi.fn(() => expect(step(key, 1)).toEqual(activity));
-  renderBare(<CanvasBar back={false} forward={true} moving={false}
-    home="graph" actions={{ back: vi.fn(), forward, home: vi.fn(), clear: vi.fn() }} />);
+  renderBare(<CanvasBar tabs={[{ id: "1", name: "Tab 1" }]} open="1" back={false} forward={true} moving={false}
+    home="graph" canAdd actions={{ back: vi.fn(), forward, home: vi.fn(), clear: vi.fn(), open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
 
   fireEvent.click(button("Forward"));
   expect(forward).toHaveBeenCalledOnce();
@@ -185,8 +234,8 @@ test("Forward calls the action for the next visual state", () => {
   expect(step(key, -1)).toEqual(opened);
   settle(key, opened, opened);
   const forward = vi.fn(() => expect(step(key, 1)).toEqual(closed));
-  renderBare(<CanvasBar back={true} forward={true} moving={false}
-    home="graph" actions={{ back: vi.fn(), forward, home: vi.fn(), clear: vi.fn() }} />);
+  renderBare(<CanvasBar tabs={[{ id: "1", name: "Tab 1" }]} open="1" back={true} forward={true} moving={false}
+    home="graph" canAdd actions={{ back: vi.fn(), forward, home: vi.fn(), clear: vi.fn(), open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
 
   fireEvent.click(button("Forward"));
   expect(forward).toHaveBeenCalledOnce();
@@ -219,42 +268,50 @@ test("Home shows the page on the graph and nothing else; Back brings the canvas 
   expect(served.visuals.map((visual) => visual.type)).toEqual(["trax.browse", "trax.timeline"]);
 });
 
-test("Clear canvas closes every visual, leaves the page as the default view, and Back restores the rest", async () => {
-  await mount();
+test("clearing a canvas tab closes the other tab and Back restores Browse", async () => {
+  await mountBrowseOnly();
+
+  userNavigates("#/activity");
+  await waitFor(() => expect(location.hash).toBe("#/activity"), { interval: 1 });
+  await addTab();
+  await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
+  const otherTab = written().tabs![1]!.id;
 
   fireEvent.click(button("Clear canvas"));
   const clearDialog = await screen.findByRole("alertdialog", { name: "Clear canvas?" });
   fireEvent.click(within(clearDialog).getByRole("button", { name: "Clear canvas" }));
-  await waitFor(() => expect(sent()).toEqual([{ kind: "hide", instance_id: "page" }, { kind: "hide", instance_id: "timeline" }]), { interval: 1 });
-  await waitFor(() => expect(document.querySelector('[data-visual-type="trax.browse"]')).not.toBeNull(), { interval: 1 });
-  expect(document.querySelector('[data-visual-type="trax.timeline"]')).toBeNull();
+  await waitFor(() => expect(sent().at(-1)).toEqual({ kind: "hide", instance_id: "page" }), { interval: 1 });
+  expect(written().tabs).toEqual([]);
+  expect(step(`${STATION}/1`, -1)).toBeNull();
+  expect(document.querySelector('[data-visual-type="trax.browse"]')).toBeNull();
+  expect(button("Back").disabled).toBe(false);
 
-  await waitFor(() => expect(button("Back").disabled).toBe(false), { interval: 1 });
   fireEvent.click(button("Back"));
-  await waitFor(() => expect(document.querySelector('[data-visual-type="trax.timeline"]')).not.toBeNull(), { interval: 1 });
+  await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
+  await waitFor(() => expect(document.querySelector('[data-visual-type="trax.browse"]')).not.toBeNull(), { interval: 1 });
+  expect(step(`${STATION}/${otherTab}`, -1)).toBeNull();
 });
 
-test("with home set to empty, Home closes every visual and the page comes back as the default view", async () => {
+test("with home set to empty, Home clears the canvas", async () => {
   receivePreferences({ ...DEFAULT_PREFERENCES, home: "empty" });
   await mount();
   expect(button("Home").title).toContain("empty canvas");
 
   fireEvent.click(button("Home"));
 
-  await waitFor(() => expect(document.querySelector('[data-visual-type="trax.timeline"]')).toBeNull(), { interval: 1 });
-  expect(document.querySelector('[data-visual-type="trax.browse"]')).not.toBeNull();
+  await waitFor(() => expect(screen.getByText(/Nothing on this canvas/)).toBeTruthy(), { interval: 1 });
   expect(sent()).toEqual([{ kind: "hide", instance_id: "page" }, { kind: "hide", instance_id: "timeline" }]);
   expect(location.hash).toBe("#/list/Issue");
 });
 
 test("Clear canvas is danger-styled and Cancel or Escape leave the action alone", async () => {
   const clear = vi.fn();
-  renderBare(<CanvasBar back={false} forward={false} moving={false}
-    home="graph" actions={{ back: vi.fn(), forward: vi.fn(), home: vi.fn(), clear }} />);
+  renderBare(<CanvasBar tabs={[{ id: "1", name: "Review" }]} open="1" back={false} forward={false} moving={false}
+    home="graph" canAdd actions={{ back: vi.fn(), forward: vi.fn(), home: vi.fn(), clear, open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
 
   fireEvent.click(screen.getByRole("button", { name: "Clear canvas" }));
   let dialog = screen.getByRole("alertdialog", { name: "Clear canvas?" });
-  expect(within(dialog).getByText("This closes every visual; the page comes back as the default view. What it worked on stays listed, and Back restores what it showed.")).toBeTruthy();
+  expect(within(dialog).getByText("This removes every visual, Browse included, and closes the other tabs. Back restores what this tab showed.")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Clear canvas" }).classList.contains("danger")).toBe(true);
   expect(within(dialog).getByRole("button", { name: "Clear canvas" }).classList.contains("danger")).toBe(true);
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
@@ -271,55 +328,55 @@ test("Clear canvas is danger-styled and Cancel or Escape leave the action alone"
   expect(clear).toHaveBeenCalledTimes(1);
 });
 
-test("the strip puts the panes first in their order; a closed chip shows beside, a shown chip focuses", async () => {
-  served = { ...START, worked: [{ record_id: "r2", visual_type: "trax.timeline" }, { record_id: "r1", visual_type: "trax.timeline" }] };
+test("a new tab opens home and keeps the tab left; opening that tab again shows it as it was left", async () => {
   await mount();
-  const strip = within(screen.getByRole("navigation", { name: "Worked on" }));
-  await strip.findByRole("button", { name: /Issue#2 Two$/ });
-  const chips = () => strip.getAllByRole("button").map((chip) => [chip.textContent, chip.getAttribute("aria-pressed")]);
-  // r2 was worked on last, but r1 is the one on a pane, so it leads.
-  expect(chips()).toEqual([["Lineage Issue#1 One", "true"], ["Lineage Issue#2 Two", "false"]]);
-
-  fireEvent.click(strip.getByRole("button", { name: /Issue#2 Two$/ }));
-  await waitFor(() => expect(sent()).toEqual([{ kind: "show", visual_type: "trax.timeline", record_id: "r2", beside: true }]), { interval: 1 });
-  await waitFor(() => expect(chips()).toEqual([["Lineage Issue#1 One", "true"], ["Lineage Issue#2 Two", "true"]]), { interval: 1 });
-  expect(document.querySelectorAll('[data-visual-type="trax.timeline"]')).toHaveLength(2);
-  // Each pane's bar names its record beside its view, as the chip does.
-  expect([...document.querySelectorAll(".visual-tile-record")].map((name) => name.textContent).toSorted()).toEqual(["Issue#1 One", "Issue#2 Two"]);
-
-  fireEvent.click(strip.getByRole("button", { name: /Issue#1 One$/ }));
-  await waitFor(() => expect(sent().at(-1)).toEqual({ kind: "focus", instance_id: "timeline" }), { interval: 1 });
-});
-
-test("a canvas showing no record and having worked on none shows no strip", async () => {
-  served = { ...START, visuals: [START.visuals[0]!] };
-  render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Page</div></Canvas></QueryClientProvider>);
-  await waitFor(() => expect(document.querySelector('[data-visual-type="trax.browse"]')).not.toBeNull(), { interval: 1 });
-  expect(screen.queryByRole("navigation", { name: "Worked on" })).toBeNull();
-});
-
-test("a pane alone in its strip fills it, whatever share its visual kept, and record panes stand as cards", async () => {
-  served = { ...START, visuals: [START.visuals[1]!], layout: { share: { "trax.timeline": 0.6 } } };
-  render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Page</div></Canvas></QueryClientProvider>);
-  const tile = await waitFor(() => {
-    const found = document.querySelector<HTMLElement>('.visual-tile[data-visual-type="trax.timeline"]');
-    expect(found).not.toBeNull();
-    return found!;
-  }, { interval: 1 });
-  expect(tile.style.getPropertyValue("--tile-share")).toBe("");
-  expect(document.querySelector(".visual-stage")!.classList.contains("visual-stage-panes")).toBe(true);
-});
-
-/** Home, so Back has a step to restore; it hides the timeline and moves the page to the graph. */
-async function stepAway() {
-  await mount();
-  fireEvent.click(button("Home"));
+  await addTab();
   await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
-  await waitFor(() => expect(button("Back").disabled).toBe(false), { interval: 1 });
-}
+  await waitFor(() => expect(document.querySelector('[data-visual-type="trax.timeline"]')).toBeNull(), { interval: 1 });
+  const layout = written();
+  expect(layout.tabs?.map(({ name, page }) => [name, page])).toEqual([["Tab 1", "#/list/Issue"], ["Tab 2", "#/graph"]]);
+  expect(layout.tabs?.[0]?.visuals?.map((visual) => visual.type)).toEqual(["trax.browse", "trax.timeline"]);
+  expect(layout.tab).toBe(layout.tabs?.[1]?.id);
+  expect(screen.getByRole("button", { name: /^Tab 2/ }).closest(".canvas-tab")?.getAttribute("aria-current")).toBe("true");
+  // A new tab begins its own steps.
+  expect(button("Back").disabled).toBe(true);
 
-test("a station opened while a restore's steps are on their way gets none of them: not its visuals, not its page", async () => {
-  await stepAway();
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: /^Tab 1/ }).disabled).toBe(false), { interval: 1 });
+  fireEvent.click(screen.getByRole("button", { name: /^Tab 1/ }));
+
+  await waitFor(() => expect(location.hash).toBe("#/list/Issue"), { interval: 1 });
+  await waitFor(() => expect(document.querySelector('[data-visual-type="trax.timeline"]')).not.toBeNull(), { interval: 1 });
+  expect(written().tab).toBe("1");
+  expect(written().tabs?.[1]?.page).toBe("#/graph");
+});
+
+test("closing the open tab opens its neighbour; a tab renamed in place keeps its name", async () => {
+  await mount();
+  await addTab();
+  await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
+  await waitFor(() => expect(button("Close Tab 2").disabled).toBe(false), { interval: 1 });
+
+  fireEvent.click(button("Close Tab 2"));
+
+  await waitFor(() => expect(location.hash).toBe("#/list/Issue"), { interval: 1 });
+  expect(written().tabs?.map((tab) => tab.name)).toEqual(["Tab 1"]);
+  expect(written().tab).toBe("1");
+  expect(screen.queryByRole("button", { name: "Close Tab 1" })).toBeNull();
+
+  fireEvent.doubleClick(screen.getByRole("button", { name: /^Tab 1/ }));
+  const name = screen.getByRole<HTMLInputElement>("textbox", { name: "Tab name" });
+  fireEvent.change(name, { target: { value: "  Review  " } });
+  fireEvent.keyDown(name, { key: "Enter" });
+
+  expect(written().tabs?.map((tab) => tab.name)).toEqual(["Review"]);
+  expect(screen.getByRole("button", { name: /^Review/ })).toBeTruthy();
+});
+
+test("a station opened while a tab's steps are on their way gets none of them: not its visuals, not its page", async () => {
+  await mount();
+  await addTab();
+  await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Tab 1" }).disabled).toBe(false), { interval: 1 });
   // Another station, on Papers with the page alone; and the next step to the server held back, as a slow network holds it.
   const other: WorkspaceState = { ...START, id: "0b7c5d2e-1111-4a5b-9c8d-2e3f4a5b6c7d", name: "beta", revision: 9, visuals: [START.visuals[0]!] };
   vi.mocked(getWorkspace).mockImplementation(async (id) => (id === other.id ? other : served));
@@ -328,28 +385,33 @@ test("a station opened while a restore's steps are on their way gets none of the
   const plain = vi.mocked(applyWorkspaceOperation).getMockImplementation()!;
   vi.mocked(applyWorkspaceOperation).mockImplementationOnce(async (...args) => { await held; return plain(...args); });
 
-  // Back restores the timeline, its step on its way; then the other station, before the step lands.
-  fireEvent.click(button("Back"));
+  // Tab 1 is opened, its timeline on its way; then the other station, before the step lands.
+  fireEvent.click(screen.getByRole("button", { name: "Tab 1" }));
   await waitFor(() => expect(sent()).toHaveLength(2), { interval: 1 });
   act(() => {
     setStation(other.id, "#/list/Paper");
     history.replaceState(null, "", "#/list/Paper");
     dispatchEvent(new HashChangeEvent("hashchange"));
   });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Tab 1" })).toBeTruthy(), { interval: 1 });
   await act(async () => { release(); await held; });
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
 
   // The other station's canvas and page are its own still.
   expect(vi.mocked(applyWorkspaceOperation).mock.calls.filter(([id]) => id === other.id)).toEqual([]);
   expect(location.hash).toBe("#/list/Paper");
-  // And the canvas is not left waiting on the step it gave up.
-  await waitFor(() => expect(button("Home").disabled).toBe(false), { interval: 1 });
+  // And the canvas is not left waiting on the step it gave up: the station's tabs open again.
+  await waitFor(() => expect(button("New tab").disabled).toBe(false), { interval: 1 });
 });
 
-test("coming back to a station left while a restore's steps were on their way finishes them", async () => {
-  await stepAway();
+test("coming back to a station left while a tab's steps were on their way finishes them, so the tab is whole and keeps what it shows", async () => {
+  await mount();
+  await addTab();
+  await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Tab 1" }).disabled).toBe(false), { interval: 1 });
   const home = served;
   const other: WorkspaceState = { ...START, id: "0b7c5d2e-1111-4a5b-9c8d-2e3f4a5b6c7d", name: "beta", revision: 9, visuals: [START.visuals[0]!] };
+  let showing = STATION;
   vi.mocked(getWorkspace).mockImplementation(async (id) => (id === other.id ? other : served));
   let release = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
@@ -357,19 +419,25 @@ test("coming back to a station left while a restore's steps were on their way fi
   // The step goes out, but its answer is lost, as a write cut short by leaving would be: the server never shows the timeline.
   vi.mocked(applyWorkspaceOperation).mockImplementationOnce(async () => { await held; throw new Error("left"); });
 
-  fireEvent.click(button("Back"));
+  fireEvent.click(screen.getByRole("button", { name: "Tab 1" }));
   await waitFor(() => expect(sent()).toHaveLength(2), { interval: 1 });
   act(() => {
+    showing = other.id;
     setStation(other.id, "#/list/Paper");
     history.replaceState(null, "", "#/list/Paper");
     dispatchEvent(new HashChangeEvent("hashchange"));
   });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Tab 1" })).toBeTruthy(), { interval: 1 });
   await act(async () => { release(); await new Promise((resolve) => setTimeout(resolve, 20)); });
   expect(served).toBe(home);
   vi.mocked(applyWorkspaceOperation).mockImplementation(plain);
 
-  // Back to the first station: its timeline and its page come back.
-  act(() => setStation(STATION, "#/graph"));
+  // Back to the first station: Tab 1 is open, and its timeline and its page come back.
+  act(() => {
+    showing = STATION;
+    setStation(STATION, "#/graph");
+  });
   await waitFor(() => expect(document.querySelector('[data-visual-type="trax.timeline"]')).not.toBeNull(), { interval: 1 });
   await waitFor(() => expect(location.hash).toBe("#/list/Issue"), { interval: 1 });
+  expect(showing).toBe(STATION);
 });

@@ -283,12 +283,11 @@ async def list_workstreams(
         from_plain(row["id"], uuid.UUID): from_plain(row["modified"], datetime)
         for row in rows
     }
-    # The bar's order is the person's: the order they saved, Scratch first and the
-    # rest newest first where they saved none.
     found.sort(
         key=lambda item: (
-            order_index.get(str(item.id), len(order_index)),
+            not item.pinned,
             not item.scratch,
+            order_index.get(str(item.id), len(order_index)),
             -modified_by_id[item.id].timestamp(),
         ),
     )

@@ -56,7 +56,7 @@
   color-scheme: light;
 }
 :root[data-skin="retro"] .topbar { margin-bottom: 9px; box-shadow: 0 3px 0 #d49a16, 0 6px 0 #b4461a, 0 9px 0 #7a3f1d; }
-:root[data-skin="retro"] :is(.workstream-title, .workstream-chat, .canvas-worked-chip, .skin-option) { border-radius: 999px; }
+:root[data-skin="retro"] :is(.workstream-title, .canvas-tab, .skin-option) { border-radius: 999px; }
 
 /* Sci-fi: a starship console. Deep navy, cyan hairlines, square corners, uppercase spaced labels. */
 :root[data-skin="scifi"] {
@@ -337,7 +337,7 @@
 :root[data-skin="hacker"] .workstream-bar { counter-reset: window; gap: 0; }
 :root[data-skin="hacker"] .workstream-title { padding: 0 18px 0 10px; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%); }
 :root[data-skin="hacker"] .workstream-title::before { counter-increment: window; content: counter(window) ":"; opacity: .7; }
-:root[data-skin="hacker"] .workstream-mark { display: none; }
+:root[data-skin="hacker"] .workstream-pin { display: none; }
 :root[data-skin="hacker"] .workstream-title.is-current::after { content: "*"; }
 
 /* Minimalist: paper and ink, greys alone, groups set as text with an underline. */
@@ -392,7 +392,7 @@
 :root[data-skin="minimal"] .topbar { border-bottom: 1px solid var(--line); }
 :root[data-skin="minimal"] .workstream-title { background: transparent; color: var(--muted); font-weight: 500; border-radius: 0; }
 :root[data-skin="minimal"] .workstream-title.is-current { background: transparent; color: var(--text); box-shadow: inset 0 -2px 0 var(--text); }
-:root[data-skin="minimal"] .workstream-mark { display: none; }
+:root[data-skin="minimal"] .workstream-pin { width: 5px; height: 5px; }
 :root[data-skin="minimal"] .topbar-rule { background: transparent; }
 
 /* Brutalist: the raw web. White, black rules, a yellow frame, blue links, hard offset shadows, no curves. */
