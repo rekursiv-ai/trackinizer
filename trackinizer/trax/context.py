@@ -15,10 +15,15 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from pathlib import Path
-from typing import TextIO, cast
+from typing import TYPE_CHECKING, TextIO, cast
 
 import os
 import sys
+import uuid
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 OUT_STREAM: ContextVar[TextIO | None] = ContextVar("trax_out_stream", default=None)
@@ -89,3 +94,23 @@ def env(name: str) -> str | None:
 def cwd() -> Path:
     """Return the directory relative paths in this invocation resolve against."""
     return Path(bound) if (bound := CWD.get()) else Path.cwd()
+
+
+def workspace_from_env(environ: Mapping[str, str]) -> uuid.UUID | None:
+    """Return the station a run started from: ``TRAX_WORKSPACE``, else its ``LC_`` twin.
+
+    Args:
+      environ: The process environment.
+
+    Returns:
+      workspace: The station id; ``None`` when neither names a valid one.
+
+    """
+    for name in ("TRAX_WORKSPACE", "LC_TRAX_WORKSPACE"):
+        value = environ.get(name, "").strip()
+        if value:
+            try:
+                return uuid.UUID(value)
+            except ValueError:
+                return None
+    return None

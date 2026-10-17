@@ -37,6 +37,7 @@ from treekle import from_plain, json_loads
 import pytest
 
 from trackinizer.client.client import Client
+from trackinizer.client.errors import ClientError
 from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
@@ -81,7 +82,7 @@ from trackinizer.trax.run.sink import (
     TrackinizerSink,
 )
 from trackinizer.trax.run.slash import SlashCommand
-from trackinizer.trax.run.worktree_diff import Output, WorktreeDiff
+from trackinizer.trax.run.worktree_diff import Output, WorktreeDiff, run_git
 from trackinizer.wire.wire_session_ir import (
     AppendRecordsResponse,
     RecordBody,
@@ -139,7 +140,7 @@ class _RecordingSink(Sink):
 
     @property
     @override
-    def session_id(self) -> None:
+    def session_id(self) -> uuid.UUID | None:
         return None
 
     @override
@@ -2389,6 +2390,8 @@ class TestWrappedCliIsATopLevelSession:
                     "CLAUDE_CODE_SESSION_ID",
                     "TRAX_ACTOR",
                     "TRAX_ROOMS",
+                    "TRAX_WORKSTREAM",
+                    "TRAX_WORKSPACE",
                 },
             ),
         ]
@@ -2679,6 +2682,81 @@ class TestSpawnWiring:
         env = cast(dict[str, str], wiring.relay["env"])
         assert env["TRAX_ACTOR"] == "scientist#2"
         assert sink.calls[:2] == ["cli_session_id r1", "open"]
+
+    def test_the_child_is_told_the_workstream_and_station_it_was_placed_in(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+        for argv in (
+            ("init", "-q", "-b", "feature"),
+            ("remote", "add", "origin", "https://github.com/o/r.git"),
+        ):
+            assert run_git(["git", "-C", str(tmp_path), *argv], 4096).returncode == 0
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("LC_TRAX_WORKSPACE", str(uuid.UUID(int=5)))
+        client = _PlacingClient()
+        wiring, _ = _wire(
+            monkeypatch,
+            tmp_path,
+            RunConfig(cli_name="claude", client=cast(Client, client)),
+            ClaudeAdapter(),
+            sink=_PlacedSink(),
+        )
+        env = cast(dict[str, str], wiring.relay["env"])
+        assert (env["TRAX_WORKSTREAM"], env["TRAX_WORKSPACE"]) == (
+            str(uuid.UUID(int=7)),
+            str(uuid.UUID(int=8)),
+        )
+        assert client.asked == [
+            (
+                f"/api/sessions/{_SESSION}/place",
+                {
+                    "workspace": str(uuid.UUID(int=5)),
+                    "git": {
+                        "origin": "https://github.com/o/r.git",
+                        "branch": "feature",
+                    },
+                },
+            ),
+        ]
+
+    def test_a_refused_placement_warns_once_and_the_run_goes_on_unplaced(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        wiring, status = _wire(
+            monkeypatch,
+            tmp_path,
+            RunConfig(
+                cli_name="claude",
+                client=cast(Client, _PlacingClient(refuse=True)),
+            ),
+            ClaudeAdapter(),
+            sink=_PlacedSink(),
+        )
+        env = cast(dict[str, str], wiring.relay["env"])
+        assert status == 0
+        assert "TRAX_WORKSPACE" not in env
+        assert capsys.readouterr().err.count("running unplaced") == 1
+
+    def test_a_local_capture_never_asks_to_be_placed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        client = _PlacingClient()
+        _ = _wire(
+            monkeypatch,
+            tmp_path,
+            RunConfig(cli_name="claude", sync=False, client=cast(Client, client)),
+            ClaudeAdapter(),
+            sink=_PlacedSink(),
+        )
+        assert client.asked == []
 
     def test_a_fresh_run_names_no_session_before_open(
         self,
@@ -2989,6 +3067,35 @@ class _GrantingSink(_RecordingSink):
         return self._granted
 
 
+class _PlacedSink(_RecordingSink):
+    """A sink whose server opened session ``_SESSION``."""
+
+    @property
+    @override
+    def session_id(self) -> uuid.UUID:
+        return _SESSION
+
+
+_SESSION = uuid.UUID("00000000-0000-0000-0000-0000000000a1")
+
+
+class _PlacingClient:
+    """A client whose server places a session, or refuses to; records what it was asked."""
+
+    def __init__(self, *, refuse: bool = False) -> None:
+        self.asked: list[tuple[str, object]] = []
+        self._refuse = refuse
+
+    def post(self, path: str, *, body: object = None) -> dict[str, str]:
+        self.asked.append((path, body))
+        if self._refuse:
+            raise ClientError("404 Not Found")
+        return {
+            "workstream_id": str(uuid.UUID(int=7)),
+            "workspace_id": str(uuid.UUID(int=8)),
+        }
+
+
 def _never_found(
     cmd: str,
     mode: int = os.F_OK | os.X_OK,
@@ -3118,6 +3225,10 @@ class _HoldingServer:
 
     def session_start(self, body: SessionStart) -> SessionStartResponse:
         return SessionStartResponse(id=self.session, seq=0, actor=body.actor)
+
+    def post(self, path: str, *, body: object = None) -> dict[str, str]:
+        del path, body
+        return {}
 
     def session_end(
         self,

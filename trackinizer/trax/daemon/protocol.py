@@ -53,7 +53,8 @@ developer's Mac.
 # request, so the daemon resolves the INVOKING user's identity and profile
 # rather than whichever shell happened to spawn it: ``USER``/``USERNAME``
 # back ``resolve_actor``; ``TRACKINIZER_PROFILE`` and ``TRACKINIZER_URL``
-# back the connection chain in ``cli.connect``.
+# back the connection chain in ``cli.connect``; ``TRAX_WORKSPACE`` and its
+# ``LC_`` twin back ``trax workspace`` with no id.
 #
 # The XDG variables are deliberately ABSENT; these should only be accessed
 # through userdirs.py.
@@ -62,6 +63,8 @@ FORWARDED_ENV: Final[tuple[str, ...]] = (
     "USERNAME",
     "TRACKINIZER_PROFILE",
     "TRACKINIZER_URL",
+    "TRAX_WORKSPACE",
+    "LC_TRAX_WORKSPACE",
 )
 
 KEY_ENV: Final = "TRACKINIZER_TOKEN"

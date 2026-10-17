@@ -39,6 +39,7 @@ from trackinizer.server.visuals.partners import (
     attach_partner,
     live_chat_session,
     resolve_partner,
+    station_session_key_may_use,
 )
 from trackinizer.server.visuals.science_chats import (
     conversation_of_session,
@@ -437,7 +438,8 @@ async def open_latest_workspace(
         latest = vetted_sql(
             _SELECT_STATION,
             "WHERE user_id = $1 AND coalesce((station->>'hidden')::boolean, FALSE) "
-            "= FALSE ORDER BY modified_at DESC, id DESC LIMIT 1",
+            "= FALSE AND NOT station ? 'session_id' "
+            "ORDER BY modified_at DESC, id DESC LIMIT 1",
         )
         row = await conn.fetchrow(latest, user_id)
         if row is None:
@@ -509,6 +511,50 @@ async def new_workspace(
             inbound=inbound,
             assistant=assistant,
         )
+
+
+async def new_session_station(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    name: str,
+    catalog: VisualCatalogBody,
+    workstream_id: uuid.UUID,
+    session_id: uuid.UUID,
+) -> uuid.UUID:
+    """Make a station for a placed session, named ``name`` or the first free variant.
+
+    Args:
+      conn: A database connection, inside the caller's transaction.
+      user_id: Owner of the new station.
+      name: The wanted name, such as the session's actor and CLI.
+      catalog: Trusted visual definitions and the initial selection.
+      workstream_id: The workstream the station sits in.
+      session_id: The session the station is made for.
+
+    Returns:
+      workspace_id: The new station.
+
+    """
+    for _ in range(_NAME_ATTEMPTS):
+        names = await conn.fetch(
+            "SELECT station->>'name' AS name FROM visual_workspaces WHERE user_id = $1",
+            user_id,
+        )
+        row = await _insert_station(
+            conn,
+            user_id=user_id,
+            name=_unique_station_name(
+                name,
+                names=(from_plain(each["name"], str) for each in names),
+            ),
+            data=initial_data(catalog),
+            workstream_id=workstream_id,
+            session_id=session_id,
+        )
+        if row is not None:
+            return cast(uuid.UUID, row["id"])
+    raise RuntimeError("no free station name")
 
 
 async def clear_chat_station(
@@ -1417,6 +1463,8 @@ async def apply_workspace_operation(
                         "layout": current.layout,
                         "hidden": current.hidden,
                         "pinned": current.pinned,
+                        "workstream_id": current.workstream_id,
+                        "session_id": current.session_id,
                     },
                 ).model_copy(update={"partner_choice": current.partner_choice})
             )
@@ -1539,6 +1587,7 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
         pinned=station.pinned,
         workstream_id=station.workstream_id,
         suggestion=station.suggestion,
+        session_id=station.session_id,
         visuals=data.visuals,
         focused_instance=data.focused_instance,
         agent_instructions=data.agent_instructions,
@@ -1558,6 +1607,7 @@ async def _insert_station(
     layout: StationLayout | None = None,
     clear_key: uuid.UUID | None = None,
     workstream_id: uuid.UUID | None = None,
+    session_id: uuid.UUID | None = None,
 ) -> Record | None:
     """Insert a station, or return None when its name or chat is taken."""
     station = StationData(
@@ -1566,6 +1616,7 @@ async def _insert_station(
         page=page,
         layout=layout,
         workstream_id=workstream_id,
+        session_id=session_id,
         clear_key=clear_key,
     )
     return await conn.fetchrow(
@@ -1846,6 +1897,11 @@ async def _workspace_for_principal(
         partner=partner,
         conversation_id=state.conversation_id,
         api_key_id=agent_api_key_id,
+    ) or await station_session_key_may_use(
+        conn,
+        owner_id=owner_id,
+        workspace_id=workspace_id,
+        api_key_id=agent_api_key_id,
     ):
         return state, owner_id
     if owner_id == user_id:
@@ -1956,6 +2012,7 @@ async def _write_data(
         pinned=current.pinned,
         workstream_id=current.workstream_id,
         suggestion=current.suggestion,
+        session_id=current.session_id,
         visuals=data.visuals,
         focused_instance=data.focused_instance,
         agent_instructions=data.agent_instructions,

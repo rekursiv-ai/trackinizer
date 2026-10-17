@@ -326,6 +326,25 @@ test("the chat menu hides the panel without hiding its station", () => {
   setChatHidden(false);
 });
 
+test("the info pop-over names the session a station was made for, with its state and a link", async () => {
+  stubFetch(async (request) => new URL(request.url).pathname === "/api/inquiries/s-made"
+    ? Response.json({ id: "s-made", kind: "AgentSession", cli: "claude", owner: "Agent", ended: null }) : Response.json({}));
+  shell({ ...workspace, session_id: "s-made" });
+  openMore();
+  fireEvent.click(screen.getByRole("button", { name: "Info" }));
+  const dialog = screen.getByRole("dialog", { name: "Chat info" });
+  await within(dialog).findByText("claude as Agent");
+  expect(within(dialog).getByRole("link", { name: "claude as Agent" }).getAttribute("href")).toBe("#/lookup/s-made");
+  expect(dialog.textContent).toContain("· live");
+});
+
+test("the info pop-over says nothing of a session for a station that was not made for one", () => {
+  shell();
+  openMore();
+  fireEvent.click(screen.getByRole("button", { name: "Info" }));
+  expect(screen.getByRole("dialog", { name: "Chat info" }).textContent).not.toContain("Made for");
+});
+
 test("a button in the header moves Chat to the other side, and says which way", () => {
   setChatSide("left");
   shell();

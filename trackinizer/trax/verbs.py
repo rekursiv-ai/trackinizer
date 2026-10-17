@@ -21,7 +21,7 @@ from treekle import MutablePlainTree, from_plain, json_loads
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import render
 from trackinizer.trax.commands import Command, HelpPage
-from trackinizer.trax.context import cwd, env
+from trackinizer.trax.context import cwd, env, workspace_from_env
 from trackinizer.trax.grammar import (
     COST_FIELDS,
     EDGE_ALIASES,
@@ -2859,7 +2859,7 @@ class Workspace(Command):
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(prog="trax workspace", description=cls.__doc__)
-        parser.add_argument("workspace_id")
+        parser.add_argument("workspace_id", nargs="?")
         parser.add_argument(
             "action",
             nargs="?",
@@ -2884,8 +2884,8 @@ class Workspace(Command):
         client_factory: Callable[[], Client],
     ) -> None:
         del verb
-        flags = cast(_WorkspaceArgs, args)
-        workspace_id = _workspace_uuid(flags.workspace_id, "workspace")
+        flags = _with_default_workspace(cast(_WorkspaceArgs, args))
+        workspace_id = _workspace_uuid(flags.workspace_id or "", "workspace")
         client = client_factory()
         if flags.action is None:
             record = flags.record or ""
@@ -3113,12 +3113,48 @@ _WORKSPACE_ACTIONS: Final = ("show", "navigate", "highlight", "hide", "focus", "
 
 
 class _WorkspaceArgs(Protocol):
-    workspace_id: str
+    workspace_id: str | None
     action: str | None
     subject: list[str]
     record: str | None
     placement: str | None
     param: list[str]
+
+
+# ``trax workspace show trax.subgraph`` parses ``show`` as the id; when that is not a
+# UUID and ``$TRAX_WORKSPACE`` (or ``$LC_TRAX_WORKSPACE``) names a station, the words
+# shift right by one and the station is the id.
+def _with_default_workspace(args: _WorkspaceArgs) -> _WorkspaceArgs:
+    """Fill in the id a `trax run` session was placed on when the command names none."""
+    named = args.workspace_id
+    if named is not None:
+        try:
+            _ = uuid.UUID(named)
+        except ValueError:
+            pass
+        else:
+            return args
+    station = workspace_from_env(
+        {
+            name: value
+            for name in ("TRAX_WORKSPACE", "LC_TRAX_WORKSPACE")
+            if (value := env(name)) is not None
+        },
+    )
+    if station is None:
+        if named is None:
+            raise ClientError(
+                "no workspace: give its UUID, or run inside a `trax run` session "
+                "placed on a station ($TRAX_WORKSPACE)",
+            )
+        return args
+    if named is not None:
+        args.action, args.subject = (
+            named,
+            [word for word in (args.action, *args.subject) if word is not None],
+        )
+    args.workspace_id = str(station)
+    return args
 
 
 # The leading ``@`` is optional; a single ``:`` separates an optional room.

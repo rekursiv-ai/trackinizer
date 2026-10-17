@@ -4,6 +4,7 @@ import { ApiError } from "../api/client";
 import { createStation as createStationInWorkstream, createWorkstream, listWorkstreams, moveStation, type Workstream } from "../api/workstreams";
 import { hideStation as setStationHidden, listStations, pinStation, type StationSummary } from "../api/stations";
 import type { ChatHead } from "../api/chats";
+import { getInquiry } from "../api/inquiries";
 import type { WorkspaceState } from "../api/workspaces";
 import { hideStation, nameStation, openStation, STATIONS_KEY } from "../stations/actions";
 import { showStation } from "../stations/useStation";
@@ -40,6 +41,12 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
   const stations = useQuery({ queryKey: STATIONS_KEY, queryFn: ({ signal }) => listStations({ signal }), enabled: nameOpen, staleTime: 2_000 });
   const workstreams = useQuery({ queryKey: ["workstreams"], queryFn: ({ signal }) => listWorkstreams({}, { signal }),
     enabled: workstreamOpen || workspace?.suggestion != null, staleTime: 2_000 });
+  const madeFor = workspace?.session_id ?? null;
+  const madeForSession = useQuery({ queryKey: ["inquiry", madeFor], queryFn: ({ signal }) => getInquiry(madeFor ?? "", { signal }),
+    enabled: infoOpen && madeFor !== null, staleTime: 5_000 });
+  const made = madeForSession.data;
+  const madeCli = typeof made?.cli === "string" ? made.cli : "session";
+  const madeActor = typeof made?.owner === "string" ? ` as ${made.owner}` : "";
   const rows = stations.data ?? [];
   const groups = workstreams.data ?? [];
   const currentGroup = groups.find((each) => each.id === workspace?.workstream_id)
@@ -245,6 +252,8 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
         <span>Chat ID: {workspace?.id ?? "—"}</span>
         <span>Conversation: {head?.conversation_id ?? "—"}</span>
         <span>Session: {head?.session_id ?? "—"}</span>
+        {madeFor !== null && <span>Made for: <a href={`#/lookup/${madeFor}`}>{`${madeCli}${madeActor}`}</a>
+          {made ? (made.ended ? " · ended" : " · live") : ""}</span>}
       </div>}
     </div>
   </header>;

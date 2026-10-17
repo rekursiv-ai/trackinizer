@@ -57,14 +57,18 @@ __all__ = [
     "FEED_FACETS_PATH",
     "FEED_HISTOGRAM_PATH",
     "FEED_PATH",
+    "GIT_LABEL_PREFIX",
     "SEND_MESSAGE_PATH",
     "SESSION_API_PATHS",
     "SESSION_AUDIENCE_PATH",
     "SESSION_END_PATH",
     "SESSION_INBOUND_PATH",
     "SESSION_PARTS_PATH",
+    "SESSION_PLACE_PATH",
     "SESSION_RECORDS_PATH",
     "SESSION_START_PATH",
+    "SESSION_WORKSTREAM_PATH",
+    "STATION_LABEL_PREFIX",
     "VERSION_PATH",
     "ConsoleRelay",
     "ConsoleRelayReceipt",
@@ -80,15 +84,19 @@ __all__ = [
     "FeedResponse",
     "FeedRoomFacet",
     "FeedWhose",
+    "GitRef",
     "InboundDrainItem",
     "InboundEnqueueRequest",
     "InboundEnqueueResponse",
+    "MoveSession",
+    "PlaceSession",
     "SendMessage",
     "SendMessageResponse",
     "SessionAudienceChange",
     "SessionAudienceResponse",
     "SessionEnd",
     "SessionEndResponse",
+    "SessionPlacement",
     "SessionStart",
     "SessionStartResponse",
     "WorkspaceMessageContext",
@@ -96,6 +104,7 @@ __all__ = [
     "WorkspaceVisibleVisual",
     "campaign_asker_label",
     "session_audience_path",
+    "session_place_path",
 ]
 
 
@@ -206,6 +215,51 @@ class SessionStartResponse(BaseModel):
     audience: str | None = None
     """Who reads the session's transcript, as the server holds it; ``None`` from a
     server that predates the field."""
+
+
+STATION_LABEL_PREFIX: Final = "station:"
+"""A placed session's label naming its station: ``station:<workspace uuid>``."""
+
+GIT_LABEL_PREFIX: Final = "git:"
+"""A placed session's label naming its checkout: ``git:<origin url>@<branch>``."""
+
+
+class GitRef(BaseModel):
+    """Where a run's checkout stands: its origin URL and branch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    origin: str = Field(min_length=1, max_length=500)
+    """The ``origin`` remote URL. The server strips any credentials from it."""
+
+    branch: str = Field(min_length=1, max_length=255)
+
+
+class PlaceSession(BaseModel):
+    """Ask the server to place a session in a workstream and a station."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace: uuid.UUID | None = None
+    """The station the run was started from (``TRAX_WORKSPACE``), if any."""
+
+    git: GitRef | None = None
+    """The run's checkout, when it is on a branch of a git work tree."""
+
+
+class SessionPlacement(BaseModel):
+    """Where a session was placed; both ids are ``None`` for a session not placed."""
+
+    workstream_id: uuid.UUID | None = None
+    workspace_id: uuid.UUID | None = None
+
+
+class MoveSession(BaseModel):
+    """The workstream a session is moved to."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workstream_id: uuid.UUID
 
 
 class FeedEvent(BaseModel):
@@ -652,6 +706,8 @@ SESSION_PARTS_PATH: Final = "/api/sessions/{session_id}/parts"
 SESSION_END_PATH: Final = "/api/sessions/{session_id}/end"
 SESSION_AUDIENCE_PATH: Final = "/api/sessions/{session_id}/audience"
 SESSION_INBOUND_PATH: Final = "/api/sessions/{session_id}/inbound"
+SESSION_PLACE_PATH: Final = "/api/sessions/{session_id}/place"
+SESSION_WORKSTREAM_PATH: Final = "/api/sessions/{session_id}/workstream"
 SEND_MESSAGE_PATH: Final = "/api/messages"
 VERSION_PATH: Final = "/api/version"
 FEED_PATH: Final = "/api/web/feed"
@@ -672,6 +728,8 @@ SESSION_API_PATHS: tuple[str, ...] = (
     SESSION_END_PATH,
     SESSION_AUDIENCE_PATH,
     SESSION_INBOUND_PATH,
+    SESSION_PLACE_PATH,
+    SESSION_WORKSTREAM_PATH,
     SEND_MESSAGE_PATH,
     VERSION_PATH,
     FEED_PATH,
@@ -688,6 +746,11 @@ def session_records_path(session_id: uuid.UUID) -> str:
 def session_end_path(session_id: uuid.UUID) -> str:
     """Return the end path for one session."""
     return SESSION_END_PATH.format(session_id=session_id)
+
+
+def session_place_path(session_id: uuid.UUID) -> str:
+    """Return the path that places one session in a workstream and station."""
+    return SESSION_PLACE_PATH.format(session_id=session_id)
 
 
 def session_audience_path(session_id: uuid.UUID) -> str:

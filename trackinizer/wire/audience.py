@@ -53,6 +53,10 @@ SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         ("POST", "/api/sessions/{session_id}/end"),
         ("POST", "/api/sessions/{session_id}/inbound"),
         ("GET", "/api/sessions/{session_id}/inbound"),
+        # Placement reads and writes a session's envelope alone (its labels and one
+        # edge), never its transcript, and only for the session's own account.
+        ("POST", "/api/sessions/{session_id}/place"),
+        ("PUT", "/api/sessions/{session_id}/workstream"),
         # A science chat's answer in writing, held in memory: a read takes the
         # records' read test, and again after it was held; a put or a delete is
         # taken only from the assistant's key that opened the chat.

@@ -815,7 +815,8 @@ _STATION: Final = uuid.UUID("22222222-2222-2222-2222-222222222222")
 _LATEST: Final = (
     "SELECT id, revision, state, station FROM visual_workspaces "
     "WHERE user_id = $1 AND coalesce((station->>'hidden')::boolean, FALSE) "
-    "= FALSE ORDER BY modified_at DESC, id DESC LIMIT 1"
+    "= FALSE AND NOT station ? 'session_id' "
+    "ORDER BY modified_at DESC, id DESC LIMIT 1"
 )
 _ROW: Final[dict[str, object]] = {
     "id": _STATION,

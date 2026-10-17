@@ -23,6 +23,7 @@ from trackinizer.wire.wire_science_chat import (
     SCIENCE_CHAT_LABEL,
     chat_session_id,
 )
+from trackinizer.wire.wire_sessions import STATION_LABEL_PREFIX
 
 
 if TYPE_CHECKING:
@@ -360,6 +361,44 @@ async def assistant_key_may_use(
             SCIENCE_CHAT_LABEL,
             POSTER_LABEL_PREFIX,
             chat_session_id(conversation_id),
+        ),
+    )
+
+
+async def station_session_key_may_use(
+    conn: Conn,
+    *,
+    owner_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+) -> bool:
+    """Say whether a key opened a live session placed on a station of its own user.
+
+    A ``trax run`` session is labelled ``station:<id>`` when it is placed. The label
+    is the session's own claim, so the key must also belong to the station's owner:
+    a label naming another user's station gives its key nothing.
+
+    Args:
+      conn: Connection the answer must be consistent with.
+      owner_id: The station's owner.
+      workspace_id: The station.
+      api_key_id: The calling key.
+
+    Returns:
+      allowed: Whether the key may read and operate the station.
+
+    """
+    return bool(
+        await conn.fetchval(
+            "SELECT 1 FROM inquiries AS sess JOIN api_keys AS credential "
+            "ON credential.id = sess.agentsession_opened_by_api_key_id "
+            "WHERE sess.kind = 'AgentSession' AND sess.status = 'active' "
+            "AND sess.agentsession_ended IS NULL AND credential.revoked_at IS NULL "
+            "AND credential.id = $1 AND credential.user_id = $2 "
+            "AND $3 = ANY(sess.labels) LIMIT 1",
+            api_key_id,
+            owner_id,
+            f"{STATION_LABEL_PREFIX}{workspace_id}",
         ),
     )
 

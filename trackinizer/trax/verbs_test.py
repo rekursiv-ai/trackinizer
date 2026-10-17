@@ -3727,6 +3727,65 @@ def test_workspace_with_no_action_reads_and_renders_the_canvas(
     assert f"workspace {client.workspace} revision 8" in capsys.readouterr().out
 
 
+def _bare(client: _CanvasClient, *arguments: str) -> None:
+    """Run `trax workspace` with no id."""
+    cli.parse_and_run(
+        ["workspace", *arguments],
+        client_factory=lambda: cast(Client, client),
+    )
+
+
+def test_workspace_with_no_id_uses_the_station_the_session_was_placed_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _CanvasClient()
+    monkeypatch.setenv("TRAX_WORKSPACE", str(client.workspace))
+    instance = uuid.uuid4()
+
+    _bare(client)
+    _bare(client, "show", "trax.subgraph", "--record", str(uuid.uuid4()))
+    _bare(client, "place", str(instance), "left")
+
+    assert client.reads[0] == f"/api/workspaces/{client.workspace}"
+    shown, placed = client.operations
+    assert shown["kind"] == "show"
+    assert shown["visual_type"] == "trax.subgraph"
+    assert (placed["kind"], placed["instance_id"]) == ("place", str(instance))
+
+
+def test_workspace_with_no_id_reads_the_ssh_forwarded_station(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _CanvasClient()
+    monkeypatch.delenv("TRAX_WORKSPACE", raising=False)
+    monkeypatch.setenv("LC_TRAX_WORKSPACE", str(client.workspace))
+
+    _bare(client)
+
+    assert client.reads[0] == f"/api/workspaces/{client.workspace}"
+
+
+def test_workspace_with_no_id_and_no_station_says_what_to_give(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRAX_WORKSPACE", raising=False)
+    monkeypatch.delenv("LC_TRAX_WORKSPACE", raising=False)
+
+    with pytest.raises(ClientError, match=r"no workspace"):
+        _bare(_CanvasClient())
+
+
+def test_an_explicit_workspace_id_wins_over_the_placed_station(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _CanvasClient()
+    monkeypatch.setenv("TRAX_WORKSPACE", str(uuid.uuid4()))
+
+    _workspace(client)
+
+    assert client.reads == [f"/api/workspaces/{client.workspace}"]
+
+
 def test_workspace_show_sends_one_operation_through_the_clients_one_path(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

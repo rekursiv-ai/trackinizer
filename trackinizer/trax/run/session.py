@@ -59,6 +59,7 @@ from trackinizer.trax.run.adapters.custom_types import Adapter, StreamAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter, LineCapture
 from trackinizer.trax.run.inbound import render_inbound
+from trackinizer.trax.run.placement import place_run, placement_env
 from trackinizer.trax.run.redact import Redactor, redactor_from_environ
 from trackinizer.trax.run.sink import (
     FileSink,
@@ -833,6 +834,18 @@ def _spawn_and_drain(
             deadline=time.monotonic() + _JOIN_DEADLINE_SEC,
         )
         raise
+    # Placed before the fork, like the routing name, so the child's env holds its
+    # workstream and station from the start. A failure leaves it unplaced.
+    placement = (
+        place_run(
+            config.client,
+            session_id=sink.session_id,
+            environ=os.environ,
+            cwd=Path.cwd(),
+        )
+        if config.syncing and config.client is not None and sink.session_id is not None
+        else None
+    )
     # Run the CLI on a PTY we own rather than letting it inherit the terminal:
     # owning the master fd is what lets the server splice messages into the
     # live session (the human still drives the native TUI). Byte-transparent,
@@ -853,8 +866,10 @@ def _spawn_and_drain(
     banner_reader = owner if adapter.name == "codex" else None
     relay = ThreadedRelay(
         argv,
-        env=_routing_env(config, granted_actor=granted_actor),
-        drop_env=adapter.parent_session_env | {"TRAX_ACTOR", "TRAX_ROOMS"},
+        env=_routing_env(config, granted_actor=granted_actor)
+        | placement_env(placement),
+        drop_env=adapter.parent_session_env
+        | {"TRAX_ACTOR", "TRAX_ROOMS", "TRAX_WORKSTREAM", "TRAX_WORKSPACE"},
         host=config.host,
         on_input=detector.feed,
         on_output=(

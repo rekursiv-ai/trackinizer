@@ -32,6 +32,7 @@ from trackinizer.server.chat_hub import (
 )
 from trackinizer.server.notify import iter_changed_ids
 from trackinizer.server.visuals.science_chats import read_head
+from trackinizer.server.visuals.session_placement import move_station_sessions
 from trackinizer.server.visuals.workspace_store import (
     ReplayConflictError,
     RevisionConflictError,
@@ -436,6 +437,14 @@ async def set_station_workstream_route(
     )
     if state is None:
         raise HTTPException(status_code=404, detail="Workspace or workstream not found")
+    await move_station_sessions(
+        engine_of(request),
+        store=get_store(request),
+        workspace_id=workspace_id,
+        email=identity.email,
+        api_key_id=identity.api_key_id,
+        workstream_id=body.workstream_id,
+    )
     return state
 
 

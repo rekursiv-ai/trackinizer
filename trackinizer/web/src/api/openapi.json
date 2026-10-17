@@ -4147,6 +4147,30 @@
         "title": "FocusVisual",
         "type": "object"
       },
+      "GitRef": {
+        "additionalProperties": false,
+        "description": "Where a run's checkout stands: its origin URL and branch.",
+        "properties": {
+          "branch": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Branch",
+            "type": "string"
+          },
+          "origin": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Origin",
+            "type": "string"
+          }
+        },
+        "required": [
+          "origin",
+          "branch"
+        ],
+        "title": "GitRef",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -5198,6 +5222,22 @@
         "title": "MetricWriteResponse",
         "type": "object"
       },
+      "MoveSession": {
+        "additionalProperties": false,
+        "description": "The workstream a session is moved to.",
+        "properties": {
+          "workstream_id": {
+            "format": "uuid",
+            "title": "Workstream Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workstream_id"
+        ],
+        "title": "MoveSession",
+        "type": "object"
+      },
       "MutableJSON": {
         "additionalProperties": {
           "$ref": "#/components/schemas/MutableJSONValue-Output"
@@ -5516,6 +5556,36 @@
           "type"
         ],
         "title": "Person",
+        "type": "object"
+      },
+      "PlaceSession": {
+        "additionalProperties": false,
+        "description": "Ask the server to place a session in a workstream and a station.",
+        "properties": {
+          "git": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GitRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace"
+          }
+        },
+        "title": "PlaceSession",
         "type": "object"
       },
       "PlaceVisual": {
@@ -6752,6 +6822,37 @@
           "id"
         ],
         "title": "SessionEndResponse",
+        "type": "object"
+      },
+      "SessionPlacement": {
+        "description": "Where a session was placed; both ids are ``None`` for a session not placed.",
+        "properties": {
+          "workspace_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Id"
+          },
+          "workstream_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workstream Id"
+          }
+        },
+        "title": "SessionPlacement",
         "type": "object"
       },
       "SessionStart": {
@@ -10461,6 +10562,18 @@
             "minimum": 0.0,
             "title": "Revision",
             "type": "integer"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
           },
           "suggestion": {
             "anyOf": [
@@ -19183,6 +19296,57 @@
         "summary": "Read Session Parts Route"
       }
     },
+    "/api/sessions/{session_id}/place": {
+      "post": {
+        "description": "Place a session in the caller's workstream and a station; the server decides.\n\nThe first rule that matches wins: the station the run started from, when it is the\ncaller's; the placement the session already has; the workstream of the caller's\nnewest earlier session on the same git branch, in a new station; else the caller's\nScratch, in a new station. Placing a placed session returns its placement. A\nservice account's session, a science chat and a ``trax helper`` are not placed:\nboth ids are null.\n\nArgs:\n  session_id: The session, which the caller's own key opened.\n  body: The station the run started from, and its git checkout.\n  request: Request carrying the database engine and store.\n  identity: The session's own account and key.\n\nReturns:\n  placement: The workstream and station of the session.",
+        "operationId": "place_session_route_api_sessions__session_id__place_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaceSession"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionPlacement"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Place Session Route"
+      }
+    },
     "/api/sessions/{session_id}/records": {
       "get": {
         "description": "Read one page of a part's records.\n\n``after_idx`` is an EXCLUSIVE lower bound rather than an offset, so paging\nis stable while a capture is still appending: an offset would re-window\nevery time the part grew.\n\n``plaintext_only`` skips the ciphertext splice, which is what a viewer\nwants -- only a replay needs the encrypted half, and it is the largest\nthing on the row.\n\nArgs:\n  session_id: AgentSession ID to read from.\n  request: FastAPI request (carries auth and store).\n  identity: Authenticated reader.\n  part: Which file, as ``GET .../parts`` numbers it; ``-1`` holds turns\n    backfilled from the retired event log.\n  after_idx: Exclusive lower bound on idx (cursor-based paging).\n  limit: Max rows per page.\n  plaintext_only: Omit ciphertext.\n  asker: The account the configured assistant reads for.\n  chat: The conversation the configured assistant reads into.\n\nReturns:\n  result: ReadRecordsResponse with matching records.",
@@ -19428,6 +19592,50 @@
           }
         },
         "summary": "Read Recent Session Turns Route"
+      }
+    },
+    "/api/sessions/{session_id}/workstream": {
+      "put": {
+        "description": "Move a session to one of the caller's workstreams.\n\nThe station made for the session moves with it when no other session sits on it.\n\nArgs:\n  session_id: The session, which the caller owns.\n  body: The destination workstream Issue.\n  request: Request carrying the database engine and store.\n  identity: The session's account, as a browser or as its own key.",
+        "operationId": "move_session_route_api_sessions__session_id__workstream_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveSession"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move Session Route"
       }
     },
     "/api/variables": {

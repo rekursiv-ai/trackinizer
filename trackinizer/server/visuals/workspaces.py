@@ -326,6 +326,11 @@ class StationData(BaseModel):
     pinned: bool = False
     workstream_id: uuid.UUID | None = None
     suggestion: WorkstreamSuggestion | None = None
+    session_id: uuid.UUID | None = None
+    """The session this station was made for (``trax run`` placement), if any. A
+    station holds many sessions, each labelled ``station:<id>``; this one only names
+    why the station exists and never changes who Chat talks to."""
+
     clear_key: uuid.UUID | None = None
     """Internal idempotency key for a cleared station; not exposed in workspace state."""
 
@@ -370,6 +375,8 @@ class WorkspaceState(WorkspaceData):
     pinned: bool = False
     workstream_id: uuid.UUID | None = None
     suggestion: WorkstreamSuggestion | None = None
+    session_id: uuid.UUID | None = None
+    """The session the station was made for, if it was made for one."""
 
     assistant: str | None = None
     """The configured assistant's actor, or None when the server has none."""

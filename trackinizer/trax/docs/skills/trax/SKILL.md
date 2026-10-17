@@ -349,6 +349,11 @@ anchor row, and each row's `app.<app>` holds what the app knows about it
 (`trax experiment 12 app to '{"myapp": {...}}'`). To change what an app's visual
 shows inside, write its rows; the visual redraws on its next read.
 
+In a `trax run` session your canvas is `$TRAX_WORKSPACE` (your workstream is
+`$TRAX_WORKSTREAM`): show your work there, and leave the id off:
+`trax workspace show trax.subgraph --record RECORD_UUID`. Unset means the
+session was not placed; use a paired chat message's `workspace_id` instead.
+
 When a paired chat message includes a `workspace_id`, use that ID to inspect or
 change the user's canvas. The agent's trax profile must point at the same server
 as the browser workspace, and the session using its API key must be paired to
