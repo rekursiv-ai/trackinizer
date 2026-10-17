@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, cast
 from unittest.mock import AsyncMock, _Call
@@ -582,6 +583,7 @@ class TestSettersForwardToThePipeline:
             (target_id, value, api_key_id, "alice", ""),
             (target_id, value, api_key_id, "alice", "why"),
         ]
+        assert all(call.reembed == () for call in spy.calls)
         column = spy.calls[0].column
         assert storage_name(route.column, COLUMN_SPECS[column]) == column
 
@@ -643,6 +645,7 @@ class _SetFieldCall:
     api_key_id: UUID | None
     actor: str
     reason: str
+    reembed: Sequence[tuple[str, list[float]]]
 
 
 @dataclass(slots=True, kw_only=True)
@@ -661,6 +664,7 @@ class _SetFieldSpy:
         api_key_id: UUID | None,
         actor: str,
         reason: str = "",
+        reembed: Sequence[tuple[str, list[float]]] = (),
     ) -> UUID:
         """Record the call and return the spy's change id."""
         self.calls.append(
@@ -671,6 +675,7 @@ class _SetFieldSpy:
                 api_key_id=api_key_id,
                 actor=actor,
                 reason=reason,
+                reembed=reembed,
             ),
         )
         return self.change_id
