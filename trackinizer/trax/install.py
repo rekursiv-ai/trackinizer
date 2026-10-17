@@ -9,17 +9,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal, TypedDict
+from typing import Final, Literal, TypedDict, cast
 
+import ctypes
 import errno
 import hashlib
 import json
+import os
+import platform
 import shutil
 import stat
 import tempfile
 
 from treekle import json_loads, to_plain
 
+
+_CWD: Final = Path(__file__).resolve().parent
 
 __all__ = [
     "TARGETS",
@@ -86,11 +91,14 @@ TARGETS: Final[dict[str, Target]] = {
 def bundled_skills() -> Path:
     """Return the packaged skills root, requiring its router and manuals.
 
+    Returns:
+      root: Directory containing the router and per-kind skill guidance.
+
     Raises:
       InstallError: Required package resources are missing or unreadable.
 
     """
-    docs = Path(__file__).resolve().parent / "docs"
+    docs = _CWD / "docs"
     root = docs / "skills"
     try:
         for resource in (
@@ -148,7 +156,7 @@ def install(
     root: Path | None = None,
     dry_run: bool = False,
 ) -> tuple[Path, int]:
-    """Install missing guidance or atomically refresh an unchanged managed copy.
+    """Install missing guidance or refresh an unchanged managed copy.
 
     Args:
       target: Agent directory convention.
@@ -189,6 +197,8 @@ def install(
             destination=destination,
             expected=expected,
             parents=parents,
+            receipt=receipt,
+            boundary=boundary,
         )
     except (OSError, InstallError) as error:
         try:
@@ -231,10 +241,10 @@ def uninstall(
         _require_owned(check)
         if check.status in {"missing", "source"}:
             return None
-        assert receipt is not None
+        assert isinstance(receipt, dict)
         if dry_run:
             return destination
-        shutil.rmtree(destination)
+        _remove_tree(destination, receipt=receipt, boundary=boundary)
     except OSError as error:
         raise InstallError(f"could not remove {destination}: {error}") from error
     try:
@@ -260,7 +270,7 @@ def _destination(target: Target, *, project: bool, root: Path) -> Path:
 def _location(target: Target, *, project: bool, root: Path) -> tuple[Path, Path]:
     destination = _destination(target, project=project, root=root) / "trax"
     convention = target.project if project else target.user
-    assert convention is not None
+    assert isinstance(convention, str)
     return destination, destination.parents[len(Path(convention).parts)]
 
 
@@ -297,6 +307,7 @@ def _inspect(
         except (FileNotFoundError, NotADirectoryError):
             source = False
         if source:
+            (destination / "SKILL.md").read_bytes()
             return SkillCheck(
                 destination=destination,
                 status="source",
@@ -325,8 +336,13 @@ def _inspect(
     ), receipt
 
 
-def _read_receipt(destination: Path, *, boundary: Path) -> _Receipt | None:
-    path = destination / ".trax-install.json"
+def _read_receipt(
+    destination: Path,
+    *,
+    boundary: Path,
+    root: Path | None = None,
+) -> _Receipt | None:
+    path = (root or destination) / ".trax-install.json"
     try:
         if not stat.S_ISREG(path.lstat().st_mode):
             return None
@@ -438,6 +454,8 @@ def _install_tree(
     destination: Path,
     expected: _Snapshot,
     parents: list[str],
+    receipt: _Receipt | None,
+    boundary: Path,
 ) -> None:
     staging = Path(tempfile.mkdtemp(prefix=".trax-", dir=destination.parent))
     replacement = staging / "replacement"
@@ -448,7 +466,7 @@ def _install_tree(
         for name in ("grammar.lark", "GRAMMAR.md"):
             shutil.copy2(source.parent.parent / name, replacement / name)
         _verify_copy(replacement, expected=expected)
-        receipt = _Receipt(
+        replacement_receipt = _Receipt(
             owner="trackinizer.trax.install",
             version=1,
             destination=str(destination),
@@ -457,10 +475,18 @@ def _install_tree(
             created_parents=parents,
         )
         (replacement / ".trax-install.json").write_text(
-            json.dumps(to_plain(receipt)) + "\n",
+            json.dumps(to_plain(replacement_receipt)) + "\n",
         )
+        _quarantine(destination, previous=previous, receipt=receipt, boundary=boundary)
         _publish(replacement, destination=destination, previous=previous)
         published = True
+        if receipt is not None:
+            _verify_previous(
+                previous,
+                destination=destination,
+                receipt=receipt,
+                boundary=boundary,
+            )
         shutil.rmtree(staging)
     except (OSError, InstallError) as error:
         if published:
@@ -486,24 +512,126 @@ def _verify_copy(replacement: Path, *, expected: _Snapshot) -> None:
 
 def _publish(replacement: Path, *, destination: Path, previous: Path) -> None:
     if _exists(destination):
-        destination.rename(previous)
+        error = InstallError(f"destination changed while installing at {destination}")
+        _restore(previous, destination=destination, failure=error)
+        raise error
     try:
-        replacement.rename(destination)
-    except OSError as error:
+        _rename_noreplace(replacement, target=destination)
+    except (OSError, InstallError) as error:
         _restore(previous, destination=destination, failure=error)
         raise
 
 
-def _restore(previous: Path, *, destination: Path, failure: OSError) -> None:
+def _restore(
+    previous: Path,
+    *,
+    destination: Path,
+    failure: OSError | InstallError,
+) -> None:
     if not _exists(previous):
         return
+    if _exists(destination):
+        raise InstallError(
+            f"{failure}; destination appeared at {destination}; "
+            f"previous installation retained at {previous}",
+        ) from failure
     try:
-        previous.rename(destination)
-    except OSError as error:
+        _rename_noreplace(previous, target=destination)
+    except (OSError, InstallError) as error:
         raise InstallError(
             f"could not publish {destination}: {failure}; restore failed: {error}; "
             f"previous installation retained at {previous}",
         ) from error
+
+
+def _rename_noreplace(path: Path, target: Path) -> Path:
+    """Rename without replacing any entry created concurrently at the target."""
+    system = platform.system()
+    if system == "Windows":
+        return path.rename(target)
+    try:
+        library = ctypes.CDLL(None, use_errno=True)
+        rename = library.renameatx_np if system == "Darwin" else library.renameat2
+    except AttributeError as error:
+        raise InstallError("exclusive directory rename is unavailable") from error
+    rename.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    rename.restype = ctypes.c_int
+    # AT_FDCWD differs by OS; RENAME_EXCL and RENAME_NOREPLACE prevent replacement.
+    directory_fd, flags = (-2, 4) if system == "Darwin" else (-100, 1)
+    result = cast(
+        int,
+        rename(
+            directory_fd,
+            os.fsencode(path),
+            directory_fd,
+            os.fsencode(target),
+            flags,
+        ),
+    )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), target)
+    return target
+
+
+def _quarantine(
+    destination: Path,
+    *,
+    previous: Path,
+    receipt: _Receipt | None,
+    boundary: Path,
+) -> None:
+    if receipt is None:
+        if _exists(destination):
+            raise InstallError(f"destination changed while installing at {destination}")
+        return
+    destination.rename(previous)
+    try:
+        _verify_previous(
+            previous,
+            destination=destination,
+            receipt=receipt,
+            boundary=boundary,
+        )
+    except (OSError, InstallError) as error:
+        _restore(previous, destination=destination, failure=error)
+        raise
+
+
+def _verify_previous(
+    previous: Path,
+    *,
+    destination: Path,
+    receipt: _Receipt,
+    boundary: Path,
+) -> None:
+    if (
+        not stat.S_ISDIR(previous.lstat().st_mode)
+        or _read_receipt(destination, boundary=boundary, root=previous) != receipt
+        or _snapshot(previous, installed=True)
+        != (receipt["files"], receipt["directories"])
+    ):
+        raise InstallError(f"managed skills changed during operation at {destination}")
+
+
+def _remove_tree(destination: Path, *, receipt: _Receipt, boundary: Path) -> None:
+    staging = Path(tempfile.mkdtemp(prefix=".trax-", dir=destination.parent))
+    previous = staging / "previous"
+    try:
+        _quarantine(destination, previous=previous, receipt=receipt, boundary=boundary)
+        shutil.rmtree(previous)
+    except (OSError, InstallError) as error:
+        _restore(previous, destination=destination, failure=error)
+        raise
+    finally:
+        if not _exists(previous):
+            staging.rmdir()
 
 
 def _exists(path: Path) -> bool:

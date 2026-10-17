@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -40,7 +41,7 @@ def bundle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     (source / "belief/SKILL.md").write_text("belief guidance")
     for name in ("grammar.lark", "GRAMMAR.md"):
         (package / "docs" / name).write_text(f"original {name}")
-    monkeypatch.setattr(install_module, "__file__", str(package / "install.py"))
+    monkeypatch.setattr(install_module, "_CWD", package)
     return source
 
 
@@ -194,6 +195,31 @@ def test_source_symlink_is_preserved(
     assert (bundle / "SKILL.md").read_text() == "router: belief/SKILL.md"
 
 
+def test_unreadable_source_router_is_a_controlled_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text("source guidance")
+    destination = tmp_path / ".agents/skills/trax"
+    destination.parent.mkdir(parents=True)
+    destination.symlink_to(source, target_is_directory=True)
+    read = Path.read_bytes
+
+    def unreadable(path: Path) -> bytes:
+        if path == destination / "SKILL.md":
+            raise PermissionError("source router unreadable")
+        return read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    with pytest.raises(InstallError, match="source router unreadable"):
+        install_module.check_skills(TARGETS["codex"], project=True, root=tmp_path)
+    assert destination.is_symlink()
+    assert destination.resolve() == source
+    assert (source / "SKILL.md").read_bytes() == b"source guidance"
+
+
 @pytest.mark.parametrize("kind", ["directory", "file", "broken-link", "other-link"])
 @pytest.mark.parametrize(
     "operation",
@@ -293,7 +319,11 @@ def test_publish_failure_rolls_back(
     destination, _ = install(TARGETS["claude"])
     previous = (destination / "SKILL.md").read_bytes()
     (bundle / "SKILL.md").write_text("new version")
-    monkeypatch.setattr(Path, "rename", _failing_rename(Path.rename, rollback=False))
+    monkeypatch.setattr(
+        install_module,
+        "_rename_noreplace",
+        _failing_rename(install_module._rename_noreplace, rollback=False),
+    )
     with pytest.raises(InstallError, match="publish failed"):
         install(TARGETS["claude"])
     assert (destination / "SKILL.md").read_bytes() == previous
@@ -307,7 +337,11 @@ def test_failed_rollback_retains_recoverable_backup(
     destination, _ = install(TARGETS["claude"])
     previous = (destination / "SKILL.md").read_bytes()
     (bundle / "SKILL.md").write_text("new version")
-    monkeypatch.setattr(Path, "rename", _failing_rename(Path.rename, rollback=True))
+    monkeypatch.setattr(
+        install_module,
+        "_rename_noreplace",
+        _failing_rename(install_module._rename_noreplace, rollback=True),
+    )
     with pytest.raises(InstallError, match="previous") as error:
         install(TARGETS["claude"])
     backups = list(destination.parent.glob(".trax-*/previous/SKILL.md"))
@@ -540,8 +574,147 @@ def test_parent_cleanup_error_reports_removed_install(
     assert str(destination.parent) in str(error.value)
 
 
+@pytest.mark.parametrize("operation", ["install", "uninstall"])
+@pytest.mark.parametrize("changed", ["SKILL.md", ".trax-install.json"])
+def test_edit_after_inspection_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+    bundle: Path,
+    operation: str,
+    changed: str,
+) -> None:
+    destination, _ = install(TARGETS["claude"])
+    (bundle / "SKILL.md").write_text("new package version")
+    inspect = install_module._inspect
+
+    def edit_after_inspection(path: Path, *, boundary: Path) -> object:
+        result = inspect(path, boundary=boundary)
+        (destination / changed).write_text("late local edit")
+        return result
+
+    monkeypatch.setattr(install_module, "_inspect", edit_after_inspection)
+    action = install if operation == "install" else uninstall
+    with pytest.raises(InstallError, match=r"changed|modified"):
+        action(TARGETS["claude"])
+    assert (destination / changed).read_text() == "late local edit"
+    assert sorted(path.name for path in destination.parent.iterdir()) == ["trax"]
+
+
+def test_edit_at_refresh_rename_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+    bundle: Path,
+) -> None:
+    destination, _ = install(TARGETS["claude"])
+    (bundle / "SKILL.md").write_text("new package version")
+    rename = Path.rename
+
+    def edit_before_rename(path: Path, target: Path) -> Path:
+        if path == destination:
+            (path / "SKILL.md").write_text("late local edit")
+        return rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", edit_before_rename)
+    with pytest.raises(InstallError, match=r"changed|modified"):
+        install(TARGETS["claude"])
+    assert (destination / "SKILL.md").read_text() == "late local edit"
+    assert sorted(path.name for path in destination.parent.iterdir()) == ["trax"]
+
+
+def test_edit_during_publication_retains_recoverable_backup(
+    monkeypatch: pytest.MonkeyPatch,
+    bundle: Path,
+) -> None:
+    destination, _ = install(TARGETS["claude"])
+    (bundle / "SKILL.md").write_text("new package version")
+    rename = install_module._rename_noreplace
+
+    def edit_previous(path: Path, target: Path) -> Path:
+        if path.name == "replacement":
+            (path.parent / "previous/SKILL.md").write_text("late local edit")
+        return rename(path, target)
+
+    monkeypatch.setattr(install_module, "_rename_noreplace", edit_previous)
+    with pytest.raises(InstallError, match="retained") as error:
+        install(TARGETS["claude"])
+    assert (destination / "SKILL.md").read_text() == "new package version"
+    backups = list(destination.parent.glob(".trax-*/previous/SKILL.md"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == "late local edit"
+    assert str(backups[0].parent.parent) in str(error.value)
+
+
+def test_restore_preserves_a_destination_that_appeared(
+    monkeypatch: pytest.MonkeyPatch,
+    bundle: Path,
+) -> None:
+    destination, _ = install(TARGETS["claude"])
+    previous = (destination / "SKILL.md").read_bytes()
+    (bundle / "SKILL.md").write_text("new package version")
+    rename = install_module._rename_noreplace
+
+    def create_conflict(path: Path, target: Path) -> Path:
+        return _create_conflict(path, target=target, rename=rename)
+
+    monkeypatch.setattr(install_module, "_rename_noreplace", create_conflict)
+    with pytest.raises(InstallError, match="retained") as error:
+        install(TARGETS["claude"])
+    assert destination.is_dir()
+    assert list(destination.iterdir()) == []
+    backups = list(destination.parent.glob(".trax-*/previous/SKILL.md"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == previous
+    assert str(backups[0].parent) in str(error.value)
+
+
+def test_publication_preserves_a_concurrent_empty_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    bundle: Path,
+) -> None:
+    del bundle
+    destination = fake_home / ".claude/skills/trax"
+    appeared: list[int] = []
+    monkeypatch.setattr(
+        install_module,
+        "_rename_noreplace",
+        partial(
+            _appear_before_rename,
+            rename=install_module._rename_noreplace,
+            appeared=appeared,
+        ),
+    )
+    with pytest.raises(InstallError):
+        install(TARGETS["claude"])
+    assert destination.stat().st_ino == appeared[0]
+    assert list(destination.iterdir()) == []
+
+
+def _appear_before_rename(
+    path: Path,
+    *,
+    target: Path,
+    rename: Callable[[Path, Path], Path],
+    appeared: list[int],
+) -> Path:
+    if path.name == "replacement":
+        target.mkdir()
+        appeared.append(target.stat().st_ino)
+    return rename(path, target)
+
+
 def _copy_failed(*_args: object, **_kwargs: object) -> None:
     raise OSError("copy failed")
+
+
+def _create_conflict(
+    path: Path,
+    *,
+    target: Path,
+    rename: Callable[[Path, Path], Path],
+) -> Path:
+    if path.name == "replacement":
+        target.mkdir()
+        raise OSError("publish failed")
+    return rename(path, target)
 
 
 def _failing_rename(
@@ -581,3 +754,9 @@ def _rmdir_failed(
         original(path)
 
     return remove
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.runner import test_main
+
+    test_main(__file__)

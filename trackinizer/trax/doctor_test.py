@@ -92,6 +92,91 @@ def test_fix_then_check_and_uninstall_restores_original_project(
     assert not (tmp_path / ".cursor").exists()
 
 
+def test_fix_refuses_unmanaged_skills_and_reports_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    destination = tmp_path / ".claude/skills/trax"
+    destination.mkdir(parents=True)
+    skill = destination / "SKILL.md"
+    skill.write_text("user guidance")
+    with pytest.raises(ClientError, match="doctor found setup problems"):
+        cli.parse_and_run(
+            ["doctor", "--fix", "--project", "--offline"],
+            client_factory=_unexpected_server,
+        )
+    output = capsys.readouterr().out
+    assert "skills: error:" in output
+    assert "unmanaged" in output
+    assert str(destination) in output
+    assert skill.read_text() == "user guidance"
+
+
+def test_uninstall_refuses_unmanaged_skills_and_preserves_content(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / ".claude/skills/trax"
+    destination.mkdir(parents=True)
+    skill = destination / "SKILL.md"
+    skill.write_text("user guidance")
+    with pytest.raises(ClientError, match="unmanaged") as error:
+        cli.parse_and_run(
+            ["doctor", "--uninstall", "--project"],
+            client_factory=_unexpected_server,
+        )
+    assert str(destination) in str(error.value)
+    assert skill.read_text() == "user guidance"
+
+
+@pytest.mark.parametrize(
+    ("project", "repair"),
+    [
+        (False, "repair: trax doctor --fix --target claude"),
+        (True, "repair: trax doctor --fix --target claude --project"),
+    ],
+)
+def test_missing_skills_report_the_scope_specific_repair_command(
+    *,
+    project: bool,
+    repair: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = ["doctor", "--offline"]
+    if project:
+        args.append("--project")
+    with pytest.raises(ClientError, match="doctor"):
+        cli.parse_and_run(args, client_factory=_unexpected_server)
+    lines = [line.strip() for line in capsys.readouterr().out.splitlines()]
+    assert "Skills are missing; run --fix." in lines
+    assert repair in lines
+
+
+def test_stale_skills_report_the_repair_command(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    package = tmp_path / "package"
+    source = package / "docs/skills/trax"
+    source.mkdir(parents=True)
+    for path in (
+        source / "SKILL.md",
+        package / "docs/grammar.lark",
+        package / "docs/GRAMMAR.md",
+    ):
+        path.write_text("original guidance")
+    monkeypatch.setattr("trackinizer.trax.install._CWD", package)
+    install(TARGETS["claude"], project=True, root=tmp_path)
+    (source / "SKILL.md").write_text("updated guidance")
+    with pytest.raises(ClientError, match="doctor"):
+        cli.parse_and_run(
+            ["doctor", "--project", "--offline"],
+            client_factory=_unexpected_server,
+        )
+    lines = [line.strip() for line in capsys.readouterr().out.splitlines()]
+    assert "repair: trax doctor --fix --target claude --project" in lines
+
+
 def test_fix_succeeds_locally_even_when_profile_cannot_resolve(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -214,7 +299,7 @@ def test_doctor_help_is_available_without_connection(
     suffix: list[str],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    args = ["help", "doctor"] if not suffix else ["doctor", *suffix]
+    args = ["doctor", *suffix] if suffix else ["help", "doctor"]
     cli.parse_and_run(args, client_factory=_unexpected_server)
     assert "trax doctor" in capsys.readouterr().out
 
