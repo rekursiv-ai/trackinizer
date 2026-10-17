@@ -215,6 +215,7 @@ async def list_inquiries_route(
     limit: int = DEFAULT_LIST_LIMIT,
     offset: int = 0,
     seq_range: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
+    receipt_id: Annotated[str | None, Query(min_length=1)] = None,
     filter_: Annotated[
         list[str] | None,
         Query(alias="filter", max_length=MAX_LIST_LIMIT),
@@ -257,6 +258,8 @@ async def list_inquiries_route(
       limit: Rows per kind (validated in [1, MAX_LIST_LIMIT]).
       offset: Skip this many rows in each kind's result.
       seq_range: Inclusive seq intervals; union selects rows.
+      receipt_id: Exact receipt id that must appear in an Experiment's
+        ``config.executions``; refused unless ``kind`` is Experiment only.
       filter_: JSON filter expressions; one per repeated param.
       fields: Row keys to send, one per repeated param; unset sends every key.
       ancestors: ``narrows`` adds each row's ``narrows`` ancestry; unset adds none.
@@ -272,6 +275,11 @@ async def list_inquiries_route(
         )
     if offset < 0:
         raise HTTPException(status_code=400, detail="offset must be >= 0")
+    if receipt_id is not None and set(kind) != {"Experiment"}:
+        raise HTTPException(
+            status_code=400,
+            detail="receipt_id filters Experiment listings only; pass kind=Experiment",
+        )
     # Inquiry ``seq`` starts at 1.
     seq_ranges = parse_seq_ranges(seq_range, min_seq=1)
     names = parse_fields(fields)
@@ -308,6 +316,7 @@ async def list_inquiries_route(
                     limit=limit,
                     offset=offset,
                     seq_ranges=seq_ranges,
+                    receipt_id=receipt_id,
                     filters=filters,
                     edges=edges,
                     reader=session_reader(request, identity),

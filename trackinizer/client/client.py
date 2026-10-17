@@ -378,6 +378,7 @@ class Client:
         limit: int = DEFAULT_LIST_LIMIT,
         offset: int = 0,
         seq_ranges: Sequence[SeqRange] = (),
+        receipt_id: str | None = None,
         filters: Sequence[Filter] = (),
         fields: Sequence[str] | None = None,
     ) -> list[dict[str, PlainTree]]:
@@ -389,6 +390,8 @@ class Client:
           limit: Max rows per page (capped at MAX_LIST_LIMIT by server).
           offset: Rows to skip (not stable during concurrent writes).
           seq_ranges: Sequence intervals to include (disjoint union).
+          receipt_id: Exact receipt id an Experiment's ``config.executions``
+            must contain; the server accepts it for ``kind="Experiment"`` only.
           filters: Field predicates applied before LIMIT on the server.
           fields: Row keys to send; None sends every key.
 
@@ -412,6 +415,7 @@ class Client:
                         "limit": limit,
                         "offset": offset,
                         "seq_range": [format_interval(r) for r in seq_ranges],
+                        "receipt_id": receipt_id,
                         "filter": [
                             json.dumps(
                                 {

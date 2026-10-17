@@ -9,7 +9,7 @@ A pure leaf: :meth:`get_inquiry`, :meth:`list_kind`,
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
 
 from treekle import from_plain
@@ -86,6 +86,16 @@ class Ancestor:
 _CLAIMABLE_KINDS: frozenset[str] = frozenset({"Belief", "Experiment"})
 
 
+# Exact membership of one receipt id in ``experiment_config.executions[*].receipt``.
+# Spelled as containment so ``idx_inquiries_experiment_config_gin`` serves it; the
+# operand is built from a bound ``$N`` so the id never enters the SQL text. A NULL
+# config (no executions recorded) is NULL under ``@>``, which the WHERE drops.
+_RECEIPT_CLAUSE: Final = (
+    "experiment_config @> jsonb_build_object('executions', "
+    "jsonb_build_array(jsonb_build_object('receipt', {p}::text)))"
+)
+
+
 def seq_range_clause(
     params: list[object],
     seq_ranges: Sequence[SeqRange],
@@ -159,6 +169,7 @@ class _ReadMixin(_StoreShared):
         limit: int = DEFAULT_LIST_LIMIT,
         offset: int = 0,
         seq_ranges: Sequence[SeqRange] = (),
+        receipt_id: str | None = None,
         filters: Sequence[RowFilter] = (),
         lowering: bool = True,
         edges: bool = True,
@@ -199,6 +210,10 @@ class _ReadMixin(_StoreShared):
           limit: Maximum rows to return.
           offset: Number of rows to skip (after filtering).
           seq_ranges: Disjoint intervals of row sequence numbers to match.
+          receipt_id: Keep only Experiments whose ``config.executions`` holds an
+            entry with exactly this ``receipt``. Meaningful for kind Experiment
+            alone; every other kind stores NULL ``experiment_config`` and
+            matches nothing. The route refuses it for other kinds.
           filters: Post-filter pipeline (RowFilter predicates evaluated
             in-process after SQL prefilter).
           lowering: If False, force all filters through Python evaluator
@@ -225,6 +240,9 @@ class _ReadMixin(_StoreShared):
             # sessions the caller reads. That gates the SQL a record clause lowers to
             # (``column_shapes._RECORDS_WHERE``), which names no audience.
             clauses.append(visible_sql("inquiries", params=params, reader=reader))
+        if receipt_id is not None:
+            params.append(receipt_id)
+            clauses.append(_RECEIPT_CLAUSE.format(p=f"${len(params)}"))
         # Every filter whose SQL form provably selects the same rows as the
         # Python predicate joins the prefilter, so the query keeps its LIMIT.
         # Whatever cannot lower stays in ``filters`` and forces the
