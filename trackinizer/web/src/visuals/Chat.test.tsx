@@ -398,18 +398,17 @@ test("clicking outside the chat name field saves the name", async () => {
   expect(await screen.findByRole("button", { name: "Kept name" })).toBeTruthy();
 });
 
-test("the chat title and workstream menus close each other in both directions", () => {
+test("the chat name field and workstream menu close each other in both directions", () => {
   shell();
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
-  expect(screen.getByRole("dialog", { name: "Chats" })).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Chat name" })).toBeTruthy();
 
   fireEvent.click(screen.getByRole("button", { name: "Workstream: Scratch" }));
-  expect(screen.queryByRole("dialog", { name: "Chats" })).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "Chat name" })).toBeNull();
   expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Workstream" }));
 
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
   expect(screen.queryByRole("textbox", { name: "Workstream" })).toBeNull();
-  expect(screen.getByRole("dialog", { name: "Chats" })).toBeTruthy();
   expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Chat name" }));
 });
 
@@ -435,7 +434,8 @@ test("global chat search includes hidden chats and restores one when opened", as
   vi.mocked(restoreStation).mockResolvedValue({ ...workspace, ...hidden, id: hidden.id, hidden: false });
   const { client } = shell();
   client.setQueryData(["stations"], [hidden]);
-  fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
+  fireEvent.click(screen.getByRole("button", { name: "More chat actions" }));
+  fireEvent.click(screen.getByRole("button", { name: "Find a chat…" }));
   const search = screen.getByRole("textbox", { name: "Search chats" });
   fireEvent.change(search, { target: { value: "Secret" } });
   expect(screen.getByRole("button", { name: "Secret notes · hidden" })).toBeTruthy();
@@ -454,29 +454,14 @@ test("the workstream chip moves this chat to the selected workstream", async () 
   await waitFor(() => expect(moveStation).toHaveBeenCalledWith(WORKSPACE_ID, destination.id));
 });
 
-test("the chat menu lists pinned then recent visible chats and creates in the current workstream", async () => {
-  const row = (id: string, name: string, modified_at: string, extra: { hidden?: boolean; pinned?: boolean } = {}) => ({
-    id, name, conversation_id: null, page: null, created_at: modified_at, modified_at, hidden: extra.hidden ?? false,
-    pinned: extra.pinned ?? false, workstream_id: null,
-  });
-  const scratch = { id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 };
-  const next = { ...workspace, id: "new-chat", name: "unnamed-workstream#2" };
-  vi.mocked(createStationInWorkstream).mockResolvedValue(next);
+test("the chat name opens a rename field alone; switching chats is the top bar's", async () => {
   const { client } = shell();
-  client.setQueryData(["stations"], [
-    row("current", "Current", "2026-10-01T00:00:00Z"), row("pinned", "Pinned", "2026-10-02T00:00:00Z", { pinned: true }),
-    row("recent", "Recent", "2026-10-03T00:00:00Z"), row("hidden", "Hidden", "2026-10-04T00:00:00Z", { hidden: true }),
-  ]);
-  client.setQueryData(["workstreams"], [scratch]);
+  client.setQueryData(["stations"], [{ ...workspace, created_at: "2026-10-01T00:00:00Z", modified_at: "2026-10-01T00:00:00Z" }]);
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
-  const chats = within(screen.getByRole("list", { name: "Chats in this workstream" }));
-  expect(chats.getAllByRole("button").filter((button) => button.classList.contains("station-option"))
-    .map((button) => button.textContent)).toEqual(["Pinned", "Recent", "Current"]);
-  expect(chats.getByRole("button", { name: "Pin Recent" })).toBeTruthy();
-  expect(chats.getByRole("button", { name: "Hide Recent" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "+ New chat" }));
-  await waitFor(() => expect(currentStation().id).toBe("new-chat"));
-  expect(createStationInWorkstream).toHaveBeenCalledWith("scratch");
+  expect(screen.getByRole("textbox", { name: "Chat name" })).toBeTruthy();
+  expect(screen.queryByRole("list", { name: "Chats in this workstream" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "+ New chat" })).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "Search chats" })).toBeNull();
 });
 
 test("the workstream picker creates a missing workstream and moves the chat", async () => {
@@ -494,14 +479,38 @@ test("the workstream picker creates a missing workstream and moves the chat", as
   expect(createWorkstream).toHaveBeenCalledWith("New work");
 });
 
-test("the chat pin control stays in the name picker instead of the header", async () => {
-  vi.mocked(pinStation).mockResolvedValue({ ...workspace, pinned: true });
+test("resting on the chat name drops down this workstream's chats; + makes one with its name ready", async () => {
+  const scratch = { id: "scratch", title: "Scratch", hidden: false, pinned: true, scratch: true, seq: 1 };
+  const other = { id: "other", name: "Other chat", conversation_id: null, page: null, created_at: "2026-10-02T00:00:00Z",
+    modified_at: "2026-10-02T00:00:00Z", hidden: false, pinned: false, workstream_id: "scratch" };
+  vi.mocked(listStations).mockResolvedValue([other]);
+  vi.mocked(listWorkstreams).mockResolvedValue([scratch]);
+  vi.mocked(createStationInWorkstream).mockResolvedValue({ ...workspace, id: "made", name: "unnamed-workstream#9" });
   const { client } = shell();
+  client.setQueryData(["stations"], [other]);
+  client.setQueryData(["workstreams"], [scratch]);
+  fireEvent.pointerMove(document.querySelector(".chat-name-pick")!, { pointerType: "mouse" });
+  const menu = await screen.findByRole("dialog", { name: "Chats in Scratch" });
+  expect(await within(menu).findByRole("button", { name: "Other chat" })).toBeTruthy();
+  expect(within(menu).getByRole("button", { name: workspace.name }).getAttribute("aria-current")).toBe("true");
+
+  fireEvent.click(within(menu).getByRole("button", { name: "+ New chat" }));
+  await waitFor(() => expect(createStationInWorkstream).toHaveBeenCalledWith("scratch"));
+  const name = await screen.findByRole<HTMLInputElement>("textbox", { name: "Chat name" });
+  expect(name.value).toBe("unnamed-workstream#9");
+});
+
+test("pin and hide for this chat sit in the more menu, not the header", async () => {
+  vi.mocked(pinStation).mockResolvedValue({ ...workspace, pinned: true });
+  vi.mocked(restoreStation).mockResolvedValue({ ...workspace, hidden: true });
+  shell();
   expect(screen.queryByRole("button", { name: "Pin chat" })).toBeNull();
-  client.setQueryData(["stations"], [{ ...workspace, created_at: "2026-10-01T00:00:00Z" }]);
-  fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
-  fireEvent.click(screen.getByRole("button", { name: `Pin ${workspace.name}` }));
+  fireEvent.click(screen.getByRole("button", { name: "More chat actions" }));
+  fireEvent.click(screen.getByRole("button", { name: "Pin chat" }));
   await waitFor(() => expect(pinStation).toHaveBeenCalledWith(WORKSPACE_ID, true));
+  fireEvent.click(screen.getByRole("button", { name: "More chat actions" }));
+  fireEvent.click(screen.getByRole("button", { name: "Hide chat" }));
+  await waitFor(() => expect(restoreStation).toHaveBeenCalledWith(WORKSPACE_ID));
 });
 
 test("clicking a workstream suggestion moves the chat there", async () => {
@@ -656,7 +665,7 @@ test("every ⋯ item wears the one menu style, Share, Delete and Public among th
   await screen.findByRole("button", { name: "Share" });
   const items = within(screen.getByLabelText("Chat actions")).getAllByRole("button");
   expect(items.map((item) => [item.textContent, item.className])).toEqual(
-    ["Clear chat", "Hide panel", "Delete chat forever", "Info", "Public", "Share"].map((name) => [name, "chat-menu-item"]));
+    ["Clear chat", "Pin chat", "Hide chat", "Find a chat…", "Hide panel", "Delete chat forever", "Info", "Public", "Share"].map((name) => [name, "chat-menu-item"]));
 });
 
 test("a refused share says why in one toast line and keeps the address in the field", async () => {

@@ -15,7 +15,9 @@ import "./topbar.css";
 /**
  * The app's one bar, along the top: the logo (home, the graph), Go (the pages),
  * Search, New, then the user's workstreams, the Workbench's visuals while a
- * canvas is mounted, and the account at the end.
+ * canvas is mounted, and the account at the end. It hides until the pointer
+ * reaches the top edge; a click on the bar itself (not on a control) keeps it
+ * open, and another lets it hide again.
  */
 export function TopBar({ stations }: { readonly stations: boolean }) {
   const palette = usePalette();
@@ -37,8 +39,10 @@ export function TopBar({ stations }: { readonly stations: boolean }) {
     <>
     <button type="button" className="topbar-edge" aria-label="Open app bar" hidden={shown}
       onPointerMove={peek.handlers.onPointerMove} onPointerLeave={peek.handlers.onPointerLeave} onClick={() => peek.set(true)} />
-    <header ref={header} className={`topbar${shown ? " topbar-auto-open" : " topbar-auto-hidden"}`} aria-label="App"
-      onPointerMove={peek.handlers.onPointerMove} onPointerLeave={peek.handlers.onPointerLeave} onBlurCapture={peek.handlers.onBlur}>
+    <header ref={header} className={`topbar${shown ? " topbar-auto-open" : " topbar-auto-hidden"}${pinned ? " topbar-pinned" : ""}`} aria-label="App"
+      title={pinned ? "Click the bar to let it hide" : "Click the bar to keep it open"}
+      onPointerMove={peek.handlers.onPointerMove} onPointerLeave={peek.handlers.onPointerLeave} onBlurCapture={peek.handlers.onBlur}
+      onClick={(event) => { if (!onControl(event.target)) setPinned((value) => !value); }}>
       <a className="topbar-logo" href={formatRoute({ name: "graph" })} aria-label="Trackinizer, the graph" title="Trackinizer">
         <Logo />
       </a>
@@ -50,13 +54,16 @@ export function TopBar({ stations }: { readonly stations: boolean }) {
       <ComposeButton onNavigate={closeGo} />
       <span className="topbar-rule" aria-hidden="true" />
       <div className="topbar-stations">{stations && <WorkstreamBar />}</div>
-      <button type="button" className="icon-btn topbar-pin" aria-label={pinned ? "Unpin app bar" : "Keep app bar open"}
-        title="Keep the bar open" aria-pressed={pinned} onClick={() => setPinned((value) => !value)}><span aria-hidden="true">📌</span></button>
       <WorkbenchMenu />
       <AccountMenu onNavigate={closeGo} />
     </header>
     </>
   );
+}
+
+/** Whether a click landed on a control (or a menu or field it opened), whose click it is, not the bar's. */
+function onControl(target: EventTarget): boolean {
+  return target instanceof Element && target.closest("a, button, input, select, textarea, [role='menu'], [role='dialog']") !== null;
 }
 
 /**

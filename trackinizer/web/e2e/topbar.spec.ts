@@ -37,7 +37,7 @@ test("the bar spans the top over Chat, at the left, and the canvas; nothing is l
   expect(column.x).toBeLessThan(16);
   await expect(page.getByRole("navigation", { name: "Sidebar" })).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "Workstreams" })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "Canvas tabs" })).toBeVisible();
+  await expect(page.getByRole("toolbar", { name: "Canvas" })).toBeVisible();
 });
 
 test("the account is its avatar at rest; the pointer on it slides out the email and role, and a click opens its menu", async ({ page }) => {
@@ -103,7 +103,7 @@ test("on a phone the bar fits the width, its controls each take a press, and Go 
   await page.getByRole("button", { name: "Open app bar" }).click();
   await expect(bar).toHaveClass(/topbar-auto-open/);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-  await bar.getByRole("navigation", { name: "Workstreams" }).getByRole("button", { name: "Scratch" }).click();
+  await bar.getByRole("navigation", { name: "Workstreams" }).getByRole("button", { name: "Scratch", exact: true }).click();
   await bar.getByRole("button", { name: "Go to" }).click();
   const go = page.getByRole("navigation", { name: "Go to" });
   await go.getByRole("link", { name: /^Activity/ }).click();

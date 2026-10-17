@@ -28,8 +28,12 @@ test("a duplicate chat name shows the 409 note and keeps the name field open", a
   await open(page);
   const first = `chat-${crypto.randomUUID().slice(0, 8)}`;
   await rename(page, first);
-  await page.locator(".chat-name-button").click();
-  await page.getByRole("button", { name: "+ New chat" }).click();
+  // A new chat comes from its workstream in the top bar; its name there is left as made.
+  await page.getByRole("button", { name: "Open app bar" }).click();
+  const streams = page.getByRole("navigation", { name: "Workstreams" });
+  await streams.getByRole("button", { name: "Scratch", exact: true }).click();
+  await streams.getByRole("button", { name: "New chat in Scratch" }).click();
+  await streams.getByRole("textbox", { name: "Chat name" }).press("Escape");
   await expect(page.locator(".chat-name-button")).toHaveAttribute("aria-label", "Scratch chat");
   await page.locator(".chat-name-button").click();
   const field = page.getByRole("textbox", { name: "Chat name" });

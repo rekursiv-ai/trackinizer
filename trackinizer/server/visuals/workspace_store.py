@@ -1589,6 +1589,7 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
         suggestion=station.suggestion,
         session_id=station.session_id,
         visuals=data.visuals,
+        worked=data.worked,
         focused_instance=data.focused_instance,
         agent_instructions=data.agent_instructions,
         continuation_record_id=data.continuation_record_id,
@@ -1984,14 +1985,8 @@ async def _check_fork_or_membership(
 
 
 def _data_of(state: WorkspaceState) -> WorkspaceData:
-    """Return the stored part of a canvas's state."""
-    return WorkspaceData(
-        visuals=state.visuals,
-        focused_instance=state.focused_instance,
-        agent_instructions=state.agent_instructions,
-        continuation_record_id=state.continuation_record_id,
-        partner_choice=state.partner_choice,
-    )
+    """Return the stored part of a canvas's state: every field ``WorkspaceData`` has."""
+    return WorkspaceData.model_validate(state, from_attributes=True)
 
 
 async def _write_data(
@@ -2014,6 +2009,7 @@ async def _write_data(
         suggestion=current.suggestion,
         session_id=current.session_id,
         visuals=data.visuals,
+        worked=data.worked,
         focused_instance=data.focused_instance,
         agent_instructions=data.agent_instructions,
         continuation_record_id=data.continuation_record_id,

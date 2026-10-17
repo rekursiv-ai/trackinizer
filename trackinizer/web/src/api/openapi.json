@@ -7090,6 +7090,11 @@
         "additionalProperties": false,
         "description": "Show one catalog visual, or focus its existing instance.",
         "properties": {
+          "beside": {
+            "default": false,
+            "title": "Beside",
+            "type": "boolean"
+          },
           "kind": {
             "const": "show",
             "title": "Kind",
@@ -10135,6 +10140,27 @@
         "additionalProperties": true,
         "type": "object"
       },
+      "WorkedRecord": {
+        "additionalProperties": false,
+        "description": "A record a canvas worked on, and the visual that showed it.",
+        "properties": {
+          "record_id": {
+            "format": "uuid",
+            "title": "Record Id",
+            "type": "string"
+          },
+          "visual_type": {
+            "title": "Visual Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id",
+          "visual_type"
+        ],
+        "title": "WorkedRecord",
+        "type": "object"
+      },
       "WorkspaceConflict": {
         "description": "A stale operation's conflict response, including live state.",
         "properties": {
@@ -10590,6 +10616,14 @@
               "$ref": "#/components/schemas/VisualInstance"
             },
             "title": "Visuals",
+            "type": "array"
+          },
+          "worked": {
+            "items": {
+              "$ref": "#/components/schemas/WorkedRecord"
+            },
+            "maxItems": 24,
+            "title": "Worked",
             "type": "array"
           },
           "workstream_id": {

@@ -22,11 +22,12 @@ import { useBrowserState } from "../state/store";
 import { CanvasBar } from "./CanvasBar";
 import { forget, go, interrupt, settle, step, takeInterrupted, useCanvasHistory } from "./canvasHistory";
 import { type Size, dropLegacySizes, fitSizes, heldWidth, legacyLayout, MIN_COLUMN, MIN_FLOAT, readLegacySizes, toFraction } from "./canvasSizes";
-import { HOME_ROUTE, homeSnapshot, PAGE, planRestore, type Snapshot, snapshotOf } from "./canvasSnapshot";
-import { type CanvasTab, leftTab, MAX_TABS, neighbourOf, newTabName, openTabOf, sizesOf, tabSnapshot, tabsOf } from "./canvasTabs";
+import { homeSnapshot, PAGE, planRestore, type Snapshot, snapshotOf } from "./canvasSnapshot";
+import { openTabOf, tabsOf } from "./canvasTabs";
+import { PaneRecord, WorkedStrip } from "./WorkedStrip";
 import { followColumns } from "./chatColumnState";
 import { CLICK_SLOP, EDGES, finishGesture, moveGesture, rememberedTile, resizeRect, slideDivider, snapZone, startGesture, TEAR_SLOP, withTile, type Edge, type TileMemory, type Gesture, type Rect, type Zone } from "./floatingTile";
-import { orderVisuals, SIDES } from "./layout";
+import { arrangeRecordPanes, onlyRecordPanes, orderVisuals, SIDES } from "./layout";
 import { holds, layoutOf, useLayout, type Layout } from "./stationLayout";
 import { preloadRenderers, RENDERERS, VisualPane } from "./registry";
 import { WorkspaceActionsProvider } from "./workspaceActions";
@@ -102,7 +103,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     params: {},
   }));
   const visualTypes = useMemo(() => new Set(catalog.data?.visuals.map((visual) => visual.type)), [catalog.data]);
-  const panes = orderVisuals(visible, workspace?.focused_instance ?? null);
+  const panes = orderVisuals(arrangeRecordPanes(visible, workspace?.focused_instance ?? null), workspace?.focused_instance ?? null);
   const browse = panes.find((pane) => pane.type === PAGE);
   /** Whether `pane` is drawn floating over the stage. */
   const floats = (pane: (typeof panes)[number]) => pane.placement === "floating";
@@ -320,38 +321,6 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     changeLayout({ tabs: [], tab: openTab });
     tabs.filter((tab) => tab.id !== openTab).forEach((tab) => forget(tabKey(workspaceId, tab.id)));
     void restore(historyKey, target);
-  }
-
-  /** The tabs with the open one as it is left now: what it shows, under a sheet the graph, and its sizes. */
-  function leaving(): CanvasTab[] {
-    const visuals = latestWorkspace.current?.visuals ?? [];
-    const now = snapshotOf(visuals, window.location.hash) ?? snapshotOf(visuals, HOME_ROUTE)!;
-    return tabs.map((tab) => (tab.id === openTab ? leftTab(tab, now, layout) : tab));
-  }
-
-  /** Open tab `id` of `kept`, the tabs the station keeps from now: its sizes at once, then what it shows. */
-  function switchTab(id: string, kept: CanvasTab[]) {
-    const tab = kept.find((each) => each.id === id);
-    if (!workspaceId || !tab) return;
-    changeLayout({ ...sizesOf(tab), tabs: kept, tab: id }, { now: true });
-    const key = tabKey(workspaceId, id);
-    const target = tabSnapshot(tab);
-    go(key, target);
-    void restore(key, target);
-  }
-
-  function addTab() {
-    const target = homeSnapshot(home);
-    const tab: CanvasTab = { id: newUuid(), name: newTabName(tabs), page: target.page, visuals: target.visuals.map((visual) => ({ ...visual, params: { ...visual.params } })) };
-    switchTab(tab.id, [...leaving(), tab]);
-  }
-
-  function closeTab(id: string) {
-    if (!workspaceId || tabs.length < 2) return;
-    const kept = tabs.filter((tab) => tab.id !== id);
-    if (id === openTab) switchTab(neighbourOf(tabs, id)!.id, kept);
-    else changeLayout({ tabs: kept });
-    forget(tabKey(workspaceId, id));
   }
 
   // A restore this station was left in the middle of: finish it as the station comes back, before
@@ -716,7 +685,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     const collapsed = floating && folded(pane);
     const at = rememberedTile(layout, pane.type, stage).place ?? pane.floating_rect ?? null;
     const size = sizes.floating[pane.type] ?? pane.floating_rect;
-    const share = sizes.share[pane.type];
+    const share = shareOf(pane);
     return (
     <div className={`visual-tile visual-tile-${floating ? "floating" : pane.placement ?? "main"}${pane.type === "trax.browse" ? " visual-tile-browse" : ""}${workspace?.focused_instance === pane.id ? " visual-tile-focused" : ""}${expandedMobileFloat === pane.id ? " visual-tile-mobile-expanded" : ""}${collapsed ? " visual-tile-collapsed" : ""}`}
       key={pane.type === "trax.browse" ? pane.type : pane.id}
@@ -747,7 +716,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           aria-label={`Move ${title}`}
           title="Drag to move; use arrow keys to move"
           onKeyDown={(event) => moveWithKeyboard(event, pane.id, pane.type)}>⠿</button>}
-        <span>{title}</span>
+        <span>{title}{!isPage && pane.record_id && <PaneRecord recordId={pane.record_id} />}</span>
         {floating && <button className="visual-tile-fold" type="button" aria-expanded={!collapsed}
           aria-label={`${collapsed ? "Expand" : "Collapse"} ${title}`}
           title={collapsed ? "Show the whole tile" : "Fold the tile to its bar"}
@@ -776,6 +745,17 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   };
 
   /**
+   * A docked tile's share of its strip, kept by visual type; none for a tile
+   * alone in its strip, which a share under 1 would leave short of the strip's
+   * end, a band of nothing beside it.
+   */
+  const shareOf = (pane: (typeof panes)[number]) => {
+    const place = pane.placement ?? "main";
+    const flowing = panes.filter((each) => (each.placement ?? "main") === place && !floats(each)).length;
+    return flowing > 1 ? sizes.share[pane.type] : undefined;
+  };
+
+  /**
    * The tiles standing at `placement`, with a divider between each two that
    * share its flow: across the main strip (`x`) or down a column (`y`). A
    * floating tile keeps its place among them and takes none of the flow.
@@ -784,7 +764,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     let flowing = 0;
     return panes.flatMap((pane, index) => {
       if ((pane.placement ?? "main") !== placement) return [];
-      const share = sizes.share[pane.type];
+      const share = shareOf(pane);
       const tile = pane.type === PAGE ? <div key="browse-slot" ref={browseSlotRef} className="visual-tile visual-browse-slot"
         data-visual-type={PAGE}
         style={share ? { "--tile-share": share, "--tile-basis": "0px" } as CSSProperties : undefined} /> : renderTile(pane, index);
@@ -831,11 +811,13 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       visualTypes,
     } : null}>
     <div className="visual-canvas">
-      {workspace && <CanvasBar tabs={tabs} open={openTab} back={history.back} forward={history.forward}
-        moving={history.moving} home={home} canAdd={tabs.length < MAX_TABS}
-        actions={{ back: () => stepBy(-1), forward: () => stepBy(1), home: goHome, clear: clearCanvas,
-          open: (id) => { if (id !== openTab) switchTab(id, leaving()); }, add: addTab, close: closeTab,
-          rename: (id, name) => changeLayout({ tabs: tabs.map((tab) => (tab.id === id ? { ...tab, name } : tab)) }) }} />}
+      {workspace && <CanvasBar back={history.back} forward={history.forward} moving={history.moving} home={home}
+        actions={{ back: () => stepBy(-1), forward: () => stepBy(1), home: goHome, clear: clearCanvas }}>
+        <WorkedStrip worked={workspace.worked ?? []} visuals={workspace.visuals} disabled={history.moving}
+          viewOf={(type) => (catalog.data?.visuals.find((visual) => visual.type === type)?.title ?? type.replace(/^trax\./, "")).split(" ")[0]!}
+          onShow={(record) => void write({ kind: "show", visual_type: record.visual_type, record_id: record.record_id, beside: true })}
+          onFocus={(pane) => void write({ kind: "focus", instance_id: pane })} />
+      </CanvasBar>}
       {writeError && <p className="visual-write-error" role="alert">{writeError}</p>}
       {controlsSlot && createPortal(
         <div className="workbench-controls" role="group" aria-label="Workbench visuals">
@@ -862,7 +844,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         </div>,
         controlsSlot,
       )}
-      <div ref={stageRef} className={`visual-stage${panes.length > 1 ? " visual-stage-split" : ""}`}>
+      <div ref={stageRef} className={`visual-stage${panes.length > 1 ? " visual-stage-split" : ""}${onlyRecordPanes(visible) ? " visual-stage-panes" : ""}`}>
         {/* The page and the other main visuals share a strip that scrolls inside itself when they outgrow it; the visuals docked at a side stand in one column there; floating ones lie over all three. */}
         {sideColumn("left")}
         {panes.some((pane) => (pane.placement ?? "main") === "main") && (

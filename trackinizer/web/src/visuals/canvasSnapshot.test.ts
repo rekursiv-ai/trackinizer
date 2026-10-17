@@ -50,6 +50,17 @@ test("a restore hides what the target lacks and shows what it misses, with its p
   ]);
 });
 
+test("two panes of one visual restore each to its own record, the missing one beside the other", () => {
+  const one = { id: "t1", type: "trax.timeline", version: 1, placement: "main" as const, record_id: "r1", params: {} };
+  const two = { ...one, id: "t2", record_id: "r2" };
+  const both = snapshotOf([one, two], "#/graph")!;
+  expect(planRestore([two, one], both)).toEqual([]);
+  expect(planRestore([one], both)).toEqual([
+    { kind: "show", visual_type: "trax.timeline", placement: "main", record_id: "r2", params: {}, beside: true },
+  ]);
+  expect(planRestore([one, two], snapshotOf([two], "#/graph")!)).toEqual([{ kind: "hide", instance_id: "t1" }]);
+});
+
 test("a visual the target shows elsewhere is placed; on another record or with other params it is shown anew", () => {
   const moved = snapshotOf([page, { ...graph, placement: "floating" }], "#/graph")!;
   expect(planRestore([page, graph], moved)).toEqual([{ kind: "place", instance_id: "g", placement: "floating" }]);

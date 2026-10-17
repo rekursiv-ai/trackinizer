@@ -62,18 +62,26 @@ export function snapshotKey(snapshot: Snapshot): string {
  * The operations that turn a canvas holding `live` into one showing `target`'s
  * visuals, applied in order: the visuals it lacks hidden, the ones it shows
  * elsewhere or on another record or with other params shown again or placed,
- * the ones missing shown. The page's route is the caller's to set.
+ * the ones missing shown. A wanted visual pairs first with a live one of its
+ * type on its record, then with any left of its type (which moves to it); one
+ * with none is shown beside, in a pane of its own, when another of its type
+ * stays. The page's route is the caller's to set.
  */
 export function planRestore(live: WorkspaceState["visuals"], target: Snapshot): WorkspaceOperation[] {
-  const wanted = new Set(target.visuals.map((visual) => visual.type));
-  const operations: WorkspaceOperation[] = live
-    .filter((visual) => !wanted.has(visual.type))
-    .map((visual) => ({ kind: "hide", instance_id: visual.id }));
-  for (const want of target.visuals) {
-    const have = live.find((visual) => visual.type === want.type);
+  const spare = [...live];
+  const take = (match: (visual: WorkspaceState["visuals"][number]) => boolean) => {
+    const at = spare.findIndex(match);
+    return at < 0 ? undefined : spare.splice(at, 1)[0];
+  };
+  const onRecord = target.visuals.map((want) => take((visual) => visual.type === want.type && (visual.record_id ?? null) === want.record_id));
+  const pairs = target.visuals.map((want, index) => [want, onRecord[index] ?? take((visual) => visual.type === want.type)] as const);
+  const kept = pairs.flatMap(([, have]) => (have ? [have] : []));
+  const operations: WorkspaceOperation[] = spare.map((visual) => ({ kind: "hide", instance_id: visual.id }));
+  for (const [want, have] of pairs) {
     const same = have && (have.record_id ?? null) === want.record_id && sameParams(have.params ?? {}, want.params);
     if (!have || !same) {
-      operations.push({ kind: "show", visual_type: want.type, placement: want.placement, record_id: want.record_id, params: { ...want.params } });
+      const beside = !have && want.record_id !== null && kept.some((visual) => visual.type === want.type);
+      operations.push({ kind: "show", visual_type: want.type, placement: want.placement, record_id: want.record_id, params: { ...want.params }, ...(beside ? { beside } : {}) });
     } else if ((have.placement ?? "main") !== want.placement) {
       operations.push({ kind: "place", instance_id: have.id, placement: want.placement });
     }
