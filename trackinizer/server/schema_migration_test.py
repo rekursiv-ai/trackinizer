@@ -1131,6 +1131,40 @@ async def _check_stations_migrated(engine: DatabaseEngine) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_migration_049_matches_the_baseline_shape(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """The ``recorded`` columns 049 adds equal the fresh-install ones.
+
+    Bootstrap builds the baseline shape (which carries them). This drops all
+    three (as a pre-049 database lacks them), replays ``schema.049``, and
+    compares columns -- the parity check neither file can make about itself,
+    since each is read by a disjoint population.
+    """
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    columns = (
+        "SELECT table_name, column_name, data_type, is_nullable, column_default "
+        "FROM information_schema.columns WHERE table_schema = 'public' "
+        "AND column_name LIKE '%recorded' ORDER BY table_name, column_name"
+    )
+    async with scratch_engine.acquire() as conn:
+        base_cols = [dict(r) for r in await conn.fetch(columns)]
+        assert {str(r["table_name"]) for r in base_cols} == {
+            "inquiries",
+            "change_log",
+        }, "the baseline did not create the recorded columns"
+
+        await conn.execute("ALTER TABLE inquiries DROP COLUMN recorded")
+        await conn.execute("ALTER TABLE change_log DROP COLUMN old_recorded")
+        await conn.execute("ALTER TABLE change_log DROP COLUMN new_recorded")
+        await conn.execute(load_sql("schema.049"))
+        migrated_cols = [dict(r) for r in await conn.fetch(columns)]
+
+    assert migrated_cols == base_cols
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_migration_042_makes_stations_of_canvases_and_presets_on_pglite(
     pglite_engine: postgres.PGliteEngine,
 ) -> None:
@@ -1271,7 +1305,7 @@ async def _make_app_old(conn: Conn) -> None:
         "DROP COLUMN old_app, DROP COLUMN new_app, "
         "DROP CONSTRAINT change_log_kind_check, "
         "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
-        f"{_change_kinds('app', 'agentsession_audience')}))",
+        f"{_change_kinds('app', 'agentsession_audience', 'recorded')}))",
     )
     await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.046.sql'")
 
@@ -1323,6 +1357,7 @@ async def test_migration_046_gives_an_existing_database_the_app_column(
         await conn.execute(load_sql("schema.046"))
         await conn.execute(load_sql("schema.047"))
         await conn.execute(load_sql("schema.048"))
+        await conn.execute(load_sql("schema.049"))
         replayed = await _catalog_names_aside(conn)
 
     assert app is None
@@ -1373,9 +1408,11 @@ async def test_the_app_column_holds_one_object_of_at_most_64_kib_on_any_kind(
     assert stored == 65_536
 
 
-# Nor is there a code store, which came after, in 048.
+# Nor is there a code store, which came after, in 048, nor a declared ``recorded``,
+# which came in 049.
 async def _make_audience_old(conn: Conn) -> None:
     """Turn a fresh database back into 046's shape: no audience move is audited."""
+    await _make_recorded_old(conn)
     await _make_code_store_old(conn)
     # Dropping a column drops the CHECKs that name it; the one tying the kind to the
     # subject names neither, so it is found by what it says.
@@ -1393,7 +1430,7 @@ async def _make_audience_old(conn: Conn) -> None:
         f'DROP CONSTRAINT "{subject}", '
         "DROP CONSTRAINT change_log_kind_check, "
         "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
-        f"{_change_kinds('agentsession_audience')}))",
+        f"{_change_kinds('agentsession_audience', 'recorded')}))",
     )
     await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.047.sql'")
 
@@ -1472,6 +1509,7 @@ async def test_migration_047_audits_audience_and_retitles_chats(
         )
         await conn.execute(load_sql("schema.047"))
         await conn.execute(load_sql("schema.048"))
+        await conn.execute(load_sql("schema.049"))
         replayed = await _catalog_names_aside(conn)
 
     assert migrated == fresh
@@ -1483,6 +1521,20 @@ async def test_migration_047_audits_audience_and_retitles_chats(
     assert logged is not None
     assert (logged["old_title"], logged["new_title"]) == ("", "")
     assert same is True
+
+
+async def _make_recorded_old(conn: Conn) -> None:
+    """Turn a fresh database back into 048's shape: no row declares ``recorded``."""
+    # Dropping a column drops its CHECKs.
+    await conn.execute("ALTER TABLE inquiries DROP COLUMN recorded")
+    await conn.execute(
+        "ALTER TABLE change_log "
+        "DROP COLUMN old_recorded, DROP COLUMN new_recorded, "
+        "DROP CONSTRAINT change_log_kind_check, "
+        "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
+        f"{_change_kinds('recorded')}))",
+    )
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.049.sql'")
 
 
 async def _make_code_store_old(conn: Conn) -> None:
@@ -1565,6 +1617,66 @@ async def test_the_code_tables_check_owner_hash_size_and_files(
             with pytest.raises(asyncpg.CheckViolationError):
                 await conn.execute(snapshot, record, owner, files)
         await conn.execute(snapshot, record, "ada@x.y", {})
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_049_gates_the_mirror_on_the_change_kind(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """049's validated gates refuse a mirror written under the wrong kind.
+
+    The fresh install states this as an unnamed CHECK inside CREATE TABLE and
+    049 as a named one it can VALIDATE, so the rule is worth asserting rather
+    than assumed from two spellings of it.
+    """
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    async with scratch_engine.acquire() as conn:
+        await conn.execute("ALTER TABLE inquiries DROP COLUMN recorded")
+        await conn.execute("ALTER TABLE change_log DROP COLUMN old_recorded")
+        await conn.execute("ALTER TABLE change_log DROP COLUMN new_recorded")
+        await conn.execute(load_sql("schema.049"))
+
+        with pytest.raises(asyncpg.exceptions.CheckViolationError):
+            await conn.execute(
+                "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind, "
+                "new_recorded) VALUES ($1, 'tester', $2, 'Issue', 'title', now())",
+                uuid.uuid4(),
+                uuid.uuid4(),
+            )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_049_gives_an_existing_database_the_recorded_kind(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """A database migrated by 049 has the catalog a fresh install has, names aside.
+
+    Bootstrap builds the baseline. This takes ``recorded`` away again (its column, its
+    two audit columns and its change kind) and lets the runner apply the migration.
+    Every table, column, constraint, index and sequence must equal the baseline's, and
+    the change log then takes a ``recorded`` edit, which the kind list would refuse if
+    049 left it as 048 had it.
+    """
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        fresh = await _catalog_names_aside(conn)
+        await _make_recorded_old(conn)
+
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        migrated = await _catalog_names_aside(conn)
+        await conn.execute(
+            "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind, "
+            "new_recorded) VALUES ($1, 'tester', $2, 'Issue', 'recorded', now())",
+            uuid.uuid4(),
+            uuid.uuid4(),
+        )
+
+    assert migrated == fresh
 
 
 if __name__ == "__main__":

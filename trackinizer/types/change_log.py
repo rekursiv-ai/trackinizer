@@ -66,6 +66,8 @@ class Snapshot:
 
     app: dict[str, object] | None = None
     """Mirrors :attr:`Inquiry.app`."""
+    recorded: datetime | None = None
+    """Mirrors :attr:`Inquiry.recorded`, the client-declared origin time."""
 
     peer_id: UUID | None = None
     """The edge neighbor's id, on edge and dependency events."""
@@ -211,6 +213,7 @@ class Change:
         "subscribers",
         "marginal_cost",
         "app",
+        "recorded",
         # Issue-only.
         "issue_kind",
         "issue_validation",
@@ -356,6 +359,7 @@ class _SnapshotKwargs(TypedDict, total=False):
     owner: Inquiry.Actor | None
     account: Inquiry.Actor | None
     app: dict[str, object] | None
+    recorded: datetime | None
     peer_id: UUID | None
     peer_kind: Inquiry.InquiryKind | None
     peer_edge_kind: Edge.Kind | None
