@@ -549,6 +549,7 @@ class _LineAdapter:
     cli_binary: str = "fakeline"
     whole_file: bool = False
     parent_session_env: frozenset[str] = frozenset[str]()
+    session_switch_commands: frozenset[str] = frozenset[str]()
 
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -564,6 +565,10 @@ class _LineAdapter:
 
     def session_id_from_path(self, path: Path) -> str | None:
         del path
+        return None
+
+    def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
+        del cli_args
         return None
 
     def reader(self) -> Tail[TraxRecord]:

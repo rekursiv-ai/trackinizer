@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Final
 
-
-if TYPE_CHECKING:
-    import pytest
+import pytest
 
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 
@@ -80,6 +78,57 @@ class TestCodexSessionId:
         )
 
         assert found == "01a06088-22fc-7121-9c25-263a54eaf330"
+
+
+_ID: Final = "01a14f1f-cca1-7071-803c-ab02f8457212"
+
+
+class TestCodexResumedSession:
+    """Which session a codex command line continues (``codex resume --help``).
+
+    ``resume`` takes a session id, a session NAME, or ``--last``; only an id
+    names a rollout the runner can find before codex starts. ``fork`` writes a
+    new rollout, so it starts a session rather than continuing one.
+    """
+
+    @pytest.mark.parametrize(
+        "cli_args",
+        [
+            ("resume", _ID),
+            ("resume", _ID, "a prompt"),
+            ("-c", "model_reasoning_effort=low", "resume", _ID),
+            ("--no-daemon", "resume", _ID),
+            ("exec", "resume", _ID),
+        ],
+        ids=["bare", "with-prompt", "after-config", "after-flag", "exec"],
+    )
+    def test_a_resume_by_id_names_the_session(self, cli_args: tuple[str, ...]) -> None:
+        assert CodexAdapter().resumed_session(cli_args) == _ID
+
+    @pytest.mark.parametrize(
+        "cli_args",
+        [
+            ("resume",),
+            ("resume", "--last"),
+            ("resume", "--last", _ID),
+            ("resume", "my-session-name"),
+            ("resume", _ID.upper()),
+        ],
+        ids=["picker", "last", "last-wins", "name", "uppercase"],
+    )
+    def test_a_resume_codex_picks_names_no_session(
+        self,
+        cli_args: tuple[str, ...],
+    ) -> None:
+        assert CodexAdapter().resumed_session(cli_args) == ""
+
+    @pytest.mark.parametrize(
+        "cli_args",
+        [(), ("fork", _ID), ("-m", "resume"), ("resume me",), ("exec", "hello")],
+        ids=["fresh", "fork", "option-value", "prompt", "exec-prompt"],
+    )
+    def test_a_new_session_is_not_a_resume(self, cli_args: tuple[str, ...]) -> None:
+        assert CodexAdapter().resumed_session(cli_args) is None
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
-"""Tests for the session runner's file scoping (Bug B regression).
+"""Tests for the session runner: which files a run captures, and how it runs.
 
 The runner shares one session root with concurrent sessions, so it must
-drain only the files the wrapped run creates -- never re-emit lines from
-sessions that already existed when the run started.
+drain only the files the wrapped run creates or resumes -- never re-emit
+lines from sessions that already existed when the run started.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO, cast, override
+from typing import TYPE_CHECKING, Final, TextIO, cast, override
 
 import asyncio
 import json
@@ -243,6 +243,7 @@ class _FakeAdapter:
     cli_binary: str = "fake"
     whole_file: bool = False
     parent_session_env: frozenset[str] = frozenset[str]()
+    session_switch_commands: frozenset[str] = frozenset({"clear"})
 
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -258,6 +259,10 @@ class _FakeAdapter:
 
     def session_id_from_path(self, path: Path) -> str | None:
         del path
+        return None
+
+    def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
+        del cli_args
         return None
 
     def reader(self) -> Tail[TraxRecord]:
@@ -339,6 +344,40 @@ def _always_found(
 
 def _write(path: Path, lines: int) -> None:
     path.write_text("".join(json.dumps({"n": i}) + "\n" for i in range(lines)))
+
+
+def _claude_line(text: str) -> str:
+    """One claude user record carrying ``text``, newline-terminated."""
+    message = {
+        "type": "user",
+        "uuid": text,
+        "message": {"role": "user", "content": text},
+    }
+    return json.dumps(message) + "\n"
+
+
+_CODEX_META: Final = (
+    '{"type":"session_meta","payload":{"session_id":"s1","cwd":"/workspace"}}\n'
+)
+
+
+def _codex_line(text: str) -> str:
+    """One codex user message carrying ``text``, newline-terminated."""
+    content = [{"type": "input_text", "text": text}]
+    payload = {"type": "message", "role": "user", "content": content}
+    return json.dumps({"type": "response_item", "payload": payload}) + "\n"
+
+
+def _append(path: Path, text: str, argv: Sequence[str]) -> None:
+    """Act as a CLI that appends ``text`` to ``path``."""
+    del argv
+    with path.open("a") as log:
+        _ = log.write(text)
+
+
+def _ignore(argv: Sequence[str]) -> None:
+    """Act as a CLI that writes nothing."""
+    del argv
 
 
 # Delivery is the handshake between a test's writes: a second write issued once the
@@ -431,7 +470,7 @@ class TestSessionScoping:
         old = tmp_path / "old.jsonl"
         _write(old, lines=5)
         adapter = _FakeAdapter(tmp_path)
-        baseline = _existing_session_files(adapter)
+        baseline = _existing_session_files(adapter, RunConfig(cli_name="fake"))
         assert old in baseline
 
         stats, sink = _drain_once(
@@ -449,7 +488,7 @@ class TestSessionScoping:
         old = tmp_path / "old.jsonl"
         _write(old, lines=4)
         adapter = _FakeAdapter(tmp_path)
-        baseline = _existing_session_files(adapter)
+        baseline = _existing_session_files(adapter, RunConfig(cli_name="fake"))
 
         stats, sink = _drain_once(
             adapter,
@@ -504,21 +543,9 @@ class TestSessionScoping:
         mine.mkdir(parents=True)
         theirs.mkdir()
 
-        def record(text: str) -> str:
-            return (
-                json.dumps(
-                    {
-                        "type": "user",
-                        "uuid": text,
-                        "message": {"role": "user", "content": text},
-                    },
-                )
-                + "\n"
-            )
-
         def write() -> None:
-            _ = (theirs / "other.jsonl").write_text(record("theirs"))
-            _ = (mine / "own.jsonl").write_text(record("mine"))
+            _ = (theirs / "other.jsonl").write_text(_claude_line("theirs"))
+            _ = (mine / "own.jsonl").write_text(_claude_line("mine"))
 
         adapter = ClaudeAdapter()
         monkeypatch.setattr(adapter, "session_scope", lambda: mine)
@@ -557,16 +584,7 @@ class TestSessionScoping:
                 scope = ClaudeAdapter().session_scope()
                 assert scope is not None
                 scope.mkdir(parents=True, exist_ok=True)
-                (scope / f"{session_id}.jsonl").write_text(
-                    json.dumps(
-                        {
-                            "type": "user",
-                            "uuid": name,
-                            "message": {"role": "user", "content": name},
-                        },
-                    )
-                    + "\n",
-                )
+                (scope / f"{session_id}.jsonl").write_text(_claude_line(name))
                 _wait_for_events(sinks[name], 1)
                 return 0
 
@@ -765,6 +783,485 @@ class TestSessionScoping:
         assert stats.counts == {"UserMessage": 3}
 
 
+_OLD: Final = "0b3c2f7e-1d4a-4f5e-9a1b-2c3d4e5f6a7b"
+_ELSEWHERE: Final = "44444444-4444-4444-8444-444444444444"
+_ROLLOUT_ID: Final = "01a14f1f-cca1-7071-803c-ab02f8457212"
+
+
+class _OpenWatchingSink(_RecordingSink):
+    """Also notes which CLI session ids the RUNNER set before the session opened.
+
+    Only the runner's own thread counts: the drain may read a resumed file and
+    set the same id first, which says nothing about what the runner knew.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._runner = threading.current_thread()
+        self._runner_ids: list[str] = []
+        self.known_at_open: list[str] | None = None
+
+    @override
+    def set_cli_session_id(self, cli_session_id: str) -> None:
+        super().set_cli_session_id(cli_session_id)
+        if threading.current_thread() is self._runner:
+            self._runner_ids.append(cli_session_id)
+
+    @override
+    def open(self) -> str | None:
+        self.known_at_open = list(self._runner_ids)
+        return None
+
+
+@pytest.fixture
+def claude_scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Return the cwd's claude project directory, holding one earlier session."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    scope = ClaudeAdapter().session_scope()
+    assert scope is not None
+    scope.mkdir(parents=True)
+    _ = (scope / f"{_OLD}.jsonl").write_text(_claude_line("before"))
+    return scope
+
+
+@pytest.fixture
+def codex_rollout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Return an earlier codex rollout under a throwaway ``$CODEX_HOME``."""
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    day = tmp_path / "sessions" / "2026" / "10" / "18"
+    day.mkdir(parents=True)
+    rollout = day / f"rollout-2026-10-18T15-07-26-{_ROLLOUT_ID}.jsonl"
+    _ = rollout.write_text(_CODEX_META + _codex_line("before"))
+    return rollout
+
+
+def _keep_main(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: Sequence[str],
+    *,
+    resume_path: Path | None = None,
+    cli_session_id: str | None = None,
+) -> RunConfig:
+    """Return the config ``trax run argv`` would run, running nothing."""
+    ran: list[RunConfig] = []
+    monkeypatch.setattr(session, "run", partial(_keep_run, ran))
+    assert (
+        session.main(argv, resume_path=resume_path, cli_session_id=cli_session_id) == 0
+    )
+    (config,) = ran
+    return config
+
+
+class TestAResumeTypedAfterTheDashes:
+    """``trax run <cli> -- <resume>`` follows the transcript the resume names.
+
+    The transcript existed before the CLI started, so the pre-spawn snapshot
+    holds it as an earlier run's and the run stored nothing. Named as
+    ``resume_path`` it gets what ``trax agentsession <seq> run`` gives the
+    file it materializes: followed from its start, and its id re-attaches the
+    AgentSession that captured it.
+    """
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            ("--resume", _OLD),
+            (f"--resume={_OLD}",),
+            ("-r", _OLD),
+            (f"-r{_OLD}",),
+            ("-pr", _OLD),
+        ],
+        ids=["split", "equals", "short", "attached", "cluster"],
+    )
+    def test_a_claude_resume_by_id_follows_its_transcript(
+        self,
+        claude_scope: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        spelling: tuple[str, ...],
+    ) -> None:
+        config = _keep_main(monkeypatch, ["claude", "--no-sync", "--", *spelling])
+
+        assert config.resume_path == claude_scope / f"{_OLD}.jsonl"
+        assert config.cli_session_id == _OLD
+        assert config.cli_args == spelling
+
+    def test_a_session_filed_under_another_project_is_followed_there(
+        self,
+        claude_scope: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Measured: claude appends to the OTHER project's file, not this cwd's.
+
+        A worktree resuming a session its main checkout started is the
+        everyday case.
+        """
+        elsewhere = claude_scope.parent / "-elsewhere" / f"{_ELSEWHERE}.jsonl"
+        elsewhere.parent.mkdir()
+        _ = elsewhere.write_text(_claude_line("before"))
+
+        config = _keep_main(
+            monkeypatch,
+            ["claude", "--no-sync", "--", "--resume", _ELSEWHERE],
+        )
+
+        assert config.resume_path == elsewhere
+        assert config.cli_session_id == _ELSEWHERE
+
+    def test_a_codex_resume_by_id_follows_its_rollout(
+        self,
+        codex_rollout: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        config = _keep_main(
+            monkeypatch,
+            ["codex", "--no-sync", "--", "resume", _ROLLOUT_ID],
+        )
+
+        assert config.resume_path == codex_rollout
+        assert config.cli_session_id == _ROLLOUT_ID
+
+    @pytest.mark.parametrize(
+        ("cli", "spelling"),
+        [
+            ("claude", ("-c",)),
+            ("claude", ("-pc",)),
+            ("claude", ("--resume",)),
+            ("claude", ("--resume", "fix bug")),
+            ("claude", (f"-r={_OLD}",)),
+            ("claude", ("--resume", _OLD.upper())),
+            ("claude", ("--resume", _ELSEWHERE)),
+            ("codex", ("resume", "--last")),
+            ("codex", ("resume", _ELSEWHERE)),
+        ],
+        ids=[
+            "continue",
+            "cluster-continue",
+            "picker",
+            "search",
+            "short-equals",
+            "uppercase",
+            "no-such-session",
+            "codex-last",
+            "codex-no-such-session",
+        ],
+    )
+    @pytest.mark.usefixtures("claude_scope", "codex_rollout")
+    def test_a_resume_the_run_cannot_name_runs_uncaptured_with_a_warning(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        cli: str,
+        spelling: tuple[str, ...],
+    ) -> None:
+        """The CLI still starts; the warning names the route that captures."""
+        config = _keep_main(monkeypatch, [cli, "--no-sync", "--", *spelling])
+
+        assert config.resume_path is None
+        assert config.cli_session_id is None
+        assert config.cli_args == spelling
+        assert f"trax agentsession <seq> run {cli}" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        ("cli", "spelling"),
+        [
+            ("claude", ()),
+            ("claude", ("--model", "haiku")),
+            ("claude", ("--resume", _OLD, "--fork-session")),
+            ("codex", ("fork", _ROLLOUT_ID)),
+        ],
+        ids=["fresh", "options", "fork", "codex-fork"],
+    )
+    @pytest.mark.usefixtures("claude_scope", "codex_rollout")
+    def test_a_new_session_follows_nothing_and_warns_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        cli: str,
+        spelling: tuple[str, ...],
+    ) -> None:
+        """A fork copies an old transcript into a NEW one, which it captures."""
+        config = _keep_main(monkeypatch, [cli, "--no-sync", "--", *spelling])
+
+        assert config.resume_path is None
+        assert config.cli_session_id is None
+        assert capsys.readouterr().err == ""
+
+    def test_a_materialized_resume_keeps_its_transcript(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``trax agentsession <seq> run`` names the file; the run trusts it."""
+        materialized = tmp_path / f"{_OLD}.jsonl"
+
+        config = _keep_main(
+            monkeypatch,
+            ["claude", "--no-sync"],
+            resume_path=materialized,
+            cli_session_id=_OLD,
+        )
+
+        assert config.resume_path == materialized
+        assert config.cli_session_id == _OLD
+        assert config.cli_args == ("--resume", _OLD)
+
+    def test_a_forked_materialized_resume_starts_a_new_session(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The fork writes a new file, so the materialized one is not followed.
+
+        Kept, it pinned the run to the old id: the fork's turns were dropped
+        and the old AgentSession re-attached to receive nothing new.
+        """
+        config = _keep_main(
+            monkeypatch,
+            ["claude", "--no-sync", "--", "--fork-session"],
+            resume_path=tmp_path / f"{_OLD}.jsonl",
+            cli_session_id=_OLD,
+        )
+
+        assert config.resume_path is None
+        assert config.cli_session_id is None
+        assert config.cli_args == ("--resume", _OLD, "--fork-session")
+
+    @pytest.mark.usefixtures("claude_scope")
+    def test_a_detached_run_warns_before_it_detaches(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A detached host writes to its log, which nobody reads."""
+        hosted: list[Callable[[HostSpec | None], int]] = []
+        monkeypatch.setattr(detach, "launch", partial(_keep_host, hosted))
+
+        assert session.main(["claude", "--detach", "--", "-c"]) == 0
+
+        assert len(hosted) == 1
+        assert "trax agentsession <seq> run claude" in capsys.readouterr().err
+
+    @pytest.mark.usefixtures("claude_scope")
+    def test_a_dry_run_resolves_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A dry run spawns no CLI, so there is no resume to warn about."""
+        config = _keep_main(monkeypatch, ["claude", "--dry-run", "--", "-c"])
+
+        assert config.resume_path is None
+        assert capsys.readouterr().err == ""
+
+
+class TestMainDispatch:
+    """``main`` hands host verbs to ``detach`` and refuses contradictory flags."""
+
+    def test_a_host_verb_goes_to_detach(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(detach, "main", len)
+        assert session.main(["ls", "x"]) == 2
+
+    @pytest.mark.parametrize(
+        "argv",
+        [["claude", "--name", "x"], ["claude", "--detach", "--dry-run"]],
+        ids=["name-without-detach", "detached-dry-run"],
+    )
+    def test_contradictory_flags_are_refused(self, argv: list[str]) -> None:
+        with pytest.raises(SystemExit):
+            _ = session.main(argv)
+
+
+class TestAResumedTranscriptIsCaptured:
+    """A run handed a ``resume_path`` captures that transcript, from its start.
+
+    Re-reading what it already holds is safe: a record's key is its position
+    in the file, so the stored turns land back on their own keys, and the
+    server re-attaches the AgentSession stamped with the id instead of opening
+    a second one.
+    """
+
+    @classmethod
+    def _spawn(
+        cls,
+        monkeypatch: pytest.MonkeyPatch,
+        config: RunConfig,
+        act: Callable[[Sequence[str]], None],
+    ) -> tuple[_OpenWatchingSink, list[str]]:
+        """Run the real spawn path with a relay that calls ``act(argv)``."""
+        sink = _OpenWatchingSink()
+        argv_seen: list[Sequence[str]] = []
+
+        class _Relay:
+            def __init__(self, argv: Sequence[str], **kwargs: object) -> None:
+                del kwargs
+                self.argv = argv
+
+            def run(self) -> int:
+                argv_seen.append(self.argv)
+                act(self.argv)
+                return 0
+
+        monkeypatch.setattr(session, "ThreadedRelay", _Relay)
+        monkeypatch.setattr(shutil, "which", _always_found)
+        rc = session._spawn_and_drain(
+            replace(config, quiesce_seconds=0.0),
+            session._ADAPTERS[config.cli_name](),
+            sink,
+            _Stats(),
+        )
+        assert rc == 0
+        (argv,) = argv_seen
+        return sink, list(argv)
+
+    def test_a_claude_resume_captures_the_file_it_appends_to(
+        self,
+        claude_scope: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        transcript = claude_scope / f"{_OLD}.jsonl"
+        config = RunConfig(
+            cli_name="claude",
+            cli_args=("--resume", _OLD),
+            resume_path=transcript,
+            cli_session_id=_OLD,
+        )
+
+        sink, argv = self._spawn(
+            monkeypatch,
+            config,
+            partial(_append, transcript, _claude_line("after")),
+        )
+
+        assert _texts(sink) == ["before", "after"]
+        assert sink.known_at_open == [_OLD]
+        assert argv == ["claude", "--resume", _OLD]
+
+    def test_a_transcript_under_another_project_is_captured(
+        self,
+        claude_scope: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Outside this cwd's project directory, which scopes every other file."""
+        elsewhere = claude_scope.parent / "-elsewhere" / f"{_ELSEWHERE}.jsonl"
+        elsewhere.parent.mkdir()
+        _ = elsewhere.write_text(_claude_line("before"))
+        config = RunConfig(
+            cli_name="claude",
+            cli_args=("--resume", _ELSEWHERE),
+            resume_path=elsewhere,
+            cli_session_id=_ELSEWHERE,
+        )
+
+        sink, _argv = self._spawn(
+            monkeypatch,
+            config,
+            partial(_append, elsewhere, _claude_line("after")),
+        )
+
+        assert _texts(sink) == ["before", "after"]
+
+    def test_a_resumed_run_does_not_adopt_a_siblings_new_file(
+        self,
+        claude_scope: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Another run's session minted in the same cwd stays that run's."""
+        transcript = claude_scope / f"{_OLD}.jsonl"
+        sibling = claude_scope / f"{_ELSEWHERE}.jsonl"
+        config = RunConfig(
+            cli_name="claude",
+            cli_args=("--resume", _OLD),
+            resume_path=transcript,
+            cli_session_id=_OLD,
+        )
+
+        def append_beside_a_sibling(argv: Sequence[str]) -> None:
+            _append(sibling, _claude_line("sibling"), argv)
+            _append(transcript, _claude_line("after"), argv)
+
+        sink, _argv = self._spawn(monkeypatch, config, append_beside_a_sibling)
+
+        assert _texts(sink) == ["before", "after"]
+
+    def test_a_forked_resume_is_pinned_to_a_fresh_id(
+        self,
+        claude_scope: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``--fork-session`` writes a NEW file, so the run names its id.
+
+        ``--session-id`` is the one spelling claude accepts beside a resume,
+        so the fork's file is known before claude writes it.
+        """
+
+        def fork(argv: Sequence[str]) -> None:
+            minted = argv[argv.index("--session-id") + 1]
+            forked = claude_scope / f"{minted}.jsonl"
+            _ = forked.write_text(_claude_line("before") + _claude_line("forked"))
+
+        sink, argv = self._spawn(
+            monkeypatch,
+            RunConfig(cli_name="claude", cli_args=("--resume", _OLD, "--fork-session")),
+            fork,
+        )
+
+        minted = argv[argv.index("--session-id") + 1]
+        assert minted != _OLD
+        assert _texts(sink) == ["before", "forked"]
+        assert sink.known_at_open == [minted]
+
+    @pytest.mark.usefixtures("claude_scope")
+    def test_a_fresh_run_is_stamped_with_its_minted_id_at_open(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Sent at open, not only at close: a killed run stays resumable.
+
+        Backfilled at close alone, a run that never closed was reaped with no
+        id, and a later ``--resume`` opened a second AgentSession that stored
+        the whole history again.
+        """
+        sink, argv = self._spawn(monkeypatch, RunConfig(cli_name="claude"), _ignore)
+
+        assert sink.known_at_open == [argv[argv.index("--session-id") + 1]]
+
+    @pytest.mark.usefixtures("claude_scope")
+    def test_a_resume_claude_picks_is_not_given_a_session_id(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Measured: claude refuses ``--session-id`` beside an unforked resume."""
+        sink, argv = self._spawn(
+            monkeypatch,
+            RunConfig(cli_name="claude", cli_args=("-pc",)),
+            _ignore,
+        )
+
+        assert argv == ["claude", "-pc"]
+        assert sink.known_at_open == []
+
+    def test_a_codex_resume_captures_the_rollout_it_appends_to(
+        self,
+        codex_rollout: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        config = RunConfig(
+            cli_name="codex",
+            cli_args=("resume", _ROLLOUT_ID),
+            resume_path=codex_rollout,
+            cli_session_id=_ROLLOUT_ID,
+        )
+
+        sink, argv = self._spawn(
+            monkeypatch,
+            config,
+            partial(_append, codex_rollout, _codex_line("after")),
+        )
+
+        assert _texts(sink) == ["before", "after"]
+        assert argv == ["codex", "--no-daemon", "resume", _ROLLOUT_ID]
+
+
 class TestWorktreeDiffWiring:
     """``trax run --diff`` wires a session's edits to its worktree diff."""
 
@@ -916,16 +1413,7 @@ class TestProjectDirectoryBornMidRun:
 
         def write() -> None:
             fresh.mkdir()
-            (fresh / "abc-123.jsonl").write_text(
-                json.dumps(
-                    {
-                        "type": "user",
-                        "uuid": "u1",
-                        "message": {"role": "user", "content": "captured"},
-                    },
-                )
-                + "\n",
-            )
+            (fresh / "abc-123.jsonl").write_text(_claude_line("captured"))
 
         _stats, sink = _drain_once(ClaudeAdapter(), write)
 
@@ -1012,16 +1500,7 @@ class TestProjectDirectoryBornMidRun:
 
         def write() -> None:
             fresh.mkdir()
-            (fresh / "abc-123.jsonl").write_text(
-                json.dumps(
-                    {
-                        "type": "user",
-                        "uuid": "u1",
-                        "message": {"role": "user", "content": "captured"},
-                    },
-                )
-                + "\n",
-            )
+            (fresh / "abc-123.jsonl").write_text(_claude_line("captured"))
 
         _stats, sink = _drain_once(ClaudeAdapter(), write)
 
@@ -1237,14 +1716,7 @@ class TestTheWatchIsArmedBeforeTheChildSpawns:
 
             def run(self) -> int:
                 _ = (scope / f"{self.session_id}.jsonl").write_text(
-                    json.dumps(
-                        {
-                            "type": "user",
-                            "uuid": "u1",
-                            "message": {"role": "user", "content": "first"},
-                        },
-                    )
-                    + "\n",
+                    _claude_line("first"),
                 )
                 return 0
 
@@ -1858,16 +2330,16 @@ class TestCompactionReDerivesPositions:
         try:
             assert armed.wait(5.0), "session-log watch did not arm"
             with log.open("ab") as handle:
-                _ = handle.write(_uuid_line("a"))
+                _ = handle.write(_claude_line("a").encode())
             _wait_for_events(sink, 1)
             assert sink.events, "the first line never reached the sink"
             with log.open("ab") as handle:
-                _ = handle.write(_uuid_line("b") + _uuid_line("c"))
+                _ = handle.write((_claude_line("b") + _claude_line("c")).encode())
             _wait_for_events(sink, 3)
             captured = len(sink.events)
 
             # Compaction: the file is REPLACED, smaller, and keeps ``c``.
-            log.write_bytes(_uuid_line("c") + _uuid_line("d"))
+            log.write_bytes((_claude_line("c") + _claude_line("d")).encode())
             _wait_for_events(sink, captured + 1)
         finally:
             stop.set()
@@ -1891,22 +2363,8 @@ class TestCompactionReDerivesPositions:
         )
 
 
-def _uuid_line(marker: str) -> bytes:
-    """One claude-shaped record whose uuid is stable for ``marker``."""
-    return (
-        json.dumps(
-            {
-                "type": "user",
-                "uuid": f"uuid-{marker}",
-                "message": {"role": "user", "content": marker},
-            },
-        )
-        + "\n"
-    ).encode()
-
-
 def _uuid_records(stream: TextIO) -> Iterator[SessionRecord]:
-    """Read the claude-shaped fixture lines ``_uuid_line`` writes."""
+    """Read the claude-shaped fixture lines ``_claude_line`` writes."""
     for line in stream:
         obj = json_loads(line, dict[str, object])
         message = from_plain(obj["message"], dict[str, object])
@@ -2036,6 +2494,77 @@ class TestEmitSlashCommands:
             deque(),
         )
         assert sink.events == []
+
+    def test_a_command_that_switches_sessions_is_noted(self) -> None:
+        """Only the adapter's switching commands; ``/model`` keeps the session."""
+        stats = _Stats()
+        at = datetime(2026, 6, 1, tzinfo=UTC)
+        _emit_slash_commands(
+            _FakeAdapter(Path()),
+            _RecordingSink(),
+            stats,
+            RunConfig(cli_name="fake"),
+            deque(
+                [
+                    (SlashCommand(command="model"), at),
+                    (SlashCommand(command="clear"), at),
+                ],
+            ),
+        )
+        assert stats.switches == ["clear"]
+
+
+class TestASessionSwitchIsWarnedAtExit:
+    """A run that saw ``/clear`` says, as it exits, what it did not capture.
+
+    Measured on claude 2.1.302 and codex 0.163.0: the turns after ``/clear``,
+    ``/branch`` or ``/fork`` land in a session under another id, which the
+    run does not own, so the transcript silently stopped there.
+    """
+
+    @pytest.mark.parametrize(("switches", "warned"), [(["clear"], True), ([], False)])
+    def test_the_exit_names_the_switching_commands(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        switches: list[str],
+        warned: bool,
+    ) -> None:
+        monkeypatch.setattr(
+            session,
+            "_ADAPTERS",
+            {"fake": lambda: _FakeAdapter(tmp_path)},
+        )
+        monkeypatch.setattr(session, "_open_sink", _open_recording_sink)
+        monkeypatch.setattr(
+            session,
+            "_spawn_and_drain",
+            partial(_spawn_switching, switches),
+        )
+
+        assert run(RunConfig(cli_name="fake", sync=False)) == 0
+
+        assert ("/clear" in capsys.readouterr().err) is warned
+
+
+def _open_recording_sink(config: RunConfig, adapter: Adapter) -> Sink:
+    """Open a recording sink in place of the run's real one."""
+    del config, adapter
+    return _RecordingSink()
+
+
+def _spawn_switching(
+    switches: list[str],
+    config: RunConfig,
+    adapter: Adapter,
+    sink: Sink,
+    stats: _Stats,
+) -> int:
+    """Stand in for a run whose human typed ``switches``."""
+    del config, adapter, sink
+    stats.switches.extend(switches)
+    return 0
 
 
 class TestDryRunDrain:
@@ -2253,6 +2782,9 @@ class TestFallbackClientInbound:
         assert clients[0].base_url == LOCALHOST_FALLBACK_URL
 
 
+_RESUMED: Final = "33333333-3333-4333-8333-333333333333"
+
+
 class TestSessionOwnerAndArgv:
     """Which CLI session a run claims, and how its CLI is told."""
 
@@ -2272,13 +2804,7 @@ class TestSessionOwnerAndArgv:
 
     @pytest.mark.parametrize(
         ("args", "named"),
-        [
-            (("--session-id", "s1"), "s1"),
-            (("--session-id=s2",), "s2"),
-            (("--resume", "s3"), "s3"),
-            (("--resume=s4",), "s4"),
-            (("-r", "s5"), "s5"),
-        ],
+        [(("--session-id", "s1"), "s1"), (("--session-id=s2",), "s2")],
     )
     def test_a_claude_session_named_on_the_command_line_is_claimed(
         self,
@@ -2292,16 +2818,47 @@ class TestSessionOwnerAndArgv:
         assert owner.session_id == named
         assert _cli_argv(ClaudeAdapter(), config, owner) == ["claude", *args]
 
-    @pytest.mark.parametrize("flag", ["--continue", "-c"])
-    def test_a_continued_claude_session_is_unknown_until_observed(
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ("--continue",),
+            ("-pc",),
+            ("--resume",),
+            ("--resume", "fix bug"),
+            ("--resume=fix bug",),
+            (f"-r{_RESUMED}",),
+        ],
+        ids=["continue", "cluster", "picker", "search", "equals-search", "attached"],
+    )
+    def test_a_claude_resume_is_never_handed_a_session_id(
         self,
-        flag: str,
+        args: tuple[str, ...],
     ) -> None:
-        config = RunConfig(cli_name="claude", cli_args=(flag,))
+        """Measured: claude refuses ``--session-id`` beside an unforked resume.
+
+        The run owns no id here: one it can name arrives as ``cli_session_id``,
+        resolved before the run, and one claude picks it cannot capture.
+        """
+        config = RunConfig(cli_name="claude", cli_args=args)
         owner = _session_owner(ClaudeAdapter(), config)
         assert owner is not None
         assert owner.session_id is None
-        assert _cli_argv(ClaudeAdapter(), config, owner) == ["claude", flag]
+        assert _cli_argv(ClaudeAdapter(), config, owner) == ["claude", *args]
+
+    def test_a_forked_claude_resume_is_minted_a_fresh_id(self) -> None:
+        """The fork writes a new file, so the run names it up front."""
+        args = ("--resume", _RESUMED, "--fork-session")
+        config = RunConfig(cli_name="claude", cli_args=args)
+        owner = _session_owner(ClaudeAdapter(), config)
+        assert owner is not None
+        assert owner.session_id is not None
+        assert owner.session_id != _RESUMED
+        assert _cli_argv(ClaudeAdapter(), config, owner) == [
+            "claude",
+            "--session-id",
+            owner.session_id,
+            *args,
+        ]
 
     def test_a_resumed_claude_run_claims_its_materialized_id(self) -> None:
         """The resume path names the id itself; claude must not get a second."""
@@ -2763,15 +3320,33 @@ class TestSpawnWiring:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
+        """A fresh codex run: codex mints its own id after it starts."""
         sink = _GrantingSink(granted="scientist")
         _ = _wire(
+            monkeypatch,
+            tmp_path,
+            RunConfig(cli_name="codex", sync=False),
+            CodexAdapter(),
+            sink=sink,
+        )
+        assert sink.calls[0] == "open"
+
+    def test_a_fresh_claude_run_names_its_minted_session_before_open(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """The id claude is handed is the one the server is stamped with at open."""
+        sink = _GrantingSink(granted="scientist")
+        wiring, _status = _wire(
             monkeypatch,
             tmp_path,
             RunConfig(cli_name="claude", sync=False),
             ClaudeAdapter(),
             sink=sink,
         )
-        assert sink.calls[0] == "open"
+        minted = wiring.argv[wiring.argv.index("--session-id") + 1]
+        assert sink.calls[:2] == [f"cli_session_id {minted}", "open"]
 
     def test_a_detached_run_hands_its_host_to_the_relay(
         self,

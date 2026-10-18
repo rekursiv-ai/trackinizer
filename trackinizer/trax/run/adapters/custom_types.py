@@ -55,14 +55,39 @@ class Adapter(Protocol):
     is what the runner captures, so the run records nothing at all.
     """
 
+    session_switch_commands: frozenset[str]
+    """Slash commands that can move the live CLI into another session.
+
+    Each continues under a session id this run does not own -- claude's
+    ``/clear`` mints one, ``/resume`` and ``/branch`` switch to one -- so the
+    turns after it go uncaptured. The runner names them in a warning at exit.
+    """
+
+    def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
+        """Return the session ``cli_args`` continue: its id, ``""``, or ``None``.
+
+        ``None`` means the arguments start a new session: a fresh one, or a
+        fork, which copies an old session into a NEW transcript. ``""`` means
+        they continue one the CLI picks after it starts (a picker,
+        ``--continue``, a search term), which the runner cannot name.
+
+        Args:
+          cli_args: The arguments the CLI is spawned with.
+
+        Returns:
+          session_id: The continued session's id, ``""`` when the CLI picks it,
+            or ``None`` for a new session.
+
+        """
+        ...
+
     def session_dirs(self) -> Iterable[Path]:
         """Directories the wrapped CLI writes session files to.
 
-        An iterable, so a CLI that shards sessions across per-project
-        subdirs (claude's ``~/.claude/projects/<hash>/``) can yield each
-        one. Paths may not exist before a first hermetic run; the live runner
-        creates them before arming its filesystem watches. An empty iterable
-        means the adapter has no filesystem capture source.
+        An iterable of watch ROOTS. Paths may not exist before a first
+        hermetic run; the live runner creates them before arming its
+        filesystem watches. An empty iterable means the adapter has no
+        filesystem capture source.
 
         Returns:
           result: Iterable of directories where session files may appear.

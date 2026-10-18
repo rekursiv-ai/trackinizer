@@ -18,6 +18,7 @@ See ``docs/cli-scraping-investigation.md`` for the empirical layout.
 
 from __future__ import annotations
 
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -39,6 +40,10 @@ _NOT_KEPT: Final = re.compile(r"[^A-Za-z0-9-]")
 working directory. Everything outside ``[A-Za-z0-9-]``, so ``/home/x/repo``
 becomes ``-home-x-repo``."""
 
+_SESSION_ID: Final = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+"""A session id as claude looks one up: exactly, so lowercase and dashed. Any other
+``--resume`` value -- uppercase, dashless, ``=<id>`` -- is a picker search term."""
+
 
 class ClaudeAdapter:
     """Reads the ``claude`` CLI's per-project session JSONL files."""
@@ -52,6 +57,12 @@ class ClaudeAdapter:
     # launching session itself, which a new top-level session is not.
     parent_session_env: frozenset[str] = frozenset(
         {"CLAUDE_CODE_CHILD_SESSION", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID"},
+    )
+    # Measured on 2.1.302: ``/clear`` (aliases ``/reset``, ``/new``) and ``/branch``
+    # mint a new session id, ``/resume`` switches to another session's file, and
+    # ``/fork`` continues in a background session under its own id.
+    session_switch_commands: frozenset[str] = frozenset(
+        {"clear", "reset", "new", "resume", "branch", "fork"},
     )
 
     @property
@@ -108,8 +119,7 @@ class ClaudeAdapter:
         """Claude's own session id is the ``<session-id>.jsonl`` filename stem.
 
         Used to correlate a resumed run to its prior AgentSession (the same id
-        names the same claude session across ``--resume``). Returns ``None`` for
-        a path that is not one of this adapter's session files.
+        names the same claude session across ``--resume``).
 
         Args:
           path: File path (typically *.jsonl).
@@ -122,6 +132,70 @@ class ClaudeAdapter:
             return None
         return path.stem or None
 
+    def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
+        """Return the session ``cli_args`` continue; see ``Adapter.resumed_session``.
+
+        Read as claude's own parser reads them: ``-r`` takes the rest of its
+        short-flag cluster (``-r<id>``) or else the next token unless that is a
+        flag, and ``--fork-session`` turns any resume into a new session.
+
+        Args:
+          cli_args: The arguments claude is spawned with.
+
+        Returns:
+          session_id: The id resumed, ``""`` when claude picks the session, or
+            ``None`` for a new one.
+
+        """
+        options = cli_args[: cli_args.index("--")] if "--" in cli_args else cli_args
+        if "--fork-session" in options:
+            return None
+        resumed: str | None = None
+        consumed = False
+        # Paired with the token after it; the last is paired with a lone dash,
+        # which reads as a flag, so a trailing ``-r`` takes no value.
+        for arg, following in pairwise((*options, "-")):
+            if consumed:
+                consumed = False
+            elif arg == "--continue":
+                resumed = ""
+            elif arg == "--resume":
+                consumed = following[:1] != "-"
+                resumed = _session_named(following if consumed else "")
+            elif arg.startswith("--resume="):
+                resumed = _session_named(arg.partition("=")[2])
+            elif arg[:1] == "-" and arg[1:2] not in {"", "-"}:
+                resumed, consumed = _short_cluster(arg[1:], following, resumed=resumed)
+        return resumed
+
     def reader(self) -> Tail[TraxRecord]:
         """Return a fresh IR reader for one claude session file."""
         return Tail(claude.normalize)
+
+
+# Commander semantics: an option that takes a value takes the REST of its cluster
+# (``-dr`` is ``--debug r``, not ``--debug --resume``), else the next token -- always
+# for a required value (``-n``), and for an optional one (``-d``, ``-r``, ``-w``)
+# only when that token is not itself a flag.
+def _short_cluster(
+    letters: str,
+    following: str,
+    *,
+    resumed: str | None,
+) -> tuple[str | None, bool]:
+    """Fold one short-flag cluster into ``resumed``; say if it took ``following``."""
+    for offset, letter in enumerate(letters, start=1):
+        if letter == "c":
+            resumed = ""
+        elif letter in "dnrw":
+            attached = letters[offset:]
+            takes_next = not attached and (letter == "n" or following[:1] != "-")
+            if letter == "r":
+                resumed = _session_named(attached or (following if takes_next else ""))
+            return resumed, takes_next
+    return resumed, False
+
+
+def _session_named(value: str) -> str:
+    """Return ``value`` when it is a session id claude looks up, else ``""``."""
+    return value if _SESSION_ID.fullmatch(value) else ""

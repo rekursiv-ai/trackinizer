@@ -168,6 +168,9 @@ class _SessionOwner:
     """The one CLI session ID whose files this wrapper may capture."""
 
     session_id: str | None = None
+    minted: bool = False
+    """Whether this run made ``session_id`` up, so must hand it to the CLI."""
+
     child_pid: int | None = None
     _output_tail: bytes = b""
 
@@ -261,6 +264,9 @@ class _Stats:
     """
 
     counts: dict[str, int] = field(default_factory=dict)
+    switches: list[str] = field(default_factory=list)
+    """Typed slash commands that can move the CLI into a session this run
+    does not capture (``Adapter.session_switch_commands``), in order."""
 
     def record(self, kind: str) -> None:
         """Tally one event of ``kind`` for the end-of-run summary.
@@ -330,9 +336,12 @@ class RunConfig:
     """
 
     resume_path: Path | None = None
-    """A materialized transcript this run continues, exempt from ``baseline``.
+    """A transcript this run continues, exempt from ``baseline`` and scope.
 
-    A resumed run's file is written BEFORE the CLI starts, so the pre-spawn
+    Materialized by ``trax agentsession <seq> run``, or found by the id a
+    resume typed after ``--`` names (``claude --resume <id>``, ``codex resume
+    <id>``) -- under another project directory too, which claude keeps
+    appending to. Either way it exists BEFORE the CLI starts, so the pre-spawn
     snapshot would classify it as a previous session's and never capture it --
     and the follower would seed it at EOF, skipping every turn it already
     holds. Naming it here exempts it from both: it is followed from offset 0,
@@ -341,11 +350,11 @@ class RunConfig:
     """
 
     cli_session_id: str | None = None
-    """The CLI's own id for a resumed run, known before the CLI writes.
+    """The CLI's own id for the session ``resume_path`` holds.
 
-    A fresh run learns this from the file the CLI mints; a resumed one MINTS
-    it, stamps the server with it, and passes it to ``--resume``. Given here,
-    the sink backfills it at open rather than waiting to observe it.
+    Named before the CLI writes anything, so the sink hands it to the server
+    at open and the server re-attaches the AgentSession that captured it,
+    rather than opening a second one.
     """
 
     quiesce_seconds: float = 1.0
@@ -413,6 +422,13 @@ def run(config: RunConfig) -> int:
         sink.close()
 
     sys.stderr.write(f"\n[trax run] {stats.render()}\n")
+    if stats.switches:
+        typed = ", ".join(f"/{command}" for command in dict.fromkeys(stats.switches))
+        sys.stderr.write(
+            f"[trax run] {typed} can move {adapter.name} into another session, whose"
+            " turns this run does not capture; resume a captured session with"
+            f" trax agentsession <seq> run {adapter.name}\n",
+        )
     return rc
 
 
@@ -558,7 +574,8 @@ def main(
         ``--out`` capture never resolves a profile or opens a socket.
       resume_path: A materialized transcript this run continues. Not a flag:
         the file is written by the resume tail moments before, so there is no
-        spelling of it a human would type.
+        spelling of it a human would type. A resume typed after ``--`` is
+        found here instead.
       cli_session_id: The id that transcript was materialized under, which
         ``--resume`` takes and which re-attaches the run to its stored
         AgentSession.
@@ -583,10 +600,19 @@ def main(
         parser.error("--name names a --detach host")
     if flags.detach and flags.dry_run:
         parser.error("--detach hosts a live CLI, and --dry-run spawns none")
+    # Prepended, so a caller's own ``--`` args still win over it.
+    cli_args = (*resume_argv(flags.cli, cli_session_id), *cli_argv)
+    if not flags.dry_run:
+        resume_path, cli_session_id = _continued_transcript(
+            _ADAPTERS[flags.cli](),
+            cli_args,
+            resume_path=resume_path,
+            cli_session_id=cli_session_id,
+        )
     start = partial(
         _run_flags,
         flags=flags,
-        cli_argv=cli_argv,
+        cli_args=cli_args,
         client_factory=client_factory,
         resume_path=resume_path,
         cli_session_id=cli_session_id,
@@ -600,6 +626,56 @@ def main(
     return start(None)
 
 
+# Decided before a ``--detach`` host forks, while stderr is still the user's terminal: a
+# warning written after it lands in the host's log, which nobody reads.
+#
+# A transcript that exists before the CLI starts is in the pre-spawn ``baseline`` and
+# would be skipped as an earlier run's, so a resume typed after ``--`` stored nothing.
+# Found by its id and named as ``resume_path``, it gets what ``trax agentsession <seq>
+# run`` gives the file it materializes. A fork of either copies the transcript into a
+# NEW one and never writes the old, so it follows nothing and the run mints the new id.
+def _continued_transcript(
+    adapter: Adapter,
+    cli_args: tuple[str, ...],
+    *,
+    resume_path: Path | None,
+    cli_session_id: str | None,
+) -> tuple[Path | None, str | None]:
+    """Return the transcript ``cli_args`` continue and its id, warning if unknown."""
+    resumed = adapter.resumed_session(cli_args)
+    if resumed is None:
+        return None, None
+    if resume_path is not None:
+        return resume_path, cli_session_id
+    found = _session_file(adapter, resumed) if resumed else None
+    if found is None:
+        sys.stderr.write(
+            f"[trax run] this run cannot tell which {adapter.name} session it"
+            " continues, so it captures none of it; resume a captured session"
+            f" with trax agentsession <seq> run {adapter.name}, or name the"
+            " session id\n",
+        )
+        return None, None
+    return found, resumed
+
+
+# Searched for by its id rather than built from the cwd: claude resumes a session filed
+# under ANOTHER project directory -- a worktree resuming its main checkout's session --
+# and keeps appending to that file, so a path derived from this cwd names nothing.
+def _session_file(adapter: Adapter, session_id: str) -> Path | None:
+    """Return the transcript ``adapter`` keeps for ``session_id``, if there is one."""
+    return next(
+        (
+            path
+            for root in adapter.session_dirs()
+            for path in root.rglob(f"*{session_id}*")
+            if adapter.matches_session_file(path)
+            and adapter.session_id_from_path(path) == session_id
+        ),
+        None,
+    )
+
+
 # The client is built HERE, inside whichever process runs the CLI: a ``--detach`` host
 # calls this after forking, so the launcher never opens a connection the host would
 # inherit half-used.
@@ -607,7 +683,7 @@ def _run_flags(
     host: HostSpec | None,
     *,
     flags: _Flags,
-    cli_argv: tuple[str, ...],
+    cli_args: tuple[str, ...],
     client_factory: Callable[[], Client] | None,
     resume_path: Path | None,
     cli_session_id: str | None,
@@ -619,8 +695,7 @@ def _run_flags(
     return run(
         RunConfig(
             cli_name=flags.cli,
-            # Prepended, so a caller's own ``--`` args still win over it.
-            cli_args=(*resume_argv(flags.cli, cli_session_id), *cli_argv),
+            cli_args=cli_args,
             actor=flags.actor or os.environ.get("AGENTNAME", "Agent"),
             rooms=tuple(flags.rooms or ()),
             private=flags.private,
@@ -819,12 +894,14 @@ def _spawn_and_drain(
     # (#453). A local-file / dry-run sink has no server session and returns
     # None, so the requested ``config.actor`` is exported unchanged.
     #
-    # A resumed run KNOWS its CLI session id before the CLI writes anything --
-    # it minted the id and materialized the transcript under it -- and handing
-    # it over BEFORE the session opens is what makes the server re-attach the
-    # existing AgentSession instead of forking a second one.
-    if config.cli_session_id is not None:
-        sink.set_cli_session_id(config.cli_session_id)
+    # Any CLI session id the run knows before the CLI writes -- a resume names it, a
+    # fresh claude run mints it -- goes over BEFORE the session opens. A resume then
+    # re-attaches the AgentSession stamped with it instead of forking a second one,
+    # and a fresh run is stamped at open: backfilled only at close, a run killed
+    # before it was reaped unstamped, and its next ``--resume`` stored it all twice.
+    named = owner.session_id if owner is not None else config.cli_session_id
+    if named is not None:
+        sink.set_cli_session_id(named)
     try:
         granted_actor = sink.open()
     except PrivateNotHeldError:
@@ -940,30 +1017,24 @@ def _spawn_and_drain(
 
 # Claude names its transcript after its session id, so knowing the id up front is what
 # tells this run's file from a concurrent run's in the same project. A run that names
-# none -- no ``--session-id``, no resume -- gets one minted here and handed to claude; a
-# ``--continue`` picks a session claude chooses, so it stays unknown until observed.
+# none -- no ``--session-id``, no resumed transcript -- and starts a new session gets
+# one minted here and handed to claude; a fork counts, since it writes a NEW file. A
+# resume claude picks itself (``--continue``, the picker, a search term) owns nothing:
+# claude refuses ``--session-id`` beside an unforked resume, and the file it continues
+# is in ``baseline``, so this run captures none of it (``main`` warned).
 # Codex mints its own, so only a resumed codex run knows it in advance.
 def _session_owner(adapter: Adapter, config: RunConfig) -> _SessionOwner | None:
     """Return the CLI session this run captures, or None when it cannot say."""
     if adapter.name == "claude":
-        session_id = (
-            config.cli_session_id
-            or _cli_arg_value(config.cli_args, "--session-id")
-            or _cli_arg_value(config.cli_args, "--resume")
-            or _cli_arg_value(config.cli_args, "-r")
-        )
-        if session_id is None and not {"--continue", "-c"}.intersection(
-            config.cli_args,
-        ):
-            session_id = str(uuid.uuid4())
-        return _SessionOwner(session_id=session_id)
+        named = config.cli_session_id or _cli_arg_value(config.cli_args, "--session-id")
+        if named is None and adapter.resumed_session(config.cli_args) is None:
+            return _SessionOwner(session_id=str(uuid.uuid4()), minted=True)
+        return _SessionOwner(session_id=named)
     if adapter.name == "codex":
         return _SessionOwner(session_id=config.cli_session_id)
     return None
 
 
-# A minted claude id is passed as ``--session-id`` -- only when nothing else names the
-# session, or claude would be handed two.
 def _cli_argv(
     adapter: Adapter,
     config: RunConfig,
@@ -971,16 +1042,9 @@ def _cli_argv(
 ) -> list[str]:
     """Return the argv that spawns a file adapter's CLI."""
     argv = [adapter.cli_binary, *config.cli_args]
-    if adapter.name == "claude" and owner is not None:
-        if (
-            owner.session_id is not None
-            and _cli_arg_value(config.cli_args, "--session-id") is None
-            and _cli_arg_value(config.cli_args, "--resume") is None
-            and _cli_arg_value(config.cli_args, "-r") is None
-            and not {"--continue", "-c"}.intersection(config.cli_args)
-            and config.cli_session_id is None
-        ):
-            argv[1:1] = ["--session-id", owner.session_id]
+    if adapter.name == "claude" and owner is not None and owner.minted:
+        assert isinstance(owner.session_id, str)
+        argv[1:1] = ["--session-id", owner.session_id]
     elif adapter.name == "codex" and "--no-daemon" not in config.cli_args:
         argv.insert(1, "--no-daemon")
     return argv
@@ -1150,15 +1214,11 @@ def _prepare_session_dirs(adapter: Adapter) -> None:
 
 
 # Files in this set existed before the child started. The follower ignores them
-# unless this run explicitly materialized one for resume.
+# unless this run is resuming one (``RunConfig.resume_path``).
 #
-# A ``resume_path`` is EXEMPT: this run materialized it moments ago and is about to
-# continue it, so excluding it would drop the very transcript being resumed -- every
-# turn the CLI appends would be captured while the ones it was handed were not.
-def _existing_session_files(
-    adapter: Adapter,
-    config: RunConfig | None = None,
-) -> frozenset[Path]:
+# A ``resume_path`` is EXEMPT: this run is about to continue it, so excluding it would
+# drop the very transcript being resumed.
+def _existing_session_files(adapter: Adapter, config: RunConfig) -> frozenset[Path]:
     """Snapshot the matching session files present before the run starts."""
     found: set[Path] = set()
     for session_dir in adapter.session_dirs():
@@ -1167,8 +1227,7 @@ def _existing_session_files(
         for path in session_dir.rglob("*"):
             if path.is_file() and adapter.matches_session_file(path):
                 found.add(path)
-    resume = config.resume_path if config is not None else None
-    return frozenset(found - {resume} if resume is not None else found)
+    return frozenset(found - {config.resume_path})
 
 
 # Wake-driven, not polled. The cost of polling was never the tick -- it was the
@@ -1380,28 +1439,14 @@ async def _follow_session_files(
     # the working directory. Resolved ONCE: a wrapped CLI cannot change the
     # runner's cwd, and re-deriving per candidate would pay a ``resolve`` on
     # every event.
-    scope = adapter.session_scope()
-
-    def mine(path: Path) -> bool:
-        """Whether this run should capture ``path``.
-
-        The baseline excludes old files; the adapter identifies transcripts;
-        the scope narrows workspace-based layouts; and the owned session ID
-        distinguishes new files from simultaneous runs in the same workspace.
-
-        Args:
-          path: Filesystem path to test for ownership.
-
-        Returns:
-          owned: True if the run should capture this path.
-
-        """
-        if path in baseline or not adapter.matches_session_file(path):
-            return False
-        if scope is not None and scope not in path.parents:
-            return False
-        return owner is None or owner.owns(adapter, path)
-
+    mine = partial(
+        _owned,
+        adapter=adapter,
+        baseline=baseline,
+        scope=adapter.session_scope(),
+        resume=resume,
+        owner=owner,
+    )
     # Digest of the body last queued per whole-file session, so one rewrite
     # delivered as two wakes is not read as two turns (see ``_queue_body``).
     # Held ACROSS rearms: a rebuilt watch re-reads bodies it already queued,
@@ -1434,6 +1479,28 @@ async def _follow_session_files(
         # Before ``until``, only a failure returns. Back off so a persistent
         # refusal is not a hot retry loop.
         await asyncio.sleep(_WATCH_REARM_SEC)
+
+
+# The baseline excludes old files; the adapter identifies transcripts; the scope
+# narrows workspace-based layouts; and the owned session ID distinguishes new files from
+# simultaneous runs in the same workspace. A resumed transcript is exempt from the scope
+# as it is from the baseline: claude keeps appending to one filed under ANOTHER
+# project's directory when that is where the session started.
+def _owned(
+    path: Path,
+    *,
+    adapter: Adapter,
+    baseline: frozenset[Path],
+    scope: Path | None,
+    resume: frozenset[Path],
+    owner: _SessionOwner | None,
+) -> bool:
+    """Return whether this run should capture ``path``."""
+    if path in baseline or not adapter.matches_session_file(path):
+        return False
+    if scope is not None and scope not in path.parents and path not in resume:
+        return False
+    return owner is None or owner.owns(adapter, path)
 
 
 async def _watch_session_files(
@@ -1655,6 +1722,8 @@ def _emit_slash_commands(
             break
         sink.emit_slash_command(command, submitted_at)
         stats.record("SlashCommand")
+        if command.command in adapter.session_switch_commands:
+            stats.switches.append(command.command)
         if config.verbose:
             sys.stderr.write(f"[trax run] {adapter.name}: SlashCommand\n")
 

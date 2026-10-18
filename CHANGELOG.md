@@ -47,6 +47,13 @@ All notable trackinizer changes are documented here. This project follows
 - Queued inbound messages carry `InboundDrainItem.source_role` and Chat
   messages carry `ChatMessage.author_role`, the sender's attested role.
 - `Client.get` accepts a per-request `timeout`.
+- `trax run` warns when it cannot capture what the CLI continues: a resume
+  that names no session it can find (`claude --continue`, the picker, a search
+  term, `codex resume --last`), and, at exit, a typed slash command that can
+  move the CLI into another session (`/clear`, `/resume`, `/branch`, `/fork`;
+  codex `/new`, `/resume`, `/fork`). Each points at
+  `trax agentsession <seq> run <cli>`. `docs/design_session_resume.md` lists
+  what every resume path and session command captures.
 
 ### Changed
 
@@ -56,12 +63,32 @@ All notable trackinizer changes are documented here. This project follows
   a configured PEM value are still masked.
 - **Breaking:** `Redactor.redact_json` and `redact_mapping` take `PlainTree`;
   `redact_mapping` returns `Mapping[str, PlainTree]`.
+- **Breaking:** the `trax run` `Adapter` protocol gains `resumed_session`
+  (which session a command line continues) and `session_switch_commands`.
 
 ### Fixed
 
 - `trax run` no longer fails an upload with HTTP 413: a record too large to
   send keeps its beginning and end around a marker, notes the cut in
   `$trackinizer_truncated`, and resuming its session needs `--lossy`.
+- `trax run <cli> -- <resume>` captures the session it continues when the
+  resume names it by id: `claude --resume <session-id>` in each spelling claude
+  accepts (`--resume=<id>`, `-r <id>`, `-r<id>`), from any project directory,
+  and `codex resume <session-id>`. The transcript existed before the run, so it
+  was skipped as an earlier run's and the session stored no records; it is now
+  followed from its start and re-attaches the AgentSession that captured it,
+  as `trax agentsession <seq> run <cli>` does.
+- `trax run claude -- --resume` (the picker), `-r<id>`, and short-flag clusters
+  such as `-pc` start: `--session-id` is no longer added beside a resume, which
+  claude rejects without `--fork-session`. A `--resume <search term>` is no
+  longer claimed as a session id.
+- A `--fork-session` run captures the fork's new transcript, including
+  `trax agentsession <seq> run claude -- --fork-session`, which followed the
+  old one and re-attached the old AgentSession.
+- A fresh `trax run claude` stamps its session with claude's session id when it
+  opens, not only when it closes: a run killed before closing was ended
+  unstamped, and resuming it stored the whole conversation in a second
+  AgentSession.
 
 ## 0.1.6 - 2026-10-07
 

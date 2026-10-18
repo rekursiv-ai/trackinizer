@@ -33,6 +33,7 @@ class TestAdapter:
     def test_is_not_resumable(self) -> None:
         """No CLI wrote these bytes, so none can be handed them back."""
         assert IOStreamAdapter().session_id_from_path(Path("x")) is None
+        assert IOStreamAdapter().resumed_session(("--resume", "x")) is None
 
 
 if __name__ == "__main__":

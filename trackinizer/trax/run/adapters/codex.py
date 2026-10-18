@@ -38,6 +38,19 @@ _ROLLOUT_NAME: Final = re.compile(
 )
 """A rollout's name: ``rollout-<ISO>-<uuid>``, the uuid being codex's own id."""
 
+_SESSION_ID: Final = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+"""A session id as codex prints and names rollouts after: lowercase and dashed."""
+
+_VALUED_OPTIONS: Final = frozenset(
+    {
+        *("-c", "--config", "-m", "--model", "-p", "--profile", "-s", "--sandbox"),
+        *("-a", "--ask-for-approval", "-C", "--cd", "-i", "--image", "--add-dir"),
+        *("--enable", "--disable", "--remote", "--remote-auth-token-env"),
+        "--local-provider",
+    },
+)
+"""Codex 0.163.0's options that take a separate value (``codex --help``)."""
+
 
 class CodexAdapter:
     """Locates the ``codex`` CLI's rollout JSONL files.
@@ -51,6 +64,11 @@ class CodexAdapter:
     cli_binary: str = "codex"
     whole_file: bool = False
     parent_session_env: frozenset[str] = frozenset[str]()
+    # Measured on 0.163.0: ``/new`` (and ``/clear``) start a new rollout,
+    # ``/resume`` switches to another, and ``/fork`` continues in a new one.
+    session_switch_commands: frozenset[str] = frozenset(
+        {"new", "clear", "resume", "fork"},
+    )
 
     @property
     def _sessions_dir(self) -> Path:
@@ -111,6 +129,44 @@ class CodexAdapter:
         # the match cannot succeed without it.
         return from_plain(found["session_id"], str)
 
+    def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
+        """Return the session ``cli_args`` continue; see ``Adapter.resumed_session``.
+
+        ``codex [exec] resume <SESSION_ID>`` names it; ``--last``, the picker
+        and a session NAME leave codex to choose. ``fork`` starts a new rollout.
+
+        Args:
+          cli_args: The arguments codex is spawned with.
+
+        Returns:
+          session_id: The id resumed, ``""`` when codex picks the session, or
+            ``None`` for a new one.
+
+        """
+        words = _positionals(cli_args)
+        if words[:1] == ("exec",):
+            words = words[1:]
+        if words[:1] != ("resume",):
+            return None
+        named = words[1] if len(words) > 1 and "--last" not in cli_args else ""
+        return named if _SESSION_ID.fullmatch(named) else ""
+
     def reader(self) -> Tail[TraxRecord]:
         """Return a fresh IR reader for one codex rollout file."""
         return Tail(codex.normalize)
+
+
+# A subcommand is the first word that is neither a flag nor a flag's value, so a value
+# that happens to read ``resume`` (``-m resume``) is not mistaken for one.
+def _positionals(cli_args: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the words of ``cli_args`` that are not options or option values."""
+    words: list[str] = []
+    consumed = False
+    for arg in cli_args:
+        if consumed:
+            consumed = False
+        elif arg.startswith("-"):
+            consumed = arg in _VALUED_OPTIONS
+        else:
+            words.append(arg)
+    return tuple(words)

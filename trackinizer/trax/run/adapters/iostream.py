@@ -55,6 +55,7 @@ class IOStreamAdapter:
     cli_binary: str = ""
     whole_file: bool = False
     parent_session_env: frozenset[str] = frozenset[str]()
+    session_switch_commands: frozenset[str] = frozenset[str]()
     stream_source: bool = True
 
     def session_dirs(self) -> Iterable[Path]:
@@ -87,6 +88,11 @@ class IOStreamAdapter:
 
         """
         del path
+        return None
+
+    def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
+        """Return ``None``: a wrapped command keeps no session to continue."""
+        del cli_args
         return None
 
     def reader(self) -> Tail[TraxRecord]:
