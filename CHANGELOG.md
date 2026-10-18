@@ -27,9 +27,9 @@ All notable trackinizer changes are documented here. This project follows
   token on stdin, saves the credential for this user, and heartbeats until
   revoked; `trax machine NAME` shows its status.
 - Browser terminal: the owner of a connected machine opens a shell on it from a
-  web tile, over WebSockets the host dials out to the server. The server
-  records the output as a private `terminal` session, masking credential
-  shapes. Only the owner opens one, from a browser session and never with a key;
+  web tile, over WebSockets the host dials out to the server. Nothing the
+  terminal shows or receives is stored. Only the owner opens one, from a browser
+  session and never with a key;
   the host opts in with `TRAX_MACHINE_TERMINAL=1` and logs every open locally.
   Adds the `websockets` dependency.
 - A writer can enroll a machine of their own: `trax machine connect` with no name

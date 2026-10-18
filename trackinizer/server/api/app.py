@@ -61,7 +61,7 @@ from trackinizer.server.api import (
     workspace_routes,
     workstream_routes,
 )
-from trackinizer.server.api._deps import terminal_services
+from trackinizer.server.api._deps import terminal_hub
 from trackinizer.server.api.addons_routes import deployment_of
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
 from trackinizer.server.auth import seed_no_auth_user
@@ -229,12 +229,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     session_reaper_loop(app.state.store, inbound=app.state.inbound),
                 ),
             )
-            terminals = terminal_services(app)
-            tasks.append(
-                asyncio.create_task(
-                    sweep_loop(terminals.hub, touch=terminals.recorder.touch_live),
-                ),
-            )
+            tasks.append(asyncio.create_task(sweep_loop(terminal_hub(app))))
             tasks.extend(
                 _start_addon_services(
                     deployment_of(app),

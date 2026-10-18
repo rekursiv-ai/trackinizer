@@ -1,4 +1,4 @@
-import { ApiError } from "../api/client";
+import { ApiError, send, TIMEOUT_MS } from "../api/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -45,7 +45,7 @@ beforeEach(() => {
   xterm.fitted = null;
   vi.mocked(closeTerminal).mockResolvedValue(undefined);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
-  vi.mocked(openTerminal).mockResolvedValue({ terminal_id: "t1", session_id: "s1", ticket: "tk" });
+  vi.mocked(openTerminal).mockResolvedValue({ terminal_id: "t1", ticket: "tk" });
   vi.mocked(attachTerminal).mockResolvedValue("tk2");
   vi.mocked(connectTerminal).mockImplementation((given) => { options = given; return link; });
 });
@@ -57,7 +57,7 @@ test("nothing opens until Start is clicked", () => {
   render(<TerminalView machine="gx10" workspace="w1" />);
   expect(openTerminal).not.toHaveBeenCalled();
   expect(xterm.instances).toHaveLength(0);
-  expect(screen.getByText("Recorded to your sessions (private).")).toBeTruthy();
+  expect(screen.queryByText(/Recorded/)).toBeNull();
 });
 
 test("Start opens on the machine from the station with the screen's size, and connects with the ticket", async () => {
@@ -81,7 +81,7 @@ test("typing becomes input, a resize becomes a resize frame, and output is writt
 });
 
 test("a live terminal re-attaches once on mount, with a fresh ticket, and without a click", async () => {
-  render(<TerminalView machine="gx10" workspace="w1" resume={{ terminal_id: "t9", session_id: "s9" }} />);
+  render(<TerminalView machine="gx10" workspace="w1" resume={{ terminal_id: "t9" }} />);
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(attachTerminal).toHaveBeenCalledWith("t9");
   expect(openTerminal).not.toHaveBeenCalled();
@@ -97,12 +97,12 @@ test("4001 shows Take over, which attaches again", async () => {
   await waitFor(() => expect(attachTerminal).toHaveBeenCalledWith("t1"));
 });
 
-test("an ended terminal links its transcript and offers Start new", async () => {
+test("an ended terminal offers Start new and links no transcript", async () => {
   render(<TerminalView machine="gx10" workspace="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   act(() => options.onStatus({ state: "ended", note: "The shell exited." }));
-  expect(screen.getByRole("link", { name: "Transcript" }).getAttribute("href")).toBe("#/lookup/s1");
+  expect(screen.queryByRole("link", { name: "Transcript" })).toBeNull();
   expect(screen.getByRole("button", { name: "Start new" })).toBeTruthy();
 });
 
@@ -153,9 +153,17 @@ test("the tile keeps the terminal in its params once it opens, and re-attaches f
   await waitFor(() => expect(attachTerminal).toHaveBeenCalledWith("t1"));
 });
 
+/** The error the page gets for a refusal, read by the real client from the body the server answers with. */
+async function refused(status: number, code: string, message: string): Promise<ApiError> {
+  const body = { detail: { code, message } };
+  const failure = await send(TIMEOUT_MS.write, undefined, async () => ({ error: body, response: new Response(JSON.stringify(body), { status }) })).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(ApiError);
+  return failure as ApiError;
+}
+
 test("a 409 terminal_live on Start attaches to the station's live terminal instead of failing", async () => {
-  vi.mocked(openTerminal).mockRejectedValue(new ApiError(409, "a terminal is live", "terminal_live"));
-  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [], live: { terminal_id: "t7", session_id: "s7", machine: "gx10" } });
+  vi.mocked(openTerminal).mockRejectedValue(await refused(409, "terminal_live", "this station already has a live terminal"));
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [], live: { terminal_id: "t7", machine: "gx10" } });
   render(<TerminalView machine="gx10" workspace="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
@@ -170,7 +178,7 @@ test.each([
   ["terminal_unconfirmed", 409, "Allow terminals on this machine first: open Chat's terminal side and click Allow."],
   ["terminal_forbidden", 403, "Terminals are not available on a server without sign-in."],
 ])("an open refused with %s says what to do", async (code, status, text) => {
-  vi.mocked(openTerminal).mockRejectedValue(new ApiError(status, "refused", code));
+  vi.mocked(openTerminal).mockRejectedValue(await refused(status, code, "the server's own words"));
   render(<TerminalView machine="gx10" workspace="w1" />);
   start();
   expect((await screen.findByRole("alert")).textContent).toBe(text);
@@ -303,19 +311,19 @@ test("handlers are registered before the first fit, and the open sends the fitte
 });
 
 test("an unmount while the terminal is still opening closes the one that arrives, and one being attached is left running", async () => {
-  let arrive: (opened: { terminal_id: string; session_id: string; ticket: string }) => void = () => {};
+  let arrive: (opened: { terminal_id: string; ticket: string }) => void = () => {};
   vi.mocked(openTerminal).mockReturnValue(new Promise((resolve) => { arrive = resolve; }));
   const first = render(<TerminalView machine="gx10" workspace="w1" />);
   start();
   await waitFor(() => expect(openTerminal).toHaveBeenCalled());
   first.unmount();
   await waitFor(() => expect(xterm.instances[0]!.disposed).toBe(true));
-  arrive({ terminal_id: "t5", session_id: "s5", ticket: "tk" });
+  arrive({ terminal_id: "t5", ticket: "tk" });
   await waitFor(() => expect(closeTerminal).toHaveBeenCalledWith("t5"));
   expect(connectTerminal).not.toHaveBeenCalled();
   let attached: (ticket: string) => void = () => {};
   vi.mocked(attachTerminal).mockReturnValue(new Promise((resolve) => { attached = resolve; }));
-  const second = render(<TerminalView machine="gx10" workspace="w1" resume={{ terminal_id: "t9", session_id: "s9" }} />);
+  const second = render(<TerminalView machine="gx10" workspace="w1" resume={{ terminal_id: "t9" }} />);
   await waitFor(() => expect(attachTerminal).toHaveBeenCalledWith("t9"));
   second.unmount();
   attached("tk");
@@ -333,7 +341,7 @@ test("under StrictMode an agent's start opens one terminal and ends connected, n
 });
 
 test("under StrictMode a terminal that is live re-attaches once", async () => {
-  render(<StrictMode><TerminalView machine="gx10" workspace="w1" resume={{ terminal_id: "t9", session_id: "s9" }} /></StrictMode>);
+  render(<StrictMode><TerminalView machine="gx10" workspace="w1" resume={{ terminal_id: "t9" }} /></StrictMode>);
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(attachTerminal).toHaveBeenCalledTimes(1);
   expect(connectTerminal).toHaveBeenCalledTimes(1);

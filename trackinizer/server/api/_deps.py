@@ -13,7 +13,6 @@ from trackinizer.server.capture_relay import CaptureRelay
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.chat_partials import ChatPartials
 from trackinizer.server.config import Config
-from trackinizer.server.terminal_record import TerminalRecorder
 from trackinizer.server.terminals import Terminal, TerminalHub
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
@@ -83,51 +82,37 @@ def get_hub(request: Request) -> ChatHub:
     return hub
 
 
-@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
-class TerminalServices:
-    """The terminal hub and the recorder that is its observer."""
-
-    hub: TerminalHub
-    recorder: TerminalRecorder
-
-
-def terminal_services(app: FastAPI) -> TerminalServices:
-    """Return the app's terminal hub and recorder, made on first use.
+def terminal_hub(app: FastAPI) -> TerminalHub:
+    """Return the app's terminal hub, made on first use.
 
     Args:
       app: The application, whose state holds the store.
 
     Returns:
-      result: The hub and the recorder.
+      result: The hub.
 
     """
     held: object = getattr(app.state, "terminals", None)
-    if isinstance(held, TerminalServices):
+    if isinstance(held, TerminalHub):
         return held
-    store = cast("_State", app.state).store
-    recorder = TerminalRecorder(store)
-    services = TerminalServices(
-        hub=TerminalHub(
-            observer=recorder,
-            alive=functools.partial(_alive, store=store),
-        ),
-        recorder=recorder,
+    hub = TerminalHub(
+        alive=functools.partial(_alive, store=cast("_State", app.state).store),
     )
-    app.state.terminals = services
-    return services
+    app.state.terminals = hub
+    return hub
 
 
-def get_terminals(request: HTTPConnection) -> TerminalServices:
-    """Return the terminal hub and recorder held on the app state.
+def get_terminal_hub(request: HTTPConnection) -> TerminalHub:
+    """Return the terminal hub held on the app state.
 
     Args:
       request: Request.
 
     Returns:
-      result: The hub and the recorder.
+      result: The hub.
 
     """
-    return terminal_services(cast("FastAPI", request.app))
+    return terminal_hub(cast("FastAPI", request.app))
 
 
 def get_relay(request: Request) -> CaptureRelay:

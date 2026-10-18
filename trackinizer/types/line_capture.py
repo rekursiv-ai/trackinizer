@@ -2,7 +2,7 @@
 
 A terminal child's bytes arrive in arbitrary chunks. :class:`LineCapture` cuts them into
 whole lines, and :func:`normalize` reads those lines as the records a ``sh`` session
-holds -- the one reading that ``trax run`` and the server's terminal recorder share.
+holds -- the reading ``trax run`` applies to a session's output.
 """
 
 from __future__ import annotations

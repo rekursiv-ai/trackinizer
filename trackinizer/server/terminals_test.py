@@ -33,13 +33,16 @@ class _Socket:
     sent: list[tuple[Frame, bytes]] = field(default_factory=list)
     closed: list[int] = field(default_factory=list)
     gone: bool = False
+    limit: int | None = None
+    """Sends it takes before the peer is gone."""
+
     broken_close: bool = False
     """Raises from ``close`` as uvicorn does once the peer has dropped."""
 
     # Both yield, as an ASGI send does, so another task can run between two sends.
     async def send_bytes(self, data: bytes) -> None:
         await asyncio.sleep(0)
-        if self.gone:
+        if self.gone or (self.limit is not None and len(self.sent) >= self.limit):
             raise SocketClosedError
         self.sent.append(decode_frame(data))
 
@@ -53,20 +56,6 @@ class _Socket:
         return [kind for kind, _ in self.sent]
 
 
-class _Observer:
-    def __init__(self) -> None:
-        self.output_bytes = bytearray()
-        self.ended_status: list[int | None] = []
-
-    async def output(self, terminal: Terminal, data: bytes) -> None:
-        del terminal
-        self.output_bytes.extend(data)
-
-    async def ended(self, terminal: Terminal, *, status: int | None) -> None:
-        del terminal
-        self.ended_status.append(status)
-
-
 class _Clock:
     def __init__(self) -> None:
         self.now = 1_000.0
@@ -78,13 +67,11 @@ class _Clock:
 class _World:
     def __init__(self) -> None:
         self.clock = _Clock()
-        self.observer = _Observer()
         self.dead: set[uuid.UUID] = set()
         self.broken: set[uuid.UUID] = set()
         """Terminals whose liveness question raises."""
         self.slept: list[float] = []
         self.hub = TerminalHub(
-            observer=self.observer,
             alive=self._alive,
             clock=self.clock,
             sleep=self._sleep,
@@ -110,7 +97,6 @@ class _World:
                 user=user,
                 machine_id=machine_id,
                 machine="gx10",
-                session_id=uuid.uuid4(),
                 rows=24,
                 cols=80,
                 workspace=workspace,
@@ -126,9 +112,7 @@ class _World:
 
 
 @pytest.mark.asyncio
-async def test_output_reaches_the_browser_ring_and_observer_and_input_the_host() -> (
-    None
-):
+async def test_output_reaches_the_browser_and_ring_and_input_the_host() -> None:
     world = _World()
     term, host, browser = await world.live()
 
@@ -137,7 +121,6 @@ async def test_output_reaches_the_browser_ring_and_observer_and_input_the_host()
 
     assert browser.sent[-1] == (Frame.OUTPUT, b"$ ")
     assert host.sent == [(Frame.INPUT, b"ls\n")]
-    assert bytes(world.observer.output_bytes) == b"$ "
     assert term.ring.since(0)[0] == b"$ "
 
 
@@ -173,6 +156,41 @@ async def test_an_offset_past_the_ring_gets_the_whole_ring_after_a_notice() -> N
         (Frame.ACK, (4).to_bytes(8)),
         (Frame.OUTPUT, b"efgh"),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [0, 1, 2])
+async def test_a_browser_that_leaves_mid_replay_detaches_whichever_send_it_fails(
+    limit: int,
+) -> None:
+    world = _World()
+    term = world.open()
+    term.ring = Ring(capacity=3)
+    assert await world.hub.host_connected(term, _Socket())
+    await world.hub.from_host(term, Frame.OUTPUT, b"abcdef")
+    browser = _Socket(limit=limit)
+
+    await world.hub.attach_browser(term, browser, offset=0)
+
+    assert (term.browser, term.detached_at is None) == (None, False)
+
+
+@pytest.mark.asyncio
+async def test_a_browser_that_leaves_while_output_queued_behind_the_replay_detaches() -> (
+    None
+):
+    world = _World()
+    term = world.open()
+    assert await world.hub.host_connected(term, _Socket())
+    await world.hub.from_host(term, Frame.OUTPUT, b"ab")
+    browser = _Socket(limit=2)
+
+    attaching = asyncio.create_task(world.hub.attach_browser(term, browser, offset=0))
+    await asyncio.sleep(0)
+    await world.hub.from_host(term, Frame.OUTPUT, b"cd")
+    await attaching
+
+    assert term.browser is None
 
 
 @pytest.mark.asyncio
@@ -285,6 +303,24 @@ async def test_one_live_terminal_per_station_names_the_live_one() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_station_opens_a_fresh_terminal_while_the_closed_one_shuts_down() -> (
+    None
+):
+    world = _World()
+    closing, host, _ = await world.live()
+    closing.workspace = _STATION
+
+    await world.hub.stop(closing)
+
+    assert host.sent == [(Frame.STOP, b"")]
+    assert not closing.ended
+    assert world.hub.live_for("a@x.y", _STATION) is None
+    fresh = world.open(workspace=_STATION)
+    assert fresh is not closing
+    assert world.hub.live_for("a@x.y", _STATION) is fresh
+
+
+@pytest.mark.asyncio
 async def test_an_untaken_open_fails_after_twenty_seconds() -> None:
     world = _World()
     term = world.open()
@@ -321,6 +357,16 @@ async def test_a_ticket_is_one_use_short_lived_and_bound() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_ticket_is_spent_by_the_second_it_expires() -> None:
+    world = _World()
+    term = world.open()
+    ticket = world.hub.mint_ticket(term)
+    world.clock.now += wire_terminals.TICKET_TTL_SEC
+
+    assert not world.hub.redeem(ticket, user="a@x.y", terminal_id=term.id)
+
+
+@pytest.mark.asyncio
 async def test_close_machine_sends_4410_to_both_legs() -> None:
     world = _World()
     term, host, browser = await world.live()
@@ -329,7 +375,6 @@ async def test_close_machine_sends_4410_to_both_legs() -> None:
 
     assert host.closed == browser.closed == [wire_terminals.CLOSE_MACHINE_REVOKED]
     assert term.ended
-    assert world.observer.ended_status == [None]
 
 
 @pytest.mark.asyncio
@@ -362,7 +407,6 @@ async def test_the_shells_exit_reaches_the_browser_and_ends_the_terminal() -> No
 
     assert browser.sent[-1] == (Frame.EXIT, (3).to_bytes(4))
     assert browser.closed == [wire_terminals.CLOSE_ENDED]
-    assert world.observer.ended_status == [3]
 
 
 @pytest.mark.asyncio
@@ -407,6 +451,12 @@ async def test_stop_asks_the_host_and_ends_at_once_without_one() -> None:
     pending = world.open(machine_id=uuid.uuid4())
     await world.hub.stop(pending)
     assert pending.ended
+
+    waiting = world.open(machine_id=uuid.uuid4())
+    browser = _Socket()
+    await world.hub.attach_browser(waiting, browser, offset=0)
+    await world.hub.stop(waiting)
+    assert browser.closed == [wire_terminals.CLOSE_ENDED]
 
 
 @pytest.mark.asyncio
@@ -484,38 +534,12 @@ async def test_a_wait_with_no_open_times_out_at_its_deadline() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_sweep_loop_touches_then_sweeps_and_survives_a_failure() -> None:
-    world = _World()
-    term = world.open()
-    world.dead.add(term.id)
-    calls: list[str] = []
-
-    async def touch() -> None:
-        calls.append("touch")
-        if len(calls) == 1:
-            raise OSError("database blip")
-
-    task = asyncio.create_task(sweep_loop(world.hub, touch=touch, interval_sec=0))
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if term.ended:
-            break
-    task.cancel()
-
-    assert calls[0] == "touch"
-    assert term.ended
-
-
-@pytest.mark.asyncio
-async def test_a_persistent_touch_failure_does_not_stop_the_sweep() -> None:
+async def test_the_sweep_loop_sweeps_each_interval() -> None:
     world = _World()
     term = world.open()
     world.dead.add(term.id)
 
-    async def touch() -> None:
-        raise OSError("always down")
-
-    task = asyncio.create_task(sweep_loop(world.hub, touch=touch, interval_sec=0))
+    task = asyncio.create_task(sweep_loop(world.hub, interval_sec=0))
     for _ in range(50):
         await asyncio.sleep(0)
         if term.ended:
@@ -549,7 +573,6 @@ async def test_a_leg_that_raises_on_close_does_not_stop_the_terminal_ending() ->
     await world.hub.host_lost(term, host)
 
     assert browser.closed == [wire_terminals.CLOSE_HOST_LOST]
-    assert world.observer.ended_status == [None]
     assert world.hub.terminal(term.id) is None
 
 
@@ -579,7 +602,6 @@ async def test_close_machine_and_sweep_finish_every_terminal_when_one_close_rais
 
     assert (a.ended, b.ended) == (True, True)
     assert browser_b.closed == [wire_terminals.CLOSE_MACHINE_REVOKED]
-    assert world.observer.ended_status == [None, None]
 
 
 @pytest.mark.asyncio
@@ -640,14 +662,15 @@ async def test_a_host_that_turned_the_open_away_reaches_the_browser_as_its_code(
 
 
 @pytest.mark.asyncio
-async def test_output_that_arrives_after_the_end_is_dropped_not_recorded() -> None:
+async def test_output_that_arrives_after_the_end_is_dropped() -> None:
     world = _World()
-    term, _, _ = await world.live()
+    term, _, browser = await world.live()
     await world.hub.end(term, code=wire_terminals.CLOSE_ENDED)
+    sent = list(browser.sent)
 
     await world.hub.from_host(term, Frame.OUTPUT, b"late")
 
-    assert bytes(world.observer.output_bytes) == b""
+    assert (browser.sent, term.ring.end) == (sent, 0)
 
 
 def test_the_ring_keeps_the_tail_and_the_attach_payload_decodes() -> None:

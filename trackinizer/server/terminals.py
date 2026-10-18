@@ -9,9 +9,9 @@ without waiting for it.
 A terminal is ``pending`` from the open until its host dials in. The host learns of
 it from :meth:`TerminalHub.wait`, a held request that returns the moment an open is
 queued. Output the host sends goes to a ring (so a browser that drops can re-attach
-from its last offset), to the observer (the recording), and to the attached browser.
-Every send is awaited, so a slow browser slows the host's reads rather than growing
-memory.
+from its last offset) and to the attached browser. Nothing is stored: a terminal's
+bytes live in the ring only as long as the terminal does. Every send is awaited, so a
+slow browser slows the host's reads rather than growing memory.
 """
 
 from __future__ import annotations
@@ -40,7 +40,6 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "Observer",
     "Opening",
     "Ring",
     "Socket",
@@ -81,18 +80,6 @@ class Socket(Protocol):
 
     async def close(self, code: int) -> None:
         """Close with a code; closing a closed socket is a no-op."""
-        ...
-
-
-class Observer(Protocol):
-    """Hears a terminal's output and its end; the recorder."""
-
-    async def output(self, terminal: Terminal, data: bytes) -> None:
-        """Take bytes the shell wrote."""
-        ...
-
-    async def ended(self, terminal: Terminal, *, status: int | None) -> None:
-        """Take the end of the terminal, once, with the shell's exit status if known."""
         ...
 
 
@@ -159,7 +146,6 @@ class Terminal:
     user: str
     machine_id: UUID
     machine: str
-    session_id: UUID
     rows: int
     cols: int
     opened_at: float
@@ -176,6 +162,9 @@ class Terminal:
     host: Socket | None = None
     browser: Socket | None = None
     ended: bool = False
+    stopping: bool = False
+    """Whether the shell was told to stop; the station no longer counts it as live."""
+
     replaying: list[tuple[Frame, bytes]] | None = None
     """Frames that arrived while a browser is being caught up; sent right after."""
 
@@ -201,7 +190,6 @@ class Opening:
     user: str
     machine_id: UUID
     machine: str
-    session_id: UUID
     rows: int
     cols: int
     workspace: UUID | None = None
@@ -242,7 +230,6 @@ class TerminalHub:
     """Every live terminal in this process, and the rules that bound them.
 
     Args:
-      observer: Hears output and the end of each terminal.
       alive: Whether a terminal's machine credential is live and its owner active;
         asked by the sweep.
       clock: Monotonic seconds.
@@ -253,12 +240,10 @@ class TerminalHub:
     def __init__(
         self,
         *,
-        observer: Observer,
         alive: Callable[[Terminal], Awaitable[bool]],
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        self._observer = observer
         self._alive = alive
         self._clock = clock
         self._sleep = sleep
@@ -296,7 +281,9 @@ class TerminalHub:
             (
                 term
                 for term in self._terminals.values()
-                if term.user == user and term.workspace == workspace
+                if term.user == user
+                and term.workspace == workspace
+                and not term.stopping
             ),
             None,
         )
@@ -356,7 +343,6 @@ class TerminalHub:
             user=user,
             machine_id=machine_id,
             machine=opening.machine,
-            session_id=opening.session_id,
             rows=opening.rows,
             cols=opening.cols,
             opened_at=now,
@@ -563,12 +549,10 @@ class TerminalHub:
             if delay:
                 await self._sleep(delay)
             term.ring.append(payload)
-            await self._observer.output(term, payload)
             await self._live(term, Frame.OUTPUT, payload)
         elif kind is Frame.EXIT:
-            status = int.from_bytes(payload)
             await self._live(term, Frame.EXIT, payload)
-            await self.end(term, code=wire_terminals.CLOSE_ENDED, status=status)
+            await self.end(term, code=wire_terminals.CLOSE_ENDED)
 
     async def from_browser(self, term: Terminal, kind: Frame, payload: bytes) -> bool:
         """Take one frame from the browser; return False when it broke a rule.
@@ -613,43 +597,29 @@ class TerminalHub:
 
     async def stop(self, term: Terminal) -> None:
         """Tell the shell to stop; the host's ``EXIT`` then ends the terminal."""
+        term.stopping = True
         if term.host is None:
             await self.end(term, code=wire_terminals.CLOSE_ENDED)
         else:
             await self._to_host(term, Frame.STOP, b"")
 
-    async def end(
-        self,
-        term: Terminal,
-        *,
-        code: int,
-        status: int | None = None,
-    ) -> None:
-        """End the terminal once: close both legs with ``code`` and tell the observer.
+    async def end(self, term: Terminal, *, code: int) -> None:
+        """End the terminal once: close both legs with ``code``.
 
         Args:
           term: The terminal.
           code: The close code both legs receive.
-          status: The shell's exit status, if it exited.
 
         """
         if term.ended:
             return
         term.ended = True
         self._terminals.pop(term.id, None)
-        # Every step runs whatever the one before it did: a peer that vanished makes
-        # its close raise, and the other leg and the recording must still be ended.
+        # A peer that vanished makes its close raise, which `_close` absorbs, so the
+        # other leg is still closed.
         for socket in (term.host, term.browser):
             if socket is not None:
                 await self._close(socket, code)
-        try:
-            await self._observer.ended(term, status=status)
-        except Exception:
-            _logger.warning(
-                "terminal %s: recording did not end",
-                term.id,
-                exc_info=True,
-            )
 
     async def close_machine(self, machine_id: UUID) -> None:
         """End every terminal on a revoked machine with 4410."""
@@ -761,25 +731,17 @@ class TerminalHub:
 async def sweep_loop(
     hub: TerminalHub,
     *,
-    touch: Callable[[], Awaitable[None]],
     interval_sec: float = wire_terminals.SWEEP_SEC,
 ) -> None:
-    """Keep the terminals' sessions alive and sweep the hub, one pass per interval.
+    """Sweep the hub, one pass per interval.
 
     Args:
       hub: The hub to sweep.
-      touch: Notes that the live terminals' sessions are still alive.
       interval_sec: Seconds between passes.
 
     """
     while True:
         await asyncio.sleep(interval_sec)
-        # Each step has its own guard: a liveness write that always fails must not
-        # switch off every timer and cap the sweep enforces.
-        try:
-            await touch()
-        except Exception:
-            _logger.exception("terminal liveness touch failed; retrying next cycle")
         try:
             await hub.sweep()
         except Exception:

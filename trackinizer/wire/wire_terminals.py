@@ -69,7 +69,6 @@ __all__ = [
     "OPEN_TTL_SEC",
     "RECONNECT_BACKOFF_SEC",
     "RECONNECT_WINDOW_SEC",
-    "RECORD_CAP_BYTES",
     "RING_BYTES",
     "SWEEP_SEC",
     "TERMINALS_PATH",
@@ -153,9 +152,6 @@ MAX_OUTPUT_BYTES_PER_SEC: Final = 4_194_304
 RING_BYTES: Final = 262_144
 """Output the server keeps for a browser that re-attaches."""
 
-RECORD_CAP_BYTES: Final = 16_777_216
-"""Output recorded per session; past it one marker line is written."""
-
 TICKET_TTL_SEC: Final = 30
 OPEN_TTL_SEC: Final = 20
 WAIT_MAX_SEC: Final = 25
@@ -192,7 +188,7 @@ class OpenTerminal(BaseModel):
     requested_by: (
         Annotated[str, Field(max_length=63, pattern=r"^[\x20-\x7e]*$")] | None
     ) = None
-    """The actor that placed the tile asking for it: shown and recorded, never trusted."""
+    """The actor that placed the tile asking for it: shown and logged by the host, never trusted."""
 
 
 class TerminalOpened(BaseModel):
@@ -201,7 +197,6 @@ class TerminalOpened(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     terminal_id: uuid.UUID
-    session_id: uuid.UUID
     ticket: str = Field(repr=False)
 
 
@@ -234,7 +229,6 @@ class LiveTerminal(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     terminal_id: uuid.UUID
-    session_id: uuid.UUID
     machine: str = Field(pattern=NAME_PATTERN)
 
 
@@ -256,7 +250,6 @@ class TerminalWait(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     terminal_id: uuid.UUID
-    session_id: uuid.UUID
     opener: str
     """The opener's email as the server claims it; the host logs it."""
 

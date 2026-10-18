@@ -1345,9 +1345,11 @@ answer 403 or 404. The machine must be online and its host must have asked for
 terminals within 45 seconds (`TRAX_MACHINE_TERMINAL=1`), else 409
 `terminal_not_enabled`. A station has one live terminal (409 `terminal_live`);
 4 per user, 4 per machine, 64 per server and 10 opens a minute per user answer 429.
+Every terminal refusal answers `detail: {code, message}`: `terminal_forbidden`,
+`terminal_not_enabled`, `terminal_unconfirmed`, `terminal_live` and `terminal_limit`.
 
 `POST /api/terminals` takes `{machine, rows, cols, workspace?}` and returns
-`{terminal_id, session_id, ticket}`. The ticket is 256 random bits, valid once for 30
+`{terminal_id, ticket}`. The ticket is 256 random bits, valid once for 30
 seconds; it never travels in a URL. The browser opens the WebSocket and sends
 `ATTACH` first (the 43-character ticket, then a u64 offset). One binary message is
 one frame: a kind byte, a four-byte big-endian length, and the payload. Browser
@@ -1371,12 +1373,9 @@ or `tmux` (or an interactive shell's background job, which has a group of its ow
 keeps running on the machine. The host reports the shell's exit within half a second
 even when such a job still holds the terminal open.
 
-The server records output as a `terminal` AgentSession in the owner's `private`
-audience (part `stream`, `Stdout` lines), with the labels `terminal`, `machine:NAME`
-and `station:<uuid>`. Keystrokes are not recorded, so input typed with echo off
-never lands. Lines are stored as the screen showed them (escape sequences removed,
-backspaces and carriage returns applied) and pass credential shapes first, and the first
-16 MiB of a session is kept, then one marker line.
+Nothing a terminal shows or receives is stored: the server keeps the last 256 KiB
+in memory for a re-attach and drops it when the terminal ends. A `trax run` started
+inside the shell records its own session, placed in the station, as it does anywhere.
 
 ### 1.27 Code store
 
