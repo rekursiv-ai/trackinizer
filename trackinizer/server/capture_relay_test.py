@@ -16,6 +16,7 @@ from trackinizer.server.capture_relay import (
     CaptureAnswer,
     CaptureImage,
     CaptureRelay,
+    CaptureTile,
 )
 
 
@@ -121,6 +122,27 @@ def test_bytes_that_are_not_the_picture_claimed_are_refused(
 ) -> None:
     with pytest.raises(ValidationError):
         CaptureImage.model_validate(bad)
+
+
+_TILE_BODY = {"left": 0.1, "top": 0.2, "right": 0.6, "bottom": 0.9}
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [{**_TILE_BODY, "left": 1.5}, {**_TILE_BODY, "top": -0.1}, {**_TILE_BODY, "x": 1}],
+)
+def test_a_tile_is_an_id_and_edges_that_are_fractions(bad: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        CaptureTile.model_validate({"id": str(_WORKSPACE), **bad})
+
+
+def test_an_image_keeps_its_tiles_in_order_and_at_most_fifty() -> None:
+    tiles = [{"id": str(uuid.uuid4()), **_TILE_BODY} for _ in range(50)]
+    image = CaptureImage.model_validate({**_image(), "tiles": tiles})
+    assert [str(t.id) for t in image.tiles] == [t["id"] for t in tiles]
+    assert CaptureImage.model_validate(_image()).tiles == []
+    with pytest.raises(ValidationError):
+        CaptureImage.model_validate({**_image(), "tiles": [*tiles, tiles[0]]})
 
 
 if __name__ == "__main__":

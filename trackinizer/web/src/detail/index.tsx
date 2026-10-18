@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { APP } from "../appName";
 import { lazy, Suspense, type ReactNode, startTransition, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { markPageDrawn } from "../debug/timings";
 import { setInquiryLock } from "../api/admin";
@@ -447,7 +448,7 @@ function Failure({ error, name, retry }: { error: Error; name: string; retry: ()
     return (
       <EmptyState icon={<Icon name="trash" size={24} />} title="Deleted or purged">
         <p>
-          <code className="mono">{name}</code> is not in Trackinizer.
+          <code className="mono">{name}</code> is not in {APP.name}.
         </p>
       </EmptyState>
     );

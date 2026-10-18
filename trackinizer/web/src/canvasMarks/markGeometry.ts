@@ -20,3 +20,27 @@ export function boundsOf(points: readonly MarkPoint[]): Bounds {
   const ys = points.map((p) => p.y);
   return { left: Math.min(...xs), top: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys) };
 }
+
+/** Where something stands on screen, in pixels. */
+export type Box = { readonly left: number; readonly top: number; readonly width: number; readonly height: number };
+
+/** The topmost of `tiles`, which are in paint order, whose rect holds the point; edges count. */
+export function topmostHolding<T extends { readonly rect: Box }>(tiles: readonly T[], x: number, y: number): T | undefined {
+  return tiles.findLast(({ rect }) => x >= rect.left && x <= rect.left + rect.width && y >= rect.top && y <= rect.top + rect.height);
+}
+
+/**
+ * A box's corners, which are fractions of the `stage`, as the store keeps them: the
+ * tile whose body holds the box's center is its tile, and the corners are fractions of
+ * that body (clamped to it). With no tile there, the corners stay the stage's.
+ */
+export function pinTo(
+  corners: readonly MarkPoint[],
+  stage: Box,
+  tiles: readonly { readonly id: string; readonly rect: Box }[],
+): { readonly tile: string | null; readonly points: readonly MarkPoint[] } {
+  const onScreen = corners.map(({ x, y }) => ({ x: stage.left + x * stage.width, y: stage.top + y * stage.height }));
+  const tile = topmostHolding(tiles, onScreen.reduce((sum, p) => sum + p.x, 0) / onScreen.length, onScreen.reduce((sum, p) => sum + p.y, 0) / onScreen.length);
+  if (!tile) return { tile: null, points: corners };
+  return { tile: tile.id, points: onScreen.map((p) => toFractions(p.x, p.y, tile.rect)) };
+}

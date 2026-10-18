@@ -62,7 +62,7 @@ class TerminalClient(Protocol):
 
 
 class TerminalHost:
-    """Opens the terminals the server asks for, at most four at a time.
+    """Opens the terminals the server asks for, each on its own bridge.
 
     Args:
       name: The machine's name, which names the log.
@@ -160,19 +160,17 @@ class TerminalHost:
         machine_id: uuid.UUID,
         instance: uuid.UUID,
     ) -> None:
-        """Start a bridge thread, or turn the open away at the host's limit."""
+        """Start a bridge thread for an open."""
         if self._stop.is_set():
             return
         with self._lock:
-            full = len(self._bridges) >= wire_terminals.MAX_HOST_BRIDGES
             thread = threading.Thread(
                 name=f"terminal-{opened.terminal_id}",
                 target=self._run,
-                args=(opened, machine_id, instance, full),
+                args=(opened, machine_id, instance),
                 daemon=True,
             )
-            if not full:
-                self._bridges[opened.terminal_id] = thread
+            self._bridges[opened.terminal_id] = thread
         thread.start()
 
     def _run(
@@ -180,11 +178,10 @@ class TerminalHost:
         opened: TerminalWait,
         machine_id: uuid.UUID,
         instance: uuid.UUID,
-        full: bool,
     ) -> None:
         """Bridge one terminal, then forget its thread."""
         try:
-            self.serve(opened, machine_id=machine_id, instance=instance, refuse=full)
+            self.serve(opened, machine_id=machine_id, instance=instance)
         finally:
             with self._lock:
                 self._bridges.pop(opened.terminal_id, None)
@@ -195,7 +192,6 @@ class TerminalHost:
         *,
         machine_id: uuid.UUID,
         instance: uuid.UUID,
-        refuse: bool = False,
     ) -> None:
         """Run one terminal to its end on the calling thread.
 
@@ -203,16 +199,10 @@ class TerminalHost:
           opened: The terminal the server asked for.
           machine_id: This machine's id.
           instance: This host's instance.
-          refuse: Turn the open away with 4429 instead of starting a shell.
 
         """
         asyncio.run(
-            self._bridge(
-                opened,
-                machine_id=machine_id,
-                instance=instance,
-                refuse=refuse,
-            ),
+            self._bridge(opened, machine_id=machine_id, instance=instance),
         )
 
     async def _bridge(
@@ -221,7 +211,6 @@ class TerminalHost:
         *,
         machine_id: uuid.UUID,
         instance: uuid.UUID,
-        refuse: bool = False,
     ) -> None:
         """Dial the server, run the shell, and relay until either side ends."""
         path = wire_terminals.MACHINE_TERMINAL_WS_PATH.format(
@@ -233,9 +222,6 @@ class TerminalHost:
             additional_headers={"Authorization": f"Bearer {self._credential}"},
             ping_interval=20,
         ) as socket:
-            if refuse:
-                await socket.close(wire_terminals.CLOSE_LIMIT)
-                return
             self._log("open", opened)
             status: int | None = None
             async with Terminal(

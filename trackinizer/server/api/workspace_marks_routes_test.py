@@ -344,6 +344,24 @@ async def test_the_next_line_carries_the_marks_drawn_since_the_last_one_with_the
     assert two == []
 
 
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_box_keeps_the_tile_it_was_drawn_on(
+    pglite_route_client: _Client,
+) -> None:
+    """The tile is stored with the box and read back with it; a loose box has none."""
+    client, store = pglite_route_client
+    workspace_id, _ = await _canvas(client, store=store)
+    tile = str(uuid.uuid4())
+
+    browser()
+    _ = await _draw(client, workspace_id=workspace_id, mark={**_BOX, "tile": tile})
+    state = await _draw(client, workspace_id=workspace_id)
+
+    assert [m["tile"] for m in _marks_of(state)] == [tile, None]
+
+
 async def _private_session(store: Store, *, account: str) -> uuid.UUID:
     """Insert a private session of ``account`` and return its id."""
     session_id = uuid.uuid4()

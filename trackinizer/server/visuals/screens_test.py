@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 
@@ -9,8 +10,13 @@ import uuid
 
 import pytest
 
-from trackinizer.server.visuals.screens import _named, read_screen
-from trackinizer.server.visuals.workspaces import VisualInstance
+from trackinizer.server.visuals.screens import _named, read_screen, wire_marks
+from trackinizer.server.visuals.workspaces import (
+    Mark,
+    MarkPoint,
+    VisualInstance,
+)
+from trackinizer.wire.wire_sessions import WorkspaceVisibleVisual
 
 
 if TYPE_CHECKING:
@@ -96,6 +102,34 @@ def test_a_route_that_names_a_record_is_that_record(
 )
 def test_a_route_that_names_no_record_names_none(route: str) -> None:
     assert _named(route) is None
+
+
+def _visual(kind: str) -> WorkspaceVisibleVisual:
+    return WorkspaceVisibleVisual(id=uuid.uuid4(), type=kind)
+
+
+def _mark(*, tile: uuid.UUID | None) -> Mark:
+    return Mark(
+        id=uuid.uuid4(),
+        seq=1,
+        author="agent",
+        at=datetime(2026, 10, 18, tzinfo=UTC),
+        points=[MarkPoint(x=0.2, y=0.1), MarkPoint(x=0.6, y=0.5)],
+        tile=tile,
+    )
+
+
+def test_a_pinned_mark_names_its_tile_and_one_whose_tile_left_is_dropped() -> None:
+    graph = _visual("trax.subgraph")
+    loose = _mark(tile=None)
+    pinned = _mark(tile=graph.id)
+    gone = _mark(tile=uuid.uuid4())
+
+    wired = wire_marks([loose, pinned, gone], records={}, visuals=[graph])
+
+    assert [(m.id, m.tile) for m in wired] == [(loose.id, None), (pinned.id, graph)]
+    assert (wired[1].left, wired[1].top) == (0.2, 0.1)
+    assert (wired[1].right, wired[1].bottom) == (0.6, 0.5)
 
 
 if __name__ == "__main__":

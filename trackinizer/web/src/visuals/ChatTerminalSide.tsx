@@ -16,6 +16,9 @@ const TerminalView = lazyView(() => import("./Terminal"), (module) => module.Ter
 /** The command that enrolls the machine the user is on. */
 const CONNECT = "trax machine connect";
 
+/** What this side tags its terminals with, so a reload re-attaches this side to its own. */
+const SURFACE = "chat";
+
 type Props = {
   readonly workspace: WorkspaceState;
   readonly shown: boolean;
@@ -36,7 +39,8 @@ export function ChatTerminalSide({ workspace, shown, onFlipBack }: Props) {
   // Newest first, as the server lists them. A machine enrolled with a key is offered only once its owner allows it.
   const ready = (machines.data?.machines ?? []).filter((each) => each.terminal_ready && each.confirmed);
   const unconfirmed = (machines.data?.machines ?? []).filter((each) => !each.confirmed);
-  const live = machines.data?.live ?? null;
+  // The newest terminal this side opened; the tile's own are not its to re-attach.
+  const live = machines.data?.terminals?.filter((each) => each.surface === SURFACE).at(-1) ?? null;
   const machine = ready.find((each) => each.name === chosen) ?? ready.find((each) => each.name === live?.machine) ?? ready[0] ?? null;
   const group = workstreams.data?.find((each) => each.id === workspace.workstream_id) ?? workstreams.data?.find((each) => each.scratch);
 
@@ -84,7 +88,7 @@ export function ChatTerminalSide({ workspace, shown, onFlipBack }: Props) {
     </div>}
     {machines.isError && !machines.data && <p role="alert" className="chat-error">Could not list your machines.</p>}
     {machines.data && <Suspense fallback={<div className="visual-loading" aria-busy="true">Loading terminal…</div>}>
-      <TerminalView machine={machine?.name ?? null} workspace={workspace.id} resume={live} shown={shown} />
+      <TerminalView machine={machine?.name ?? null} workspace={workspace.id} surface={SURFACE} resume={live} shown={shown} />
     </Suspense>}
   </section>;
 }

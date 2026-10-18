@@ -332,12 +332,6 @@ class TerminalVisual:
                     default="",
                     max_length=63,
                 ),
-                # The terminal's id, set once it starts so a reload re-attaches.
-                "terminal": ParameterDescription(
-                    type="string",
-                    default="",
-                    max_length=36,
-                ),
                 # True when an agent asked for a terminal: the viewer's browser then
                 # opens one by itself, with their own session. No key ever opens it.
                 "start": ParameterDescription(type="boolean", default=False),

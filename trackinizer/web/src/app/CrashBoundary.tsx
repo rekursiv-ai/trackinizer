@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from "react";
+import { APP } from "../appName";
 import { CopyDetails } from "../debug/CopyDetails";
 import { Icon } from "../ui/icons";
 import { EmptyState } from "../ui/view";
@@ -32,7 +33,7 @@ export class CrashBoundary extends Component<{
     const { error } = crash;
     const message = error instanceof Error ? error.message : String(error);
     const screen = (
-      <EmptyState icon={<Icon name="x" size={24} />} title="Trackinizer stopped on an error">
+      <EmptyState icon={<Icon name="x" size={24} />} title={`${APP.name} stopped on an error`}>
         <p role="alert">{message}</p>
         <p>Copy the details for a bug report, then reload to start again.</p>
         <span className="w-actions">

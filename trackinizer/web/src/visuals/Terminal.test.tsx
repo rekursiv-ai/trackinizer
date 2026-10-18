@@ -8,11 +8,10 @@ import { ProfileContext } from "../app/boot";
 import { bindShortcuts } from "../commands/registry";
 import { receivePreferences, preferences } from "../preferences";
 import { TerminalTile, TerminalView } from "./Terminal";
-import { canvasActions } from "./testing";
-import { WorkspaceActionsProvider } from "./workspaceActions";
+import { requestNewTerminal, takeNewTerminalRequest } from "./newTerminal";
 import type { RendererProps } from "./registry";
 
-const xterm = vi.hoisted(() => ({ events: [] as string[], fitted: null as { rows: number; cols: number } | null, fits: 0, providers: [] as unknown[], instances: [] as Array<{ options: { fontSize?: number }; written: Uint8Array[]; data: (data: string) => void; resize: (size: { rows: number; cols: number }) => void; disposed: boolean }> }));
+const xterm = vi.hoisted(() => ({ events: [] as string[], focused: 0, fitted: null as { rows: number; cols: number } | null, fits: 0, providers: [] as unknown[], instances: [] as Array<{ options: { fontSize?: number }; written: Uint8Array[]; data: (data: string) => void; resize: (size: { rows: number; cols: number }) => void; disposed: boolean; keys: (event: KeyboardEvent) => boolean }> }));
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
     options: { fontSize?: number } = {}; rows = 24; cols = 80; written: Uint8Array[] = []; disposed = false;
@@ -25,6 +24,9 @@ vi.mock("@xterm/xterm", () => ({
     open() { xterm.events.push("open"); }
     write(bytes: Uint8Array) { this.written.push(bytes); }
     dispose() { this.disposed = true; }
+    focus() { xterm.focused += 1; }
+    attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) { this.keys = handler; }
+    keys: (event: KeyboardEvent) => boolean = () => true;
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { term?: { rows: number; cols: number }; fit() { xterm.fits += 1; xterm.events.push("fit"); if (xterm.fitted && this.term) Object.assign(this.term, xterm.fitted); } } }));
@@ -41,6 +43,7 @@ beforeEach(() => {
   xterm.instances.length = 0;
   xterm.providers.length = 0;
   xterm.fits = 0;
+  xterm.focused = 0;
   xterm.events.length = 0;
   xterm.fitted = null;
   vi.mocked(closeTerminal).mockResolvedValue(undefined);
@@ -49,7 +52,7 @@ beforeEach(() => {
   vi.mocked(attachTerminal).mockResolvedValue("tk2");
   vi.mocked(connectTerminal).mockImplementation((given) => { options = given; return link; });
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); takeNewTerminalRequest(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
 
 const start = () => fireEvent.click(screen.getByRole("button", { name: /Start terminal/ }));
 
@@ -64,7 +67,7 @@ test("Start opens on the machine from the station with the screen's size, and co
   render(<TerminalView machine="gx10" workspace="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
-  expect(openTerminal).toHaveBeenCalledWith("gx10", "w1", 24, 80);
+  expect(openTerminal).toHaveBeenCalledWith("gx10", "w1", 24, 80, null);
   expect(options).toMatchObject({ id: "t1", ticket: "tk" });
 });
 
@@ -138,19 +141,71 @@ test("unmounting lets go of the socket and the screen, and leaves the shell runn
   expect(xterm.instances[0]!.disposed).toBe(true);
 });
 
-test("the tile keeps the terminal in its params once it opens, and re-attaches from them", async () => {
-  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: true }], live: null });
-  const actions = canvasActions();
-  const instance = { id: "v1", type: "trax.terminal", version: 1, placement: "main", record_id: null, params: {} } as RendererProps["instance"];
-  const props = { instance, workspace: null, onWorkspaceChanged: vi.fn(), focused: false };
-  const wrap = (each: RendererProps) => <QueryClientProvider client={new QueryClient()}><WorkspaceActionsProvider value={actions}><TerminalTile {...each} /></WorkspaceActionsProvider></QueryClientProvider>;
-  render(wrap(props));
+const ready = { name: "gx10", status: "online", terminal_ready: true, confirmed: true };
+const tileInstance = (id: string) => ({ id, type: "trax.terminal", version: 1, placement: "main", record_id: null, params: { machine: "gx10" } } as RendererProps["instance"]);
+// Each test names its own tile: the terminals an agent or a request started are remembered per tile id for the page.
+const renderTile = (id: string) => render(<QueryClientProvider client={new QueryClient()}><TerminalTile instance={tileInstance(id)} workspace={null} onWorkspaceChanged={vi.fn()} focused={false} /></QueryClientProvider>);
+
+test("a tile opens its terminals with its own id as their surface", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [] });
+  renderTile("v-open");
+  fireEvent.click(await screen.findByRole("button", { name: "Start terminal on gx10" }));
+  await waitFor(() => expect(openTerminal).toHaveBeenCalledWith("gx10", null, 24, 80, "v-open"));
+});
+
+test("a reload re-attaches each live terminal this tile opened as a tab, and no other surface's", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [
+    { terminal_id: "ta", machine: "gx10", surface: "v-reload" }, { terminal_id: "tb", machine: "gx10", surface: "v-reload" }, { terminal_id: "tc", machine: "gx10", surface: "chat" },
+  ] });
+  renderTile("v-reload");
+  await waitFor(() => expect(attachTerminal).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(attachTerminal).mock.calls.map(([id]) => id).toSorted()).toEqual(["ta", "tb"]);
+  expect(screen.getAllByRole("tab")).toHaveLength(2);
+});
+
+test("New terminal opens a second shell beside the first, which keeps its socket", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [] });
+  vi.mocked(openTerminal).mockResolvedValueOnce({ terminal_id: "t1", ticket: "k1" }).mockResolvedValueOnce({ terminal_id: "t2", ticket: "k2" });
+  const first = { ...link, dispose: vi.fn() };
+  vi.mocked(connectTerminal).mockImplementationOnce((given) => { options = given; return first; });
+  renderTile("v-new");
+  fireEvent.click(await screen.findByRole("button", { name: "Start terminal on gx10" }));
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole("button", { name: "New terminal" }));
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(2));
+  expect(openTerminal).toHaveBeenCalledTimes(2);
+  expect(screen.getAllByRole("tab")).toHaveLength(2);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(first.dispose).not.toHaveBeenCalled();
+  expect(closeTerminal).not.toHaveBeenCalled();
+});
+
+test("closing a tab stops its shell and drops the tab; the last one is replaced by one to Start", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [{ terminal_id: "ta", machine: "gx10", surface: "v-close" }] });
+  renderTile("v-close");
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
+  fireEvent.click(screen.getByRole("button", { name: "Close terminal 1" }));
+  expect(closeTerminal).toHaveBeenCalledWith("ta");
+  expect(await screen.findByRole("button", { name: "Start terminal on gx10" })).toBeTruthy();
+  expect(screen.getAllByRole("tab")).toHaveLength(1);
+});
+
+test("the palette's request adds a tab that starts by itself, once", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [] });
+  renderTile("v-palette");
   await screen.findByRole("button", { name: "Start terminal on gx10" });
-  start();
-  await waitFor(() => expect(actions.operate).toHaveBeenCalledWith(expect.objectContaining({ params: { machine: "gx10", terminal: "t1" } })));
-  cleanup();
-  render(wrap({ ...props, instance: { ...instance, params: { machine: "gx10", terminal: "t1" } } }));
-  await waitFor(() => expect(attachTerminal).toHaveBeenCalledWith("t1"));
+  act(() => requestNewTerminal());
+  await waitFor(() => expect(openTerminal).toHaveBeenCalledTimes(1));
+  expect(screen.getAllByRole("tab")).toHaveLength(2);
+  expect(takeNewTerminalRequest()).toBe(false);
+});
+
+test("a request made before the tile mounts gives it one tab that starts, not a blank one beside it", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [] });
+  requestNewTerminal();
+  renderTile("v-early");
+  await waitFor(() => expect(openTerminal).toHaveBeenCalledTimes(1));
+  expect(screen.getAllByRole("tab")).toHaveLength(1);
 });
 
 /** The error the page gets for a refusal, read by the real client from the body the server answers with. */
@@ -161,20 +216,9 @@ async function refused(status: number, code: string, message: string): Promise<A
   return failure as ApiError;
 }
 
-test("a 409 terminal_live on Start attaches to the station's live terminal instead of failing", async () => {
-  vi.mocked(openTerminal).mockRejectedValue(await refused(409, "terminal_live", "this station already has a live terminal"));
-  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [], live: { terminal_id: "t7", machine: "gx10" } });
-  render(<TerminalView machine="gx10" workspace="w1" />);
-  start();
-  await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
-  expect(listTerminalMachines).toHaveBeenCalledWith("w1");
-  expect(attachTerminal).toHaveBeenCalledWith("t7");
-  expect(options).toMatchObject({ id: "t7", ticket: "tk2" });
-});
-
 test.each([
   ["terminal_not_enabled", 409, "Start the host with `trax machine connect`: that one command turns terminals on."],
-  ["terminal_limit", 429, "Terminal limit reached; close one."],
+  ["terminal_limit", 429, "Too many terminals opened just now; wait a minute."],
   ["terminal_unconfirmed", 409, "Allow terminals on this machine first: open Chat's terminal side and click Allow."],
   ["terminal_forbidden", 403, "Terminals are not available on a server without sign-in."],
 ])("an open refused with %s says what to do", async (code, status, text) => {
@@ -255,15 +299,16 @@ test("an agent's start opens the terminal once, without a click, and says who as
 });
 
 test("a tile asked to start opens only on a ready machine of the user's, and never once a terminal is placed", async () => {
-  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: false, confirmed: true }], live: null });
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: false, confirmed: true }], terminals: [] });
   const instance = (params: Record<string, string | boolean>, id: string) => ({ id, type: "trax.terminal", version: 1, placement: "main", record_id: null, params }) as RendererProps["instance"];
   const wrap = (each: RendererProps["instance"]) => <QueryClientProvider client={new QueryClient()}><TerminalTile instance={each} workspace={null} onWorkspaceChanged={vi.fn()} focused={false} /></QueryClientProvider>;
   render(wrap(instance({ machine: "gx10", start: true }, "t-notready")));
   await screen.findByRole("button", { name: "Start terminal on gx10" });
   expect(openTerminal).not.toHaveBeenCalled();
   cleanup();
-  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: true }], live: null });
-  render(wrap(instance({ machine: "gx10", start: true, terminal: "t1" }, "t-placed")));
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: true }], terminals: [] });
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: true }], terminals: [{ terminal_id: "t1", machine: "gx10", surface: "t-placed" }] });
+  render(wrap(instance({ machine: "gx10", start: true }, "t-placed")));
   await waitFor(() => expect(attachTerminal).toHaveBeenCalledWith("t1"));
   expect(openTerminal).not.toHaveBeenCalled();
   cleanup();
@@ -285,7 +330,7 @@ test("the terminal's text size follows the user's preference as it changes", asy
 });
 
 test("who asked is the placing user when not the viewer, the shared assistant, or the viewer's own agent", async () => {
-  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: true }], live: null });
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: true }], terminals: [] });
   const tile = (id: string, placed_by: string | null, workspace: unknown) => render(
     <QueryClientProvider client={new QueryClient()}><ProfileContext value={{ email: "ada@example.com" } as never}>
       <TerminalTile instance={{ id, type: "trax.terminal", version: 1, placement: "main", record_id: null, params: { machine: "gx10", start: true }, placed_by } as RendererProps["instance"]}
@@ -306,7 +351,7 @@ test("handlers are registered before the first fit, and the open sends the fitte
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(xterm.events.slice(0, 4)).toEqual(["onData", "onResize", "open", "fit"]);
-  expect(openTerminal).toHaveBeenCalledWith("gx10", "w1", 40, 120);
+  expect(openTerminal).toHaveBeenCalledWith("gx10", "w1", 40, 120, null);
   expect(options.size?.()).toEqual({ rows: 40, cols: 120 });
 });
 
@@ -348,9 +393,95 @@ test("under StrictMode a terminal that is live re-attaches once", async () => {
 });
 
 test("a tile asked to start on a machine its owner has not allowed stays inert", async () => {
-  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: false }], live: null });
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: false }], terminals: [] });
   const instance = { id: "t-unconfirmed", type: "trax.terminal", version: 1, placement: "main", record_id: null, params: { machine: "gx10", start: true } } as RendererProps["instance"];
   render(<QueryClientProvider client={new QueryClient()}><TerminalTile instance={instance} workspace={null} onWorkspaceChanged={vi.fn()} focused={false} /></QueryClientProvider>);
   await screen.findByRole("button", { name: "Start terminal on gx10" });
   expect(openTerminal).not.toHaveBeenCalled();
+});
+
+test("a shell the user starts or adds takes the keyboard as it opens", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [] });
+  vi.mocked(openTerminal).mockResolvedValueOnce({ terminal_id: "t1", ticket: "k1" }).mockResolvedValueOnce({ terminal_id: "t2", ticket: "k2" });
+  renderTile("v-focus");
+  fireEvent.click(await screen.findByRole("button", { name: "Start terminal on gx10" }));
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(1));
+  expect(xterm.focused).toBe(1);
+  fireEvent.click(screen.getByRole("button", { name: "New terminal" }));
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(2));
+  expect(xterm.focused).toBeGreaterThanOrEqual(2);
+});
+
+test("a shell an agent starts, or a reload re-attaches, leaves the keyboard where it is", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [{ terminal_id: "ta", machine: "gx10", surface: "v-keep" }] });
+  renderTile("v-keep");
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(1));
+  const asked = { id: "v-asked", type: "trax.terminal", version: 1, placement: "main", record_id: null, params: { machine: "gx10", start: true } } as RendererProps["instance"];
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [] });
+  render(<QueryClientProvider client={new QueryClient()}><TerminalTile instance={asked} workspace={null} onWorkspaceChanged={vi.fn()} focused={false} /></QueryClientProvider>);
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(2));
+  expect(xterm.focused).toBe(0);
+});
+
+/** What the screen's key handler answers a keydown, and whether the page cancelled the key. */
+function press(index: number, init: KeyboardEventInit): { sent: boolean; cancelled: boolean } {
+  const event = new KeyboardEvent("keydown", { cancelable: true, ...init });
+  const sent = xterm.instances[index]!.keys(event);
+  return { sent, cancelled: event.defaultPrevented };
+}
+
+test("Ctrl+Shift+T opens a tab and Ctrl+Shift+W closes it, the keys never reaching the shell", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [{ terminal_id: "ta", machine: "gx10", surface: "v-keys" }] });
+  renderTile("v-keys");
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
+  expect(press(0, { ctrlKey: true, shiftKey: true, key: "T" })).toEqual({ sent: false, cancelled: true });
+  await waitFor(() => expect(screen.getAllByRole("tab")).toHaveLength(2));
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(2));
+  // The new tab is the shown one, so its screen is the one the keyboard is in.
+  expect(press(1, { ctrlKey: true, shiftKey: true, key: "W" })).toEqual({ sent: false, cancelled: true });
+  expect(closeTerminal).toHaveBeenCalledWith("t1");
+  await waitFor(() => expect(screen.getAllByRole("tab")).toHaveLength(1));
+});
+
+test("Ctrl+Shift+PageDown and PageUp switch tabs, and the screen shown takes the keyboard", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [
+    { terminal_id: "ta", machine: "gx10", surface: "v-switch" }, { terminal_id: "tb", machine: "gx10", surface: "v-switch" },
+  ] });
+  renderTile("v-switch");
+  await waitFor(() => expect(screen.getAllByRole("tab")).toHaveLength(2));
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(2));
+  const selected = () => screen.getAllByRole("tab").map((each) => each.getAttribute("aria-selected"));
+  expect(selected()).toEqual(["true", "false"]);
+  const focused = xterm.focused;
+  press(0, { ctrlKey: true, shiftKey: true, key: "PageDown" });
+  await waitFor(() => expect(selected()).toEqual(["false", "true"]));
+  expect(xterm.focused).toBeGreaterThan(focused);
+  press(1, { ctrlKey: true, shiftKey: true, key: "PageUp" });
+  await waitFor(() => expect(selected()).toEqual(["true", "false"]));
+});
+
+test("plain Ctrl+T, Ctrl+W and Ctrl+Tab reach the shell until the setting is on, then act", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [{ terminal_id: "ta", machine: "gx10", surface: "v-pass" }] });
+  renderTile("v-pass");
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
+  for (const key of ["t", "w", "Tab"]) expect(press(0, { ctrlKey: true, key })).toEqual({ sent: true, cancelled: false });
+  expect(screen.getAllByRole("tab")).toHaveLength(1);
+  act(() => receivePreferences({ ...preferences(), terminal_tab_chords: true }));
+  try {
+    expect(press(0, { ctrlKey: true, key: "t" })).toEqual({ sent: false, cancelled: true });
+    await waitFor(() => expect(screen.getAllByRole("tab")).toHaveLength(2));
+    expect(press(0, { ctrlKey: true, key: "Tab" })).toEqual({ sent: false, cancelled: true });
+    await waitFor(() => expect(screen.getAllByRole("tab")[1]!.getAttribute("aria-selected")).toBe("true"));
+    expect(press(1, { ctrlKey: true, key: "w" })).toEqual({ sent: false, cancelled: true });
+    await waitFor(() => expect(screen.getAllByRole("tab")).toHaveLength(1));
+  } finally {
+    act(() => receivePreferences({ ...preferences(), terminal_tab_chords: false }));
+  }
+});
+
+test("a terminal outside the tile, with no tabs to act on, sends every chord to the shell", async () => {
+  render(<TerminalView machine="gx10" workspace="w1" />);
+  start();
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
+  expect(press(0, { ctrlKey: true, shiftKey: true, key: "T" })).toEqual({ sent: true, cancelled: false });
 });

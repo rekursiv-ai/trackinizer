@@ -264,7 +264,7 @@ test("the stream's state drives the live layer's paused bar: down for 10 s pause
 function OpenCanvas() {
   const registry = useContext(CaptureContext);
   useEffect(() => {
-    registry?.set({ stage: document.createElement("div"), boxes: () => [] });
+    registry?.set({ stage: document.createElement("div") });
     return () => registry?.set(null);
   }, [registry]);
   return null;

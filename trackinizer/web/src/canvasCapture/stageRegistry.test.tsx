@@ -5,7 +5,7 @@ import { CaptureContext, CaptureRegistry, type CaptureSource } from "./stageRegi
 
 afterEach(cleanup);
 
-const source: CaptureSource = { stage: document.createElement("div"), boxes: () => [] };
+const source: CaptureSource = { stage: document.createElement("div") };
 
 test("the registry offers the source set last, and nothing once withdrawn", () => {
   const registry = new CaptureRegistry();

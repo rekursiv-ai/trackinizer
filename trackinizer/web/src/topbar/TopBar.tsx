@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { APP } from "../appName";
 import { usePalette } from "../commands/palette";
 import { keyCaps } from "../commands/registry";
 import { ComposeButton } from "../create/ComposeButton";
@@ -39,7 +40,7 @@ export function TopBar({ stations }: { readonly stations: boolean }) {
       onPointerMove={peek.handlers.onPointerMove} onPointerLeave={peek.handlers.onPointerLeave} onClick={() => peek.set(true)} />
     <header ref={header} className={`topbar${shown ? " topbar-auto-open" : " topbar-auto-hidden"}`} aria-label="App"
       onPointerMove={peek.handlers.onPointerMove} onPointerLeave={peek.handlers.onPointerLeave} onBlurCapture={peek.handlers.onBlur}>
-      <a className="topbar-logo" href={formatRoute({ name: "graph" })} aria-label="Trackinizer, the graph" title="Trackinizer">
+      <a className="topbar-logo" href={formatRoute({ name: "graph" })} aria-label={`${APP.name}, the graph`} title={APP.name}>
         <Logo />
       </a>
       <GoMenu open={goOpen} onOpen={setGoOpen} />

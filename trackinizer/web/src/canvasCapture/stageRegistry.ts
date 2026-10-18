@@ -1,16 +1,7 @@
 import { createContext } from "react";
 
-/** A red box on the stage, as the picture of it names it. */
-export type CapturedBox = { readonly id: string; readonly author: "person" | "agent" };
-
-/** A red box with its two corners, as fractions of the stage, to be drawn on the picture. */
-export type SourceBox = CapturedBox & { readonly points: readonly { readonly x: number; readonly y: number }[] };
-
-/** What the open canvas offers to be pictured: its stage, and the red boxes now on it. */
-export type CaptureSource = {
-  readonly stage: HTMLElement;
-  readonly boxes: () => readonly SourceBox[];
-};
+/** What the open canvas offers to be pictured: its stage, red boxes and tiles in it. */
+export type CaptureSource = { readonly stage: HTMLElement };
 
 /**
  * The canvas that is on screen, if one is. The stream that hears an agent's request

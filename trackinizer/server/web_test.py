@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 import json
 import os
+import struct
 import time
 import uuid
 
@@ -1583,6 +1584,74 @@ class TestLoginPage:
         assert r.status_code == 200
         assert r.text == "LOGIN-PAGE"
 
+    def _sign_in_page(
+        self,
+        tmp_path: Path,
+        *,
+        manifest: str | None,
+        with_app: bool = True,
+    ) -> tuple[TestClient, Path]:
+        pages = tmp_path / "pages"
+        pages.mkdir()
+        (pages / "login.html").write_text(
+            "<title>Sign in - {{app_name}}</title>{{app_name}}",
+        )
+        build = _write_build(tmp_path / "b", marker="a")
+        if manifest is not None:
+            (build / "manifest.webmanifest").write_text(manifest)
+        app = FastAPI()
+        web.attach(app, assets_dir=pages, app_dir=build if with_app else None)
+        return TestClient(app), build
+
+    def test_the_page_names_the_app_from_the_served_builds_manifest(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client, _ = self._sign_in_page(tmp_path, manifest='{"name": "Acme"}')
+        assert client.get("/auth/login_page").text == (
+            "<title>Sign in - Acme</title>Acme"
+        )
+
+    @pytest.mark.parametrize(
+        "manifest",
+        [None, "not json", "[]", "{}", '{"name": 3}', '{"name": ""}', '{"name": "  "}'],
+    )
+    def test_the_page_says_trackinizer_when_the_build_names_nothing(
+        self,
+        tmp_path: Path,
+        manifest: str | None,
+    ) -> None:
+        client, _ = self._sign_in_page(tmp_path, manifest=manifest)
+        assert client.get("/auth/login_page").text == (
+            "<title>Sign in - Trackinizer</title>Trackinizer"
+        )
+
+    def test_the_page_says_trackinizer_without_an_app_directory(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client, _ = self._sign_in_page(tmp_path, manifest=None, with_app=False)
+        assert (
+            "Sign in - Trackinizer</title>Trackinizer"
+            in client.get(
+                "/auth/login_page",
+            ).text
+        )
+
+    def test_the_name_is_read_on_every_request_and_escaped(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client, build = self._sign_in_page(tmp_path, manifest='{"name": "one"}')
+        assert "</title>one" in client.get("/auth/login_page").text
+        (build / "manifest.webmanifest").write_text('{"name": "<b>two&"}')
+        assert "</title>&lt;b&gt;two&amp;" in client.get("/auth/login_page").text
+
+    def test_the_shipped_page_has_no_name_of_its_own(self) -> None:
+        page = (Path(web.__file__).parent / "assets" / "login.html").read_text()
+        assert page.count("{{app_name}}") == 2
+        assert "Trackinizer" not in page
+
     def test_google_sign_in_waits_for_the_server_to_offer_it(self) -> None:
         # Without OAuth the button leads to a 503, or a 404 where OAuth is not
         # mounted. So it starts hidden, and the page shows it only when
@@ -1919,6 +1988,40 @@ class TestAppDir:
         r = client.get("/app/assets/app.js", headers={"if-none-match": etag})
         assert r.status_code == 304
         assert r.headers.get("cache-control") == immutable
+
+    def test_the_install_files_serve_without_a_session_and_nothing_else_does(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Chrome fetches the manifest and its icons without the session cookie, so a
+        # signed-in user would otherwise never be offered Install.
+        build = _write_build(tmp_path / "b", marker="a")
+        (build / "manifest.webmanifest").write_text("{}")
+        (build / "icon-192.png").write_bytes(b"png")
+        (build / "icon-512.png").write_bytes(b"png")
+        (build / "favicon.svg").write_text("<svg/>")
+        app = _build_app_dir_app(tmp_path, build)
+        _install_identity(app, None)
+        client = TestClient(app, follow_redirects=False)
+        paths = (
+            "/app/manifest.webmanifest",
+            "/app/icon-192.png",
+            "/app/icon-512.png",
+            "/app/favicon.svg",
+            "/app/assets/app.js",
+        )
+        answers = [client.get(path) for path in paths]
+        served = {
+            path: (r.status_code, r.headers.get("content-type"))
+            for path, r in zip(paths, answers, strict=True)
+        }
+        assert served == {
+            "/app/manifest.webmanifest": (200, "application/manifest+json"),
+            "/app/icon-192.png": (200, "image/png"),
+            "/app/icon-512.png": (200, "image/png"),
+            "/app/favicon.svg": (401, "application/json"),
+            "/app/assets/app.js": (401, "application/json"),
+        }
 
     def test_app_is_off_unless_a_directory_is_given(self, tmp_path: Path) -> None:
         app = FastAPI()
@@ -2507,6 +2610,118 @@ class _StartTags(HTMLParser):
     @override
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.tags.append((tag, {name: value or "" for name, value in attrs}))
+
+
+class TestSearchEmbedder:
+    """Which embedder a session search uses: none, the A/B model, or the default."""
+
+    @classmethod
+    def _request(cls) -> Request:
+        return Request({"type": "http", "app": FastAPI()})
+
+    @classmethod
+    def _stub(
+        cls,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[object, object, list[tuple[object, ...]]]:
+        override, default = object(), object()
+        calls: list[tuple[object, ...]] = []
+
+        def fake_override(request: Request, name: str, dim: int | None) -> object:
+            calls.append(("override", request, name, dim))
+            return override
+
+        def fake_default(request: Request) -> object:
+            calls.append(("default", request))
+            return default
+
+        monkeypatch.setattr(web, "_override_embedder", fake_override)
+        monkeypatch.setattr(web, "_session_embedder", fake_default)
+        return override, default, calls
+
+    @pytest.mark.parametrize("semantic", [False, True])
+    def test_a_dimension_without_a_model_is_refused_with_its_reason(
+        self,
+        semantic: bool,
+    ) -> None:
+        with pytest.raises(HTTPException) as caught:
+            web._search_embedder(
+                self._request(),
+                semantic=semantic,
+                model="",
+                dim=256,
+            )
+        assert (caught.value.status_code, caught.value.detail) == (
+            400,
+            "dim requires model",
+        )
+
+    def test_a_search_that_is_not_semantic_uses_no_embedder(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._stub(monkeypatch)
+        for model in ("", "qwen3-embedding-4b"):
+            found = web._search_embedder(
+                self._request(),
+                semantic=False,
+                model=model,
+                dim=None,
+            )
+            assert found is None
+
+    def test_a_model_selects_the_override_with_its_dimension(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        override, _, calls = self._stub(monkeypatch)
+        request = self._request()
+        found = web._search_embedder(
+            request,
+            semantic=True,
+            model="m",
+            dim=512,
+        )
+        assert found is override
+        assert calls == [("override", request, "m", 512)]
+
+    def test_no_model_selects_the_default(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _, default, calls = self._stub(monkeypatch)
+        request = self._request()
+        found = web._search_embedder(
+            request,
+            semantic=True,
+            model="",
+            dim=None,
+        )
+        assert found is default
+        assert calls == [("default", request)]
+
+
+def test_the_install_icons_served_signed_out_are_192_and_512_pixel_pngs() -> None:
+    # The identity table (web/src/identity.ts) names them; the build copies public/.
+    public = _CWD.parent / "web" / "public"
+    assert _png_size(public / "icon-192.png") == (192, 192)
+    assert _png_size(public / "icon-512.png") == (512, 512)
+
+
+def test_the_entry_page_links_the_built_manifest_and_takes_its_name_from_it() -> None:
+    page = (_CWD.parent / "web" / "index.html").read_text()
+    assert '<link rel="manifest" href="%BASE_URL%manifest.webmanifest" />' in page
+    assert "<title>%APP_NAME%</title>" in page
+    assert "Trackinizer" not in page
+    assert not (_CWD.parent / "web" / "public" / "manifest.webmanifest").exists()
+
+
+def _png_size(path: Path) -> tuple[int, int]:
+    """Return the width and height a PNG's header names."""
+    data = path.read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", path
+    width, height = struct.unpack(">II", data[16:24])
+    return width, height
 
 
 if __name__ == "__main__":

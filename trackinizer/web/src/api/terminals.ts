@@ -10,26 +10,26 @@ export type TerminalMachine = {
   readonly confirmed: boolean;
 };
 
-/** A terminal that is open now, and the machine it runs on. */
-export type LiveTerminal = { readonly terminal_id: string; readonly machine: string };
+/** A terminal that is open now, the machine it runs on, and the view that opened it. */
+export type LiveTerminal = { readonly terminal_id: string; readonly machine: string; readonly surface?: string | null };
 
-/** The caller's machines, newest ready first, and their live terminal opened from the asked station. */
-export type TerminalMachines = { readonly machines: readonly TerminalMachine[]; readonly live?: LiveTerminal | null };
+/** The caller's machines, newest ready first, and their live terminals opened from the asked station, oldest first. */
+export type TerminalMachines = { readonly machines: readonly TerminalMachine[]; readonly terminals?: readonly LiveTerminal[] };
 
 /** What opening a terminal returns: its id and the one-use ticket. */
 export type OpenedTerminal = { readonly terminal_id: string; readonly ticket: string };
 
-/** The caller's machines, newest first; `workspace` asks for that station's live terminal too. */
+/** The caller's machines, newest first; `workspace` asks for that station's live terminals too. */
 export async function listTerminalMachines(workspace?: string, { signal }: CallOptions = {}): Promise<TerminalMachines> {
   return send(TIMEOUT_MS.read, signal, (signal) => client.GET("/api/terminals/machines", {
     params: { query: { workspace } }, signal,
   }));
 }
 
-/** Open a terminal on `machine`, from `workspace`'s station. Only a click calls it. */
-export async function openTerminal(machine: string, workspace: string | null, rows: number, cols: number): Promise<OpenedTerminal> {
+/** Open a terminal on `machine`, from `workspace`'s station, for the view named `surface`. Only a click calls it. */
+export async function openTerminal(machine: string, workspace: string | null, rows: number, cols: number, surface: string | null): Promise<OpenedTerminal> {
   return send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/terminals", {
-    body: { machine, workspace, rows, cols }, signal,
+    body: { machine, workspace, rows, cols, surface }, signal,
   }));
 }
 
@@ -71,7 +71,6 @@ const FINAL: Readonly<Record<number, LinkStatus>> = {
   4410: { state: "ended", note: "The machine was revoked." },
   // The host is gone and the server dropped the terminal, so an attach would be a 404: nothing to retry.
   4004: { state: "ended", note: "The machine disconnected." },
-  4429: { state: "refused", note: "Terminal limit reached; close one." },
 };
 
 /** Waits before each retry, then the last until `GIVE_UP_MS` have passed. */

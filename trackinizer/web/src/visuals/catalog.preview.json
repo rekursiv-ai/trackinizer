@@ -82,7 +82,6 @@
       "default_size": "wide",
       "parameter_schema": {
         "machine": {"type": "string", "default": "", "minimum": null, "maximum": null, "max_length": 63},
-        "terminal": {"type": "string", "default": "", "minimum": null, "maximum": null, "max_length": 36},
         "start": {"type": "boolean", "default": false, "minimum": null, "maximum": null, "max_length": null}
       },
       "record_kinds": null

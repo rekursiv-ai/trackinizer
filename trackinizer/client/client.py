@@ -2004,8 +2004,9 @@ class Client:
 
         Returns:
           capture: ``width``, ``height``, ``mime``, ``data`` (base64), the visuals
-            ``not_captured`` and the red ``boxes`` on it. A 424 ``ClientError``
-            says why there is no picture.
+            ``not_captured``, the red ``boxes`` on it and the ``tiles`` (each
+            visual's ``id`` and body edges as fractions of the picture, topmost
+            last). A 424 ``ClientError`` says why there is no picture.
 
         """
         where = f"/api/workspaces/{workspace_id}/captures"

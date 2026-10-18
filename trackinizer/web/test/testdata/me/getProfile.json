@@ -37,6 +37,7 @@
         "skin": "default",
         "stars": [],
         "terminal_font_size": "13px",
+        "terminal_tab_chords": false,
         "theme": "dark",
         "views": [],
         "workstreams": {

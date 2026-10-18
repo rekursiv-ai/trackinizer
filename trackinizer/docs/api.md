@@ -1343,14 +1343,17 @@ machine's owner opens one, with a browser session (a cookie): an API key, a
 service account, a request without this server's own `Origin`, and anyone else
 answer 403 or 404. The machine must be online and its host must have asked for
 terminals within 45 seconds (`TRAX_MACHINE_TERMINAL=1`), else 409
-`terminal_not_enabled`. A station has one live terminal (409 `terminal_live`);
-4 per user, 4 per machine, 64 per server and 10 opens a minute per user answer 429.
-Every terminal refusal answers `detail: {code, message}`: `terminal_forbidden`,
-`terminal_not_enabled`, `terminal_unconfirmed`, `terminal_live` and `terminal_limit`.
+`terminal_not_enabled`. A station may hold any number of terminals; a user's 11th
+open within a minute answers 429. Every terminal refusal answers
+`detail: {code, message}`: `terminal_forbidden`, `terminal_not_enabled`,
+`terminal_unconfirmed` and `terminal_limit`.
 
-`POST /api/terminals` takes `{machine, rows, cols, workspace?}` and returns
-`{terminal_id, ticket}`. The ticket is 256 random bits, valid once for 30
-seconds; it never travels in a URL. The browser opens the WebSocket and sends
+`POST /api/terminals` takes `{machine, rows, cols, workspace?, surface?}` and returns
+`{terminal_id, ticket}`. `surface` names the view that opened it;
+`GET /api/terminals/machines?workspace=ID` lists the caller's live terminals for
+that station as `terminals` (`terminal_id`, `machine`, `surface`), oldest first. The
+ticket is 256 random bits, valid once for 30 seconds; it never travels in a URL.
+The browser opens the WebSocket and sends
 `ATTACH` first (the 43-character ticket, then a u64 offset). One binary message is
 one frame: a kind byte, a four-byte big-endian length, and the payload. Browser
 frames are `ATTACH` (1), `INPUT` (2), `RESIZE` (3, u16 rows and cols, clamped to
@@ -1360,7 +1363,7 @@ re-attaches within 60 seconds with a ticket from `attach` and its last offset; a
 offset that fell out of the 256 KiB ring gets the whole ring after a
 `--- output lost ---` line. Close codes: 4000 ended, 4001 taken over, 4002 idle
 (60 minutes without input), 4003 lifetime (24 hours), 4004 host lost, 4403
-refused, 4410 machine revoked, 4429 limit.
+refused, 4410 machine revoked.
 
 The host holds `wait` (at most 25 seconds; `null` when nothing came) and dials the
 host WebSocket with its machine credential and its current `instance`; a second

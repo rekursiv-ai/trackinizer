@@ -73,6 +73,9 @@ def _picture(*, mime: str = "image/png") -> dict[str, object]:
             "data": _PNG,
             "not_captured": ["the graph"],
             "boxes": [{"id": str(_BOX), "author": "person"}],
+            "tiles": [
+                {"id": str(_BOX), "left": 0.0, "top": 0.1, "right": 0.5, "bottom": 1.0},
+            ],
         },
     }
 

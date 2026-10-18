@@ -1,4 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
+import { APP } from "../appName";
 import { type ReactNode, startTransition, useDeferredValue, useEffect, useState } from "react";
 import { ApiError } from "../api/client";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
@@ -107,7 +108,7 @@ function Boot() {
   const message = boot.error instanceof Error ? boot.error.message : String(boot.error);
   return (
     <Frame>
-      <EmptyState icon={<Icon name="x" size={24} />} title="Could not start Trackinizer">
+      <EmptyState icon={<Icon name="x" size={24} />} title={`Could not start ${APP.name}`}>
         <p role="alert">{message}</p>
         <span className="w-actions">
           <button type="button" className="btn" onClick={boot.retry}>
@@ -125,7 +126,7 @@ function Frame({ busy = false, children }: { busy?: boolean; children?: ReactNod
   return (
     <div className="app" aria-busy={busy}>
       <div className="topbar">
-        <span className="topbar-logo" title="Trackinizer">
+        <span className="topbar-logo" title={APP.name}>
           <Logo />
         </span>
       </div>

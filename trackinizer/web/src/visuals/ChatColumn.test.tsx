@@ -275,6 +275,14 @@ test("the palette lists Chat's commands, and a hidden Chat offers to show it", a
   expect(screen.getByLabelText("Palette").textContent).toBe("Show Chat|Chat full screen|Move Chat to the other side|New chat");
 });
 
+test("the palette offers New terminal, bound to no key", async () => {
+  function Terminals() {
+    return <output aria-label="Terminals">{useCommandList().filter((command) => command.section === "Terminal").map((command) => `${command.title}:${command.keys?.length ?? 0}`).join("|")}</output>;
+  }
+  await show(workspace, { sheet: <Terminals /> });
+  expect(screen.getByLabelText("Terminals").textContent).toBe("New terminal:0");
+});
+
 test("the divider tells the width the stylesheet gave Chat before the user sets one", async () => {
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(431);
   await show();

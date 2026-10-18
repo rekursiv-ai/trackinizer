@@ -124,18 +124,12 @@ async def _first_line(ws: ServerConnection) -> int:
     raise AssertionError("closed before the shell wrote a line")
 
 
-async def _run(
-    host: TerminalHost,
-    opened: TerminalWait,
-    *,
-    refuse: bool = False,
-) -> None:
+async def _run(host: TerminalHost, opened: TerminalWait) -> None:
     await asyncio.to_thread(
         host.serve,
         opened,
         machine_id=_MACHINE,
         instance=_INSTANCE,
-        refuse=refuse,
     )
 
 
@@ -270,24 +264,6 @@ async def test_each_open_and_close_is_logged_once_for_this_user_only() -> None:
     assert '"status":5' in second
 
 
-async def test_a_refused_open_is_closed_4429_and_starts_no_shell() -> None:
-    codes: list[int | None] = []
-
-    async def handler(ws: ServerConnection) -> None:
-        await ws.wait_closed()
-        codes.append(ws.close_code)
-
-    server, url = await _listening(handler)
-    await _run(_host(url, "/bin/sh", "-c", "exit 0"), _opened(), refuse=True)
-    await asyncio.sleep(0.05)
-    server.close()
-
-    assert codes == [wire_terminals.CLOSE_LIMIT]
-    assert not (
-        state_dir() / "rekursiv-ai" / "trax" / "machines" / "box.terminals.log"
-    ).exists()
-
-
 async def _five_opens(
     wait_for: Callable[[list[ServerConnection]], bool],
 ) -> tuple[TerminalHost, _Client, list[ServerConnection], Server]:
@@ -301,7 +277,7 @@ async def _five_opens(
         await ws.wait_closed()
 
     server, url = await _listening(handler)
-    client = _Client([_opened() for _ in range(wire_terminals.MAX_HOST_BRIDGES + 1)])
+    client = _Client([_opened() for _ in range(5)])
     host = _host(url, "/bin/sh", "-c", "sleep 30", client=client)
     host.start(_MACHINE, _INSTANCE)
     for _ in range(500):
@@ -311,22 +287,19 @@ async def _five_opens(
     return host, client, conns, server
 
 
-async def test_the_fifth_open_is_refused_with_the_limits_code() -> None:
-    host, _, conns, server = await _five_opens(
-        lambda conns: any(ws.close_code is not None for ws in conns),
-    )
+async def test_a_host_serves_five_terminals_at_once_and_refuses_none() -> None:
+    host, _, conns, server = await _five_opens(lambda conns: len(conns) == 5)
 
-    refused = [ws.close_code for ws in conns if ws.close_code is not None]
+    open_now = [ws.close_code is None for ws in conns]
     await asyncio.to_thread(host.stop)
     server.close()
 
-    assert refused == [wire_terminals.CLOSE_LIMIT]
-    assert len(conns) == wire_terminals.MAX_HOST_BRIDGES + 1
+    assert open_now == [True] * 5
 
 
 async def test_stop_ends_every_bridge_and_the_listener_lets_go_of_its_client() -> None:
     host, client, conns, server = await _five_opens(
-        lambda conns: len(conns) == wire_terminals.MAX_HOST_BRIDGES + 1,
+        lambda conns: len(conns) == 5,
     )
 
     await asyncio.to_thread(host.stop)

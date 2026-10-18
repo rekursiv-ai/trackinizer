@@ -509,7 +509,11 @@ class WorkspaceMark(BaseModel):
     top: float = Field(default=0.0, ge=0, le=1)
     right: float = Field(default=0.0, ge=0, le=1)
     bottom: float = Field(default=0.0, ge=0, le=1)
-    """Where it stands, as fractions of the stage's width and height."""
+    """Where it stands, as fractions of the width and height of the ``tile``'s body,
+    or of the stage when there is no tile."""
+
+    tile: WorkspaceVisibleVisual | None = None
+    """The visual it was drawn on, when it was drawn on one."""
 
     instances: list[WorkspaceVisibleVisual] = Field(default_factory=list)
     """The visuals under it that are still on the canvas."""

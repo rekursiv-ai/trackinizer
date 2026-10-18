@@ -189,8 +189,11 @@ class _World:
         workspace: uuid.UUID | None = None,
         origin: str | None = _ORIGIN,
         requested_by: str | None = None,
+        surface: str | None = None,
     ) -> httpx2.Response:
         body: dict[str, object] = {"machine": machine, "rows": 24, "cols": 80}
+        if surface is not None:
+            body["surface"] = surface
         if requested_by is not None:
             body["requested_by"] = requested_by
         if workspace is not None:
@@ -391,7 +394,7 @@ async def test_an_owner_opens_a_terminal_and_bytes_flow_both_ways_until_exit(
         wire_terminals.TERMINAL_MACHINES_PATH,
         headers=world.browser(cookie),
     )
-    assert from_plain(listed.json(), dict[str, object])["live"] is None
+    assert from_plain(listed.json(), dict[str, object])["terminals"] == []
 
 
 async def _stored(world: _World) -> list[set[str]]:
@@ -477,22 +480,6 @@ async def test_an_abrupt_host_drop_closes_the_browser_and_raises_nothing(
     assert terminal_hub(app).terminal(terminal_id) is None
 
 
-async def test_a_host_at_its_limit_reaches_the_browser_as_4429(world: _World) -> None:
-    ada = await world.person("ada@x.y")
-    cookie = world.cookie(ada)
-    await world.join(cookie)
-    await world.wait()
-    terminal_id, ticket = _opened(await world.open(cookie))
-    browser, host, tasks = await _connected(world, cookie, terminal_id, ticket)
-
-    host.leave(code=wire_terminals.CLOSE_LIMIT)
-    closed = await browser.close_code()
-    browser.leave()
-    await asyncio.gather(*tasks)
-
-    assert closed == wire_terminals.CLOSE_LIMIT
-
-
 async def test_a_browser_that_reconnects_with_an_offset_gets_only_what_it_missed(
     world: _World,
 ) -> None:
@@ -528,7 +515,7 @@ async def test_a_browser_that_reconnects_with_an_offset_gets_only_what_it_missed
     await asyncio.gather(task, tasks[1])
 
 
-async def test_the_listing_names_the_live_terminal_and_a_second_open_is_refused(
+async def test_the_listing_names_every_live_terminal_of_the_station_with_its_surface(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -554,12 +541,16 @@ async def test_the_listing_names_the_live_terminal_and_a_second_open_is_refused(
     assert (not_asked.status_code, _code(not_asked)) == (409, "terminal_not_enabled")
 
     await world.wait()
-    terminal_id, _ = _opened(await world.open(cookie, workspace=workspace))
+    first, _ = _opened(
+        await world.open(cookie, workspace=workspace, surface="chat"),
+    )
+    second, _ = _opened(
+        await world.open(cookie, workspace=workspace, surface="tile-1"),
+    )
     after = from_plain(
         (await world.call("GET", path, headers=world.browser(cookie))).json(),
         dict[str, object],
     )
-    again = await world.open(cookie, workspace=workspace)
     other = from_plain(
         (
             await world.call("GET", path, headers=world.browser(world.cookie(bob)))
@@ -568,11 +559,11 @@ async def test_the_listing_names_the_live_terminal_and_a_second_open_is_refused(
     )
 
     assert from_plain(after["machines"], list[dict[str, object]])[0]["terminal_ready"]
-    live = from_plain(after["live"], dict[str, str])
-    assert (live["terminal_id"], live["machine"]) == (str(terminal_id), "gx10")
-    assert again.status_code == 409
-    assert _code(again) == "terminal_live"
-    assert (other["machines"], other["live"]) == ([], None)
+    assert after["terminals"] == [
+        {"terminal_id": str(first), "machine": "gx10", "surface": "chat"},
+        {"terminal_id": str(second), "machine": "gx10", "surface": "tile-1"},
+    ]
+    assert (other["machines"], other["terminals"]) == ([], [])
 
 
 async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_machine(
@@ -590,6 +581,8 @@ async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_mac
     foreign = await world.open(cookie, origin=None)
     assert (foreign.status_code, _code(foreign)) == (403, "terminal_forbidden")
     assert (await world.open(cookie, origin="https://evil.test")).status_code == 403
+    bad = await world.open(cookie, surface="has space")
+    assert bad.status_code == 422
     key = await world.key(ada)
     keyed = await world.call(
         "POST",
@@ -600,7 +593,7 @@ async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_mac
     assert keyed.status_code == 403
     stranger_station, _ = await world.station(bob)
     assert (await world.open(cookie, workspace=stranger_station)).status_code == 404
-    for _ in range(wire_terminals.MAX_LIVE_PER_USER):
+    for _ in range(wire_terminals.MAX_OPENS_PER_MIN_PER_USER):
         _opened(await world.open(cookie))
     over = await world.open(cookie)
     assert (over.status_code, _code(over)) == (429, "terminal_limit")

@@ -24,7 +24,7 @@ async function startedTile(page: Page, request: Parameters<typeof resetCanvas>[0
   });
   expect(shown.ok(), await shown.text()).toBe(true);
   await page.route("**/api/terminals/machines**", (route) => route.fulfill({
-    json: { machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: true }], live: null },
+    json: { machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: true }], terminals: [] },
   }));
   await page.route("**/api/terminals", (route) => route.fulfill({ status: 201, json: { terminal_id: crypto.randomUUID(), ticket: "t".repeat(43) } }));
   await page.routeWebSocket(/\/api\/terminals\/[0-9a-f-]{36}\/ws$/, (socket) => {
@@ -57,4 +57,14 @@ test("the maximize button stands clear of the screen's text", async ({ page, req
   const button = (await tile.getByRole("button", { name: "Maximize terminal" }).boundingBox())!;
   const screen = (await tile.locator(".xterm-screen").boundingBox())!;
   expect(button.y + button.height).toBeLessThanOrEqual(screen.y);
+});
+
+test("New terminal opens a second shell in its own tab, and switching shows each screen", async ({ page, request }) => {
+  const tile = await startedTile(page, request);
+  await tile.getByRole("button", { name: "New terminal" }).click();
+  await expect(tile.getByRole("tab")).toHaveCount(2);
+  await expect(tile.locator(".xterm-screen:visible")).toHaveCount(1);
+  await tile.getByRole("tab", { name: "Terminal 1" }).click();
+  await expect(tile.locator(".xterm-screen:visible")).toHaveCount(1);
+  await expect(tile.getByRole("tab", { name: "Terminal 1" })).toHaveAttribute("aria-selected", "true");
 });

@@ -1,4 +1,5 @@
 import { newUuid } from "../api/idempotency";
+import { APP } from "../appName";
 import type { components } from "../api/generated/schema";
 import type { Preferences } from "../preferences";
 import type { Filter, FilterOp } from "../query/query";
@@ -111,7 +112,7 @@ export function stateOf(kept: Preferences, tiles: UiState["tiles"]): BrowserStat
  */
 export function parseState(value: unknown): BrowserState {
   if (!isRecord(value) || typeof value.version !== "number") {
-    throw new Error("This is not an export of Trackinizer's browser state.");
+    throw new Error(`This is not an export of ${APP.name}'s browser state.`);
   }
   if (value.version > VERSION || value.version < OLDEST_READABLE) {
     throw new Error(`This export is version ${value.version}; this build reads version ${VERSION}. Reload for the latest build.`);

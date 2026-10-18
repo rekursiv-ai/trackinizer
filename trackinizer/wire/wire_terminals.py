@@ -39,7 +39,6 @@ __all__ = [
     "CLOSE_HOST_LOST",
     "CLOSE_IDLE",
     "CLOSE_LIFETIME",
-    "CLOSE_LIMIT",
     "CLOSE_MACHINE_REVOKED",
     "CLOSE_REFUSED",
     "CLOSE_TAKEN_OVER",
@@ -57,12 +56,8 @@ __all__ = [
     "MACHINE_TERMINAL_WAIT_PATH",
     "MACHINE_TERMINAL_WS_PATH",
     "MAX_COLS",
-    "MAX_HOST_BRIDGES",
     "MAX_INPUT_BYTES_PER_SEC",
     "MAX_INPUT_FRAME_BYTES",
-    "MAX_LIVE_PER_MACHINE",
-    "MAX_LIVE_PER_SERVER",
-    "MAX_LIVE_PER_USER",
     "MAX_OPENS_PER_MIN_PER_USER",
     "MAX_OUTPUT_BYTES_PER_SEC",
     "MAX_ROWS",
@@ -94,7 +89,7 @@ TERMINALS_PATH: Final = "/api/terminals"
 """``POST``: open a terminal (the owner's browser, cookie only)."""
 
 TERMINAL_MACHINES_PATH: Final = "/api/terminals/machines"
-"""``GET``: the caller's own machines; ``?workspace=ID`` also names its live terminal."""
+"""``GET``: the caller's own machines; ``?workspace=ID`` also lists its live terminals."""
 
 TERMINAL_CONFIRM_PATH: Final = "/api/terminals/machines/{name}/confirm"
 """``POST``: the owner confirms a machine enrolled with a key, so terminals may open."""
@@ -135,7 +130,6 @@ CLOSE_LIFETIME: Final = 4003
 CLOSE_HOST_LOST: Final = 4004
 CLOSE_REFUSED: Final = 4403
 CLOSE_MACHINE_REVOKED: Final = 4410
-CLOSE_LIMIT: Final = 4429
 
 FINAL_CLOSE_CODES: Final = frozenset(
     {CLOSE_ENDED, CLOSE_TAKEN_OVER, CLOSE_IDLE, CLOSE_LIFETIME, CLOSE_MACHINE_REVOKED},
@@ -163,11 +157,7 @@ IDLE_SEC: Final = 3_600
 LIFETIME_SEC: Final = 86_400
 SWEEP_SEC: Final = 60
 
-MAX_LIVE_PER_USER: Final = 4
-MAX_LIVE_PER_MACHINE: Final = 4
-MAX_LIVE_PER_SERVER: Final = 64
 MAX_OPENS_PER_MIN_PER_USER: Final = 10
-MAX_HOST_BRIDGES: Final = 4
 
 RECONNECT_BACKOFF_SEC: Final = (0.5, 1.0, 2.0, 4.0, 8.0)
 RECONNECT_WINDOW_SEC: Final = 60
@@ -189,6 +179,9 @@ class OpenTerminal(BaseModel):
         Annotated[str, Field(max_length=63, pattern=r"^[\x20-\x7e]*$")] | None
     ) = None
     """The actor that placed the tile asking for it: shown and logged by the host, never trusted."""
+
+    surface: Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")] | None = None
+    """The view that opened it (Chat's terminal side, or one tile): it re-attaches to its own."""
 
 
 class TerminalOpened(BaseModel):
@@ -230,18 +223,20 @@ class LiveTerminal(BaseModel):
 
     terminal_id: uuid.UUID
     machine: str = Field(pattern=NAME_PATTERN)
+    surface: str | None = None
+    """The ``surface`` it was opened with."""
 
 
 class TerminalMachines(BaseModel):
-    """The caller's machines, and their live terminal for the asked station."""
+    """The caller's machines, and their live terminals for the asked station."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     machines: list[TerminalMachine]
     """Newest first, by when each machine was registered."""
 
-    live: LiveTerminal | None = None
-    """The caller's live terminal opened from ``?workspace=``; ``None`` when none."""
+    terminals: list[LiveTerminal] = Field(default_factory=list)
+    """The caller's live terminals opened from ``?workspace=``, oldest first."""
 
 
 class TerminalWait(BaseModel):

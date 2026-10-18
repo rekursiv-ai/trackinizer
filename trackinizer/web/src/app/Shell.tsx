@@ -1,4 +1,5 @@
 import { Suspense, useState } from "react";
+import { APP } from "../appName";
 import { createCommands } from "../commands/create";
 import { PaletteContext, usePaletteState } from "../commands/palette";
 import { useCommands } from "../commands/registry";
@@ -177,7 +178,7 @@ function RouteView({ route }: { route: ViewRoute }) {
           <ViewHeader icon={<Icon name="x" />} title="Not found" />
           <EmptyState icon={<Icon name="x" size={24} />} title="Nothing lives at this address">
             <p>
-              <code className="mono">{route.hash}</code> is not a Trackinizer link.
+              <code className="mono">{route.hash}</code> is not a {APP.name} link.
             </p>
             <a className="btn" href={formatRoute(HOME)}>
               Go to the graph

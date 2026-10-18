@@ -8,7 +8,7 @@ import { CaptureRegistry, type CaptureSource } from "./stageRegistry";
 vi.mock("../api/workspaces", () => ({ answerCapture: vi.fn() }));
 vi.mock("./captureStage", () => ({ captureStage: vi.fn() }));
 
-const source: CaptureSource = { stage: document.createElement("div"), boxes: () => [] };
+const source: CaptureSource = { stage: document.createElement("div") };
 const picture = { error: "stands in for a picture" };
 
 function registry(offered: CaptureSource | null) {

@@ -29,6 +29,7 @@ __all__ = [
     "CaptureBox",
     "CaptureImage",
     "CaptureRelay",
+    "CaptureTile",
 ]
 
 
@@ -46,6 +47,19 @@ class CaptureBox(BaseModel):
 
     id: UUID
     author: Literal["person", "agent"]
+
+
+class CaptureTile(BaseModel):
+    """A visual on the stage, with where its body stood in the picture."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    left: Annotated[float, Field(ge=0, le=1)]
+    top: Annotated[float, Field(ge=0, le=1)]
+    right: Annotated[float, Field(ge=0, le=1)]
+    bottom: Annotated[float, Field(ge=0, le=1)]
+    """The body's edges, as fractions of the picture's width and height."""
 
 
 class CaptureImage(BaseModel):
@@ -68,6 +82,11 @@ class CaptureImage(BaseModel):
     boxes: Annotated[list[CaptureBox], Field(max_length=50)] = Field(
         default_factory=list,
     )
+
+    tiles: Annotated[list[CaptureTile], Field(max_length=50)] = Field(
+        default_factory=list,
+    )
+    """Every visual on the stage in paint order, the topmost last."""
 
     @model_validator(mode="after")
     def _is_a_picture(self) -> Self:
