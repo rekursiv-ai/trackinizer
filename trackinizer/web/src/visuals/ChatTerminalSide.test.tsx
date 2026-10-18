@@ -60,7 +60,7 @@ test("no machine: the bar offers `trax machine connect` and Copy writes it", asy
 });
 
 test("a terminal live on the station re-attaches: its machine is chosen and it is the view's resume", async () => {
-  const live = { terminal_id: "t9", session_id: "s9", machine: "laptop" };
+  const live = { terminal_id: "t9", machine: "laptop" };
   mount([machine("gx10"), machine("laptop")], live);
   await screen.findByText("terminal view");
   expect(view).toHaveBeenLastCalledWith(expect.objectContaining({ machine: "laptop", resume: live }));

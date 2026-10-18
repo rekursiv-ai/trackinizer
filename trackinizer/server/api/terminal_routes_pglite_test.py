@@ -20,7 +20,7 @@ import pytest
 
 from trackinizer.lib.posix.host import Frame, decode_frame, encode_frame, encode_winsize
 from trackinizer.server.api import terminal_routes
-from trackinizer.server.api._deps import terminal_services
+from trackinizer.server.api._deps import terminal_hub
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import clear_identity_override
 from trackinizer.server.auth import create_api_key
@@ -322,6 +322,13 @@ def _opened(response: httpx2.Response) -> tuple[uuid.UUID, str]:
     return uuid.UUID(body["terminal_id"]), body["ticket"]
 
 
+def _code(response: httpx2.Response) -> str:
+    """Return the ``code`` of a refusal's ``detail: {code, message}``."""
+    detail = from_plain(response.json(), dict[str, dict[str, str]])["detail"]
+    assert set(detail) == {"code", "message"}
+    return detail["code"]
+
+
 async def _run_browser(peer: _Peer, terminal_id: uuid.UUID) -> None:
     await terminal_routes.terminal_web_socket(peer.websocket, terminal_id)
 
@@ -348,11 +355,6 @@ async def test_an_owner_opens_a_terminal_and_bytes_flow_both_ways_until_exit(
         await world.open(cookie, workspace=workspace, requested_by="helper-1"),
     )
     offered = from_plain((await world.wait()).json(), dict[str, object])
-    async with world.store.engine.acquire() as conn:
-        labels = await conn.fetchval(
-            "SELECT labels FROM inquiries WHERE agentsession_cli = 'terminal'",
-        )
-    assert "requested-by:helper-1" in from_plain(labels, list[str])
     assert offered["requested_by"] == "helper-1"
     assert offered["terminal_id"] == str(terminal_id)
     assert (offered["opener"], offered["rows"], offered["cols"]) == ("ada@x.y", 24, 80)
@@ -392,6 +394,50 @@ async def test_an_owner_opens_a_terminal_and_bytes_flow_both_ways_until_exit(
     assert from_plain(listed.json(), dict[str, object])["live"] is None
 
 
+async def _stored(world: _World) -> list[set[str]]:
+    """Name what a session would leave behind: rows, manifests and records."""
+    queries = (
+        "SELECT id::text AS key FROM inquiries",
+        "SELECT session_id::text AS key FROM session_manifests",
+        (
+            "SELECT session_id::text || '/' || part || '/' || idx AS key "
+            "FROM session_records"
+        ),
+    )
+    async with world.store.engine.acquire() as conn:
+        return [
+            {from_plain(each["key"], str) for each in await conn.fetch(query)}
+            for query in queries
+        ]
+
+
+async def test_opening_and_using_a_terminal_stores_no_session_and_no_record(
+    world: _World,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie)
+    await world.wait()
+    before = await _stored(world)
+
+    opened = await world.open(cookie)
+    terminal_id, ticket = _opened(opened)
+    browser, host, tasks = await _connected(world, cookie, terminal_id, ticket)
+    host.push(Frame.OUTPUT, b"echo hi\r\nhi\r\n")
+    assert await browser.frame() == (Frame.OUTPUT, b"echo hi\r\nhi\r\n")
+    browser.push(Frame.INPUT, b"ls\n")
+    assert await host.frame() == (Frame.INPUT, b"ls\n")
+    host.push(Frame.EXIT, (0).to_bytes(4))
+    assert await browser.frame() == (Frame.EXIT, (0).to_bytes(4))
+    host.leave()
+    browser.leave()
+    await asyncio.gather(*tasks)
+    await asyncio.sleep(0)
+
+    assert await _stored(world) == before
+    assert set(from_plain(opened.json(), dict[str, str])) == {"terminal_id", "ticket"}
+
+
 async def _connected(
     world: _World,
     cookie: str,
@@ -410,7 +456,7 @@ async def _connected(
     return browser, host, tasks
 
 
-async def test_an_abrupt_host_drop_closes_the_browser_ends_the_session_and_raises_nothing(
+async def test_an_abrupt_host_drop_closes_the_browser_and_raises_nothing(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -428,13 +474,7 @@ async def test_an_abrupt_host_drop_closes_the_browser_ends_the_session_and_raise
     await asyncio.gather(*tasks)
 
     assert closed == wire_terminals.CLOSE_HOST_LOST
-    assert terminal_services(app).hub.terminal(terminal_id) is None
-    async with world.store.engine.acquire() as conn:
-        ended = await conn.fetchval(
-            "SELECT agentsession_ended IS NOT NULL FROM inquiries "
-            "WHERE agentsession_cli = 'terminal'",
-        )
-    assert ended is True
+    assert terminal_hub(app).terminal(terminal_id) is None
 
 
 async def test_a_host_at_its_limit_reaches_the_browser_as_4429(world: _World) -> None:
@@ -510,7 +550,8 @@ async def test_the_listing_names_the_live_terminal_and_a_second_open_is_refused(
             "confirmed": True,
         },
     ]
-    assert (await world.open(cookie, workspace=workspace)).status_code == 409
+    not_asked = await world.open(cookie, workspace=workspace)
+    assert (not_asked.status_code, _code(not_asked)) == (409, "terminal_not_enabled")
 
     await world.wait()
     terminal_id, _ = _opened(await world.open(cookie, workspace=workspace))
@@ -530,7 +571,7 @@ async def test_the_listing_names_the_live_terminal_and_a_second_open_is_refused(
     live = from_plain(after["live"], dict[str, str])
     assert (live["terminal_id"], live["machine"]) == (str(terminal_id), "gx10")
     assert again.status_code == 409
-    assert from_plain(again.json(), dict[str, str])["detail"] == "terminal_live"
+    assert _code(again) == "terminal_live"
     assert (other["machines"], other["live"]) == ([], None)
 
 
@@ -546,7 +587,8 @@ async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_mac
     await world.wait()
     assert (await world.open(world.cookie(bob))).status_code == 404
     assert (await world.open(cookie, machine="nope")).status_code == 404
-    assert (await world.open(cookie, origin=None)).status_code == 403
+    foreign = await world.open(cookie, origin=None)
+    assert (foreign.status_code, _code(foreign)) == (403, "terminal_forbidden")
     assert (await world.open(cookie, origin="https://evil.test")).status_code == 403
     key = await world.key(ada)
     keyed = await world.call(
@@ -558,6 +600,10 @@ async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_mac
     assert keyed.status_code == 403
     stranger_station, _ = await world.station(bob)
     assert (await world.open(cookie, workspace=stranger_station)).status_code == 404
+    for _ in range(wire_terminals.MAX_LIVE_PER_USER):
+        _opened(await world.open(cookie))
+    over = await world.open(cookie)
+    assert (over.status_code, _code(over)) == (429, "terminal_limit")
 
     async with world.store.engine.acquire() as conn:
         await conn.execute(
@@ -641,7 +687,7 @@ async def test_a_machine_an_agent_enrolled_opens_no_terminal_until_its_owner_con
     )
     assert (unconfirmed.status_code, by_key.status_code) == (409, 403)
     assert (no_origin.status_code, stranger.status_code) == (403, 404)
-    assert "terminal_unconfirmed" in unconfirmed.text
+    assert _code(unconfirmed) == "terminal_unconfirmed"
     assert [(m["name"], m["confirmed"]) for m in listed] == [
         ("evilbox", False),
         ("older", False),
@@ -718,7 +764,7 @@ async def test_the_sweep_ends_a_terminal_whose_owner_is_no_longer_a_writer(
     await world.join(cookie)
     await world.wait()
     terminal_id, _ = _opened(await world.open(cookie))
-    hub = terminal_services(app).hub
+    hub = terminal_hub(app)
     await hub.sweep()
     assert hub.terminal(terminal_id) is not None
 
@@ -827,10 +873,10 @@ async def test_the_host_socket_refuses_an_unknown_credential_a_stale_instance_an
     await task
 
     assert codes == [wire_terminals.CLOSE_REFUSED] * 3
-    assert terminal_services(app).hub.terminal(terminal_id) is None
+    assert terminal_hub(app).terminal(terminal_id) is None
 
 
-async def test_a_revoke_closes_both_legs_with_4410_and_ends_the_session(
+async def test_a_revoke_closes_both_legs_with_4410(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -861,12 +907,6 @@ async def test_a_revoke_closes_both_legs_with_4410_and_ends_the_session(
     await asyncio.gather(*tasks)
 
     assert codes == [wire_terminals.CLOSE_MACHINE_REVOKED] * 2
-    async with world.store.engine.acquire() as conn:
-        ended = await conn.fetchval(
-            "SELECT count(*) FROM inquiries WHERE kind = 'AgentSession' "
-            "AND agentsession_cli = 'terminal' AND agentsession_ended IS NOT NULL",
-        )
-    assert ended == 1
     revoked = _host_peer(world, terminal_id)
     await terminal_routes.terminal_host_socket(
         revoked.websocket,

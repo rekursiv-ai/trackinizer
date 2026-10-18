@@ -4779,11 +4779,6 @@
             "title": "Machine",
             "type": "string"
           },
-          "session_id": {
-            "format": "uuid",
-            "title": "Session Id",
-            "type": "string"
-          },
           "terminal_id": {
             "format": "uuid",
             "title": "Terminal Id",
@@ -4792,7 +4787,6 @@
         },
         "required": [
           "terminal_id",
-          "session_id",
           "machine"
         ],
         "title": "LiveTerminal",
@@ -10066,11 +10060,6 @@
         "additionalProperties": false,
         "description": "A terminal was queued for the host; attach with the ticket.",
         "properties": {
-          "session_id": {
-            "format": "uuid",
-            "title": "Session Id",
-            "type": "string"
-          },
           "terminal_id": {
             "format": "uuid",
             "title": "Terminal Id",
@@ -10083,7 +10072,6 @@
         },
         "required": [
           "terminal_id",
-          "session_id",
           "ticket"
         ],
         "title": "TerminalOpened",
@@ -10131,11 +10119,6 @@
             "title": "Rows",
             "type": "integer"
           },
-          "session_id": {
-            "format": "uuid",
-            "title": "Session Id",
-            "type": "string"
-          },
           "terminal_id": {
             "format": "uuid",
             "title": "Terminal Id",
@@ -10168,7 +10151,6 @@
         },
         "required": [
           "terminal_id",
-          "session_id",
           "opener",
           "rows",
           "cols"
@@ -20563,7 +20545,7 @@
     },
     "/api/terminals": {
       "post": {
-        "description": "Open a terminal on one of the caller's machines, recorded to a private session.\n\nOnly a browser session opens one: an API key, a service account, a request without\nthis server's ``Origin``, and anyone but the machine's owner are refused. The\nmachine must be online and its host must have asked for terminals within 45 seconds\n(``TRAX_MACHINE_TERMINAL=1``). Attach with the returned ticket within 30 seconds.\n\nArgs:\n  body: The machine, the terminal's size, and the station it opens from.\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n\nReturns:\n  opened: The terminal and session ids, and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for a key, a service account or a foreign origin; 404 for no\n    such machine of the caller's, or station; 409 ``terminal_unconfirmed`` until the\n    owner confirms a machine a key enrolled, ``terminal_not_enabled`` when the host\n    is not asking, or ``terminal_live`` when the station has a terminal; 429 past a\n    limit. Every terminal route answers 403 on a server with authentication off.",
+        "description": "Open a terminal on one of the caller's machines.\n\nOnly a browser session opens one: an API key, a service account, a request without\nthis server's ``Origin``, and anyone but the machine's owner are refused. The\nmachine must be online and its host must have asked for terminals within 45 seconds\n(``TRAX_MACHINE_TERMINAL=1``). Attach with the returned ticket within 30 seconds.\n\nArgs:\n  body: The machine, the terminal's size, and the station it opens from.\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n\nReturns:\n  opened: The terminal id and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for a key, a service account or a foreign origin; 404 for no\n    such machine of the caller's, or station; 409 ``terminal_unconfirmed`` until the\n    owner confirms a machine a key enrolled, ``terminal_not_enabled`` when the host\n    is not asking, or ``terminal_live`` when the station has a terminal; 429 past a\n    limit. Every terminal route answers 403 on a server with authentication off.",
         "operationId": "open_terminal_route_api_terminals_post",
         "requestBody": {
           "content": {
@@ -20725,7 +20707,7 @@
     },
     "/api/terminals/{terminal_id}/close": {
       "post": {
-        "description": "Stop the caller's terminal; its shell is killed and the session ends.\n\nArgs:\n  terminal_id: The terminal.\n  request: Request carrying the terminal hub.\n  identity: The signed-in opener.",
+        "description": "Stop the caller's terminal; its shell is killed.\n\nArgs:\n  terminal_id: The terminal.\n  request: Request carrying the terminal hub.\n  identity: The signed-in opener.",
         "operationId": "close_terminal_route_api_terminals__terminal_id__close_post",
         "parameters": [
           {

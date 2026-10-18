@@ -4,8 +4,7 @@ Only a machine's owner opens a terminal on it, from a browser session: an API ke
 does, whatever its role. Opening asks the hub (``server/terminals.py``) to queue the
 terminal for the machine's host, which holds a ``GET`` on the wait route and dials the
 host WebSocket. The browser dials the browser WebSocket and sends ``ATTACH`` with the
-one-use ticket the open returned. The hub relays; the recorder
-(``server/terminal_record.py``) records the output as a private session.
+one-use ticket the open returned. The hub relays; nothing is stored.
 
 A WebSocket cannot answer 404 or 410 after the handshake, so both sockets accept, and
 then refuse with a close code (``wire_terminals``).
@@ -25,18 +24,10 @@ from treekle import from_plain
 
 from trackinizer.lib.posix.host import Frame, decode_frame
 from trackinizer.server import auth
-from trackinizer.server.api._deps import (
-    auth_is_disabled,
-    get_store,
-    get_terminals,
-)
+from trackinizer.server.api._deps import auth_is_disabled, get_terminal_hub
 from trackinizer.server.api._origin import is_strictly_same_origin
 from trackinizer.server.api._routes_shared import engine_of
 from trackinizer.server.api.machines_routes import MachineName, fetch_machines
-from trackinizer.server.api.session_access import (
-    require_session,
-    require_session_access,
-)
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.machine_auth import current_machine, machine_of
 from trackinizer.server.terminals import (
@@ -96,7 +87,7 @@ async def open_terminal_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> TerminalOpened:
-    """Open a terminal on one of the caller's machines, recorded to a private session.
+    """Open a terminal on one of the caller's machines.
 
     Only a browser session opens one: an API key, a service account, a request without
     this server's ``Origin``, and anyone but the machine's owner are refused. The
@@ -109,7 +100,7 @@ async def open_terminal_route(
       identity: The signed-in owner.
 
     Returns:
-      opened: The terminal and session ids, and the one-use attach ticket.
+      opened: The terminal id and the one-use attach ticket.
 
     Raises:
       HTTPException: 403 for a key, a service account or a foreign origin; 404 for no
@@ -123,33 +114,19 @@ async def open_terminal_route(
     _require_origin(request)
     machine_id = await _owned_machine(request, identity, name=body.machine)
     workstream = await _station_workstream(request, identity, workspace=body.workspace)
-    services = get_terminals(request)
-    if not services.hub.ready(machine_id):
-        raise HTTPException(
-            status_code=409,
-            detail="terminal_not_enabled: start the host with TRAX_MACHINE_TERMINAL=1",
+    hub = get_terminal_hub(request)
+    if not hub.ready(machine_id):
+        raise _refused(
+            409,
+            code="terminal_not_enabled",
+            message="start the host with TRAX_MACHINE_TERMINAL=1",
         )
-    _check(request, identity, machine_id=machine_id, workspace=body.workspace)
-    session_id = await services.recorder.start(
-        user=identity.email,
-        machine=body.machine,
-        workspace=body.workspace,
-        requested_by=body.requested_by,
-    )
-    store = get_store(request)
-    await require_session_access(
-        request,
-        identity,
-        session=await require_session(store, session_id),
-        mode="write",
-    )
     try:
-        term = services.hub.open(
+        term = hub.open(
             Opening(
                 user=identity.email,
                 machine_id=machine_id,
                 machine=body.machine,
-                session_id=session_id,
                 rows=body.rows,
                 cols=body.cols,
                 workspace=body.workspace,
@@ -158,13 +135,8 @@ async def open_terminal_route(
             ),
         )
     except (StationLiveError, TerminalLimitError) as error:
-        await services.recorder.abandon(session_id)
         raise _refusal(error) from error
-    return TerminalOpened(
-        terminal_id=term.id,
-        session_id=session_id,
-        ticket=services.hub.mint_ticket(term),
-    )
+    return TerminalOpened(terminal_id=term.id, ticket=hub.mint_ticket(term))
 
 
 @router.get(TERMINAL_MACHINES_PATH)
@@ -186,7 +158,7 @@ async def list_terminal_machines_route(
 
     """
     _require_human(request, identity)
-    hub = get_terminals(request).hub
+    hub = get_terminal_hub(request)
     async with engine_of(request).acquire() as conn:
         rows = await fetch_machines(conn, name=None, viewer=identity)
     machines = [
@@ -216,7 +188,6 @@ async def list_terminal_machines_route(
         if live is None
         else LiveTerminal(
             terminal_id=live.id,
-            session_id=live.session_id,
             machine=live.machine,
         ),
     )
@@ -273,7 +244,7 @@ async def attach_terminal_route(
 
     """
     term = _own_terminal(request, identity, terminal_id=terminal_id)
-    return TerminalTicket(ticket=get_terminals(request).hub.mint_ticket(term))
+    return TerminalTicket(ticket=get_terminal_hub(request).mint_ticket(term))
 
 
 @router.post(TERMINAL_CLOSE_PATH, status_code=204)
@@ -282,7 +253,7 @@ async def close_terminal_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> None:
-    """Stop the caller's terminal; its shell is killed and the session ends.
+    """Stop the caller's terminal; its shell is killed.
 
     Args:
       terminal_id: The terminal.
@@ -291,7 +262,7 @@ async def close_terminal_route(
 
     """
     term = _own_terminal(request, identity, terminal_id=terminal_id)
-    await get_terminals(request).hub.stop(term)
+    await get_terminal_hub(request).stop(term)
 
 
 @router.get(MACHINE_TERMINAL_WAIT_PATH)
@@ -317,10 +288,14 @@ async def terminal_wait_route(
 
     """
     if auth_is_disabled(request):
-        raise HTTPException(status_code=403, detail="terminal_forbidden")
+        raise _refused(
+            403,
+            code="terminal_forbidden",
+            message="terminals are not available here",
+        )
     await current_machine(request, machine_id)
     await _require_instance(request, machine_id, instance=instance)
-    term = await get_terminals(request).hub.wait(
+    term = await get_terminal_hub(request).wait(
         machine_id,
         wait_sec=min(wait_sec, wire_terminals.WAIT_MAX_SEC),
     )
@@ -328,7 +303,6 @@ async def terminal_wait_route(
         return None
     return TerminalWait(
         terminal_id=term.id,
-        session_id=term.session_id,
         opener=term.user,
         rows=term.rows,
         cols=term.cols,
@@ -352,7 +326,7 @@ async def terminal_web_socket(websocket: WebSocket, terminal_id: UUID) -> None:
     if auth_is_disabled(websocket) or not is_strictly_same_origin(websocket):
         await leg.close(wire_terminals.CLOSE_REFUSED)
         return
-    hub = get_terminals(websocket).hub
+    hub = get_terminal_hub(websocket)
     try:
         identity = await auth.user_of(websocket)
     except HTTPException:
@@ -409,7 +383,7 @@ async def terminal_host_socket(
             else wire_terminals.CLOSE_REFUSED,
         )
         return
-    hub = get_terminals(websocket).hub
+    hub = get_terminal_hub(websocket)
     term = hub.terminal(terminal_id)
     if (
         term is None
@@ -510,13 +484,21 @@ def _require_human(request: HTTPConnection, identity: AuthIdentity) -> None:
         or identity.api_key_id is not None
         or is_service_address(identity.email)
     ):
-        raise HTTPException(status_code=403, detail="terminal_forbidden")
+        raise _refused(
+            403,
+            code="terminal_forbidden",
+            message="terminals are not available here",
+        )
 
 
 def _require_origin(request: Request) -> None:
     """Refuse a request that does not carry this server's own ``Origin``."""
     if not is_strictly_same_origin(request):
-        raise HTTPException(status_code=403, detail="terminal_forbidden")
+        raise _refused(
+            403,
+            code="terminal_forbidden",
+            message="terminals are not available here",
+        )
 
 
 def _own_terminal(
@@ -528,7 +510,7 @@ def _own_terminal(
     """Return the caller's live terminal, after the human and origin checks."""
     _require_human(request, identity)
     _require_origin(request)
-    term = get_terminals(request).hub.terminal(terminal_id)
+    term = get_terminal_hub(request).terminal(terminal_id)
     if term is None or term.user != identity.email:
         raise NotFoundError("no such terminal")
     return term
@@ -555,9 +537,10 @@ async def _owned_machine(
     if machine is None:
         raise NotFoundError(f"no terminal-capable machine {name}")
     if not machine["confirmed"]:
-        raise HTTPException(
-            status_code=409,
-            detail="terminal_unconfirmed: confirm this machine first",
+        raise _refused(
+            409,
+            code="terminal_unconfirmed",
+            message="confirm this machine first",
         )
     return from_plain(machine["id"], UUID)
 
@@ -583,29 +566,23 @@ async def _station_workstream(
     return UUID(workstream) if workstream else None
 
 
-def _check(
-    request: Request,
-    identity: AuthIdentity,
-    *,
-    machine_id: UUID,
-    workspace: UUID | None,
-) -> None:
-    """Refuse an open past a limit, before a session is started for it."""
-    try:
-        get_terminals(request).hub.check(
-            user=identity.email,
-            machine_id=machine_id,
-            workspace=workspace,
-        )
-    except (StationLiveError, TerminalLimitError) as error:
-        raise _refusal(error) from error
-
-
 def _refusal(error: StationLiveError | TerminalLimitError) -> HTTPException:
     """Return the error a refused open answers with."""
     if isinstance(error, StationLiveError):
-        return HTTPException(status_code=409, detail="terminal_live")
-    return HTTPException(status_code=429, detail="terminal_limit")
+        return _refused(
+            409,
+            code="terminal_live",
+            message="this station already has a live terminal",
+        )
+    return _refused(429, code="terminal_limit", message="too many terminals are open")
+
+
+def _refused(status_code: int, *, code: str, message: str) -> HTTPException:
+    """Return a refusal whose ``detail`` is ``{code, message}``."""
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message},
+    )
 
 
 async def _require_instance(

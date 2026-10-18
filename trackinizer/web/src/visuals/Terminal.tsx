@@ -19,7 +19,7 @@ import { terminalOptions } from "./terminalTheme";
 import "./Terminal.css";
 
 /** A terminal already running: what a reload re-attaches to. */
-export type LiveTerminal = { readonly terminal_id: string; readonly session_id: string };
+export type LiveTerminal = { readonly terminal_id: string };
 
 /** A terminal to connect to: `created` when this call opened it (and so must close it if it is let go of first). */
 type Opened = LiveTerminal & { readonly ticket: string; readonly created?: boolean };
@@ -113,8 +113,8 @@ export function TerminalView({ machine, workspace, resume = null, onOpened, show
         if (opened.created) void closeTerminal(opened.terminal_id).catch(() => undefined);
         return;
       }
-      setSession({ terminal_id: opened.terminal_id, session_id: opened.session_id });
-      onOpened?.({ terminal_id: opened.terminal_id, session_id: opened.session_id });
+      setSession({ terminal_id: opened.terminal_id });
+      onOpened?.({ terminal_id: opened.terminal_id });
       live.current.link = connectTerminal({
         id: opened.terminal_id, ticket: opened.ticket, onOutput: (bytes) => term.write(bytes), onStatus: setPhase,
         size: () => ({ rows: term.rows, cols: term.cols }),
@@ -136,7 +136,7 @@ export function TerminalView({ machine, workspace, resume = null, onOpened, show
       if (!(error instanceof ApiError && error.status === 409 && error.code === "terminal_live" && workspace)) throw error;
       const { live } = await listTerminalMachines(workspace);
       if (!live) throw error;
-      return { terminal_id: live.terminal_id, session_id: live.session_id, ticket: await attachTerminal(live.terminal_id) };
+      return { terminal_id: live.terminal_id, ticket: await attachTerminal(live.terminal_id) };
     }
   };
   const start = () => {
@@ -217,12 +217,10 @@ export function TerminalView({ machine, workspace, resume = null, onOpened, show
         <button type="button" className="btn" disabled={!machine} onClick={start}>
           {machine ? `Start terminal on ${machine}` : "Start terminal"}
         </button>
-        <p className="muted">Recorded to your sessions (private).</p>
       </div>}
       {phase.state === "taken" && <p className="terminal-note" role="status">{phase.note}{" "}
         {session && <button type="button" className="btn" onClick={() => void attach(session)}>Take over</button>}</p>}
       {(phase.state === "ended" || phase.state === "refused") && <p className="terminal-note" role="status">{phase.note}{" "}
-        {session?.session_id && <a href={`#/lookup/${session.session_id}`}>Transcript</a>}{" "}
         <button type="button" className="btn" disabled={!machine || active} onClick={start}>Start new</button></p>}
     </section>
   );
@@ -250,7 +248,7 @@ export function TerminalTile({ instance, workspace }: RendererProps) {
     {!given && ready.length > 1 && <select aria-label="Machine" value={machine ?? ""} onChange={(event) => setPicked(event.target.value)}>
       {ready.map((each) => <option key={each.name} value={each.name}>{each.name}</option>)}
     </select>}
-    <TerminalView machine={machine} workspace={workspace?.id ?? null} resume={terminal ? { terminal_id: terminal, session_id: "" } : null}
+    <TerminalView machine={machine} workspace={workspace?.id ?? null} resume={terminal ? { terminal_id: terminal } : null}
       autoStart={asked ? instance.id : null} requestedBy={requester(instance.placed_by, viewer, workspace)}
       onOpened={(opened) => machine && actions?.operate({ kind: "show", visual_type: instance.type, record_id: null, params: { machine, terminal: opened.terminal_id } })} />
   </div>;

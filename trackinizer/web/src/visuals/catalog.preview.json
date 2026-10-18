@@ -77,7 +77,7 @@
       "type": "trax.terminal",
       "version": 1,
       "title": "Terminal",
-      "description": "A shell on one of your own machines, recorded to a private session in your sessions. It starts only when you click Start terminal.",
+      "description": "A shell on one of your own machines. It starts only when you click Start terminal.",
       "requires": [],
       "default_size": "wide",
       "parameter_schema": {

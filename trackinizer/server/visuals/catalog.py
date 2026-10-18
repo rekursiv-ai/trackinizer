@@ -298,7 +298,7 @@ class FilesVisual:
 
 
 class TerminalVisual:
-    """A shell on one of the viewer's own machines, recorded to a private session."""
+    """A shell on one of the viewer's own machines."""
 
     class Config(Fig["TerminalVisual"]):
         title: str = "Terminal"
@@ -320,8 +320,8 @@ class TerminalVisual:
             version=1,
             title=self.config.title,
             description=(
-                "A shell on one of your own machines, recorded to a private session "
-                "in your sessions. It starts only when you click Start terminal."
+                "A shell on one of your own machines. "
+                "It starts only when you click Start terminal."
             ),
             requires=[],
             default_size="wide",

@@ -6,15 +6,16 @@
 .terminal-start .muted { color: #5e5c64; }
 .terminal-note { margin: 0; padding: 4px 8px; border-top: 1px solid #5e5c64; }
 .terminal a { color: #2a7bde; }
+/* The canvas tile: the terminal takes the tile's height, so the shell gets the rows it can show. */
+.terminal-tile { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; min-width: 0; }
 .chat-terminal-side { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
 .chat-terminal-side[hidden] { display: none; }
 .chat-terminal-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
 .chat-terminal-bar code { padding: 0 4px; background: var(--chip, rgba(127, 127, 127, .2)); }
 .chat-terminal-bar .chat-terminal-dismiss { margin-left: auto; }
-.terminal { position: relative; }
 /* Hover-revealed, like the Chat header's buttons; always shown where there is no hover. */
-.terminal-maximize { position: absolute; top: 2px; right: 6px; z-index: 2; color: inherit; opacity: 0; transition: opacity .12s; }
+.terminal .terminal-maximize { flex: 0 0 auto; align-self: flex-end; margin: 0 6px; color: inherit; opacity: 0; transition: opacity .12s; }
 .terminal:hover .terminal-maximize, .terminal:focus-within .terminal-maximize { opacity: 1; }
-@media (hover: none) { .terminal-maximize { opacity: 1; } }
+@media (hover: none) { .terminal .terminal-maximize { opacity: 1; } }
 /* Maximized: the same element, so the same screen and socket, fixed over the chat row; top, left, width and height are measured. */
 .terminal-maximized { position: fixed; z-index: 60; }

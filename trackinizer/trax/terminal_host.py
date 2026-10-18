@@ -333,7 +333,6 @@ class TerminalHost:
             event=event,
             terminal_id=opened.terminal_id,
             opener=opened.opener,
-            session_id=opened.session_id,
             requested_by=opened.requested_by,
             status=status,
         )
@@ -402,6 +401,5 @@ class _LogLine(BaseModel):
     event: str
     terminal_id: uuid.UUID
     opener: str
-    session_id: uuid.UUID
     requested_by: str | None = None
     status: int | None = None

@@ -3004,7 +3004,6 @@ class TestMachineHostMethods:
             None,
             {
                 "terminal_id": str(_MACHINE_ID),
-                "session_id": str(_INSTANCE),
                 "opener": "ada@x.y",
                 "rows": 24,
                 "cols": 80,

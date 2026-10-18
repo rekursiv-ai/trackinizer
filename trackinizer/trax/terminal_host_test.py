@@ -67,7 +67,6 @@ def _opened(**fields: object) -> TerminalWait:
     return TerminalWait.model_validate(
         {
             "terminal_id": uuid.uuid4(),
-            "session_id": uuid.uuid4(),
             "opener": "ada@x.y",
             "rows": 24,
             "cols": 80,
@@ -267,7 +266,6 @@ async def test_each_open_and_close_is_logged_once_for_this_user_only() -> None:
     assert f'"event":"open","terminal_id":"{opened.terminal_id}"' in first
     assert '"opener":"ada@x.y"' in first
     assert '"requested_by":"helper-1"' in first
-    assert f'"session_id":"{opened.session_id}"' in first
     assert '"event":"close"' in second
     assert '"status":5' in second
 

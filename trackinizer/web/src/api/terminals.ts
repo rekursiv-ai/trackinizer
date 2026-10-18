@@ -11,13 +11,13 @@ export type TerminalMachine = {
 };
 
 /** A terminal that is open now, and the machine it runs on. */
-export type LiveTerminal = { readonly terminal_id: string; readonly session_id: string; readonly machine: string };
+export type LiveTerminal = { readonly terminal_id: string; readonly machine: string };
 
 /** The caller's machines, newest ready first, and their live terminal opened from the asked station. */
 export type TerminalMachines = { readonly machines: readonly TerminalMachine[]; readonly live?: LiveTerminal | null };
 
-/** What opening a terminal returns: its id, the session that records it, and the one-use ticket. */
-export type OpenedTerminal = { readonly terminal_id: string; readonly session_id: string; readonly ticket: string };
+/** What opening a terminal returns: its id and the one-use ticket. */
+export type OpenedTerminal = { readonly terminal_id: string; readonly ticket: string };
 
 /** The caller's machines, newest first; `workspace` asks for that station's live terminal too. */
 export async function listTerminalMachines(workspace?: string, { signal }: CallOptions = {}): Promise<TerminalMachines> {
