@@ -206,3 +206,13 @@ test("a refused sign-out shows why, and stays on the page", async () => {
   expect((await session.findByRole("alert")).textContent).toBe("Could not sign out. cross-origin logout rejected");
   expect(assign).not.toHaveBeenCalled();
 });
+
+test("the terminal tab chords are off until chosen, and the choice is kept in the user's preferences", async () => {
+  const server = serveAccount(ADA);
+  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
+  const box = within(screen.getByRole("region", { name: "Appearance" })).getByRole<HTMLInputElement>("checkbox", { name: "Ctrl+T, Ctrl+W and Ctrl+Tab open, close and switch terminal tabs" });
+  expect(box.checked).toBe(false);
+  fireEvent.click(box);
+  expect(box.checked).toBe(true);
+  await waitFor(() => expect(preferenceWrites(server)).toEqual([["PATCH", { terminal_tab_chords: true }]]));
+});

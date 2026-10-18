@@ -56,7 +56,8 @@ async def request_capture_route(
       identity: The assistant's agent key.
 
     Returns:
-      image: The canvas as the person sees it, with the boxes on it.
+      image: The canvas as the person sees it, with the boxes on it and where each
+        visual's body stands.
 
     """
     if identity.api_key_id is None:

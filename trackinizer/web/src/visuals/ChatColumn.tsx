@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { APP } from "../appName";
 import { type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { newChat } from "../stations/actions";
 import { usePageSync } from "../stations/usePageSync";
@@ -10,6 +11,7 @@ import { dropLegacySizes, fitWidth, heldWidth, MIN_CHAT, readLegacySizes } from 
 import { type ChatSide, flipChatSide, setChatFullscreen, setChatHidden, toggleChatFullscreen, toggleChatHidden, useChatColumn } from "./chatColumnState";
 import { useHoverOpen } from "./hoverOpen";
 import { useLayout } from "./stationLayout";
+import { showNewTerminal } from "./newTerminal";
 import "./chatColumn.css";
 
 /**
@@ -53,7 +55,7 @@ export function ChatColumn({
   usePageSync();
   // The tab is titled by its station, as a terminal's is by its directory.
   useEffect(() => {
-    if (workspace) document.title = `${workspace.name} · Trackinizer`;
+    if (workspace) document.title = `${workspace.name} · ${APP.name}`;
   }, [workspace?.name]);
   const row = useRef<HTMLDivElement>(null);
   const column = useRef<HTMLDivElement>(null);
@@ -106,6 +108,7 @@ export function ChatColumn({
     { id: "chat.fullscreen", title: fullscreen ? "Leave full screen Chat" : "Chat full screen", keys: ["Alt+Enter"], section: "Chat", global: true, run: toggleChatFullscreen },
     { id: "chat.side", title: "Move Chat to the other side", section: "Chat", run: flipChatSide },
     { id: "chat.new", title: "New chat", section: "Chat", run: () => void newChat(queryClient) },
+    { id: "terminal.new", title: "New terminal", section: "Terminal", run: () => void showNewTerminal(queryClient, workspace) },
     ...(fullscreen ? [{ id: "chat.fullscreen.exit", title: "Leave full screen Chat", keys: ["Escape"], run: () => setChatFullscreen(false) }] : []),
   ]);
 

@@ -7,7 +7,7 @@
 <!-- Nobody is signed in yet, so no one's theme is known: the page follows the system's appearance. -->
 <script>if(!matchMedia("(prefers-color-scheme: dark)").matches){document.documentElement.dataset.theme="light";document.querySelector('meta[name="theme-color"]').content="#edf1f5"}</script>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><style>.f{stroke:%23f7f8f8;fill:%23f7f8f8}@media (prefers-color-scheme:light){.f{stroke:%23101112;fill:%23101112}}</style><path stroke='%233987e5' d='M9 18.6C9 16.8 4.2 14.04 4.2 9A7.8 7.8 0 0 1 19.8 9C19.8 14.04 15 16.8 15 18.6M9 22.8H15'/><g class='f'><path fill='none' d='M9 7.5L12 13.5M15.3 9.3L12 13.5V18.6'/><circle stroke='none' cx='9' cy='7.5' r='2.6'/><circle stroke='none' cx='15.3' cy='9.3' r='2.6'/></g></svg>">
-<title>Sign in - Trackinizer</title>
+<title>Sign in - {{app_name}}</title>
 <style>
   /* Copied from the web app's src/styles.css (the command menu's surface) and
      src/graph/tokens.css (the graph's colours). A signed-out visitor cannot load
@@ -110,7 +110,7 @@
         <g fill="currentColor" stroke="none"><circle cx="9" cy="7.5" r="2.6"/><circle cx="15.3" cy="9.3" r="2.6"/></g>
       </g>
     </svg>
-    Trackinizer
+    {{app_name}}
   </div>
   <h1>Sign in</h1>
   <p class="lede"><span class="k" style="--k: var(--g-kind-Issue)">Issues</span>, <span class="k" style="--k: var(--g-kind-Belief)">beliefs</span>, <span class="k" style="--k: var(--g-kind-Paper)">papers</span>, <span class="k" style="--k: var(--g-kind-Experiment)">experiments</span> and <span class="k" style="--k: var(--g-kind-AgentSession)">agent sessions</span> as one live graph.</p>

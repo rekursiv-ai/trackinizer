@@ -1686,13 +1686,16 @@ def test_a_capture_posts_once_and_returns_the_picture() -> None:
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         seen.append((request.method, request.url.path))
-        return httpx2.Response(200, json={"width": 4, "mime": "image/png"})
+        return httpx2.Response(
+            200,
+            json={"width": 4, "mime": "image/png", "tiles": [{"id": "t"}]},
+        )
 
     with Client("http://server") as client:
         _install_mock_transport(client, handler)
         picture = client.capture_workspace(workspace)
 
-    assert picture == {"width": 4, "mime": "image/png"}
+    assert picture == {"width": 4, "mime": "image/png", "tiles": [{"id": "t"}]}
     assert seen == [("POST", f"/api/workspaces/{workspace}/captures")]
 
 

@@ -174,6 +174,7 @@ def wire_marks(
 
     Returns:
       marks: Each mark with the visuals and records under it that are still there.
+        A mark whose tile left the canvas is left out: the person no longer sees it.
 
     """
     on_canvas = {visual.id: visual for visual in visuals}
@@ -182,6 +183,7 @@ def wire_marks(
             id=mark.id,
             author=mark.author,
             page=mark.page,
+            tile=None if mark.tile is None else on_canvas[mark.tile],
             left=min(p.x for p in mark.points),
             top=min(p.y for p in mark.points),
             right=max(p.x for p in mark.points),
@@ -192,6 +194,7 @@ def wire_marks(
             records=[records[each] for each in mark.covers.records if each in records],
         )
         for mark in marks
+        if mark.tile is None or mark.tile in on_canvas
     ]
 
 

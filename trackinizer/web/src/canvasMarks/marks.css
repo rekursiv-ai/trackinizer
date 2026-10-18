@@ -1,6 +1,8 @@
 .mark-layer { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
-.mark-svg { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
-.mark-outline { fill: none; stroke: #e5484d; stroke-width: 2; }
+.mark-boxes { position: absolute; inset: 0; pointer-events: none; }
+/* A box stands in a percentage box of the stage or of a tile's body, grown to at least 24 px around its own center. */
+.mark-box, .mark-draft { position: absolute; z-index: 6; min-width: 24px; min-height: 24px; transform: translate(-50%, -50%); overflow: visible; pointer-events: none; }
+.mark-outline { fill: none; stroke: #e5484d; stroke-width: 2; pointer-events: none; }
 /* A wide transparent band along the outline takes the click; the inside passes it through. */
 .mark-hit { fill: none; stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }
 .mark-box:hover .mark-outline, .mark-box:focus-within .mark-outline { stroke-width: 3; }

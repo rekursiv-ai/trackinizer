@@ -102,6 +102,7 @@ const TERMINAL_FONT_SIZES: readonly string[] = ["11px", "12px", "13px", "14px", 
 function ThemeSection() {
   const { choice: theme } = useTheme();
   const { skin, terminal_font_size: terminalFontSize } = usePreferences();
+  const tabChords = usePreferences().terminal_tab_chords;
   // A fixed skin sets every colour itself (skins.css), so the theme has nothing to colour under it.
   const fixed = skin !== "default";
   return (
@@ -135,6 +136,15 @@ function ThemeSection() {
           {TERMINAL_FONT_SIZES.includes(terminalFontSize) ? null : <option value={terminalFontSize}>{terminalFontSize}</option>}
           {TERMINAL_FONT_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
         </select>
+      </div>
+      <div className="st-row">
+        <label className="st-workspace-choice">
+          <input type="checkbox" checked={tabChords} onChange={(event) => {
+            void choosePreferences({ terminal_tab_chords: event.target.checked });
+          }} />
+          Ctrl+T, Ctrl+W and Ctrl+Tab open, close and switch terminal tabs
+        </label>
+        <span className="muted">Ctrl+Shift+T, Ctrl+Shift+W and Ctrl+Shift+PageUp/PageDown always do. In a plain browser tab Chrome keeps these chords; in the installed app the page gets them.</span>
       </div>
     </Section>
   );

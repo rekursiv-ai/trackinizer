@@ -8,6 +8,7 @@ import { clearMarks, drawMark, type Mark, removeMark, type WorkspaceState } from
 import { createQueryClient } from "../app/queryClient";
 import { CommandRegistry, CommandRegistryContext, Shortcuts, useCommands } from "../commands/registry";
 import { MarkLayer } from "./MarkLayer";
+import { useTileBodies } from "./tileBodies";
 import { useBoxes } from "./useBoxes";
 
 vi.mock("../api/workspaces", () => ({ drawMark: vi.fn(), removeMark: vi.fn(), clearMarks: vi.fn() }));
@@ -17,25 +18,28 @@ const marksCss = readFileSync(join(import.meta.dirname, "marks.css"), "utf8");
 
 const REC = "889ffcb2-cf44-43e7-9806-eb08428c6203";
 
-const box = (id: string, page: string | null): Mark => ({
+const box = (id: string, page: string | null, tile?: string): Mark => ({
   id, seq: 1, author: "jp@x", page, at: "2026-10-17T00:00:00Z",
   points: [{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.5 }],
+  ...(tile ? { tile } : {}),
 });
 
 const station = (marks: Mark[]): WorkspaceState => ({
   id: "w", name: "s", conversation_id: null, page: null, revision: 1, focused_instance: null, visuals: [], marks,
 });
 
-/** What the canvas does: the bar's two buttons and the layer, over one stage holding a tile and a record row. */
-function Harness({ workspace }: { readonly workspace: WorkspaceState }) {
+/** What the canvas does: the bar's two buttons and the layer, over one stage holding a tile, a record row and the bodies of `tiles`. */
+function Harness({ workspace, tiles }: { readonly workspace: WorkspaceState; readonly tiles: readonly string[] }) {
   const boxes = useBoxes(workspace);
+  const { bodies, bodyRef } = useTileBodies();
   return (
     <div data-testid="stage">
       <button type="button" onClick={boxes.toggle} aria-pressed={boxes.drawing}>pen</button>
       <button type="button" onClick={boxes.clearAll}>clear</button>
       <div data-visual-instance="inst-1" />
       <div data-row={REC} />
-      <MarkLayer boxes={boxes} />
+      {tiles.map((id) => <div key={id} data-visual-instance={id}><div className="visual-tile-body" data-testid={`body-${id}`} ref={bodyRef(id)} /></div>)}
+      <MarkLayer boxes={boxes} bodies={bodies} />
     </div>
   );
 }
@@ -46,18 +50,23 @@ function Page({ back }: { readonly back: () => void }) {
   return null;
 }
 
-function mount(marks: Mark[] = [], back: () => void = () => {}) {
+function mount(marks: Mark[] = [], back: () => void = () => {}, places: Readonly<Record<string, readonly [number, number, number, number]>> = {}) {
   render(
     <QueryClientProvider client={createQueryClient(() => {})}>
       <CommandRegistryContext value={new CommandRegistry()}>
         <Shortcuts />
         <Page back={back} />
-        <Harness workspace={station(marks)} />
+        <Harness workspace={station(marks)} tiles={Object.keys(places)} />
       </CommandRegistryContext>
     </QueryClientProvider>,
   );
   const rect = { left: 0, top: 0, width: 1000, height: 500, right: 1000, bottom: 500, x: 0, y: 0, toJSON: () => ({}) };
-  vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue(rect);
+  // The tiles' bodies stand where `places` says (left, top, width, height); everything else fills the stage.
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    const at = places[this.parentElement?.dataset.visualInstance ?? ""];
+    if (!this.classList.contains("visual-tile-body") || !at) return rect;
+    return { left: at[0], top: at[1], width: at[2], height: at[3], right: at[0] + at[2], bottom: at[1] + at[3], x: at[0], y: at[1], toJSON: () => ({}) };
+  });
 }
 
 beforeEach(() => {
@@ -166,7 +175,8 @@ test("only the outline takes a click: the inside and the layer pass it through",
     return start < 0 ? "" : `\n${marksCss}`.slice(start).split("}")[0]!;
   };
   expect(rule(".mark-layer")).toContain("pointer-events: none");
-  expect(rule(".mark-svg")).toContain("pointer-events: none");
+  expect(rule(".mark-boxes")).toContain("pointer-events: none");
+  expect(rule(".mark-box, .mark-draft")).toContain("pointer-events: none");
   expect(rule(".mark-outline")).toContain("fill: none");
   expect(rule(".mark-hit")).toContain("pointer-events: stroke");
   expect(rule(".mark-hit")).toContain("fill: none");
@@ -190,4 +200,72 @@ test("a refused write says so and keeps the pen in hand", async () => {
   drag(document.querySelector(".mark-capture")!, [[100, 100], [400, 300]]);
   expect((await screen.findByRole("alert")).textContent).toBe("Could not save that box.");
   expect(document.querySelector(".mark-capture")).not.toBeNull();
+});
+
+const BODY = "body-t1";
+/** The left, top, width and height of the tile `t1`'s body on the 1000 x 500 stage. */
+const T1 = [500, 100, 400, 200] as const;
+const styleOf = (element: Element) => {
+  const { left, top, width, height } = (element as SVGElement).style;
+  return { left, top, width, height };
+};
+
+test("a drag over a tile pins the box to it, in fractions of the tile's body", async () => {
+  mount([], () => {}, { t1: T1 });
+  fireEvent.click(pen());
+  drag(document.querySelector(".mark-capture")!, [[550, 150], [850, 250]]);
+  await waitFor(() => expect(drawMark).toHaveBeenCalledTimes(1));
+  expect(vi.mocked(drawMark).mock.calls[0]![1]).toMatchObject({
+    tile: "t1",
+    points: [{ x: 0.125, y: 0.25 }, { x: 0.875, y: 0.75 }],
+    page: "#/graph",
+  });
+});
+
+test("the tile is the one that holds the box's center, so a box mostly over it but centered outside is the stage's", async () => {
+  mount([], () => {}, { t1: T1 });
+  fireEvent.click(pen());
+  drag(document.querySelector(".mark-capture")!, [[100, 100], [550, 150]]);
+  await waitFor(() => expect(drawMark).toHaveBeenCalledTimes(1));
+  const drawn = vi.mocked(drawMark).mock.calls[0]![1];
+  expect(drawn).not.toHaveProperty("tile");
+  expect(drawn.points).toEqual([{ x: 0.1, y: 0.2 }, { x: 0.55, y: 0.3 }]);
+});
+
+test("a pinned box stands inside its tile's body in percentages, and not in the stage's layer", () => {
+  mount([box("p", "#/graph", "t1")], () => {}, { t1: T1 });
+  const pinned = screen.getByTestId(BODY).querySelector('[data-mark="p"]')!;
+  expect(styleOf(pinned)).toEqual({ left: "30%", top: "30%", width: "40%", height: "40%" });
+  expect(document.querySelector(".mark-boxes [data-mark]")).toBeNull();
+});
+
+test("a box with no tile stands in the stage's layer, in percentages of the stage", () => {
+  mount([box("a", "#/graph")], () => {}, { t1: T1 });
+  const loose = document.querySelector('.mark-boxes [data-mark="a"]')!;
+  expect(styleOf(loose)).toEqual({ left: "30%", top: "30%", width: "40%", height: "40%" });
+  expect(screen.getByTestId(BODY).querySelector("[data-mark]")).toBeNull();
+});
+
+test("a box whose tile is not on the canvas shows nowhere, and is not deleted", () => {
+  mount([box("a", "#/graph", "gone")], () => {}, { t1: T1 });
+  expect(shown()).toEqual(new Set());
+  expect(removeMark).not.toHaveBeenCalled();
+});
+
+test("a pinned box's outline removes it as an unpinned one's does", async () => {
+  mount([box("p", "#/graph", "t1")], () => {}, { t1: T1 });
+  fireEvent.click(document.querySelector('[data-mark="p"] .mark-hit')!);
+  await waitFor(() => expect(removeMark).toHaveBeenCalledWith("w", "p"));
+});
+
+test("a box shows at least 24 px wide and tall, grown evenly around the center it was drawn at", () => {
+  // jsdom lays nothing out, so the floor is read from the style sheet's rule.
+  const start = `\n${marksCss}`.indexOf("\n.mark-box, .mark-draft {");
+  const rule = `\n${marksCss}`.slice(start).split("}")[0]!;
+  expect(rule).toContain("min-width: 24px");
+  expect(rule).toContain("min-height: 24px");
+  expect(rule).toContain("transform: translate(-50%, -50%)");
+  mount([box("a", "#/graph")]);
+  // The box is placed by its center, which is what the transform grows it around.
+  expect(styleOf(document.querySelector('[data-mark="a"]')!)).toMatchObject({ left: "30%", top: "30%" });
 });

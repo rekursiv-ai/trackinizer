@@ -1,7 +1,8 @@
 import { newUuid } from "../api/idempotency";
 import type { CaptureAnswer } from "../api/workspaces";
+import { tilesInPaintOrder } from "../canvasMarks/tiles";
 import { loadImage, rasterize } from "./raster";
-import type { CaptureSource, SourceBox } from "./stageRegistry";
+import type { CaptureSource } from "./stageRegistry";
 import { drawTicks } from "./ticks";
 
 /** The longest side of the picture, in pixels; a larger stage is drawn smaller. */
@@ -28,13 +29,15 @@ export async function captureStage(source: CaptureSource, options: { readonly fr
   if (bounds.width === 0 || bounds.height === 0) return { error: "The canvas has no size on screen." };
   const scale = Math.min(1, LONG_SIDE / Math.max(bounds.width, bounds.height));
   const frames = [...stage.querySelectorAll<HTMLIFrameElement>("iframe.artifact-html-frame")];
+  // A box pinned to a tile stands inside it, so it is left out of the tile's picture as well.
+  const marks = [...stage.querySelectorAll("[data-mark]")];
   try {
     // A fixed element resolves against the picture, not the screen, so it is drawn alone.
     const fixed = fixedIn(stage);
     const [surface, lifted, drawn] = await Promise.all([
-      // The boxes are drawn last, from their data, so that nothing lifted covers them.
-      rasterize(stage, scale, { leave: [...fixed, ...stage.querySelectorAll(".mark-layer")] }),
-      Promise.all(fixed.map((each) => rasterize(each, scale, { style: ANCHORED }))),
+      // The boxes are drawn last, from where they are on screen, so that nothing lifted covers them.
+      rasterize(stage, scale, { leave: [...fixed, ...stage.querySelectorAll(".mark-layer"), ...marks] }),
+      Promise.all(fixed.map((each) => rasterize(each, scale, { style: ANCHORED, leave: marks }))),
       Promise.all(frames.map((frame) => askFrame(frame, options.frameWaitMs ?? FRAME_WAIT_MS))),
     ]);
     const context = surface.getContext("2d");
@@ -45,8 +48,8 @@ export async function captureStage(source: CaptureSource, options: { readonly fr
       const placed = await place(context, drawn[index], frame.getBoundingClientRect(), bounds, surface);
       if (!placed) blank.push(nameOf(frame));
     }
-    const boxes = source.boxes();
-    outline(context, boxes, surface);
+    const boxes = boxesOn(stage, bounds);
+    outline(context, boxes, bounds, surface);
     drawTicks(context, surface);
     const encoded = encode(surface);
     if (!encoded) return { error: "The picture is too large to send." };
@@ -57,6 +60,7 @@ export async function captureStage(source: CaptureSource, options: { readonly fr
         ...encoded,
         not_captured: [...new Set(blank)].slice(0, 20),
         boxes: boxes.map(({ id, author }) => ({ id, author })),
+        tiles: tilesIn(stage, bounds),
       },
     };
   } catch (error) {
@@ -64,18 +68,65 @@ export async function captureStage(source: CaptureSource, options: { readonly fr
   }
 }
 
-/** Draw each red box as its outline, in the red of the mark layer, at its fractions of the picture. */
+/** A red box that is on screen: its id and author, where it stands and the part of that which shows. */
+type ShownBox = { readonly id: string; readonly author: "person" | "agent"; readonly rect: DOMRect; readonly seen: Seen };
+
+/** The edges, in pixels, of what shows. */
+type Seen = { readonly left: number; readonly top: number; readonly right: number; readonly bottom: number };
+
+/**
+ * The red boxes on `stage` where the screen shows them, from their own rects, so the
+ * 24 px floor and a tile's moves are in them. A box with nothing of it in view, off
+ * the stage, folded away or cut off by its tile, is not on screen.
+ */
+function boxesOn(stage: HTMLElement, bounds: DOMRect): ShownBox[] {
+  return [...stage.querySelectorAll<SVGElement>("[data-mark]")].flatMap((element) => {
+    const rect = element.getBoundingClientRect();
+    const tile = element.closest<HTMLElement>("[data-visual-instance]");
+    const [top, right, bottom, left] = tile ? insetOf(tile.style.clipPath) : [0, 0, 0, 0];
+    const cut = tile?.getBoundingClientRect() ?? bounds;
+    const seen = {
+      left: Math.max(rect.left, bounds.left, cut.left + left),
+      top: Math.max(rect.top, bounds.top, cut.top + top),
+      right: Math.min(rect.right, bounds.right, cut.right - right),
+      bottom: Math.min(rect.bottom, bounds.bottom, cut.bottom - bottom),
+    };
+    if (rect.width <= 0 || rect.height <= 0 || seen.right <= seen.left || seen.bottom <= seen.top) return [];
+    return [{ id: element.dataset.mark!, author: element.dataset.author === "agent" ? "agent" as const : "person" as const, rect, seen }];
+  });
+}
+
+/** Every visual on `stage` with its body's edges as fractions of the picture, in paint order, the topmost last. */
+function tilesIn(stage: HTMLElement, bounds: DOMRect) {
+  const fraction = (value: number, origin: number, size: number) => Math.round(Math.min(1, Math.max(0, (value - origin) / size)) * 10_000) / 10_000;
+  return tilesInPaintOrder(stage).map(({ id, rect }) => ({
+    id,
+    left: fraction(rect.left, bounds.left, bounds.width), top: fraction(rect.top, bounds.top, bounds.height),
+    right: fraction(rect.left + rect.width, bounds.left, bounds.width), bottom: fraction(rect.top + rect.height, bounds.top, bounds.height),
+  })).filter((tile) => tile.right > tile.left && tile.bottom > tile.top).slice(-MAX_TILES);
+}
+
+/** The most tiles an answer carries, which is the server's bound; the topmost are kept. */
+const MAX_TILES = 50;
+
+/** Draw each red box as its outline, in the red of the mark layer, where it stands on the picture and cut to what shows. */
 function outline(
   context: CanvasRenderingContext2D,
-  boxes: readonly SourceBox[],
+  boxes: readonly ShownBox[],
+  stage: DOMRect,
   surface: { readonly width: number; readonly height: number },
 ): void {
+  const [across, down] = [surface.width / stage.width, surface.height / stage.height];
   context.save();
   context.strokeStyle = BOX_RED;
   context.lineWidth = Math.max(2, 2 * (surface.width / 800));
-  for (const { points } of boxes) {
-    const [a, b] = [points[0]!, points.at(-1)!];
-    context.strokeRect(Math.min(a.x, b.x) * surface.width, Math.min(a.y, b.y) * surface.height, Math.abs(b.x - a.x) * surface.width, Math.abs(b.y - a.y) * surface.height);
+  for (const { rect, seen } of boxes) {
+    context.save();
+    context.beginPath();
+    context.rect((seen.left - stage.left) * across, (seen.top - stage.top) * down, (seen.right - seen.left) * across, (seen.bottom - seen.top) * down);
+    context.clip();
+    context.strokeRect((rect.left - stage.left) * across, (rect.top - stage.top) * down, rect.width * across, rect.height * down);
+    context.restore();
   }
   context.restore();
 }

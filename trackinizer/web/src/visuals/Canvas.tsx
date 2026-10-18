@@ -21,6 +21,7 @@ import { useHash } from "../router/trail";
 import { useBrowserState } from "../state/store";
 import { CaptureContext } from "../canvasCapture/stageRegistry";
 import { MarkLayer } from "../canvasMarks/MarkLayer";
+import { useTileBodies } from "../canvasMarks/tileBodies";
 import { useBoxes } from "../canvasMarks/useBoxes";
 import { CanvasBar } from "./CanvasBar";
 import { forget, go, interrupt, settle, step, takeInterrupted, useCanvasHistory } from "./canvasHistory";
@@ -51,6 +52,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const workspace = station.data;
   const workspaceId = workspace?.id;
   const boxes = useBoxes(workspace);
+  const { bodies, bodyRef } = useTileBodies();
   const latestWorkspace = useRef(workspace);
   latestWorkspace.current = workspace;
   const legacyPreview = import.meta.env.DEV && station.error instanceof ApiError && station.error.status === 404;
@@ -81,17 +83,12 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const [browser, updateBrowser] = useBrowserState();
   const [stage, setStage] = useState<Size>({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement>(null);
-  // An agent may ask for a picture of this stage; the boxes are read when it does.
+  // An agent may ask for a picture of this stage; the boxes are read off it when it does.
   const captures = useContext(CaptureContext);
-  const boxesRef = useRef(boxes.shown);
-  boxesRef.current = boxes.shown;
   useEffect(() => {
     const stage = stageRef.current;
     if (!captures || !stage) return;
-    captures.set({
-      stage,
-      boxes: () => boxesRef.current.map((box) => ({ id: box.id, author: box.author === "agent" ? "agent" : "person", points: box.points })),
-    });
+    captures.set({ stage });
     return () => captures.set(null);
   }, [captures]);
   const dragRef = useRef<TileDrag | null>(null);
@@ -781,13 +778,16 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         <button type="button" title="Dismiss visual" disabled={change.isPending}
           onClick={() => operate({ kind: "hide", instance_id: pane.id })}>×</button>
       </div>}
-      <VisualPane instance={pane} workspace={workspace ?? null} onWorkspaceChanged={acceptWorkspace}
-        focused={workspace?.focused_instance === pane.id}>
-        {isPage && <div className="visual-browse-content">
-          <CrashBoundary reload={() => window.location.reload()} resetKey={window.location.hash}
-            frame={(crash) => <div className="view">{crash}</div>}>{children}</CrashBoundary>
-        </div>}
-      </VisualPane>
+      {/* The body is the tile below its bar; the red boxes pinned to the tile stand in it. */}
+      <div className="visual-tile-body" ref={bodyRef(pane.id)}>
+        <VisualPane instance={pane} workspace={workspace ?? null} onWorkspaceChanged={acceptWorkspace}
+          focused={workspace?.focused_instance === pane.id}>
+          {isPage && <div className="visual-browse-content">
+            <CrashBoundary reload={() => window.location.reload()} resetKey={window.location.hash}
+              frame={(crash) => <div className="view">{crash}</div>}>{children}</CrashBoundary>
+          </div>}
+        </VisualPane>
+      </div>
     </div>
     );
   };
@@ -895,7 +895,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         {browse && renderTile(browse, panes.indexOf(browse))}
         <div ref={snapRef} className="visual-snap" aria-hidden="true" />
         <div ref={ghostRef} className="visual-drag-ghost" aria-hidden="true" />
-        {workspace && <MarkLayer boxes={boxes} />}
+        {workspace && <MarkLayer boxes={boxes} bodies={bodies} />}
       </div>
     </div>
     </WorkspaceActionsProvider>

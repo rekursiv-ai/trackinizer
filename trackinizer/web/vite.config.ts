@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vitest/config";
+import { fillName, identityOf, manifestOf } from "./src/identity";
 
 // The dev server stands in for the trackinizer server: it proxies the API and the
 // login pages to TRACKINIZER_WEB_API_URL, and signs each request with
@@ -19,6 +20,10 @@ const proxyRoute = {
   headers: token ? { Authorization: `Bearer ${token}` } : {},
 };
 
+// The app's name: TRACKINIZER_WEB_APP picks an identity from src/identity.ts, none the default. The deploy sets it.
+const app = process.env.TRACKINIZER_WEB_APP ?? "";
+const identity = identityOf(app);
+
 // The commit this app is built from. The bundle carries it for Copy details
 // (src/debug/details.ts) and dist/version.json for the deploy: read at run time,
 // version.json could already name a newer build than the one the tab loaded.
@@ -29,8 +34,8 @@ const commit = execFileSync("git", ["rev-parse", "HEAD"], {
 
 export default defineConfig({
   base: "/app/",
-  plugins: [react(), versionJson(), preloadFirstLoad()],
-  define: { __COMMIT__: JSON.stringify(commit) },
+  plugins: [react(), versionJson(), appIdentity(), preloadFirstLoad()],
+  define: { __COMMIT__: JSON.stringify(commit), __APP__: JSON.stringify(app) },
   build: {
     // dist/.vite/manifest.json, from which scripts/bundle-size.ts reads what a
     // first visit loads: the entry imports React DOM and the app dynamically
@@ -75,6 +80,24 @@ export default defineConfig({
     ],
   },
 });
+
+/** The identity in the page: its name in index.html, and the install manifest, emitted by a build and served by the dev server. */
+function appIdentity(): Plugin {
+  const manifest = `${JSON.stringify(manifestOf(identity), null, 2)}\n`;
+  return {
+    name: "trackinizer-app-identity",
+    transformIndexHtml: (html) => fillName(html, identity),
+    configureServer(server) {
+      server.middlewares.use("/app/manifest.webmanifest", (_request, response) => {
+        response.setHeader("Content-Type", "application/manifest+json");
+        response.end(manifest);
+      });
+    },
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "manifest.webmanifest", source: manifest });
+    },
+  };
+}
 
 function versionJson(): Plugin {
   return {

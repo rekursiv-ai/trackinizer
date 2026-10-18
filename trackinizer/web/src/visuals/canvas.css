@@ -197,3 +197,5 @@
 /* A canvas with nothing on it, as an empty Home leaves it. */
 .visual-empty { margin: auto; padding: 24px; color: var(--muted); font-size: 13px; text-align: center; }
 .chat-panel[hidden] { display: none; }
+/* The tile below its bar: the area red boxes pinned to the tile are positioned in. */
+.visual-tile-body { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; position: relative; }

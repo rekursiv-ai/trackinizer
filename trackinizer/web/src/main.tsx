@@ -1,4 +1,5 @@
 import { StrictMode } from "react";
+import { APP } from "./appName";
 import { prefetch } from "./app/prefetch";
 import { restoreReturnHash } from "./app/session";
 import { installDebug, logRenderError } from "./debug/install";
@@ -39,6 +40,6 @@ Promise.all([chunk(import("react-dom/client")), chunk(import("./start"))])
   .catch((error: unknown) => {
     // Without React there is no crash screen: say so rather than leave the page
     // blank. Thrown on, the error is logged as unhandled (installDebug).
-    document.getElementById("root")!.textContent = `Trackinizer could not load: ${String(error)}. Reload to try again.`;
+    document.getElementById("root")!.textContent = `${APP.name} could not load: ${String(error)}. Reload to try again.`;
     throw error;
   });

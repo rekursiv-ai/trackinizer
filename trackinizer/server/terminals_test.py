@@ -14,7 +14,6 @@ from trackinizer.server.terminals import (
     Opening,
     Ring,
     SocketClosedError,
-    StationLiveError,
     Terminal,
     TerminalHub,
     TerminalLimitError,
@@ -91,6 +90,7 @@ class _World:
         user: str = "a@x.y",
         machine_id: uuid.UUID = _MACHINE,
         workspace: uuid.UUID | None = None,
+        surface: str | None = None,
     ) -> Terminal:
         return self.hub.open(
             Opening(
@@ -100,6 +100,7 @@ class _World:
                 rows=24,
                 cols=80,
                 workspace=workspace,
+                surface=surface,
             ),
         )
 
@@ -257,21 +258,13 @@ async def test_input_resets_the_idle_clock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_each_cap_and_the_open_rate_refuse() -> None:
+async def test_no_count_of_live_terminals_refuses_an_open() -> None:
     world = _World()
-    for _ in range(wire_terminals.MAX_LIVE_PER_USER):
-        world.open()
-    with pytest.raises(TerminalLimitError):
-        world.open()
-    with pytest.raises(TerminalLimitError):
-        world.open(user="b@x.y")
-    world.open(user="b@x.y", machine_id=uuid.UUID(int=9))
+    for _ in range(70):
+        world.open(workspace=_STATION)
+        world.clock.now += 7
 
-    server = _World()
-    for n in range(wire_terminals.MAX_LIVE_PER_SERVER):
-        server.open(user=f"u{n}@x.y", machine_id=uuid.UUID(int=n + 100))
-    with pytest.raises(TerminalLimitError):
-        server.open(user="late@x.y", machine_id=uuid.UUID(int=999))
+    assert len(world.hub.live_in("a@x.y", workspace=_STATION)) == 70
 
 
 @pytest.mark.asyncio
@@ -288,36 +281,34 @@ async def test_opens_per_minute_are_limited_and_the_window_slides() -> None:
 
 
 @pytest.mark.asyncio
-async def test_one_live_terminal_per_station_names_the_live_one() -> None:
+async def test_a_station_lists_each_of_the_users_live_terminals_oldest_first() -> None:
     world = _World()
-    first = world.open(workspace=_STATION)
+    first = world.open(workspace=_STATION, surface="chat")
+    second = world.open(workspace=_STATION, surface="tile")
+    world.open(workspace=uuid.UUID(int=3))
+    world.open(user="b@x.y", workspace=_STATION)
 
-    with pytest.raises(StationLiveError) as raised:
-        world.open(workspace=_STATION)
-
-    assert raised.value.terminal is first
-    assert world.hub.live_for("a@x.y", _STATION) is first
-    assert world.hub.live_for("b@x.y", _STATION) is None
+    assert world.hub.live_in("a@x.y", workspace=_STATION) == [first, second]
+    assert [t.surface for t in world.hub.live_in("a@x.y", workspace=_STATION)] == [
+        "chat",
+        "tile",
+    ]
     await world.hub.end(first, code=wire_terminals.CLOSE_ENDED)
-    assert world.hub.live_for("a@x.y", _STATION) is None
+    assert world.hub.live_in("a@x.y", workspace=_STATION) == [second]
 
 
 @pytest.mark.asyncio
-async def test_a_station_opens_a_fresh_terminal_while_the_closed_one_shuts_down() -> (
-    None
-):
+async def test_a_terminal_told_to_stop_is_no_longer_listed_for_its_station() -> None:
     world = _World()
     closing, host, _ = await world.live()
     closing.workspace = _STATION
+    other = world.open(workspace=_STATION)
 
     await world.hub.stop(closing)
 
     assert host.sent == [(Frame.STOP, b"")]
     assert not closing.ended
-    assert world.hub.live_for("a@x.y", _STATION) is None
-    fresh = world.open(workspace=_STATION)
-    assert fresh is not closing
-    assert world.hub.live_for("a@x.y", _STATION) is fresh
+    assert world.hub.live_in("a@x.y", workspace=_STATION) == [other]
 
 
 @pytest.mark.asyncio
@@ -647,18 +638,6 @@ async def test_what_the_browser_sent_before_the_host_dialled_reaches_it_then() -
         (Frame.RESIZE, encode_winsize(30, 90)),
         (Frame.INPUT, b"ls\n"),
     ]
-
-
-@pytest.mark.asyncio
-async def test_a_host_that_turned_the_open_away_reaches_the_browser_as_its_code() -> (
-    None
-):
-    world = _World()
-    term, host, browser = await world.live()
-
-    await world.hub.host_lost(term, host, code=wire_terminals.CLOSE_LIMIT)
-
-    assert browser.closed == [wire_terminals.CLOSE_LIMIT]
 
 
 @pytest.mark.asyncio

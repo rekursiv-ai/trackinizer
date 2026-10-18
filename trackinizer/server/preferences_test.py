@@ -31,6 +31,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "chat_side": "left",
     "highlight_mentions": True,
     "terminal_font_size": "13px",
+    "terminal_tab_chords": False,
     "home": "graph",
     "stars": [],
     "views": [],

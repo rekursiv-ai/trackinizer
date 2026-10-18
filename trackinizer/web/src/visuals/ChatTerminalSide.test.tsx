@@ -14,8 +14,8 @@ vi.mock("./Terminal", () => ({ TerminalView: (props: object) => { view(props); r
 const workspace = { id: "w1", workstream_id: "g1" } as WorkspaceState;
 const machine = (name: string, extra: Partial<TerminalMachine> = {}): TerminalMachine => ({ name, status: "online", terminal_ready: true, confirmed: true, ...extra });
 
-function mount(machines: TerminalMachine[], live: LiveTerminal | null = null) {
-  vi.mocked(listTerminalMachines).mockResolvedValue({ machines, live });
+function mount(machines: TerminalMachine[], terminals: LiveTerminal[] = []) {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines, terminals });
   vi.mocked(listWorkstreams).mockResolvedValue([{ id: "g1", title: "ARC3", scratch: false } as never]);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return { client, ...render(<QueryClientProvider client={client}><ChatTerminalSide workspace={workspace} shown onFlipBack={vi.fn()} /></QueryClientProvider>) };
@@ -59,11 +59,19 @@ test("no machine: the bar offers `trax machine connect` and Copy writes it", asy
   vi.unstubAllGlobals();
 });
 
-test("a terminal live on the station re-attaches: its machine is chosen and it is the view's resume", async () => {
-  const live = { terminal_id: "t9", machine: "laptop" };
-  mount([machine("gx10"), machine("laptop")], live);
+test("the newest terminal this side opened re-attaches: its machine is chosen and it is the view's resume", async () => {
+  const older = { terminal_id: "t8", machine: "gx10", surface: "chat" };
+  const live = { terminal_id: "t9", machine: "laptop", surface: "chat" };
+  const tile = { terminal_id: "t10", machine: "gx10", surface: "7f1c2a9e-0000-4000-8000-000000000000" };
+  mount([machine("gx10"), machine("laptop")], [older, live, tile]);
   await screen.findByText("terminal view");
-  expect(view).toHaveBeenLastCalledWith(expect.objectContaining({ machine: "laptop", resume: live }));
+  expect(view).toHaveBeenLastCalledWith(expect.objectContaining({ machine: "laptop", resume: live, surface: "chat" }));
+});
+
+test("a terminal only a tile opened is not this side's to re-attach", async () => {
+  mount([machine("gx10")], [{ terminal_id: "t10", machine: "gx10", surface: "tile-1" }]);
+  await screen.findByText("terminal view");
+  expect(view).toHaveBeenLastCalledWith(expect.objectContaining({ resume: null, surface: "chat" }));
 });
 
 test("dismissing the bar keeps it gone on the next mount", async () => {
@@ -78,7 +86,7 @@ test("dismissing the bar keeps it gone on the next mount", async () => {
 });
 
 test("the chat icon flips back", async () => {
-  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [], live: null });
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [], terminals: [] });
   vi.mocked(listWorkstreams).mockResolvedValue([]);
   const back = vi.fn();
   render(<QueryClientProvider client={new QueryClient()}><ChatTerminalSide workspace={workspace} shown onFlipBack={back} /></QueryClientProvider>);
@@ -97,7 +105,7 @@ test("a machines refetch that fails does not unmount a live terminal view", asyn
 });
 
 test("hidden, the side asks the server for nothing", async () => {
-  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [], live: null });
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [], terminals: [] });
   vi.mocked(listWorkstreams).mockResolvedValue([]);
   render(<QueryClientProvider client={new QueryClient()}><ChatTerminalSide workspace={workspace} shown={false} onFlipBack={vi.fn()} /></QueryClientProvider>);
   await Promise.resolve();
@@ -111,7 +119,7 @@ test("a machine enrolled with a key is never offered until Allow: one click conf
   expect(screen.getByRole("group", { name: "Allow fresh" }).textContent).toContain("New machine fresh wants terminals.");
   expect(screen.getByRole("note").textContent).not.toContain("fresh");
   expect(view).toHaveBeenLastCalledWith(expect.objectContaining({ machine: "gx10" }));
-  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [machine("fresh"), machine("gx10")], live: null });
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [machine("fresh"), machine("gx10")], terminals: [] });
   fireEvent.click(screen.getByRole("button", { name: "Allow" }));
   await waitFor(() => expect(confirmTerminalMachine).toHaveBeenCalledWith("fresh"));
   await waitFor(() => expect(screen.queryByRole("group", { name: "Allow fresh" })).toBeNull());

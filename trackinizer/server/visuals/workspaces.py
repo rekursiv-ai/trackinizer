@@ -111,7 +111,12 @@ class NewMark(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     points: Annotated[list[MarkPoint], Field(min_length=2, max_length=2)]
-    """Two opposite corners."""
+    """Two opposite corners: fractions of the ``tile``'s body, or of the stage when
+    there is no tile."""
+
+    tile: uuid.UUID | None = None
+    """The visual instance it was drawn on. The box shows with that tile and not at
+    all while the tile is off the canvas; it is not deleted."""
 
     covers: MarkCovers = Field(default_factory=MarkCovers)
 

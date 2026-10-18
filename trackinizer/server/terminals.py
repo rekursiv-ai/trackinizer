@@ -44,7 +44,6 @@ __all__ = [
     "Ring",
     "Socket",
     "SocketClosedError",
-    "StationLiveError",
     "Terminal",
     "TerminalHub",
     "TerminalLimitError",
@@ -60,15 +59,7 @@ class SocketClosedError(Exception):
 
 
 class TerminalLimitError(Exception):
-    """An open would pass one of the live-terminal caps or the open rate."""
-
-
-class StationLiveError(Exception):
-    """The caller already has a live terminal for the station."""
-
-    def __init__(self, terminal: Terminal) -> None:
-        super().__init__(str(terminal.id))
-        self.terminal = terminal
+    """An open would pass the open rate."""
 
 
 class Socket(Protocol):
@@ -152,6 +143,7 @@ class Terminal:
     workspace: UUID | None = None
     workstream: UUID | None = None
     requested_by: str | None = None
+    surface: str | None = None
     detached_at: float | None = None
     """When no browser was attached since; ``None`` while one is."""
 
@@ -163,7 +155,7 @@ class Terminal:
     browser: Socket | None = None
     ended: bool = False
     stopping: bool = False
-    """Whether the shell was told to stop; the station no longer counts it as live."""
+    """Whether the shell was told to stop; the station no longer lists it."""
 
     replaying: list[tuple[Frame, bytes]] | None = None
     """Frames that arrived while a browser is being caught up; sent right after."""
@@ -195,6 +187,7 @@ class Opening:
     workspace: UUID | None = None
     workstream: UUID | None = None
     requested_by: str | None = None
+    surface: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -266,52 +259,37 @@ class TerminalHub:
         """Return the live terminal with this id, or ``None``."""
         return self._terminals.get(terminal_id)
 
-    def live_for(self, user: str, workspace: UUID) -> Terminal | None:
-        """Return the user's live terminal opened from this station, or ``None``.
+    def live_in(self, user: str, *, workspace: UUID) -> list[Terminal]:
+        """Return the user's live terminals opened from this station, oldest first.
 
         Args:
           user: The opener's email.
           workspace: The station.
 
         Returns:
-          terminal: The live terminal, if there is one.
+          terminals: Those not told to stop.
 
         """
-        return next(
-            (
-                term
-                for term in self._terminals.values()
-                if term.user == user
-                and term.workspace == workspace
-                and not term.stopping
-            ),
-            None,
-        )
+        return [
+            term
+            for term in self._terminals.values()
+            if term.user == user and term.workspace == workspace and not term.stopping
+        ]
 
-    def check(self, *, user: str, machine_id: UUID, workspace: UUID | None) -> None:
-        """Refuse an open that would pass a cap, the open rate, or a station's one.
+    def check(self, *, user: str) -> None:
+        """Refuse an open past the open rate.
 
         Args:
           user: The opener's email.
-          machine_id: The machine to open on.
-          workspace: The station the open is from.
 
         Raises:
-          StationLiveError: The user has a live terminal for the station.
-          TerminalLimitError: A cap or the open rate is reached.
+          TerminalLimitError: The user opened too many terminals in the last minute.
 
         """
-        if workspace is not None and (live := self.live_for(user, workspace)):
-            raise StationLiveError(live)
-        terms = self._terminals.values()
         opens = self._opens.get(user, deque())
         now = self._clock()
         if (
-            sum(term.user == user for term in terms) >= wire_terminals.MAX_LIVE_PER_USER
-            or sum(term.machine_id == machine_id for term in terms)
-            >= wire_terminals.MAX_LIVE_PER_MACHINE
-            or len(self._terminals) >= wire_terminals.MAX_LIVE_PER_SERVER
-            or sum(now - at < 60.0 for at in opens)
+            sum(now - at < 60.0 for at in opens)
             >= wire_terminals.MAX_OPENS_PER_MIN_PER_USER
         ):
             raise TerminalLimitError
@@ -326,15 +304,10 @@ class TerminalHub:
           terminal: The queued terminal.
 
         Raises:
-          StationLiveError: The user has a live terminal for the station.
-          TerminalLimitError: A cap or the open rate is reached.
+          TerminalLimitError: The open rate is reached.
 
         """
-        self.check(
-            user=opening.user,
-            machine_id=opening.machine_id,
-            workspace=opening.workspace,
-        )
+        self.check(user=opening.user)
         now = self._clock()
         user = opening.user
         machine_id = opening.machine_id
@@ -349,6 +322,7 @@ class TerminalHub:
             workspace=opening.workspace,
             workstream=opening.workstream,
             requested_by=opening.requested_by,
+            surface=opening.surface,
             detached_at=now,
             last_input_at=now,
         )
@@ -515,23 +489,16 @@ class TerminalHub:
             await self._to_host(term, Frame.INPUT, typed)
         return True
 
-    async def host_lost(
-        self,
-        term: Terminal,
-        socket: Socket,
-        *,
-        code: int = wire_terminals.CLOSE_HOST_LOST,
-    ) -> None:
+    async def host_lost(self, term: Terminal, socket: Socket) -> None:
         """End the terminal when its host's socket dropped.
 
         Args:
           term: The terminal.
           socket: The host socket that dropped.
-          code: What the browser is told: 4004, or the host's own 4429 refusal.
 
         """
         if term.host is socket and not term.ended:
-            await self.end(term, code=code)
+            await self.end(term, code=wire_terminals.CLOSE_HOST_LOST)
 
     async def from_host(self, term: Terminal, kind: Frame, payload: bytes) -> None:
         """Take one frame from the host: output, or the shell's exit.

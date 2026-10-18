@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pydantic
 import pytest
 
@@ -31,7 +33,6 @@ def test_close_codes_are_distinct_and_final_ones_are_a_subset() -> None:
         wire_terminals.CLOSE_HOST_LOST,
         wire_terminals.CLOSE_REFUSED,
         wire_terminals.CLOSE_MACHINE_REVOKED,
-        wire_terminals.CLOSE_LIMIT,
     ]
     assert len(set(codes)) == len(codes)
     assert set(codes) > wire_terminals.FINAL_CLOSE_CODES
@@ -49,6 +50,9 @@ def test_close_codes_are_distinct_and_final_ones_are_a_subset() -> None:
         {"machine": "gx10", "rows": 24, "cols": 80, "requested_by": "a\nb"},
         {"machine": "gx10", "rows": 24, "cols": 80, "requested_by": "\x1b[31mred"},
         {"machine": "gx10", "rows": 24, "cols": 80, "requested_by": "calf\u00e9"},
+        {"machine": "gx10", "rows": 24, "cols": 80, "surface": "has space"},
+        {"machine": "gx10", "rows": 24, "cols": 80, "surface": "s" * 65},
+        {"machine": "gx10", "rows": 24, "cols": 80, "surface": ""},
     ],
 )
 def test_open_body_refuses_out_of_range_and_unknown_fields(
@@ -56,6 +60,12 @@ def test_open_body_refuses_out_of_range_and_unknown_fields(
 ) -> None:
     with pytest.raises(pydantic.ValidationError):
         OpenTerminal.model_validate(body)
+
+
+@pytest.mark.parametrize("surface", ["chat", str(uuid.UUID(int=7))])
+def test_open_body_takes_a_surface_key(surface: str) -> None:
+    body = {"machine": "gx10", "rows": 24, "cols": 80, "surface": surface}
+    assert OpenTerminal.model_validate(body).surface == surface
 
 
 if __name__ == "__main__":

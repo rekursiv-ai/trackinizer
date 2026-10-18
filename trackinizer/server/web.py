@@ -43,6 +43,7 @@ from uuid import UUID
 from weakref import WeakSet
 
 import asyncio
+import html
 import math
 import re
 import shlex
@@ -51,14 +52,14 @@ import uuid
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import (
-    FileResponse,
+    HTMLResponse,
     RedirectResponse,
     Response,
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from treekle import from_plain
+from treekle import from_plain, json_loads
 from treekle.absent import ABSENT
 
 from trackinizer.server.api._deps import get_assistant, get_store, tag_row
@@ -111,6 +112,8 @@ if TYPE_CHECKING:
 
 
 _CWD: Final = Path(__file__).resolve().parent
+_DEFAULT_APP_NAME: Final = "Trackinizer"
+"""What the sign-in page calls the app when the served build names none."""
 
 
 type WebView = dict[str, object]
@@ -991,7 +994,15 @@ def attach(
             ("/console", "/app/#/console"),
         ):
             _get(app, path, _RedirectRoute(location=location))
-    _add_login_route(app, assets / "login.html")
+    _add_login_route(app, page_path=assets / "login.html", app_dir=app_dir)
+
+
+# What a browser fetches to offer "Install" before anyone has signed in: Chrome asks
+# for the manifest and its icons without the session cookie. They hold nothing but a
+# name and a logo.
+_INSTALL_FILES: Final = frozenset(
+    {"manifest.webmanifest", "icon-192.png", "icon-512.png"},
+)
 
 
 # Files are served through ``get_response`` from a route, not by mounting the
@@ -1042,7 +1053,7 @@ class _AppRoute:
         path: str,
         identity: AuthIdentity | None,
     ) -> Response:
-        if identity is not None:
+        if identity is not None or path in _INSTALL_FILES:
             try:
                 return await self.files.get_response(path, scope=request.scope)
             except StarletteHTTPException as err:
@@ -1078,18 +1089,45 @@ class _RedirectRoute:
         )
 
 
+# The sign-in page is the server's own, so its app name is not a setting: it is the
+# name the served build gives itself, read on every request as the build is (a build
+# may be swapped under a running server), and Trackinizer when there is none.
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _LoginPageRoute:
     page_path: Path
+    app_dir: Path | None
 
-    async def __call__(self) -> FileResponse:
-        return FileResponse(self.page_path)
+    async def __call__(self) -> HTMLResponse:
+        name = _app_name(self.app_dir)
+        return HTMLResponse(
+            self.page_path.read_text().replace("{{app_name}}", html.escape(name)),
+        )
 
 
-def _add_login_route(app: FastAPI, page_path: Path) -> None:
+def _add_login_route(app: FastAPI, page_path: Path, app_dir: Path | None) -> None:
     """Mount the login page when its asset exists."""
     if page_path.is_file():
-        _get(app, "/auth/login_page", _LoginPageRoute(page_path=page_path))
+        _get(
+            app,
+            "/auth/login_page",
+            _LoginPageRoute(page_path=page_path, app_dir=app_dir),
+        )
+
+
+def _app_name(app_dir: Path | None) -> str:
+    """Return the name in the build's ``manifest.webmanifest``, else ``Trackinizer``."""
+    if app_dir is not None:
+        try:
+            manifest = json_loads(
+                (app_dir / "manifest.webmanifest").read_bytes(),
+                dict[str, object],
+            )
+        except (OSError, ValueError):
+            return _DEFAULT_APP_NAME
+        name = manifest.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return _DEFAULT_APP_NAME
 
 
 def _login_redirect(request: Request) -> RedirectResponse:

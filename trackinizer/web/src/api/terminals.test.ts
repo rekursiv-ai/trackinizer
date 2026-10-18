@@ -85,7 +85,7 @@ test("retries back off 0.5, 1, 2 s and give up after 60 s", async () => {
   expect(statuses.at(-1)).toMatchObject({ state: "ended" });
 });
 
-test.each([[4000, "ended"], [4002, "ended"], [4003, "ended"], [4004, "ended"], [4410, "ended"], [4001, "taken"], [4403, "refused"], [4429, "refused"]])(
+test.each([[4000, "ended"], [4002, "ended"], [4003, "ended"], [4004, "ended"], [4410, "ended"], [4001, "taken"], [4403, "refused"]])(
   "close code %i is final and does not reconnect", async (code, state) => {
     const { socket, statuses } = start();
     socket().open();
@@ -103,15 +103,11 @@ test("dispose leaves the shell running: the socket closes 1000 and no STOP goes 
   expect(socket().sent.every((sent) => decodeFrame(sent).kind !== Frame.STOP)).toBe(true);
 });
 
-test("4004 says the machine disconnected, and 4429 says the limit was reached", () => {
+test("4004 says the machine disconnected", () => {
   const first = start();
   first.socket().open();
   first.socket().drop(4004);
   expect(first.statuses.at(-1)).toEqual({ state: "ended", note: "The machine disconnected." });
-  const second = start();
-  second.socket().open();
-  second.socket().drop(4429);
-  expect(second.statuses.at(-1)).toEqual({ state: "refused", note: "Terminal limit reached; close one." });
 });
 
 test("an attach that finds no terminal ends the retries at once", async () => {

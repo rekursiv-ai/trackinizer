@@ -33,7 +33,6 @@ from trackinizer.server.machine_auth import current_machine, machine_of
 from trackinizer.server.terminals import (
     Opening,
     SocketClosedError,
-    StationLiveError,
     Terminal,
     TerminalLimitError,
     decode_attach,
@@ -106,8 +105,8 @@ async def open_terminal_route(
       HTTPException: 403 for a key, a service account or a foreign origin; 404 for no
         such machine of the caller's, or station; 409 ``terminal_unconfirmed`` until the
         owner confirms a machine a key enrolled, ``terminal_not_enabled`` when the host
-        is not asking, or ``terminal_live`` when the station has a terminal; 429 past a
-        limit. Every terminal route answers 403 on a server with authentication off.
+        is not asking; 429 ``terminal_limit`` past 10 opens a minute. Every terminal
+        route answers 403 on a server with authentication off.
 
     """
     _require_human(request, identity)
@@ -132,10 +131,15 @@ async def open_terminal_route(
                 workspace=body.workspace,
                 workstream=workstream,
                 requested_by=body.requested_by,
+                surface=body.surface,
             ),
         )
-    except (StationLiveError, TerminalLimitError) as error:
-        raise _refusal(error) from error
+    except TerminalLimitError as error:
+        raise _refused(
+            429,
+            code="terminal_limit",
+            message="too many terminals opened just now; wait a minute",
+        ) from error
     return TerminalOpened(terminal_id=term.id, ticket=hub.mint_ticket(term))
 
 
@@ -145,16 +149,16 @@ async def list_terminal_machines_route(
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     workspace: UUID | None = None,
 ) -> TerminalMachines:
-    """List the caller's own machines, and their live terminal for a station.
+    """List the caller's own machines, and their live terminals for a station.
 
     Args:
       request: Request carrying the store and the terminal hub.
       identity: The signed-in owner.
-      workspace: The station whose live terminal to name.
+      workspace: The station whose live terminals to list.
 
     Returns:
       machines: The caller's machines, each with whether it can take a terminal now;
-        and ``live``, the caller's terminal opened from ``workspace``, if one is open.
+        and ``terminals``, the caller's live terminals opened from ``workspace``.
 
     """
     _require_human(request, identity)
@@ -181,15 +185,17 @@ async def list_terminal_machines_route(
             reverse=True,
         )
     ]
-    live = None if workspace is None else hub.live_for(identity.email, workspace)
+    live = [] if workspace is None else hub.live_in(identity.email, workspace=workspace)
     return TerminalMachines(
         machines=machines,
-        live=None
-        if live is None
-        else LiveTerminal(
-            terminal_id=live.id,
-            machine=live.machine,
-        ),
+        terminals=[
+            LiveTerminal(
+                terminal_id=term.id,
+                machine=term.machine,
+                surface=term.surface,
+            )
+            for term in live
+        ],
     )
 
 
@@ -396,15 +402,7 @@ async def terminal_host_socket(
         while (frame := await _read_frame(leg)) is not None:
             await hub.from_host(term, *frame)
     finally:
-        # A host that turned the open away for its own limit says so, and the browser
-        # is told that rather than that the host was lost.
-        await hub.host_lost(
-            term,
-            leg,
-            code=wire_terminals.CLOSE_LIMIT
-            if leg.peer_code == wire_terminals.CLOSE_LIMIT
-            else wire_terminals.CLOSE_HOST_LOST,
-        )
+        await hub.host_lost(term, socket=leg)
 
 
 class _Leg:
@@ -412,8 +410,6 @@ class _Leg:
 
     def __init__(self, websocket: WebSocket) -> None:
         self._websocket = websocket
-        self.peer_code: int | None = None
-        """The code the peer closed with, once it has."""
 
     async def send_bytes(self, data: bytes) -> None:
         """Send one binary message."""
@@ -431,11 +427,8 @@ class _Leg:
             return
 
     async def receive(self) -> Message:
-        """Receive one ASGI message, noting the code of a disconnect."""
-        message = await self._websocket.receive()
-        if message["type"] == "websocket.disconnect":
-            self.peer_code = message.get("code")
-        return message
+        """Receive one ASGI message."""
+        return await self._websocket.receive()
 
 
 async def _read_frame(leg: _Leg) -> tuple[Frame, bytes] | None:
@@ -564,17 +557,6 @@ async def _station_workstream(
         raise NotFoundError("no such station")
     workstream = from_plain(row["workstream"], str, default="")
     return UUID(workstream) if workstream else None
-
-
-def _refusal(error: StationLiveError | TerminalLimitError) -> HTTPException:
-    """Return the error a refused open answers with."""
-    if isinstance(error, StationLiveError):
-        return _refused(
-            409,
-            code="terminal_live",
-            message="this station already has a live terminal",
-        )
-    return _refused(429, code="terminal_limit", message="too many terminals are open")
 
 
 def _refused(status_code: int, *, code: str, message: str) -> HTTPException:

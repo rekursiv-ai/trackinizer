@@ -130,7 +130,7 @@ test("Browse's initial children mount connected and can autofocus before a saved
   expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Initial Browse draft" }));
 });
 
-test("the canvas offers its stage and the boxes on it to an agent's request for a picture, until it unmounts", async () => {
+test("the canvas offers its stage, with the boxes standing on it, to an agent's request for a picture, until it unmounts", async () => {
   browseOnly();
   const boxed: WorkspaceState = { ...workspace, marks: [
     { id: "b1", seq: 1, author: "jp@example.com", at: "2026-10-17T10:00:00Z", points: [{ x: 0.1, y: 0.1 }, { x: 0.4, y: 0.4 }] },
@@ -140,16 +140,30 @@ test("the canvas offers its stage and the boxes on it to an agent's request for 
   const registry = new CaptureRegistry();
   const view = render(<QueryClientProvider client={createQueryClient(() => {})}><CaptureContext value={registry}><Canvas><p>Page</p></Canvas></CaptureContext></QueryClientProvider>);
   await screen.findByText("Page");
-  await waitFor(() => expect(registry.get()?.boxes()).toHaveLength(2), { interval: 1 });
+  await waitFor(() => expect(registry.get()?.stage.querySelectorAll("[data-mark]")).toHaveLength(2), { interval: 1 });
 
   const source = registry.get()!;
   expect(source.stage).toBe(document.querySelector(".visual-stage"));
-  expect(source.boxes()).toEqual([
-    { id: "b1", author: "person", points: boxed.marks![0]!.points },
-    { id: "b2", author: "agent", points: boxed.marks![1]!.points },
+  expect([...source.stage.querySelectorAll<SVGElement>("[data-mark]")].map((box) => [box.dataset.mark, box.dataset.author, box.style.left, box.style.width])).toEqual([
+    ["b1", "person", "25%", "30%"],
+    ["b2", "agent", "70%", "40%"],
   ]);
   view.unmount();
   expect(registry.get()).toBeNull();
+});
+
+test("a box pinned to a tile stands in that tile's body, below its bar, and one pinned to a tile that is not there does not show", async () => {
+  browseOnly();
+  const [browse] = workspace.visuals;
+  const mark = (id: string, tile: string) => ({ id, seq: 1, author: "jp@example.com", at: "2026-10-17T10:00:00Z", points: [{ x: 0.1, y: 0.1 }, { x: 0.4, y: 0.4 }], tile });
+  vi.mocked(createDefaultWorkspace).mockResolvedValue({ ...workspace, marks: [mark("here", browse!.id), mark("gone", "00000000-0000-4000-8000-000000000000")] });
+  render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><p>Page</p></Canvas></QueryClientProvider>);
+  await screen.findByText("Page");
+
+  const tile = document.querySelector(`[data-visual-instance="${browse!.id}"]`)!;
+  const body = tile.querySelector(":scope > .visual-tile-body")!;
+  await waitFor(() => expect(body.querySelector('[data-mark="here"]')).not.toBeNull());
+  expect(document.querySelector('[data-mark="gone"]')).toBeNull();
 });
 
 test("Browse keeps focus when an unrelated Canvas stage measurement renders", async () => {

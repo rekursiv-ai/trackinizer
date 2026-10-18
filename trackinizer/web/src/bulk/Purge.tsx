@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { APP } from "../appName";
 import { Dialog } from "radix-ui";
 import { useState } from "react";
 import { SCIENCE_CHAT_LABEL } from "../api/chats";
@@ -102,7 +103,7 @@ export function PurgeDialog({
               </Dialog.Description>
               {owner !== null ? (
                 <p className="pg-owner">
-                  {name} is owned by <b>{owner}</b>. Trackinizer purges only rows without an owner, so the owner is
+                  {name} is owned by <b>{owner}</b>. {APP.name} purges only rows without an owner, so the owner is
                   cleared first.
                 </p>
               ) : null}

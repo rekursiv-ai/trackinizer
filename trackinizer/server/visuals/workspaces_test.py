@@ -27,6 +27,7 @@ from trackinizer.server.visuals.workspaces import (
     CampaignSetup,
     ClearMarks,
     HideVisual,
+    Mark,
     NameChat,
     NewMark,
     Placement,
@@ -233,7 +234,7 @@ def test_a_visual_records_who_placed_it_only_when_told_and_only_when_it_is_new()
     assert placed(again) == ["kb@x.y"]
     assert placed(by_person) == [None]
     [terminal] = [v for v in by_agent.visuals if v.type == "trax.terminal"]
-    assert terminal.params == {"machine": "gx10", "terminal": "", "start": True}
+    assert terminal.params == {"machine": "gx10", "start": True}
 
 
 def test_showing_files_on_a_new_record_keeps_its_narrowing() -> None:
@@ -1010,6 +1011,21 @@ def test_clearing_a_page_takes_the_boxes_it_shows_and_leaves_the_other_pages() -
 
     assert [m.id for m in cleared.marks] == [other.id]
     assert {here.id, anywhere.id, again.id}.isdisjoint(m.id for m in cleared.marks)
+
+
+_TILE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+
+def test_a_box_keeps_the_tile_it_was_drawn_on_and_an_old_box_has_none() -> None:
+    """The tile rides through `with_mark` and a stored box without one still loads."""
+    data = _draw(initial_data(default_catalog()), new=_box(tile=_TILE))
+    data = _draw(data, new=_box())
+    pinned, loose = data.marks
+    assert pinned.tile == uuid.UUID(_TILE)
+    assert loose.tile is None
+    old = loose.model_dump(mode="json")
+    del old["tile"]
+    assert Mark.model_validate(old).tile is None
 
 
 if __name__ == "__main__":

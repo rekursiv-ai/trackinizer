@@ -1075,6 +1075,14 @@
             "title": "Not Captured",
             "type": "array"
           },
+          "tiles": {
+            "items": {
+              "$ref": "#/components/schemas/CaptureTile"
+            },
+            "maxItems": 50,
+            "title": "Tiles",
+            "type": "array"
+          },
           "width": {
             "maximum": 4096.0,
             "minimum": 1.0,
@@ -1089,6 +1097,50 @@
           "data"
         ],
         "title": "CaptureImage",
+        "type": "object"
+      },
+      "CaptureTile": {
+        "additionalProperties": false,
+        "description": "A visual on the stage, with where its body stood in the picture.",
+        "properties": {
+          "bottom": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Bottom",
+            "type": "number"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "left": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Left",
+            "type": "number"
+          },
+          "right": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Right",
+            "type": "number"
+          },
+          "top": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Top",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "left",
+          "top",
+          "right",
+          "bottom"
+        ],
+        "title": "CaptureTile",
         "type": "object"
       },
       "Change": {
@@ -4779,6 +4831,17 @@
             "title": "Machine",
             "type": "string"
           },
+          "surface": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surface"
+          },
           "terminal_id": {
             "format": "uuid",
             "title": "Terminal Id",
@@ -5163,6 +5226,18 @@
             "minimum": 1.0,
             "title": "Seq",
             "type": "integer"
+          },
+          "tile": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tile"
           }
         },
         "required": [
@@ -5661,6 +5736,18 @@
             "minItems": 2,
             "title": "Points",
             "type": "array"
+          },
+          "tile": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tile"
           }
         },
         "required": [
@@ -5722,6 +5809,18 @@
             "minimum": 1.0,
             "title": "Rows",
             "type": "integer"
+          },
+          "surface": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9_-]{1,64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surface"
           },
           "workspace": {
             "anyOf": [
@@ -6180,6 +6279,13 @@
             "pattern": "^[1-9][0-9]?(\\.[0-9])?(px|pt)$",
             "title": "Terminal Font Size",
             "type": "string",
+            "x-setting": true
+          },
+          "terminal_tab_chords": {
+            "default": false,
+            "description": "Ctrl+T, Ctrl+W and Ctrl+Tab open, close and switch terminal tabs instead of reaching the shell (Ctrl+Shift+T, Ctrl+Shift+W and Ctrl+Shift+PageUp/PageDown always do).",
+            "title": "Terminal Tab Chords",
+            "type": "boolean",
             "x-setting": true
           },
           "theme": {
@@ -10030,23 +10136,20 @@
       },
       "TerminalMachines": {
         "additionalProperties": false,
-        "description": "The caller's machines, and their live terminal for the asked station.",
+        "description": "The caller's machines, and their live terminals for the asked station.",
         "properties": {
-          "live": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/LiveTerminal"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "machines": {
             "items": {
               "$ref": "#/components/schemas/TerminalMachine"
             },
             "title": "Machines",
+            "type": "array"
+          },
+          "terminals": {
+            "items": {
+              "$ref": "#/components/schemas/LiveTerminal"
+            },
+            "title": "Terminals",
             "type": "array"
           }
         },
@@ -10936,6 +11039,16 @@
             "minimum": 0.0,
             "title": "Right",
             "type": "number"
+          },
+          "tile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceVisibleVisual"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "top": {
             "default": 0.0,
@@ -20545,7 +20658,7 @@
     },
     "/api/terminals": {
       "post": {
-        "description": "Open a terminal on one of the caller's machines.\n\nOnly a browser session opens one: an API key, a service account, a request without\nthis server's ``Origin``, and anyone but the machine's owner are refused. The\nmachine must be online and its host must have asked for terminals within 45 seconds\n(``TRAX_MACHINE_TERMINAL=1``). Attach with the returned ticket within 30 seconds.\n\nArgs:\n  body: The machine, the terminal's size, and the station it opens from.\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n\nReturns:\n  opened: The terminal id and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for a key, a service account or a foreign origin; 404 for no\n    such machine of the caller's, or station; 409 ``terminal_unconfirmed`` until the\n    owner confirms a machine a key enrolled, ``terminal_not_enabled`` when the host\n    is not asking, or ``terminal_live`` when the station has a terminal; 429 past a\n    limit. Every terminal route answers 403 on a server with authentication off.",
+        "description": "Open a terminal on one of the caller's machines.\n\nOnly a browser session opens one: an API key, a service account, a request without\nthis server's ``Origin``, and anyone but the machine's owner are refused. The\nmachine must be online and its host must have asked for terminals within 45 seconds\n(``TRAX_MACHINE_TERMINAL=1``). Attach with the returned ticket within 30 seconds.\n\nArgs:\n  body: The machine, the terminal's size, and the station it opens from.\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n\nReturns:\n  opened: The terminal id and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for a key, a service account or a foreign origin; 404 for no\n    such machine of the caller's, or station; 409 ``terminal_unconfirmed`` until the\n    owner confirms a machine a key enrolled, ``terminal_not_enabled`` when the host\n    is not asking; 429 ``terminal_limit`` past 10 opens a minute. Every terminal\n    route answers 403 on a server with authentication off.",
         "operationId": "open_terminal_route_api_terminals_post",
         "requestBody": {
           "content": {
@@ -20584,7 +20697,7 @@
     },
     "/api/terminals/machines": {
       "get": {
-        "description": "List the caller's own machines, and their live terminal for a station.\n\nArgs:\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n  workspace: The station whose live terminal to name.\n\nReturns:\n  machines: The caller's machines, each with whether it can take a terminal now;\n    and ``live``, the caller's terminal opened from ``workspace``, if one is open.",
+        "description": "List the caller's own machines, and their live terminals for a station.\n\nArgs:\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n  workspace: The station whose live terminals to list.\n\nReturns:\n  machines: The caller's machines, each with whether it can take a terminal now;\n    and ``terminals``, the caller's live terminals opened from ``workspace``.",
         "operationId": "list_terminal_machines_route_api_terminals_machines_get",
         "parameters": [
           {
@@ -22991,7 +23104,7 @@
     },
     "/api/workspaces/{workspace_id}/captures": {
       "post": {
-        "description": "Ask the owner's open page for a picture of the canvas, and wait for it.\n\nOnly the canvas's Chat partner, as for every other operation on it. The page\nthat answers first wins; the picture is passed on and never stored. When no\npage is open, none answers within the wait, or the page has no canvas to\ndraw, the answer is 424 with the reason.\n\nArgs:\n  workspace_id: Canvas to look at.\n  request: Request carrying the database engine, the hub and the relay.\n  identity: The assistant's agent key.\n\nReturns:\n  image: The canvas as the person sees it, with the boxes on it.",
+        "description": "Ask the owner's open page for a picture of the canvas, and wait for it.\n\nOnly the canvas's Chat partner, as for every other operation on it. The page\nthat answers first wins; the picture is passed on and never stored. When no\npage is open, none answers within the wait, or the page has no canvas to\ndraw, the answer is 424 with the reason.\n\nArgs:\n  workspace_id: Canvas to look at.\n  request: Request carrying the database engine, the hub and the relay.\n  identity: The assistant's agent key.\n\nReturns:\n  image: The canvas as the person sees it, with the boxes on it and where each\n    visual's body stands.",
         "operationId": "request_capture_route_api_workspaces__workspace_id__captures_post",
         "parameters": [
           {

@@ -46,6 +46,7 @@ ASSISTANT_KEYS: Final = frozenset(
         "chat_side",
         "highlight_mentions",
         "terminal_font_size",
+        "terminal_tab_chords",
         "home",
     },
 )
@@ -258,6 +259,15 @@ class Preferences(_Strict):
         default="13px",
         pattern=r"^[1-9][0-9]?(\.[0-9])?(px|pt)$",
         description=("The browser terminal's font size, in px or pt: 13px, or 16pt."),
+        json_schema_extra=SETTING,
+    )
+    terminal_tab_chords: bool = Field(
+        default=False,
+        description=(
+            "Ctrl+T, Ctrl+W and Ctrl+Tab open, close and switch terminal tabs "
+            "instead of reaching the shell (Ctrl+Shift+T, Ctrl+Shift+W and "
+            "Ctrl+Shift+PageUp/PageDown always do)."
+        ),
         json_schema_extra=SETTING,
     )
     home: Literal["graph", "empty"] = Field(

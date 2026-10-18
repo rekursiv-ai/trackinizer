@@ -19,3 +19,12 @@
 @media (hover: none) { .terminal .terminal-maximize { opacity: 1; } }
 /* Maximized: the same element, so the same screen and socket, fixed over the chat row; top, left, width and height are measured. */
 .terminal-maximized { position: fixed; z-index: 60; }
+/* The tile's tabs: one shell each, all kept mounted so a hidden one keeps its socket. */
+/* The strip sits over the terminal's own top row (the maximize button's), so tabs cost the screen no height. */
+.terminal-panes { position: relative; display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; min-width: 0; }
+.terminal-tabs { position: absolute; top: 0; left: 0; right: 44px; z-index: 1; display: flex; flex-wrap: nowrap; align-items: center; gap: 2px; padding: 0 4px; overflow-x: auto; }
+.terminal-tabs .btn.ghost { min-height: 0; padding: 0 6px; line-height: 20px; font-size: 12px; color: #00ff00; }
+.terminal-tab { display: inline-flex; align-items: center; border-radius: 4px; }
+.terminal-tab[data-active="true"] { background: rgba(0, 255, 0, .18); }
+.terminal-pane { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; min-width: 0; }
+.terminal-pane[hidden] { display: none; }
