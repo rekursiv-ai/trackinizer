@@ -90,6 +90,8 @@ export type LinkOptions = {
   readonly fresh?: (id: string) => Promise<string>;
   /** The screen's size now: sent as a RESIZE after every ACK, so the shell has the real size whatever size it opened at. */
   readonly size?: () => { readonly rows: number; readonly cols: number };
+  /** Told, in ms, how long the first INPUT frame still unanswered waited for the next OUTPUT: the echo's round trip. */
+  readonly onEcho?: (ms: number) => void;
 };
 
 /** The live link to one terminal. */
@@ -114,8 +116,11 @@ function socketUrl(id: string): string {
  * 60 s. The ticket never rides the URL.
  */
 export function connectTerminal(options: LinkOptions): TerminalLink {
-  const { id, onOutput, onStatus, socket = (url) => new WebSocket(url), fresh = attachTerminal, size } = options;
+  const { id, onOutput, onStatus, socket = (url) => new WebSocket(url), fresh = attachTerminal, size, onEcho } = options;
   let ws: WebSocket | null = null;
+  // When the first INPUT frame not yet answered went out. Dropped at every ACK and close, so output replayed after
+  // an attach is never taken for an echo.
+  let typedAt: number | null = null;
   let ticket: string | null = options.ticket;
   let offset = 0;
   let attempt = 0;
@@ -147,6 +152,7 @@ export function connectTerminal(options: LinkOptions): TerminalLink {
       const frame = decodeFrame(new Uint8Array(event.data));
       if (frame.kind === Frame.ACK) {
         offset = decodeOffset(frame.payload);
+        typedAt = null;
         attempt = 0;
         lostAt = 0;
         onStatus({ state: "live" });
@@ -156,6 +162,10 @@ export function connectTerminal(options: LinkOptions): TerminalLink {
         }
       } else if (frame.kind === Frame.OUTPUT) {
         offset += frame.payload.length;
+        if (typedAt !== null) {
+          onEcho?.(performance.now() - typedAt);
+          typedAt = null;
+        }
         onOutput(frame.payload);
       } else if (frame.kind === Frame.EXIT) {
         const code = frame.payload.length === 4 ? new DataView(frame.payload.buffer, frame.payload.byteOffset, 4).getUint32(0) : undefined;
@@ -164,6 +174,7 @@ export function connectTerminal(options: LinkOptions): TerminalLink {
     };
     next.onclose = (event: CloseEvent) => {
       if (closed || ws !== next) return;
+      typedAt = null;
       const known = FINAL[event.code];
       if (known) finish(known);
       else retry();
@@ -192,6 +203,7 @@ export function connectTerminal(options: LinkOptions): TerminalLink {
   return {
     // A paste arrives as one string: the server refuses an INPUT frame over 64 KiB, so it goes in frames of at most that.
     input: (bytes) => {
+      typedAt ??= performance.now();
       for (let at = 0; at < bytes.length; at += MAX_INPUT_FRAME) send(encodeFrame(Frame.INPUT, bytes.subarray(at, at + MAX_INPUT_FRAME)));
     },
     resize: (rows, cols) => send(encodeFrame(Frame.RESIZE, encodeWinsize(rows, cols))),

@@ -18,7 +18,7 @@ function mount(machines: TerminalMachine[], terminals: LiveTerminal[] = []) {
   vi.mocked(listTerminalMachines).mockResolvedValue({ machines, terminals });
   vi.mocked(listWorkstreams).mockResolvedValue([{ id: "g1", title: "ARC3", scratch: false } as never]);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return { client, ...render(<QueryClientProvider client={client}><ChatTerminalSide workspace={workspace} shown onFlipBack={vi.fn()} /></QueryClientProvider>) };
+  return { client, ...render(<QueryClientProvider client={client}><ChatTerminalSide workspace={workspace} shown header={<header>chat header</header>} /></QueryClientProvider>) };
 }
 
 beforeEach(() => view.mockClear());
@@ -85,13 +85,12 @@ test("dismissing the bar keeps it gone on the next mount", async () => {
   expect(screen.queryByRole("note")).toBeNull();
 });
 
-test("the chat icon flips back", async () => {
-  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [], terminals: [] });
-  vi.mocked(listWorkstreams).mockResolvedValue([]);
-  const back = vi.fn();
-  render(<QueryClientProvider client={new QueryClient()}><ChatTerminalSide workspace={workspace} shown onFlipBack={back} /></QueryClientProvider>);
-  fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
-  expect(back).toHaveBeenCalled();
+test("Chat's header tops the side, and the side has none of its own", async () => {
+  mount([machine("gx10")]);
+  await screen.findByText("terminal view");
+  const side = screen.getByRole("region", { name: "Terminal" });
+  expect(side.firstElementChild!.textContent).toBe("chat header");
+  expect(side.querySelectorAll("header")).toHaveLength(1);
 });
 
 test("a machines refetch that fails does not unmount a live terminal view", async () => {
@@ -107,7 +106,7 @@ test("a machines refetch that fails does not unmount a live terminal view", asyn
 test("hidden, the side asks the server for nothing", async () => {
   vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [], terminals: [] });
   vi.mocked(listWorkstreams).mockResolvedValue([]);
-  render(<QueryClientProvider client={new QueryClient()}><ChatTerminalSide workspace={workspace} shown={false} onFlipBack={vi.fn()} /></QueryClientProvider>);
+  render(<QueryClientProvider client={new QueryClient()}><ChatTerminalSide workspace={workspace} shown={false} header={null} /></QueryClientProvider>);
   await Promise.resolve();
   expect(listTerminalMachines).not.toHaveBeenCalled();
 });

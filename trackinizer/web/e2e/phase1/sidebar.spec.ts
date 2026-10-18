@@ -1,4 +1,4 @@
-import { expect, test } from "../fixtures";
+import { expect, revealBar, test } from "../fixtures";
 
 // Phase 1's manual row starts with "every sidebar entry" and "each kind's list:
 // tabs, Filter, Group, Sort". The pages are now the top bar's Go menu, and
@@ -10,16 +10,15 @@ test("every page in Go opens its view, and each kind's list has its tabs and too
     inquiry_kind_all: string[];
   };
   await page.goto("/app/#/activity");
-  const bar = page.getByRole("banner", { name: "App" });
   const go = page.getByRole("navigation", { name: "Go to" });
   // Graph, Console, Activity, then one Browse entry per kind in the server's order.
   const hashes = ["#/graph", "#/console", "#/activity", ...kinds.map((kind) => `#/list/${kind}`)];
-  await bar.getByRole("button", { name: "Go to" }).click();
+  await (await revealBar(page)).getByRole("button", { name: "Go to" }).click();
   await expect(go.getByRole("link")).toHaveCount(hashes.length);
   await page.keyboard.press("Escape");
 
   for (const [n, hash] of hashes.entries()) {
-    await bar.getByRole("button", { name: "Go to" }).click();
+    await (await revealBar(page)).getByRole("button", { name: "Go to" }).click();
     const entry = go.getByRole("link").nth(n);
     const name = (await entry.locator(".label").textContent())!.trim();
     await entry.click();
@@ -28,7 +27,7 @@ test("every page in Go opens its view, and each kind's list has its tabs and too
     const named = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(new RegExp(`^${named}( · .+)?$`));
     expect(new URL(page.url()).hash).toBe(hash);
-    await bar.getByRole("button", { name: "Go to" }).click();
+    await (await revealBar(page)).getByRole("button", { name: "Go to" }).click();
     await expect(go.getByRole("link").nth(n)).toHaveAttribute("aria-current", "page");
     await page.keyboard.press("Escape");
     if (!hash.startsWith("#/list/")) continue;
@@ -42,7 +41,7 @@ test("every page in Go opens its view, and each kind's list has its tabs and too
 
   // Settings and Admin (the e2e server's user is an admin) open as a sheet over the page.
   for (const [name, hash] of [["Your settings", "#/settings"], ["Admin", "#/admin"]] as const) {
-    await bar.getByRole("button", { name: /^Account: / }).click();
+    await (await revealBar(page)).getByRole("button", { name: /^Account: / }).click();
     await page.getByRole("dialog", { name: "Account" }).getByRole("link", { name }).click();
     await expect(page.getByRole("complementary", { name }).getByRole("heading", { level: 1 })).toHaveText(name);
     expect(new URL(page.url()).hash).toBe(hash);

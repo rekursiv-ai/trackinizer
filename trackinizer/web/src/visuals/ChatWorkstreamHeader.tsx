@@ -18,14 +18,16 @@ type Props = {
   readonly onHide: () => Promise<void>;
   readonly onClear: () => Promise<void>;
   readonly onDeleted: (conversation: string) => void;
-  /** Flip the column to the station's terminal. */
+  /** Flip the column to the station's terminal, or back from it. */
   readonly onFlip?: () => void;
+  /** The column shows the terminal: the header names it and its flip button returns to chat. */
+  readonly flipped?: boolean;
 };
 
 type HeaderMenu = "name" | "workstream" | "more" | "info";
 
 /** Chat naming, switching, workstream placement, and its compact header controls. */
-export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDeleted, onFlip }: Props) {
+export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDeleted, onFlip, flipped = false }: Props) {
   const queryClient = useQueryClient();
   const { side, hidden } = useChatColumn();
   const [menu, setMenu] = useState<HeaderMenu | null>(null);
@@ -180,7 +182,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
         {head?.audience === "private" && <span>Private</span>}
       </span>
       <div className="chat-name-pick">
-        {nameOpen ? <input ref={renameInput} className="chat-name-input" aria-label="Chat name" value={nameDraft}
+        {flipped ? <strong>Terminal</strong> : nameOpen ? <input ref={renameInput} className="chat-name-input" aria-label="Chat name" value={nameDraft}
           onChange={(event) => { setNameDraft(event.target.value); setNameProblem(null); }}
           onKeyDown={(event) => {
             if (event.key === "Enter") { event.preventDefault(); void saveName(); }
@@ -189,7 +191,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
           }} />
           : <button type="button" className="chat-name-button" title="Rename, switch chats or search" aria-label={shownName}
             onClick={() => { setNameDraft(workspace?.name ?? ""); setNameProblem(null); setMenu("name"); }}>{shownName}<span className="chat-name-caret hover-only">▾</span></button>}
-        {nameOpen && <div className="station-menu chat-name-menu" role="dialog" aria-label="Chats">
+        {nameOpen && !flipped && <div className="station-menu chat-name-menu" role="dialog" aria-label="Chats">
           {nameProblem && <p className="station-problem" role="status">{nameProblem}</p>}
           <p className="chat-menu-label">Chats in {currentGroup?.title ?? "Scratch"}</p>
           <ul className="station-list" aria-label="Chats in this workstream">
@@ -236,8 +238,10 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
       </span>}
     </div>
     <div className="chat-head-actions" role="toolbar" aria-label="Chat controls">
-      {onFlip && <button className="btn ghost hover-only" type="button" aria-label="Open terminal" title="Flip to a terminal on your machine"
-        onClick={onFlip}><Icon name="terminal" /></button>}
+      {onFlip && (flipped
+        ? <button className="btn ghost" type="button" aria-label="Back to chat" title="Flip back to chat" onClick={onFlip}><Icon name="chat" /></button>
+        : <button className="btn ghost hover-only" type="button" aria-label="Open terminal" title="Flip to a terminal on your machine"
+          onClick={onFlip}><Icon name="terminal" /></button>)}
       <button className="btn ghost hover-only" type="button" aria-label={`Move Chat to the ${side === "left" ? "right" : "left"}`}
         title="Dock on the other side" onClick={() => setChatSide(side === "left" ? "right" : "left")}>{side === "left" ? "▷" : "◁"}</button>
       <button className="btn ghost hover-only" type="button" aria-label="More chat actions" aria-expanded={moreOpen} onClick={() => setMenu(moreOpen ? null : "more")}>⋯</button>

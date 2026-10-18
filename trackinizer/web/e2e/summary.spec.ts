@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import type { APIRequestContext, Page } from "@playwright/test";
 import { resetCanvas } from "./canvasState";
-import { expect, test } from "./fixtures";
+import { expect, revealBar, test } from "./fixtures";
 
 // The campaign summary visual, read from a campaign's brief Issue: the sessions tree, one
 // session, and the corpus. The rows are the Artifacts the summary service files, labelled as
@@ -11,6 +11,12 @@ import { expect, test } from "./fixtures";
 // That the server refuses the transcript to the first is tested where the audience is enforced.
 
 test.use({ canvas: true, viewport: { width: 1600, height: 1000 } });
+
+// Each test starts on a canvas of its own: the visuals another spec left (a campaign's timeline floats
+// over the summary) are not this test's.
+test.beforeEach(async ({ request }) => {
+  await resetCanvas(request);
+});
 
 test.afterEach(async ({ request }) => {
   await resetCanvas(request);
@@ -66,7 +72,7 @@ async function readAs(page: Page, audiences: string[]) {
 
 async function open(page: Page, seq: number) {
   await page.goto(`/app/#/ref/Issue/${seq}`);
-  await page.getByRole("banner", { name: "App" }).getByRole("button", { name: "Workbench", exact: true }).click();
+  await (await revealBar(page)).getByRole("button", { name: "Workbench", exact: true }).click();
   const option = page.locator(".workbench-menu").getByRole("checkbox", { name: /Campaign summary/ });
   // Showing a visual is a write to the station; the box checks when the server's canvas comes back.
   await option.click();

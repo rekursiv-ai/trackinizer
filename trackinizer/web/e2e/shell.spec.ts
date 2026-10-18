@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, revealBar, test } from "./fixtures";
 
 const heading = (page: Page) => page.getByRole("heading", { level: 1 });
 const hash = (page: Page) => new URL(page.url()).hash;
@@ -7,7 +7,7 @@ const hash = (page: Page) => new URL(page.url()).hash;
 /** The top bar's Go menu, opened; a page's entry in it is named by its label and keys. */
 async function go(page: Page) {
   const menu = page.getByRole("navigation", { name: "Go to" });
-  if (!(await menu.isVisible())) await page.getByRole("banner", { name: "App" }).getByRole("button", { name: "Go to" }).click();
+  if (!(await menu.isVisible())) await (await revealBar(page)).getByRole("button", { name: "Go to" }).click();
   return menu;
 }
 

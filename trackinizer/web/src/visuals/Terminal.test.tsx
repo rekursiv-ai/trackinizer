@@ -11,10 +11,11 @@ import { TerminalTile, TerminalView } from "./Terminal";
 import { requestNewTerminal, takeNewTerminalRequest } from "./newTerminal";
 import type { RendererProps } from "./registry";
 
-const xterm = vi.hoisted(() => ({ events: [] as string[], focused: 0, fitted: null as { rows: number; cols: number } | null, fits: 0, providers: [] as unknown[], instances: [] as Array<{ options: { fontSize?: number }; written: Uint8Array[]; data: (data: string) => void; resize: (size: { rows: number; cols: number }) => void; disposed: boolean; keys: (event: KeyboardEvent) => boolean }> }));
+const xterm = vi.hoisted(() => ({ events: [] as string[], focused: 0, fitted: null as { rows: number; cols: number } | null, fits: 0, providers: [] as unknown[], instances: [] as Array<{ options: { fontSize?: number }; written: Array<Uint8Array | string>; data: (data: string) => void; resize: (size: { rows: number; cols: number }) => void; disposed: boolean; keys: (event: KeyboardEvent) => boolean }> }));
 vi.mock("@xterm/xterm", () => ({
   Terminal: class {
-    options: { fontSize?: number } = {}; rows = 24; cols = 80; written: Uint8Array[] = []; disposed = false;
+    options: { fontSize?: number } = {}; rows = 24; cols = 80; written: Array<Uint8Array | string> = []; disposed = false;
+    buffer = { active: { type: "normal", cursorX: 2, cursorY: 0, baseY: 0, getLine: () => undefined } };
     data: (data: string) => void = () => {};
     resize: (size: { rows: number; cols: number }) => void = () => {};
     onData(handler: (data: string) => void) { xterm.events.push("onData"); this.data = handler; }
@@ -22,7 +23,7 @@ vi.mock("@xterm/xterm", () => ({
     constructor() { xterm.instances.push(this); }
     loadAddon(addon: { term?: unknown }) { addon.term = this; }
     open() { xterm.events.push("open"); }
-    write(bytes: Uint8Array) { this.written.push(bytes); }
+    write(bytes: Uint8Array | string) { this.written.push(bytes); }
     dispose() { this.disposed = true; }
     focus() { xterm.focused += 1; }
     attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) { this.keys = handler; }
@@ -79,8 +80,25 @@ test("typing becomes input, a resize becomes a resize frame, and output is writt
   expect([...link.input.mock.calls[0]![0] as Uint8Array]).toEqual([108, 115, 13]);
   xterm.instances[0]!.resize({ rows: 30, cols: 100 });
   expect(link.resize).toHaveBeenCalledWith(30, 100);
-  act(() => options.onOutput(new Uint8Array([65])));
-  expect(xterm.instances[0]!.written).toHaveLength(1);
+  const bytes = new Uint8Array([65]);
+  act(() => options.onOutput(bytes));
+  expect(xterm.instances[0]!.written).toEqual([bytes]);
+  expect(xterm.instances[0]!.written[0]).toBe(bytes);
+});
+
+test("on a slow link what is typed is drawn dim at once; the link's echo times turn that on", async () => {
+  render(<TerminalView machine="gx10" workspace="w1" />);
+  start();
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
+  const screen = xterm.instances[0]!;
+  screen.data("x");
+  screen.data("a");
+  expect(screen.written).toEqual([]);
+  act(() => options.onOutput(new Uint8Array([120, 97])));
+  for (let i = 0; i < 5; i++) act(() => options.onEcho!(300));
+  screen.data("b");
+  expect(screen.written.at(-1)).toContain("\x1b[2mb");
+  expect(link.input).toHaveBeenCalledTimes(3);
 });
 
 test("a live terminal re-attaches once on mount, with a fresh ticket, and without a click", async () => {

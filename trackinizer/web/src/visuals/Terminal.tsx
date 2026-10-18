@@ -17,6 +17,7 @@ import { takeNewTerminalRequest, useNewTerminalRequested } from "./newTerminal";
 import { tabChord, type TabChord } from "./terminalKeys";
 import { gatedClipboard } from "./terminalClipboard";
 import { terminalOptions } from "./terminalTheme";
+import { attachTypeahead, type TypeaheadLink } from "./terminalTypeaheadScreen";
 import "./Terminal.css";
 
 /** A terminal already running: what a reload re-attaches to. */
@@ -65,7 +66,7 @@ function canvasRect(): CSSProperties {
 export function TerminalView({ machine, workspace, surface = null, resume = null, onOpened, shown = true, autoStart = null, requestedBy, onChord, keyboard = 0 }: TerminalViewProps) {
   const prefs = usePreferences();
   const host = useRef<HTMLDivElement>(null);
-  const live = useRef<{ term: Xterm; fit: FitAddon; link: TerminalLink | null } | null>(null);
+  const live = useRef<{ term: Xterm; fit: FitAddon; link: TerminalLink | null; typeahead: TypeaheadLink } | null>(null);
   const [phase, setPhase] = useState<Phase>({ state: "idle" });
   const [session, setSession] = useState<LiveTerminal | null>(resume);
   const [maximized, setMaximized] = useState(false);
@@ -83,6 +84,7 @@ export function TerminalView({ machine, workspace, surface = null, resume = null
 
   const release = useCallback(() => {
     live.current?.link?.dispose();
+    live.current?.typeahead.dispose();
     live.current?.term.dispose();
     live.current = null;
   }, []);
@@ -108,12 +110,19 @@ export function TerminalView({ machine, workspace, surface = null, resume = null
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.loadAddon(new ClipboardAddon(undefined, gatedClipboard({ lastInput: () => lastInput.current, copied: noteCopied })));
+    // On a slow link what is typed shows at once, dim, until the shell's echo confirms it (`terminalTypeahead.ts`).
+    const typeahead = attachTypeahead(term);
     // Registered before the first fit, so no size the screen takes is missed; each goes to the link once there is one.
     term.onData((data) => {
       lastInput.current = Date.now();
-      live.current?.link?.input(encoder.encode(data));
+      const link = live.current?.link;
+      if (link) typeahead.input(data);
+      link?.input(encoder.encode(data));
     });
-    term.onResize(({ rows, cols }) => live.current?.link?.resize(rows, cols));
+    term.onResize(({ rows, cols }) => {
+      typeahead.resize();
+      live.current?.link?.resize(rows, cols);
+    });
     // A tab chord goes to the tile, not the shell: false keeps xterm from sending it, and the page keeps the browser from acting on it.
     term.attachCustomKeyEventHandler((event) => {
       const { onChord: take, pass } = chordNow.current;
@@ -125,7 +134,7 @@ export function TerminalView({ machine, workspace, surface = null, resume = null
       }
       return false;
     });
-    live.current = { term, fit, link: null };
+    live.current = { term, fit, link: null, typeahead };
     setPhase({ state: "starting" });
     // The screen shows once this phase has rendered; opening and fitting it before would measure a hidden element.
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -147,7 +156,7 @@ export function TerminalView({ machine, workspace, surface = null, resume = null
       setSession({ terminal_id: opened.terminal_id });
       onOpened?.({ terminal_id: opened.terminal_id });
       live.current.link = connectTerminal({
-        id: opened.terminal_id, ticket: opened.ticket, onOutput: (bytes) => term.write(bytes), onStatus: setPhase,
+        id: opened.terminal_id, ticket: opened.ticket, onOutput: typeahead.output, onEcho: typeahead.echo, onStatus: setPhase,
         size: () => ({ rows: term.rows, cols: term.cols }),
       });
     } catch (error) {

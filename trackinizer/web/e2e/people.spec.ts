@@ -1,5 +1,5 @@
 import type { APIRequestContext, Locator, Page, Request } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, openProperties, test } from "./fixtures";
 
 // People and agents in owner and subscriber pickers against the e2e server,
 // where --no-auth makes every request the admin no-auth@localhost. Each test
@@ -21,6 +21,7 @@ async function stored(request: APIRequestContext, id: string): Promise<{ owner: 
 async function openDetail(page: Page, id: string): Promise<void> {
   await page.goto(`/app/#/lookup/${id}`);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await openProperties(page);
 }
 
 const propButton = (page: Page, field: string) =>
@@ -67,6 +68,7 @@ test("from a detail: a new person owns it by email, a new agent subscribes by ha
   expect((await stored(request, id)).subscribers).toEqual([handle]);
 
   await page.reload();
+  await openProperties(page);
   await propButton(page, "owner").click();
   const grace = page.getByRole("option", { name: new RegExp(`^Grace ${run}`) });
   await expect(grace).toHaveAttribute("aria-selected", "true");
@@ -149,6 +151,7 @@ test("an admin invites a new person to sign in as a writer; a writer is offered 
     if (new URL(sent.url()).pathname.startsWith("/api/admin/")) admin.push(sent);
   });
   await page.reload();
+  await openProperties(page);
   const writer = await addThrough(page, propButton(page, "owner"), "New person…", { "Email (optional)": `g3-other-${run}@example.com` });
   await expect(writer.getByRole("button", { name: /^Add as owner/ })).toBeVisible();
   await expect(writer.getByRole("checkbox")).toHaveCount(0);

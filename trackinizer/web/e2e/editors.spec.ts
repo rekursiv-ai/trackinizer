@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { APIRequestContext, Page, Request } from "@playwright/test";
-import { expect, failedResource, test, streamOpened, abortStream, allowStreamErrors } from "./fixtures";
+import { expect, failedResource, openProperties, test, streamOpened, abortStream, allowStreamErrors } from "./fixtures";
 
 // The detail's editors against the e2e server, with the Python client as a
 // second user. Each test makes its own Issue, so rows other spec files create
@@ -43,6 +43,7 @@ async function openDetail(page: Page, id: string): Promise<Request[]> {
   await page.goto(`/app/#/lookup/${id}`);
   await subscribed;
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await openProperties(page);
   return writes;
 }
 
@@ -63,6 +64,7 @@ test("a status change after the Python client's gets the conflict dialog, then l
   allowStreamErrors(allowErrors);
   allowErrors(failedResource(`/api/inquiries/${id}/status`, 409));
   await page.goto(`/app/#/lookup/${id}`);
+  await openProperties(page);
   await expect(propButton(page, "status")).toHaveText("Active");
   await pythonEdit(baseURL!, id, "status", "abandoned");
 
@@ -232,6 +234,7 @@ test("an Issue's last type goes with a DELETE checked at save, so a type the Pyt
   });
   const sent = () => writes.map((write) => [`${write.method()} ${new URL(write.url()).pathname.split("/").at(-1)}`, write.postDataJSON()]);
   await page.goto(`/app/#/lookup/${id}`);
+  await openProperties(page);
   await expect(propButton(page, "issue_kind")).toHaveText("bug");
   await pythonEdit(baseURL!, id, "issue_kind", ["bug", "feature"]);
 

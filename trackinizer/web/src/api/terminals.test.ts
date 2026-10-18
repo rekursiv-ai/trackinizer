@@ -159,3 +159,49 @@ test("the lost-output marker before ACK is not counted: ACK sets the offset, lat
   const attach = decodeFrame(socket().sent[0]!).payload;
   expect(new DataView(attach.buffer, attach.byteOffset + 43, 8).getBigUint64(0)).toBe(1007n);
 });
+
+function echoes() {
+  const ms: number[] = [];
+  const link = connectTerminal({
+    id: "t1", ticket: "A".repeat(43), onOutput: () => {}, onStatus: () => {}, onEcho: (each) => ms.push(each),
+    socket: (url) => new FakeSocket(url) as unknown as WebSocket, fresh: () => Promise.resolve("T".repeat(43)),
+  });
+  return { link, ms, socket: () => FakeSocket.all.at(-1)! };
+}
+
+test("the echo is the wait from the first unanswered INPUT to the next OUTPUT", () => {
+  const { link, ms, socket } = echoes();
+  socket().open();
+  socket().ack(0);
+  link.input(new Uint8Array([97]));
+  vi.advanceTimersByTime(100);
+  link.input(new Uint8Array([98]));
+  vi.advanceTimersByTime(200);
+  socket().frame(Frame.OUTPUT, new Uint8Array([97]));
+  expect(ms).toEqual([300]);
+  socket().frame(Frame.OUTPUT, new Uint8Array([98]));
+  expect(ms).toEqual([300]);
+});
+
+test("output with no input waiting, and output replayed after an attach, is no echo", () => {
+  const { link, ms, socket } = echoes();
+  socket().open();
+  socket().ack(0);
+  socket().frame(Frame.OUTPUT, new Uint8Array([36]));
+  link.input(new Uint8Array([97]));
+  socket().ack(1);
+  socket().frame(Frame.OUTPUT, new Uint8Array([97]));
+  expect(ms).toEqual([]);
+});
+
+test("a dropped socket forgets the input it was waiting on", async () => {
+  const { link, ms, socket } = echoes();
+  socket().open();
+  socket().ack(0);
+  link.input(new Uint8Array([97]));
+  socket().drop(1006);
+  await vi.advanceTimersByTimeAsync(500);
+  socket().open();
+  socket().frame(Frame.OUTPUT, new Uint8Array([97]));
+  expect(ms).toEqual([]);
+});

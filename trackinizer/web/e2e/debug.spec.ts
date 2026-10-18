@@ -1,6 +1,6 @@
 import { writeFileSync } from "node:fs";
 import type { APIRequestContext, APIResponse, Page, TestInfo } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, openProperties, test } from "./fixtures";
 
 // Copy details against the e2e server: a render crash, a read and a write the
 // server refuses. Each shows Copy details, whose request id is the one the
@@ -103,6 +103,7 @@ test("a write the server refuses shows Copy details with the id it echoed", asyn
     route.continue({ postData: JSON.stringify({ ...route.request().postDataJSON(), value: 5 }) }),
   );
   await page.goto(`/app/#/lookup/${id}`);
+  await openProperties(page);
   const status = page.getByRole("complementary", { name: "Properties" }).locator('[data-field="status"] button.prop-btn');
   await expect(status).toHaveText("Active");
   const refused = page.waitForResponse((response) => response.url().endsWith(`/api/inquiries/${id}/status`));

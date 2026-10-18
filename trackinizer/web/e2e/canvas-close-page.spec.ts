@@ -1,5 +1,5 @@
 import type { APIRequestContext } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, revealBar, test } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
 // The page (Browse) closes like any other tile, and the user's own navigation
@@ -49,7 +49,7 @@ test("the Workbench section offers a closed page and brings it back", async ({ p
   await browse.getByTitle("Dismiss visual").click();
   await expect(browse).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Workbench", exact: true }).first().click();
+  await (await revealBar(page)).getByRole("button", { name: "Workbench", exact: true }).click();
   const option = page.getByRole("checkbox", { name: /Browse/ });
   await expect(option).not.toBeChecked();
   // The box follows the canvas once the server has answered, so a click is not a check.

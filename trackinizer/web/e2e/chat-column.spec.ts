@@ -149,12 +149,14 @@ test("the shortcut hides Chat to a strip with its icon and an accent line toward
 
 test("the Hide button in Chat's header folds it to its strip, and Pin stands it beside the page again", async ({ page }) => {
   const { column } = await open(page);
+  await column.getByRole("button", { name: "More chat actions" }).click();
   await column.getByRole("button", { name: "Hide Chat" }).click();
   await expect(column).toBeHidden();
   const strip = page.getByRole("button", { name: "Show Chat" });
   await expect(strip).toBeVisible();
   await strip.hover();
-  await column.getByRole("button", { name: "Pin Chat beside the page" }).click();
+  // A press anywhere in the opened Chat pins it, so the ⋯ that opens the menu pins it too.
+  await column.getByRole("button", { name: "More chat actions" }).click();
   await expect(strip).toHaveCount(0);
   await expect(column.getByRole("button", { name: "Hide Chat" })).toBeVisible();
 });
@@ -226,6 +228,6 @@ test("on a phone only Chat shows, at full width, with no sideways scroll", async
   const chat = await box(column);
   expect(Math.round(chat.width)).toBe(390);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
-  await expect(column.locator(".chat-station")).toBeInViewport();
+  await expect(column.locator(".chat-name-button")).toBeInViewport();
   await expect(page.getByRole("separator", { name: "Resize Chat" })).toBeHidden();
 });

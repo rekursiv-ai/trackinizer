@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, failedResource, setPreferences, test } from "./fixtures";
+import { expect, failedResource, revealBar, setPreferences, test } from "./fixtures";
 
 // Your settings against the e2e server, where --no-auth makes every request the
 // synthetic admin no-auth@localhost. Tokens and aliases made here are this
@@ -120,7 +120,7 @@ test("Settings opens as half a page over the page, from its left edge, and Close
   await page.goto("/app/#/list/Issue");
   const list = page.getByRole("heading", { level: 1, name: "Issues" });
   await expect(list).toBeVisible();
-  await page.getByRole("banner", { name: "App" }).getByRole("button", { name: /^Account: / }).click();
+  await (await revealBar(page)).getByRole("button", { name: /^Account: / }).click();
   await page.getByRole("dialog", { name: "Account" }).getByRole("link", { name: "Your settings" }).click();
   await expect(sheet(page).getByRole("heading", { level: 1 })).toHaveText("Your settings");
   // The list stays under it, mounted, its other half in view.

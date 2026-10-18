@@ -2022,6 +2022,20 @@ test("the header's terminal button flips Chat to the terminal side and back, kee
   expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("half a thought");
 });
 
+test("flipped, the terminal side keeps the Chat header's buttons and only names the terminal", async () => {
+  shell();
+  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
+  const side = await screen.findByRole("region", { name: "Terminal", hidden: true });
+  const head = within(side).getByRole("banner");
+  expect(head.querySelector(".chat-name-pick strong")!.textContent).toBe("Terminal");
+  expect(within(head).queryByRole("button", { name: workspace.name })).toBeNull();
+  expect(within(head).getByRole("button", { name: /^Move Chat to the/ })).toBeTruthy();
+  expect(within(head).getByRole("button", { name: "More chat actions" })).toBeTruthy();
+  expect(within(head).getByRole("button", { name: /^Workstream:/ })).toBeTruthy();
+  expect(within(head).queryByRole("button", { name: "Open terminal" })).toBeNull();
+  expect(within(head).getByRole("button", { name: "Back to chat" })).toBeTruthy();
+});
+
 test("the flip is remembered for the station and no terminal side is mounted before the first flip", () => {
   shell();
   expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();

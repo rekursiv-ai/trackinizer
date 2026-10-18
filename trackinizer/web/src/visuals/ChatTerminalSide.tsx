@@ -1,12 +1,11 @@
 // The back of the Chat column: a terminal on one of the user's machines, with a bar saying how to start a
-// session there. Chat flips to it from its header and back from this one's, in the same place.
+// session there. Chat's header, passed in, tops this side too: it flips back.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Suspense, useState } from "react";
+import { type ReactNode, Suspense, useState } from "react";
 import { confirmTerminalMachine, listTerminalMachines, type TerminalMachine } from "../api/terminals";
 import type { WorkspaceState } from "../api/workspaces";
 import { listWorkstreams } from "../api/workstreams";
 import { lazyView } from "../router/lazy";
-import { Icon } from "../ui/icons";
 import { useBarDismissed } from "./terminalFlip";
 import "./Terminal.css";
 
@@ -22,11 +21,12 @@ const SURFACE = "chat";
 type Props = {
   readonly workspace: WorkspaceState;
   readonly shown: boolean;
-  readonly onFlipBack: () => void;
+  /** Chat's header, in its flipped form. */
+  readonly header: ReactNode;
 };
 
 /** The terminal side of `workspace`'s Chat. */
-export function ChatTerminalSide({ workspace, shown, onFlipBack }: Props) {
+export function ChatTerminalSide({ workspace, shown, header }: Props) {
   const machines = useQuery({ queryKey: ["terminal-machines", workspace.id], queryFn: ({ signal }) => listTerminalMachines(workspace.id, { signal }),
     enabled: shown, staleTime: 5_000 });
   const workstreams = useQuery({ queryKey: ["workstreams"], queryFn: ({ signal }) => listWorkstreams({}, { signal }), enabled: shown, staleTime: 2_000 });
@@ -59,12 +59,7 @@ export function ChatTerminalSide({ workspace, shown, onFlipBack }: Props) {
   const copy = () => Promise.resolve().then(() => navigator.clipboard.writeText(CONNECT)).then(() => setCopied("copied"), () => setCopied("refused"));
 
   return <section className="chat-terminal-side" aria-label="Terminal" hidden={!shown}>
-    <header className="chat-head">
-      <strong>Terminal</strong>
-      <div className="chat-head-actions" role="toolbar" aria-label="Terminal controls">
-        <button className="btn ghost" type="button" aria-label="Back to chat" title="Flip back to chat" onClick={onFlipBack}><Icon name="chat" /></button>
-      </div>
-    </header>
+    {header}
     {machines.data && unconfirmed.map((each) => <div key={each.name} className="chat-terminal-bar" role="group" aria-label={`Allow ${each.name}`}>
       <span>New machine <strong>{each.name}</strong> wants terminals.</span>
       <button type="button" className="btn" disabled={allowing !== null} onClick={() => void allow(each.name)}>Allow</button>
