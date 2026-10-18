@@ -1258,8 +1258,8 @@ wheels = [
 
 [[package]]
 name = "rekursiv-ai-typeshed"
-version = "0.1.4"
-source = { git = "https://github.com/rekursiv-ai/typings?subdirectory=typeshed&branch=main#7747ab32165010acf4a134170fe7543d4b96946b" }
+version = "0.1.5"
+source = { git = "https://github.com/rekursiv-ai/typings?subdirectory=typeshed&branch=main#79989e01ed24d823681a09b40ac387ca4c4df71a" }
 dependencies = [
     { name = "basedpyright" },
     { name = "ty" },
@@ -1267,8 +1267,8 @@ dependencies = [
 
 [[package]]
 name = "rekursiv-ai-typings"
-version = "0.1.4"
-source = { git = "https://github.com/rekursiv-ai/typings?branch=main#7747ab32165010acf4a134170fe7543d4b96946b" }
+version = "0.1.5"
+source = { git = "https://github.com/rekursiv-ai/typings?branch=main#79989e01ed24d823681a09b40ac387ca4c4df71a" }
 
 [[package]]
 name = "rich"
@@ -1513,6 +1513,7 @@ dependencies = [
 [package.dev-dependencies]
 debug = [
     { name = "ipython" },
+    { name = "tqdm" },
 ]
 dev = [
     { name = "asyncpg-stubs" },
@@ -1530,6 +1531,7 @@ dev = [
     { name = "rekursiv-ai-typeshed" },
     { name = "rekursiv-ai-typings" },
     { name = "ruff" },
+    { name = "tqdm" },
     { name = "ty" },
 ]
 lint = [
@@ -1595,7 +1597,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-debug = [{ name = "ipython" }]
+debug = [
+    { name = "ipython" },
+    { name = "tqdm" },
+]
 dev = [
     { name = "asyncpg-stubs", specifier = ">=0.31.2" },
     { name = "basedpyright", specifier = ">=1.40.1" },
@@ -1612,6 +1617,7 @@ dev = [
     { name = "rekursiv-ai-typeshed", git = "https://github.com/rekursiv-ai/typings?subdirectory=typeshed&branch=main" },
     { name = "rekursiv-ai-typings", git = "https://github.com/rekursiv-ai/typings?branch=main" },
     { name = "ruff" },
+    { name = "tqdm" },
     { name = "ty", specifier = ">=0.0.84" },
 ]
 lint = [
@@ -1683,8 +1689,8 @@ wheels = [
 
 [[package]]
 name = "treekle"
-version = "0.1.1"
-source = { git = "https://github.com/rekursiv-ai/treekle?branch=main#2bf17dd1a809459a2430843402781f02c591131f" }
+version = "0.2.0"
+source = { git = "https://github.com/rekursiv-ai/treekle?branch=main#50a2ce72acdfb084db80f07a53dcdd3c7402da04" }
 
 [[package]]
 name = "truststore"

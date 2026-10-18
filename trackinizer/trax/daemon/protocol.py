@@ -380,8 +380,9 @@ def daemon_source_version() -> str:
       version: The :func:`source_version` of every module the daemon imports.
 
     """
+    root = package_root()
     return source_version(
-        package_root(),
+        root,
         outside=(),
     )
 

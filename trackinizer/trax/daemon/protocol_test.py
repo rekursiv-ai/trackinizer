@@ -20,6 +20,7 @@ import pytest
 
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.daemon.protocol import (
+    _UNIX_SOCKET_PATH_MAX_BYTES,
     PROTOCOL_VERSION,
     ProtocolVersionError,
     Request,
@@ -256,6 +257,26 @@ class TestSocketPath:
             path.unlink(missing_ok=True)
 
         assert path.resolve().parent == logical_path.parent.resolve()
+
+    def test_an_address_of_exactly_the_limit_is_used_as_it_is(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Only an address past the kernel's limit needs a short alias."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(tempfile, "tempdir", "runtime")
+        logical_path = Path("s" * _UNIX_SOCKET_PATH_MAX_BYTES)
+        path = socket_address(logical_path)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+        try:
+            listener.bind(str(path))
+        finally:
+            listener.close()
+            path.unlink(missing_ok=True)
+
+        assert path == logical_path
 
     def test_rejects_a_runtime_root_with_group_access(
         self,
