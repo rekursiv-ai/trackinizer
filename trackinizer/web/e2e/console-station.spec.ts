@@ -3,7 +3,7 @@ import { resetCanvas } from "./canvasState";
 import { expect, streamOpened, test } from "./fixtures";
 
 // The console inside a station: a named one starts on the station's agents, an unnamed
-// one on every session, and one control switches it; a line sent to an agent is told to the station's chat
+// one on Mine (the sessions under the user's account), and one control switches it; a line sent to an agent is told to the station's chat
 // once, as a relay; and the chat draws that relay line as its own. The server here
 // has no assistant, so what the chat would answer is out of reach: the relay request
 // is intercepted, and the relay line is seeded as the chat's session record.
@@ -66,7 +66,7 @@ function watchFeed(page: Page): (string | null)[] {
   return reads;
 }
 
-test("in a named station the console opens on the station's agents, and All sessions widens it and This station narrows it again", async ({ page, request }) => {
+test("in a named station the console opens on the station's agents, and Everyone widens it and This station narrows it again", async ({ page, request }) => {
   const actor = `scope-${TAG}`;
   await startAgent(request, actor, "Agent outside the station.");
   const renamed = await request.patch(`/api/workspaces/${station}`, { data: { name: `scope-${TAG}` } });
@@ -82,7 +82,7 @@ test("in a named station the console opens on the station's agents, and All sess
 
   // A live refetch may still go out scoped while the click lands: from the first read in the new scope on, every read is in it.
   reads.length = 0;
-  await scope.getByRole("button", { name: "All sessions" }).click();
+  await scope.getByRole("button", { name: "Everyone" }).click();
   await expect(page.locator(".console-line", { hasText: "Agent outside the station." })).toBeVisible();
   expect(reads).toContain(null);
   expect(reads.slice(reads.indexOf(null)).every((each) => each === null), JSON.stringify(reads)).toBe(true);
@@ -94,12 +94,12 @@ test("in a named station the console opens on the station's agents, and All sess
   expect(reads.slice(reads.indexOf(station)).every((each) => each === station), JSON.stringify(reads)).toBe(true);
 });
 
-test("in an unnamed station the console opens on every session, as before stations", async ({ page, request }) => {
+test("in an unnamed station the console opens on Mine, not narrowed to a station", async ({ page, request }) => {
   await startAgent(request, `unnamed-${TAG}`, "Agent of no station.");
   const reads = watchFeed(page);
   await openConsole(page);
   const scope = page.getByRole("group", { name: "Scope" });
-  await expect(scope.getByRole("button", { name: "All sessions" })).toHaveAttribute("aria-pressed", "true");
+  await expect(scope.getByRole("button", { name: "Mine" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".console-line", { hasText: "Agent of no station." })).toBeVisible();
   expect(reads.length).toBeGreaterThan(0);
   expect(reads.every((each) => each === null)).toBe(true);
@@ -115,7 +115,7 @@ test("a line to an agent goes to it, then the station's chat is told once, under
     await route.fulfill({ json: { delivered: true } });
   });
   await openConsole(page);
-  await page.getByRole("group", { name: "Scope" }).getByRole("button", { name: "All sessions" }).click();
+  await page.getByRole("group", { name: "Scope" }).getByRole("button", { name: "Everyone" }).click();
   await expect(page.locator(".console-line", { hasText: "Waiting for work." })).toBeVisible();
   await page.getByRole("textbox", { name: "Message" }).last().fill(`@${actor} rerun the suite`);
   await page.getByRole("textbox", { name: "Message" }).last().press("Enter");
@@ -131,7 +131,7 @@ test("a chat that was not told is said quietly, and the console's box names its 
   await bindOwnChat(page, request);
   await page.route("**/api/workspaces/*/relay", (route) => route.fulfill({ json: { delivered: false } }));
   await openConsole(page);
-  await page.getByRole("group", { name: "Scope" }).getByRole("button", { name: "All sessions" }).click();
+  await page.getByRole("group", { name: "Scope" }).getByRole("button", { name: "Everyone" }).click();
   const agents = page.getByRole("region", { name: "Agents" });
   await agents.getByRole("combobox", { name: "Group agents by" }).selectOption("family");
   await agents.getByRole("checkbox", { name: `quiet-*`, exact: true }).check();

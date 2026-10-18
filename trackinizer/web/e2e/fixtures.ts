@@ -1,6 +1,6 @@
 // The suite's `test` and `expect`. Every spec imports them from here, not from
 // @playwright/test, so every test runs under the error guard below.
-import { type APIRequestContext, type Page, test as base, expect } from "@playwright/test";
+import { type APIRequestContext, type Locator, type Page, test as base, expect } from "@playwright/test";
 
 export { expect };
 
@@ -15,6 +15,31 @@ export async function setPreferences(
 ): Promise<void> {
   const patched = await request.patch("/api/me/preferences", { data: change });
   if (!patched.ok()) throw new Error(`Could not set preferences: ${patched.status()} ${await patched.text()}`);
+}
+
+/**
+ * The app bar, shown. It rests folded against the top edge and opens while the pointer moves on it, so a
+ * test reaches a control in it by moving the pointer on the edge first; it folds again once the pointer leaves.
+ * A pointer that leaves what was under it as the bar folds can fold it again after it came, so the pointer
+ * moves again, as a user's does, until the bar is open.
+ */
+export async function revealBar(page: Page): Promise<Locator> {
+  const bar = page.getByRole("banner", { name: "App" });
+  const x = (page.viewportSize()?.width ?? 1280) / 2;
+  await expect(async () => {
+    await page.mouse.move(x, 1);
+    await page.mouse.move(x + 2, 3, { steps: 2 });
+    await expect(bar).toHaveClass(/topbar-auto-open/, { timeout: 1000 });
+  }).toPass();
+  return bar;
+}
+
+/** An Issue's Properties and details stand folded; open them, as a reader does, where a test reads or edits a field in them. */
+export async function openProperties(page: Page): Promise<void> {
+  const fold = page.locator(".props-fold");
+  await expect(fold).toBeAttached();
+  if (!(await fold.evaluate((element: HTMLDetailsElement) => element.open))) await fold.locator("summary").click();
+  await expect(fold).toHaveJSProperty("open", true);
 }
 
 /** Agree to the rules as they stand, as the page does: naming the version the profile shows. */

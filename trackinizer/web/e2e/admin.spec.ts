@@ -1,5 +1,5 @@
 import type { Page, Request } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, revealBar, test } from "./fixtures";
 
 // Admin against the e2e server. --no-auth makes every request the synthetic
 // admin no-auth@localhost; playwright.config.ts seeds a second user,
@@ -66,7 +66,7 @@ test("a viewer sees no Admin entry or command, a link to Admin is refused, and n
   });
   await page.goto("/app/#/list/Issue");
   // The account names the role; its menu has Your settings and, for a viewer, no Admin.
-  await page.getByRole("banner", { name: "App" }).getByRole("button", { name: /^Account: .*, viewer$/ }).click();
+  await (await revealBar(page)).getByRole("button", { name: /^Account: .*, viewer$/ }).click();
   const account = page.getByRole("dialog", { name: "Account" });
   await expect(account.getByText("viewer")).toBeVisible();
   await expect(account.getByRole("link", { name: "Your settings" })).toBeVisible();

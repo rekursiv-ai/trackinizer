@@ -66,10 +66,9 @@
 .hover-only { opacity: 0; transition: opacity .12s; }
 .chat-head:hover .hover-only, .chat-head:focus-within .hover-only { opacity: 1; }
 @media (hover: none) { .hover-only, .chat-name-row-actions { opacity: 1; } }
-/* A header pop-over opens away from the screen's edge Chat stands at: leftwards from Chat at the
-   right, rightwards, over the workbench, from Chat at the left, where leftwards would run off the page. */
-.chat-head-pop .station-menu { left: auto; right: 0; }
-.chat-row-left .chat-head-pop .station-menu { left: 0; right: auto; }
+/* Share and Delete open under their item in the ⋯ menu, as wide as it: a pop-over hung from the item would run
+   past the Chat column, whose panel clips what overflows it, and be cut off. */
+.chat-head-pop .station-menu { position: static; width: auto; box-shadow: none; }
 .chat-share-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 0 0 8px; font-size: 12px; overflow-wrap: anywhere; }
 .chat-head-pop .chat-note { margin: 0; }
 .chat-error { margin: 8px 12px 0; color: var(--error-text); font-size: 12px; }

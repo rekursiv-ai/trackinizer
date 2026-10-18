@@ -46,16 +46,20 @@ async function enableInput(page: Page, station: Station): Promise<Locator> {
   const state = await response.json();
   // The harness has no assistant. Only its availability is supplied; records, drafts and stations use the server.
   await expect.poll(() => page.evaluate((id) => (window as unknown as { heldEventSources: EventSource[] }).heldEventSources.some((source) => source.url.includes(`/workspaces/${id}/events`)), state.id)).toBe(true);
-  await page.evaluate((state) => {
-    const sources = (window as unknown as { heldEventSources: EventSource[] }).heldEventSources;
-    const stream = sources.findLast((source) => source.url.includes(`/workspaces/${state.id}/events`));
-    if (!stream) throw new Error(`workspace stream missing: ${state.id}`);
-    stream.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "workspace", t: Date.now(), state: {
-      ...state, partner: { session_id: null, actor: "input-test", cli: "claude", status: "live", kind: "shared" },
-    } }) }));
-  }, state);
   const input = page.locator(".chat-panel textarea");
-  await expect(input).toBeEnabled();
+  // The station's own stream sends its state, assistant-less, once as it connects. That frame may land after ours and
+  // put the input off again, so ours goes again until the input is on, which it stays once the stream's has come.
+  await expect.poll(async () => {
+    await page.evaluate((state) => {
+      const sources = (window as unknown as { heldEventSources: EventSource[] }).heldEventSources;
+      const stream = sources.findLast((source) => source.url.includes(`/workspaces/${state.id}/events`));
+      if (!stream) throw new Error(`workspace stream missing: ${state.id}`);
+      stream.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "workspace", t: Date.now(), state: {
+        ...state, partner: { session_id: null, actor: "input-test", cli: "claude", status: "live", kind: "shared" },
+      } }) }));
+    }, state);
+    return input.isEnabled();
+  }).toBe(true);
   return input;
 }
 

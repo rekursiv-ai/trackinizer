@@ -366,15 +366,17 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   useEffect(() => {
     if (flip && workspace) setTerminalOpenedFor(workspace.id);
   }, [flip, workspace?.id]);
+  // The same header on both sides, so its buttons stay; flipped, it names the terminal and flips back.
+  const header = (flipped: boolean) => <ChatWorkstreamHeader workspace={workspace} head={head.data ?? undefined} flipped={flipped}
+    onFlip={workspace ? () => setFlipped(workspace.id, !flipped) : undefined}
+    onHide={hideCurrentStation} onClear={clearCurrentChat}
+    onDeleted={(conversation) => chatDeleted(conversation)} />;
   const terminalSide = workspace && (terminalOpenedFor === workspace.id || flip)
-    && <ChatTerminalSide key={workspace.id} workspace={workspace} shown={flip} onFlipBack={() => setFlipped(workspace.id, false)} />;
+    && <ChatTerminalSide key={workspace.id} workspace={workspace} shown={flip} header={header(true)} />;
 
   return (<>
     <section className="chat-panel" aria-label="Chat" hidden={flip}>
-      <ChatWorkstreamHeader workspace={workspace} head={head.data ?? undefined}
-        onFlip={workspace ? () => setFlipped(workspace.id, true) : undefined}
-        onHide={hideCurrentStation} onClear={clearCurrentChat}
-        onDeleted={(conversation) => chatDeleted(conversation)} />
+      {header(false)}
       {screen.name === "lookup" && <ChatScreenContext id={screen.id} label={screen.id} />}
       {screen.name === "ref" && <ChatScreenRef kind={screen.kind} seq={screen.seq} />}
       <div className="chat-lines" ref={stage} role="log" aria-label="Messages" aria-live="polite"

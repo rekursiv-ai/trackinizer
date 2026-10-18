@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, setPreferences, streamOpened, test } from "./fixtures";
+import { expect, revealBar, setPreferences, streamOpened, test } from "./fixtures";
 import { post } from "./listViews";
 
 // The panels that collapse (src/ui/panel.tsx): Peek, the
@@ -120,17 +120,22 @@ for (const theme of ["dark", "light"] as const) {
     await page.goto("/app/#/console");
     await page.getByRole("button", { name: "Collapse views and filters" }).click();
     await expect(page.getByRole("complementary", { name: "Views and filters" })).toBeHidden();
-    await audit(page, theme, "console, its rail collapsed");
+    await audit(page, theme, "console, its rail collapsed", { feed: false });
     // The top bar's account menu, open over the page: its skins, accounts and Sign out.
-    await page.getByRole("banner", { name: "App" }).getByRole("button", { name: /^Account: / }).click();
+    await (await revealBar(page)).getByRole("button", { name: /^Account: / }).click();
     await expect(page.getByRole("dialog", { name: "Account" })).toBeVisible();
-    await audit(page, theme, "console, the account menu open");
+    await audit(page, theme, "console, the account menu open", { feed: false });
   });
 }
 
-async function audit(page: Page, theme: "dark" | "light", view: string) {
+/**
+ * `feed: false` leaves the console's feed out: it draws every session other specs left on this server, which makes
+ * axe's pass take longer than the test has, and its lines are audited by a11y.spec.ts's console test, with its own.
+ */
+async function audit(page: Page, theme: "dark" | "light", view: string, { feed = true }: { feed?: boolean } = {}) {
   await expect(page.locator("html"), "the theme applied").toHaveCSS("color-scheme", theme);
-  const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  const axe = new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]);
+  const { violations } = await (feed ? axe : axe.exclude(".console-feed")).analyze();
   const found = violations.flatMap((violation) => violation.nodes.map((node) => `${violation.id} at ${node.target.join(" ")}: ${node.failureSummary}`));
   expect.soft(found, `axe violations on ${view}, ${theme} theme`).toEqual([]);
 }

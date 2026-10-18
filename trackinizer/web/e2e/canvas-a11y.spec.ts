@@ -5,7 +5,7 @@ import { expect, setPreferences, test } from "./fixtures";
 
 // axe's WCAG 2.0 and 2.1 A and AA rules (the a11y spec's) on the default layout:
 // the canvas, with Chat beside a list and a detail, with a conversation open and
-// the top bar's station menu open, and with the partner picker open, at 1280 and 390 px,
+// the chat's name menu open, and with the partner picker open, at 1280 and 390 px,
 // in both themes. The conversation and the sessions are served by the test, since
 // no partner runs on the e2e server.
 
@@ -73,21 +73,25 @@ for (const theme of ["dark", "light"] as const) {
         const { issue } = await seed(page, request);
         await page.goto("/app/#/list/Issue");
         await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
-        await expect(page.locator("a.row").first()).toBeVisible();
+        // A phone shows Chat alone, the page kept mounted and hidden.
+        const phone = size.width <= 760;
+        if (phone) await expect(page.locator(".visual-stage")).toBeHidden();
+        else await expect(page.locator("a.row").first()).toBeVisible();
         await audit(page, theme, `a list with Chat, ${size.width} px`);
         await page.goto(`/app/#/lookup/${issue}`);
-        await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+        if (phone) await expect(page.getByRole("heading", { level: 1 })).toBeHidden();
+        else await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
         await audit(page, theme, `a detail with Chat, ${size.width} px`);
       });
 
-      test("Chat with a conversation open, and the station menu open", async ({ page, request }) => {
+      test("Chat with a conversation open, and the chat menu open", async ({ page, request }) => {
         const { issue } = await seed(page, request);
         await page.goto(`/app/#/lookup/${issue}`);
         await expect(page.getByText("Two things:")).toBeVisible();
         await audit(page, theme, `a conversation, ${size.width} px`);
-        await page.getByRole("button", { name: "All stations" }).click();
-        await expect(page.getByRole("dialog", { name: "Stations" }).getByRole("button", { name: /unnamed-workstream/ }).first()).toBeVisible();
-        await audit(page, theme, `the station menu, ${size.width} px`);
+        await page.locator(".chat-column").getByRole("button", { name: "Scratch chat" }).click();
+        await expect(page.getByRole("dialog", { name: "Chats" }).getByRole("button", { name: /unnamed-workstream/ }).first()).toBeVisible();
+        await audit(page, theme, `the chat menu, ${size.width} px`);
       });
     });
   }

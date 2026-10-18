@@ -1,5 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
-import { expect, setPreferences, test } from "./fixtures";
+import { expect, revealBar, setPreferences, test } from "./fixtures";
 import { exposeEventSources, pushChat, resetCanvas } from "./canvasState";
 
 // An agent hides Chat's column with a `chat` frame (the --no-auth server this
@@ -42,7 +42,7 @@ test("a chat frame hides Chat to its strip and a later one shows it again, the s
   await pushChat(page, true);
   await expect(column).toBeHidden();
   await expect(strip).toBeVisible();
-  expect(Math.round((await box(strip)).width)).toBe(16);
+  expect(Math.round((await box(strip)).width)).toBe(24);
   expect((await box(stage)).width).toBeGreaterThan(beside.width);
   await pushChat(page, false);
   await expect(column).toBeVisible();
@@ -70,13 +70,15 @@ test("Pin stands the opened Chat beside the workbench again, and it stays when t
   const beside = await box(stage);
   await pushChat(page, true);
   await strip.hover();
-  await column.getByRole("button", { name: "Pin Chat beside the page" }).click();
+  // A press anywhere in the opened Chat pins it, so the ⋯ that opens the menu pins it too.
+  await column.getByRole("button", { name: "More chat actions" }).click();
   await leave(page);
   await page.waitForTimeout(500);
   await expect(column).toBeVisible();
   await expect(strip).toHaveCount(0);
   expect(await box(stage)).toEqual(beside);
   await expect(column.getByRole("button", { name: "Pin Chat beside the page" })).toHaveCount(0);
+  await expect(column.getByRole("button", { name: "Hide Chat" })).toBeVisible();
 });
 
 test("the keyboard inside the opened Chat holds it open until it leaves", async ({ page }) => {
@@ -96,6 +98,8 @@ test("the keyboard inside the opened Chat holds it open until it leaves", async 
 
 test("the opened Chat lies under the top bar, which stays whole above it", async ({ page }) => {
   const { column, strip } = await open(page);
+  // The bar folds when the pointer leaves it, so it is kept open while the pointer rests on the strip.
+  await (await revealBar(page)).getByRole("button", { name: "Keep app bar open" }).click();
   await pushChat(page, true);
   await strip.hover();
   await expect(column).toBeVisible();
@@ -138,18 +142,20 @@ test("a hidden Chat shown by the hide key or the strip is a column; a hide key p
 });
 
 for (const theme of ["dark", "light"] as const) {
-  test(`the strip is the accent colour in the ${theme} theme`, async ({ page }) => {
+  test(`the strip's line toward the workbench is the accent colour in the ${theme} theme`, async ({ page }) => {
     const { strip } = await open(page, { theme });
     await pushChat(page, true);
     await expect(strip).toBeVisible();
-    const fill = await strip.evaluate((element) => {
+    // Chat is at the left, so the line is on the strip's right.
+    const line = await strip.evaluate((element) => {
       const probe = document.createElement("i");
-      probe.style.background = "var(--accent)";
+      probe.style.color = "var(--accent)";
       document.body.append(probe);
-      const accent = getComputedStyle(probe).backgroundColor;
+      const accent = getComputedStyle(probe).color;
       probe.remove();
-      return { strip: getComputedStyle(element).backgroundColor, accent };
+      const style = getComputedStyle(element);
+      return { accent, color: style.borderRightColor, width: style.borderRightWidth };
     });
-    expect(fill.strip).toBe(fill.accent);
+    expect([line.color, line.width]).toEqual([line.accent, "2px"]);
   });
 }
