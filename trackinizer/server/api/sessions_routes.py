@@ -34,6 +34,7 @@ from trackinizer.server.api.session_access import (
     require_chat_opener,
     require_session,
     require_session_access,
+    require_session_id_change,
     require_session_write_access,
     resolve_asker,
 )
@@ -523,6 +524,22 @@ async def session_end_route(
     require_session_write_access(identity, session)
     await require_session_access(request, identity, session=session, mode="write")
     require_chat_opener(identity, session=session)
+    # Ordinary vendor-ID finalization keeps shared writer access; only a chat
+    # membership change uses the stricter ID-edit guard.
+    if (
+        body.cli_session_id is not None
+        and body.cli_session_id != session.cli_session_id
+        and (
+            is_a_science_chat(session)
+            or body.cli_session_id.startswith(CHAT_SESSION_PREFIX)
+        )
+    ):
+        await require_session_id_change(
+            request,
+            identity,
+            session_id,
+            value=body.cli_session_id,
+        )
     actor = _actor(identity, body.actor)
     # Always stamp a real ``ended``: ``ended IS NULL`` is the "live" predicate
     # (the active/previous split), so a complete session must never leave it

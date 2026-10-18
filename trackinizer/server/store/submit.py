@@ -438,11 +438,17 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     "labels": canonical_strs(req.labels or ()),
                     "subscribers": canonical_strs(req.subscribers or ()),
                     "app": req.app,
+                    "created": req.created,
                     **(extras or {}),
                 },
             )
             for model, vec in embeddings:
                 await upsert_embedding(conn, row_id, model, vec)
+            reason = ""
+            if req.created is not None:
+                reason = f"backfill: created={req.created.isoformat()}"
+                if req.reason:
+                    reason += "; " + req.reason
             cause, _ = await self.emit_change(
                 conn,
                 api_key_id=api_key_id,
@@ -450,6 +456,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 subject_id=row_id,
                 subject_kind=kind,
                 kind="created",
+                reason=reason,
                 marginal_cost=req.marginal_cost,
             )
             if post_insert is not None:

@@ -21,6 +21,8 @@
 //   --as ACTOR   --reason TEXT     audit attribution (on a write; `run --as` differs)
 //   --format table|json|ids   --limit N   --sort priority|seq|recent|oldest|valence
 //   --show-ids   --profile/--host/--port
+//   --backfill TIMESTAMP   timezone-aware past created time; new rows only
+//     existing rows keep created; modified and creation audit use server time
 // A field VALUE of `-` reads stdin; a value starting with `@` reads that file path.
 
 start: invocation

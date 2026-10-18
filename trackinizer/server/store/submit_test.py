@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable
+from datetime import datetime
 from typing import cast
 from unittest.mock import AsyncMock
 
@@ -43,6 +44,45 @@ from trackinizer.wire.bodies import (
 
 
 class TestSubmit:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("created", [None, "2020-01-02T05:04:05+02:00"])
+    @pytest.mark.parametrize(
+        "reason",
+        ["", "  uploaded history\noriginal explanation  ", " "],
+    )
+    async def test_creation_audit_marks_only_backfills(
+        self,
+        created: str | None,
+        reason: str,
+    ) -> None:
+        store, engine = make_store()
+        await store.submit_issue(
+            SubmitIssue.model_validate(
+                {
+                    "title": "imported",
+                    "account": "tester@example.com",
+                    "created": created,
+                    "reason": reason,
+                },
+            ),
+        )
+        changes = [
+            call
+            for call in engine.conn.execute.call_args_list
+            if isinstance(call.args[0], str)
+            and "INSERT INTO change_log" in call.args[0]
+        ]
+        assert len(changes) == 1
+        columns = str(changes[0].args[0]).split("(", 1)[1].split(")", 1)[0].split(", ")
+        expected = ""
+        if created is not None:
+            expected = (
+                f"backfill: created={datetime.fromisoformat(created).isoformat()}"
+            )
+            if reason:
+                expected += "; " + reason
+        assert changes[0].args[1 + columns.index("reason")] == expected
+
     @pytest.mark.asyncio
     async def test_submit_issue_notifies(self) -> None:
         store, engine = make_store()

@@ -77,6 +77,8 @@ async def insert_inquiry(
     ``values`` holds every non-identity column by its flat storage name (base
     columns bare -- ``title``, ``account``, ``description``, ``labels``, ... --
     and ``<kind>_<field>`` for kind-specific ones); an absent column stores NULL.
+    ``created`` may supply a historical instant at initial creation; absent or
+    ``None`` leaves the database default in effect. ``modified`` stays server-owned.
     The column list, placeholders, and per-column normalization all derive from
     :data:`COLUMN_SPECS` + ``RUNTIME_HOOKS`` (the same "unset is NULL" contract
     the edit path uses), so a new column needs no edit here -- decorate the
@@ -100,7 +102,7 @@ async def insert_inquiry(
     # would otherwise silently DROP a typo'd key (``paper_soruce`` -> the real
     # column binds NULL) and let a missing required column reach the DB as a raw
     # NOT NULL 500. Reject both at the call site instead, before any SQL runs.
-    if unknown := set(values) - set(derived_columns):
+    if unknown := set(values) - set(derived_columns) - {"created"}:
         raise ValueError(f"insert_inquiry: unknown column(s) {sorted(unknown)}")
     # A kind-specific column is required of that kind's rows alone.
     if missing := [
@@ -111,6 +113,10 @@ async def insert_inquiry(
         and values.get(c) is None
     ]:
         raise ValueError(f"insert_inquiry: missing required column(s) {missing}")
+    insert_values = [_normalize_for_insert(c, values.get(c)) for c in derived_columns]
+    if values.get("created") is not None:
+        derived_columns.append("created")
+        insert_values.append(values["created"])
     # ``id`` ($1), ``kind`` ($2), ``seq`` (nextval), ``status`` (COALESCE'd $3);
     # the derived columns follow as $4.. in bind order.
     derived_placeholders = ", ".join(
@@ -132,7 +138,7 @@ async def insert_inquiry(
         row_id,
         kind,
         status,
-        *(_normalize_for_insert(c, values.get(c)) for c in derived_columns),
+        *insert_values,
     )
 
 

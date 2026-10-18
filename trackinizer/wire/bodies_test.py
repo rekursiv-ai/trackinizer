@@ -8,6 +8,8 @@ across modules.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import math
 
 from pydantic import ValidationError
@@ -36,6 +38,100 @@ from trackinizer.wire.edge_bodies import CreateEdge, CreateEdgeItem
 
 
 class TestSubmitModels:
+    @pytest.mark.parametrize(
+        "created",
+        ["2020-01-02T03:04:05Z", "2020-01-02T05:04:05+02:00"],
+    )
+    def test_backfill_preserves_an_aware_instant(self, created: str) -> None:
+        body = SubmitIssue.model_validate({"title": "imported", "created": created})
+        assert body.created == datetime(2020, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+    @pytest.mark.parametrize(
+        "created",
+        [
+            "0001-01-01T00:00:00Z",
+            "0001-01-01T01:00:00+01:00",
+            "0001-01-01T00:00:00+01:00",
+            datetime.min.replace(tzinfo=UTC),
+        ],
+    )
+    def test_backfill_rejects_the_utc_minimum_and_earlier_instants(
+        self,
+        created: object,
+    ) -> None:
+        with pytest.raises(ValidationError, match="0001-01-01"):
+            SubmitIssue.model_validate({"title": "imported", "created": created})
+
+    @pytest.mark.parametrize(
+        ("created", "expected"),
+        [
+            (
+                "0001-01-01T00:00:00.000001Z",
+                datetime(1, 1, 1, microsecond=1, tzinfo=UTC),
+            ),
+            (
+                "0001-01-01T01:00:00.000001+01:00",
+                datetime(1, 1, 1, microsecond=1, tzinfo=UTC),
+            ),
+            ("0001-01-01T00:00:00-01:00", datetime(1, 1, 1, 1, tzinfo=UTC)),
+        ],
+    )
+    def test_backfill_preserves_finite_neighbors_of_the_utc_minimum(
+        self,
+        created: str,
+        expected: datetime,
+    ) -> None:
+        body = SubmitIssue.model_validate({"title": "imported", "created": created})
+        assert body.created == expected
+
+    @pytest.mark.parametrize(
+        "created",
+        ["0001-01-01T00:00:00Z", "0001-01-01T01:00:00+01:00"],
+    )
+    def test_batch_rejects_the_utc_minimum(self, created: str) -> None:
+        with pytest.raises(ValidationError, match="0001-01-01"):
+            SubmitBatch.model_validate(
+                {
+                    "items": [
+                        {
+                            "kind": "Issue",
+                            "title": "imported",
+                            "created": created,
+                            "idempotency_key": new_uuid(),
+                        },
+                    ],
+                },
+            )
+
+    @pytest.mark.parametrize(
+        "created",
+        [
+            "2020-01-02",
+            "2020-01-02T03:04:05",
+            datetime(2020, 1, 2, tzinfo=UTC).replace(tzinfo=None),
+        ],
+    )
+    def test_backfill_requires_an_explicit_timezone(self, created: object) -> None:
+        with pytest.raises(ValidationError, match="timezone"):
+            SubmitIssue.model_validate({"title": "imported", "created": created})
+
+    @pytest.mark.parametrize(
+        "created",
+        [0, 1_577_934_245.0, "1577934245", "1577934245.0", True, [], {}],
+    )
+    def test_backfill_rejects_implicit_utc_coercion(self, created: object) -> None:
+        with pytest.raises(ValidationError):
+            SubmitIssue.model_validate({"title": "imported", "created": created})
+
+    def test_backfill_rejects_future_instants(self) -> None:
+        future = datetime.now(UTC) + timedelta(days=1)
+        with pytest.raises(ValidationError, match="future"):
+            SubmitIssue.model_validate({"title": "imported", "created": future})
+
+    def test_backfill_defaults_to_the_server_clock(self) -> None:
+        assert SubmitIssue(title="new").created is None
+        assert SubmitIssue(title="new", created=None).created is None
+
     def test_pydantic_submit_models_have_defaults(self) -> None:
         assert SubmitArtifact(title="x").labels is None
         assert SubmitIssue(title="x").priority is None
@@ -256,6 +352,97 @@ class TestEdgeBodies:
         a created edge's labels column matches a Store-created edge's.
         """
         assert CreateEdge().labels is None
+
+
+class TestSubmitAgentSessionBackfill:
+    @pytest.mark.parametrize(
+        "cli_session_id",
+        ["chat:00000000-0000-0000-0000-000000000001", "chat:not-a-uuid", "chat:"],
+    )
+    @pytest.mark.parametrize(
+        "created",
+        [
+            "2020-01-02T03:04:05Z",
+            "2020-01-02T05:04:05+02:00",
+            "2020-01-01T22:04:05-05:00",
+        ],
+    )
+    def test_chat_backfill_is_rejected(
+        self,
+        cli_session_id: str,
+        created: str,
+    ) -> None:
+        with pytest.raises(ValidationError, match="science chat sessions"):
+            SubmitAgentSession.model_validate(
+                {"title": "chat", "cli_session_id": cli_session_id, "created": created},
+            )
+
+    @pytest.mark.parametrize(
+        "cli_session_id",
+        [None, "claude-session", "Chat:vendor-session", "vendor:chat:session"],
+    )
+    @pytest.mark.parametrize(
+        "created",
+        ["2020-01-02T05:04:05+02:00", "2020-01-01T22:04:05-05:00"],
+    )
+    def test_ordinary_session_backfill_is_preserved(
+        self,
+        cli_session_id: str | None,
+        created: str,
+    ) -> None:
+        body = SubmitAgentSession.model_validate(
+            {"title": "imported", "cli_session_id": cli_session_id, "created": created},
+        )
+        assert body.cli_session_id == cli_session_id
+        assert body.created == datetime(2020, 1, 2, 3, 4, 5, tzinfo=UTC)
+
+    @pytest.mark.parametrize(
+        "cli_session_id",
+        ["chat:00000000-0000-0000-0000-000000000001", "chat:not-a-uuid", "chat:"],
+    )
+    @pytest.mark.parametrize("explicit_null", [False, True])
+    def test_chat_creation_keeps_the_server_clock(
+        self,
+        cli_session_id: str,
+        explicit_null: bool,
+    ) -> None:
+        fields: dict[str, object] = {
+            "title": "chat",
+            "cli_session_id": cli_session_id,
+        }
+        if explicit_null:
+            fields["created"] = None
+        body = SubmitAgentSession.model_validate(fields)
+        assert body.cli_session_id == cli_session_id
+        assert body.created is None
+
+    @pytest.mark.parametrize(
+        "cli_session_id",
+        ["chat:00000000-0000-0000-0000-000000000001", "chat:not-a-uuid", "chat:"],
+    )
+    @pytest.mark.parametrize(
+        "created",
+        ["2020-01-02T05:04:05+02:00", "2020-01-01T22:04:05-05:00"],
+    )
+    def test_batch_parsing_rejects_chat_backfill(
+        self,
+        cli_session_id: str,
+        created: str,
+    ) -> None:
+        with pytest.raises(ValidationError, match="science chat sessions"):
+            SubmitBatch.model_validate(
+                {
+                    "items": [
+                        {
+                            "kind": "AgentSession",
+                            "title": "chat",
+                            "cli_session_id": cli_session_id,
+                            "created": created,
+                            "idempotency_key": new_uuid(),
+                        },
+                    ],
+                },
+            )
 
 
 class TestSubmitBatch:

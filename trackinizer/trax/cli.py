@@ -28,7 +28,7 @@ from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import env
 from trackinizer.trax.doctor import Doctor
 from trackinizer.trax.machines import MACHINE_WORD, Machines
-from trackinizer.trax.parser import parse_list_query
+from trackinizer.trax.parser import parse_backfill_timestamp, parse_list_query
 from trackinizer.trax.profile import (
     Profile,
     Profiles,
@@ -214,7 +214,12 @@ def parse_and_run(
 
     """
     top, leftover = _peel_top_flags(list(argv))
-    SHOW_IDS.set(cast(_TopFlags, top).show_ids)
+    flags = cast(_TopFlags, top)
+    SHOW_IDS.set(flags.show_ids)
+    if flags.backfill is not None:
+        if not leftover or leftover[0].lower() not in Kind.names:
+            raise ClientError("--backfill requires a create command")
+        leftover = [leftover[0], f"--backfill={flags.backfill}", *leftover[1:]]
     if client_factory is None:
         # ``connect`` shares one Client per resolved target for the life of
         # the process, so every verb here -- and every later invocation, when
@@ -258,7 +263,9 @@ def parse_and_run(
 # The connection flags that take a value, so the prefix scan knows to skip the
 # token after them when locating the verb. ``--show-ids`` is a store_true and
 # takes none.
-_VALUE_FLAGS: frozenset[str] = frozenset({"--profile", "--host", "--port"})
+_VALUE_FLAGS: frozenset[str] = frozenset(
+    {"--profile", "--host", "--port", "--backfill"},
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -302,6 +309,7 @@ class _TopFlags(Protocol):
     host: str | None
     port: int | None
     show_ids: bool
+    backfill: str | None
 
 
 def _resolve_target(args: argparse.Namespace) -> Target:
@@ -371,6 +379,7 @@ def _peel_top_flags(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         action="store_true",
         help="include UUIDs in command output (hidden by default)",
     )
+    parser.add_argument("--backfill", type=parse_backfill_timestamp, default=None)
     split = _prefix_end(argv)
     args, unknown = parser.parse_known_args(argv[:split])
     return args, [*unknown, *argv[split:]]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import uuid
@@ -26,6 +27,7 @@ from trackinizer.server.api.canvas_test_support import (
 )
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.inbound import InboundQueue
+from trackinizer.wire.bodies import SubmitAgentSession
 
 
 if TYPE_CHECKING:
@@ -250,6 +252,62 @@ async def test_another_branch_does_not_return_to_it(
     )
 
     assert placed["workstream_id"] != str(workstream)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("has_earlier", [False, True])
+async def test_a_backfilled_session_inherits_only_from_earlier_branch_history(
+    pglite_route_client: _Client,
+    has_earlier: bool,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    recent = await _workstream(client, "Recent branch work")
+    historical = await _workstream(client, "Historical branch work")
+    candidates = [(2022, recent)]
+    if has_earlier:
+        candidates.append((2019, historical))
+    for year, workstream in candidates:
+        session_id = await store.submit_agentsession(
+            SubmitAgentSession(
+                title=f"Session from {year}",
+                account=USER_AGENT.email,
+                owner=f"session-{year}",
+                cli="codex",
+                created=datetime(year, 1, 1, tzinfo=UTC),
+                labels=[_LABEL],
+            ),
+            audience="private",
+            api_key_id=USER_AGENT.key_id,
+        )
+        await store.add_edge(
+            from_id=session_id,
+            to_id=workstream,
+            edge_kind="produced_by",
+            actor=USER_AGENT.email,
+        )
+    backfilled = await store.submit_agentsession(
+        SubmitAgentSession(
+            title="Session from 2020",
+            account=USER_AGENT.email,
+            owner="session-2020",
+            cli="codex",
+            created=datetime(2020, 1, 1, tzinfo=UTC),
+        ),
+        audience="private",
+        api_key_id=USER_AGENT.key_id,
+    )
+
+    placed = await _place(client, backfilled, _MAIN)
+
+    if has_earlier:
+        assert placed["workstream_id"] == str(historical)
+    else:
+        assigned = await store.get_inquiry(uuid.UUID(str(placed["workstream_id"])))
+        assert assigned is not None
+        assert assigned.title == "Scratch"
+    assert placed["workstream_id"] != str(recent)
 
 
 @pytest.mark.db_pglite

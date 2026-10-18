@@ -1499,7 +1499,7 @@ codechanges                 yes  yes    yes
 id                          no   no     no      immutable
 kind                        no   no     no      immutable
 seq                         no   no     no      immutable
-created                     no   no     no      immutable
+created                     no   no     no      immutable after creation; see 3.6
 modified                    no   no     no      server-managed
 projected edge fields       no   no     no      mutate via /api/edges
 ```
@@ -1660,15 +1660,53 @@ actor   optional audit label; omitted means server uses principal email
 reason  optional; default is empty string
 ```
 
+Every inquiry create body accepts an optional `created` timestamp through
+`SubmitBase`, including each batch item's body. It is a creation request
+override, not an editable row field. Supply a timezone-aware ISO-8601 timestamp
+in the past; a timestamp without a timezone or in the future answers 422.
+
+For example, `POST /api/inquiries/issue` can import a historical issue:
+
+```json
+{
+  "title": "Timeout observed during import",
+  "created": "2025-02-14T09:30:00+01:00"
+}
+```
+
+On first insert, the row's `created` is the supplied time and `modified` is
+the current server time. The creation event's `change_log.created` also keeps
+the current server time, so audit history records when the server received
+the row. For a backfill, the same creation event records
+`backfill: created=<ISO timestamp>` in its `reason`, followed by `; ` and the
+caller's reason when supplied. This annotation survives later edits and same-key
+retries; it is readable audit text, not a structured import identifier. Without
+an override, both row timestamps use the current server time and the creation
+event keeps its existing empty reason.
+Later edits leave `created` unchanged and advance `modified`. A retry or
+deduplication that returns an existing row preserves its timestamps.
+
+Science-chat sessions, whose `cli_session_id` starts with `chat:`, cannot
+override `created`: their server-owned creation order establishes chat
+ownership. Ordinary historical AgentSession records remain importable under
+their original CLI session IDs. A session cannot adopt or change a reserved
+chat ID when it ends; an unchanged chat ID can still be supplied.
+
+Historical dates participate in existing chronological sorting and provenance
+inference. Branch placement of a historical session considers sessions no later
+than its creation time. Audit and notification cursors use the creation event's
+server timestamp, so an imported record remains visible as a new change.
+
 ### 3.7 Inquiry batch create body
 
 ```
 {
   "items": [
     {
-      "kind": "<kind>",
+      "kind": "Issue",
       "idempotency_key": "<uuid>",
-      "body": <inquiry_create_body_without_idempotency_key>
+      "title": "Historical timeout",
+      "created": "2025-02-14T08:30:00Z"
     }
   ]
 }
@@ -1676,12 +1714,14 @@ reason  optional; default is empty string
 
 ```
 Batch route has no top-level Idempotency-Key.
-Each batch item has idempotency_key.
+Each batch item has idempotency_key and flat SubmitKind fields; no body wrapper.
 The batch is all-or-nothing: every item commits in one transaction, or
   any failure rolls the whole batch back and no row is persisted.
-Each committed item writes one change_log row.
+Each newly committed item writes one created change_log event.
+Initial edges generate additional audit events.
 Retrying the same item idempotency_key returns the original id.
-Reusing one item idempotency_key for different content returns 409.
+Reusing one item idempotency_key for another kind returns 409.
+A same-kind retry returns the original row without replacing its content or dates.
 ```
 
 ### 3.8 Edge create body

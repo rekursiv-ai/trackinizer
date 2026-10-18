@@ -74,6 +74,9 @@ argparse so they may appear anywhere in the command:
   are previewed and nothing is written. A zero- or one-row match applies
   directly.
 
+Place the creation flag `--backfill TIMESTAMP` before the row arguments or
+at the end of the command. It requires at least one new row. See section 3.
+
 ## 3. Row command
 
 ```
@@ -112,6 +115,28 @@ kind, peek one token.
 
 A bare kind (`trax issue`) lists all rows of that kind. The list form
 (`list_query`) is described in section 6.
+
+### Historical creation
+
+`--backfill TIMESTAMP` sets `created` on every new row in the command,
+including inline-created rows. TIMESTAMP must be a timezone-aware ISO-8601
+timestamp in the past. The CLI sends it as the creation request's `created`
+field; it adds no SVO field or setter. Existing rows, including an anchor
+used to create an inline row, keep their creation dates.
+
+The flag requires at least one new row. Reads, edit-only commands, links
+between existing rows, deletes, and bulk edits reject it. To import rows
+with different dates, create them in separate commands.
+
+The server sets each new row's `modified` and the creation event's
+`change_log.created` to the current server time. Later edits preserve
+`created` and advance `modified`; a retry or deduplication that returns an
+existing row preserves its timestamps. Without the flag, normal creation
+uses the current server time.
+
+Historical session records keep their original CLI session IDs. Reserved
+science-chat identities (`chat:` IDs) keep server-owned creation timestamps
+because their order establishes chat ownership; they cannot be backfilled.
 
 ## 4. Tails on an existing row
 
@@ -759,6 +784,19 @@ trax issue title to "Retry bug" priority to high
 
 ```trax
 trax belief title to "PNT holds" confidence to 0.9 judgement to proven
+```
+
+Import a historical issue with an explicit creation date:
+
+```trax
+trax issue --backfill 2025-02-14T08:30:00Z title to "Historical timeout"
+```
+
+Create a historical artifact under an existing issue. Only the new artifact
+gets the supplied creation date; Issue#7 keeps its date:
+
+```trax
+trax issue --backfill 2025-02-14T09:30:00+01:00 7 produced artifact title to "Historical result"
 ```
 
 One field value may be `-`, which reads stdin at runtime. Any field value that

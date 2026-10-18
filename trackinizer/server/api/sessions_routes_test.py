@@ -8,7 +8,7 @@ not drain the session's inbound queue).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial, partialmethod
 from typing import TYPE_CHECKING, cast
@@ -23,6 +23,7 @@ from treekle import from_plain, json_loads
 import httpx2
 import pytest
 
+from trackinizer.conftest import set_field_row
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api import sessions_routes
 from trackinizer.server.api.app import app
@@ -337,6 +338,164 @@ class TestSessionEndAtomicity:
         assert r.status_code == 200, r.text
         # A clean close releases the now-dead session's queue.
         assert inbound.pending(session_id) == 0
+
+    @pytest.mark.parametrize("original_id", [None, "vendor-old"])
+    @pytest.mark.parametrize("owns_session", [True, False])
+    def test_vendor_id_finalization_preserves_shared_writer_access(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        original_id: str | None,
+        owns_session: bool,
+    ) -> None:
+        client, store, engine = route_client
+        engine.conn.fetchval.return_value = True
+        session = replace(
+            _live_session(TEST_API_KEY_ID if owns_session else uuid.uuid4()),
+            cli_session_id=original_id,
+            audience="open",
+        )
+        set_field_row(
+            engine.conn,
+            {
+                "kind": "AgentSession",
+                "cli_session_id": original_id,
+                "opener": session.opened_by_api_key_id,
+            },
+        )
+        monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
+        end = AsyncMock(return_value=datetime(2026, 1, 1, tzinfo=UTC))
+        monkeypatch.setattr(store, "end_session", end)
+
+        response = client.post(
+            f"/api/sessions/{session.id}/end",
+            json={"cli_session_id": "vendor-final"},
+        )
+
+        assert response.status_code == 200, response.text
+        call = end.await_args
+        assert call is not None
+        end.assert_awaited_once_with(
+            session.id,
+            ended=call.kwargs["ended"],
+            cli_session_id="vendor-final",
+            api_key_id=TEST_API_KEY_ID,
+            actor=TEST_USER_EMAIL,
+        )
+
+    @pytest.mark.parametrize("final_id", ["omitted", "null", "same"])
+    def test_chat_close_preserves_its_existing_id(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        final_id: str,
+    ) -> None:
+        client, store, engine = route_client
+        named = chat_session_id(uuid.uuid4())
+        session = replace(_live_session(), cli_session_id=named)
+        set_field_row(
+            engine.conn,
+            {
+                "kind": "AgentSession",
+                "cli_session_id": named,
+                "opener": session.opened_by_api_key_id,
+            },
+        )
+        monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
+        end = AsyncMock(return_value=datetime(2026, 1, 1, tzinfo=UTC))
+        monkeypatch.setattr(store, "end_session", end)
+        body: dict[str, object] = {}
+        if final_id != "omitted":
+            body["cli_session_id"] = named if final_id == "same" else None
+
+        response = client.post(f"/api/sessions/{session.id}/end", json=body)
+
+        assert response.status_code == 200, response.text
+        call = end.await_args
+        assert call is not None
+        assert call.kwargs["cli_session_id"] == (named if final_id == "same" else None)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_historical_session_cannot_join_a_chat_when_it_ends(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Late vendor-id finalization cannot backdate a chat's starter or drain a queue."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    conversation = uuid.uuid4()
+    _ = await seed_helper_chat(store, conversation_id=conversation)
+    act_as_user_agent("writer")
+    created = await client.post(
+        "/api/inquiries/agentsession",
+        json={
+            "title": "historical import",
+            "created": "2020-01-01T00:00:00Z",
+            "cli_session_id": "vendor-history",
+        },
+    )
+    assert created.status_code == 201, created.text
+    session_id = uuid.UUID(
+        from_plain(json_loads(created.content, dict[str, object])["id"], str),
+    )
+    inbound = InboundQueue()
+    app.state.inbound = inbound
+    message = Inbound(text="undelivered steering")
+    inbound.mark_poller(session_id)
+    _ = inbound.enqueue(session_id, message)
+    async with store.engine.acquire() as conn:
+        before_rows = await conn.fetch("SELECT * FROM inquiries ORDER BY id")
+        before_changes = await conn.fetch("SELECT * FROM change_log ORDER BY id")
+
+    refused = await client.post(
+        f"/api/sessions/{session_id}/end",
+        json={"cli_session_id": chat_session_id(conversation)},
+    )
+
+    assert refused.status_code == 403, refused.text
+    async with store.engine.acquire() as conn:
+        assert await conn.fetch("SELECT * FROM inquiries ORDER BY id") == before_rows
+        assert (
+            await conn.fetch("SELECT * FROM change_log ORDER BY id") == before_changes
+        )
+    assert inbound.has_poller(session_id)
+    assert inbound.drain(session_id) == [message]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("include_id", [False, True])
+async def test_a_chat_close_with_an_unchanged_id_replays_its_original_receipt(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    include_id: bool,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    conversation = uuid.uuid4()
+    session_id = await seed_helper_chat(store, conversation_id=conversation)
+    act_as_user_agent()
+    body = {"cli_session_id": chat_session_id(conversation)} if include_id else {}
+    headers = {"Idempotency-Key": str(uuid.uuid4())}
+
+    first = await client.post(
+        f"/api/sessions/{session_id}/end",
+        json=body,
+        headers=headers,
+    )
+    assert first.status_code == 200, first.text
+    async with store.engine.acquire() as conn:
+        after_first = await conn.fetch("SELECT * FROM change_log ORDER BY id")
+    retry = await client.post(
+        f"/api/sessions/{session_id}/end",
+        json=body,
+        headers=headers,
+    )
+
+    assert retry.status_code == 200, retry.text
+    assert retry.json() == first.json()
+    async with store.engine.acquire() as conn:
+        assert await conn.fetch("SELECT * FROM change_log ORDER BY id") == after_first
 
 
 class TestInboundHoldEndsWithTheSession:

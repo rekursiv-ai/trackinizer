@@ -52,6 +52,7 @@ from trackinizer.trax.grammar import (
 from trackinizer.trax.parser import (
     consume_ref,
     parse_actions,
+    parse_backfill_timestamp,
     parse_bulk_apply,
     parse_export_selector,
     parse_list_query,
@@ -217,6 +218,13 @@ class Kind(Command):
         parser.add_argument("--sort", choices=SORT_CHOICES, default="priority")
         parser.add_argument("--width", type=int, default=None)
         parser.add_argument("--changes", action="store_true")
+        parser.add_argument(
+            "--backfill",
+            type=parse_backfill_timestamp,
+            default=None,
+            metavar="ISO_TIMESTAMP",
+            help="set created on newly created inquiries to a past time with timezone",
+        )
         parser.add_argument(
             "--makeitso",
             action="store_true",
@@ -415,6 +423,7 @@ class Kind(Command):
           client_factory: Callable that creates a client.
 
         """
+        _require_creation(args)
         if not tail:
             raise ClientError("run needs a target CLI: trax agentsession 42 run claude")
         if not starts_with_ref(before):
@@ -459,6 +468,7 @@ class Kind(Command):
         client_factory: Callable[[], Client],
     ) -> None:
         """``experiment <ref> metric ...``: read or write one experiment's grid."""
+        _require_creation(args)
         ref, consumed = consume_ref(before, 0, kind_hint="Experiment")
         if consumed != len(before):
             raise ClientError(
@@ -492,6 +502,7 @@ class Kind(Command):
         client_factory: Callable[[], Client],
     ) -> None:
         """Cross-experiment masked read/rank over the experiments ``before`` selects."""
+        _require_creation(args)
         if action.write is not None:
             raise ClientError("a cross-experiment metric tail cannot write; name a ref")
         query = parse_list_query("Experiment", before) or ListQuery(
@@ -1042,7 +1053,11 @@ class Kind(Command):
         # ``--as`` must reach the created rows' audit: the batch route
         # otherwise records the authenticated principal's email, so a
         # CLI actor showed up on edits but never on creates.
-        ids = client.submit_batch(items, edges=edges, actor=actor)
+        ids = client.submit_batch(
+            _creation_items(items, args),
+            edges=edges,
+            actor=actor,
+        )
         # Cost columns are flattened, so a delta cannot ride the create body;
         # each is applied right after the atomic create lands, on its OWN node,
         # through the same signed-delta setter a standalone ``agent-cost add`` uses.
@@ -1415,7 +1430,11 @@ class Kind(Command):
         # ``--as`` must reach the created rows' audit: the batch route
         # otherwise records the authenticated principal's email, so a
         # CLI actor showed up on edits but never on creates.
-        ids = client.submit_batch(items, edges=edges, actor=actor)
+        ids = client.submit_batch(
+            _creation_items(items, args),
+            edges=edges,
+            actor=actor,
+        )
         for node_index, cost in deferred_costs:
             client.add_cost(
                 ids[node_index],
@@ -1624,6 +1643,7 @@ Options:
   --format table|json|ids; --limit INT
   --sort priority|seq|recent|oldest|valence
   --as TEXT; --reason TEXT
+  --backfill ISO_TIMESTAMP    past creation time with timezone; new inquiries only
 """
 
 
@@ -1645,6 +1665,7 @@ def run_list_query(
       client_factory: Callable that creates a client.
 
     """
+    _require_creation(args)
     print_rows(
         _query_rows(
             query,
@@ -1681,6 +1702,7 @@ def run_bulk_apply(
       client_factory: Lazily builds the shared client.
 
     """
+    _require_creation(args)
     client = client_factory()
     rows = _query_rows(bulk.query, client, limit=MAX_LIST_LIMIT)
     if len(rows) == MAX_LIST_LIMIT:
@@ -1716,6 +1738,7 @@ def run_show(
       client_factory: Callable that creates a client.
 
     """
+    _require_creation(args)
     client = client_factory()
     _kind, _target_id, payload = client.get_inquiry(ref)
     if _arg_str(args, "format_") == "json":
@@ -1832,6 +1855,7 @@ def run_actions(
       kind: Inquiry type (validates write fields before any action).
 
     """
+    _require_creation(args, actions=actions)
     write_fields = tuple(
         action.field
         for action in actions
@@ -3665,6 +3689,34 @@ def _resolve_set_value(action: SetField, client: Client) -> object:
 
 def _arg_str(args: argparse.Namespace, name: str) -> str:
     return from_plain(_arg_values(args).get(name), str, default="")
+
+
+def _require_creation(
+    args: argparse.Namespace,
+    *,
+    actions: Sequence[Action] = (),
+) -> None:
+    """Reject backfill on a command that creates no inquiries before any request."""
+    if _arg_str(args, "backfill") and not any(
+        isinstance(action, EdgeAction) and isinstance(action.target, InlineCreate)
+        for action in actions
+    ):
+        raise ClientError("--backfill requires a create command or an inline create")
+
+
+def _creation_items(
+    items: Sequence[tuple[Inquiry.InquiryKind, Mapping[str, object]]],
+    args: argparse.Namespace,
+) -> Sequence[tuple[Inquiry.InquiryKind, Mapping[str, object]]]:
+    """Attach request-only creation context to new batch items."""
+    context: dict[str, object] = {}
+    if created := _arg_str(args, "backfill"):
+        context["created"] = created
+        if reason := _arg_str(args, "reason"):
+            context["reason"] = reason
+    if context:
+        return [(kind, dict(body, **context)) for kind, body in items]
+    return items
 
 
 class _ListMutation(Protocol):

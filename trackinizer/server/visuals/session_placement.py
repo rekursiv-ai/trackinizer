@@ -295,11 +295,13 @@ async def _decide(
             "AND e.to_kind = 'Issue' JOIN inquiries AS issue ON issue.id = e.to_id "
             "WHERE past.kind = 'AgentSession' AND past.account = $1 "
             "AND $2 = ANY(past.labels) AND past.id <> $3 AND issue.owner = $1 "
+            "AND past.created <= $4 "
             "AND issue.labels @> ARRAY['workstream']::text[] "
             "ORDER BY past.created DESC, past.id DESC LIMIT 1",
             email,
             git,
             session.id,
+            session.created,
         )
         if earlier is not None:
             return from_plain(earlier, uuid.UUID), None

@@ -271,6 +271,36 @@ is always allowed and never wrong. Details and traps: `GRAMMAR.md`.
 Field values may read from stdin (`to -`), a file (`to @path`), or a process
 substitution (`to @<(...)`) -- the value form is independent of the tree shape.
 
+### Backfilling historical rows
+
+Use `--backfill TIMESTAMP` when creating rows for historical facts. Supply a
+timezone-aware ISO-8601 timestamp in the past. It sets `created` on every new
+row in that command, including inline creates; an existing anchor keeps its
+creation date. Put the flag before row arguments or at the command's end.
+Split commands when the new rows need different dates.
+
+```bash
+trax issue --backfill 2025-02-14T08:30:00Z \
+  title to "Historical timeout" --as Agent
+trax issue --backfill 2025-02-14T08:30:00Z 7 \
+  produced artifact title to "Historical result" --as Agent
+```
+
+The flag requires at least one new row; reads, edit-only commands, links
+between existing rows, deletes, and bulk edits reject it. `created` has no
+generic setter. `modified` and the creation audit event use the current
+server time. Later edits preserve `created`; retries and deduplication that
+return an existing row preserve its timestamps.
+
+Import historical sessions under their original CLI session IDs. Reserved
+science-chat identities (`chat:` IDs) cannot be backfilled: their server-owned
+creation order establishes chat ownership.
+
+When importing a session summary, use the original occurrence date for an
+existing historical fact. Use the synthesis date for a newly inferred
+Belief: old evidence does not make a new inference historical. Omit the flag
+for normal creation at the current server time.
+
 ### Linking code changes (commit SHAs)
 
 Attach commits as `codechange` artifacts via the `produced` edge. Two traps:

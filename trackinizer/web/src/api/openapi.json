@@ -8268,6 +8268,18 @@
             ],
             "title": "Cli Session Id"
           },
+          "created": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
           "description": {
             "anyOf": [
               {
@@ -8323,6 +8335,11 @@
                 "type": "null"
               }
             ]
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
           },
           "rooms": {
             "anyOf": [
@@ -8422,6 +8439,18 @@
             ],
             "title": "App"
           },
+          "created": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
           "description": {
             "anyOf": [
               {
@@ -8477,6 +8506,11 @@
                 "type": "null"
               }
             ]
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
           },
           "status": {
             "anyOf": [
@@ -8643,6 +8677,18 @@
             ],
             "title": "Confidence"
           },
+          "created": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
           "description": {
             "anyOf": [
               {
@@ -8723,6 +8769,11 @@
             "title": "Proved By",
             "type": "array"
           },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
           "status": {
             "anyOf": [
               {
@@ -8795,6 +8846,18 @@
             ],
             "title": "App"
           },
+          "created": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
           "description": {
             "anyOf": [
               {
@@ -8850,6 +8913,11 @@
                 "type": "null"
               }
             ]
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
           },
           "sha": {
             "anyOf": [
@@ -8961,6 +9029,18 @@
             ],
             "title": "Config"
           },
+          "created": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
           "description": {
             "anyOf": [
               {
@@ -9027,6 +9107,11 @@
                 "type": "null"
               }
             ]
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
           },
           "status": {
             "anyOf": [
@@ -9099,6 +9184,18 @@
               }
             ],
             "title": "App"
+          },
+          "created": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
           },
           "description": {
             "anyOf": [
@@ -9205,6 +9302,11 @@
                 "type": "null"
               }
             ]
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
           },
           "requires": {
             "items": {
@@ -9322,6 +9424,18 @@
             ],
             "title": "Authors"
           },
+          "created": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
           "description": {
             "anyOf": [
               {
@@ -9421,6 +9535,11 @@
               }
             ],
             "title": "Publish Date"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
           },
           "source": {
             "anyOf": [
@@ -9527,6 +9646,18 @@
             ],
             "title": "App"
           },
+          "created": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
           "description": {
             "anyOf": [
               {
@@ -9582,6 +9713,11 @@
                 "type": "null"
               }
             ]
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
           },
           "status": {
             "anyOf": [
@@ -9666,6 +9802,18 @@
             ],
             "title": "App"
           },
+          "created": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created"
+          },
           "description": {
             "anyOf": [
               {
@@ -9743,6 +9891,11 @@
               }
             ],
             "title": "Query"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
           },
           "status": {
             "anyOf": [

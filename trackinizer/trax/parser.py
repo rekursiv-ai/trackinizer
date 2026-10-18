@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, cast, get_args
 
+import argparse
 import math
 import uuid
 
@@ -85,6 +87,30 @@ else:
 _ALL_FILTER_FIELDS: frozenset[str] = frozenset(
     field for names in FILTER_FIELDS_CLI.values() for field in names
 )
+
+
+def parse_backfill_timestamp(value: str) -> str:
+    """Parse a past, timezone-aware ISO 8601 creation timestamp for argparse.
+
+    Args:
+      value: Explicitly dated creation time supplied to ``--backfill``.
+
+    Returns:
+      timestamp: ISO 8601 text with its timezone preserved.
+
+    Raises:
+      argparse.ArgumentTypeError: If the timestamp is invalid, naive, or future.
+
+    """
+    try:
+        created = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("expected an ISO 8601 timestamp") from error
+    if created.tzinfo is None or created.utcoffset() is None:
+        raise argparse.ArgumentTypeError("timestamp requires an explicit timezone")
+    if created >= datetime.now(UTC):
+        raise argparse.ArgumentTypeError("timestamp must be in the past")
+    return created.isoformat()
 
 
 def parse_list_query(
