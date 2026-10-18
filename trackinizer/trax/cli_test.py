@@ -673,7 +673,9 @@ def test_run_shim_resolves_client_from_active_profile(
         argv: Sequence[str],
         *,
         client_factory: Callable[[], Client] | None = None,
+        profile: str | None = None,
     ) -> int:
+        del profile
         captured["argv"] = list(argv)
         # The factory resolves the active profile only when invoked, mirroring
         # the sync path; ``--no-sync`` never calls it.

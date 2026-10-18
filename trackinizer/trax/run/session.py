@@ -75,10 +75,17 @@ from trackinizer.types.line_capture import LineCapture
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from datetime import datetime
 
+    from trackinizer.trax.run.box_hook import hook
     from trackinizer.wire.wire_sessions import WorkspaceMessageContext
+else:
+    from wrapt import lazy_import
+
+    # Only a claude run placed on a station touches the box hook; any other run
+    # loads none of it (0.4 ms measured, so this is about scope, not speed).
+    hook = lazy_import("trackinizer.trax.run.box_hook.hook")
 
 
 _logger = logging.getLogger(__name__)
@@ -357,6 +364,10 @@ class RunConfig:
     rather than opening a second one.
     """
 
+    profile: str | None = None
+    """The ``--profile`` the run was started with; the box hook reads the station
+    through it."""
+
     quiesce_seconds: float = 1.0
     """Seconds to keep draining after the CLI exits."""
 
@@ -564,6 +575,7 @@ def main(
     client_factory: Callable[[], Client] | None = None,
     resume_path: Path | None = None,
     cli_session_id: str | None = None,
+    profile: str | None = None,
 ) -> int:
     """Entry point for ``trax run``, called from ``trax/cli.py``.
 
@@ -579,6 +591,7 @@ def main(
       cli_session_id: The id that transcript was materialized under, which
         ``--resume`` takes and which re-attaches the run to its stored
         AgentSession.
+      profile: The top-level ``--profile``, if given.
 
     Returns:
       exit_code: The wrapped CLI's exit status; for ``--detach``, whether the
@@ -616,6 +629,7 @@ def main(
         client_factory=client_factory,
         resume_path=resume_path,
         cli_session_id=cli_session_id,
+        profile=profile,
     )
     if flags.detach:
         return detach.launch(
@@ -687,6 +701,7 @@ def _run_flags(
     client_factory: Callable[[], Client] | None,
     resume_path: Path | None,
     cli_session_id: str | None,
+    profile: str | None,
 ) -> int:
     """Run the parsed ``trax run`` invocation, served at ``host`` when given."""
     # ``syncing`` off the parsed flags, not off a half-built config: the client
@@ -707,6 +722,7 @@ def _run_flags(
             client=client_factory() if syncing and client_factory else None,
             resume_path=resume_path,
             cli_session_id=cli_session_id,
+            profile=profile,
             host=host,
         ),
     )
@@ -924,6 +940,12 @@ def _spawn_and_drain(
         if config.syncing and config.client is not None and sink.session_id is not None
         else None
     )
+    argv, hook_settings = _with_box_hook(
+        argv,
+        adapter=adapter,
+        placed=placement_env(placement),
+        profile=config.profile,
+    )
     # Run the CLI on a PTY we own rather than letting it inherit the terminal:
     # owning the master fd is what lets the server splice messages into the
     # live session (the human still drives the native TUI). Byte-transparent,
@@ -988,6 +1010,8 @@ def _spawn_and_drain(
         if rc == 0 and banner_reader is not None:
             banner_reader.finish_output()
     finally:
+        if hook_settings is not None:
+            shutil.rmtree(hook_settings.parent, ignore_errors=True)
         if stream_capture is not None:
             # Flush a trailing unterminated line so a child that exited mid-line
             # still gets its last words captured. The sink is a LockedSink, so
@@ -1048,6 +1072,27 @@ def _cli_argv(
     elif adapter.name == "codex" and "--no-daemon" not in config.cli_args:
         argv.insert(1, "--no-daemon")
     return argv
+
+
+# The hook is told about boxes on the station the CLI was placed on, so it is only
+# worth running when the child's environment names one. A ``--settings`` the person
+# gave wins: claude takes one, and theirs is deliberate.
+def _with_box_hook(
+    argv: list[str],
+    *,
+    adapter: Adapter,
+    placed: Mapping[str, str],
+    profile: str | None,
+) -> tuple[list[str], Path | None]:
+    """Return ``argv`` handing claude the box hook, and the file it is in, if any."""
+    if (
+        adapter.name != "claude"
+        or "TRAX_WORKSPACE" not in placed
+        or _cli_arg_value(tuple(argv), "--settings") is not None
+    ):
+        return argv, None
+    settings = hook.prepare(profile=profile)
+    return [argv[0], "--settings", str(settings), *argv[1:]], settings
 
 
 def _cli_arg_value(args: tuple[str, ...], flag: str) -> str | None:

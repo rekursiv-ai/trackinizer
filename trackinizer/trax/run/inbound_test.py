@@ -6,12 +6,34 @@ import json
 import uuid
 
 from trackinizer.client.chat_forks import ForkLine
-from trackinizer.trax.run.inbound import render_fork_lines, render_inbound
+from trackinizer.trax.run.inbound import (
+    Box,
+    render_box_lines,
+    render_fork_lines,
+    render_inbound,
+)
 from trackinizer.wire.wire_sessions import (
     ConsoleRelay,
     ConsoleTarget,
     WorkspaceMessageContext,
 )
+
+
+class TestRenderBoxLines:
+    """One template for a box, whoever formatted what it covers."""
+
+    def test_covers_are_joined_as_given_and_none_reads_nothing(self) -> None:
+        boxes = [
+            Box(id="b1", author="jp@x", page="#/graph", covers=('"a b"', "tile t1")),
+            Box(id="b2", author="agent", page=None, covers=()),
+        ]
+
+        assert render_box_lines(boxes) == (
+            "\nBoxes drawn on the canvas since your last line"
+            " (`mark remove ID` takes one away):"
+            '\n  b1 by jp@x on #/graph; covers: "a b", tile t1'
+            "\n  b2 by agent on no page; covers: nothing"
+        )
 
 
 class TestRenderForkLines:

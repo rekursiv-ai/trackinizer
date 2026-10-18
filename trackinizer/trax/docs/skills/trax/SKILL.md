@@ -415,7 +415,10 @@ X2,Y2` takes two corners as fractions (0 to 1) of the stage, and the box shows o
 the page the station is on until someone clicks it away. `--record` names the
 records it points at. `trax workspace WORKSPACE_UUID` lists every box with its id,
 page and the records and visuals under it, and a Chat line carries the boxes drawn
-since the last one; `mark remove` takes one away; `mark clear` takes every box,
+since the last one. A Claude session started with `trax run` in a station hears
+of each new box with the person's next prompt; any other agent in a station runs
+`trax workspace $TRAX_WORKSPACE` to see the boxes when the person mentions the
+canvas. `mark remove` takes one away; `mark clear` takes every box,
 or one page's with `--page`.
 
 The catalog registers `trax.browse`, `trax.subgraph`, `trax.timeline`,

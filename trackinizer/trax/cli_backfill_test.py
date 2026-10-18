@@ -275,8 +275,9 @@ def test_native_run_backfill_spelling_is_forwarded(
         argv: Sequence[str],
         *,
         client_factory: Callable[[], Client] | None = None,
+        profile: str | None = None,
     ) -> int:
-        del client_factory
+        del client_factory, profile
         heard.append(list(argv))
         return 0
 
