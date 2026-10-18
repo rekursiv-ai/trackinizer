@@ -1284,11 +1284,22 @@ Anything else, on any of the five registry routes, answers 422.
 A machine that runs a host connects in three steps. An admin calls `enroll`
 with the machine's name, which registers the machine if it is new and returns a
 one-use enrollment token (`enr_...`) valid for 15 minutes; a new `enroll`
-supersedes any open token. The host calls `join` with the token, once, and
+supersedes any open token. A writer may `enroll` too, for a name that is new or
+already theirs: the machine's `owner` is the enroller, and a writer's new machine
+has the role `personal`, so `GET /api/machines` shows it only to its owner, an admin
+included (no campaign is offered it; an admin still `revoke`s it by name). `owner`
+is shown to the owner and admins only. An admin or the owner may `revoke` a machine.
+Nobody adopts a name another person holds: an admin's `enroll` of a machine another
+person owns answers 409 `machine_owned` and names the owner, and the response of
+`enroll` names the owner. A token joins only for an active admin when the machine is
+unowned or the admin's own, or for the owner of a personal machine. An admin's
+`enroll` confirms the machine; a writer's (often an agent's key) leaves it
+unconfirmed until its owner calls `POST /api/terminals/machines/<name>/confirm` in a
+browser session, and no terminal opens on it before (409 `terminal_unconfirmed`). The host calls `join` with the token, once, and
 receives the machine's id and its machine credential (`trax_machine_...`).
 A token that is malformed, unknown, used, expired, issued for another name, or
-issued by an account that is no longer an active admin answers 401 with one
-body. Joining a machine that already has a live credential revokes that
+issued by an account that is neither an active admin nor the owner of a personal machine
+answers 401 with one body. Joining a machine that already has a live credential revokes that
 credential first. Both responses are `Cache-Control: no-store`, and a 422 on
 `join` never echoes the token, not even as a body key.
 
@@ -1311,6 +1322,61 @@ credential answers 401, so only a holder of a once-valid secret learns of the
 revoke. Revoking a revoked machine, or one that never joined, is a no-op.
 `DELETE` answers 409 `machine_in_service` while the machine holds a live
 credential; revoke it first.
+
+#### Terminals
+
+```
+POST   /api/terminals
+GET    /api/terminals/machines?workspace=<uuid>
+POST   /api/terminals/<uuid>/attach
+POST   /api/terminals/<uuid>/close
+WS     /api/terminals/<uuid>/ws
+GET    /api/machines/<uuid>/terminals/wait?instance=<uuid>&wait_sec=25
+WS     /api/machines/<uuid>/terminals/<uuid>/ws?instance=<uuid>
+```
+
+A shell on a connected machine, shown in its owner's browser. A server running with
+authentication off refuses every terminal route and both sockets (403
+`terminal_forbidden`, close 4403). Both sides dial the
+server, which pairs and relays them; the host listens on nothing. Only the
+machine's owner opens one, with a browser session (a cookie): an API key, a
+service account, a request without this server's own `Origin`, and anyone else
+answer 403 or 404. The machine must be online and its host must have asked for
+terminals within 45 seconds (`TRAX_MACHINE_TERMINAL=1`), else 409
+`terminal_not_enabled`. A station has one live terminal (409 `terminal_live`);
+4 per user, 4 per machine, 64 per server and 10 opens a minute per user answer 429.
+
+`POST /api/terminals` takes `{machine, rows, cols, workspace?}` and returns
+`{terminal_id, session_id, ticket}`. The ticket is 256 random bits, valid once for 30
+seconds; it never travels in a URL. The browser opens the WebSocket and sends
+`ATTACH` first (the 43-character ticket, then a u64 offset). One binary message is
+one frame: a kind byte, a four-byte big-endian length, and the payload. Browser
+frames are `ATTACH` (1), `INPUT` (2), `RESIZE` (3, u16 rows and cols, clamped to
+500 by 1000) and `STOP` (5). The server answers `ACK` (7, the offset the stream
+resumes at), `OUTPUT` (6) and `EXIT` (8, a u32 status). A browser that drops
+re-attaches within 60 seconds with a ticket from `attach` and its last offset; an
+offset that fell out of the 256 KiB ring gets the whole ring after a
+`--- output lost ---` line. Close codes: 4000 ended, 4001 taken over, 4002 idle
+(60 minutes without input), 4003 lifetime (24 hours), 4004 host lost, 4403
+refused, 4410 machine revoked, 4429 limit.
+
+The host holds `wait` (at most 25 seconds; `null` when nothing came) and dials the
+host WebSocket with its machine credential and its current `instance`; a second
+claim of one terminal, a stale instance or an unknown credential closes 4403, a
+revoked one 4410. Revoking a machine closes its terminals with 4410 on both legs.
+
+Closing a terminal, an idle or lifetime limit and a revoke end the shell's process
+group, as closing an ssh session does: a job the shell started with `nohup`, `setsid`
+or `tmux` (or an interactive shell's background job, which has a group of its own)
+keeps running on the machine. The host reports the shell's exit within half a second
+even when such a job still holds the terminal open.
+
+The server records output as a `terminal` AgentSession in the owner's `private`
+audience (part `stream`, `Stdout` lines), with the labels `terminal`, `machine:NAME`
+and `station:<uuid>`. Keystrokes are not recorded, so input typed with echo off
+never lands. Lines are stored as the screen showed them (escape sequences removed,
+backspaces and carriage returns applied) and pass credential shapes first, and the first
+16 MiB of a session is kept, then one marker line.
 
 ### 1.27 Code store
 

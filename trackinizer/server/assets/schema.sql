@@ -963,7 +963,7 @@ CREATE TABLE IF NOT EXISTS variables (
 );
 
 -- The machines a campaign may run on: a name, a role, one line telling an agent
--- how to use the machine, and labels. Added in 035.
+-- how to use the machine, and labels. Added in 035; the owner in 049.
 CREATE TABLE IF NOT EXISTS machines (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name        TEXT NOT NULL UNIQUE CHECK (name ~ '^[a-z0-9][a-z0-9-]{0,62}$'),
@@ -978,7 +978,9 @@ CREATE TABLE IF NOT EXISTS machines (
     host_instance  UUID,
     host_version   TEXT NOT NULL DEFAULT '' CHECK (char_length(host_version) <= 64),
     facts          JSONB NOT NULL DEFAULT '{}'
-                   CHECK (jsonb_typeof(facts) = 'object' AND octet_length(facts::text) <= 8192)
+                   CHECK (jsonb_typeof(facts) = 'object' AND octet_length(facts::text) <= 8192),
+    owner          TEXT,
+    confirmed_at   TIMESTAMPTZ
 );
 
 -- One-use tokens that let a host join as a machine, and the credentials it joins

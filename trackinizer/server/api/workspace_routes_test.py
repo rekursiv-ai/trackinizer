@@ -55,6 +55,7 @@ from trackinizer.server.api.conftest import (
 )
 from trackinizer.server.api.session_access import Asker
 from trackinizer.server.api.workspace_routes import _current_state
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.chat_hub import (
     ChatHub,
     HighlightFrame,
@@ -476,7 +477,10 @@ def test_current_state_reads_the_canvas_with_its_ids_or_raises_not_found(
     monkeypatch.setattr(workspace_routes, "get_assistant", give_assistant)
     monkeypatch.setattr(workspace_routes, "read_workspace", read)
 
-    got = asyncio.run(_current_state(request, user_id=owner, workspace_id=found))
+    reader = SessionReader(email="owner@example.com")
+    got = asyncio.run(
+        _current_state(request, user_id=owner, workspace_id=found, reader=reader),
+    )
     assert got is state
     assert seen[-1] == (
         engine,
@@ -485,11 +489,14 @@ def test_current_state_reads_the_canvas_with_its_ids_or_raises_not_found(
             "workspace_id": found,
             "inbound": inbound,
             "assistant": assistant,
+            "reader": reader,
         },
     )
 
     with pytest.raises(HTTPException) as caught:
-        asyncio.run(_current_state(request, user_id=owner, workspace_id=missing))
+        asyncio.run(
+            _current_state(request, user_id=owner, workspace_id=missing, reader=reader),
+        )
     assert caught.value.status_code == 404
     assert caught.value.detail == "Workspace not found"
 

@@ -139,8 +139,18 @@ class Reader:
 """
 
 
-_PREFIXES: Final = ("/api/sessions/", "/api/web/feed", "/api/messages")
-_EXACT: Final = ("/api/web/search_sessions", "/api/inquiries", "/api/export")
+_PREFIXES: Final = (
+    "/api/sessions/",
+    "/api/web/feed",
+    "/api/messages",
+    "/api/terminals",
+)
+_EXACT: Final = (
+    "/api/web/search_sessions",
+    "/api/inquiries",
+    "/api/export",
+    "/api/machines/{machine_id}/terminals/wait",
+)
 
 
 def unmarked_readers(source: str) -> list[str]:

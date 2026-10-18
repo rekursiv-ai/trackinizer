@@ -120,16 +120,14 @@ test("a skin chosen in Appearance shows at once and is kept; under a fixed skin 
   expect(theme.disabled).toBe(false);
 });
 
-test("Chat style is Default until Terminal is picked, which marks the page and is kept in the user's preferences", async () => {
+test("Terminal font size is 13px until another is picked, and is kept in the user's preferences", async () => {
   const server = serveAccount(ADA);
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  const style = within(screen.getByRole("region", { name: "Appearance" })).getByRole<HTMLSelectElement>("combobox", { name: "Chat style" });
-  expect(style.value).toBe("default");
-  expect(Array.from(style.options, (option) => option.textContent)).toEqual(["Default", "Terminal"]);
-  fireEvent.change(style, { target: { value: "terminal" } });
-  expect(style.value).toBe("terminal");
-  expect(document.documentElement.dataset.chatStyle).toBe("terminal");
-  await waitFor(() => expect(preferenceWrites(server)).toEqual([["PATCH", { chat_style: "terminal" }]]));
+  const size = within(screen.getByRole("region", { name: "Appearance" })).getByRole<HTMLSelectElement>("combobox", { name: "Terminal font size" });
+  expect(size.value).toBe("13px");
+  fireEvent.change(size, { target: { value: "16px" } });
+  expect(size.value).toBe("16px");
+  await waitFor(() => expect(preferenceWrites(server)).toEqual([["PATCH", { terminal_font_size: "16px" }]]));
 });
 
 test("the theme picked elsewhere, as by the sidebar's button, shows in Appearance at once", () => {

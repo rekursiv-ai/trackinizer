@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse
 
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.locks import require_unlocked
+from trackinizer.server.artifact_capture import with_capture_script
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.reports import (
     ArtifactContentConflictError,
@@ -118,7 +119,8 @@ async def read_artifact_html_route(
       identity: Authenticated teammate.
 
     Returns:
-      page: The stored HTML under the sandbox Content Security Policy.
+      page: The stored HTML, with the script that answers the canvas's request for
+        a picture, under the sandbox Content Security Policy.
 
     """
     del identity
@@ -131,7 +133,7 @@ async def read_artifact_html_route(
     # bot-detection scripts this policy blocks, so viewers see and copy broken
     # text. Compression survives: caddy compresses before Cloudflare.
     return HTMLResponse(
-        artifact.html,
+        with_capture_script(artifact.html),
         headers={
             "Content-Security-Policy": CONTENT_SECURITY_POLICY,
             "X-Content-Type-Options": "nosniff",

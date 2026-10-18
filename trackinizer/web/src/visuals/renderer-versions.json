@@ -4,5 +4,6 @@
   "trax.timeline": 1,
   "trax.artifact": 1,
   "trax.summary": 1,
-  "trax.files": 1
+  "trax.files": 1,
+  "trax.terminal": 1
 }

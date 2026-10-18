@@ -14,7 +14,7 @@ import uuid
 
 from treekle import from_plain
 
-from trackinizer.server.audience import reads_session
+from trackinizer.server.audience import NOBODY, reads_session
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import tx
 from trackinizer.server.preferences import (
@@ -48,14 +48,22 @@ from trackinizer.server.visuals.science_chats import (
     read_line_starter,
     science_chat_exists_at,
 )
-from trackinizer.server.visuals.screens import read_screen
+from trackinizer.server.visuals.screens import (
+    read_covered_records,
+    read_screen,
+    wire_marks,
+)
 from trackinizer.server.visuals.workspaces import (
+    AGENT_AUTHOR,
+    AddMark,
     ApplyWorkspaceOperation,
     ChatWindow,
     ChoosePartner,
+    ClearMarks,
     Highlight,
     NameChat,
     Navigate,
+    RemoveMark,
     SetPreferences,
     ShowVisual,
     StationData,
@@ -69,6 +77,7 @@ from trackinizer.server.visuals.workspaces import (
     initial_data,
     refuse_record,
     restore_page,
+    without_marks,
 )
 from trackinizer.server.visuals.workstreams import check_workstream, open_scratch
 from trackinizer.types.errors import ChatDeletedError, ConflictError
@@ -103,6 +112,9 @@ _STATION: Final = "id, revision, state, station"
 
 _SELECT_STATION: Final = vetted_sql("SELECT ", _STATION, " FROM visual_workspaces ")
 _RETURNING_STATION: Final = vetted_sql(" RETURNING ", _STATION)
+
+_MARKS_PER_LINE: Final = 20
+"""Most marks one Chat line carries; the newest, when more were drawn."""
 
 _NAME_ATTEMPTS: Final = 8
 """Tries at a free name before a station gives up: another create took it each time."""
@@ -292,6 +304,12 @@ async def send_chat_line(
             trail=body.trail,
             visuals=state.visuals,
         )
+        unsent = [m for m in state.marks if m.seq > state.marks_sent][-_MARKS_PER_LINE:]
+        marks = wire_marks(
+            unsent,
+            records=await read_covered_records(conn, marks=unsent, reader=reader),
+            visuals=screen.visuals,
+        )
         # Last, so a refused line leaves the station as it was.
         station_id = (
             await _fork_station(
@@ -326,6 +344,7 @@ async def send_chat_line(
                             fork=body.fork,
                             page=screen.page,
                             trail=screen.trail,
+                            marks=marks,
                         ),
                     ),
                 ),
@@ -341,6 +360,14 @@ async def send_chat_line(
                 ).encode(),
             ).hexdigest(),
         )
+        if state.marks_seq > state.marks_sent:
+            # Not a canvas change: no revision, as a page or layout write has none.
+            await conn.execute(
+                "UPDATE visual_workspaces SET state = jsonb_set(state, "
+                "'{marks_sent}', to_jsonb($2::int)) WHERE id = $1",
+                body.workspace_id,
+                state.marks_seq,
+            )
     return ChatSent(
         conversation_id=conversation_id,
         session_id=chat,
@@ -614,7 +641,7 @@ async def clear_chat_station(
         row = await _new_station(
             conn,
             user_id=user_id,
-            data=WorkspaceData.model_validate(source["state"]),
+            data=without_marks(WorkspaceData.model_validate(source["state"])),
             page=source_state.page,
             layout=source_state.layout,
             clear_key=key,
@@ -1317,6 +1344,7 @@ async def read_workspace(
     inbound: InboundQueue,
     assistant: Assistant | None,
     agent_api_key_id: uuid.UUID | None = None,
+    reader: SessionReader = NOBODY,
 ) -> WorkspaceState | None:
     """Read one canvas for its owner, or for an agent key allowed to use it.
 
@@ -1328,6 +1356,8 @@ async def read_workspace(
       assistant: The configured assistant, if any.
       agent_api_key_id: The calling agent key, if any; see
         :func:`_workspace_for_principal` for what it may read.
+      reader: The caller, as the transcript test reads them: a session a mark covers
+        is named only when they read it.
 
     Returns:
       state: Workspace with its partner, or None when the principal may not see it.
@@ -1345,12 +1375,85 @@ async def read_workspace(
         if found is None:
             return None
         state, owner_id = found
-        return await attach_partner(
+        return await _with_labels(
             conn,
-            state=state,
-            owner_id=owner_id,
-            inbound=inbound,
-            assistant=assistant,
+            state=await attach_partner(
+                conn,
+                state=state,
+                owner_id=owner_id,
+                inbound=inbound,
+                assistant=assistant,
+            ),
+            reader=reader,
+        )
+
+
+async def agent_may_operate(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    agent_api_key_id: uuid.UUID,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> bool:
+    """Say whether an agent key may use a canvas: the check every operation makes.
+
+    Args:
+      engine: Database connection source.
+      user_id: The key's account.
+      workspace_id: The canvas.
+      agent_api_key_id: The calling agent key.
+      inbound: In-process poller leases.
+      assistant: The configured assistant, if any.
+
+    Returns:
+      allowed: False when the canvas does not exist or the key is not its partner.
+
+    Raises:
+      WorkspaceKeyRefusedError: The account owns the canvas but this key is not
+        its partner.
+
+    """
+    async with engine.acquire() as conn:
+        return (
+            await _workspace_for_principal(
+                conn,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                agent_api_key_id=agent_api_key_id,
+                inbound=inbound,
+                assistant=assistant,
+            )
+            is not None
+        )
+
+
+async def owns_workspace(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+) -> bool:
+    """Say whether a canvas is one of ``user_id``'s own stations.
+
+    Args:
+      engine: Database connection source.
+      user_id: The signed-in browser account.
+      workspace_id: The canvas.
+
+    Returns:
+      owned: True when the account owns the canvas.
+
+    """
+    async with engine.acquire() as conn:
+        return (
+            await conn.fetchval(
+                "SELECT 1 FROM visual_workspaces WHERE id = $1 AND user_id = $2",
+                workspace_id,
+                user_id,
+            )
+            is not None
         )
 
 
@@ -1383,6 +1486,9 @@ async def apply_workspace_operation(
     inbound: InboundQueue,
     assistant: Assistant | None,
     agent_api_key_id: uuid.UUID | None = None,
+    placed_by: str | None = None,
+    author: str = "",
+    reader: SessionReader = NOBODY,
 ) -> AppliedOperation | None:
     """Apply one compare-and-swap operation and persist its replay receipt.
 
@@ -1390,7 +1496,9 @@ async def apply_workspace_operation(
     and no revision: it is only recorded, for replay, and an agent key alone may send
     it. The one exception is a ``navigate`` on a canvas that has closed the page, which
     shows the page again in the next revision. ``preferences`` changes the station
-    owner's preferences. A show names
+    owner's preferences. A box, its removal or the clearing of all commutes with
+    every other write, so it takes the next revision whatever revision it expects.
+    A show names
     a record the visual accepts: its catalog lists the kinds, and one that takes no
     record refuses any.
 
@@ -1405,6 +1513,11 @@ async def apply_workspace_operation(
       assistant: The configured assistant, if any.
       agent_api_key_id: Calling API key, or None for browser cookie auth; see
         :func:`_workspace_for_principal` for what it may operate.
+      placed_by: Who a visual this operation adds is recorded as placed by.
+      author: The caller's email, which a mark carries when drawn by a browser; a
+        mark drawn by an agent key carries ``agent``.
+      reader: The caller, as the transcript test reads them: a session a mark covers
+        is named in the answer only when they read it.
 
     Returns:
       applied: The updated or replayed state with its partner, or None when the
@@ -1522,14 +1635,22 @@ async def apply_workspace_operation(
             )
         if isinstance(body.operation, ChoosePartner) and agent_api_key_id is not None:
             raise ValueError("Only the canvas's owner chooses its Chat partner.")
-        if body.revision != current.revision:
+        drawing = isinstance(body.operation, AddMark | RemoveMark | ClearMarks)
+        if body.revision != current.revision and not drawing:
             raise RevisionConflictError(await with_partner(state=current))
         if isinstance(body.operation, ShowVisual):
             await _check_record(conn, operation=body.operation, catalog=catalog)
         updated = await _write_data(
             conn,
             current=current,
-            data=apply_operation(_data_of(current), body.operation, catalog),
+            data=apply_operation(
+                _data_of(current),
+                body.operation,
+                catalog,
+                placed_by=placed_by,
+                author=AGENT_AUTHOR if agent_api_key_id else author,
+                page=current.page,
+            ),
         )
         await _remember(
             conn,
@@ -1542,7 +1663,14 @@ async def apply_workspace_operation(
             # Old retries still carry a stale revision and receive 409 after
             # their receipt expires. Keep the recent 64 exact replay results.
             await trim_operation_receipts(conn, workspace_id=workspace_id)
-        return AppliedOperation(state=await with_partner(state=updated), replayed=False)
+        return AppliedOperation(
+            state=await _with_labels(
+                conn,
+                state=await with_partner(state=updated),
+                reader=reader,
+            ),
+            replayed=False,
+        )
 
 
 async def trim_operation_receipts(conn: Conn, *, workspace_id: uuid.UUID) -> None:
@@ -1593,6 +1721,9 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
         agent_instructions=data.agent_instructions,
         continuation_record_id=data.continuation_record_id,
         partner_choice=data.partner_choice,
+        marks=data.marks,
+        marks_seq=data.marks_seq,
+        marks_sent=data.marks_sent,
     )
 
 
@@ -1991,6 +2122,27 @@ def _data_of(state: WorkspaceState) -> WorkspaceData:
         agent_instructions=state.agent_instructions,
         continuation_record_id=state.continuation_record_id,
         partner_choice=state.partner_choice,
+        marks=state.marks,
+        marks_seq=state.marks_seq,
+        marks_sent=state.marks_sent,
+    )
+
+
+async def _with_labels(
+    conn: Conn,
+    *,
+    state: WorkspaceState,
+    reader: SessionReader,
+) -> WorkspaceState:
+    """Return ``state`` naming the records its marks cover that ``reader`` may see."""
+    records = await read_covered_records(conn, marks=state.marks, reader=reader)
+    return state.model_copy(
+        update={
+            "record_labels": {
+                id_: f"{record.kind}#{record.seq} {record.title}"
+                for id_, record in records.items()
+            },
+        },
     )
 
 
@@ -2018,6 +2170,9 @@ async def _write_data(
         agent_instructions=data.agent_instructions,
         continuation_record_id=data.continuation_record_id,
         partner_choice=data.partner_choice,
+        marks=data.marks,
+        marks_seq=data.marks_seq,
+        marks_sent=data.marks_sent,
     )
     await conn.execute(
         "UPDATE visual_workspaces SET revision = $2, state = $3, "

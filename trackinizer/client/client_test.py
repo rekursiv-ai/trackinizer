@@ -1378,14 +1378,16 @@ class TestClientMethods:
 # on the fake. The variable and machine methods are driven through stub clients in
 # ``trax/variables_test.py`` and ``trax/machines_test.py``, so the shared fake does
 # not carry them. No ``trax`` command files code, so the fake carries no code-store
-# method either.
+# method either. The canvas capture is an agent's alone, and no command takes one.
 _FAKE_EXEMPT: frozenset[str] = frozenset(
     {"flags", "from_args", "get", "post", "put", "patch", "delete"}
     | {"list_variables", "put_variable", "delete_variable"}
     | {"list_machines", "get_machine", "put_machine"}
     | {"change_machine_labels", "delete_machine"}
     | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"}
-    | {"code_missing", "code_put_blobs", "code_put_snapshot", "code_snapshot"},
+    | {"wait_terminals"}
+    | {"code_missing", "code_put_blobs", "code_put_snapshot", "code_snapshot"}
+    | {"capture_workspace"},
 )
 
 
@@ -1676,6 +1678,39 @@ def test_a_chat_window_reads_no_revision_and_names_the_flag() -> None:
             {"revision": 0, "operation": {"kind": "chat", "hidden": True}},
         ),
     ]
+
+
+def test_a_capture_posts_once_and_returns_the_picture() -> None:
+    workspace = uuid.uuid4()
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append((request.method, request.url.path))
+        return httpx2.Response(200, json={"width": 4, "mime": "image/png"})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        picture = client.capture_workspace(workspace)
+
+    assert picture == {"width": 4, "mime": "image/png"}
+    assert seen == [("POST", f"/api/workspaces/{workspace}/captures")]
+
+
+def test_a_capture_no_page_answered_is_a_424_that_is_not_retried() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        calls.append(request.url.path)
+        return httpx2.Response(424, json={"detail": "No open page answered."})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        with pytest.raises(ClientError) as raised:
+            client.capture_workspace(uuid.uuid4())
+
+    assert raised.value.status_code == 424
+    assert "No open page answered" in str(raised.value)
+    assert len(calls) == 1
 
 
 def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:
@@ -2264,6 +2299,7 @@ class TestSessionMethods:
                 },
             },
             "trail": [],
+            "marks": [],
             "relay": None,
         }
 
@@ -2817,7 +2853,11 @@ class TestMachineHostMethods:
             seen.append(request)
             return httpx2.Response(
                 201,
-                json={"token": _ENROLLMENT_TOKEN, "expires_at": "2026-10-07T12:15:00Z"},
+                json={
+                    "token": _ENROLLMENT_TOKEN,
+                    "expires_at": "2026-10-07T12:15:00Z",
+                    "owner": "ada@x.y",
+                },
             )
 
         with Client("https://server") as client:
@@ -2827,6 +2867,7 @@ class TestMachineHostMethods:
         assert [(r.method, r.url.path) for r in seen] == [("POST", ENROLL_PATH)]
         assert json_loads(seen[0].content) == {"name": "gpu-box"}
         assert enrolled.token == _ENROLLMENT_TOKEN
+        assert enrolled.owner == "ada@x.y"
 
     def test_join_machine_sends_once_and_parses_the_credential(self) -> None:
         seen: list[httpx2.Request] = []
@@ -2954,6 +2995,38 @@ class TestMachineHostMethods:
             {"instance": str(_INSTANCE), "host_version": "0.1", "facts": {"cpus": 4}},
         ]
         assert beat.server_time.year == 2026
+
+    def test_wait_terminals_asks_with_the_instance_and_reads_a_terminal_or_null(
+        self,
+    ) -> None:
+        seen: list[httpx2.Request] = []
+        answers: list[object] = [
+            None,
+            {
+                "terminal_id": str(_MACHINE_ID),
+                "session_id": str(_INSTANCE),
+                "opener": "ada@x.y",
+                "rows": 24,
+                "cols": 80,
+            },
+        ]
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json=answers.pop(0))
+
+        with Client("https://server", api_key=_CREDENTIAL) as client:
+            _install_mock_transport(client, handler)
+            none = client.wait_terminals(_MACHINE_ID, instance=_INSTANCE, wait_sec=25)
+            found = client.wait_terminals(_MACHINE_ID, instance=_INSTANCE, wait_sec=25)
+
+        assert none is None
+        assert found is not None
+        assert (found.opener, found.rows, found.workspace) == ("ada@x.y", 24, None)
+        assert seen[0].url.path == (f"/api/machines/{_MACHINE_ID}/terminals/wait")
+        assert seen[0].url.params["instance"] == str(_INSTANCE)
+        assert seen[0].url.params["wait_sec"] == "25"
+        assert seen[0].headers["Authorization"] == f"Bearer {_CREDENTIAL}"
 
     def test_heartbeat_machine_surfaces_a_revoked_credential_as_410(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:

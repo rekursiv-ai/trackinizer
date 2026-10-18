@@ -54,6 +54,8 @@ from trackinizer.wire.wire_service_accounts import is_service_address
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
+    from starlette.requests import HTTPConnection
+
     from trackinizer.lib.postgres import Conn, DatabaseEngine
 
 
@@ -87,6 +89,7 @@ __all__ = [
     "revoke_api_key",
     "seed_no_auth_user",
     "set_api_key_role",
+    "user_of",
     "verify_secret",
 ]
 
@@ -311,7 +314,16 @@ def generate_token() -> tuple[str, str]:
 
 
 async def current_user(request: Request) -> AuthIdentity:
-    """FastAPI dependency resolving the bearer-token or session-cookie principal.
+    """FastAPI dependency resolving the principal of an HTTP request; see :func:`user_of`."""
+    return await user_of(request)
+
+
+# A separate function, not a wider ``current_user``: FastAPI injects a dependency's
+# parameter only when its annotation resolves at runtime, and ruff moves a type used
+# only in annotations under ``TYPE_CHECKING``, which would turn ``request`` into a
+# required query parameter and answer 422 for every route.
+async def user_of(request: HTTPConnection) -> AuthIdentity:
+    """Resolve the bearer-token or session-cookie principal of a request or WebSocket.
 
     Tries the ``Authorization: Bearer`` header first, then the signed
     ``trackinizer_session`` cookie, else raises 401. Bearer wins when both
@@ -325,7 +337,7 @@ async def current_user(request: Request) -> AuthIdentity:
     user.
 
     Args:
-      request: FastAPI request (contains headers, cookies, app.state).
+      request: The request or WebSocket (contains headers, cookies, app.state).
 
     Returns:
       identity: Resolved AuthIdentity with user_id, role, email, and key_id.
@@ -376,7 +388,7 @@ async def current_user(request: Request) -> AuthIdentity:
     raise HTTPException(status_code=401, detail="not authenticated")
 
 
-def extract_bearer(request: Request) -> str | None:
+def extract_bearer(request: HTTPConnection) -> str | None:
     """Return the bearer secret from the Authorization header, or ``None``.
 
     A non-Bearer scheme yields ``None`` so :func:`current_user` can try the session
@@ -999,7 +1011,7 @@ def _publish_bootstrap_token(token_path: Path) -> None:
 # The session path is off when ``app.state.config`` is absent (tests that skip the
 # lifespan) or ``Config.session_secret`` is unset (OAuth not configured); bearer auth is
 # unaffected either way.
-def _try_read_session_user_id(request: Request) -> uuid.UUID | None:
+def _try_read_session_user_id(request: HTTPConnection) -> uuid.UUID | None:
     """Return the ``users.id`` from the signed session cookie, or ``None``."""
     config = _config(cast("_AppLike", request.app).state)
     if config is None or not config.session_secret:

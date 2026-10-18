@@ -12,6 +12,7 @@ from treekle import json_loads
 import pytest
 
 from trackinizer.server.chat_hub import (
+    CaptureFrame,
     ChangedFrame,
     ChatFrame,
     ChatHub,
@@ -304,6 +305,31 @@ def test_a_subscriber_that_leaves_hears_no_more_and_the_last_takes_the_entry() -
         assert elsewhere.queue.qsize() == 0
         assert set(held) == {_WORKSPACE, other}
     assert held == {}
+
+
+def test_a_canvas_is_listened_to_only_while_a_stream_follows_it() -> None:
+    """``listening`` is how a request for a picture fails at once with no page open."""
+    hub = ChatHub()
+    assert not hub.listening(_WORKSPACE)
+    with hub.subscribe(_WORKSPACE):
+        assert hub.listening(_WORKSPACE)
+        assert not hub.listening(uuid.UUID(int=7))
+    assert not hub.listening(_WORKSPACE)
+
+
+def test_a_capture_frame_reaches_the_stream_and_is_not_replayed() -> None:
+    """A request for a picture is an event: a stream that opens later never hears it."""
+    hub = ChatHub()
+    request = uuid.UUID(int=9)
+    with hub.subscribe(_WORKSPACE) as early:
+        hub.publish(_WORKSPACE, frame=CaptureFrame(request=request))
+        with hub.subscribe(_WORKSPACE) as late:
+            assert late.queue.empty()
+        frame = early.queue.get_nowait()
+    assert isinstance(frame, CaptureFrame)
+    assert json_loads(frame.model_dump_json(), dict[str, object])["request"] == str(
+        request,
+    )
 
 
 def test_changed_frame_names_its_inquiry() -> None:

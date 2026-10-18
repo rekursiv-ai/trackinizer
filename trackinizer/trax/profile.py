@@ -6,10 +6,12 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Final, cast, override
+from urllib.parse import urlsplit
 
 import argparse
 import os
 import re
+import shlex
 import tempfile
 
 from trackinizer.client.client import Client, server_url
@@ -17,7 +19,7 @@ from trackinizer.client.errors import ClientError
 from trackinizer.lib.userdirs import config_dir
 from trackinizer.trax.client_cache import close_clients
 from trackinizer.trax.commands import Command, HelpPage
-from trackinizer.trax.context import env
+from trackinizer.trax.context import env, trax_env
 from trackinizer.trax.render import echo
 
 
@@ -290,7 +292,84 @@ def load_profile() -> Profile:
         return read_profile(name)
     if _explicit_profile() is not None:
         raise ClientError(f"profile {name!r} not found")
+    server = terminal_server()
+    if server is not None and (named := profile_for_server(server)) is not None:
+        return read_profile(named)
     return Profile(url=LOCALHOST_FALLBACK_URL)
+
+
+def terminal_server() -> str | None:
+    """Return the server a shell from a trax terminal names, if it names a sound one.
+
+    The variable travels through ``ssh`` and so can be set by whoever controls the
+    far end. Only an ``http`` or ``https`` URL of printable characters, with no
+    whitespace and no credentials, is believed.
+
+    Returns:
+      server: The URL, or ``None`` when unset or not sound.
+
+    """
+    server = trax_env("SERVER") or ""
+    if re.fullmatch(r"[!-~]+", server) is None:
+        return None
+    try:
+        parts = urlsplit(server)
+    except ValueError:
+        return None
+    if (
+        parts.scheme not in ("http", "https")
+        or parts.netloc == ""
+        or "@" in parts.netloc
+    ):
+        return None
+    return server
+
+
+def profile_for_server(server: str) -> str | None:
+    """Return the name of the saved profile whose URL is ``server``, or ``None``.
+
+    Args:
+      server: A server URL, compared without a trailing slash.
+
+    Returns:
+      name: The first such profile by name.
+
+    """
+    wanted = server.rstrip("/")
+    return next(
+        (
+            name
+            for name, profile in list_profiles()
+            if profile.url.rstrip("/") == wanted
+        ),
+        None,
+    )
+
+
+def unmatched_server_hint() -> str | None:
+    """Return what to run when a terminal's server has no saved profile, else ``None``.
+
+    A shell that came from a trax terminal names its server (``LC_TRAX_SERVER``). When
+    nothing selects a profile and no saved profile has that URL, trax would report to
+    localhost, so it says how to log in instead.
+
+    Returns:
+      hint: The message, or ``None`` when there is nothing to say.
+
+    """
+    server = terminal_server()
+    if (
+        server is None
+        or _explicit_profile() is not None
+        or (env("TRACKINIZER_URL") or "") != ""
+        or profile_for_server(server) is not None
+    ):
+        return None
+    quoted = shlex.quote(server)
+    return (
+        f"trax: this shell came from {quoted}, which has no saved profile; to use it: "
+        f"trax profile remote url to {quoted}, then add a token from Settings.\n"
+    )
 
 
 def current_profile() -> str:

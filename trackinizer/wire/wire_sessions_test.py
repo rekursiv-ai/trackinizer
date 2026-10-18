@@ -22,7 +22,9 @@ from trackinizer.wire.wire_sessions import (
     SendMessage,
     SessionEnd,
     SessionStart,
+    WorkspaceMark,
     inbound_read_timeout,
+    session_audience_path,
     session_end_path,
     session_inbound_path,
     session_records_path,
@@ -244,6 +246,33 @@ class TestPaths:
         assert session_records_path(sid).endswith("/records")
         assert session_end_path(sid) == f"/api/sessions/{sid}/end"
         assert session_inbound_path(sid) == f"/api/sessions/{sid}/inbound"
+        assert session_audience_path(sid) == f"/api/sessions/{sid}/audience"
+
+
+class TestWorkspaceMark:
+    def test_a_box_stands_inside_the_stage(self) -> None:
+        box = WorkspaceMark(
+            id=uuid.uuid4(),
+            author="jp",
+            left=0.1,
+            top=0.2,
+            right=0.4,
+            bottom=1.0,
+        )
+
+        assert (box.left, box.top, box.right, box.bottom) == (0.1, 0.2, 0.4, 1.0)
+
+    @pytest.mark.parametrize("corner", ["left", "top", "right", "bottom"])
+    @pytest.mark.parametrize("beyond", [-0.01, 1.01])
+    def test_a_corner_beyond_the_stage_is_refused(
+        self,
+        corner: str,
+        beyond: float,
+    ) -> None:
+        with pytest.raises(ValidationError):
+            WorkspaceMark.model_validate(
+                {"id": str(uuid.uuid4()), "author": "jp", corner: beyond},
+            )
 
 
 class TestConsoleRelay:

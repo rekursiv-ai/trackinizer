@@ -144,7 +144,11 @@ def test_no_secret_appears_in_a_repr() -> None:
     shown = [
         repr(_join()),
         repr(
-            EnrollResponse(token=_TOKEN, expires_at=datetime(2026, 10, 7, tzinfo=UTC)),
+            EnrollResponse(
+                token=_TOKEN,
+                expires_at=datetime(2026, 10, 7, tzinfo=UTC),
+                owner="ada@x.y",
+            ),
         ),
         repr(JoinResponse(machine_id=uuid.uuid4(), credential=credential)),
     ]

@@ -54,7 +54,8 @@ developer's Mac.
 # rather than whichever shell happened to spawn it: ``USER``/``USERNAME``
 # back ``resolve_actor``; ``TRACKINIZER_PROFILE`` and ``TRACKINIZER_URL``
 # back the connection chain in ``cli.connect``; ``TRAX_WORKSPACE`` and its
-# ``LC_`` twin back ``trax workspace`` with no id.
+# ``LC_`` twin back ``trax workspace`` with no id; ``TRAX_SERVER`` and
+# ``LC_TRAX_SERVER`` name the server a terminal's shell came from.
 #
 # The XDG variables are deliberately ABSENT; these should only be accessed
 # through userdirs.py.
@@ -65,6 +66,8 @@ FORWARDED_ENV: Final[tuple[str, ...]] = (
     "TRACKINIZER_URL",
     "TRAX_WORKSPACE",
     "LC_TRAX_WORKSPACE",
+    "TRAX_SERVER",
+    "LC_TRAX_SERVER",
 )
 
 KEY_ENV: Final = "TRACKINIZER_TOKEN"

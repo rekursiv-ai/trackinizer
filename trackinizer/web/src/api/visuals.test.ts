@@ -23,6 +23,6 @@ test("development preview uses the checked catalog when the hosted route is olde
   const catalog = await getVisualCatalog();
   expect(catalog.default_visual).toBe("trax.browse");
   expect(catalog.visuals.map((visual) => visual.type)).toEqual([
-    "trax.browse", "trax.subgraph", "trax.timeline", "trax.artifact", "trax.summary", "trax.files",
+    "trax.browse", "trax.subgraph", "trax.timeline", "trax.artifact", "trax.summary", "trax.files", "trax.terminal",
   ]);
 });

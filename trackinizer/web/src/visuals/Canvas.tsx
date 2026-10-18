@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createPortal } from "react-dom";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { ApiError } from "../api/client";
 import { findRef } from "../api/detail";
 import { newUuid } from "../api/idempotency";
@@ -19,6 +19,9 @@ import { usePreferences } from "../preferences";
 import { parseHash } from "../router/route";
 import { useHash } from "../router/trail";
 import { useBrowserState } from "../state/store";
+import { CaptureContext } from "../canvasCapture/stageRegistry";
+import { MarkLayer } from "../canvasMarks/MarkLayer";
+import { useBoxes } from "../canvasMarks/useBoxes";
 import { CanvasBar } from "./CanvasBar";
 import { forget, go, interrupt, settle, step, takeInterrupted, useCanvasHistory } from "./canvasHistory";
 import { type Size, dropLegacySizes, fitSizes, heldWidth, legacyLayout, MIN_COLUMN, MIN_FLOAT, readLegacySizes, toFraction } from "./canvasSizes";
@@ -47,6 +50,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const station = useStation();
   const workspace = station.data;
   const workspaceId = workspace?.id;
+  const boxes = useBoxes(workspace);
   const latestWorkspace = useRef(workspace);
   latestWorkspace.current = workspace;
   const legacyPreview = import.meta.env.DEV && station.error instanceof ApiError && station.error.status === 404;
@@ -77,6 +81,19 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const [browser, updateBrowser] = useBrowserState();
   const [stage, setStage] = useState<Size>({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement>(null);
+  // An agent may ask for a picture of this stage; the boxes are read when it does.
+  const captures = useContext(CaptureContext);
+  const boxesRef = useRef(boxes.shown);
+  boxesRef.current = boxes.shown;
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!captures || !stage) return;
+    captures.set({
+      stage,
+      boxes: () => boxesRef.current.map((box) => ({ id: box.id, author: box.author === "agent" ? "agent" : "person", points: box.points })),
+    });
+    return () => captures.set(null);
+  }, [captures]);
   const dragRef = useRef<TileDrag | null>(null);
   // What a drag draws over the stage: where the tile would dock, and, for a
   // docked tile, a card that follows the pointer in its place.
@@ -832,7 +849,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     } : null}>
     <div className="visual-canvas">
       {workspace && <CanvasBar tabs={tabs} open={openTab} back={history.back} forward={history.forward}
-        moving={history.moving} home={home} canAdd={tabs.length < MAX_TABS}
+        moving={history.moving} home={home} canAdd={tabs.length < MAX_TABS} boxes={boxes}
         actions={{ back: () => stepBy(-1), forward: () => stepBy(1), home: goHome, clear: clearCanvas,
           open: (id) => { if (id !== openTab) switchTab(id, leaving()); }, add: addTab, close: closeTab,
           rename: (id, name) => changeLayout({ tabs: tabs.map((tab) => (tab.id === id ? { ...tab, name } : tab)) }) }} />}
@@ -878,6 +895,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         {browse && renderTile(browse, panes.indexOf(browse))}
         <div ref={snapRef} className="visual-snap" aria-hidden="true" />
         <div ref={ghostRef} className="visual-drag-ghost" aria-hidden="true" />
+        {workspace && <MarkLayer boxes={boxes} />}
       </div>
     </div>
     </WorkspaceActionsProvider>

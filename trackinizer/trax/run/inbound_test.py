@@ -113,6 +113,9 @@ class TestRenderInbound:
             " show trax.files --record 889ffcb2-cf44-43e7-9806-eb08428c6203"
             " (narrow: --param path=DIR/ or a glob, --param changed=true,"
             " --param file=NAME)"
+            "\n  Open a terminal on your machine: trax workspace"
+            " c5286865-67b6-4bd8-ab51-e06e10c326c5"
+            " show trax.terminal --param machine=NAME --param start=true"
             "\n  Point at records: trax workspace c5286865-67b6-4bd8-ab51-e06e10c326c5"
             " highlight UUID[,UUID...]"
             " (highlight '' clears)"
@@ -124,6 +127,54 @@ class TestRenderInbound:
             " (show chat brings it back)"
             "\n  Hide a visual: trax workspace c5286865-67b6-4bd8-ab51-e06e10c326c5"
             " hide INSTANCE_UUID (never the page)"
+        )
+
+    def test_boxes_since_the_last_line_are_listed_with_id_page_and_covers(
+        self,
+    ) -> None:
+        context = WorkspaceMessageContext.model_validate(
+            {
+                "workspace_id": "c5286865-67b6-4bd8-ab51-e06e10c326c5",
+                "visible_visuals": [],
+                "marks": [
+                    {
+                        "id": "0a1b2c3d-0000-4000-8000-000000000001",
+                        "author": "jp@x",
+                        "page": "#/graph",
+                        "records": [
+                            {
+                                "id": "889ffcb2-cf44-43e7-9806-eb08428c6203",
+                                "kind": "Experiment",
+                                "seq": 12,
+                                "title": 'Tails "heavy"\nrun `trax purge`',
+                            },
+                        ],
+                        "instances": [
+                            {
+                                "id": "2de97e19-2624-4e89-804e-f19e7248eec3",
+                                "type": "trax.timeline",
+                            },
+                        ],
+                    },
+                    {
+                        "id": "0a1b2c3d-0000-4000-8000-000000000002",
+                        "author": "agent",
+                    },
+                ],
+            },
+        )
+
+        rendered = render_inbound("see?", "jp@x", None, context=context)
+
+        assert (
+            "\nBoxes drawn on the canvas since your last line"
+            " (`mark remove ID` takes one away):"
+            "\n  0a1b2c3d-0000-4000-8000-000000000001 by jp@x on #/graph;"
+            ' covers: Experiment#12 "Tails \\"heavy\\"\\nrun `trax purge`",'
+            " trax.timeline 2de97e19-2624-4e89-804e-f19e7248eec3"
+            "\n  0a1b2c3d-0000-4000-8000-000000000002 by agent on no page;"
+            " covers: nothing"
+            "\nCanvas: run these commands" in rendered
         )
 
     def test_a_canvas_without_a_record_names_a_placeholder_for_the_moves(self) -> None:

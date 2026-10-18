@@ -48,7 +48,6 @@ pytestmark = [
 _DEFAULTS = {
     "theme": "dark",
     "skin": "default",
-    "chat_style": "default",
     "chat_side": "left",
     "highlight_mentions": True,
     "terminal_font_size": "13px",
@@ -142,12 +141,12 @@ async def test_the_stations_agent_sets_its_owners_preferences_and_every_station_
         act_as_assistant()
         first = await client.post(
             path,
-            json=_set({"theme": "light", "chat_style": "terminal"}),
+            json=_set({"theme": "light", "chat_side": "right"}),
             headers={"Idempotency-Key": key},
         )
         replay = await client.post(
             path,
-            json=_set({"theme": "light", "chat_style": "terminal"}),
+            json=_set({"theme": "light", "chat_side": "right"}),
             headers={"Idempotency-Key": key},
         )
         told = (_frames(here), _frames(there))
@@ -159,11 +158,11 @@ async def test_the_stations_agent_sets_its_owners_preferences_and_every_station_
     assert preferences == {
         **_DEFAULTS,
         "theme": "light",
-        "chat_style": "terminal",
+        "chat_side": "right",
     }
     assert "workstreams" not in preferences
     stored = await _stored(store, TEST_USER_ID)
-    assert stored == {"theme": "light", "chat_style": "terminal"}
+    assert stored == {"theme": "light", "chat_side": "right"}
     for frames in told:
         [frame] = frames
         # The owner's browser is sent every key, its own data too; the agent, the UI's.
@@ -219,13 +218,13 @@ async def test_the_agent_sees_and_sets_only_the_ui_preferences_it_is_allowed(
         monkeypatch.setattr(module, "ASSISTANT_KEYS", frozenset({"theme"}))
     client, store = pglite_route_client
     workspace_id = await _paired_station(client, store)
-    await client.patch("/api/me/preferences", json={"chat_style": "terminal"})
+    await client.patch("/api/me/preferences", json={"chat_side": "right"})
     act_as_assistant()
     path = f"/api/workspaces/{workspace_id}/operations"
 
     refused = await client.post(
         path,
-        json=_set({"theme": "light", "chat_style": "default"}),
+        json=_set({"theme": "light", "chat_side": "left"}),
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     allowed = await client.post(
@@ -235,14 +234,14 @@ async def test_the_agent_sees_and_sets_only_the_ui_preferences_it_is_allowed(
     )
 
     assert refused.status_code == 422
-    assert "may not set: chat_style" in refused.text
+    assert "may not set: chat_side" in refused.text
     assert allowed.status_code == 200, allowed.text
     assert json_loads(allowed.content, dict[str, object])["preferences"] == {
         "theme": "light",
     }
     assert await _stored(store, TEST_USER_ID) == {
         "theme": "light",
-        "chat_style": "terminal",
+        "chat_side": "right",
     }
 
 

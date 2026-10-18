@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import json
 import re
 import uuid
 
@@ -19,12 +20,18 @@ from trackinizer.server.visuals.catalog import (
     default_workspace,
 )
 from trackinizer.server.visuals.workspaces import (
+    MAX_MARKS,
+    MAX_MARKS_BYTES,
+    AddMark,
     ApplyWorkspaceOperation,
     CampaignSetup,
+    ClearMarks,
     HideVisual,
     NameChat,
+    NewMark,
     Placement,
     PlaceVisual,
+    RemoveMark,
     ShowVisual,
     StationData,
     StationLayout,
@@ -197,6 +204,36 @@ _NARROWED: dict[str, str | int | bool] = {
 def _files(data: WorkspaceData) -> tuple[uuid.UUID | None, dict[str, str | int | bool]]:
     [files] = [visual for visual in data.visuals if visual.type == "trax.files"]
     return files.record_id, files.params
+
+
+def test_a_visual_records_who_placed_it_only_when_told_and_only_when_it_is_new() -> (
+    None
+):
+    """An agent's show names its key's user on the new instance; a re-show keeps it."""
+    catalog = default_catalog()
+    show = ShowVisual(
+        kind="show",
+        visual_type="trax.terminal",
+        params={"machine": "gx10", "start": True},
+    )
+
+    by_agent = apply_operation(
+        initial_data(catalog),
+        show,
+        catalog,
+        placed_by="kb@x.y",
+    )
+    again = apply_operation(by_agent, show, catalog, placed_by="other@x.y")
+    by_person = apply_operation(initial_data(catalog), show, catalog)
+
+    def placed(data: WorkspaceData) -> list[str | None]:
+        return [v.placed_by for v in data.visuals if v.type == "trax.terminal"]
+
+    assert placed(by_agent) == ["kb@x.y"]
+    assert placed(again) == ["kb@x.y"]
+    assert placed(by_person) == [None]
+    [terminal] = [v for v in by_agent.visuals if v.type == "trax.terminal"]
+    assert terminal.params == {"machine": "gx10", "terminal": "", "start": True}
 
 
 def test_showing_files_on_a_new_record_keeps_its_narrowing() -> None:
@@ -837,6 +874,142 @@ def test_a_chat_name_is_trimmed_and_bounded() -> None:
         NameChat(name=" ")
     with pytest.raises(ValidationError):
         NameChat(name="x" * 121)
+
+
+def _box(**changes: object) -> NewMark:
+    """Make a valid box from two corners, with ``changes`` applied."""
+    return NewMark.model_validate(
+        {"points": [{"x": 0.1, "y": 0.2}, {"x": 0.4, "y": 0.5}]} | changes,
+    )
+
+
+def _draw(
+    data: WorkspaceData,
+    *,
+    new: NewMark,
+    author: str = "jp@example.com",
+    page: str | None = "#/graph",
+) -> WorkspaceData:
+    return apply_operation(
+        data,
+        AddMark(kind="mark", mark=new),
+        default_catalog(),
+        author=author,
+        page=page,
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"points": [{"x": 0.1, "y": 0.1}]},
+        {"points": [{"x": 0, "y": 0}] * 3},
+        {"points": [{"x": 1.5, "y": 0}] * 2},
+        {"points": [{"x": 0, "y": -0.1}] * 2},
+        {"points": [{"x": 0, "y": 0}] * 2, "kind": "arrow"},
+        {"points": [{"x": 0, "y": 0}] * 2, "color": "blue"},
+        {"points": [{"x": 0, "y": 0}] * 2, "page": "no hash"},
+    ],
+)
+def test_a_box_is_two_corners_on_the_stage_and_nothing_else(
+    bad: dict[str, object],
+) -> None:
+    """Corner count, fractions, extra fields and a bad page are refused."""
+    with pytest.raises(ValidationError):
+        NewMark.model_validate(bad)
+
+
+def test_a_box_takes_its_author_page_and_a_rising_seq_from_the_server() -> None:
+    """A drawer sends no id, author or seq; the page it names wins over the station's."""
+    data = _draw(initial_data(default_catalog()), new=_box(), page="#/list/Issue")
+    data = _draw(data, new=_box(page="#/own"), author="agent", page="#/list/Issue")
+    data = _draw(data, new=_box(), author="agent", page=None)
+    assert [(m.seq, m.author, m.page) for m in data.marks] == [
+        (1, "jp@example.com", "#/list/Issue"),
+        (2, "agent", "#/own"),
+        (3, "agent", None),
+    ]
+    assert data.marks_seq == 3
+
+
+def test_the_two_hundred_and_first_box_drops_the_oldest() -> None:
+    """The count cap evicts from the front and seq keeps counting."""
+    data = initial_data(default_catalog())
+    for _ in range(MAX_MARKS + 1):
+        data = _draw(data, new=_box())
+    assert [m.seq for m in data.marks] == list(range(2, MAX_MARKS + 2))
+
+
+def test_boxes_past_sixty_four_kib_drop_the_oldest_until_they_fit() -> None:
+    """The byte cap binds before the count when the boxes are large."""
+    data = initial_data(default_catalog())
+    covers = {"records": [str(uuid.uuid4()) for _ in range(20)]}
+    for _ in range(100):
+        data = _draw(data, new=_box(covers=covers))
+    stored = json.dumps([mark.model_dump(mode="json") for mark in data.marks])
+    assert len(stored) <= MAX_MARKS_BYTES
+    # The oldest went: what is left is the newest run, ending at the last drawn.
+    seqs = [mark.seq for mark in data.marks]
+    assert 1 < seqs[0] <= 100
+    assert seqs == list(range(seqs[0], 101))
+
+
+def test_removing_a_box_takes_that_one_whoever_drew_it_and_a_gone_one_changes_nothing() -> (
+    None
+):
+    """Any box goes by its id; removing it again, or another id, leaves the rest."""
+    catalog = default_catalog()
+    data = _draw(initial_data(catalog), new=_box(), author="jp")
+    data = _draw(data, new=_box(), author="agent")
+    first, second = data.marks
+    removed = apply_operation(
+        data,
+        RemoveMark(kind="remove_mark", id=first.id),
+        catalog,
+    )
+    assert [m.id for m in removed.marks] == [second.id]
+    again = apply_operation(
+        removed,
+        RemoveMark(kind="remove_mark", id=first.id),
+        catalog,
+    )
+    assert again == removed
+    stranger = apply_operation(
+        removed,
+        RemoveMark(kind="remove_mark", id=uuid.uuid4()),
+        catalog,
+    )
+    assert stranger == removed
+
+
+def test_clearing_takes_every_box_and_seq_keeps_counting() -> None:
+    """Clear is all: the author does not matter."""
+    data = _draw(initial_data(default_catalog()), new=_box(), author="jp")
+    data = _draw(data, new=_box(), author="agent")
+    cleared = apply_operation(
+        data,
+        ClearMarks(kind="clear_marks"),
+        default_catalog(),
+    )
+    assert cleared.marks == []
+    assert cleared.marks_seq == 2
+
+
+def test_clearing_a_page_takes_the_boxes_it_shows_and_leaves_the_other_pages() -> None:
+    """A page's boxes and the page-less ones go; a box of another page stays."""
+    data = initial_data(default_catalog())
+    for page in ("#/graph", "#/list/Issue", None, "#/graph"):
+        data = _draw(data, new=_box(), page=page)
+    here, other, anywhere, again = data.marks
+
+    cleared = apply_operation(
+        data,
+        ClearMarks(kind="clear_marks", page="#/graph"),
+        default_catalog(),
+    )
+
+    assert [m.id for m in cleared.marks] == [other.id]
+    assert {here.id, anywhere.id, again.id}.isdisjoint(m.id for m in cleared.marks)
 
 
 if __name__ == "__main__":

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
+import json
 import math
 import uuid
 
@@ -62,11 +63,74 @@ class VisualInstance(BaseModel):
     record_id: uuid.UUID | None = None
     params: dict[str, str | int | bool] = Field(default_factory=dict)
     floating_rect: FloatingRect | None = None
+    placed_by: str | None = Field(default=None, max_length=320)
+    """Who placed it when an agent's key did (that key's user), else None; shown, never
+    trusted."""
 
 
 RETIRED_VISUAL_TYPES: frozenset[str] = frozenset({"trax.chat"})
 """Visual types a canvas once held and no catalog offers now. Chat is a column of its
 own beside the canvas, so a stored canvas that still holds it reads without it."""
+
+
+MAX_MARKS: Final = 200
+"""Most boxes a canvas holds; adding past it drops the oldest."""
+
+MAX_MARKS_BYTES: Final = 64 * 1024
+"""Most bytes of JSON a canvas's boxes take; adding past it drops the oldest."""
+
+AGENT_AUTHOR: Final = "agent"
+"""The author of a mark an agent key draws."""
+
+
+class MarkPoint(BaseModel):
+    """A place on the stage, as fractions of its width and height."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: Annotated[float, Field(ge=0, le=1)]
+    y: Annotated[float, Field(ge=0, le=1)]
+
+
+class MarkCovers(BaseModel):
+    """What lies under a mark, read from the page when it was drawn."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    instances: Annotated[list[uuid.UUID], Field(max_length=12)] = Field(
+        default_factory=list,
+    )
+    records: Annotated[list[uuid.UUID], Field(max_length=20)] = Field(
+        default_factory=list,
+    )
+
+
+class NewMark(BaseModel):
+    """A box as its drawer sends it: the server adds who, when, which and where."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    points: Annotated[list[MarkPoint], Field(min_length=2, max_length=2)]
+    """Two opposite corners."""
+
+    covers: MarkCovers = Field(default_factory=MarkCovers)
+
+    page: Annotated[str, Field(max_length=512, pattern=ROUTE_PATTERN)] | None = None
+    """The `#/...` page it is drawn on, when its drawer knows it better than the
+    station does (a browser's own address); else the station's page is used."""
+
+
+class Mark(NewMark):
+    """One red box on a canvas. Its ``page`` is where it was drawn, and where it shows."""
+
+    id: uuid.UUID
+    seq: int = Field(ge=1)
+    """Counts up over the canvas's life, so a mark's order survives the drops."""
+
+    author: str
+    """The person's email, or ``agent`` for an agent key."""
+
+    at: datetime
 
 
 class WorkspaceData(BaseModel):
@@ -78,6 +142,13 @@ class WorkspaceData(BaseModel):
     continuation_record_id: uuid.UUID | None = None
     partner_choice: PartnerChoice = "shared"
     """Whose session Chat talks to: the shared assistant or the owner's helper."""
+
+    marks: list[Mark] = Field(default_factory=list)
+    marks_seq: int = Field(default=0, ge=0)
+    """The ``seq`` of the newest mark ever drawn."""
+
+    marks_sent: int = Field(default=0, ge=0)
+    """The newest ``seq`` already handed to the station's agent with a Chat line."""
 
     @model_validator(mode="after")
     def _drop_retired_visuals(self) -> WorkspaceData:
@@ -387,6 +458,10 @@ class WorkspaceState(WorkspaceData):
     """The owner's preferences a station's assistant may see (``ASSISTANT_KEYS``), so
     it can say what is set; computed on each read, never stored with the canvas."""
 
+    record_labels: dict[uuid.UUID, str] = Field(default_factory=dict)
+    """``Kind#seq title`` of each record a mark covers, so a reader need not look
+    them up; computed on a read and on a mark's write, never stored."""
+
 
 class TabName(BaseModel):
     """A canvas tab as the station list names it: enough to show and open it."""
@@ -618,6 +693,29 @@ class ChoosePartner(OperationModel):
     choice: PartnerChoice
 
 
+class AddMark(OperationModel):
+    """Draw one box. It commutes with every other, so no revision is expected."""
+
+    kind: Literal["mark"]
+    mark: NewMark
+
+
+class RemoveMark(OperationModel):
+    """Take one box away, whoever drew it; one already gone is no change."""
+
+    kind: Literal["remove_mark"]
+    id: uuid.UUID
+
+
+class ClearMarks(OperationModel):
+    """Take the boxes of one page away, or every box. No revision is expected."""
+
+    kind: Literal["clear_marks"]
+    page: Annotated[str, Field(max_length=512, pattern=ROUTE_PATTERN)] | None = None
+    """The `#/...` page to clear: its boxes, and those with no page, which show on
+    every page. None clears every box."""
+
+
 type Operation = Annotated[
     ShowVisual
     | HideVisual
@@ -627,7 +725,10 @@ type Operation = Annotated[
     | Highlight
     | ChatWindow
     | SetPreferences
-    | ChoosePartner,
+    | ChoosePartner
+    | AddMark
+    | RemoveMark
+    | ClearMarks,
     Field(discriminator="kind"),
 ]
 
@@ -761,10 +862,85 @@ def refuse_params(
     return None
 
 
+def with_mark(
+    data: WorkspaceData,
+    *,
+    new: NewMark,
+    author: str,
+    page: str | None,
+) -> WorkspaceData:
+    """Add ``new`` to a copy of ``data``, dropping the oldest marks past the caps.
+
+    Args:
+      data: Current canvas data.
+      new: The mark as drawn.
+      author: Who drew it.
+      page: The page the station is on, where the mark will show.
+
+    Returns:
+      state: ``data`` with the mark last.
+
+    """
+    updated = data.model_copy(deep=True)
+    updated.marks_seq += 1
+    updated.marks.append(
+        Mark.model_validate(
+            new.model_dump()
+            | {
+                "id": uuid.uuid4(),
+                "seq": updated.marks_seq,
+                "author": author,
+                "page": new.page or page,
+                "at": datetime.now(UTC),
+            },
+        ),
+    )
+    del updated.marks[: max(0, len(updated.marks) - MAX_MARKS)]
+    while (
+        len(updated.marks) > 1
+        and len(json.dumps([m.model_dump(mode="json") for m in updated.marks]))
+        > MAX_MARKS_BYTES
+    ):
+        del updated.marks[0]
+    return updated
+
+
+def without_mark(data: WorkspaceData, *, mark_id: uuid.UUID) -> WorkspaceData:
+    """Take the box ``mark_id`` from a copy of ``data``; one not there changes nothing."""
+    updated = data.model_copy(deep=True)
+    updated.marks = [m for m in updated.marks if m.id != mark_id]
+    return updated
+
+
+def without_marks(data: WorkspaceData, *, page: str | None = None) -> WorkspaceData:
+    """Take boxes from a copy of ``data``.
+
+    Args:
+      data: Current canvas data.
+      page: The page whose boxes go, with those that have no page and so show on
+        every page; None takes every box.
+
+    Returns:
+      state: ``data`` without them.
+
+    """
+    updated = data.model_copy(deep=True)
+    updated.marks = (
+        []
+        if page is None
+        else [m for m in updated.marks if m.page is not None and m.page != page]
+    )
+    return updated
+
+
 def apply_operation(
     data: WorkspaceData,
     operation: Operation,
     catalog: VisualCatalogBody,
+    *,
+    placed_by: str | None = None,
+    author: str = "",
+    page: str | None = None,
 ) -> WorkspaceData:
     """Validate and apply one operation to a copy of the current state.
 
@@ -772,11 +948,20 @@ def apply_operation(
       data: Current canvas data.
       operation: Requested visual change.
       catalog: Trusted descriptor set.
+      placed_by: Who a visual this operation adds is recorded as placed by.
+      author: Who asks, for a mark.
+      page: The page the station is on, for a mark.
 
     Returns:
       state: New canvas data.
 
     """
+    if isinstance(operation, AddMark):
+        return with_mark(data, new=operation.mark, author=author, page=page)
+    if isinstance(operation, RemoveMark):
+        return without_mark(data, mark_id=operation.id)
+    if isinstance(operation, ClearMarks):
+        return without_marks(data, page=operation.page)
     updated = data.model_copy(deep=True)
     if isinstance(operation, ShowVisual):
         descriptor = next(
@@ -828,6 +1013,7 @@ def apply_operation(
             or ("main" if descriptor.default_size == "wide" else "side"),
             record_id=operation.record_id,
             params=params,
+            placed_by=placed_by,
         )
         updated.visuals.append(instance)
         updated.focused_instance = instance.id

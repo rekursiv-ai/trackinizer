@@ -87,6 +87,18 @@ role; setting, labelling and deleting need the admin role.
 On the machine's own host, `connect` joins with the enrollment token on stdin
 and heartbeats until the machine is revoked, using the machine's own credential.
 
+`trax machine connect` with no name is for your own computer. It uses the short
+hostname, enrolls the computer as a personal machine (writer role; only you and
+admins see it), saves its credential and serves terminals, so the web app can open
+a shell on it. A named `connect` serves terminals only when the host sets
+`TRAX_MACHINE_TERMINAL=1`. Each open and close is logged to
+`$XDG_STATE_HOME/rekursiv-ai/trax/machines/NAME.terminals.log`, with who the
+server says opened it. A shell it opens starts as your login shell and carries
+`TRAX_WORKSTREAM`, `TRAX_WORKSPACE` and `TRACKINIZER_PROFILE`, and `LC_TRAX_*`
+copies (with `LC_TRAX_SERVER`, the server URL, never a key) that `ssh` forwards, so
+`trax` on the far side reports to the same server. Closing a terminal ends the shell's
+process group, as closing ssh does: `nohup`, `setsid` and `tmux` jobs keep running.
+
 ```bash
 trax machine                                           # list
 trax machine gpu-box                                   # show one
@@ -95,6 +107,7 @@ trax machine gpu-box how to @how.txt                   # how line from a file
 trax machine gpu-box label add gpu                     # add a label
 trax machine gpu-box del                               # unregister
 trax machine gpu-box connect < token                   # on the host: join, heartbeat
+trax machine connect                                   # this computer: enroll, serve a terminal
 ```
 
 ## Run (CLI shim)

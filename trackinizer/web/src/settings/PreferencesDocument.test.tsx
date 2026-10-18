@@ -29,8 +29,8 @@ test("the document lists every setting under its comment, and reads back as the 
 });
 
 test("comments, a // inside a string and a trailing comma are read; a slip is named on its line", () => {
-  expect(readDocument('{\n  // a note\n  "theme": "light", // why\n  "chat_style": "a // b",\n}')).toEqual({ values: { theme: "light", chat_style: "a // b" } });
-  expect(readDocument('{\n  "theme": "light"\n  "chat_style": "default"\n}')).toEqual({ problems: [{ line: 3, message: expect.stringContaining("not JSON") }] });
+  expect(readDocument('{\n  // a note\n  "theme": "light", // why\n  "chat_side": "a // b",\n}')).toEqual({ values: { theme: "light", chat_side: "a // b" } });
+  expect(readDocument('{\n  "theme": "light"\n  "chat_side": "left"\n}')).toEqual({ problems: [{ line: 3, message: expect.stringContaining("not JSON") }] });
   expect(readDocument('{\n  "theme": "light",\n  "colour": "red"\n}')).toEqual({ problems: [{ line: 3, message: 'There is no setting "colour".' }] });
   expect(readDocument("[1]")).toEqual({ problems: [{ line: 1, message: "The document is one { … } of settings." }] });
 });
@@ -73,8 +73,8 @@ test("Reset to defaults puts every setting back, and an untouched document follo
   const server = serveAccount(ADA);
   renderScreen(<PreferencesDocument />, ADA);
   expect(box().value).toContain('"terminal_font_size": "16pt"');
-  act(() => receivePreferences({ ...preferences(), chat_style: "terminal" }));
-  expect(box().value).toContain('"chat_style": "terminal"');
+  act(() => receivePreferences({ ...preferences(), chat_side: "right" }));
+  expect(box().value).toContain('"chat_side": "right"');
   fireEvent.click(screen.getByRole("button", { name: "Reset to defaults" }));
   await waitFor(() => expect(sent(server)).toEqual([Object.fromEntries(SETTINGS.map(({ key }) => [key, null]))]), FAST);
 });

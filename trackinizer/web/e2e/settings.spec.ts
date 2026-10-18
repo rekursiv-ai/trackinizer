@@ -146,18 +146,17 @@ async function storedPreferences(page: Page): Promise<{ [key: string]: unknown }
   return ((await (await page.request.get("/api/me/profile")).json()) as { preferences: { [key: string]: unknown } }).preferences;
 }
 
-test("a theme and Chat style chosen in Settings follow the user to a fresh browser, which keeps neither", async ({ page, browser }) => {
+test("a theme and terminal font size chosen in Settings follow the user to a fresh browser, which keeps neither", async ({ page, browser }) => {
   await openSettings(page);
   const appearance = page.getByRole("region", { name: "Appearance" });
   await appearance.getByRole("combobox", { name: "Theme" }).selectOption("light");
-  await appearance.getByRole("combobox", { name: "Chat style" }).selectOption("terminal");
-  await expect.poll(() => storedPreferences(page)).toMatchObject({ theme: "light", chat_style: "terminal" });
+  await appearance.getByRole("combobox", { name: "Terminal font size" }).selectOption("16px");
+  await expect.poll(() => storedPreferences(page)).toMatchObject({ theme: "light", terminal_font_size: "16px" });
 
   const fresh = await browser.newContext();
   const other = await fresh.newPage();
   await other.goto("/app/#/graph");
   await expect(other.locator("html")).toHaveAttribute("data-theme", "light");
-  await expect(other.locator("html")).toHaveAttribute("data-chat-style", "terminal");
   expect(await other.evaluate(() => Object.keys(localStorage))).not.toContain("trackinizer.theme");
   await fresh.close();
 });

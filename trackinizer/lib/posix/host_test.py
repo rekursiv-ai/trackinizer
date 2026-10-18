@@ -23,6 +23,7 @@ from trackinizer.lib.posix.host import (
     Frame,
     Host,
     HostSpec,
+    decode_frame,
     decode_status,
     decode_winsize,
     encode_frame,
@@ -697,6 +698,22 @@ async def _wait_for(predicate: Callable[[], bool], timeout_sec: float) -> None:
             return
         await asyncio.sleep(0.01)
     raise TimeoutError(f"condition not met within {timeout_sec}s")
+
+
+def test_decode_frame_inverts_encode_frame() -> None:
+    assert decode_frame(encode_frame(Frame.OUTPUT, b"hi")) == (Frame.OUTPUT, b"hi")
+    assert decode_frame(encode_frame(Frame.STOP)) == (Frame.STOP, b"")
+
+
+@pytest.mark.parametrize(
+    "message",
+    [b"", b"\x06\x00\x00", b"\x06\x00\x00\x00\x05ab", b"\x63\x00\x00\x00\x00"],
+)
+def test_decode_frame_refuses_a_short_mismatched_or_unknown_record(
+    message: bytes,
+) -> None:
+    with pytest.raises(ValueError, match=r"frame|99"):
+        decode_frame(message)
 
 
 if __name__ == "__main__":

@@ -13,8 +13,11 @@ from urllib.parse import parse_qs, unquote
 import re
 import uuid
 
+from trackinizer.server.audience import visible_sql
+from trackinizer.server.values import vetted_sql
 from trackinizer.types.inquiries import KIND_TO_CLASS
 from trackinizer.wire.wire_sessions import (
+    WorkspaceMark,
     WorkspacePage,
     WorkspaceRecordContext,
     WorkspaceVisibleVisual,
@@ -25,7 +28,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from trackinizer.lib.postgres import Conn
-    from trackinizer.server.visuals.workspaces import VisualInstance
+    from trackinizer.server.audience import SessionReader
+    from trackinizer.server.visuals.workspaces import Mark, VisualInstance
 
 
 type Seq = tuple[str, int]
@@ -109,6 +113,86 @@ async def read_screen(
             for v in visuals
         ],
     )
+
+
+async def read_covered_records(
+    conn: Conn,
+    *,
+    marks: Sequence[Mark],
+    reader: SessionReader,
+) -> dict[uuid.UUID, WorkspaceRecordContext]:
+    """Resolve the records ``marks`` cover, in one query.
+
+    A mark's covers are what its drawer's browser said, so a session among them is
+    named only when ``reader`` reads its transcript.
+
+    Args:
+      conn: Connection to read with.
+      marks: The marks whose covered records are wanted.
+      reader: Who the names are for, as the transcript test reads them.
+
+    Returns:
+      records: Each record that exists and may be named, by id; any other is left out.
+
+    """
+    ids = sorted({record for mark in marks for record in mark.covers.records})
+    if not ids:
+        return {}
+    params: list[object] = [ids]
+    # Audience: gated -- a session is named only to a reader of its transcript.
+    readable = visible_sql("i", params=params, reader=reader)
+    rows = await conn.fetch(
+        vetted_sql(
+            "SELECT i.id, i.kind, i.seq, i.title FROM inquiries AS i "
+            "WHERE i.id = ANY($1::uuid[]) AND (i.kind <> 'AgentSession' OR ",
+            readable,
+            ")",
+        ),
+        *params,
+    )
+    records = (
+        WorkspaceRecordContext.model_validate(
+            {**dict(row), "title": str(row["title"])[:512]},
+        )
+        for row in rows
+    )
+    return {record.id: record for record in records}
+
+
+def wire_marks(
+    marks: Sequence[Mark],
+    *,
+    records: dict[uuid.UUID, WorkspaceRecordContext],
+    visuals: Sequence[WorkspaceVisibleVisual],
+) -> list[WorkspaceMark]:
+    """Say what ``marks`` cover in the form an agent's line carries.
+
+    Args:
+      marks: The marks drawn since the sender's last line.
+      records: The records they cover that exist, as :func:`read_covered_records` read.
+      visuals: The visuals on the canvas, which a mark's instances are matched to.
+
+    Returns:
+      marks: Each mark with the visuals and records under it that are still there.
+
+    """
+    on_canvas = {visual.id: visual for visual in visuals}
+    return [
+        WorkspaceMark(
+            id=mark.id,
+            author=mark.author,
+            page=mark.page,
+            left=min(p.x for p in mark.points),
+            top=min(p.y for p in mark.points),
+            right=max(p.x for p in mark.points),
+            bottom=max(p.y for p in mark.points),
+            instances=[
+                on_canvas[each] for each in mark.covers.instances if each in on_canvas
+            ],
+            records=[records[each] for each in mark.covers.records if each in records],
+        )
+        for mark in marks
+    ]
 
 
 def _named(route: str) -> Named | None:

@@ -31,6 +31,7 @@ from trackinizer.server.api import (
     addons_routes,
     admin_routes,
     auth_routes,
+    capture_routes,
     chat_partial_routes,
     code_routes,
     console_relay_routes,
@@ -53,12 +54,14 @@ from trackinizer.server.api import (
     session_placement_routes,
     sessions_routes,
     submit,
+    terminal_routes,
     timeline_routes,
     variables_routes,
     visuals_routes,
     workspace_routes,
     workstream_routes,
 )
+from trackinizer.server.api._deps import terminal_services
 from trackinizer.server.api.addons_routes import deployment_of
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
 from trackinizer.server.auth import seed_no_auth_user
@@ -75,6 +78,7 @@ from trackinizer.server.secrets import parse_secrets
 from trackinizer.server.session_reaper import session_reaper_loop
 from trackinizer.server.store.core import Store
 from trackinizer.server.subscriber import push_changes_to_live_subscribers
+from trackinizer.server.terminals import sweep_loop
 from trackinizer.server.visuals.catalog import default_workspace
 from trackinizer.types.errors import (
     ChatDeletedError,
@@ -225,6 +229,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     session_reaper_loop(app.state.store, inbound=app.state.inbound),
                 ),
             )
+            terminals = terminal_services(app)
+            tasks.append(
+                asyncio.create_task(
+                    sweep_loop(terminals.hub, touch=terminals.recorder.touch_live),
+                ),
+            )
             tasks.extend(
                 _start_addon_services(
                     deployment_of(app),
@@ -323,6 +333,7 @@ ROUTERS: Final = (
     addons_routes.router,
     admin_routes.router,
     auth_routes.router,
+    capture_routes.router,
     chat_partial_routes.router,
     code_routes.router,
     console_relay_routes.router,
@@ -345,6 +356,7 @@ ROUTERS: Final = (
     session_ir_routes.router,
     sessions_routes.router,
     submit.router,
+    terminal_routes.router,
     timeline_routes.router,
     variables_routes.router,
     visuals_routes.router,

@@ -5,7 +5,7 @@ import { log } from "./debug/log";
 import { sameJson } from "./state/value";
 
 /**
- * The user's preferences: theme, Chat's style and side, and the like, and the
+ * The user's preferences: theme, Chat's side, and the like, and the
  * user's own data: stars, saved views, names, read marks and unsent drafts. They
  * live on the server (`server/preferences.py`), on the user's row, so any browser
  * or machine finds them and an agent the user works with can change them; this
@@ -18,7 +18,6 @@ export type Preferences = Required<components["schemas"]["Preferences"]>;
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: "dark",
   skin: "default",
-  chat_style: "default",
   chat_side: "left",
   highlight_mentions: true,
   terminal_font_size: "13px",
@@ -40,7 +39,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
 /** The keys this browser kept before they moved to the server, read once and then removed. */
 const LEGACY = {
   theme: "trackinizer.theme",
-  chat_style: "trackinizer.chat.style",
+  // Chat has no style now; its old key is still forgotten, unread.
+  style: "trackinizer.chat.style",
   chat_side: "trackinizer.chat.side",
   highlight_mentions: (email: string) => `trackinizer.v2.highlight-mentions.${email}`,
 } as const;
@@ -90,7 +90,12 @@ function show(next: Preferences): void {
  * key sends it not: the defaults stay.
  */
 export function receivePreferences(next: Partial<Preferences> | undefined): void {
-  if (next && sending === 0) show({ ...DEFAULT_PREFERENCES, ...next });
+  if (next && sending === 0) show(known({ ...DEFAULT_PREFERENCES, ...next }));
+}
+
+/** `values` without a key this page does not know: one an older server still sends (`chat_style`) is dropped, not shown. */
+function known(values: Preferences): Preferences {
+  return Object.fromEntries(Object.entries(values).filter(([key]) => key in DEFAULT_PREFERENCES)) as Preferences;
 }
 
 /**
@@ -109,7 +114,7 @@ export async function choosePreferences(change: Partial<Preferences>, { keepaliv
     const saved = await turn;
     sending -= 1;
     markUnsaved(keys, false);
-    if (sending === 0) show({ ...DEFAULT_PREFERENCES, ...saved });
+    if (sending === 0) show(known({ ...DEFAULT_PREFERENCES, ...saved }));
     return true;
   } catch (error) {
     sending -= 1;
@@ -187,17 +192,16 @@ export async function sendWaiting({ keepalive = false } = {}): Promise<void> {
  * server takes it, then this browser forgets it. Nothing to send, nothing is sent.
  */
 export async function adoptLegacyPreferences(email: string): Promise<void> {
-  const keys = [LEGACY.theme, LEGACY.chat_style, LEGACY.chat_side, LEGACY.highlight_mentions(email)];
+  const keys = [LEGACY.theme, LEGACY.style, LEGACY.chat_side, LEGACY.highlight_mentions(email)];
   let kept: (string | null)[];
   try {
     kept = keys.map((key) => localStorage.getItem(key));
   } catch {
     return;
   }
-  const [theme, style, side, mentions] = kept;
+  const [theme, , side, mentions] = kept;
   const change: Partial<Preferences> = {
     ...(theme === "dark" || theme === "light" || theme === "system" ? { theme } : {}),
-    ...(style === "default" || style === "terminal" ? { chat_style: style } : {}),
     ...(side === "left" || side === "right" ? { chat_side: side } : {}),
     ...(mentions === "off" ? { highlight_mentions: false } : {}),
   };

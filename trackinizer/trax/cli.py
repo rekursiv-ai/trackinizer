@@ -34,6 +34,7 @@ from trackinizer.trax.profile import (
     Profiles,
     load_profile,
     read_profile,
+    unmatched_server_hint,
 )
 from trackinizer.trax.render import SHOW_IDS, echo
 from trackinizer.trax.variables import ENV_WORD, Variables
@@ -275,6 +276,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     # calls ``parse_and_run`` directly and keeps its clients for its lifetime.
     atexit.register(close_clients)
     try:
+        if (hint := unmatched_server_hint()) is not None:
+            _ = sys.stderr.write(hint)
         parse_and_run(sys.argv[1:] if argv is None else list(argv))
     except ClientError as err:
         sys.stderr.write(f"trax: {err}\n")

@@ -1094,6 +1094,61 @@ async def test_suggestion_updates_chat_station_without_creating_an_issue(
     assert issues_after == issues_before
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_boxes_are_stored_read_back_and_dropped_by_a_cleared_station(
+    seeded_workspace: PGliteEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mark survives the write and the read; a clear-chat copy starts with none."""
+    monkeypatch.setattr(
+        workspace_store,
+        "_with_partner",
+        _station_state_without_partner,
+    )
+    inbound = InboundQueue()
+    drawn = await _apply(
+        seeded_workspace,
+        ApplyWorkspaceOperation.model_validate(
+            {
+                "revision": 0,
+                "operation": {
+                    "kind": "mark",
+                    "mark": {
+                        "points": [{"x": 0.5, "y": 0.5}, {"x": 0.7, "y": 0.8}],
+                        "page": "#/graph",
+                    },
+                },
+            },
+        ),
+        key=uuid.uuid4(),
+        inbound=inbound,
+    )
+    assert drawn is not None
+    read = await read_workspace(
+        seeded_workspace,
+        user_id=_USER,
+        workspace_id=_WORKSPACE,
+        inbound=inbound,
+        assistant=None,
+    )
+    assert read is not None
+    assert [(m.page, m.seq) for m in read.marks] == [("#/graph", 1)]
+    assert [m.id for m in read.marks] == [m.id for m in drawn.state.marks]
+    assert read.marks_seq == 1
+
+    copied = await clear_chat_station(
+        seeded_workspace,
+        user_id=_USER,
+        workspace_id=_WORKSPACE,
+        key=uuid.uuid4(),
+        inbound=inbound,
+        assistant=None,
+    )
+    assert copied is not None
+    assert (copied.marks, copied.marks_seq) == ([], 1)
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

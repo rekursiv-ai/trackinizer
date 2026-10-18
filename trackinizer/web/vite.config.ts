@@ -38,7 +38,7 @@ export default defineConfig({
     manifest: true,
   },
   server: {
-    proxy: { "/api": proxyRoute, "/auth": proxyRoute },
+    proxy: { "/api": { ...proxyRoute, ws: true }, "/auth": proxyRoute },
   },
   test: {
     // The app's logger (src/debug/log.ts) prints every failed request, and the

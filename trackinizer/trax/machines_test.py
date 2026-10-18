@@ -7,14 +7,16 @@ from typing import TYPE_CHECKING, cast
 
 import io
 import sys
+import uuid
 
 import httpx2
 import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.trax import cli, machine_host
+from trackinizer.trax import cli, machine_host, machines, profile
 from trackinizer.trax.machines import MACHINE_WORD, Machines
+from trackinizer.wire.wire_machine_host import EnrollResponse, JoinResponse
 from trackinizer.wire.wire_machines import (
     MAX_HOW_CHARS,
     NAME_PATTERN,
@@ -26,6 +28,8 @@ from trackinizer.wire.wire_machines import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
+
+    from trackinizer.trax.terminal_host import TerminalHost
 
 
 def _machine(
@@ -59,6 +63,16 @@ class _StubClient:
         self.calls: list[tuple[object, ...]] = []
         # ``connect`` reads only the URL; the host loop is stubbed.
         self.base_url = "https://server"
+
+    def enroll_machine(self, name: str) -> EnrollResponse:
+        self.calls.append(("enroll", name))
+        return EnrollResponse.model_validate(
+            {
+                "token": "enr_tok",
+                "expires_at": datetime(2026, 10, 6, tzinfo=UTC),
+                "owner": "ada@x.y",
+            },
+        )
 
     def list_machines(self) -> list[Machine]:
         self.calls.append(("list",))
@@ -327,8 +341,10 @@ def test_delete_unregisters_the_machine(
 @pytest.mark.parametrize("name", sorted(RESERVED_NAMES))
 def test_a_reserved_name_is_refused_before_any_request(name: str) -> None:
     client = _StubClient()
+    # A bare ``connect`` is not a name: it enrolls this computer.
+    shown = [] if name == "connect" else [[name]]
     for argv in (
-        [name],
+        *shown,
         [name, "role"],
         [name, "role", "to", "dev"],
         [name, "label", "add", "gpu"],
@@ -527,6 +543,94 @@ def test_connect_hands_the_host_loop_stdin_and_a_client_per_key(
         assert (host.base_url, host.api_key) == ("https://server", "trax_machine_x")
     assert seen["name"] == "cloud-ab12cd34"
     assert seen["read_token"] == sys.stdin.readline
+
+
+def _connect_seen(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    client: _StubClient,
+) -> dict[str, object]:
+    """Run ``trax machine ARGV`` with the host loop stubbed; return what it got."""
+    seen: dict[str, object] = {}
+
+    def fake_connect(name: str, **kwargs: object) -> None:
+        seen.update(kwargs, name=name)
+
+    monkeypatch.setattr(machine_host, "connect", fake_connect)
+    _run(argv, client=client)
+    return seen
+
+
+def test_connect_with_no_name_enrolls_this_computer_and_serves_terminals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("socket.gethostname", lambda: "Dev_Box.local")
+    client = _StubClient()
+
+    seen = _connect_seen(monkeypatch, ["connect"], client)
+
+    assert seen["name"] == "dev-box"
+    read_token = cast("Callable[[], str]", seen["read_token"])
+    assert read_token() == "enr_tok"
+    assert client.calls == [("enroll", "dev-box")]
+    terminals_for = cast("Callable[[JoinResponse], object]", seen["terminals_for"])
+    assert terminals_for is not None
+
+
+def test_a_named_connect_serves_terminals_only_when_the_host_opted_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRAX_MACHINE_TERMINAL", raising=False)
+    off = _connect_seen(monkeypatch, ["gx10", "connect"], _StubClient())
+    monkeypatch.setenv("TRAX_MACHINE_TERMINAL", "1")
+    on = _connect_seen(monkeypatch, ["gx10", "connect"], _StubClient())
+
+    assert off["terminals_for"] is None
+    assert on["terminals_for"] is not None
+    assert on["read_token"] == sys.stdin.readline
+
+
+def test_the_terminal_server_names_the_server_and_the_profile_but_holds_no_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+    profile.save_profile("hosted", profile.Profile(url="https://server", api_key="K"))
+    monkeypatch.setenv("TRAX_MACHINE_TERMINAL", "1")
+    seen = _connect_seen(monkeypatch, ["gx10", "connect"], _StubClient())
+    terminals_for = cast(
+        "Callable[[JoinResponse], TerminalHost]",
+        seen["terminals_for"],
+    )
+
+    host = terminals_for(
+        JoinResponse(machine_id=uuid.uuid4(), credential="trax_machine_c"),
+    )
+
+    assert host.trax_env == {
+        "LC_TRAX_SERVER": "https://server",
+        "TRACKINIZER_PROFILE": "hosted",
+    }
+
+
+def test_a_server_url_with_credentials_is_never_exported_to_the_shell() -> None:
+    joined = JoinResponse(machine_id=uuid.uuid4(), credential="trax_machine_c")
+
+    host = machines._terminal_host("gx10", "https://u:pw@server.test", joined)
+
+    assert "LC_TRAX_SERVER" not in host.trax_env
+    assert "pw" not in repr(host.trax_env)
+
+
+def test_a_hostname_that_is_not_a_machine_name_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("socket.gethostname", lambda: "init")
+
+    err = _refusal(["connect"], client=_StubClient())
+
+    assert "reserved" in str(err)
 
 
 def test_a_malformed_connect_is_refused_before_any_request() -> None:

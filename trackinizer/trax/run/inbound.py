@@ -18,7 +18,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from trackinizer.client.chat_forks import ForkLine
-    from trackinizer.wire.wire_sessions import WorkspaceMessageContext
+    from trackinizer.wire.wire_sessions import (
+        WorkspaceMark,
+        WorkspaceMessageContext,
+    )
 
 
 # A single PTY interleaves every room's messages into one input stream, so the agent
@@ -79,6 +82,8 @@ def render_inbound(
         workspace = f"trax workspace {context.workspace_id}"
         on_screen = None if context.page is None else context.page.record
         record = on_screen.id if on_screen else "RECORD_UUID"
+        if context.marks:
+            rendered += _render_marks(context.marks)
         rendered += (
             "\nCanvas: run these commands; describing them does nothing."
             f"\n  Show a record: {workspace} navigate '#/lookup/{record}'"
@@ -89,6 +94,8 @@ def render_inbound(
             " --placement main"
             f"\n  Show its files and diffs: {workspace} show trax.files --record {record}"
             " (narrow: --param path=DIR/ or a glob, --param changed=true, --param file=NAME)"
+            f"\n  Open a terminal on your machine: {workspace} show trax.terminal"
+            " --param machine=NAME --param start=true"
             f"\n  Point at records: {workspace} highlight UUID[,UUID...]"
             " (highlight '' clears)"
             f"\n  Go to a view: {workspace} navigate '#/list/Issue' (or '#/graph',"
@@ -143,3 +150,24 @@ def _envelope_agent_message(text: str) -> str | None:
         return None
     message = from_plain(payload, dict[str, object]).get("agent_message")
     return message if isinstance(message, str) else None
+
+
+# A note's words are what its author wrote on the canvas, so they are quoted as data,
+# never read as a command.
+# Titles are what people wrote on the records, so they are quoted as data.
+def _render_marks(marks: Sequence[WorkspaceMark]) -> str:
+    """List the boxes drawn since the last line, one per line, with what they cover."""
+    lines = [
+        (
+            "\nBoxes drawn on the canvas since your last line"
+            " (`mark remove ID` takes one away):"
+        ),
+    ]
+    for mark in marks:
+        covers = [f"{r.kind}#{r.seq} {json.dumps(r.title)}" for r in mark.records]
+        covers += [f"{v.type} {v.id}" for v in mark.instances]
+        lines.append(
+            f"  {mark.id} by {mark.author} on {mark.page or 'no page'};"
+            f" covers: {', '.join(covers) or 'nothing'}",
+        )
+    return "\n".join(lines)

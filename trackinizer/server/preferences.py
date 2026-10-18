@@ -43,7 +43,6 @@ ASSISTANT_KEYS: Final = frozenset(
     {
         "theme",
         "skin",
-        "chat_style",
         "chat_side",
         "highlight_mentions",
         "terminal_font_size",
@@ -245,11 +244,6 @@ class Preferences(_Strict):
         ),
         json_schema_extra=SETTING,
     )
-    chat_style: Literal["default", "terminal"] = Field(
-        default="default",
-        description="How Chat is drawn: the app's own look, or as a terminal.",
-        json_schema_extra=SETTING,
-    )
     chat_side: Literal["left", "right"] = Field(
         default="left",
         description="The side of the workbench Chat stands on; the sidebar takes the other.",
@@ -263,9 +257,7 @@ class Preferences(_Strict):
     terminal_font_size: str = Field(
         default="13px",
         pattern=r"^[1-9][0-9]?(\.[0-9])?(px|pt)$",
-        description=(
-            "Chat's font size in the Terminal style, in px or pt: 13px, or 16pt."
-        ),
+        description=("The browser terminal's font size, in px or pt: 13px, or 16pt."),
         json_schema_extra=SETTING,
     )
     home: Literal["graph", "empty"] = Field(
@@ -387,7 +379,11 @@ async def write_preferences(
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         checked.model_dump(mode="json", include=set(chosen)),
-        sorted(key for key, value in change.items() if value is None),
+        # A retired key goes with the next write, so a stored value never lingers.
+        [
+            *sorted(key for key, value in change.items() if value is None),
+            "chat_style",
+        ],
         user_id,
     )
     return None if stored is None else stored_preferences(stored["preferences"])

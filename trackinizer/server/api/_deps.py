@@ -6,16 +6,21 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 import dataclasses
 import datetime
+import functools
 import uuid
 
+from trackinizer.server.capture_relay import CaptureRelay
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.chat_partials import ChatPartials
 from trackinizer.server.config import Config
+from trackinizer.server.terminal_record import TerminalRecorder
+from trackinizer.server.terminals import Terminal, TerminalHub
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
 
 if TYPE_CHECKING:
     from fastapi import FastAPI, Request
+    from starlette.requests import HTTPConnection
 
     from trackinizer.server.config import Assistant, ChatOrgs
     from trackinizer.server.inbound import InboundQueue
@@ -78,6 +83,70 @@ def get_hub(request: Request) -> ChatHub:
     return hub
 
 
+@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+class TerminalServices:
+    """The terminal hub and the recorder that is its observer."""
+
+    hub: TerminalHub
+    recorder: TerminalRecorder
+
+
+def terminal_services(app: FastAPI) -> TerminalServices:
+    """Return the app's terminal hub and recorder, made on first use.
+
+    Args:
+      app: The application, whose state holds the store.
+
+    Returns:
+      result: The hub and the recorder.
+
+    """
+    held: object = getattr(app.state, "terminals", None)
+    if isinstance(held, TerminalServices):
+        return held
+    store = cast("_State", app.state).store
+    recorder = TerminalRecorder(store)
+    services = TerminalServices(
+        hub=TerminalHub(
+            observer=recorder,
+            alive=functools.partial(_alive, store=store),
+        ),
+        recorder=recorder,
+    )
+    app.state.terminals = services
+    return services
+
+
+def get_terminals(request: HTTPConnection) -> TerminalServices:
+    """Return the terminal hub and recorder held on the app state.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The hub and the recorder.
+
+    """
+    return terminal_services(cast("FastAPI", request.app))
+
+
+def get_relay(request: Request) -> CaptureRelay:
+    """Return the canvas-capture relay held on the app state, made on first use.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The CaptureRelay.
+
+    """
+    app = cast("FastAPI", request.app)
+    relay: object = getattr(app.state, "relay", None)
+    if not isinstance(relay, CaptureRelay):
+        relay = app.state.relay = CaptureRelay()
+    return relay
+
+
 def get_partials(request: Request) -> ChatPartials:
     """Return the chats' answers in writing, held on the app state, made on first use.
 
@@ -121,6 +190,20 @@ def get_assistant(request: Request) -> Assistant | None:
     """
     config: object = getattr(cast("FastAPI", request.app).state, "config", None)
     return config.assistant if isinstance(config, Config) else None
+
+
+def auth_is_disabled(request: HTTPConnection) -> bool:
+    """Return whether the server runs with authentication off (``--no-auth``).
+
+    Args:
+      request: The request or WebSocket.
+
+    Returns:
+      disabled: True when every caller resolves to a synthetic admin.
+
+    """
+    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
+    return isinstance(config, Config) and config.auth_disabled
 
 
 def get_staff(request: Request) -> tuple[str, ...]:
@@ -275,3 +358,18 @@ def _jsonable(value: object) -> object:
 
 class _App(Protocol):
     state: _State
+
+
+async def _alive(term: Terminal, *, store: Store) -> bool:
+    """Whether the machine's credential is live and its owner an active user."""
+    async with store.engine.acquire() as conn:
+        return bool(
+            await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM machines m "
+                "JOIN machine_credentials c ON c.machine_id = m.id "
+                "JOIN users u ON u.email = m.owner "
+                "WHERE m.id = $1 AND c.revoked_at IS NULL "
+                "AND u.status = 'active' AND u.role IN ('writer', 'admin'))",
+                term.machine_id,
+            ),
+        )

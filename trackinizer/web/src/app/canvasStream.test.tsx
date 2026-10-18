@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
-import { useContext } from "react";
+import { useContext, useEffect } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
-import { createDefaultWorkspace, openWorkspaceEvents, type WorkspaceEventListener, type WorkspaceState } from "../api/workspaces";
+import { answerCapture, createDefaultWorkspace, openWorkspaceEvents, type WorkspaceEventListener, type WorkspaceState } from "../api/workspaces";
+import { captureStage } from "../canvasCapture/captureStage";
+import { CaptureContext } from "../canvasCapture/stageRegistry";
 import { recentTimings, resetTimings } from "../debug/timings";
 import { META } from "../detail/testing";
 import { LiveContext } from "../live";
@@ -17,7 +19,8 @@ import { setStation } from "../stations/store";
 import { CanvasStream } from "./canvasStream";
 import { useHighlighted } from "./highlights";
 
-vi.mock("../api/workspaces", () => ({ createDefaultWorkspace: vi.fn(), openWorkspaceEvents: vi.fn() }));
+vi.mock("../api/workspaces", () => ({ createDefaultWorkspace: vi.fn(), openWorkspaceEvents: vi.fn(), answerCapture: vi.fn() }));
+vi.mock("../canvasCapture/captureStage", () => ({ captureStage: vi.fn() }));
 
 const workspace: WorkspaceState = { id: "w1", name: "unnamed-workstream#1", conversation_id: null, page: null, revision: 3, focused_instance: null, visuals: [] };
 
@@ -235,7 +238,7 @@ test("a chat has no frames of its own: its session's change reaches the live lay
   expect(hub.change).toHaveBeenCalledTimes(2);
   expect(hub.change).toHaveBeenCalledWith("session-1");
   expect(invalidate).not.toHaveBeenCalled();
-  expect(Object.keys(stream).toSorted()).toEqual(["changed", "chat", "drop", "highlight", "navigate", "open", "preferences", "refuse", "workspace"]);
+  expect(Object.keys(stream).toSorted()).toEqual(["capture", "changed", "chat", "drop", "highlight", "navigate", "open", "preferences", "refuse", "workspace"]);
 });
 
 test("the stream's state drives the live layer's paused bar: down for 10 s pauses it, an open clears it", async () => {
@@ -255,4 +258,32 @@ test("the stream's state drives the live layer's paused bar: down for 10 s pause
   stream.open();
   expect(real.status()).toBe("connected");
   vi.useRealTimers();
+});
+
+/** A canvas, as far as the stream knows it: it offers a stage to the registry while mounted. */
+function OpenCanvas() {
+  const registry = useContext(CaptureContext);
+  useEffect(() => {
+    registry?.set({ stage: document.createElement("div"), boxes: () => [] });
+    return () => registry?.set(null);
+  }, [registry]);
+  return null;
+}
+
+test("an agent's request for a picture is answered with the open canvas, under the request's id", async () => {
+  const picture = { error: "stands in for a picture" };
+  vi.mocked(captureStage).mockResolvedValue(picture);
+  show(true, <OpenCanvas />);
+  const stream = await listener();
+  stream.capture("req-1", 40);
+  await waitFor(() => expect(answerCapture).toHaveBeenCalledWith("w1", "req-1", picture), { interval: 1 });
+  expect(captureStage).toHaveBeenCalledOnce();
+});
+
+test("a request for a picture while the canvas is not on screen is answered with why not", async () => {
+  show(true, <p>Settings</p>);
+  const stream = await listener();
+  stream.capture("req-2", 41);
+  await waitFor(() => expect(answerCapture).toHaveBeenCalledWith("w1", "req-2", { error: expect.stringContaining("No canvas is on screen") }), { interval: 1 });
+  expect(captureStage).not.toHaveBeenCalled();
 });

@@ -17,6 +17,7 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
 )
 from trackinizer.trax.run.adapters import scrape
+from trackinizer.types.line_capture import normalize
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
 
@@ -35,7 +36,7 @@ def _encoding(records: list[TraxRecord]) -> dict[str, object]:
 
 def test_every_line_becomes_a_record() -> None:
     """Normalization is total: no line is dropped, blank ones included."""
-    records = list(scrape.normalize(StringIO("one\n\nthree\n")))
+    records = list(normalize(StringIO("one\n\nthree\n")))
 
     assert isinstance(records[1], ContextClear)
     assert [r.text for r in records if isinstance(r, Stdout)] == [
@@ -52,7 +53,7 @@ def test_a_bare_stream_reads_as_output() -> None:
     The distinction is made at CAPTURE, where the fds still exist, and rides
     the record from there.
     """
-    records = list(scrape.normalize(StringIO("hello\n")))
+    records = list(normalize(StringIO("hello\n")))
 
     assert isinstance(records[2], Stdout)
 
@@ -62,7 +63,7 @@ def test_the_capture_rewrites_byte_exact() -> None:
     text = "first\nsecond line with  spaces\n\nlast"
 
     out = StringIO()
-    scrape.denormalize(scrape.normalize(StringIO(text)), out)
+    scrape.denormalize(normalize(StringIO(text)), out)
 
     assert out.getvalue() == text
 
@@ -85,14 +86,14 @@ def test_every_stream_writes_its_line_back() -> None:
 
 def test_a_capture_without_a_trailing_newline_is_recorded_as_such() -> None:
     """The final newline's absence is state, not a line to invent."""
-    records = list(scrape.normalize(StringIO("no trailing newline")))
+    records = list(normalize(StringIO("no trailing newline")))
 
     assert _encoding(records)["newline_terminated"] is False
 
 
 def test_an_empty_capture_reads_as_newline_terminated() -> None:
     """Nothing captured is not a truncated line."""
-    records = list(scrape.normalize(StringIO("")))
+    records = list(normalize(StringIO("")))
 
     assert not records
 
@@ -106,9 +107,9 @@ def test_reading_line_by_line_matches_reading_the_whole_stream() -> None:
     """
     lines = ["a\n", "b\n", "c"]
 
-    fed = [record for line in lines for record in scrape.normalize(StringIO(line))]
+    fed = [record for line in lines for record in normalize(StringIO(line))]
 
-    whole = list(scrape.normalize(StringIO("".join(lines))))
+    whole = list(normalize(StringIO("".join(lines))))
     assert [type(r).__name__ for r in fed if isinstance(r, Stdout)] == [
         type(r).__name__ for r in whole if isinstance(r, Stdout)
     ]
@@ -121,7 +122,7 @@ def test_a_foreign_record_writes_nothing() -> None:
     is what makes ``convert`` report the loss rather than inventing a line the
     command never printed.
     """
-    records = list(scrape.normalize(StringIO("kept\n")))
+    records = list(normalize(StringIO("kept\n")))
 
     out = StringIO()
     scrape.denormalize([*records, UserMessage(content="from elsewhere")], out)

@@ -2,29 +2,36 @@
 
 The registry records machines; listing and showing need the writer role, and
 changing the registry needs the admin role. On the host itself, ``connect`` joins
-and keeps the machine connected with the machine's own credential.
+and keeps the machine connected with the machine's own credential. ``connect`` with
+no name enrolls this computer as a personal machine of the signed-in user, and serves
+a terminal in the browser.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Final, cast, override
+from urllib.parse import urlsplit
 
 import argparse
 import re
+import socket
 import sys
 import time
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax.commands import Command, HelpPage
-from trackinizer.trax.context import cwd
+from trackinizer.trax.context import cwd, env
+from trackinizer.trax.profile import profile_for_server
 from trackinizer.trax.render import echo
 
 
 if TYPE_CHECKING:
-    from trackinizer.trax import machine_host
+    from trackinizer.trax import machine_host, terminal_host
+    from trackinizer.trax.terminal_host import TerminalHost
     from trackinizer.wire import wire_machines
+    from trackinizer.wire.wire_machine_host import JoinResponse
     from trackinizer.wire.wire_machines import Machine
 else:
     from wrapt import lazy_import
@@ -33,13 +40,14 @@ else:
     # pydantic build stays off the cold-start path of every other verb.
     wire_machines = lazy_import("trackinizer.wire.wire_machines")
     machine_host = lazy_import("trackinizer.trax.machine_host")
+    terminal_host = lazy_import("trackinizer.trax.terminal_host")
 
 
 MACHINE_WORD: Final = "machine"
 """The verb that selects this command, in matching, help and usage."""
 
 _FORMS: Final = (
-    "[NAME [FIELD [to VALUE|-|@FILE] | label add|del LABEL | del | connect]]"
+    "[NAME [FIELD [to VALUE|-|@FILE] | label add|del LABEL | del | connect] | connect]"
 )
 
 _USAGE: Final = f"usage: trax {MACHINE_WORD} {_FORMS}"
@@ -78,6 +86,7 @@ class Machines(Command):
             f"trax {MACHINE_WORD} NAME label del LABEL      remove a label",
             f"trax {MACHINE_WORD} NAME del                  unregister the machine",
             f"trax {MACHINE_WORD} NAME connect < TOKEN      join, then heartbeat",
+            f"trax {MACHINE_WORD} connect                   enroll this computer, serve a terminal",
         ),
         notes=(
             "A field left out of a set keeps its value; to '' clears one.",
@@ -89,6 +98,12 @@ class Machines(Command):
                 "connect reads the one-use enrollment token from stdin and saves the "
                 "machine credential for this user; it exits 0 once the machine is "
                 "revoked."
+            ),
+            (
+                "'connect' with no NAME names this computer by its short hostname, "
+                "enrolls it as your personal machine when it is new, and serves "
+                "terminals in the browser (TRAX_MACHINE_TERMINAL=1 for that run). "
+                "Needs the writer role."
             ),
             (
                 "A last word of help, -h or --help shows this page: set such a value "
@@ -122,6 +137,9 @@ class Machines(Command):
         words = [token.lower() for token in tokens]
         if not tokens:
             cls.run_list(client_factory)
+            return
+        if len(tokens) == 1 and words[0] == "connect":
+            cls.run_connect(client_factory, None)
             return
         name = tokens[0]
         _check_name(name)
@@ -274,21 +292,61 @@ class Machines(Command):
         echo(f"deleted: {MACHINE_WORD} {name}")
 
     @classmethod
-    def run_connect(cls, client_factory: Callable[[], Client], name: str) -> None:
+    def run_connect(
+        cls,
+        client_factory: Callable[[], Client],
+        name: str | None,
+    ) -> None:
         """Join as ``name`` when no credential is saved, then heartbeat until revoked.
 
         Args:
-          client_factory: Callable returning a trax Client; only its URL is used.
-          name: Machine name.
+          client_factory: Callable returning a trax Client; its URL is used, and
+            with no ``name`` its key enrolls this computer.
+          name: Machine name; ``None`` names this computer by its hostname, enrolls
+            it as a personal machine if new, and serves terminals.
 
         """
-        url = client_factory().base_url
+        client = client_factory()
+        url = client.base_url
+        own = name is None
+        name = _host_name() if name is None else name
+        serve = own or env("TRAX_MACHINE_TERMINAL") == "1"
         machine_host.connect(
             name,
             client_for=lambda key: Client(url, api_key=key),
-            read_token=sys.stdin.readline,
+            read_token=(
+                (lambda: client.enroll_machine(name).token)
+                if own
+                else sys.stdin.readline
+            ),
             sleep=time.sleep,
+            terminals_for=(
+                (lambda joined: _terminal_host(name, url, joined)) if serve else None
+            ),
         )
+
+
+def _host_name() -> str:
+    """Return this computer's short hostname as a machine name."""
+    name = re.sub(r"[^a-z0-9-]", "-", socket.gethostname().split(".")[0].lower())
+    name = name.strip("-")[:63]
+    _check_name(name)
+    return name
+
+
+def _terminal_host(name: str, url: str, joined: JoinResponse) -> TerminalHost:
+    """Make the terminal server for a joined machine; its shells name the server."""
+    # A URL with credentials in it would be sent to every ssh server by ``SendEnv LC_*``.
+    trax_env = {} if "@" in urlsplit(url).netloc else {"LC_TRAX_SERVER": url}
+    if (profile := profile_for_server(url)) is not None:
+        trax_env["TRACKINIZER_PROFILE"] = profile
+    return terminal_host.TerminalHost(
+        name=name,
+        server_url=url,
+        credential=joined.credential,
+        client_for=lambda key: Client(url, api_key=key),
+        trax_env=trax_env,
+    )
 
 
 def _check_name(name: str) -> None:

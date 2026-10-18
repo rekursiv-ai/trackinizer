@@ -41,13 +41,13 @@ test("a change shows at once, is sent as only its keys, and the server's answer 
 test("a profile read while a change is on its way does not undo it", async () => {
   let answer: ((response: Response) => void) | null = null;
   stubFetch(() => new Promise<Response>((resolve) => (answer = resolve)));
-  const kept = choosePreferences({ chat_style: "terminal" });
+  const kept = choosePreferences({ chat_side: "right" });
   receivePreferences(DEFAULTS);
-  expect(preferences().chat_style).toBe("terminal");
+  expect(preferences().chat_side).toBe("right");
   await vi.waitFor(() => expect(answer).not.toBeNull(), { interval: 1 });
-  answer!(Response.json({ ...DEFAULTS, chat_style: "terminal" }));
+  answer!(Response.json({ ...DEFAULTS, chat_side: "right" }));
   expect(await kept).toBe(true);
-  expect(preferences().chat_style).toBe("terminal");
+  expect(preferences().chat_side).toBe("right");
 });
 
 test("a change the server did not take stays on the page, and the next profile read brings the server's back", async () => {
@@ -67,9 +67,9 @@ test("what this browser kept before is sent once, then forgotten", async () => {
   const sent = server();
   await adoptLegacyPreferences("ada@example.com");
   expect(patches(sent)).toEqual([["PATCH", "/api/me/preferences", {
-    theme: "light", chat_style: "terminal", chat_side: "right", highlight_mentions: false,
+    theme: "light", chat_side: "right", highlight_mentions: false,
   }]]);
-  expect(preferences()).toEqual({ ...DEFAULTS, theme: "light", chat_style: "terminal", chat_side: "right", highlight_mentions: false });
+  expect(preferences()).toEqual({ ...DEFAULTS, theme: "light", chat_side: "right", highlight_mentions: false });
   // Another user's switch on this browser is theirs to send.
   expect(Object.keys(localStorage)).toEqual(["trackinizer.v2.highlight-mentions.grace@example.com"]);
   await adoptLegacyPreferences("ada@example.com");
@@ -93,6 +93,16 @@ test("a profile from a server older than a key leaves that key's default", () =>
   const { stars: _, ...older } = { ...DEFAULTS, theme: "light" as const };
   receivePreferences(older);
   expect(preferences()).toEqual({ ...DEFAULTS, theme: "light" });
+});
+
+test("a key an older server still sends, as the retired chat_style, is dropped and breaks nothing", async () => {
+  receivePreferences({ ...DEFAULTS, theme: "light", chat_style: "terminal" } as Partial<Preferences>);
+  expect(preferences().theme).toBe("light");
+  expect("chat_style" in preferences()).toBe(false);
+  server({ ...DEFAULTS, chat_style: "terminal", chat_side: "right" } as Preferences);
+  expect(await choosePreferences({ chat_side: "right" })).toBe(true);
+  expect("chat_style" in preferences()).toBe(false);
+  expect(preferences().chat_side).toBe("right");
 });
 
 test("a value equal to the one shown keeps its object, so what reads only that key does not render again", () => {

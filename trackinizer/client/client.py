@@ -79,6 +79,7 @@ if TYPE_CHECKING:
         wire_metrics_query,
         wire_session_ir,
         wire_sessions,
+        wire_terminals,
         wire_variables,
     )
     from trackinizer.wire.filters import Filter
@@ -111,6 +112,7 @@ if TYPE_CHECKING:
         SessionStartResponse,
         WorkspaceMessageContext,
     )
+    from trackinizer.wire.wire_terminals import TerminalWait
     from trackinizer.wire.wire_variables import Variable
 else:
     from wrapt import lazy_import
@@ -130,6 +132,7 @@ else:
     # Same lazy-bind for ``wire_machines``: only the machine methods touch it.
     wire_machines = lazy_import("trackinizer.wire.wire_machines")
     wire_machine_host = lazy_import("trackinizer.wire.wire_machine_host")
+    wire_terminals = lazy_import("trackinizer.wire.wire_terminals")
     # Same lazy-bind for ``wire_variables``: only the variable methods touch it.
     wire_variables = lazy_import("trackinizer.wire.wire_variables")
     # Same lazy-bind for ``wire_code``: only the code-store methods touch it.
@@ -1993,6 +1996,21 @@ class Client:
         )
         return dict(_require_mapping(windowed, where))
 
+    def capture_workspace(self, workspace_id: uuid.UUID) -> dict[str, PlainTree]:
+        """Ask the canvas owner's open page for a picture of the canvas.
+
+        Args:
+          workspace_id: The canvas.
+
+        Returns:
+          capture: ``width``, ``height``, ``mime``, ``data`` (base64), the visuals
+            ``not_captured`` and the red ``boxes`` on it. A 424 ``ClientError``
+            says why there is no picture.
+
+        """
+        where = f"/api/workspaces/{workspace_id}/captures"
+        return dict(_require_mapping(self.post(where), where))
+
     def _revision_of(self, workspace_id: uuid.UUID) -> int:
         """Return the canvas's live revision."""
         where = f"/api/workspaces/{workspace_id}"
@@ -2103,7 +2121,9 @@ class Client:
         )
 
     def enroll_machine(self, name: str) -> EnrollResponse:
-        """Register a machine if new and issue a one-use enrollment token (admin).
+        """Register a machine if new and issue a one-use enrollment token.
+
+        A writer's own new machine is personal: only they and admins see it.
 
         Args:
           name: Machine name.
@@ -2194,8 +2214,38 @@ class Client:
         )
         return _validate_model(wire_machine_host.HeartbeatResponse, response, where)
 
+    def wait_terminals(
+        self,
+        machine_id: uuid.UUID,
+        *,
+        instance: uuid.UUID,
+        wait_sec: float,
+    ) -> TerminalWait | None:
+        """Hold up to ``wait_sec`` for a terminal to open, as the machine's host.
+
+        Args:
+          machine_id: The machine's id, from joining.
+          instance: The host's id, which must be the machine's current one.
+          wait_sec: How long the server may hold the request; the read timeout
+            exceeds it, or the client would abort the very wait it asked for.
+
+        Returns:
+          terminal: The terminal to open, or ``None`` when none came in time.
+
+        """
+        where = wire_terminals.MACHINE_TERMINAL_WAIT_PATH.format(machine_id=machine_id)
+        response = self._request(
+            "GET",
+            where,
+            params={"instance": str(instance), "wait_sec": wait_sec},
+            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+        )
+        if response is None:
+            return None
+        return _validate_model(wire_terminals.TerminalWait, response, where)
+
     def revoke_machine(self, name: str) -> None:
-        """Take a machine out of service (admin); the server answers 404 when absent."""
+        """Take a machine out of service (admin or owner); 404 when absent."""
         self._request(
             "POST",
             wire_machine_host.REVOKE_PATH.format(name=quote(name, safe="")),

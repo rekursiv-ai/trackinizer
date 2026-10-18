@@ -18,7 +18,7 @@ test("Chat starts on the left, shown, and not full screen", async () => {
 });
 
 test("the side is the user's preference: a flip shows at once and is sent; hidden and full screen are this tab's alone", async () => {
-  const sent = stubFetch(() => Response.json({ theme: "dark", chat_style: "default", chat_side: "right", highlight_mentions: true, terminal_font_size: "13px" }));
+  const sent = stubFetch(() => Response.json({ theme: "dark", chat_side: "right", highlight_mentions: true, terminal_font_size: "13px" }));
   const first = await fresh();
   first.flipChatSide();
   first.setChatHidden(true);

@@ -91,6 +91,24 @@ def env(name: str) -> str | None:
     return os.environ.get(name)
 
 
+def trax_env(name: str) -> str | None:
+    """Read ``TRAX_<name>``, else ``LC_TRAX_<name>``, for this invocation.
+
+    The ``LC_`` spelling is the one that survives ``ssh``: stock clients send ``LC_*``
+    and stock servers accept it, so a shell that came through ``ssh`` from a trax
+    terminal still knows its station and server.
+
+    Args:
+      name: The variable name without its ``TRAX_`` prefix.
+
+    Returns:
+      value: The first of the two that is set, or ``None``.
+
+    """
+    value = env(f"TRAX_{name}")
+    return value if value is not None else env(f"LC_TRAX_{name}")
+
+
 def cwd() -> Path:
     """Return the directory relative paths in this invocation resolve against."""
     return Path(bound) if (bound := CWD.get()) else Path.cwd()

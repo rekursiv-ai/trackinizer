@@ -10,6 +10,7 @@ import {
   getWorkspace,
   type WorkspaceState,
 } from "../api/workspaces";
+import { CommandRegistry, CommandRegistryContext } from "../commands/registry";
 import { ProfileContext } from "../app/boot";
 import { WorkbenchSlot } from "../app/workbenchSlot";
 import { PROFILE } from "../detail/testing";
@@ -17,6 +18,7 @@ import { createQueryClient } from "../app/queryClient";
 import { newerWorkspace } from "../stations/cache";
 import { setStation } from "../stations/store";
 import { setStationLayout } from "../api/stations";
+import { CaptureContext, CaptureRegistry } from "../canvasCapture/stageRegistry";
 import { Canvas } from "./Canvas";
 import { forgetHistories } from "./canvasHistory";
 import { currentChatColumn, setChatHidden } from "./chatColumnState";
@@ -44,9 +46,12 @@ beforeAll(async () => {
   await Promise.all([import("./Timeline"), import("./ContextGraph")]);
 });
 
+
+/** The canvas offers its pen's Escape as a command, which needs a registry above it. */
+const commands = new CommandRegistry();
 /** The canvas shows the signed-in user's state, so every render has a profile above it; its controls stand in the sidebar's slot, beside it. */
 function render(ui: ReactElement) {
-  return renderBare(ui, { wrapper: ({ children }: { children: ReactNode }) => <ProfileContext value={PROFILE}>{children}<WorkbenchSlot /></ProfileContext> });
+  return renderBare(ui, { wrapper: ({ children }: { children: ReactNode }) => <CommandRegistryContext value={commands}><ProfileContext value={PROFILE}>{children}<WorkbenchSlot /></ProfileContext></CommandRegistryContext> });
 }
 
 const workspace: WorkspaceState = {
@@ -123,6 +128,28 @@ test("Browse's initial children mount connected and can autofocus before a saved
   render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><Content /></Canvas></QueryClientProvider>);
   expect(connected.mock.calls).toEqual([[true]]);
   expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Initial Browse draft" }));
+});
+
+test("the canvas offers its stage and the boxes on it to an agent's request for a picture, until it unmounts", async () => {
+  browseOnly();
+  const boxed: WorkspaceState = { ...workspace, marks: [
+    { id: "b1", seq: 1, author: "jp@example.com", at: "2026-10-17T10:00:00Z", points: [{ x: 0.1, y: 0.1 }, { x: 0.4, y: 0.4 }] },
+    { id: "b2", seq: 2, author: "agent", at: "2026-10-17T10:01:00Z", points: [{ x: 0.5, y: 0.5 }, { x: 0.9, y: 0.9 }] },
+  ] };
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(boxed);
+  const registry = new CaptureRegistry();
+  const view = render(<QueryClientProvider client={createQueryClient(() => {})}><CaptureContext value={registry}><Canvas><p>Page</p></Canvas></CaptureContext></QueryClientProvider>);
+  await screen.findByText("Page");
+  await waitFor(() => expect(registry.get()?.boxes()).toHaveLength(2), { interval: 1 });
+
+  const source = registry.get()!;
+  expect(source.stage).toBe(document.querySelector(".visual-stage"));
+  expect(source.boxes()).toEqual([
+    { id: "b1", author: "person", points: boxed.marks![0]!.points },
+    { id: "b2", author: "agent", points: boxed.marks![1]!.points },
+  ]);
+  view.unmount();
+  expect(registry.get()).toBeNull();
 });
 
 test("Browse keeps focus when an unrelated Canvas stage measurement renders", async () => {
@@ -334,7 +361,7 @@ test("a canvas with no sidebar to stand in draws its page all the same", async (
   browseOnly();
   vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
   vi.mocked(getWorkspace).mockResolvedValue(workspace);
-  renderBare(<QueryClientProvider client={createQueryClient(() => {})}><ProfileContext value={PROFILE}><Canvas><div>Browse content</div></Canvas></ProfileContext></QueryClientProvider>);
+  renderBare(<QueryClientProvider client={createQueryClient(() => {})}><CommandRegistryContext value={commands}><ProfileContext value={PROFILE}><Canvas><div>Browse content</div></Canvas></ProfileContext></CommandRegistryContext></QueryClientProvider>);
   expect(await screen.findByText("Browse content")).toBeTruthy();
   expect(screen.queryByRole("group", { name: "Workbench visuals" })).toBeNull();
 });
@@ -577,7 +604,7 @@ test("a dock button moves a tile to that side of the page at once; the page itse
   // The left column stands before the page's strip, and its button has nowhere left to go.
   const stage = document.querySelector(".visual-stage")!;
   expect([...stage.children].filter((child) => !child.classList.contains("visual-tile-browse")).map((child) => child.className)).toEqual([
-    "visual-side-column visual-side-column-left", "visual-column-edge", "visual-main-strip", "visual-snap", "visual-drag-ghost"]);
+    "visual-side-column visual-side-column-left", "visual-column-edge", "visual-main-strip", "visual-snap", "visual-drag-ghost", "mark-layer"]);
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Dock Note at the left" }).disabled).toBe(true), { interval: 1 });
 });
 

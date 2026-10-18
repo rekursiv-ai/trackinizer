@@ -1,6 +1,7 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { AlertDialog } from "radix-ui";
 import { Icon } from "../ui/icons";
+import type { Boxes } from "../canvasMarks/useBoxes";
 import type { CanvasTab } from "./canvasTabs";
 
 /** What the bar does; the canvas does each. */
@@ -19,9 +20,10 @@ export type CanvasBarActions = {
  * The canvas's top row, as a browser's: Back and Forward step through what the
  * open tab showed, Home shows what the user's `home` setting names (the graph,
  * or nothing), and the tabs each hold a canvas of their own. A double click
- * names a tab in place; × closes it while another is left.
+ * names a tab in place; × closes it while another is left. At the left end, the
+ * pen draws red boxes on the page (Escape stops) and the eraser takes every box away.
  */
-export function CanvasBar({ tabs, open, back, forward, moving, home, canAdd, actions }: {
+export function CanvasBar({ tabs, open, back, forward, moving, home, canAdd, boxes, actions }: {
   readonly tabs: readonly CanvasTab[];
   readonly open: string;
   readonly back: boolean;
@@ -29,6 +31,7 @@ export function CanvasBar({ tabs, open, back, forward, moving, home, canAdd, act
   readonly moving: boolean;
   readonly home: "graph" | "empty";
   readonly canAdd: boolean;
+  readonly boxes: Boxes;
   readonly actions: CanvasBarActions;
 }) {
   const [naming, setNaming] = useState<{ readonly id: string; readonly value: string } | null>(null);
@@ -60,6 +63,11 @@ export function CanvasBar({ tabs, open, back, forward, moving, home, canAdd, act
 
   return (
     <div className="canvas-bar" role="toolbar" aria-label="Canvas">
+      <button className="canvas-bar-button" type="button" aria-label="Draw a box" aria-pressed={boxes.drawing}
+        title="Draw a red box on this page; click one to remove it (Escape stops drawing)"
+        disabled={boxes.page === null} onClick={boxes.toggle}><Icon name="edit" size={15} /></button>
+      <button className="canvas-bar-button" type="button" aria-label="Clear all boxes" title="Clear all boxes on this page"
+        disabled={boxes.shown.length === 0} onClick={boxes.clearAll}><Icon name="eraser" size={15} /></button>
       <button className="canvas-bar-button" type="button" aria-label="Back" title="Back to what this tab showed before"
         disabled={!back || moving} onClick={actions.back}><Icon name="arrowLeft" size={15} /></button>
       <button className="canvas-bar-button" type="button" aria-label="Forward" title="Forward again"

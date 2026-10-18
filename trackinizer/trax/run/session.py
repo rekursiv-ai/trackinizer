@@ -57,7 +57,7 @@ from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.custom_types import Adapter, StreamAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
-from trackinizer.trax.run.adapters.iostream import IOStreamAdapter, LineCapture
+from trackinizer.trax.run.adapters.iostream import IOStreamAdapter
 from trackinizer.trax.run.inbound import render_inbound
 from trackinizer.trax.run.placement import place_run, placement_env
 from trackinizer.trax.run.redact import Redactor, redactor_from_environ
@@ -71,6 +71,7 @@ from trackinizer.trax.run.sink import (
 )
 from trackinizer.trax.run.slash import SlashCommand, SlashCommandDetector
 from trackinizer.trax.run.worktree_diff import WorktreeDiff, open_worktree_diff
+from trackinizer.types.line_capture import LineCapture
 
 
 if TYPE_CHECKING:

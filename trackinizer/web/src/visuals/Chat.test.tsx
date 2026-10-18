@@ -17,7 +17,6 @@ import { LiveContext } from "../live";
 import type { LiveHub } from "../live/hub";
 import type { LiveQuery } from "../live/serial";
 import { startTrail } from "../router/trail";
-import { chooseChatStyle } from "../chatStyle";
 import { preferences, receivePreferences, sendWaiting } from "../preferences";
 import { Chat } from "./Chat";
 import { setStation, currentStation } from "../stations/store";
@@ -54,6 +53,8 @@ vi.mock("../api/sessions", async (original) => ({
   readSessionRecords: vi.fn(),
   setSessionAudience: vi.fn(),
 }));
+vi.mock("../api/terminals", () => ({ listTerminalMachines: vi.fn(async () => ({ machines: [], live: null })) }));
+vi.mock("./Terminal", () => ({ TerminalView: () => <div>terminal view</div> }));
 vi.mock("../api/detail", () => ({ getDetail: vi.fn(), findRef: vi.fn() }));
 
 const WORKSPACE_ID = "c5286865-67b6-4bd8-ab51-e06e10c326c5";
@@ -546,9 +547,6 @@ test("a relay line reads as \"you → lead-2: text\", in its own style, with no 
   expect(mine.className).not.toContain("chat-line-assistant");
   expect(within(mine).queryByRole("button", { name: "Fork from here" })).toBeNull();
   expect(screen.getByText(/stop/).closest("article")!.textContent).toBe("grace → lead-3: stop");
-  act(() => chooseChatStyle("terminal"));
-  expect(mine.querySelector(".chat-prompt")).toBeNull();
-  act(() => chooseChatStyle("default"));
 });
 
 test("Chat asks its partner: the box reads Ask <partner>", () => {
@@ -1919,19 +1917,6 @@ test("the switch is honoured while a lookup is under way", async () => {
   expect(marked(highlights)).toEqual([]);
 });
 
-test("in the Terminal style a user's line, mine or another's, follows a shell prompt, and an answer has none", async () => {
-  open("c1");
-  hold("c1", said(0, ME, "my question"), answered(1, "an answer"), said(2, GRACE, "and mine"));
-  shell();
-  await screen.findByText("an answer");
-  expect(document.querySelector(".chat-prompt")).toBeNull();
-  act(() => chooseChatStyle("terminal"));
-  const prompts = Array.from(document.querySelectorAll(".chat-prompt"), (prompt) => prompt.parentElement!.textContent);
-  expect(prompts).toEqual(["ada@localhost:[unnamed-workstream#1]$ my question", "grace@localhost:[unnamed-workstream#1]$ and mine"]);
-  act(() => chooseChatStyle("default"));
-  expect(document.querySelector(".chat-prompt")).toBeNull();
-});
-
 test("a recap whose last answer proposes a next experiment offers to launch it, sending the canned ask", async () => {
   vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
   open("c1");
@@ -2022,4 +2007,34 @@ test("hovering a stored line shows when it was sent, in the reader's own time; a
   const pending = document.querySelector(".chat-line-pending");
   expect(pending).not.toBeNull();
   expect(pending!.getAttribute("title")).toBeNull();
+});
+
+test("the header's terminal button flips Chat to the terminal side and back, keeping the draft", async () => {
+  shell();
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "half a thought" } });
+  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
+  const side = await screen.findByRole("region", { name: "Terminal", hidden: true });
+  expect(side.hasAttribute("hidden")).toBe(false);
+  expect(document.querySelector(".chat-panel")!.hasAttribute("hidden")).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
+  expect(screen.getByRole("region", { name: "Chat", hidden: true }).hasAttribute("hidden")).toBe(false);
+  expect(side.hasAttribute("hidden")).toBe(true);
+  expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("half a thought");
+});
+
+test("the flip is remembered for the station and no terminal side is mounted before the first flip", () => {
+  shell();
+  expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
+  expect(localStorage.getItem(`trackinizer.chat.flip.${WORKSPACE_ID}`)).toBe("terminal");
+});
+
+test("the terminal side belongs to its station: another station never shows this one's shell", async () => {
+  const station = shell();
+  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
+  await screen.findByRole("region", { name: "Terminal", hidden: true });
+  station.again({ ...workspace, id: "w-other" });
+  expect(document.querySelector(".chat-terminal-side")).toBeNull();
+  station.again(workspace);
+  expect(document.querySelector(".chat-terminal-side")).not.toBeNull();
 });

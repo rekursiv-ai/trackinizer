@@ -37,6 +37,26 @@
       "Actor": {
         "type": "string"
       },
+      "AddMark": {
+        "additionalProperties": false,
+        "description": "Draw one box. It commutes with every other, so no revision is expected.",
+        "properties": {
+          "kind": {
+            "const": "mark",
+            "title": "Kind",
+            "type": "string"
+          },
+          "mark": {
+            "$ref": "#/components/schemas/NewMark"
+          }
+        },
+        "required": [
+          "kind",
+          "mark"
+        ],
+        "title": "AddMark",
+        "type": "object"
+      },
       "AddonCatalogBody": {
         "description": "The addons this deployment runs.",
         "properties": {
@@ -991,6 +1011,86 @@
         "title": "CanvasTab",
         "type": "object"
       },
+      "CaptureBox": {
+        "additionalProperties": false,
+        "description": "A red box that stood on the canvas when the picture was taken.",
+        "properties": {
+          "author": {
+            "enum": [
+              "person",
+              "agent"
+            ],
+            "title": "Author",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "author"
+        ],
+        "title": "CaptureBox",
+        "type": "object"
+      },
+      "CaptureImage": {
+        "additionalProperties": false,
+        "description": "The canvas as the person sees it.",
+        "properties": {
+          "boxes": {
+            "items": {
+              "$ref": "#/components/schemas/CaptureBox"
+            },
+            "maxItems": 50,
+            "title": "Boxes",
+            "type": "array"
+          },
+          "data": {
+            "title": "Data",
+            "type": "string"
+          },
+          "height": {
+            "maximum": 4096.0,
+            "minimum": 1.0,
+            "title": "Height",
+            "type": "integer"
+          },
+          "mime": {
+            "enum": [
+              "image/png",
+              "image/jpeg"
+            ],
+            "title": "Mime",
+            "type": "string"
+          },
+          "not_captured": {
+            "items": {
+              "maxLength": 80,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Not Captured",
+            "type": "array"
+          },
+          "width": {
+            "maximum": 4096.0,
+            "minimum": 1.0,
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "width",
+          "height",
+          "mime",
+          "data"
+        ],
+        "title": "CaptureImage",
+        "type": "object"
+      },
       "Change": {
         "description": "An append-only audit row, chained to its cause via ``caused_by``.\n\nOn the Python side the flat ``old_*`` / ``new_*`` columns collapse into\ntwo nested :class:`Snapshot` objects. The populated fields in each name\nthe columns the event touched; a NULL on one side means the value came\ninto being or ceased to exist. The schema CHECK constraints decide which\ndeltas a given ``kind`` may carry.\n\n``old`` / ``new`` is the temporal pair, kept distinct from\n``edges.from_id`` / ``edges.to_id``, which are graph endpoints in a\ndifferent table.\n\nThe per-event USD spend is the difference between the sides:\n:attr:`marginal_cost` returns ``new.marginal_cost - old.marginal_cost``,\ntreating a ``None`` side as ``Cost()``.",
         "properties": {
@@ -1461,6 +1561,35 @@
           "owner"
         ],
         "title": "ClaimNextIssue",
+        "type": "object"
+      },
+      "ClearMarks": {
+        "additionalProperties": false,
+        "description": "Take the boxes of one page away, or every box. No revision is expected.",
+        "properties": {
+          "kind": {
+            "const": "clear_marks",
+            "title": "Kind",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "ClearMarks",
         "type": "object"
       },
       "CodeBlob": {
@@ -2441,6 +2570,10 @@
             "title": "Expires At",
             "type": "string"
           },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
           "token": {
             "title": "Token",
             "type": "string"
@@ -2448,7 +2581,8 @@
         },
         "required": [
           "token",
-          "expires_at"
+          "expires_at",
+          "owner"
         ],
         "title": "EnrollResponse",
         "type": "object"
@@ -4636,6 +4770,34 @@
         "title": "LineagePage",
         "type": "object"
       },
+      "LiveTerminal": {
+        "additionalProperties": false,
+        "description": "A terminal that is open now.",
+        "properties": {
+          "machine": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+            "title": "Machine",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "terminal_id": {
+            "format": "uuid",
+            "title": "Terminal Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "terminal_id",
+          "session_id",
+          "machine"
+        ],
+        "title": "LiveTerminal",
+        "type": "object"
+      },
       "LockBody": {
         "description": "Request body for ``PUT /api/admin/inquiries/{id}/lock``.",
         "properties": {
@@ -4721,6 +4883,17 @@
             "title": "Name",
             "type": "string"
           },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
           "role": {
             "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
             "title": "Role",
@@ -4791,6 +4964,17 @@
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
             "title": "Name",
             "type": "string"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
           },
           "role": {
             "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
@@ -4936,6 +5120,115 @@
           "ir_id"
         ],
         "title": "ManifestBody",
+        "type": "object"
+      },
+      "Mark": {
+        "additionalProperties": false,
+        "description": "One red box on a canvas. Its ``page`` is where it was drawn, and where it shows.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "covers": {
+            "$ref": "#/components/schemas/MarkCovers"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/MarkPoint"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "title": "Points",
+            "type": "array"
+          },
+          "seq": {
+            "minimum": 1.0,
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "points",
+          "id",
+          "seq",
+          "author",
+          "at"
+        ],
+        "title": "Mark",
+        "type": "object"
+      },
+      "MarkCovers": {
+        "additionalProperties": false,
+        "description": "What lies under a mark, read from the page when it was drawn.",
+        "properties": {
+          "instances": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 12,
+            "title": "Instances",
+            "type": "array"
+          },
+          "records": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "title": "MarkCovers",
+        "type": "object"
+      },
+      "MarkPoint": {
+        "additionalProperties": false,
+        "description": "A place on the stage, as fractions of its width and height.",
+        "properties": {
+          "x": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "MarkPoint",
         "type": "object"
       },
       "MetricAxis": {
@@ -5346,6 +5639,42 @@
         "title": "Navigate",
         "type": "object"
       },
+      "NewMark": {
+        "additionalProperties": false,
+        "description": "A box as its drawer sends it: the server adds who, when, which and where.",
+        "properties": {
+          "covers": {
+            "$ref": "#/components/schemas/MarkCovers"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/MarkPoint"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "title": "Points",
+            "type": "array"
+          }
+        },
+        "required": [
+          "points"
+        ],
+        "title": "NewMark",
+        "type": "object"
+      },
       "NewWorkspace": {
         "additionalProperties": false,
         "description": "Optional workstream for a newly opened station.",
@@ -5366,17 +5695,75 @@
         "title": "NewWorkspace",
         "type": "object"
       },
+      "OpenTerminal": {
+        "additionalProperties": false,
+        "description": "Open a terminal on one of the caller's machines.",
+        "properties": {
+          "cols": {
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Cols",
+            "type": "integer"
+          },
+          "machine": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+            "title": "Machine",
+            "type": "string"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "maxLength": 63,
+                "pattern": "^[\\x20-\\x7e]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By"
+          },
+          "rows": {
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Rows",
+            "type": "integer"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace"
+          }
+        },
+        "required": [
+          "machine",
+          "rows",
+          "cols"
+        ],
+        "title": "OpenTerminal",
+        "type": "object"
+      },
       "Operation": {
         "discriminator": {
           "mapping": {
             "chat": "#/components/schemas/ChatWindow",
+            "clear_marks": "#/components/schemas/ClearMarks",
             "focus": "#/components/schemas/FocusVisual",
             "hide": "#/components/schemas/HideVisual",
             "highlight": "#/components/schemas/Highlight",
+            "mark": "#/components/schemas/AddMark",
             "navigate": "#/components/schemas/Navigate",
             "partner": "#/components/schemas/ChoosePartner",
             "place": "#/components/schemas/PlaceVisual",
             "preferences": "#/components/schemas/SetPreferences",
+            "remove_mark": "#/components/schemas/RemoveMark",
             "show": "#/components/schemas/ShowVisual"
           },
           "propertyName": "kind"
@@ -5408,6 +5795,15 @@
           },
           {
             "$ref": "#/components/schemas/ChoosePartner"
+          },
+          {
+            "$ref": "#/components/schemas/AddMark"
+          },
+          {
+            "$ref": "#/components/schemas/RemoveMark"
+          },
+          {
+            "$ref": "#/components/schemas/ClearMarks"
           }
         ]
       },
@@ -5649,17 +6045,6 @@
             "type": "string",
             "x-setting": true
           },
-          "chat_style": {
-            "default": "default",
-            "description": "How Chat is drawn: the app's own look, or as a terminal.",
-            "enum": [
-              "default",
-              "terminal"
-            ],
-            "title": "Chat Style",
-            "type": "string",
-            "x-setting": true
-          },
           "collapsed": {
             "default": [],
             "description": "The sections you folded, by key.",
@@ -5797,7 +6182,7 @@
           },
           "terminal_font_size": {
             "default": "13px",
-            "description": "Chat's font size in the Terminal style, in px or pt: 13px, or 16pt.",
+            "description": "The browser terminal's font size, in px or pt: 13px, or 16pt.",
             "pattern": "^[1-9][0-9]?(\\.[0-9])?(px|pt)$",
             "title": "Terminal Font Size",
             "type": "string",
@@ -6287,6 +6672,28 @@
           "seq"
         ],
         "title": "RelationTarget",
+        "type": "object"
+      },
+      "RemoveMark": {
+        "additionalProperties": false,
+        "description": "Take one box away, whoever drew it; one already gone is no change.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "remove_mark",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "RemoveMark",
         "type": "object"
       },
       "RoleChangeBody": {
@@ -9444,6 +9851,178 @@
         "title": "TabVisual",
         "type": "object"
       },
+      "TerminalMachine": {
+        "additionalProperties": false,
+        "description": "One machine the caller owns, and whether it can take a terminal now.",
+        "properties": {
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "name": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MachineStatus"
+          },
+          "terminal_ready": {
+            "title": "Terminal Ready",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "terminal_ready",
+          "confirmed"
+        ],
+        "title": "TerminalMachine",
+        "type": "object"
+      },
+      "TerminalMachines": {
+        "additionalProperties": false,
+        "description": "The caller's machines, and their live terminal for the asked station.",
+        "properties": {
+          "live": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LiveTerminal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "machines": {
+            "items": {
+              "$ref": "#/components/schemas/TerminalMachine"
+            },
+            "title": "Machines",
+            "type": "array"
+          }
+        },
+        "required": [
+          "machines"
+        ],
+        "title": "TerminalMachines",
+        "type": "object"
+      },
+      "TerminalOpened": {
+        "additionalProperties": false,
+        "description": "A terminal was queued for the host; attach with the ticket.",
+        "properties": {
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "terminal_id": {
+            "format": "uuid",
+            "title": "Terminal Id",
+            "type": "string"
+          },
+          "ticket": {
+            "title": "Ticket",
+            "type": "string"
+          }
+        },
+        "required": [
+          "terminal_id",
+          "session_id",
+          "ticket"
+        ],
+        "title": "TerminalOpened",
+        "type": "object"
+      },
+      "TerminalTicket": {
+        "additionalProperties": false,
+        "description": "A one-use ticket to attach to a live terminal.",
+        "properties": {
+          "ticket": {
+            "title": "Ticket",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket"
+        ],
+        "title": "TerminalTicket",
+        "type": "object"
+      },
+      "TerminalWait": {
+        "additionalProperties": false,
+        "description": "An open request, as the host receives it.",
+        "properties": {
+          "cols": {
+            "title": "Cols",
+            "type": "integer"
+          },
+          "opener": {
+            "title": "Opener",
+            "type": "string"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested By"
+          },
+          "rows": {
+            "title": "Rows",
+            "type": "integer"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "terminal_id": {
+            "format": "uuid",
+            "title": "Terminal Id",
+            "type": "string"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace"
+          },
+          "workstream": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workstream"
+          }
+        },
+        "required": [
+          "terminal_id",
+          "session_id",
+          "opener",
+          "rows",
+          "cols"
+        ],
+        "title": "TerminalWait",
+        "type": "object"
+      },
       "TimelineDirection": {
         "additionalProperties": false,
         "description": "One direct Issue direction and its capped results.",
@@ -10083,6 +10662,18 @@
             "title": "Params",
             "type": "object"
           },
+          "placed_by": {
+            "anyOf": [
+              {
+                "maxLength": 320,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placed By"
+          },
           "placement": {
             "$ref": "#/components/schemas/Placement",
             "default": "main"
@@ -10153,6 +10744,79 @@
         "title": "WorkspaceConflict",
         "type": "object"
       },
+      "WorkspaceMark": {
+        "description": "A red box drawn on the canvas since the sender's last line, with what it covers.",
+        "properties": {
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "bottom": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Bottom",
+            "type": "number"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "instances": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceVisibleVisual"
+            },
+            "title": "Instances",
+            "type": "array"
+          },
+          "left": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Left",
+            "type": "number"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceRecordContext"
+            },
+            "title": "Records",
+            "type": "array"
+          },
+          "right": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Right",
+            "type": "number"
+          },
+          "top": {
+            "default": 0.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Top",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "author"
+        ],
+        "title": "WorkspaceMark",
+        "type": "object"
+      },
       "WorkspaceMessageContext": {
         "description": "Server-derived canvas context attached to an inbound message.",
         "properties": {
@@ -10201,6 +10865,13 @@
                 "type": "null"
               }
             ]
+          },
+          "marks": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceMark"
+            },
+            "title": "Marks",
+            "type": "array"
           },
           "page": {
             "anyOf": [
@@ -10510,6 +11181,25 @@
               }
             ]
           },
+          "marks": {
+            "items": {
+              "$ref": "#/components/schemas/Mark"
+            },
+            "title": "Marks",
+            "type": "array"
+          },
+          "marks_sent": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Marks Sent",
+            "type": "integer"
+          },
+          "marks_seq": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Marks Seq",
+            "type": "integer"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -10557,6 +11247,16 @@
               }
             ],
             "title": "Preferences"
+          },
+          "record_labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "format": "uuid"
+            },
+            "title": "Record Labels",
+            "type": "object"
           },
           "revision": {
             "minimum": 0.0,
@@ -12368,7 +13068,7 @@
     },
     "/api/artifacts/{artifact_id}/html": {
       "get": {
-        "description": "Serve one HTML Artifact revision as a page: the link an agent shares.\n\nv2 embeds this same URL in its Artifact frame. The ``sandbox`` directive\ngives the page an opaque origin even when opened directly, so its scripts\ncannot read Trackinizer cookies or storage, nor call the API.\n\nArgs:\n  artifact_id: Canonical Artifact identity for the revision.\n  request: Request carrying the graph Store.\n  identity: Authenticated teammate.\n\nReturns:\n  page: The stored HTML under the sandbox Content Security Policy.",
+        "description": "Serve one HTML Artifact revision as a page: the link an agent shares.\n\nv2 embeds this same URL in its Artifact frame. The ``sandbox`` directive\ngives the page an opaque origin even when opened directly, so its scripts\ncannot read Trackinizer cookies or storage, nor call the API.\n\nArgs:\n  artifact_id: Canonical Artifact identity for the revision.\n  request: Request carrying the graph Store.\n  identity: Authenticated teammate.\n\nReturns:\n  page: The stored HTML, with the script that answers the canvas's request for\n    a picture, under the sandbox Content Security Policy.",
         "operationId": "read_artifact_html_route_api_artifacts__artifact_id__html_get",
         "parameters": [
           {
@@ -17115,7 +17815,7 @@
     },
     "/api/machines/enroll": {
       "post": {
-        "description": "Register the machine if it is new and issue a one-use enrollment token.\n\nA new token supersedes any open one for the same machine.\n\nArgs:\n  body: The machine's name.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n  identity: Admin principal, recorded as who enrolled the machine.\n\nReturns:\n  enrolled: The token, shown once, and when it expires.\n\nRaises:\n  ValidationError: The name is reserved.",
+        "description": "Register the machine if it is new and issue a one-use enrollment token.\n\nA new token supersedes any open one for the same machine. An admin enrolls a\nmachine that is new, unowned or already theirs, and confirms it; one another person\nowns answers 409 ``machine_owned``, naming the owner. A writer may enroll a machine\nthat is new, which becomes theirs with the role ``personal`` and stays unconfirmed\nuntil they confirm it in the web app, or one that is already theirs.\n\nArgs:\n  body: The machine's name.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n  identity: Writer principal, recorded as who enrolled the machine.\n\nReturns:\n  enrolled: The token, shown once, when it expires, and the machine's owner.\n\nRaises:\n  ValidationError: The name is reserved.\n  MachineOwnedError: An admin names a machine another person owns.\n  HTTPException: 403 when a writer names a machine that is not theirs.",
         "operationId": "enroll_machine_route_api_machines_enroll_post",
         "requestBody": {
           "content": {
@@ -17154,7 +17854,7 @@
     },
     "/api/machines/join": {
       "post": {
-        "description": "Exchange an enrollment token for a machine credential.\n\nThe token is the credential, so the route has no other authentication. It is\nvalid once, within 15 minutes, for the machine name it was issued for, and only\nwhile the admin who issued it is still an active admin. Joining a machine that\nalready has a live credential revokes that credential first.\n\nArgs:\n  body: The machine name, the token, and the host's instance, version and facts.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n\nReturns:\n  joined: The machine's id and its credential, shown once.\n\nRaises:\n  HTTPException: 401 when the token is malformed, unknown, used, expired, issued\n    for another machine, or issued by an account that is no longer an active admin.",
+        "description": "Exchange an enrollment token for a machine credential.\n\nThe token is the credential, so the route has no other authentication. It is\nvalid once, within 15 minutes, for the machine name it was issued for, and only\nwhile the account that issued it is still an active admin, or owns the machine and\nit is a personal one.\nJoining a machine that already has a live credential revokes that credential first\nand closes the terminals open on it.\n\nArgs:\n  body: The machine name, the token, and the host's instance, version and facts.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n\nReturns:\n  joined: The machine's id and its credential, shown once.\n\nRaises:\n  HTTPException: 401 when the token is malformed, unknown, used, expired, issued\n    for another machine, or issued by an account that is no longer an active admin.",
         "operationId": "join_machine_route_api_machines_join_post",
         "requestBody": {
           "content": {
@@ -17240,6 +17940,76 @@
           }
         },
         "summary": "Heartbeat Machine Route"
+      }
+    },
+    "/api/machines/{machine_id}/terminals/wait": {
+      "get": {
+        "description": "Hold until the machine has a terminal to open, then return it; else ``null``.\n\nThe machine's own credential authenticates, as for a heartbeat. The wait is held at\nmost 25 seconds, and its arrival tells the server that the host serves terminals.\n\nArgs:\n  machine_id: The machine.\n  request: Request carrying the database engine and the terminal hub.\n  instance: The host instance, which must be the machine's current one.\n  wait_sec: How long to hold, clamped to 25 seconds.\n\nReturns:\n  terminal: The next terminal to open, or ``None`` when none came in time.",
+        "operationId": "terminal_wait_route_api_machines__machine_id__terminals_wait_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "machine_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Machine Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "instance",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Instance",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "wait_sec",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "minimum": 0,
+              "title": "Wait Sec",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/TerminalWait"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Terminal Wait Route Api Machines  Machine Id  Terminals Wait Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Terminal Wait Route"
       }
     },
     "/api/machines/{name}": {
@@ -17403,7 +18173,7 @@
     },
     "/api/machines/{name}/revoke": {
       "post": {
-        "description": "Take a machine out of service; revoking one already revoked is a no-op.\n\nThe machine's credential row is kept, so its host learns of the revoke by a 410\non its next request. An enrollment token not yet used is closed too, so a revoke\nis not undone by a host that joins with it.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: Admin principal.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: No such machine.",
+        "description": "Take a machine out of service; revoking one already revoked is a no-op.\n\nAn admin may revoke any machine, and a writer the machines they own. The machine's\ncredential row is kept, so its host learns of the revoke by a 410 on its next\nrequest, and the terminals open on it are closed with 4410. An enrollment token not\nyet used is closed too, so a revoke is not undone by a host that joins with it.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: Admin principal, or the machine's owner.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: No such machine.\n  HTTPException: 403 when a writer names a machine that is not theirs.",
         "operationId": "revoke_machine_route_api_machines__name__revoke_post",
         "parameters": [
           {
@@ -19636,6 +20406,202 @@
           }
         },
         "summary": "Move Session Route"
+      }
+    },
+    "/api/terminals": {
+      "post": {
+        "description": "Open a terminal on one of the caller's machines, recorded to a private session.\n\nOnly a browser session opens one: an API key, a service account, a request without\nthis server's ``Origin``, and anyone but the machine's owner are refused. The\nmachine must be online and its host must have asked for terminals within 45 seconds\n(``TRAX_MACHINE_TERMINAL=1``). Attach with the returned ticket within 30 seconds.\n\nArgs:\n  body: The machine, the terminal's size, and the station it opens from.\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n\nReturns:\n  opened: The terminal and session ids, and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for a key, a service account or a foreign origin; 404 for no\n    such machine of the caller's, or station; 409 ``terminal_unconfirmed`` until the\n    owner confirms a machine a key enrolled, ``terminal_not_enabled`` when the host\n    is not asking, or ``terminal_live`` when the station has a terminal; 429 past a\n    limit. Every terminal route answers 403 on a server with authentication off.",
+        "operationId": "open_terminal_route_api_terminals_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenTerminal"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalOpened"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open Terminal Route"
+      }
+    },
+    "/api/terminals/machines": {
+      "get": {
+        "description": "List the caller's own machines, and their live terminal for a station.\n\nArgs:\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n  workspace: The station whose live terminal to name.\n\nReturns:\n  machines: The caller's machines, each with whether it can take a terminal now;\n    and ``live``, the caller's terminal opened from ``workspace``, if one is open.",
+        "operationId": "list_terminal_machines_route_api_terminals_machines_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Workspace"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalMachines"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Terminal Machines Route"
+      }
+    },
+    "/api/terminals/machines/{name}/confirm": {
+      "post": {
+        "description": "Confirm a machine the caller owns, so terminals may open on it.\n\nA machine enrolled with an API key is unconfirmed: an agent could have enrolled a\nhost the person does not control. Only the person, in a browser session, confirms.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: The signed-in owner.\n\nRaises:\n  NotFoundError: The caller owns no such machine.",
+        "operationId": "confirm_terminal_machine_route_api_terminals_machines__name__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Terminal Machine Route"
+      }
+    },
+    "/api/terminals/{terminal_id}/attach": {
+      "post": {
+        "description": "Mint a one-use ticket to attach again to the caller's live terminal.\n\nArgs:\n  terminal_id: The terminal.\n  request: Request carrying the terminal hub.\n  identity: The signed-in opener.\n\nReturns:\n  ticket: Valid for 30 seconds, once.",
+        "operationId": "attach_terminal_route_api_terminals__terminal_id__attach_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "terminal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Terminal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalTicket"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attach Terminal Route"
+      }
+    },
+    "/api/terminals/{terminal_id}/close": {
+      "post": {
+        "description": "Stop the caller's terminal; its shell is killed and the session ends.\n\nArgs:\n  terminal_id: The terminal.\n  request: Request carrying the terminal hub.\n  identity: The signed-in opener.",
+        "operationId": "close_terminal_route_api_terminals__terminal_id__close_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "terminal_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Terminal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Close Terminal Route"
       }
     },
     "/api/variables": {
@@ -21888,6 +22854,112 @@
         "summary": "Rename Workspace Route"
       }
     },
+    "/api/workspaces/{workspace_id}/captures": {
+      "post": {
+        "description": "Ask the owner's open page for a picture of the canvas, and wait for it.\n\nOnly the canvas's Chat partner, as for every other operation on it. The page\nthat answers first wins; the picture is passed on and never stored. When no\npage is open, none answers within the wait, or the page has no canvas to\ndraw, the answer is 424 with the reason.\n\nArgs:\n  workspace_id: Canvas to look at.\n  request: Request carrying the database engine, the hub and the relay.\n  identity: The assistant's agent key.\n\nReturns:\n  image: The canvas as the person sees it, with the boxes on it.",
+        "operationId": "request_capture_route_api_workspaces__workspace_id__captures_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureImage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "424": {
+            "description": "No open page of the canvas gave a picture."
+          }
+        },
+        "summary": "Request Capture Route"
+      }
+    },
+    "/api/workspaces/{workspace_id}/captures/{capture_id}": {
+      "put": {
+        "description": "Answer an agent's request for a picture, from the owner's open page.\n\nThe body is a ``CaptureAnswer`` of at most 2.2 MB. The first answer to a\nrequest is taken; a later one, or one for a request that is over, is 404.\n\nArgs:\n  workspace_id: The canvas the page shows.\n  capture_id: The request id the page was sent.\n  request: Request carrying the body.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  response: Empty.",
+        "operationId": "answer_capture_route_api_workspaces__workspace_id__captures__capture_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workspace_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Workspace Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "capture_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Capture Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "error": {
+                    "type": "string"
+                  },
+                  "image": {
+                    "$ref": "#/components/schemas/CaptureImage"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Answer Capture Route"
+      }
+    },
     "/api/workspaces/{workspace_id}/clear-chat": {
       "post": {
         "description": "Copy a station's canvas into a fresh, chatless station.\n\nArgs:\n  workspace_id: Station to clear.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the station.\n  key: Retry-safe idempotency key.\n\nReturns:\n  state: The new station, or the same station for a retry.",
@@ -22024,7 +23096,7 @@
     },
     "/api/workspaces/{workspace_id}/operations": {
       "post": {
-        "description": "Apply one revisioned operation and return the updated canvas.\n\nA ``navigate``, ``highlight``, ``chat`` or ``preferences`` operation, which only an\nagent key may send, changes neither a visual nor the revision: it pushes a\n``navigate``, ``highlight`` or ``chat`` frame to this station, or, for\n``preferences``, which changes the owner's preferences, a ``preferences`` frame\nto every station of the owner. A replay of an applied key returns the original state and\npublishes nothing.\n\nArgs:\n  workspace_id: Canvas to change.\n  body: Expected revision and visual operation.\n  request: Request carrying the database engine.\n  identity: Authenticated workspace owner.\n  key: Retry-safe idempotency key.\n\nReturns:\n  state: Updated canvas, or a conflict with the current revision.",
+        "description": "Apply one revisioned operation and return the updated canvas.\n\nA ``navigate``, ``highlight``, ``chat`` or ``preferences`` operation, which only an\nagent key may send, changes neither a visual nor the revision: it pushes a\n``navigate``, ``highlight`` or ``chat`` frame to this station, or, for\n``preferences``, which changes the owner's preferences, a ``preferences`` frame\nto every station of the owner. A ``mark``, ``remove_mark`` or\n``clear_marks`` operation (red boxes) commutes with every other write, so it\ntakes the next revision whatever revision it expects; ``remove_mark`` takes any\none box, ``clear_marks`` every box or one page's, and one already gone is no\nchange. A replay of an applied key returns the original state and publishes\nnothing.\n\nArgs:\n  workspace_id: Canvas to change.\n  body: Expected revision and visual operation.\n  request: Request carrying the database engine.\n  identity: Authenticated workspace owner.\n  key: Retry-safe idempotency key.\n\nReturns:\n  state: Updated canvas, or a conflict with the current revision.",
         "operationId": "workspace_operation_route_api_workspaces__workspace_id__operations_post",
         "parameters": [
           {

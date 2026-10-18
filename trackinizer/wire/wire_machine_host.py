@@ -91,6 +91,9 @@ class EnrollResponse(BaseModel):
     expires_at: datetime
     """When the token stops working."""
 
+    owner: str
+    """Who owns the machine: the enroller, or the person who enrolled it first."""
+
 
 class JoinRequest(BaseModel):
     """Join as a machine with an enrollment token."""

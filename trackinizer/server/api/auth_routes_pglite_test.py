@@ -260,7 +260,6 @@ async def _profile(client: httpx2.AsyncClient) -> dict[str, object]:
 _DEFAULTS: dict[str, object] = {
     "theme": "dark",
     "skin": "default",
-    "chat_style": "default",
     "chat_side": "left",
     "highlight_mentions": True,
     "terminal_font_size": "13px",
@@ -297,16 +296,36 @@ async def test_a_change_sets_its_keys_and_keeps_the_rest(
     await seed_accounts(store)
 
     first = await client.patch("/api/me/preferences", json={"theme": "light"})
-    second = await client.patch("/api/me/preferences", json={"chat_style": "terminal"})
+    second = await client.patch("/api/me/preferences", json={"chat_side": "right"})
 
     assert first.status_code == 200, first.text
-    assert second.json() == {**_DEFAULTS, "theme": "light", "chat_style": "terminal"}
+    assert second.json() == {**_DEFAULTS, "theme": "light", "chat_side": "right"}
     assert (await _profile(client))["preferences"] == second.json()
     # Only what the user set is stored; the defaults stay out.
     assert await _stored_preferences(store, TEST_USER_ID) == {
         "theme": "light",
-        "chat_style": "terminal",
+        "chat_side": "right",
     }
+
+
+async def test_a_retired_key_a_user_still_has_stored_is_ignored_then_dropped(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            'UPDATE users SET preferences = \'{"chat_style": "terminal"}\'::jsonb '
+            "WHERE id = $1",
+            TEST_USER_ID,
+        )
+
+    assert (await _profile(client))["preferences"] == _DEFAULTS
+    changed = await client.patch("/api/me/preferences", json={"theme": "light"})
+
+    assert changed.status_code == 200, changed.text
+    assert "chat_style" not in from_plain(changed.json(), dict[str, object])
+    assert await _stored_preferences(store, TEST_USER_ID) == {"theme": "light"}
 
 
 async def test_null_puts_a_key_back_to_its_default(
@@ -334,11 +353,11 @@ async def test_an_unknown_key_or_a_bad_value_writes_nothing(
 
     unknown = await client.patch(
         "/api/me/preferences",
-        json={"colour": "red", "chat_style": "terminal"},
+        json={"colour": "red", "chat_side": "right"},
     )
     bad = await client.patch(
         "/api/me/preferences",
-        json={"theme": "blue", "chat_style": "terminal"},
+        json={"theme": "blue", "chat_side": "right"},
     )
 
     assert unknown.status_code == 422
@@ -448,7 +467,7 @@ async def test_an_admin_resets_a_users_preferences_and_never_sees_them(
     await seed_accounts(store)
     await client.patch(
         "/api/me/preferences",
-        json={"theme": "light", "chat_style": "terminal"},
+        json={"theme": "light", "chat_side": "right"},
     )
     install_identity(
         make_test_identity(

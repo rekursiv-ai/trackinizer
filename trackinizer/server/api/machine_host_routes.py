@@ -1,10 +1,12 @@
 """Routes a machine host uses to enroll, join and stay connected, and the revoke route.
 
 An admin enrolls a machine by name and hands the host a one-use, 15-minute token.
-The host joins with it, once, and receives a machine credential. It then heartbeats
-with that credential, and its machine reads online until it has been silent for 180
-seconds. An admin revokes the machine; the credential's row is kept, so every host
-route then answers it 410 instead of 401.
+A writer may enroll a machine of their own the same way: it is theirs (``owner``) and
+personal, so only they and admins see it. The host joins with the token, once, and
+receives a machine credential. It then heartbeats with that credential, and its
+machine reads online until it has been silent for 180 seconds. An admin, or the owner,
+revokes the machine; the credential's row is kept, so every host route then answers
+it 410 instead of 401.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from treekle import from_plain
 
+from trackinizer.server.api._deps import get_terminals
 from trackinizer.server.api._routes_shared import engine_of
 from trackinizer.server.api.machines_routes import (
     MachineName,
@@ -51,6 +54,7 @@ from trackinizer.wire.wire_machine_host import (
     JoinRequest,
     JoinResponse,
 )
+from trackinizer.wire.wire_machines import PERSONAL_ROLE
 
 
 if TYPE_CHECKING:
@@ -59,6 +63,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AnotherHostConnectedError",
+    "MachineOwnedError",
     "enroll_machine_route",
     "heartbeat_machine_route",
     "join_machine_route",
@@ -76,28 +81,40 @@ class AnotherHostConnectedError(ConflictError):
     code = "another_host_connected"
 
 
+class MachineOwnedError(ConflictError):
+    """The machine name is taken by a machine another person owns."""
+
+    code = "machine_owned"
+
+
 @router.post(ENROLL_PATH, response_model=EnrollResponse, status_code=201)
 async def enroll_machine_route(
     body: EnrollRequest,
     request: Request,
     response: Response,
-    identity: Annotated[AuthIdentity, Depends(require_role("admin"))],
+    identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> EnrollResponse:
     """Register the machine if it is new and issue a one-use enrollment token.
 
-    A new token supersedes any open one for the same machine.
+    A new token supersedes any open one for the same machine. An admin enrolls a
+    machine that is new, unowned or already theirs, and confirms it; one another person
+    owns answers 409 ``machine_owned``, naming the owner. A writer may enroll a machine
+    that is new, which becomes theirs with the role ``personal`` and stays unconfirmed
+    until they confirm it in the web app, or one that is already theirs.
 
     Args:
       body: The machine's name.
       request: Request carrying the database engine.
       response: Response, marked ``no-store`` because it carries a secret.
-      identity: Admin principal, recorded as who enrolled the machine.
+      identity: Writer principal, recorded as who enrolled the machine.
 
     Returns:
-      enrolled: The token, shown once, and when it expires.
+      enrolled: The token, shown once, when it expires, and the machine's owner.
 
     Raises:
       ValidationError: The name is reserved.
+      MachineOwnedError: An admin names a machine another person owns.
+      HTTPException: 403 when a writer names a machine that is not theirs.
 
     """
     refuse_reserved(body.name)
@@ -109,12 +126,37 @@ async def enroll_machine_route(
         # inserted with a NULL machine, and the route answers 500. The lock also
         # serialises two enrollments of one machine, so the later one always
         # supersedes the earlier.
-        machine_id = await conn.fetchval(
-            "INSERT INTO machines (name, updated_by) VALUES ($1, $2) "
-            "ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
+        admin = identity.role == "admin"
+        machine = await conn.fetchrow(
+            "INSERT INTO machines (name, updated_by, owner, role, confirmed_at) "
+            "VALUES ($1, $2, $2, $3, CASE WHEN $4 THEN now() END) "
+            "ON CONFLICT (name) DO UPDATE SET "
+            "owner = CASE WHEN $4 THEN COALESCE(machines.owner, EXCLUDED.owner) "
+            "ELSE machines.owner END, "
+            "confirmed_at = CASE WHEN $4 THEN COALESCE(machines.confirmed_at, now()) "
+            "ELSE machines.confirmed_at END RETURNING id, owner",
             body.name,
             identity.email,
+            "" if admin else PERSONAL_ROLE,
+            admin,
         )
+        if machine is None:
+            raise ValueError("Expected machine is not None.")
+        machine_id = machine["id"]
+        owner = from_plain(machine["owner"], str | None)
+        if owner != identity.email:
+            # Nobody adopts a name another person holds: the machine under it, and any
+            # shell opened on it, stay that person's. Raised inside the transaction, so
+            # nothing is kept.
+            if admin:
+                raise MachineOwnedError(
+                    f"machine {body.name!r} is owned by {owner}; "
+                    "choose another name, or have them revoke it first",
+                )
+            raise HTTPException(
+                status_code=403,
+                detail="machine belongs to another user",
+            )
         await conn.execute(
             "UPDATE machine_enrollments SET used_at = now() "
             "WHERE machine_id = $1 AND used_at IS NULL",
@@ -135,6 +177,7 @@ async def enroll_machine_route(
     return EnrollResponse(
         token=minted.token,
         expires_at=from_plain(expires_at, datetime),
+        owner=identity.email,
     )
 
 
@@ -148,8 +191,10 @@ async def join_machine_route(
 
     The token is the credential, so the route has no other authentication. It is
     valid once, within 15 minutes, for the machine name it was issued for, and only
-    while the admin who issued it is still an active admin. Joining a machine that
-    already has a live credential revokes that credential first.
+    while the account that issued it is still an active admin, or owns the machine and
+    it is a personal one.
+    Joining a machine that already has a live credential revokes that credential first
+    and closes the terminals open on it.
 
     Args:
       body: The machine name, the token, and the host's instance, version and facts.
@@ -191,12 +236,16 @@ async def join_machine_route(
                 "UPDATE machine_enrollments SET used_at = now() "
                 "WHERE id = $1 AND used_at IS NULL AND expires_at > now() "
                 "AND secret_sha256 = $2 AND machine_id = $3 "
-                "AND EXISTS (SELECT 1 FROM users WHERE email = created_by "
-                "AND status = 'active' AND role = 'admin') "
+                "AND EXISTS (SELECT 1 FROM users u JOIN machines m ON m.id = $3 "
+                "WHERE u.email = machine_enrollments.created_by "
+                "AND u.status = 'active' AND ((u.role = 'admin' "
+                "AND (m.owner IS NULL OR m.owner = u.email)) "
+                "OR (m.owner = u.email AND m.role = $4))) "
                 "RETURNING id",
                 parsed.id,
                 parsed.digest,
                 machine_id,
+                PERSONAL_ROLE,
             )
             if claimed is None:
                 raise _refused()
@@ -216,6 +265,7 @@ async def join_machine_route(
                 body.instance,
                 body.host_version,
             )
+    await get_terminals(request).hub.close_machine(from_plain(machine_id, UUID))
     response.headers["Cache-Control"] = "no-store"
     return JoinResponse(
         machine_id=from_plain(machine_id, UUID),
@@ -285,35 +335,45 @@ async def heartbeat_machine_route(
 async def revoke_machine_route(
     name: MachineName,
     request: Request,
-    identity: Annotated[AuthIdentity, Depends(require_role("admin"))],
+    identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> Response:
     """Take a machine out of service; revoking one already revoked is a no-op.
 
-    The machine's credential row is kept, so its host learns of the revoke by a 410
-    on its next request. An enrollment token not yet used is closed too, so a revoke
-    is not undone by a host that joins with it.
+    An admin may revoke any machine, and a writer the machines they own. The machine's
+    credential row is kept, so its host learns of the revoke by a 410 on its next
+    request, and the terminals open on it are closed with 4410. An enrollment token not
+    yet used is closed too, so a revoke is not undone by a host that joins with it.
 
     Args:
       name: The machine's name.
       request: Request carrying the database engine.
-      identity: Admin principal.
+      identity: Admin principal, or the machine's owner.
 
     Returns:
       empty: 204 with no body.
 
     Raises:
       NotFoundError: No such machine.
+      HTTPException: 403 when a writer names a machine that is not theirs.
 
     """
-    del identity
     refuse_reserved(name)
     async with engine_of(request).acquire() as conn, tx(conn):
-        machine_id = await conn.fetchval(
-            "SELECT id FROM machines WHERE name = $1 FOR UPDATE",
+        machine = await conn.fetchrow(
+            "SELECT id, owner FROM machines WHERE name = $1 FOR UPDATE",
             name,
         )
-        if machine_id is None:
+        if machine is None:
             raise absent_machine(name)
+        if (
+            identity.role != "admin"
+            and from_plain(machine["owner"], str | None) != identity.email
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="machine belongs to another user",
+            )
+        machine_id = machine["id"]
         await _revoke_credentials(conn, from_plain(machine_id, UUID))
         await conn.execute(
             "UPDATE machine_enrollments SET used_at = now() "
@@ -324,6 +384,7 @@ async def revoke_machine_route(
             "UPDATE machines SET host_instance = NULL WHERE id = $1",
             machine_id,
         )
+    await get_terminals(request).hub.close_machine(from_plain(machine_id, UUID))
     return Response(status_code=204)
 
 
@@ -335,9 +396,12 @@ async def _token_is_usable(conn: Conn, *, parsed: ParsedSecret, name: str) -> bo
         "WHERE e.id = $1 AND m.name = $2 AND e.used_at IS NULL "
         "AND e.expires_at > now() "
         "AND EXISTS (SELECT 1 FROM users u WHERE u.email = e.created_by "
-        "AND u.status = 'active' AND u.role = 'admin')",
+        "AND u.status = 'active' AND ((u.role = 'admin' "
+        "AND (m.owner IS NULL OR m.owner = u.email)) "
+        "OR (u.email = m.owner AND m.role = $3)))",
         parsed.id,
         name,
+        PERSONAL_ROLE,
     )
     return stored is not None and secrets.compare_digest(
         from_plain(stored, bytes),
