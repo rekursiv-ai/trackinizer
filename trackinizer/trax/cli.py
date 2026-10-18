@@ -239,7 +239,11 @@ def parse_and_run(
         # from the active profile (same chain every verb uses) and hand it over;
         # the memoized ``client_factory`` is unused.
         del client_factory
-        rc = session.main(rest, client_factory=lambda: connect(top))
+        rc = session.main(
+            rest,
+            client_factory=lambda: connect(top),
+            profile=cast(_TopFlags, top).profile,
+        )
         if rc != 0:
             sys.exit(rc)
         return None

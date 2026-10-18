@@ -7,6 +7,7 @@ the helper does not import it.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import json
@@ -140,6 +141,41 @@ def render_fork_lines(rendered: str, *, lines: Sequence[ForkLine]) -> str:
     )
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Box:
+    """One red box as the agent is told of it."""
+
+    id: str
+    author: str
+    page: str | None
+    covers: tuple[str, ...]
+    """What lies under it, each already worded and quoted by whoever knew it."""
+
+
+def render_box_lines(boxes: Sequence[Box]) -> str:
+    """Word the boxes drawn since the agent's last line, one per line.
+
+    Args:
+      boxes: The boxes, each with what it covers already worded.
+
+    Returns:
+      text: A line of heading then one line per box, starting with a newline.
+
+    """
+    lines = [
+        (
+            "\nBoxes drawn on the canvas since your last line"
+            " (`mark remove ID` takes one away):"
+        ),
+    ]
+    lines += [
+        f"  {box.id} by {box.author} on {box.page or 'no page'};"
+        f" covers: {', '.join(box.covers) or 'nothing'}"
+        for box in boxes
+    ]
+    return "\n".join(lines)
+
+
 def _envelope_agent_message(text: str) -> str | None:
     """Return the ``agent_message`` line of a change envelope, or None if not one."""
     try:
@@ -157,17 +193,17 @@ def _envelope_agent_message(text: str) -> str | None:
 # Titles are what people wrote on the records, so they are quoted as data.
 def _render_marks(marks: Sequence[WorkspaceMark]) -> str:
     """List the boxes drawn since the last line, one per line, with what they cover."""
-    lines = [
-        (
-            "\nBoxes drawn on the canvas since your last line"
-            " (`mark remove ID` takes one away):"
-        ),
-    ]
-    for mark in marks:
-        covers = [f"{r.kind}#{r.seq} {json.dumps(r.title)}" for r in mark.records]
-        covers += [f"{v.type} {v.id}" for v in mark.instances]
-        lines.append(
-            f"  {mark.id} by {mark.author} on {mark.page or 'no page'};"
-            f" covers: {', '.join(covers) or 'nothing'}",
-        )
-    return "\n".join(lines)
+    return render_box_lines(
+        [
+            Box(
+                id=str(mark.id),
+                author=mark.author,
+                page=mark.page,
+                covers=(
+                    *(f"{r.kind}#{r.seq} {json.dumps(r.title)}" for r in mark.records),
+                    *(f"{v.type} {v.id}" for v in mark.instances),
+                ),
+            )
+            for mark in marks
+        ],
+    )

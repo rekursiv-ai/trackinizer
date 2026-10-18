@@ -71,6 +71,7 @@ from trackinizer.trax.run.session import (
     _routing_env,
     _session_owner,
     _Stats,
+    _with_box_hook,
     resume_argv,
     run,
 )
@@ -91,6 +92,7 @@ from trackinizer.wire.wire_session_ir import (
 from trackinizer.wire.wire_sessions import (
     SessionEnd,
     SessionEndResponse,
+    SessionPlacement,
     SessionStart,
     SessionStartResponse,
     WorkspaceMessageContext,
@@ -2782,6 +2784,77 @@ class TestFallbackClientInbound:
         assert clients[0].base_url == LOCALHOST_FALLBACK_URL
 
 
+class TestBoxHookLifetime:
+    """The hook's directory belongs to the run that made it."""
+
+    @pytest.mark.parametrize("gone_already", [False, True])
+    def test_a_placed_claude_run_is_handed_the_hook_and_removes_its_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        gone_already: bool,
+    ) -> None:
+        heard: list[Sequence[str]] = []
+        texts: list[str] = []
+
+        class _Placed(_RecordingSink):
+            @property
+            @override
+            def session_id(self) -> uuid.UUID | None:
+                return uuid.UUID(int=1)
+
+        class _Relay:
+            def __init__(self, argv: Sequence[str], **kwargs: object) -> None:
+                del kwargs
+                heard.append(argv)
+                self.settings = argv[argv.index("--settings") + 1]
+                settings = Path(argv[argv.index("--settings") + 1])
+                texts.append(settings.read_text())
+
+            def run(self) -> int:
+                if gone_already:
+                    shutil.rmtree(Path(self.settings).parent)
+                return 0
+
+        def watch(*args: object, **kwargs: object) -> None:
+            del args
+            armed = kwargs["armed"]
+            assert isinstance(armed, threading.Event)
+            armed.set()
+
+        def open_sink(config: RunConfig, adapter: Adapter) -> Sink:
+            del config, adapter
+            return _Placed()
+
+        def poll(*args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def place(*args: object, **kwargs: object) -> SessionPlacement:
+            del args, kwargs
+            return SessionPlacement(workspace_id=uuid.UUID(int=2))
+
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(session, "_open_sink", open_sink)
+        monkeypatch.setattr(session, "_drain_filesystem_loop", watch)
+        monkeypatch.setattr(session, "_inbound_poll_loop", poll)
+        monkeypatch.setattr(session, "place_run", place)
+        monkeypatch.setattr(session, "ThreadedRelay", _Relay)
+        monkeypatch.setattr(shutil, "which", _always_found)
+
+        config = RunConfig(
+            cli_name="claude",
+            client=Client(base_url=LOCALHOST_FALLBACK_URL),
+            profile="prod",
+            quiesce_seconds=0.0,
+        )
+        assert run(config) == 0
+        assert "--profile prod" in texts[0]
+
+        [argv] = heard
+        assert not Path(argv[argv.index("--settings") + 1]).parent.exists()
+
+
 _RESUMED: Final = "33333333-3333-4333-8333-333333333333"
 
 
@@ -2867,6 +2940,40 @@ class TestSessionOwnerAndArgv:
         assert owner is not None
         assert owner.session_id == "r1"
         assert _cli_argv(ClaudeAdapter(), config, owner) == ["claude"]
+
+    def test_a_claude_run_placed_on_a_station_is_handed_the_box_hook(self) -> None:
+        argv, settings = _with_box_hook(
+            ["claude", "--model", "haiku"],
+            adapter=ClaudeAdapter(),
+            placed={"TRAX_WORKSPACE": "c5286865-67b6-4bd8-ab51-e06e10c326c5"},
+            profile="prod",
+        )
+
+        assert settings is not None
+        assert argv == ["claude", "--settings", str(settings), "--model", "haiku"]
+        assert "--profile prod" in settings.read_text()
+
+    @pytest.mark.parametrize(
+        ("adapter", "placed", "args"),
+        [
+            (ClaudeAdapter(), {}, []),
+            (CodexAdapter(), {"TRAX_WORKSPACE": "w"}, []),
+            (ClaudeAdapter(), {"TRAX_WORKSPACE": "w"}, ["--settings", "mine.json"]),
+            (ClaudeAdapter(), {"TRAX_WORKSPACE": "w"}, ["--settings=mine.json"]),
+        ],
+    )
+    def test_no_hook_without_a_station_a_claude_or_with_the_users_own_settings(
+        self,
+        adapter: Adapter,
+        placed: dict[str, str],
+        args: list[str],
+    ) -> None:
+        argv = [adapter.cli_binary, *args]
+
+        assert _with_box_hook(argv, adapter=adapter, placed=placed, profile=None) == (
+            argv,
+            None,
+        )
 
     def test_codex_claims_only_a_resumed_id(self) -> None:
         fresh = _session_owner(CodexAdapter(), RunConfig(cli_name="codex"))
