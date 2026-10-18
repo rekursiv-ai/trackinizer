@@ -72,6 +72,20 @@
         "file": {"type": "string", "default": "", "minimum": null, "maximum": null, "max_length": 512}
       },
       "record_kinds": null
+    },
+    {
+      "type": "trax.terminal",
+      "version": 1,
+      "title": "Terminal",
+      "description": "A shell on one of your own machines, recorded to a private session in your sessions. It starts only when you click Start terminal.",
+      "requires": [],
+      "default_size": "wide",
+      "parameter_schema": {
+        "machine": {"type": "string", "default": "", "minimum": null, "maximum": null, "max_length": 63},
+        "terminal": {"type": "string", "default": "", "minimum": null, "maximum": null, "max_length": 36},
+        "start": {"type": "boolean", "default": false, "minimum": null, "maximum": null, "max_length": null}
+      },
+      "record_kinds": null
     }
   ]
 }

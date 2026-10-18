@@ -32,6 +32,7 @@ __all__ = [
     "MAX_FACTS_BYTES",
     "MAX_HOW_CHARS",
     "NAME_PATTERN",
+    "PERSONAL_ROLE",
     "RESERVED_NAMES",
     "ROLE_PATTERN",
     "Facts",
@@ -56,6 +57,10 @@ RESERVED_NAMES: Final = frozenset(
     {"enroll", "join", "init", "import", "check", "connect", "leave", "top"},
 )
 """Names no machine may take: they are, or will be, route segments and CLI words."""
+
+PERSONAL_ROLE: Final = "personal"
+"""The role of a machine a writer enrolled for themselves: only its owner (and an admin)
+sees it, so no campaign is offered it."""
 
 MAX_FACTS_BYTES: Final = 4_096
 """Largest ``facts`` object, as compact JSON; the table's limit is twice this."""
@@ -124,6 +129,9 @@ class Machine(BaseModel):
 
     last_heartbeat: datetime | None = None
     """When the host last heartbeat, or ``None`` before the first."""
+
+    owner: str | None = None
+    """The person responsible for it, shown to that person and to admins only."""
 
 
 class MachineDetail(Machine):

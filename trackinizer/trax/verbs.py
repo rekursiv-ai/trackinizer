@@ -16,7 +16,7 @@ import math
 import sys
 import uuid
 
-from treekle import MutablePlainTree, from_plain, json_loads
+from treekle import MutablePlainTree, PlainTree, from_plain, json_loads
 
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import render
@@ -2822,10 +2822,17 @@ class Workspace(Command):
 
     names = ("workspace",)
     help = HelpPage(
-        usage="trax workspace WORKSPACE_UUID [show TYPE | navigate ROUTE | highlight UUID[,UUID...] | hide UUID | focus UUID | place UUID PLACEMENT]",
+        usage="trax workspace WORKSPACE_UUID [show TYPE | navigate ROUTE | highlight UUID[,UUID...] | hide UUID | focus UUID | place UUID PLACEMENT | mark X1,Y1 X2,Y2 | mark remove MARK_ID | mark clear]",
         summary="Read a workspace, change its visible modules, move its page, or mark records.",
         options=(
-            ("--record UUID", "Record target for a shown visual."),
+            (
+                "--record UUID",
+                "Record target for a shown visual; a box's, UUID[,UUID...].",
+            ),
+            (
+                "--page HASH",
+                "With `mark clear`, clear only the boxes shown on page HASH.",
+            ),
             (
                 "--param KEY=VALUE",
                 (
@@ -2842,12 +2849,22 @@ class Workspace(Command):
             "trax workspace UUID highlight RECORD_UUID,RECORD_UUID",
             "trax workspace UUID hide chat",
             "trax workspace UUID hide INSTANCE_UUID",
+            "trax workspace UUID mark 0.1,0.2 0.4,0.5 --record RECORD_UUID",
+            "trax workspace UUID mark remove MARK_UUID",
+            "trax workspace UUID mark clear",
+            "trax workspace UUID mark clear --page '#/graph'",
             "trax workspace UUID theme to light",
-            "trax workspace UUID chat_style to terminal",
+            "trax workspace UUID chat_side to right",
             "trax workspace UUID theme to null",
         ),
         notes=(
             "Mutations fetch the current revision before applying one operation.",
+            (
+                "mark draws a red box on the canvas, which people see and draw on too, "
+                "and which stays until someone clicks it away; its corners are X,Y "
+                "fractions (0 to 1) of the stage. It shows on the page the station is on. "
+                "`trax workspace UUID` lists the boxes with their ids and what each covers."
+            ),
             (
                 "KEY to VALUE sets the station owner's preference KEY (VALUE read as JSON "
                 "when it parses, else as text; null puts it back to its default)."
@@ -2873,6 +2890,7 @@ class Workspace(Command):
             choices=("main", "left", "side", "floating"),
         )
         parser.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
+        parser.add_argument("--page")
         return parser
 
     @classmethod
@@ -2889,7 +2907,13 @@ class Workspace(Command):
         client = client_factory()
         if flags.action is None:
             record = flags.record or ""
-            if flags.subject or record or flags.placement is not None or flags.param:
+            if (
+                flags.subject
+                or record
+                or flags.placement is not None
+                or flags.param
+                or flags.page is not None
+            ):
                 raise ClientError("workspace read does not accept operation arguments")
             _print_workspace(client.read_workspace(workspace_id))
             return
@@ -2908,6 +2932,9 @@ class Workspace(Command):
         if flags.action == "highlight":
             updated = client.highlight(workspace_id, ids=_highlight_ids(flags))
             _print_workspace(updated)
+            return
+        if flags.action == "mark":
+            _print_workspace(_mark(client, workspace_id=workspace_id, args=flags))
             return
         if _is_chat(flags):
             updated = client.chat_window(workspace_id, hidden=flags.action == "hide")
@@ -2974,6 +3001,62 @@ def _workspace_operation(
             "placement": subject[1],
         }
     return operation
+
+
+def _mark(
+    client: Client,
+    *,
+    workspace_id: uuid.UUID,
+    args: _WorkspaceArgs,
+) -> dict[str, PlainTree]:
+    """Draw, remove or clear red boxes: ``mark X1,Y1 X2,Y2``, ``mark remove ID``, ``mark clear``."""
+    subject = args.subject
+    if args.placement is not None or args.param:
+        raise ClientError("mark takes no --placement or --param")
+    if subject == ["clear"] and args.record is None:
+        return client.apply_workspace_operation(
+            workspace_id,
+            operation={"kind": "clear_marks"}
+            | ({} if args.page is None else {"page": args.page}),
+        )
+    if args.page is not None:
+        raise ClientError("--page goes with mark clear only")
+    if subject[:1] == ["remove"] and args.record is None:
+        if len(subject) != 2:
+            raise ClientError("mark remove takes one MARK_ID")
+        return client.apply_workspace_operation(
+            workspace_id,
+            operation={
+                "kind": "remove_mark",
+                "id": str(_workspace_uuid(subject[1], "mark")),
+            },
+        )
+    if len(subject) != 2 or subject[0] in {"clear", "remove"}:
+        raise ClientError("mark takes X1,Y1 X2,Y2, or remove MARK_ID, or clear")
+    mark: dict[str, object] = {"points": [_mark_point(point) for point in subject]}
+    if args.record is not None:
+        mark["covers"] = {
+            "records": [
+                str(_workspace_uuid(item, "record"))
+                for item in args.record.split(",")
+                if item
+            ],
+        }
+    return client.apply_workspace_operation(
+        workspace_id,
+        operation={"kind": "mark", "mark": mark},
+    )
+
+
+def _mark_point(text: str) -> dict[str, float]:
+    """Read ``X,Y`` as fractions of the stage."""
+    try:
+        x, y = text.split(",")
+        return {"x": float(x), "y": float(y)}
+    except ValueError as error:
+        raise ClientError(
+            f"a point is X,Y fractions of the stage, not {text!r}",
+        ) from error
 
 
 def _is_preference(args: _WorkspaceArgs) -> bool:
@@ -3090,7 +3173,6 @@ def _print_workspace(payload: object) -> None:
     visuals = from_plain(state.get("visuals"), list[dict[str, object]], default=[])
     if not visuals:
         echo("  (no visuals)")
-        return
     for visual in visuals:
         instance_id = from_plain(visual.get("id"), str, default="unknown")
         visual_type = from_plain(visual.get("type"), str, default="unknown")
@@ -3098,6 +3180,20 @@ def _print_workspace(payload: object) -> None:
         record_id = from_plain(visual.get("record_id"), str, default="")
         target = f" record={record_id}" if record_id else ""
         echo(f"  {visual_type} {instance_id} {placement}{target}")
+    _print_marks(state)
+
+
+def _print_marks(state: Mapping[str, object]) -> None:
+    """Print every box with its id, page and what it covers."""
+    labels = from_plain(state.get("record_labels"), dict[str, str], default={})
+    for mark in from_plain(state.get("marks"), list[dict[str, object]], default=[]):
+        covers = from_plain(mark.get("covers"), dict[str, list[str]], default={})
+        named = [labels.get(each, each) for each in covers.get("records", [])]
+        named += covers.get("instances", [])
+        echo(
+            f"  box {mark.get('id')} by {mark.get('author')} "
+            f"on {mark.get('page') or 'no page'} covers: {', '.join(named) or 'nothing'}",
+        )
 
 
 def _workspace_uuid(value: str, label: str) -> uuid.UUID:
@@ -3108,7 +3204,15 @@ def _workspace_uuid(value: str, label: str) -> uuid.UUID:
         raise ClientError(f"{label} is not a valid UUID: {value!r}") from error
 
 
-_WORKSPACE_ACTIONS: Final = ("show", "navigate", "highlight", "hide", "focus", "place")
+_WORKSPACE_ACTIONS: Final = (
+    "show",
+    "navigate",
+    "highlight",
+    "hide",
+    "focus",
+    "place",
+    "mark",
+)
 """The operations a workspace takes by name; any other word starts ``KEY to VALUE``."""
 
 
@@ -3119,6 +3223,7 @@ class _WorkspaceArgs(Protocol):
     record: str | None
     placement: str | None
     param: list[str]
+    page: str | None
 
 
 # ``trax workspace show trax.subgraph`` parses ``show`` as the id; when that is not a

@@ -1,6 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { exposeEventSources, resetCanvas } from "./canvasState";
-import { expect, setPreferences, streamOpened, test } from "./fixtures";
+import { expect, streamOpened, test } from "./fixtures";
 
 test.use({ canvas: true });
 
@@ -8,7 +8,6 @@ type Station = { id: string; name: string };
 
 test.beforeEach(async ({ page, request }) => {
   await resetCanvas(request);
-  await setPreferences(request, { chat_style: "terminal" });
   await page.addInitScript(exposeEventSources);
 });
 

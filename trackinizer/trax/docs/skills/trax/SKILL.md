@@ -370,11 +370,23 @@ trax workspace WORKSPACE_UUID focus INSTANCE_UUID
 trax workspace WORKSPACE_UUID place INSTANCE_UUID floating
 trax workspace WORKSPACE_UUID hide INSTANCE_UUID
 trax workspace WORKSPACE_UUID highlight RECORD_UUID,RECORD_UUID
+trax workspace WORKSPACE_UUID mark 0.1,0.2 0.4,0.5 --record RECORD_UUID
+trax workspace WORKSPACE_UUID mark remove MARK_UUID
+trax workspace WORKSPACE_UUID mark clear
+trax workspace WORKSPACE_UUID mark clear --page '#/graph'
 trax workspace WORKSPACE_UUID hide chat
 trax workspace WORKSPACE_UUID show chat
 trax workspace WORKSPACE_UUID theme to light
-trax workspace WORKSPACE_UUID chat_style to null
+trax workspace WORKSPACE_UUID chat_side to null
 ```
+
+Boxes are red rectangles on the canvas, drawn by people and agents: `mark X1,Y1
+X2,Y2` takes two corners as fractions (0 to 1) of the stage, and the box shows on
+the page the station is on until someone clicks it away. `--record` names the
+records it points at. `trax workspace WORKSPACE_UUID` lists every box with its id,
+page and the records and visuals under it, and a Chat line carries the boxes drawn
+since the last one; `mark remove` takes one away; `mark clear` takes every box,
+or one page's with `--page`.
 
 The catalog registers `trax.browse`, `trax.subgraph`, `trax.timeline`,
 `trax.artifact`, `trax.summary` and `trax.files`. `trax.timeline` (Lineage and
@@ -408,7 +420,7 @@ it is not replayed to a tab that was not listening.
 so they can look at what you showed; hide it when they should look at the page
 and show it when you want them to read your answer. It is an event too: no revision
 is read or changed, only an agent key may send it, and a reloaded tab shows Chat.
-`KEY to VALUE` changes one of the user's preferences (`theme`, `skin`, `chat_style`,
+`KEY to VALUE` changes one of the user's preferences (`theme`, `skin`,
 `chat_side`, `highlight_mentions`, `terminal_font_size`, `home`): theirs, not your
 account's, and every tab of theirs shows it at once. VALUE reads as JSON when it
 parses (`false`, `null`), else as text; `null` puts the key back to its default.
@@ -469,7 +481,12 @@ shows one, with its role, labels, `how` line and status (writer role). `trax
 machine NAME role to ROLE` and `how to TEXT` set a field and create the machine;
 `label add|del LABEL` and `del` change or unregister it (admin role). Read
 `how` before using one. The registry only records machines; it never reaches
-one.
+one. A person's own computer is a `personal` machine, which only they and admins
+see; `trax machine connect` (no name) enrolls the computer you are on and serves a
+terminal in the web app. A shell the web app opens sets `TRAX_WORKSTREAM` and
+`TRAX_WORKSPACE`, and `LC_TRAX_*` copies that survive `ssh`; `trax` reads
+`TRAX_X`, else `LC_TRAX_X`, and uses the saved profile whose URL is
+`LC_TRAX_SERVER`.
 
 ## Recovery
 

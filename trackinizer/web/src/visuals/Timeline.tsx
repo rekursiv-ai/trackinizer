@@ -116,7 +116,7 @@ function Cards({ row, index, axis, open, selected }: {
   const y = rowY(index);
   const label = `${ref(record)} ${record.title}`;
   const self = selected?.record.id === record.id ? selected : null;
-  return <g data-role={row.role} data-ref={ref(record)}>
+  return <g data-role={row.role} data-ref={ref(record)} data-record={record.id}>
     <a href={recordHref(record)} aria-label={label} onClick={(event) => open(event, record)}>
       <title>{self ? resultHover(record, self.evidence, self.evidence_truncated) : hover(record)}</title>
       <rect x={0} y={TOP + index * ROW_H} width={axis.labelW} height={ROW_H} className="tl-card-hit" />
@@ -142,7 +142,7 @@ function Results({ row, index, axis, selectedId, open }: {
   return <g>
     {row.results.map(({ record, evidence, evidence_truncated }, i) => {
       const rx = xs[i]!;
-      return <g key={record.id} className={`tl-result${record.id === selectedId ? " tl-selected" : ""}`} data-ref={ref(record)}>
+      return <g key={record.id} className={`tl-result${record.id === selectedId ? " tl-selected" : ""}`} data-ref={ref(record)} data-record={record.id}>
         <line x1={node.cx} y1={node.cy} x2={rx} y2={ry} className="tl-produced" aria-hidden="true" />
         <a href={recordHref(record)} aria-label={`${ref(record)} ${record.title}`} onClick={(event) => open(event, record)}>
           <title>{resultHover(record, evidence, evidence_truncated)}</title>

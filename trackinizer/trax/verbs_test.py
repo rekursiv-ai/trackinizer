@@ -3660,7 +3660,22 @@ class _CanvasClient:
     ) -> dict[str, object]:
         del workspace_id
         self.operations.append(operation)
-        return self._state(9, visuals=[])
+        if operation["kind"] != "mark":
+            return self._state(9, visuals=[])
+        record = str(self.workspace)
+        return {
+            **self._state(9, visuals=[]),
+            "record_labels": {record: "Experiment#12 Measured tails"},
+            "marks": [
+                {
+                    "id": "m1",
+                    "author": "agent",
+                    "page": "#/graph",
+                    "covers": {"records": [record], "instances": ["inst-1"]},
+                },
+                {"id": "m2", "author": "jp", "covers": {}},
+            ],
+        }
 
     def navigate(
         self,
@@ -4246,6 +4261,97 @@ class _RecordingWorkspace:
         del path
         self.operations.append(from_plain(body, dict[str, object])["operation"])
         return self.state
+
+
+def _operation(client: _CanvasClient) -> dict[str, object]:
+    """Return the one operation the client was asked to apply."""
+    [operation] = client.operations
+    return operation
+
+
+def test_workspace_mark_draws_a_box_from_two_corners_and_names_its_records() -> None:
+    client = _CanvasClient()
+    record = uuid.uuid4()
+
+    _workspace(client, "mark", "0.1,0.2", "0.4,0.5")
+    _workspace(client, "mark", "0,0", "1,1", "--record", f"{record},{record}")
+
+    plain, covered = client.operations
+    corners = [{"x": 0.1, "y": 0.2}, {"x": 0.4, "y": 0.5}]
+    assert plain == {"kind": "mark", "mark": {"points": corners}}
+    assert covered == {
+        "kind": "mark",
+        "mark": {
+            "points": [{"x": 0.0, "y": 0.0}, {"x": 1.0, "y": 1.0}],
+            "covers": {"records": [str(record)] * 2},
+        },
+    }
+
+
+def test_workspace_mark_remove_and_clear_send_their_operations() -> None:
+    first, second = _CanvasClient(), _CanvasClient()
+    mark_id = uuid.uuid4()
+
+    _workspace(first, "mark", "remove", str(mark_id))
+    _workspace(second, "mark", "clear")
+
+    assert _operation(first) == {"kind": "remove_mark", "id": str(mark_id)}
+    assert _operation(second) == {"kind": "clear_marks"}
+
+
+def test_workspace_mark_clear_page_names_the_page_to_clear() -> None:
+    client = _CanvasClient()
+
+    _workspace(client, "mark", "clear", "--page", "#/graph")
+
+    assert _operation(client) == {"kind": "clear_marks", "page": "#/graph"}
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["mark"], "mark takes X1,Y1 X2,Y2"),
+        (["mark", "0,0"], "mark takes X1,Y1 X2,Y2"),
+        (["mark", "0,0", "1,1", "2,2"], "mark takes X1,Y1 X2,Y2"),
+        (["mark", "clear", "now"], "mark takes X1,Y1 X2,Y2"),
+        (["mark", "remove"], "mark remove takes one MARK_ID"),
+        (["mark", "remove", "not-a-uuid"], "mark is not a valid UUID"),
+        (["mark", "0,0", "left,right"], "X,Y fractions"),
+        (["mark", "0,0", "0.5"], "X,Y fractions"),
+        (["mark", "0,0", "0.1,0.2,0.3"], "X,Y fractions"),
+        (["mark", "0,0", "1,1", "--placement", "main"], "no --placement"),
+        (["mark", "0,0", "1,1", "--page", "#/graph"], "--page goes with mark clear"),
+        (
+            ["mark", "remove", str(uuid.uuid4()), "--page", "#/graph"],
+            "--page goes with",
+        ),
+        (["mark", "clear", "--record", str(uuid.uuid4())], "mark takes X1,Y1"),
+    ],
+)
+def test_workspace_mark_refuses_a_malformed_command(
+    arguments: list[str],
+    message: str,
+) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match=message):
+        _workspace(client, *arguments)
+
+    assert client.operations == []
+
+
+def test_workspace_prints_each_box_with_its_id_page_and_what_it_covers(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+
+    _workspace(client, "mark", "0.3,0.3", "0.5,0.5")
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[-2:] == [
+        "  box m1 by agent on #/graph covers: Experiment#12 Measured tails, inst-1",
+        "  box m2 by jp on no page covers: nothing",
+    ]
 
 
 if __name__ == "__main__":

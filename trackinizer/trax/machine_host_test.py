@@ -280,6 +280,73 @@ def test_host_facts_fit_the_join_contract() -> None:
     assert joined.facts == facts
 
 
+class _Terminals:
+    """Records when the terminal server starts and stops, relative to the heartbeats."""
+
+    def __init__(self, calls: list[tuple[object, ...]]) -> None:
+        self.calls = calls
+
+    def start(self, machine_id: uuid.UUID, instance: uuid.UUID) -> None:
+        self.calls.append(("terminals-start", machine_id, instance))
+
+    def stop(self) -> None:
+        self.calls.append(("terminals-stop",))
+
+
+def test_a_host_that_opted_in_reports_terminals_and_stops_them_before_it_returns() -> (
+    None
+):
+    _save()
+    host = _Host(beats=[None, _REVOKED])
+    served: list[JoinResponse] = []
+
+    def terminals_for(joined: JoinResponse) -> _Terminals:
+        served.append(joined)
+        return _Terminals(host.calls)
+
+    connect(
+        "box-1",
+        client_for=host,
+        read_token=_no_token,
+        sleep=lambda _: None,
+        terminals_for=terminals_for,
+    )
+
+    kinds = [call[0] for call in host.calls]
+    assert kinds == ["terminals-start", "beat", "beat", "terminals-stop"]
+    assert host.calls[1][4] == host_facts(terminal=True)
+    assert host.calls[0][1] == _MACHINE_ID
+    assert host.calls[0][2] == host.calls[1][2]
+    assert [joined.credential for joined in served] == [_CREDENTIAL]
+
+
+def test_terminals_stop_when_the_host_ends_on_an_error_too() -> None:
+    _save()
+    host = _Host(beats=[ClientError("-> 403", status_code=403)])
+
+    with pytest.raises(ClientError):
+        connect(
+            "box-1",
+            client_for=host,
+            read_token=_no_token,
+            sleep=lambda _: None,
+            terminals_for=lambda _joined: _Terminals(host.calls),
+        )
+
+    assert host.calls[-1] == ("terminals-stop",)
+
+
+def test_a_host_that_did_not_opt_in_serves_no_terminals_and_says_so() -> None:
+    _save()
+    host = _Host()
+
+    connect("box-1", client_for=host, read_token=_no_token, sleep=lambda _: None)
+
+    assert "terminal" not in host_facts()
+    assert [call[0] for call in host.calls] == ["beat"]
+    assert host.calls[0][4] == host_facts()
+
+
 def _no_token() -> str:
     raise AssertionError("a saved credential must not read a token")
 

@@ -7,8 +7,7 @@ import { dateTime, relativeTime, useMinuteClock } from "../detail/time";
 import { useOnline } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { ViewHeader } from "../ui/view";
-import { type ChatStyle, chooseChatStyle, useChatStyle } from "../chatStyle";
-import { usePreferences } from "../preferences";
+import { choosePreferences, usePreferences } from "../preferences";
 import { chooseSkin, chooseTheme, type Skin, SKINS, type ThemePreference, useTheme } from "../theme";
 import { KeyValue, ReadError, Section } from "./account";
 import { AliasesSection } from "./Aliases";
@@ -97,10 +96,12 @@ function VisualWorkspaceSection() {
   );
 }
 
+/** The sizes the picker offers; a size the user set in the preferences document shows as well. */
+const TERMINAL_FONT_SIZES: readonly string[] = ["11px", "12px", "13px", "14px", "16px", "18px"];
+
 function ThemeSection() {
   const { choice: theme } = useTheme();
-  const { skin } = usePreferences();
-  const chatStyle = useChatStyle();
+  const { skin, terminal_font_size: terminalFontSize } = usePreferences();
   // A fixed skin sets every colour itself (skins.css), so the theme has nothing to colour under it.
   const fixed = skin !== "default";
   return (
@@ -125,14 +126,14 @@ function ThemeSection() {
         </select>
         {fixed && <span id="appearance-theme-note" className="muted">The theme colours the Default skin only.</span>}
       </div>
-      {/* One of the user's preferences, like the theme: how the Chat panel looks, not what it holds. */}
+      {/* One of the user's preferences, like the theme: the text size of the terminal Chat flips to. */}
       <div className="st-row">
-        <label htmlFor="appearance-chat-style">Chat style</label>
-        <select id="appearance-chat-style" className="st-theme" value={chatStyle} onChange={(event) => {
-          chooseChatStyle(event.target.value as ChatStyle);
+        <label htmlFor="appearance-terminal-font">Terminal font size</label>
+        <select id="appearance-terminal-font" className="st-theme" value={terminalFontSize} onChange={(event) => {
+          void choosePreferences({ terminal_font_size: event.target.value });
         }}>
-          <option value="default">Default</option>
-          <option value="terminal">Terminal</option>
+          {TERMINAL_FONT_SIZES.includes(terminalFontSize) ? null : <option value={terminalFontSize}>{terminalFontSize}</option>}
+          {TERMINAL_FONT_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
         </select>
       </div>
     </Section>

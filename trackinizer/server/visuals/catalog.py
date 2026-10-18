@@ -14,6 +14,7 @@ __all__ = [
     "FilesVisual",
     "ParameterDescription",
     "StaticVisual",
+    "TerminalVisual",
     "TimelineVisual",
     "Visual",
     "VisualCatalogBody",
@@ -296,6 +297,54 @@ class FilesVisual:
         )
 
 
+class TerminalVisual:
+    """A shell on one of the viewer's own machines, recorded to a private session."""
+
+    class Config(Fig["TerminalVisual"]):
+        title: str = "Terminal"
+        """Name shown in the Configure panel."""
+
+    def __init__(self, config: Config) -> None:
+        """Keep the configured title until projection."""
+        self.config = config
+
+    def describe(self) -> VisualDescription:
+        """Describe the view and the parameters a caller may set.
+
+        Returns:
+          description: Inert catalog entry; it starts nothing until its owner clicks.
+
+        """
+        return VisualDescription(
+            type="trax.terminal",
+            version=1,
+            title=self.config.title,
+            description=(
+                "A shell on one of your own machines, recorded to a private session "
+                "in your sessions. It starts only when you click Start terminal."
+            ),
+            requires=[],
+            default_size="wide",
+            parameter_schema={
+                # A machine name; empty lets the viewer pick one.
+                "machine": ParameterDescription(
+                    type="string",
+                    default="",
+                    max_length=63,
+                ),
+                # The terminal's id, set once it starts so a reload re-attaches.
+                "terminal": ParameterDescription(
+                    type="string",
+                    default="",
+                    max_length=36,
+                ),
+                # True when an agent asked for a terminal: the viewer's browser then
+                # opens one by itself, with their own session. No key ever opens it.
+                "start": ParameterDescription(type="boolean", default=False),
+            },
+        )
+
+
 class Workspace:
     """The trusted composition of visual configs and its initial selection."""
 
@@ -328,6 +377,7 @@ class Workspace:
                     record_kinds=["Issue", "AgentSession"],
                 ),
                 FilesVisual.Config(),
+                TerminalVisual.Config(),
             ],
         )
         """Configured visual modules available to a workspace."""

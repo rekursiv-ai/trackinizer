@@ -35,6 +35,8 @@ from trackinizer.wire.wire_machine_host import (
 
 
 if TYPE_CHECKING:
+    from starlette.requests import HTTPConnection
+
     from trackinizer.lib.postgres import Conn
 
 
@@ -43,6 +45,7 @@ __all__ = [
     "MintedSecret",
     "ParsedSecret",
     "current_machine",
+    "machine_of",
     "machine_revoked",
     "mint_secret",
     "parse_credential",
@@ -148,7 +151,14 @@ def should_bump_last_used(
 
 
 async def current_machine(request: Request, machine_id: UUID) -> MachineIdentity:
-    """Authenticate a host route by the machine credential in the bearer header.
+    """Authenticate an HTTP host route by its machine credential; see :func:`machine_of`."""
+    return await machine_of(request, machine_id)
+
+
+# Separate from ``current_machine`` for the reason ``auth.user_of`` is separate from
+# ``current_user``: the dependency's annotation must stay importable at runtime.
+async def machine_of(request: HTTPConnection, machine_id: UUID) -> MachineIdentity:
+    """Authenticate a host route or WebSocket by the machine credential in the bearer.
 
     A malformed, unknown or wrong-secret credential is 401 with one body, so a
     caller learns nothing about which ids exist. Only a credential whose secret
@@ -157,7 +167,7 @@ async def current_machine(request: Request, machine_id: UUID) -> MachineIdentity
     on another machine's path is 404, since 403 would confirm the id exists.
 
     Args:
-      request: Request carrying the database engine and the Authorization header.
+      request: Request or WebSocket carrying the database engine and the Authorization.
       machine_id: The machine in the route's path.
 
     Returns:
@@ -239,7 +249,7 @@ class _App(Protocol):
     state: _State
 
 
-def _bumped(request: Request) -> dict[UUID, float]:
+def _bumped(request: HTTPConnection) -> dict[UUID, float]:
     """Return the app's ``last_used`` throttle, creating it on first use."""
     state = cast("_App", request.app).state
     bumped = cast(

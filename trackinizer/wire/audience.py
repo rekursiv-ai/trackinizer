@@ -74,13 +74,22 @@ SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         ("GET", "/api/web/search_sessions"),
         ("GET", "/api/inquiries"),
         ("GET", "/api/export"),
+        # A terminal's output is recorded to a private session. Each route is opened
+        # by the machine's owner alone, in a browser session, never by a key; the
+        # recorder writes the session as the server (``# Audience: internal``).
+        ("POST", "/api/terminals"),
+        ("GET", "/api/terminals/machines"),
+        ("POST", "/api/terminals/machines/{name}/confirm"),
+        ("POST", "/api/terminals/{terminal_id}/attach"),
+        ("POST", "/api/terminals/{terminal_id}/close"),
+        ("GET", "/api/machines/{machine_id}/terminals/wait"),
     },
 )
 """Every route that reads, writes or sends into a session's transcript, as
 ``(method, path)``.
 
 A route belongs here when its path is under ``/api/sessions/``, ``/api/web/feed``,
-``/api/messages`` or is ``/api/web/search_sessions``, ``/api/inquiries`` (whose record
+``/api/messages``, ``/api/terminals`` or is ``/api/web/search_sessions``, ``/api/inquiries`` (whose record
 filters match transcript text) or ``/api/export``. The audit test lists the routes
 the app registers under those and fails on any this set lacks, so a new route that
 reads a session cannot ship without being placed here, where a review asks which

@@ -9,6 +9,7 @@ from trackinizer.client.errors import ClientError
 from trackinizer.lib.userdirs import config_dir
 from trackinizer.trax import profile
 from trackinizer.trax.conftest import FakeClient, run
+from trackinizer.trax.context import trax_env
 from trackinizer.trax.profile import Profile
 
 
@@ -544,6 +545,116 @@ def test_write_atomic_uses_unique_temp_per_write(
         p.name for p in tmp_path.iterdir() if p.name not in ("p", "rekursiv-ai")
     ]
     assert leftovers == [], f"temp file leaked: {leftovers}"
+
+
+def _save(name: str, url: str) -> None:
+    profile.save_profile(name, Profile(url=url, api_key="trax_k"))
+
+
+def test_a_shell_from_a_terminal_uses_the_saved_profile_for_its_server(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _redirect_config(monkeypatch, tmp_path)
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+    _save("hosted", "https://trax.test")
+    _save("local", "http://127.0.0.1:8765")
+    monkeypatch.setenv("LC_TRAX_SERVER", "https://trax.test/")
+
+    assert profile.load_profile().url == "https://trax.test"
+    assert profile.unmatched_server_hint() is None
+
+
+def test_an_explicit_profile_or_url_beats_the_server_a_terminal_names(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _redirect_config(monkeypatch, tmp_path)
+    _save("hosted", "https://trax.test")
+    _save("local", "http://127.0.0.1:8765")
+    monkeypatch.setenv("LC_TRAX_SERVER", "https://trax.test")
+    monkeypatch.setenv("TRACKINIZER_PROFILE", "local")
+
+    assert profile.load_profile().url == "http://127.0.0.1:8765"
+    monkeypatch.delenv("TRACKINIZER_PROFILE")
+    profile.switch_profile("local")
+    assert profile.load_profile().url == "http://127.0.0.1:8765"
+
+
+def test_a_server_without_a_saved_profile_gets_the_login_hint_and_localhost(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _redirect_config(monkeypatch, tmp_path)
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+    monkeypatch.delenv("TRACKINIZER_URL", raising=False)
+    _save("local", "http://127.0.0.1:8765")
+    monkeypatch.setenv("LC_TRAX_SERVER", "https://other.test")
+
+    hint = profile.unmatched_server_hint()
+
+    assert hint is not None
+    assert "trax profile remote url to https://other.test, then add a token" in hint
+    assert "from Settings" in hint
+    assert "token to" not in hint
+    assert profile.load_profile().url == "http://127.0.0.1:8765"
+    monkeypatch.setenv("TRACKINIZER_URL", "https://x.test")
+    assert profile.unmatched_server_hint() is None
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        "ftp://x.test",
+        "https://user:pw@x.test",
+        "https://x.test/a b",
+        "https://x.test/\x1b[31m",
+        "javascript:alert(1)",
+        "https://",
+        "x.test",
+    ],
+)
+def test_a_server_that_is_not_a_sound_url_is_ignored_and_never_echoed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    server: str,
+) -> None:
+    _redirect_config(monkeypatch, tmp_path)
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+    monkeypatch.delenv("TRACKINIZER_URL", raising=False)
+    _save("hosted", "https://x.test")
+    monkeypatch.setenv("LC_TRAX_SERVER", server)
+
+    assert profile.terminal_server() is None
+    assert profile.unmatched_server_hint() is None
+    assert profile.load_profile().url != server
+
+
+def test_the_hint_quotes_a_server_that_holds_a_shell_metacharacter(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _redirect_config(monkeypatch, tmp_path)
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+    monkeypatch.delenv("TRACKINIZER_URL", raising=False)
+    monkeypatch.setenv("LC_TRAX_SERVER", "https://x.test/;rm")
+
+    hint = profile.unmatched_server_hint()
+
+    assert hint is not None
+    assert "'https://x.test/;rm'" in hint
+
+
+def test_trax_env_prefers_the_plain_name_over_the_ssh_forwarded_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRAX_WORKSPACE", raising=False)
+    monkeypatch.delenv("LC_TRAX_WORKSPACE", raising=False)
+    assert trax_env("WORKSPACE") is None
+    monkeypatch.setenv("LC_TRAX_WORKSPACE", "from-ssh")
+    assert trax_env("WORKSPACE") == "from-ssh"
+    monkeypatch.setenv("TRAX_WORKSPACE", "plain")
+    assert trax_env("WORKSPACE") == "plain"
 
 
 def test_profile_repr_and_str_hold_no_key_text() -> None:

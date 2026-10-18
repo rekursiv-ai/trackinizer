@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "CaptureFrame",
     "ChangedFrame",
     "ChatFrame",
     "ChatHub",
@@ -83,6 +84,13 @@ class ChatFrame(_Stamped):
     hidden: bool
 
 
+class CaptureFrame(_Stamped):
+    """An agent asks the open page for a picture of the canvas. Not replayed."""
+
+    type: Literal["capture"] = "capture"
+    request: UUID
+
+
 class PreferencesFrame(_Stamped):
     """The station owner's preferences changed: by them, or by the station's agent.
 
@@ -106,6 +114,7 @@ type Frame = (
     | NavigateFrame
     | HighlightFrame
     | ChatFrame
+    | CaptureFrame
     | PreferencesFrame
     | ChangedFrame
 )
@@ -164,6 +173,18 @@ class ChatHub:
                 while not subscription.queue.empty():
                     subscription.queue.get_nowait()
                 subscription.queue.put_nowait(None)
+
+    def listening(self, workspace_id: UUID) -> bool:
+        """Say whether any open stream follows a workspace.
+
+        Args:
+          workspace_id: Canvas to ask about.
+
+        Returns:
+          listening: True while at least one stream is subscribed.
+
+        """
+        return workspace_id in self._subscribers
 
     def nudge(self) -> None:
         """Ask every open stream to recheck its canvas's partner.

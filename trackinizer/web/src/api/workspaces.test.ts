@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { stubFetch } from "./testing";
 import { FakeEventSource } from "../live/testing";
-import { openWorkspaceEvents, setSessionSettings, type WorkspaceEventListener } from "./workspaces";
+import { answerCapture, clearMarks, drawMark, type NewMark, openWorkspaceEvents, removeMark, setSessionSettings, type WorkspaceEventListener } from "./workspaces";
 
 beforeEach(() => FakeEventSource.reset());
 afterEach(() => vi.unstubAllGlobals());
@@ -17,6 +17,7 @@ function recorder(): { heard: unknown[][]; listener: WorkspaceEventListener } {
       navigate: (...args) => heard.push(["navigate", ...args]),
       highlight: (...args) => heard.push(["highlight", ...args]),
       chat: (...args) => heard.push(["chat", ...args]),
+      capture: (...args) => heard.push(["capture", ...args]),
       preferences: (...args) => heard.push(["preferences", ...args]),
       changed: (...args) => heard.push(["changed", ...args]),
       open: () => heard.push(["open"]),
@@ -38,6 +39,20 @@ test("session settings use the owned workspace route and campaign body", async (
   }]);
 });
 
+test("a box, its removal and the clearing of all go to the operations route with no revision to match", async () => {
+  const sent = stubFetch(() => Response.json(state));
+  const mark: NewMark = { points: [{ x: 0.1, y: 0.2 }, { x: 0.3, y: 0.4 }], page: "#/graph" };
+  await drawMark("w", mark);
+  await removeMark("w", "box-id");
+  await clearMarks("w", "#/graph");
+  expect(sent.map((each) => [each.method, each.path, each.body])).toEqual([
+    ["POST", "/api/workspaces/w/operations", { revision: 0, operation: { kind: "mark", mark } }],
+    ["POST", "/api/workspaces/w/operations", { revision: 0, operation: { kind: "remove_mark", id: "box-id" } }],
+    ["POST", "/api/workspaces/w/operations", { revision: 0, operation: { kind: "clear_marks", page: "#/graph" } }],
+  ]);
+  expect(new Set(sent.map((each) => each.headers["idempotency-key"])).size).toBe(3);
+});
+
 test("the events stream opens on the workspace's route and passes on each kind of frame", () => {
   const { heard, listener } = recorder();
   openWorkspaceEvents("w", listener, { connect });
@@ -52,15 +67,16 @@ test("the events stream opens on the workspace's route and passes on each kind o
     { type: "highlight", ids: [], t: 22 },
     { type: "chat", hidden: true, t: 8 },
     { type: "chat", hidden: false, t: 9 },
-    { type: "preferences", preferences: { theme: "light", chat_style: "default", chat_side: "left", highlight_mentions: true, terminal_font_size: "13px" }, t: 10 },
+    { type: "capture", request: "r1", t: 30 },
+    { type: "preferences", preferences: { theme: "light", chat_side: "left", highlight_mentions: true, terminal_font_size: "13px" }, t: 10 },
     { type: "changed", id: "row", t: 7 },
   ];
   for (const frame of frames) source.send("", JSON.stringify(frame));
   expect(heard).toEqual([
     ["open"], ["workspace", state, 1], ["workspace", state, 3],
     ["navigate", "#/lookup/x", 2], ["highlight", ["a", "b"], 21], ["highlight", [], 22],
-    ["chat", true, 8], ["chat", false, 9],
-    ["preferences", { theme: "light", chat_style: "default", chat_side: "left", highlight_mentions: true, terminal_font_size: "13px" }, 10],
+    ["chat", true, 8], ["chat", false, 9], ["capture", "r1", 30],
+    ["preferences", { theme: "light", chat_side: "left", highlight_mentions: true, terminal_font_size: "13px" }, 10],
     ["changed", "row", 7],
   ]);
 });
@@ -100,4 +116,22 @@ test("a dropped stream reconnects by itself, a refused one tries again, and each
   close();
   expect(FakeEventSource.last.readyState).toBe(2);
   vi.useRealTimers();
+});
+
+test("a capture frame without a request id is ignored with a warning", () => {
+  const { heard, listener } = recorder();
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  openWorkspaceEvents("w", listener, { connect });
+  FakeEventSource.last.send("", JSON.stringify({ type: "capture", t: 1 }));
+  expect(heard).toEqual([]);
+  expect(warn).toHaveBeenCalledOnce();
+  warn.mockRestore();
+});
+
+test("an answer to a request for a picture is put under its request id", async () => {
+  const sent = stubFetch(() => new Response(null, { status: 204 }));
+  await answerCapture("w", "req-1", { error: "No canvas is on screen." });
+  expect(sent.map((each) => [each.method, each.path, each.body])).toEqual([
+    ["PUT", "/api/workspaces/w/captures/req-1", { error: "No canvas is on screen." }],
+  ]);
 });

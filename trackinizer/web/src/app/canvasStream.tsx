@@ -1,6 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { openWorkspaceEvents } from "../api/workspaces";
+import { answerRequest } from "../canvasCapture/answer";
+import { CaptureContext, CaptureRegistry } from "../canvasCapture/stageRegistry";
 import { recordFrame, recordNavigation } from "../debug/timings";
 import { LiveContext } from "../live";
 import { receivePreferences } from "../preferences";
@@ -20,8 +22,9 @@ import { HighlightContext, HighlightStore } from "./highlights";
  *
  * It also applies what the stream says about the canvas: the workspace (a
  * revision never replaces a newer one), an agent's navigation, and what it points at
- * (the tab's highlights, `highlights.ts`), and when it hides or shows Chat's
- * column. Chat's lines have no frames of their own: a conversation is a session, and a line added to it is the session's `changed` id, which
+ * (the tab's highlights, `highlights.ts`), when it hides or shows Chat's
+ * column, and when it asks for a picture of the canvas, which the open canvas
+ * draws through the registry this provides (`canvasCapture/`). Chat's lines have no frames of their own: a conversation is a session, and a line added to it is the session's `changed` id, which
  * the live layer hands to the Chat that follows it. Gap recovery on an open is the
  * live layer's own.
  */
@@ -33,6 +36,7 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
   kindsRef.current = kinds ?? [];
   const [feed] = useState(() => new ChatFeed());
   const [highlights] = useState(() => new HighlightStore());
+  const [captures] = useState(() => new CaptureRegistry());
   const created = useStation({ enabled });
   const workspaceId = enabled ? created.data?.id : undefined;
   useEffect(() => {
@@ -49,6 +53,7 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
       },
       highlight: (ids) => highlights.set(ids),
       chat: (hidden) => setChatHidden(hidden),
+      capture: (request) => void answerRequest(workspaceId, request, captures, { hidden: document.hidden }),
       preferences: (preferences) => receivePreferences(preferences),
       changed: (id) => hub?.change(id),
       open: () => hub?.open(),
@@ -60,10 +65,12 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
       close();
       highlights.set([]);
     };
-  }, [workspaceId, queryClient, hub, highlights, feed]);
+  }, [workspaceId, queryClient, hub, highlights, feed, captures]);
   return (
     <ChatFeedContext value={enabled ? feed : null}>
-      <HighlightContext value={highlights}>{children}</HighlightContext>
+      <HighlightContext value={highlights}>
+        <CaptureContext value={captures}>{children}</CaptureContext>
+      </HighlightContext>
     </ChatFeedContext>
   );
 }

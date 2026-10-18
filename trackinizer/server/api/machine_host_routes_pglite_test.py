@@ -26,6 +26,7 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.auth import create_api_key
+from trackinizer.server.machine_auth import mint_secret
 from trackinizer.wire.wire_machine_host import (
     CREDENTIAL_PREFIX,
     ENROLL_PATH,
@@ -84,16 +85,15 @@ async def _admin_account(
         )
 
 
-async def test_enroll_needs_admin(
+async def test_enroll_needs_the_writer_role(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
-    responses: list[httpx2.Response] = []
-    for role in ("viewer", "writer"):
-        _as(role)
-        responses.append(await client.post(ENROLL_PATH, json={"name": "dev-1"}))
+    _as("viewer")
 
-    assert [r.status_code for r in responses] == [403, 403]
+    refused = await client.post(ENROLL_PATH, json={"name": "dev-1"})
+
+    assert refused.status_code == 403
     _as("admin")
     assert (await _listed(client)).machines == []
 
@@ -115,8 +115,14 @@ async def test_enroll_registers_the_machine_and_returns_a_fifteen_minute_token(
     lifetime = enrolled.expires_at - before
     assert timedelta(seconds=ENROLL_TTL_SEC - 5) < lifetime
     assert lifetime < timedelta(seconds=ENROLL_TTL_SEC + 5)
+    assert enrolled.owner == TEST_USER_EMAIL
     assert (await _detail(client, "dev-1")).status == "never"
     assert _secret_of(enrolled.token) not in await _everything_stored(store)
+    async with store.engine.acquire() as conn:
+        confirmed = await conn.fetchval(
+            "SELECT confirmed_at IS NOT NULL FROM machines WHERE name = 'dev-1'",
+        )
+    assert confirmed is True
 
 
 async def test_enroll_of_an_existing_machine_keeps_its_fields(
@@ -130,6 +136,59 @@ async def test_enroll_of_an_existing_machine_keeps_its_fields(
 
     assert response.status_code == 201
     assert (await _detail(client, "dev-1")).role == "dev"
+
+
+async def _squatted(store: Store, name: str = "colossus2") -> None:
+    """Register ``name`` as a personal machine a writer, ``mal``, enrolled."""
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO machines (name, updated_by, owner, role) "
+            "VALUES ($1, 'mal@x.y', 'mal@x.y', 'personal')",
+            name,
+        )
+
+
+async def test_an_admin_cannot_enroll_a_name_another_person_owns(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, store = pglite_route_client
+    await _squatted(store)
+    _as("admin")
+
+    response = await client.post(ENROLL_PATH, json={"name": "colossus2"})
+
+    assert response.status_code == 409
+    assert "mal@x.y" in response.text
+    async with store.engine.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT owner, role, "
+            "(SELECT count(*) FROM machine_enrollments) AS enrollments "
+            "FROM machines WHERE name = 'colossus2'",
+        )
+    assert row is not None
+    assert (row["owner"], row["role"], row["enrollments"]) == ("mal@x.y", "personal", 0)
+
+
+async def test_an_admin_token_does_not_join_a_machine_someone_else_owns(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, store = pglite_route_client
+    await _squatted(store)
+    minted = mint_secret(ENROLLMENT_PREFIX)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO machine_enrollments "
+            "(id, machine_id, secret_sha256, created_by, expires_at) "
+            "SELECT $1, id, $2, $3, now() + interval '5 minutes' FROM machines "
+            "WHERE name = 'colossus2'",
+            minted.id,
+            minted.digest,
+            TEST_USER_EMAIL,
+        )
+
+    response = await _join(client, "colossus2", minted.token)
+
+    assert response.status_code == 401
 
 
 @pytest.mark.parametrize("name", ["Upper", "a b", "", "enroll", "join", "connect"])
@@ -341,7 +400,7 @@ async def test_a_host_version_with_a_nul_is_422_and_the_token_is_kept(
     ],
     ids=["disabled", "demoted", "deleted"],
 )
-async def test_a_token_whose_issuer_is_no_longer_an_active_admin_is_401(
+async def test_a_token_whose_issuer_is_neither_an_active_admin_nor_the_owner_is_401(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
     closed_by: str,
 ) -> None:
@@ -489,12 +548,15 @@ async def test_revoke_closes_an_open_enrollment_and_is_idempotent(
     assert (await _join(client, "dev-1", token)).status_code == 401
 
 
-async def test_revoke_needs_admin_and_a_registered_machine(
+async def test_revoke_needs_the_admin_or_owner_and_a_registered_machine(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
     joined = await _joined(client, "dev-1")
     _as("writer")
+    install_identity(
+        make_test_identity(role="writer", api_key_id=None, email="other@x.y"),
+    )
     refused = await client.post(REVOKE_PATH.format(name="dev-1"))
     _as("admin")
     absent = await client.post(REVOKE_PATH.format(name="nope"))
@@ -506,6 +568,27 @@ async def test_revoke_needs_admin_and_a_registered_machine(
         422,
     )
     assert (await _heartbeat(client, joined)).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("role", "joins"),
+    [("", False), ("personal", True)],
+    ids=["shared", "personal"],
+)
+async def test_a_demoted_issuer_who_owns_the_machine_joins_only_a_personal_one(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    role: str,
+    joins: bool,
+) -> None:
+    client, store = pglite_route_client
+    token = await _enroll(client, "dev-1")
+    async with store.engine.acquire() as conn:
+        await conn.execute("UPDATE machines SET role = $1", role)
+        await conn.execute("UPDATE users SET role = 'writer'")
+
+    response = await _join(client, "dev-1", token)
+
+    assert response.status_code == (201 if joins else 401)
 
 
 async def test_a_machine_enrolls_again_after_revoke(

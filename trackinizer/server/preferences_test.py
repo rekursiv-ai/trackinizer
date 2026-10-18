@@ -28,7 +28,6 @@ if TYPE_CHECKING:
 _DEFAULTS: dict[str, JsonValue] = {
     "theme": "dark",
     "skin": "default",
-    "chat_style": "default",
     "chat_side": "left",
     "highlight_mentions": True,
     "terminal_font_size": "13px",
@@ -168,7 +167,7 @@ async def test_a_write_sets_and_resets_keys_in_one_statement() -> None:
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"theme": "light"},
-        ["chat_side"],
+        ["chat_side", "chat_style"],
         _USER,
     )
 
@@ -194,7 +193,7 @@ async def test_a_write_for_a_user_who_is_gone_is_none() -> None:
         ({"colour": "red", "theme": None}, "No such preference: colour"),
         ({"theme": "blue"}, "theme: "),
         (
-            {"chat_style": "terminal", "highlight_mentions": "yes"},
+            {"chat_side": "right", "highlight_mentions": "yes"},
             "highlight_mentions: ",
         ),
     ],

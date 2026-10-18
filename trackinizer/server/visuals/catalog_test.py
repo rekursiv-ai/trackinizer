@@ -11,6 +11,7 @@ from trackinizer.server.visuals.catalog import (
     FilesVisual,
     ParameterDescription,
     StaticVisual,
+    TerminalVisual,
     TimelineVisual,
     Workspace,
     default_catalog,
@@ -28,6 +29,7 @@ def test_default_workspace_builds_the_default_catalog() -> None:
         "trax.artifact",
         "trax.summary",
         "trax.files",
+        "trax.terminal",
     ]
 
 
@@ -81,6 +83,7 @@ def test_record_visuals_name_the_kinds_they_accept() -> None:
         "trax.artifact": ["Artifact"],
         "trax.summary": ["Issue", "AgentSession"],
         "trax.files": None,
+        "trax.terminal": None,
     }
 
 
@@ -111,6 +114,22 @@ def test_context_graph_bounds_its_reach_and_its_highlight() -> None:
         "",
         512,
     )
+
+
+def test_terminal_needs_no_record_and_bounds_its_machine_and_terminal() -> None:
+    """The terminal tile starts nothing itself; its two parameters are capped."""
+    described = TerminalVisual.Config().make().describe()
+    assert (described.type, described.requires, described.default_size) == (
+        "trax.terminal",
+        [],
+        "wide",
+    )
+    machine = described.parameter_schema["machine"]
+    terminal = described.parameter_schema["terminal"]
+    assert (machine.type, machine.default, machine.max_length) == ("string", "", 63)
+    assert (terminal.type, terminal.default, terminal.max_length) == ("string", "", 36)
+    start = described.parameter_schema["start"]
+    assert (start.type, start.default) == ("boolean", False)
 
 
 def test_files_takes_any_record_and_bounds_its_narrowing() -> None:

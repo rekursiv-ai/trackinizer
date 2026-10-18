@@ -1,6 +1,6 @@
 import type { APIRequestContext, Page } from "@playwright/test";
 import { resetCanvas } from "./canvasState";
-import { expect, setPreferences, streamOpened, test } from "./fixtures";
+import { expect, streamOpened, test } from "./fixtures";
 
 // The console inside a station: a named one starts on the station's agents, an unnamed
 // one on every session, and one control switches it; a line sent to an agent is told to the station's chat
@@ -141,33 +141,26 @@ test("a chat that was not told is said quietly, and the console's box names its 
   await expect(page.locator(".composer-receipt")).toHaveText("Sent to 1 session; Chat not told");
 });
 
-for (const style of ["default", "terminal"] as const) {
-  test(`the chat draws a relay line as its own, in the ${style} chat style`, async ({ page, request }) => {
-    const { email } = await (await request.get("/api/me/profile")).json();
-    const started = await request.post("/api/sessions/start", { data: { cli: "claude", title: "E2E relay chat" } });
-    const { id: session } = await started.json();
-    const relay = "→ lead-2, tiles-a:ops: rerun the suite";
-    await capture(request, session, [
-      { kind: "AgentToAgentMessage", payload: { sender: email, content: "Hello." }, text: "Hello." },
-      { kind: "AssistantMessage", payload: { content: "Hi." }, text: "Hi." },
-      { kind: "AgentToAgentMessage", payload: { sender: email, content: relay }, text: relay },
-    ], "chat.jsonl");
-    const conversation = crypto.randomUUID();
-    await page.route(`**/api/chats/${conversation}`, (route) => route.fulfill({ json: {
-      conversation_id: conversation, session_id: session, title: "E2E", account: email, live: true, forks: 0, forked_from: null, forks_on_typing: false, audience: "open", may_hide: false, shared_with: [], may_share: false, may_delete: false,
-    } }));
-    expect((await request.post(`/api/workspaces/for-chat/${conversation}`)).ok()).toBe(true);
-    await setPreferences(page.request, { chat_style: style });
-    await page.setViewportSize({ width: 1400, height: 900 });
-    const subscribed = streamOpened(page);
-    await page.goto("/app/#/list/Issue");
-    await subscribed;
-    const line = page.locator(".chat-line-relay");
-    await expect(line).toHaveText("you → lead-2, tiles-a:ops: rerun the suite");
-    await expect(page.locator(".chat-panel .chat-line-user")).toHaveCount(1);
-    await expect(line.locator(".chat-prompt")).toHaveCount(0);
-    const colour = await line.locator(".chat-line-body").evaluate((element) => getComputedStyle(element).color);
-    if (style === "terminal") expect(colour).toBe("rgb(94, 92, 100)");
-    else expect(colour).not.toBe("rgb(94, 92, 100)");
-  });
-}
+test(`the chat draws a relay line as its own`, async ({ page, request }) => {
+  const { email } = await (await request.get("/api/me/profile")).json();
+  const started = await request.post("/api/sessions/start", { data: { cli: "claude", title: "E2E relay chat" } });
+  const { id: session } = await started.json();
+  const relay = "→ lead-2, tiles-a:ops: rerun the suite";
+  await capture(request, session, [
+    { kind: "AgentToAgentMessage", payload: { sender: email, content: "Hello." }, text: "Hello." },
+    { kind: "AssistantMessage", payload: { content: "Hi." }, text: "Hi." },
+    { kind: "AgentToAgentMessage", payload: { sender: email, content: relay }, text: relay },
+  ], "chat.jsonl");
+  const conversation = crypto.randomUUID();
+  await page.route(`**/api/chats/${conversation}`, (route) => route.fulfill({ json: {
+    conversation_id: conversation, session_id: session, title: "E2E", account: email, live: true, forks: 0, forked_from: null, forks_on_typing: false, audience: "open", may_hide: false, shared_with: [], may_share: false, may_delete: false,
+  } }));
+  expect((await request.post(`/api/workspaces/for-chat/${conversation}`)).ok()).toBe(true);
+  await page.setViewportSize({ width: 1400, height: 900 });
+  const subscribed = streamOpened(page);
+  await page.goto("/app/#/list/Issue");
+  await subscribed;
+  const line = page.locator(".chat-line-relay");
+  await expect(line).toHaveText("you → lead-2, tiles-a:ops: rerun the suite");
+  await expect(page.locator(".chat-panel .chat-line-user")).toHaveCount(1);
+});

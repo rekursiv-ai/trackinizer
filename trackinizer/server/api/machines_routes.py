@@ -28,6 +28,7 @@ from trackinizer.wire.wire_machines import (
     MACHINE_PATH,
     MACHINES_PATH,
     NAME_PATTERN,
+    PERSONAL_ROLE,
     RESERVED_NAMES,
     Machine,
     MachineDetail,
@@ -51,6 +52,7 @@ __all__ = [
     "absent_machine",
     "change_machine_labels_route",
     "delete_machine_route",
+    "fetch_machines",
     "get_machine_route",
     "list_machines_route",
     "put_machine_route",
@@ -86,10 +88,9 @@ async def list_machines_route(
       machines: Every machine, sorted by name in byte order.
 
     """
-    del identity
     async with engine_of(request).acquire() as conn:
-        rows = await _fetch_machines(conn, name=None)
-    return MachineList(machines=[_machine(row) for row in rows])
+        rows = await fetch_machines(conn, name=None, viewer=identity)
+    return MachineList(machines=[_machine(row, viewer=identity) for row in rows])
 
 
 @router.get(MACHINE_PATH, response_model=MachineDetail)
@@ -112,13 +113,12 @@ async def get_machine_route(
       NotFoundError: No such machine.
 
     """
-    del identity
     refuse_reserved(name)
     async with engine_of(request).acquire() as conn:
-        rows = await _fetch_machines(conn, name=name)
+        rows = await fetch_machines(conn, name=name, viewer=identity)
     if not rows:
         raise absent_machine(name)
-    return _machine_detail(rows[0])
+    return _machine_detail(rows[0], viewer=identity)
 
 
 @router.put(MACHINE_PATH, status_code=204)
@@ -268,25 +268,72 @@ def refuse_reserved(name: str) -> None:
         raise ValidationError(f"{name!r} is a reserved machine name")
 
 
-def _machine(row: Record) -> Machine:
+# One statement for the listing and the single read, so the derived status has one
+# spelling. ``$1`` is the silence, in seconds, after which a connected machine reads
+# offline; ``$2`` is one name, or NULL for every machine. ``revoked`` means every
+# credential the machine ever had was revoked; ``never`` means no heartbeat yet. A
+# personal machine (``$3``) is read only by its owner (``$4``), an admin included: an
+# admin revokes it by name, but never lists it, so nothing that lists machines to choose
+# one offers a person's laptop.
+async def fetch_machines(
+    conn: Conn,
+    *,
+    name: str | None,
+    viewer: AuthIdentity,
+) -> list[Record]:
+    """Read the machines ``viewer`` may see, with the status derived.
+
+    Args:
+      conn: A connection.
+      name: One machine's name, or ``None`` for every machine.
+      viewer: Who reads; a personal machine is read only by its owner.
+
+    Returns:
+      rows: The machines, sorted by name in byte order.
+
+    """
+    return await conn.fetch(
+        "SELECT id, name, role, how, labels, updated_by, updated, last_heartbeat, owner, "
+        "created, confirmed_at, "
+        "host_version, facts, CASE "
+        "WHEN EXISTS (SELECT 1 FROM machine_credentials c "
+        "WHERE c.machine_id = machines.id) "
+        "AND NOT EXISTS (SELECT 1 FROM machine_credentials c "
+        "WHERE c.machine_id = machines.id AND c.revoked_at IS NULL) THEN 'revoked' "
+        "WHEN last_heartbeat IS NULL THEN 'never' "
+        "WHEN last_heartbeat > now() - make_interval(secs => $1) THEN 'online' "
+        "ELSE 'offline' END AS status "
+        "FROM machines WHERE ($2::text IS NULL OR name = $2) "
+        "AND (role <> $3 OR owner = $4) "
+        'ORDER BY name COLLATE "C"',
+        OFFLINE_AFTER_SEC,
+        name,
+        PERSONAL_ROLE,
+        viewer.email,
+    )
+
+
+def _machine(row: Record, *, viewer: AuthIdentity) -> Machine:
     """Build the wire model of one ``machines`` row."""
-    return Machine.model_validate(_fields(row))
+    return Machine.model_validate(_fields(row, viewer=viewer))
 
 
-def _machine_detail(row: Record) -> MachineDetail:
+def _machine_detail(row: Record, *, viewer: AuthIdentity) -> MachineDetail:
     """Build the detailed wire model of one ``machines`` row."""
     return MachineDetail.model_validate(
         {
-            **_fields(row),
+            **_fields(row, viewer=viewer),
             "host_version": from_plain(row["host_version"], str),
             "facts": from_plain(row["facts"], dict[str, object]),
         },
     )
 
 
-def _fields(row: Record) -> dict[str, object]:
-    """Return the fields a listed machine carries."""
+def _fields(row: Record, *, viewer: AuthIdentity) -> dict[str, object]:
+    """Return the fields a listed machine carries; the owner only to who may see it."""
+    owner = from_plain(row["owner"], str | None)
     return {
+        "owner": owner if viewer.role == "admin" or owner == viewer.email else None,
         "name": from_plain(row["name"], str),
         "role": from_plain(row["role"], str),
         "how": from_plain(row["how"], str),
@@ -303,25 +350,3 @@ def _labels(raw: Sequence[str]) -> list[str]:
     if any(not label.strip() or "\x00" in label for label in raw):
         raise ValidationError("a label is blank or contains a NUL character")
     return list(canonical_strs(raw))
-
-
-# One statement for the listing and the single read, so the derived status has one
-# spelling. ``$1`` is the silence, in seconds, after which a connected machine reads
-# offline; ``$2`` is one name, or NULL for every machine. ``revoked`` means every
-# credential the machine ever had was revoked; ``never`` means no heartbeat yet.
-async def _fetch_machines(conn: Conn, *, name: str | None) -> list[Record]:
-    """Read machines, with the status derived from credentials and heartbeat."""
-    return await conn.fetch(
-        "SELECT name, role, how, labels, updated_by, updated, last_heartbeat, "
-        "host_version, facts, CASE "
-        "WHEN EXISTS (SELECT 1 FROM machine_credentials c "
-        "WHERE c.machine_id = machines.id) "
-        "AND NOT EXISTS (SELECT 1 FROM machine_credentials c "
-        "WHERE c.machine_id = machines.id AND c.revoked_at IS NULL) THEN 'revoked' "
-        "WHEN last_heartbeat IS NULL THEN 'never' "
-        "WHEN last_heartbeat > now() - make_interval(secs => $1) THEN 'online' "
-        "ELSE 'offline' END AS status "
-        'FROM machines WHERE $2::text IS NULL OR name = $2 ORDER BY name COLLATE "C"',
-        OFFLINE_AFTER_SEC,
-        name,
-    )

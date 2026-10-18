@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from fastapi import HTTPException, Request
+    from starlette.requests import HTTPConnection
 
     from trackinizer.lib.postgres import DatabaseEngine
     from trackinizer.server.auth import AuthIdentity
@@ -30,7 +31,7 @@ class _State(Protocol):
     engine: DatabaseEngine
 
 
-def engine_of(request: Request) -> DatabaseEngine:
+def engine_of(request: HTTPConnection) -> DatabaseEngine:
     """Return the DatabaseEngine held on app state.
 
     Args:

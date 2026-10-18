@@ -32,6 +32,7 @@ dependencies = [
     "fastapi>=0.123.9",
     "starlette>=0.40",
     "uvicorn>=0.30.0",
+    "websockets>=15",
     # http client
     "httpx2>=2.12",
     # session signing

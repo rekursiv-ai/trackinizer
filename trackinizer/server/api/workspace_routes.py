@@ -20,7 +20,7 @@ from trackinizer.server.api._deps import (
 from trackinizer.server.api._routes_shared import engine_of, require_browser
 from trackinizer.server.api.session_access import resolve_asker, session_reader
 from trackinizer.server.api.visuals_routes import visual_catalog
-from trackinizer.server.audience import TranscriptPings
+from trackinizer.server.audience import SessionReader, TranscriptPings
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.chat_hub import (
     ChatFrame,
@@ -120,6 +120,7 @@ async def workspace_events_route(
         request,
         user_id=identity.user_id,
         workspace_id=workspace_id,
+        reader=session_reader(request, identity),
     )
     await read_state()
     return StreamingResponse(
@@ -718,6 +719,7 @@ async def read_workspace_route(
             inbound=get_inbound(request),
             assistant=get_assistant(request),
             agent_api_key_id=identity.api_key_id,
+            reader=session_reader(request, identity),
         )
     except WorkspaceKeyRefusedError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
@@ -744,8 +746,12 @@ async def workspace_operation_route(
     agent key may send, changes neither a visual nor the revision: it pushes a
     ``navigate``, ``highlight`` or ``chat`` frame to this station, or, for
     ``preferences``, which changes the owner's preferences, a ``preferences`` frame
-    to every station of the owner. A replay of an applied key returns the original state and
-    publishes nothing.
+    to every station of the owner. A ``mark``, ``remove_mark`` or
+    ``clear_marks`` operation (red boxes) commutes with every other write, so it
+    takes the next revision whatever revision it expects; ``remove_mark`` takes any
+    one box, ``clear_marks`` every box or one page's, and one already gone is no
+    change. A replay of an applied key returns the original state and publishes
+    nothing.
 
     Args:
       workspace_id: Canvas to change.
@@ -769,6 +775,9 @@ async def workspace_operation_route(
             inbound=get_inbound(request),
             assistant=get_assistant(request),
             agent_api_key_id=identity.api_key_id,
+            placed_by=None if identity.api_key_id is None else identity.email,
+            author=identity.email,
+            reader=session_reader(request, identity),
         )
     except RevisionConflictError as error:
         return JSONResponse(
@@ -820,6 +829,7 @@ async def _current_state(
     *,
     user_id: uuid.UUID,
     workspace_id: uuid.UUID,
+    reader: SessionReader,
 ) -> WorkspaceState:
     """Read the owner's canvas with its partner, or 404."""
     state = await read_workspace(
@@ -828,6 +838,7 @@ async def _current_state(
         workspace_id=workspace_id,
         inbound=get_inbound(request),
         assistant=get_assistant(request),
+        reader=reader,
     )
     if state is None:
         raise HTTPException(status_code=404, detail="Workspace not found")

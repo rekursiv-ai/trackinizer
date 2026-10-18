@@ -59,7 +59,8 @@ def test_enroll_supersedes_open_tokens_then_stores_only_the_digest(
 ) -> None:
     client, _, engine = route_client
     _as("admin")
-    engine.conn.fetchval.side_effect = [_MACHINE_ID, _BEAT]
+    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": TEST_USER_EMAIL})
+    engine.conn.fetchval.side_effect = [_BEAT]
 
     response = client.post(ENROLL_PATH, json={"name": "dev-1"})
 
@@ -67,13 +68,17 @@ def test_enroll_supersedes_open_tokens_then_stores_only_the_digest(
     token = from_plain(response.json(), dict[str, str])["token"]
     parsed = parse_enrollment(token)
     assert parsed is not None
-    upsert, insert = engine.conn.fetchval.call_args_list
+    upsert = engine.conn.fetchrow.call_args
+    insert = engine.conn.fetchval.call_args
     # One statement registers the machine or locks its row; a separate insert and
     # lock leave a gap in which a delete commits and the lock finds no machine.
     sql = from_plain(upsert.args[0], str)
-    assert "INSERT INTO machines (name, updated_by) VALUES ($1, $2)" in sql
-    assert "ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id" in sql
-    assert upsert.args[1:] == ("dev-1", TEST_USER_EMAIL)
+    assert "INSERT INTO machines (name, updated_by, owner, role, confirmed_at)" in sql
+    assert "VALUES ($1, $2, $2, $3, CASE WHEN $4 THEN now() END)" in sql
+    assert "ON CONFLICT (name) DO UPDATE SET" in sql
+    assert "COALESCE(machines.confirmed_at, now())" in sql
+    assert "RETURNING id, owner" in sql
+    assert upsert.args[1:] == ("dev-1", TEST_USER_EMAIL, "", True)
     assert "INSERT INTO machine_enrollments" in from_plain(insert.args[0], str)
     assert insert.args[1:] == (
         parsed.id,
@@ -92,15 +97,43 @@ def test_enroll_supersedes_open_tokens_then_stores_only_the_digest(
     assert token not in " ".join(sent)
 
 
-def test_enroll_by_a_non_admin_sends_nothing(
+def test_enroll_by_a_viewer_sends_nothing(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
+    _as("viewer")
 
     response = client.post(ENROLL_PATH, json={"name": "dev-1"})
 
     assert response.status_code == 403
     _assert_untouched(engine)
+
+
+def test_a_writer_enrolls_a_machine_that_is_new_as_their_own_personal_one(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": TEST_USER_EMAIL})
+    engine.conn.fetchval.side_effect = [_BEAT]
+
+    response = client.post(ENROLL_PATH, json={"name": "laptop"})
+
+    assert response.status_code == 201
+    upsert = engine.conn.fetchrow.call_args
+    assert upsert.args[1:] == ("laptop", TEST_USER_EMAIL, "personal", False)
+
+
+def test_a_writer_cannot_enroll_a_machine_that_belongs_to_someone_else(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": "other@x.y"})
+
+    response = client.post(ENROLL_PATH, json={"name": "laptop"})
+
+    assert response.status_code == 403
+    engine.conn.fetchval.assert_not_called()
+    assert executed_sql(engine.conn) == ["BEGIN", "ROLLBACK"]
 
 
 def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
@@ -129,9 +162,11 @@ def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
     assert "AND e.expires_at > now()" in sql
     assert (
         "FROM users u WHERE u.email = e.created_by "
-        "AND u.status = 'active' AND u.role = 'admin'"
+        "AND u.status = 'active' AND ((u.role = 'admin' "
+        "AND (m.owner IS NULL OR m.owner = u.email)) "
+        "OR (u.email = m.owner AND m.role = $3))"
     ) in sql
-    assert check.args[1:] == (parsed_enrollment.id, "dev-1")
+    assert check.args[1:] == (parsed_enrollment.id, "dev-1", "personal")
     # The same first lock as enroll, revoke and delete take, or a join racing one of
     # them deadlocks.
     assert "FROM machines WHERE name = $1 FOR UPDATE" in from_plain(lock.args[0], str)
@@ -141,12 +176,16 @@ def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
     assert "used_at IS NULL AND expires_at > now() AND secret_sha256 = $2" in sql
     assert "AND machine_id = $3" in sql
     assert (
-        "FROM users WHERE email = created_by AND status = 'active' AND role = 'admin'"
+        "FROM users u JOIN machines m ON m.id = $3 "
+        "WHERE u.email = machine_enrollments.created_by AND u.status = 'active' "
+        "AND ((u.role = 'admin' AND (m.owner IS NULL OR m.owner = u.email)) "
+        "OR (m.owner = u.email AND m.role = $4))"
     ) in sql
     assert claim.args[1:] == (
         parsed_enrollment.id,
         enrollment.digest,
         _MACHINE_ID,
+        "personal",
     )
     sent = executed_sql(engine.conn)
     assert [sql.split(" (")[0].split(" SET")[0] for sql in sent] == [
@@ -394,12 +433,12 @@ def test_revoke_closes_credentials_enrollments_and_the_host_instance(
 ) -> None:
     client, _, engine = route_client
     _as("admin")
-    engine.conn.fetchval.return_value = _MACHINE_ID
+    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": "other@x.y"})
 
     response = client.post(REVOKE_PATH.format(name="dev-1"))
 
     assert (response.status_code, response.content) == (204, b"")
-    select = engine.conn.fetchval.call_args
+    select = engine.conn.fetchrow.call_args
     assert "FROM machines WHERE name = $1 FOR UPDATE" in from_plain(select.args[0], str)
     assert select.args[1:] == ("dev-1",)
     sent = executed_sql(engine.conn)
@@ -423,7 +462,7 @@ def test_revoke_of_an_absent_machine_is_404_and_changes_nothing(
 ) -> None:
     client, _, engine = route_client
     _as("admin")
-    engine.conn.fetchval.return_value = None
+    set_field_row(engine.conn, None)
 
     response = client.post(REVOKE_PATH.format(name="nope"))
 
@@ -431,15 +470,33 @@ def test_revoke_of_an_absent_machine_is_404_and_changes_nothing(
     assert executed_sql(engine.conn) == ["BEGIN", "ROLLBACK"]
 
 
-def test_revoke_by_a_non_admin_sends_nothing(
+def test_revoke_by_a_viewer_sends_nothing(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
+    _as("viewer")
 
     response = client.post(REVOKE_PATH.format(name="dev-1"))
 
     assert response.status_code == 403
     _assert_untouched(engine)
+
+
+def test_a_writer_revokes_their_own_machine_and_not_another_users(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": "other@x.y"})
+
+    refused = client.post(REVOKE_PATH.format(name="dev-1"))
+
+    assert refused.status_code == 403
+    assert executed_sql(engine.conn) == ["BEGIN", "ROLLBACK"]
+
+    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": TEST_USER_EMAIL})
+    allowed = client.post(REVOKE_PATH.format(name="dev-1"))
+
+    assert allowed.status_code == 204
 
 
 def _as(role: Role) -> None:

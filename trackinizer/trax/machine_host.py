@@ -9,6 +9,9 @@ error, or another host still holding the machine is retried, sooner at first.
 
 It uses the machine's own credential, never the profile's key, so it runs in the
 calling process rather than in traxd.
+
+A host that opted in to terminals also serves them (``trax/terminal_host.py``) for as
+long as it stays connected, and kills every shell when the machine is revoked.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ else:
 __all__ = [
     "HOST_CLIS",
     "HostClient",
+    "TerminalServing",
     "connect",
     "host_facts",
 ]
@@ -85,12 +89,25 @@ class HostClient(Protocol):
         ...
 
 
+class TerminalServing(Protocol):
+    """Serves terminals for a joined machine: started once, stopped on any exit."""
+
+    def start(self, machine_id: uuid.UUID, instance: uuid.UUID) -> None:
+        """Start listening for terminals to open."""
+        ...
+
+    def stop(self) -> None:
+        """Stop listening and kill every shell."""
+        ...
+
+
 def connect(
     name: str,
     *,
     client_for: Callable[[str], HostClient],
     read_token: Callable[[], str],
     sleep: Callable[[float], None],
+    terminals_for: Callable[[JoinResponse], TerminalServing] | None = None,
 ) -> None:
     """Join ``name`` when no credential is saved, then heartbeat until it is revoked.
 
@@ -99,6 +116,8 @@ def connect(
       client_for: Returns a client that sends the given key; ``""`` sends none.
       read_token: Returns the enrollment token, read from stdin.
       sleep: Waits the given seconds between heartbeats.
+      terminals_for: Makes the terminal server for the joined machine's credential;
+        ``None`` serves none, whatever the server asks.
 
     Raises:
       ClientError: The token was refused, the saved credential is unknown to the
@@ -107,7 +126,7 @@ def connect(
     """
     instance = uuid.uuid4()
     version = _host_version()
-    facts = host_facts()
+    facts = host_facts(terminal=terminals_for is not None)
     # Sent with the first heartbeat only, and not after a join, which stored them.
     unsent: Facts | None = facts
     saved = _saved_credential(name)
@@ -128,37 +147,49 @@ def connect(
         _save_credential(name, saved)
         echo(f"joined: machine {name}")
         unsent = None
-    with closing(client_for(saved.credential)) as client:
-        failures = 0
-        while True:
-            try:
-                client.heartbeat_machine(
-                    saved.machine_id,
-                    instance=instance,
-                    host_version=version,
-                    facts=unsent,
-                )
-            except ClientError as err:
-                if err.status_code == 410:
-                    echo(f"revoked: machine {name}")
-                    return
-                failures += 1
-                sleep(_retry_delay(err, failures=failures))
-                continue
-            unsent = None
+    terminals = None if terminals_for is None else terminals_for(saved)
+    if terminals is not None:
+        terminals.start(saved.machine_id, instance)
+    try:
+        with closing(client_for(saved.credential)) as client:
             failures = 0
-            sleep(HEARTBEAT_SEC)
+            while True:
+                try:
+                    client.heartbeat_machine(
+                        saved.machine_id,
+                        instance=instance,
+                        host_version=version,
+                        facts=unsent,
+                    )
+                except ClientError as err:
+                    if err.status_code == 410:
+                        echo(f"revoked: machine {name}")
+                        return
+                    failures += 1
+                    sleep(_retry_delay(err, failures=failures))
+                    continue
+                unsent = None
+                failures = 0
+                sleep(HEARTBEAT_SEC)
+    finally:
+        if terminals is not None:
+            terminals.stop()
 
 
-def host_facts() -> Facts:
+def host_facts(*, terminal: bool = False) -> Facts:
     """Return what this host reports about itself.
+
+    Args:
+      terminal: Whether this host serves terminals, which the facts then say.
 
     Returns:
       facts: Its OS and architecture, CPU count, memory in MB, the user it runs
-        as, and which of :data:`HOST_CLIS` are on ``PATH``.
+        as, which of :data:`HOST_CLIS` are on ``PATH``, and ``terminal: true`` when
+        it serves terminals.
 
     """
     return {
+        **({"terminal": True} if terminal else {}),
         "os": platform.system().lower(),
         "arch": platform.machine(),
         "cpus": os.cpu_count() or 0,

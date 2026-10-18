@@ -26,6 +26,21 @@ All notable trackinizer changes are documented here. This project follows
 - `trax machine NAME connect` hosts a machine: it joins with the enrollment
   token on stdin, saves the credential for this user, and heartbeats until
   revoked; `trax machine NAME` shows its status.
+- Browser terminal: the owner of a connected machine opens a shell on it from a
+  web tile, over WebSockets the host dials out to the server. The server
+  records the output as a private `terminal` session, masking credential
+  shapes. Only the owner opens one, from a browser session and never with a key;
+  the host opts in with `TRAX_MACHINE_TERMINAL=1` and logs every open locally.
+  Adds the `websockets` dependency.
+- A writer can enroll a machine of their own: `trax machine connect` with no name
+  uses the short hostname, enrolls it as a personal machine only its owner and
+  admins see, and serves terminals. Machines gain an `owner`; the owner (or an
+  admin) can revoke it.
+- A shell opened from a terminal carries the trax context (`TRAX_WORKSTREAM`,
+  `TRAX_WORKSPACE`, `TRACKINIZER_PROFILE`, and `LC_TRAX_*` copies that survive
+  `ssh`). `trax` reads `TRAX_X`, else `LC_TRAX_X`, and uses the saved profile
+  whose URL is `LC_TRAX_SERVER` when none is selected; with none saved it prints
+  how to log in.
 - `trax` takes its server and key from `TRACKINIZER_URL` and
   `TRACKINIZER_TOKEN`. A malformed token is refused, and a lone token is
   ignored.

@@ -18,6 +18,7 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.visuals.reports import read_artifact_content_on_conn
+from trackinizer.wire.artifact_html import CONTENT_SECURITY_POLICY
 from trackinizer.wire.bodies import (
     SubmitArtifact,
     SubmitBelief,
@@ -435,7 +436,12 @@ async def test_html_route_serves_the_revision_as_a_sandboxed_page(
 
     response = await client.get(f"/api/artifacts/{artifact_id}/html")
     assert response.status_code == 200
-    assert response.text == page
+    # The page is the author's, then the script that answers the canvas's request
+    # for a picture; the policy that runs both is the unchanged Artifact policy.
+    assert response.text.startswith(page)
+    assert response.text.count("<script>") == 1
+    assert "trax-capture" in response.text
+    assert response.headers["content-security-policy"] == CONTENT_SECURITY_POLICY
     assert response.headers["content-type"] == "text/html; charset=utf-8"
     policy = [
         part.strip() for part in response.headers["content-security-policy"].split(";")
@@ -471,7 +477,7 @@ async def test_html_route_serves_the_revision_as_a_sandboxed_page(
     )
     shared = await client.get(f"/api/artifacts/{artifact_id}/html")
     assert shared.status_code == 200
-    assert shared.text == page
+    assert shared.text == response.text
 
 
 @pytest.mark.db_pglite

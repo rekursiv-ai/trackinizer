@@ -47,7 +47,7 @@ function serve(enabled: boolean, { email = "ada@example.com", role = "writer", l
   readonly role?: string;
   readonly logout?: () => Response;
 } = {}) {
-  const DEFAULTS = { theme: "dark", chat_style: "default", chat_side: "left", highlight_mentions: true, terminal_font_size: "13px" };
+  const DEFAULTS = { theme: "dark", chat_side: "left", highlight_mentions: true, terminal_font_size: "13px" };
   const bodies: { [path: string]: unknown } = {
     "/api/meta/enums": { inquiry_kind_all: ["Issue"], status: ["active"] },
     "/api/meta/fields": {},

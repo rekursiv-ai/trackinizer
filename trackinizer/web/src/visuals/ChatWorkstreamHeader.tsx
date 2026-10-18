@@ -9,6 +9,7 @@ import type { WorkspaceState } from "../api/workspaces";
 import { hideStation, nameStation, openStation, STATIONS_KEY } from "../stations/actions";
 import { showStation } from "../stations/useStation";
 import { setChatHidden, setChatSide, useChatColumn } from "./chatColumnState";
+import { Icon } from "../ui/icons";
 import { DeleteChat, PrivacySwitch, ShareChat } from "./ChatSharing";
 
 type Props = {
@@ -17,12 +18,14 @@ type Props = {
   readonly onHide: () => Promise<void>;
   readonly onClear: () => Promise<void>;
   readonly onDeleted: (conversation: string) => void;
+  /** Flip the column to the station's terminal. */
+  readonly onFlip?: () => void;
 };
 
 type HeaderMenu = "name" | "workstream" | "more" | "info";
 
 /** Chat naming, switching, workstream placement, and its compact header controls. */
-export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDeleted }: Props) {
+export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDeleted, onFlip }: Props) {
   const queryClient = useQueryClient();
   const { side, hidden } = useChatColumn();
   const [menu, setMenu] = useState<HeaderMenu | null>(null);
@@ -233,6 +236,8 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
       </span>}
     </div>
     <div className="chat-head-actions" role="toolbar" aria-label="Chat controls">
+      {onFlip && <button className="btn ghost hover-only" type="button" aria-label="Open terminal" title="Flip to a terminal on your machine"
+        onClick={onFlip}><Icon name="terminal" /></button>}
       <button className="btn ghost hover-only" type="button" aria-label={`Move Chat to the ${side === "left" ? "right" : "left"}`}
         title="Dock on the other side" onClick={() => setChatSide(side === "left" ? "right" : "left")}>{side === "left" ? "▷" : "◁"}</button>
       <button className="btn ghost hover-only" type="button" aria-label="More chat actions" aria-expanded={moreOpen} onClick={() => setMenu(moreOpen ? null : "more")}>⋯</button>

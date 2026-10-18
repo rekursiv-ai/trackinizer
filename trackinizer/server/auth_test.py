@@ -25,6 +25,7 @@ import os
 import uuid
 
 from fastapi import HTTPException, Request
+from starlette.requests import HTTPConnection
 
 import pytest
 
@@ -57,6 +58,7 @@ from trackinizer.server.auth import (
     require_role,
     revoke_api_key,
     set_api_key_role,
+    user_of,
     verify_secret,
 )
 from trackinizer.server.config import Config
@@ -1666,6 +1668,144 @@ def _session_cookie_value(user_id: uuid.UUID, secret: str) -> str:
 def _config_with_session_secret(secret: str) -> Config:
     """Return a :class:`Config` carrying just enough fields for the session path."""
     return Config(session_secret=secret, session_max_age_seconds=600)
+
+
+class TestUserOf:
+    """The resolver behind ``current_user``, which a WebSocket handshake also uses."""
+
+    @pytest.mark.asyncio
+    async def test_current_user_answers_what_user_of_answers(self) -> None:
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
+        request = _request_with(engine, f"Bearer {secret}")
+
+        assert await current_user(request) == await user_of(request)
+
+    @pytest.mark.asyncio
+    async def test_a_websocket_handshake_resolves_like_a_request(self) -> None:
+        secret, _ = generate_token()
+        key_id = uuid.uuid4()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [
+            _row(secret_hash=hash_secret(secret), key_id=key_id),
+        ]
+        handshake = HTTPConnection(
+            {
+                "type": "websocket",
+                "headers": [(b"authorization", f"Bearer {secret}".encode())],
+                "app": SimpleNamespace(
+                    state=SimpleNamespace(
+                        engine=engine,
+                        config=Config(),
+                        store=Store(cast(DatabaseEngine, engine), embed=StubEmbedder()),
+                    ),
+                ),
+            },
+        )
+
+        assert (await user_of(handshake)).api_key_id == key_id
+
+    @pytest.mark.asyncio
+    async def test_auth_disabled_resolves_a_synthetic_admin_with_an_id(self) -> None:
+        engine = FakeEngine()
+
+        identity = await user_of(
+            _request_with(engine, None, config=Config(auth_disabled=True)),
+        )
+
+        assert isinstance(identity.user_id, uuid.UUID)
+        assert (identity.role, identity.api_key_id) == ("admin", None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bearer",
+        [
+            "trax_machine_" + "0" * 32 + "_" + "A" * 43,
+            "enr_" + "0" * 32 + "_" + "A" * 43,
+        ],
+    )
+    async def test_a_machine_secret_gets_the_unknown_bearer_answer(
+        self,
+        bearer: str,
+    ) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await user_of(_request_with(FakeEngine(), f"Bearer {bearer}"))
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            401,
+            "invalid bearer token",
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_bearer_is_401_invalid_bearer_token(self) -> None:
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = []
+
+        with pytest.raises(HTTPException) as refused:
+            await user_of(_request_with(engine, f"Bearer {secret}"))
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            401,
+            "invalid bearer token",
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_credential_is_401_not_authenticated(self) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await user_of(_request_with(FakeEngine(), None))
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            401,
+            "not authenticated",
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_cookie_user_is_the_one_looked_up(self) -> None:
+        user_id = uuid.uuid4()
+        signing_key = "session-secret-x"
+        engine = FakeEngine()
+        engine.conn.fetchrow = AsyncMock(
+            return_value={
+                "id": user_id,
+                "email": "u@example.com",
+                "role": "writer",
+                "status": "active",
+                "hosted_domain": None,
+            },
+        )
+        request = _request_with(
+            engine,
+            None,
+            cookies={SESSION_COOKIE_NAME: _session_cookie_value(user_id, signing_key)},
+            config=_config_with_session_secret(signing_key),
+        )
+
+        await user_of(request)
+
+        assert user_id in engine.conn.fetchrow.call_args.args
+
+    @pytest.mark.asyncio
+    async def test_a_request_without_an_id_logs_an_empty_one(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
+        request = _request_with(engine, f"Bearer {secret}")
+        cast(MagicMock, request).state = SimpleNamespace()
+
+        with caplog.at_level(logging.INFO):
+            await user_of(request)
+
+        logged = [
+            record.__dict__["request_id"]
+            for record in caplog.records
+            if getattr(record, "event", "") == "trackinizer_auth_completed"
+        ]
+        assert logged == [""]
 
 
 class TestCurrentUserSession:

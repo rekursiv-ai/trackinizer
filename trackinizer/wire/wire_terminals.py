@@ -1,0 +1,269 @@
+"""Wire contract for the browser terminal: paths, bodies, limits, close codes, frames.
+
+A terminal is a shell on a machine its owner connected, shown in the owner's
+browser. The browser and the host each dial the server, which pairs them and
+relays bytes:
+
+- The browser ``POST``s :data:`TERMINALS_PATH`, then opens
+  :data:`TERMINAL_WS_PATH` and sends ``ATTACH`` first.
+- The host holds a ``GET`` on :data:`MACHINE_TERMINAL_WAIT_PATH`; an open request
+  returns at once, and the host dials :data:`MACHINE_TERMINAL_WS_PATH`.
+
+One WebSocket binary message is one frame: a kind byte, a four-byte big-endian
+length, and the payload (``trackinizer.lib.posix.host.encode_frame``). The kinds below
+equal that module's ``Frame`` values; a test holds them equal.
+
+- Browser to server: ``ATTACH`` (:data:`TICKET_CHARS` ASCII ticket bytes then a
+  u64 offset) first, then ``INPUT``, ``RESIZE`` (u16 rows, u16 cols), ``STOP``.
+- Server to browser: ``ACK`` (u64 offset the stream resumes at), ``OUTPUT``, ``EXIT``
+  (u32 status).
+- Server to host: ``INPUT``, ``RESIZE``, ``STOP``. Host to server: ``OUTPUT``, ``EXIT``.
+
+This package is part of the publishable client distribution, so it must
+not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Final
+
+import uuid
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from trackinizer.wire.wire_machines import NAME_PATTERN, MachineStatus
+
+
+__all__ = [
+    "CLOSE_ENDED",
+    "CLOSE_HOST_LOST",
+    "CLOSE_IDLE",
+    "CLOSE_LIFETIME",
+    "CLOSE_LIMIT",
+    "CLOSE_MACHINE_REVOKED",
+    "CLOSE_REFUSED",
+    "CLOSE_TAKEN_OVER",
+    "DETACH_GRACE_SEC",
+    "FINAL_CLOSE_CODES",
+    "FRAME_ACK",
+    "FRAME_ATTACH",
+    "FRAME_EXIT",
+    "FRAME_INPUT",
+    "FRAME_OUTPUT",
+    "FRAME_RESIZE",
+    "FRAME_STOP",
+    "IDLE_SEC",
+    "LIFETIME_SEC",
+    "MACHINE_TERMINAL_WAIT_PATH",
+    "MACHINE_TERMINAL_WS_PATH",
+    "MAX_COLS",
+    "MAX_HOST_BRIDGES",
+    "MAX_INPUT_BYTES_PER_SEC",
+    "MAX_INPUT_FRAME_BYTES",
+    "MAX_LIVE_PER_MACHINE",
+    "MAX_LIVE_PER_SERVER",
+    "MAX_LIVE_PER_USER",
+    "MAX_OPENS_PER_MIN_PER_USER",
+    "MAX_OUTPUT_BYTES_PER_SEC",
+    "MAX_ROWS",
+    "OPEN_TTL_SEC",
+    "RECONNECT_BACKOFF_SEC",
+    "RECONNECT_WINDOW_SEC",
+    "RECORD_CAP_BYTES",
+    "RING_BYTES",
+    "SWEEP_SEC",
+    "TERMINALS_PATH",
+    "TERMINAL_ATTACH_PATH",
+    "TERMINAL_CLOSE_PATH",
+    "TERMINAL_CONFIRM_PATH",
+    "TERMINAL_MACHINES_PATH",
+    "TERMINAL_WS_PATH",
+    "TICKET_CHARS",
+    "TICKET_TTL_SEC",
+    "WAIT_LEASE_SEC",
+    "WAIT_MAX_SEC",
+    "LiveTerminal",
+    "OpenTerminal",
+    "TerminalMachine",
+    "TerminalMachines",
+    "TerminalOpened",
+    "TerminalTicket",
+    "TerminalWait",
+]
+
+TERMINALS_PATH: Final = "/api/terminals"
+"""``POST``: open a terminal (the owner's browser, cookie only)."""
+
+TERMINAL_MACHINES_PATH: Final = "/api/terminals/machines"
+"""``GET``: the caller's own machines; ``?workspace=ID`` also names its live terminal."""
+
+TERMINAL_CONFIRM_PATH: Final = "/api/terminals/machines/{name}/confirm"
+"""``POST``: the owner confirms a machine enrolled with a key, so terminals may open."""
+
+TERMINAL_ATTACH_PATH: Final = "/api/terminals/{terminal_id}/attach"
+"""``POST``: mint a reconnect ticket for the opener."""
+
+TERMINAL_CLOSE_PATH: Final = "/api/terminals/{terminal_id}/close"
+"""``POST``: send ``STOP`` to the terminal's shell."""
+
+TERMINAL_WS_PATH: Final = "/api/terminals/{terminal_id}/ws"
+"""The browser's WebSocket; its first frame is ``ATTACH``."""
+
+MACHINE_TERMINAL_WAIT_PATH: Final = "/api/machines/{machine_id}/terminals/wait"
+"""``GET ?instance=ID``, held up to :data:`WAIT_MAX_SEC`: the host's next open request,
+or ``null`` when none came."""
+
+MACHINE_TERMINAL_WS_PATH: Final = (
+    "/api/machines/{machine_id}/terminals/{terminal_id}/ws"
+)
+"""The host's WebSocket, authenticated by the machine credential."""
+
+FRAME_ATTACH: Final = 1
+FRAME_INPUT: Final = 2
+FRAME_RESIZE: Final = 3
+FRAME_STOP: Final = 5
+FRAME_OUTPUT: Final = 6
+FRAME_ACK: Final = 7
+FRAME_EXIT: Final = 8
+
+TICKET_CHARS: Final = 43
+"""Length of a ticket (256 random bits, url-safe base64) in the ``ATTACH`` payload."""
+
+CLOSE_ENDED: Final = 4000
+CLOSE_TAKEN_OVER: Final = 4001
+CLOSE_IDLE: Final = 4002
+CLOSE_LIFETIME: Final = 4003
+CLOSE_HOST_LOST: Final = 4004
+CLOSE_REFUSED: Final = 4403
+CLOSE_MACHINE_REVOKED: Final = 4410
+CLOSE_LIMIT: Final = 4429
+
+FINAL_CLOSE_CODES: Final = frozenset(
+    {CLOSE_ENDED, CLOSE_TAKEN_OVER, CLOSE_IDLE, CLOSE_LIFETIME, CLOSE_MACHINE_REVOKED},
+)
+"""Close codes after which the browser does not reconnect."""
+
+MAX_ROWS: Final = 500
+MAX_COLS: Final = 1_000
+
+MAX_INPUT_FRAME_BYTES: Final = 65_536
+MAX_INPUT_BYTES_PER_SEC: Final = 1_048_576
+MAX_OUTPUT_BYTES_PER_SEC: Final = 4_194_304
+
+RING_BYTES: Final = 262_144
+"""Output the server keeps for a browser that re-attaches."""
+
+RECORD_CAP_BYTES: Final = 16_777_216
+"""Output recorded per session; past it one marker line is written."""
+
+TICKET_TTL_SEC: Final = 30
+OPEN_TTL_SEC: Final = 20
+WAIT_MAX_SEC: Final = 25
+WAIT_LEASE_SEC: Final = 45
+"""A machine that waited within this long can take an open."""
+
+DETACH_GRACE_SEC: Final = 60
+IDLE_SEC: Final = 3_600
+LIFETIME_SEC: Final = 86_400
+SWEEP_SEC: Final = 60
+
+MAX_LIVE_PER_USER: Final = 4
+MAX_LIVE_PER_MACHINE: Final = 4
+MAX_LIVE_PER_SERVER: Final = 64
+MAX_OPENS_PER_MIN_PER_USER: Final = 10
+MAX_HOST_BRIDGES: Final = 4
+
+RECONNECT_BACKOFF_SEC: Final = (0.5, 1.0, 2.0, 4.0, 8.0)
+RECONNECT_WINDOW_SEC: Final = 60
+
+
+class OpenTerminal(BaseModel):
+    """Open a terminal on one of the caller's machines."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    machine: str = Field(pattern=NAME_PATTERN)
+    rows: Annotated[int, Field(ge=1, le=MAX_ROWS)]
+    cols: Annotated[int, Field(ge=1, le=MAX_COLS)]
+
+    workspace: uuid.UUID | None = None
+    """The station the terminal opens from; the shell's trax context names it."""
+
+    requested_by: (
+        Annotated[str, Field(max_length=63, pattern=r"^[\x20-\x7e]*$")] | None
+    ) = None
+    """The actor that placed the tile asking for it: shown and recorded, never trusted."""
+
+
+class TerminalOpened(BaseModel):
+    """A terminal was queued for the host; attach with the ticket."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    terminal_id: uuid.UUID
+    session_id: uuid.UUID
+    ticket: str = Field(repr=False)
+
+
+class TerminalTicket(BaseModel):
+    """A one-use ticket to attach to a live terminal."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ticket: str = Field(repr=False)
+
+
+class TerminalMachine(BaseModel):
+    """One machine the caller owns, and whether it can take a terminal now."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(pattern=NAME_PATTERN)
+    status: MachineStatus
+    terminal_ready: bool
+    """Online, and its host waited for an open within :data:`WAIT_LEASE_SEC`."""
+
+    confirmed: bool
+    """Whether its owner confirmed it; a terminal opens only on a confirmed machine
+    (409 ``terminal_unconfirmed``). An admin's enroll confirms; a writer's does not."""
+
+
+class LiveTerminal(BaseModel):
+    """A terminal that is open now."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    terminal_id: uuid.UUID
+    session_id: uuid.UUID
+    machine: str = Field(pattern=NAME_PATTERN)
+
+
+class TerminalMachines(BaseModel):
+    """The caller's machines, and their live terminal for the asked station."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    machines: list[TerminalMachine]
+    """Newest first, by when each machine was registered."""
+
+    live: LiveTerminal | None = None
+    """The caller's live terminal opened from ``?workspace=``; ``None`` when none."""
+
+
+class TerminalWait(BaseModel):
+    """An open request, as the host receives it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    terminal_id: uuid.UUID
+    session_id: uuid.UUID
+    opener: str
+    """The opener's email as the server claims it; the host logs it."""
+
+    requested_by: str | None = None
+    """Who asked for the terminal, as the opener's browser claimed; the host logs it."""
+
+    rows: int
+    cols: int
+    workspace: uuid.UUID | None = None
+    workstream: uuid.UUID | None = None

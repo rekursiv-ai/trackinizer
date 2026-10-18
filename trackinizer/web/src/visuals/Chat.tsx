@@ -23,9 +23,10 @@ import { useChatFeed } from "./chatFeed";
 import { FOLLOW_UP_ASK, followUpSuggested } from "./chatFollowUp";
 import { useAnswerHighlights } from "./chatHighlights";
 import { useChatPartial } from "./chatPartial";
-import { ChatPrompt } from "./ChatPrompt";
 import { useChatDraft } from "./chatDraft";
 import { ChatWorkstreamHeader } from "./ChatWorkstreamHeader";
+import { ChatTerminalSide } from "./ChatTerminalSide";
+import { setFlipped, useFlipped } from "./terminalFlip";
 import { RecordField } from "./RecordField";
 
 /** The most characters one message may have, as the server holds it. */
@@ -358,9 +359,20 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   // The same gate as the composer's: no follow-up while the chat is read, closed to me, or a line is on its way.
   const followUpKey = live && !reading && !loading && !outsider && sending.size === 0 && last && !last.pending && last.role === "assistant" ? last.key : null;
 
-  return (
-    <section className="chat-panel" aria-label="Chat">
+  // Flipped, the column shows the station's terminal; Chat stays mounted, with its draft and stream.
+  const flip = useFlipped(workspaceId ?? undefined);
+  // The terminal side belongs to the station that opened it: another station gets its own, never this one's shell.
+  const [terminalOpenedFor, setTerminalOpenedFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (flip && workspace) setTerminalOpenedFor(workspace.id);
+  }, [flip, workspace?.id]);
+  const terminalSide = workspace && (terminalOpenedFor === workspace.id || flip)
+    && <ChatTerminalSide key={workspace.id} workspace={workspace} shown={flip} onFlipBack={() => setFlipped(workspace.id, false)} />;
+
+  return (<>
+    <section className="chat-panel" aria-label="Chat" hidden={flip}>
       <ChatWorkstreamHeader workspace={workspace} head={head.data ?? undefined}
+        onFlip={workspace ? () => setFlipped(workspace.id, true) : undefined}
         onHide={hideCurrentStation} onClear={clearCurrentChat}
         onDeleted={(conversation) => chatDeleted(conversation)} />
       {screen.name === "lookup" && <ChatScreenContext id={screen.id} label={screen.id} />}
@@ -385,7 +397,7 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
           <button className="btn ghost" type="button" onClick={() => void openConversation(head.data!.forked_from!)}>another chat</button>.</p>}
         {head.data && head.data.forks > 0 && <p className="chat-note">{forkedTimes(head.data.forks)}</p>}
         {outsider && <p className="chat-note" role="status">{outsiderNote(head.data!.audience)}</p>}
-        {lines.map((line) => <ChatLine key={line.key} line={line} me={me} station={workspace?.name ?? ""} kinds={kinds}
+        {lines.map((line) => <ChatLine key={line.key} line={line} me={me} kinds={kinds}
           onFork={forkable ? pickFork : undefined} onFollowUp={line.key === followUpKey ? launchFollowUp : undefined} />)}
         {/* One working line, the last tool call's name, in place of a status the partner no longer sends.
             The reply being written takes its place, drawn as the answer will be; busy, so the log
@@ -413,7 +425,8 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
         check={checkText} retryable={resendable}
         failure={failureText} />
     </section>
-  );
+    {terminalSide}
+  </>);
 }
 
 /** The page a message is sent from and the up to 8 pages before it, oldest first. */
@@ -471,11 +484,9 @@ function ChatOff({ local }: { readonly local: boolean }) {
  * so the panel's renders (a status, the canvas around it) leave each line's
  * Markdown alone unless its text changed. A line by someone else says who.
  */
-const ChatLine = memo(function ChatLine({ line, me, station, kinds, onFork, onFollowUp }: {
+const ChatLine = memo(function ChatLine({ line, me, kinds, onFork, onFollowUp }: {
   readonly line: Line;
   readonly me: string;
-  /** The station's name, which the Terminal style's prompt shows. */
-  readonly station: string;
   readonly kinds: readonly string[];
   /** Pick this stored answer as where a fork starts; absent where a fork cannot be started. */
   readonly onFork?: (at: LineAt, quote: string) => void;
@@ -495,7 +506,7 @@ const ChatLine = memo(function ChatLine({ line, me, station, kinds, onFork, onFo
     {other && <span className="chat-line-author">{line.author}</span>}
     {line.role === "assistant"
       ? <Markdown source={line.text} kinds={kinds} className="md chat-line-body" images={false} />
-      : <p className="chat-line-body"><ChatPrompt author={line.author ?? me} station={station} />{line.text}</p>}
+      : <p className="chat-line-body">{line.text}</p>}
     {onFollowUp && line.role === "assistant" && followUpSuggested(line.text)
       && <button className="btn chat-line-followup" type="button" onClick={onFollowUp}>Launch the follow-up</button>}
     {onFork && at && line.role === "assistant" && <button className="btn ghost chat-line-fork" type="button" onClick={() => onFork(at, quoted(line.text))}>Fork from here</button>}

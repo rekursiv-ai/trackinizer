@@ -15,9 +15,9 @@ test.beforeEach(async ({ request }) => {
   await resetCanvas(request);
 });
 
-async function open(page: Page, options: { theme?: "dark" | "light"; style?: "default" | "terminal" } = {}): Promise<{ column: Locator; stage: Locator; strip: Locator }> {
+async function open(page: Page, options: { theme?: "dark" | "light" } = {}): Promise<{ column: Locator; stage: Locator; strip: Locator }> {
   await page.addInitScript(exposeEventSources);
-  await setPreferences(page.request, { theme: options.theme ?? "dark", chat_style: options.style ?? "default" });
+  await setPreferences(page.request, { theme: options.theme ?? "dark" });
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/app/#/list/Issue");
   const column = page.locator(".chat-column");
@@ -138,20 +138,18 @@ test("a hidden Chat shown by the hide key or the strip is a column; a hide key p
 });
 
 for (const theme of ["dark", "light"] as const) {
-  for (const style of ["default", "terminal"] as const) {
-    test(`the strip is the accent colour in the ${theme} theme and the ${style} chat style`, async ({ page }) => {
-      const { strip } = await open(page, { theme, style });
-      await pushChat(page, true);
-      await expect(strip).toBeVisible();
-      const fill = await strip.evaluate((element) => {
-        const probe = document.createElement("i");
-        probe.style.background = "var(--accent)";
-        document.body.append(probe);
-        const accent = getComputedStyle(probe).backgroundColor;
-        probe.remove();
-        return { strip: getComputedStyle(element).backgroundColor, accent };
-      });
-      expect(fill.strip).toBe(fill.accent);
+  test(`the strip is the accent colour in the ${theme} theme`, async ({ page }) => {
+    const { strip } = await open(page, { theme });
+    await pushChat(page, true);
+    await expect(strip).toBeVisible();
+    const fill = await strip.evaluate((element) => {
+      const probe = document.createElement("i");
+      probe.style.background = "var(--accent)";
+      document.body.append(probe);
+      const accent = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return { strip: getComputedStyle(element).backgroundColor, accent };
     });
-  }
+    expect(fill.strip).toBe(fill.accent);
+  });
 }

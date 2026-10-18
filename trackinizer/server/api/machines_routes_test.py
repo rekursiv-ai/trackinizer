@@ -53,6 +53,7 @@ def _row(name: str, *, role: str = "", how: str = "") -> dict[str, object]:
         "updated_by": TEST_USER_EMAIL,
         "updated": _UPDATED,
         "last_heartbeat": None,
+        "owner": None,
         "status": "never",
         "host_version": "",
         "facts": {},
@@ -78,8 +79,8 @@ def test_listing_asks_for_every_machine_in_byte_order_of_name(
     ]
     sql, *args = engine.conn.fetch.call_args.args
     assert isinstance(sql, str)
-    assert 'OR name = $2 ORDER BY name COLLATE "C"' in sql
-    assert args == [OFFLINE_AFTER_SEC, None]
+    assert '(role <> $3 OR owner = $4) ORDER BY name COLLATE "C"' in sql
+    assert args == [OFFLINE_AFTER_SEC, None, "personal", TEST_USER_EMAIL]
 
 
 def test_listing_reports_the_status_the_database_derived(
@@ -128,8 +129,8 @@ def test_getting_one_machine_asks_for_it_by_name(
     assert from_plain(response.json(), dict[str, object])["how"] == "ssh dev-1"
     sql, *args = engine.conn.fetch.call_args.args
     assert isinstance(sql, str)
-    assert "WHERE $2::text IS NULL OR name = $2" in sql
-    assert args == [OFFLINE_AFTER_SEC, "dev-1"]
+    assert "WHERE ($2::text IS NULL OR name = $2)" in sql
+    assert args == [OFFLINE_AFTER_SEC, "dev-1", "personal", TEST_USER_EMAIL]
 
 
 def test_getting_an_absent_machine_is_not_found(

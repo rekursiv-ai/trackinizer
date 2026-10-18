@@ -1,4 +1,5 @@
 import { type CallOptions, client, send, TIMEOUT_MS } from "./client";
+import { newUuid } from "./idempotency";
 import type { components } from "./generated/schema";
 import { type EventSourceLike, openEvents } from "./stream";
 
@@ -37,6 +38,35 @@ export async function applyWorkspaceOperation(
   })));
 }
 
+export type Mark = components["schemas"]["Mark"];
+export type NewMark = components["schemas"]["NewMark"];
+
+/** Draw one red box. Boxes commute with every other write, so no revision is expected. */
+export function drawMark(id: string, mark: NewMark): Promise<WorkspaceState> {
+  return applyWorkspaceOperation(id, 0, { kind: "mark", mark }, newUuid());
+}
+
+/** Take one box away, whoever drew it; one already gone is no change. */
+export function removeMark(id: string, markId: string): Promise<WorkspaceState> {
+  return applyWorkspaceOperation(id, 0, { kind: "remove_mark", id: markId }, newUuid());
+}
+
+/** Take away the boxes shown on `page` (those with no page too), as the pen's page sees them. */
+export function clearMarks(id: string, page: string): Promise<WorkspaceState> {
+  return applyWorkspaceOperation(id, 0, { kind: "clear_marks", page }, newUuid());
+}
+
+export type CaptureImage = components["schemas"]["CaptureImage"];
+/** A page's reply to an agent's request for a picture of the canvas: the picture, or why none. */
+export type CaptureAnswer = { readonly image: CaptureImage } | { readonly error: string };
+
+/** Answer request `request` for a picture of canvas `id`; one already answered is a 404. */
+export async function answerCapture(id: string, request: string, answer: CaptureAnswer): Promise<void> {
+  await send(TIMEOUT_MS.write, undefined, (signal) => client.PUT("/api/workspaces/{workspace_id}/captures/{capture_id}", {
+    params: { path: { workspace_id: id, capture_id: request } }, body: answer, signal,
+  }));
+}
+
 /** Store or clear campaign defaults on the current chat-head session. */
 export async function setSessionSettings(workspaceId: string, campaign: components["schemas"]["CampaignSetup"] | null): Promise<SessionCampaign> {
   return send(TIMEOUT_MS.write, undefined, (signal) => client.PUT("/api/workspaces/{workspace_id}/session-settings", {
@@ -61,6 +91,8 @@ export type WorkspaceEventListener = {
   readonly navigate: (route: string, t: number) => void;
   /** An agent pointed at inquiries, by id; the newest list replaces the last and an empty one clears. */
   readonly highlight: (ids: readonly string[], t: number) => void;
+  /** An agent asks this tab for a picture of the canvas; `request` is the id to answer. Not replayed. */
+  readonly capture: (request: string, t: number) => void;
   /** An agent hid Chat's column (`true`) or showed it again (`false`); this tab's state, not the canvas's. */
   readonly chat: (hidden: boolean, t: number) => void;
   /** The user's preferences changed, by them on another tab or by the station's agent: every key. */
@@ -101,6 +133,7 @@ export function openWorkspaceEvents(
         case "navigate": return listener.navigate(frame.route, frame.t);
         case "highlight": return listener.highlight(frame.ids, frame.t);
         case "chat": return listener.chat(frame.hidden, frame.t);
+        case "capture": return listener.capture(frame.request, frame.t);
         case "preferences": return listener.preferences(frame.preferences, frame.t);
         case "changed": return listener.changed(frame.id, frame.t);
       }
@@ -113,6 +146,7 @@ type Frame =
   | { readonly type: "navigate"; readonly route: string; readonly t: number }
   | { readonly type: "highlight"; readonly ids: readonly string[]; readonly t: number }
   | { readonly type: "chat"; readonly hidden: boolean; readonly t: number }
+  | { readonly type: "capture"; readonly request: string; readonly t: number }
   | { readonly type: "preferences"; readonly preferences: Preferences; readonly t: number }
   | { readonly type: "changed"; readonly id: string; readonly t: number };
 
@@ -126,7 +160,7 @@ function parseFrame(data: unknown): Frame | null {
     return null;
   }
   if (typeof frame !== "object" || frame === null) return null;
-  const { type, t, state, route, id, ids, hidden, preferences } = frame as { [name: string]: unknown };
+  const { type, t, state, route, id, ids, hidden, preferences, request } = frame as { [name: string]: unknown };
   if (typeof t !== "number") return null;
   if (type === "workspace") {
     try {
@@ -138,6 +172,7 @@ function parseFrame(data: unknown): Frame | null {
   if (type === "navigate") return typeof route === "string" ? { type, route, t } : null;
   if (type === "highlight") return Array.isArray(ids) && ids.every((each) => typeof each === "string") ? { type, ids, t } : null;
   if (type === "chat") return typeof hidden === "boolean" ? { type, hidden, t } : null;
+  if (type === "capture") return typeof request === "string" ? { type, request, t } : null;
   // The server sends every key; the store takes them as they come.
   if (type === "preferences") return typeof preferences === "object" && preferences !== null ? { type, preferences: preferences as Preferences, t } : null;
   if (type === "changed") return typeof id === "string" ? { type, id, t } : null;

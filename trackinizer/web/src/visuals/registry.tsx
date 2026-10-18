@@ -19,6 +19,7 @@ const Timeline = lazyView(() => import("./Timeline"), (module) => module.Timelin
 const Artifact = lazyView(() => import("./Artifact"), (module) => module.Artifact);
 const Summary = lazyView(() => import("./Summary"), (module) => module.Summary);
 const Files = lazyView(() => import("./Files"), (module) => module.Files);
+const Terminal = lazyView(() => import("./Terminal"), (module) => module.TerminalTile);
 /**
  * Renderers for visuals an addon's deployment adds to the catalog. They stay out
  * of renderer-versions.json, which mirrors the default catalog every server has.
@@ -50,6 +51,7 @@ export const RENDERERS: Readonly<Record<string, Renderer>> = {
   "trax.artifact": { version: rendererVersions["trax.artifact"], Component: Artifact },
   "trax.summary": { version: rendererVersions["trax.summary"], Component: Summary },
   "trax.files": { version: rendererVersions["trax.files"], Component: Files },
+  "trax.terminal": { version: rendererVersions["trax.terminal"], Component: Terminal },
 } satisfies Record<keyof typeof rendererVersions, Renderer>;
 
 /** A missing or newer renderer fails within its tile, never the entire canvas. */

@@ -178,6 +178,7 @@
 .canvas-bar-button { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; margin-bottom: 3px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
 .canvas-bar-button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
 .canvas-bar-button:disabled { opacity: .4; cursor: default; }
+.canvas-bar-button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent-hover); }
 .canvas-tabs { display: flex; flex: 0 1 auto; align-items: flex-end; gap: 2px; min-width: 0; height: 32px; overflow-x: auto; scrollbar-width: none; }
 .canvas-tabs::-webkit-scrollbar { display: none; }
 .canvas-tab { display: flex; flex: none; align-items: center; max-width: min(180px, 28vw); height: 28px; margin-bottom: 2px; padding: 0 2px; border-radius: 6px 6px 0 0; color: var(--ink-muted); }
@@ -195,3 +196,4 @@
 @media (hover: none) { .canvas-tab-close, .canvas-tab-new, .canvas-clear { opacity: 1; } }
 /* A canvas with nothing on it, as an empty Home leaves it. */
 .visual-empty { margin: auto; padding: 24px; color: var(--muted); font-size: 13px; text-align: center; }
+.chat-panel[hidden] { display: none; }

@@ -49,7 +49,7 @@ from trackinizer.lib.agent.types.sessions import (
 from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
-from trackinizer.trax.run.adapters.iostream import IOStreamAdapter, LineCapture
+from trackinizer.trax.run.adapters.iostream import IOStreamAdapter
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.redact import Redactor
 from trackinizer.trax.run.sink import (
@@ -67,6 +67,7 @@ from trackinizer.trax.run.truncate import (
     was_truncated,
 )
 from trackinizer.trax.run.worktree_diff import WORKTREE_DIFF_PART
+from trackinizer.types.line_capture import LineCapture
 from trackinizer.types.session_records import _BY_KIND, SessionRecordRow
 from trackinizer.types.streams import Stderr, Stdin, Stdout
 from trackinizer.wire.wire_session_ir import (

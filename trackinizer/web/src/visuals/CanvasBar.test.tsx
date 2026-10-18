@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { listStations, setStationLayout } from "../api/stations";
 import { getVisualCatalog } from "../api/visuals";
 import { applyWorkspaceOperation, createDefaultWorkspace, getWorkspace, type WorkspaceOperation, type WorkspaceState } from "../api/workspaces";
+import { CommandRegistry, CommandRegistryContext } from "../commands/registry";
 import { ProfileContext } from "../app/boot";
 import { createQueryClient } from "../app/queryClient";
 import { WorkbenchSlot } from "../app/workbenchSlot";
@@ -15,11 +16,15 @@ import { Canvas } from "./Canvas";
 import { forgetHistories, observe, settle, step } from "./canvasHistory";
 import { snapshotOf } from "./canvasSnapshot";
 import { flushLayouts, forgetLayouts, type Layout } from "./stationLayout";
+import type { Boxes } from "../canvasMarks/useBoxes";
 import { CanvasBar } from "./CanvasBar";
 
 vi.mock("../api/visuals", () => ({ getVisualCatalog: vi.fn() }));
 vi.mock("../api/stations", () => ({ setStationLayout: vi.fn().mockResolvedValue(undefined), listStations: vi.fn().mockResolvedValue([]) }));
 vi.mock("../api/workspaces", () => ({ createDefaultWorkspace: vi.fn(), getWorkspace: vi.fn(), applyWorkspaceOperation: vi.fn() }));
+
+/** A page with no boxes and no pen in hand. */
+const NO_BOXES: Boxes = { page: "#/graph", shown: [], drawing: false, toggle: vi.fn(), draw: vi.fn(), remove: vi.fn(), clearAll: vi.fn(), error: null };
 
 const STATION = "c5286865-67b6-4bd8-ab51-e06e10c326c5";
 
@@ -98,8 +103,11 @@ afterEach(() => {
   sessionStorage.clear();
 });
 
+/** The canvas offers its pen's Escape as a command, which needs a registry above it. */
+const commands = new CommandRegistry();
+
 function render(ui: ReactElement) {
-  return renderBare(ui, { wrapper: ({ children }: { children: ReactNode }) => <ProfileContext value={PROFILE}>{children}<WorkbenchSlot /></ProfileContext> });
+  return renderBare(ui, { wrapper: ({ children }: { children: ReactNode }) => <CommandRegistryContext value={commands}><ProfileContext value={PROFILE}>{children}<WorkbenchSlot /></ProfileContext></CommandRegistryContext> });
 }
 
 /** The canvas draws its own tabs. */
@@ -206,7 +214,7 @@ test("Forward control walks to the next page route", () => {
   settle(key, issue, issue);
   const forward = vi.fn(() => expect(step(key, 1)).toEqual(activity));
   renderBare(<CanvasBar tabs={[{ id: "1", name: "Tab 1" }]} open="1" back={false} forward={true} moving={false}
-    home="graph" canAdd actions={{ back: vi.fn(), forward, home: vi.fn(), clear: vi.fn(), open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
+    home="graph" canAdd boxes={NO_BOXES} actions={{ back: vi.fn(), forward, home: vi.fn(), clear: vi.fn(), open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
 
   fireEvent.click(button("Forward"));
   expect(forward).toHaveBeenCalledOnce();
@@ -235,7 +243,7 @@ test("Forward calls the action for the next visual state", () => {
   settle(key, opened, opened);
   const forward = vi.fn(() => expect(step(key, 1)).toEqual(closed));
   renderBare(<CanvasBar tabs={[{ id: "1", name: "Tab 1" }]} open="1" back={true} forward={true} moving={false}
-    home="graph" canAdd actions={{ back: vi.fn(), forward, home: vi.fn(), clear: vi.fn(), open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
+    home="graph" canAdd boxes={NO_BOXES} actions={{ back: vi.fn(), forward, home: vi.fn(), clear: vi.fn(), open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
 
   fireEvent.click(button("Forward"));
   expect(forward).toHaveBeenCalledOnce();
@@ -307,7 +315,7 @@ test("with home set to empty, Home clears the canvas", async () => {
 test("Clear canvas is danger-styled and Cancel or Escape leave the action alone", async () => {
   const clear = vi.fn();
   renderBare(<CanvasBar tabs={[{ id: "1", name: "Review" }]} open="1" back={false} forward={false} moving={false}
-    home="graph" canAdd actions={{ back: vi.fn(), forward: vi.fn(), home: vi.fn(), clear, open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
+    home="graph" canAdd boxes={NO_BOXES} actions={{ back: vi.fn(), forward: vi.fn(), home: vi.fn(), clear, open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
 
   fireEvent.click(screen.getByRole("button", { name: "Clear canvas" }));
   let dialog = screen.getByRole("alertdialog", { name: "Clear canvas?" });
@@ -440,4 +448,47 @@ test("coming back to a station left while a tab's steps were on their way finish
   await waitFor(() => expect(document.querySelector('[data-visual-type="trax.timeline"]')).not.toBeNull(), { interval: 1 });
   await waitFor(() => expect(location.hash).toBe("#/list/Issue"), { interval: 1 });
   expect(showing).toBe(STATION);
+});
+
+test("the pen and the eraser stand first in the bar, before Back", () => {
+  renderBare(<CanvasBar tabs={[{ id: "1", name: "Tab 1" }]} open="1" back forward moving={false}
+    home="graph" canAdd boxes={NO_BOXES} actions={{ back: vi.fn(), forward: vi.fn(), home: vi.fn(), clear: vi.fn(), open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
+  const names = within(screen.getByRole("toolbar", { name: "Canvas" })).getAllByRole("button").map((each) => each.getAttribute("aria-label"));
+  expect(names.slice(0, 3)).toEqual(["Draw a box", "Clear all boxes", "Back"]);
+});
+
+test("the pen toggles drawing and shows it is on", () => {
+  const toggle = vi.fn();
+  const bar = (drawing: boolean) => (
+    <CanvasBar tabs={[{ id: "1", name: "Tab 1" }]} open="1" back forward moving={false} home="graph" canAdd
+      boxes={{ ...NO_BOXES, drawing, toggle }}
+      actions={{ back: vi.fn(), forward: vi.fn(), home: vi.fn(), clear: vi.fn(), open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
+  const { rerender } = renderBare(bar(false));
+  const pen = screen.getByRole("button", { name: "Draw a box" });
+  expect(pen.getAttribute("aria-pressed")).toBe("false");
+  fireEvent.click(pen);
+  expect(toggle).toHaveBeenCalledOnce();
+  rerender(bar(true));
+  expect(screen.getByRole("button", { name: "Draw a box" }).getAttribute("aria-pressed")).toBe("true");
+});
+
+test("clear all is off while the page has no boxes and takes every box when it has some", () => {
+  const clearAll = vi.fn();
+  const box = { id: "m1", seq: 1, author: "jp", at: "2026-10-17T00:00:00Z", page: "#/graph", points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] };
+  const bar = (shown: Boxes["shown"]) => (
+    <CanvasBar tabs={[{ id: "1", name: "Tab 1" }]} open="1" back forward moving={false} home="graph" canAdd
+      boxes={{ ...NO_BOXES, shown, clearAll }}
+      actions={{ back: vi.fn(), forward: vi.fn(), home: vi.fn(), clear: vi.fn(), open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
+  const { rerender } = renderBare(bar([]));
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Clear all boxes" }).disabled).toBe(true);
+  rerender(bar([box]));
+  fireEvent.click(screen.getByRole("button", { name: "Clear all boxes" }));
+  expect(clearAll).toHaveBeenCalledOnce();
+});
+
+test("under a sheet the pen is off", () => {
+  renderBare(<CanvasBar tabs={[{ id: "1", name: "Tab 1" }]} open="1" back forward moving={false} home="graph" canAdd
+    boxes={{ ...NO_BOXES, page: null }}
+    actions={{ back: vi.fn(), forward: vi.fn(), home: vi.fn(), clear: vi.fn(), open: vi.fn(), add: vi.fn(), close: vi.fn(), rename: vi.fn() }} />);
+  expect(screen.getByRole<HTMLButtonElement>("button", { name: "Draw a box" }).disabled).toBe(true);
 });

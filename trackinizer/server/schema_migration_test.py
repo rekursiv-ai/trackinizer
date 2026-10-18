@@ -631,8 +631,10 @@ async def test_migration_035_matches_the_baseline_machines_table(
             "DROP TABLE machine_credentials, machine_enrollments, machines",
         )
         await conn.execute(load_sql("schema.035"))
-        # The baseline holds 036's columns too, so they are added before comparing.
+        # The baseline holds 036's and 049's columns too, so they are added before
+        # comparing.
         await conn.execute(load_sql("schema.036"))
+        await conn.execute(load_sql("schema.049"))
         migrated_cols = [dict(r) for r in await conn.fetch(columns)]
         migrated_cons = {
             (r["conname"], r["def"]) for r in await conn.fetch(constraints)
@@ -706,6 +708,7 @@ async def test_migration_036_matches_the_baseline_machine_host_tables(
         )
         await conn.execute(load_sql("schema.035"))
         await conn.execute(load_sql("schema.036"))
+        await conn.execute(load_sql("schema.049"))
         migrated = {t: await _table_shape(conn, t) for t in _MACHINE_HOST_TABLES}
         # Replaying it over the existing tables is a no-op, not an error.
         await conn.execute(load_sql("schema.036"))
@@ -1565,6 +1568,59 @@ async def test_the_code_tables_check_owner_hash_size_and_files(
             with pytest.raises(asyncpg.CheckViolationError):
                 await conn.execute(snapshot, record, owner, files)
         await conn.execute(snapshot, record, "ada@x.y", {})
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_049_gives_a_machine_the_owner_who_enrolled_it_last(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """A 048 database gains ``machines.owner``, filled from the latest used enrollment.
+
+    A machine that never joined stays NULL. The catalog equals a fresh install's, and a
+    replay keeps an owner already set.
+    """
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        fresh = await _catalog_names_aside(conn)
+        await conn.execute(
+            "ALTER TABLE machines DROP COLUMN owner, DROP COLUMN confirmed_at",
+        )
+        await conn.execute(
+            "DELETE FROM applied_migrations WHERE name = 'schema.049.sql'",
+        )
+        await conn.execute(
+            "INSERT INTO machines (name, updated_by) VALUES "
+            "('joined', 'x@y.z'), ('never', 'x@y.z')",
+        )
+        enroll = (
+            "INSERT INTO machine_enrollments "
+            "(machine_id, secret_sha256, created_by, expires_at, used_at) "
+            "SELECT id, $1, $2, now(), now() - make_interval(mins => $3) "
+            "FROM machines WHERE name = 'joined'"
+        )
+        await conn.execute(enroll, bytes(32), "old@x.y", 10)
+        await conn.execute(enroll, bytes(32), "new@x.y", 1)
+
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        migrated = await _catalog_names_aside(conn)
+        owners = await conn.fetch(
+            "SELECT name, owner, confirmed_at IS NOT NULL AS confirmed "
+            "FROM machines ORDER BY name",
+        )
+        await conn.execute("UPDATE machines SET owner = 'kept@x.y'")
+        await conn.execute(load_sql("schema.049"))
+        kept = await conn.fetchval("SELECT DISTINCT owner FROM machines")
+
+    assert migrated == fresh
+    assert [(row["name"], row["owner"], row["confirmed"]) for row in owners] == [
+        ("joined", "new@x.y", True),
+        ("never", None, False),
+    ]
+    assert kept == "kept@x.y"
 
 
 if __name__ == "__main__":

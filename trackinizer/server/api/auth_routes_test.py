@@ -550,7 +550,6 @@ class TestProfile:
         assert body["preferences"] == {
             "theme": "light",
             "skin": "default",
-            "chat_style": "default",
             "chat_side": "left",
             "highlight_mentions": True,
             "terminal_font_size": "13px",
@@ -633,7 +632,6 @@ class TestPreferences:
         assert from_plain(r.json(), dict[str, object]) == {
             "theme": "light",
             "skin": "default",
-            "chat_style": "default",
             "chat_side": "left",
             "highlight_mentions": True,
             "terminal_font_size": "13px",
@@ -648,7 +646,7 @@ class TestPreferences:
         )
         assert call.args[1:] == (
             {"theme": "light"},
-            ["chat_side"],
+            ["chat_side", "chat_style"],
             uuid.UUID("11111111-1111-1111-1111-111111111111"),
         )
 
@@ -661,7 +659,10 @@ class TestPreferences:
         engine.conn.fetchrow = AsyncMock(return_value={"preferences": {"read": read}})
         r = client.patch("/api/me/preferences", json={"read": read, "lens": None})
         assert r.status_code == 200, r.text
-        assert engine.conn.fetchrow.call_args.args[1:3] == ({"read": read}, ["lens"])
+        assert engine.conn.fetchrow.call_args.args[1:3] == (
+            {"read": read},
+            ["lens", "chat_style"],
+        )
 
     @pytest.mark.parametrize(
         ("body", "named"),

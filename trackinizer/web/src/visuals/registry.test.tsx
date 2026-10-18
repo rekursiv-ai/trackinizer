@@ -40,3 +40,9 @@ test("a pane marks its paint for the revision that changed it, once, and not aga
   vi.useRealTimers();
   expect(recentTimings().map((frame) => frame.marks.map((mark) => `${mark.type}:${mark.kind}`))).toEqual([["trax.browse:paint"], []]);
 });
+
+test("trax.terminal has a renderer of its catalog version; another version shows the unsupported notice", () => {
+  const instance = { id: "v1", type: "trax.terminal", version: 2, placement: "main", record_id: null, params: {} } as const;
+  render(<VisualPane instance={instance} workspace={null} onWorkspaceChanged={vi.fn()} focused={false} />);
+  expect(screen.getByRole("alert").textContent).toBe("No renderer for trax.terminal version 2.");
+});

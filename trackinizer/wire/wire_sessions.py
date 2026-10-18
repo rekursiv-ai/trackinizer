@@ -99,6 +99,7 @@ __all__ = [
     "SessionPlacement",
     "SessionStart",
     "SessionStartResponse",
+    "WorkspaceMark",
     "WorkspaceMessageContext",
     "WorkspaceRecordContext",
     "WorkspaceVisibleVisual",
@@ -494,6 +495,29 @@ class WorkspacePage(BaseModel):
     record: WorkspaceRecordContext | None = None
 
 
+class WorkspaceMark(BaseModel):
+    """A red box drawn on the canvas since the sender's last line, with what it covers."""
+
+    id: uuid.UUID
+    """What ``trax workspace ID mark remove`` takes."""
+
+    author: str
+    page: str | None = None
+    """The `#/...` page it was drawn on."""
+
+    left: float = Field(default=0.0, ge=0, le=1)
+    top: float = Field(default=0.0, ge=0, le=1)
+    right: float = Field(default=0.0, ge=0, le=1)
+    bottom: float = Field(default=0.0, ge=0, le=1)
+    """Where it stands, as fractions of the stage's width and height."""
+
+    instances: list[WorkspaceVisibleVisual] = Field(default_factory=list)
+    """The visuals under it that are still on the canvas."""
+
+    records: list[WorkspaceRecordContext] = Field(default_factory=list)
+    """The records under it that exist."""
+
+
 class ConsoleTarget(BaseModel):
     """An agent a Console line was sent to, as ``@actor`` or ``@actor:room``."""
 
@@ -565,6 +589,9 @@ class WorkspaceMessageContext(BaseModel):
 
     trail: list[WorkspacePage] = Field(default_factory=list)
     """The pages they came through before it, oldest first."""
+
+    marks: list[WorkspaceMark] = Field(default_factory=list)
+    """The boxes drawn on the station since its last line, oldest first."""
 
     relay: ConsoleRelay | None = None
     """Set when the message is not a question for the partner but a note of what the
