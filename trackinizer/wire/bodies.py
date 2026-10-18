@@ -121,8 +121,8 @@ class SubmitBase(_CostFields):
     @field_validator("created", mode="after")
     @classmethod
     def _validate_created(cls, value: datetime | None) -> datetime | None:
-        # asyncpg maps the UTC minimum to -infinity, whose naive decode breaks
-        # comparisons with ordinary inquiry timestamps.
+        # The asyncpg driver maps the UTC minimum to -infinity, whose naive decode
+        # breaks comparisons with ordinary inquiry timestamps.
         if value is not None and value <= datetime.min.replace(tzinfo=UTC):
             raise ValueError("created must be after 0001-01-01T00:00:00Z")
         if value is not None and value > datetime.now(UTC):
