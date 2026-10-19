@@ -463,7 +463,6 @@ extend-safe-fixes = [
     # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 ]
 
-
 "*.ipynb" = [
     "ARG001",  # Unused function argument (callbacks).
     "BLE001",  # Blind exception (sandboxed exec).
@@ -540,7 +539,6 @@ extend-safe-fixes = [
     "T201",    # Print found. (Eval scripts use print for output.)
     # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 ]
-
 
 # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 
@@ -682,7 +680,6 @@ reportInvalidCast = false                  # All cast() calls are intentional.
 # Extra.
 reportUnknownMemberType = false
 # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
-
 
 [tool.ty.environment]
 python-version = "3.12"  # Intentional; test at 3.12 for exports.

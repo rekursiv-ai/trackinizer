@@ -566,6 +566,140 @@ def test_native_bytes_round_trip(native: str) -> None:
     assert out.getvalue() == native
 
 
+def _event(payload: str) -> str:
+    """Return one event line carrying ``payload``."""
+    return '{"type":"event_msg","payload":' + payload + "}\n"
+
+
+@pytest.mark.parametrize(
+    "native",
+    [
+        "\n" + META,
+        META.removesuffix("\n"),
+        META + "[1]\n",
+        META + '{"type":"compacted","payload":{"message":"summary"}}\n',
+        META + _item('{"type":"tool_search_output","call_id":"c","tools":[]}'),
+        META
+        + _item(
+            '{"type":"function_call","name":"f","arguments":"{\\"a\\": 1}",'
+            '"call_id":"c"}',
+        ),
+        META
+        + _item(
+            '{"type":"web_search_call","id":"w","status":"completed",'
+            '"action":{"type":"search","query":"q"}}',
+        ),
+        META + _event('{"type":"error","message":"boom"}'),
+        META + _event('{"type":"context_compacted"}'),
+        META + _event('{"type":"mcp_tool_call_end","call_id":"c","result":{}}'),
+        META
+        + _event(
+            '{"type":"exec_command_end","call_id":"c","command":["ls"],'
+            '"stdout":"a\\n","stderr":"","exit_code":0}',
+        ),
+        META + _event('{"type":"patch_apply_end","call_id":"c","success":true}'),
+        META
+        + _event(
+            '{"type":"item_completed","item":{"type":"WebSearch","id":"w",'
+            '"query":"q"}}',
+        ),
+    ],
+    ids=[
+        "launch-after-blank",
+        "no-final-newline",
+        "non-object-line",
+        "compacted-summary-only",
+        "tool-search-output",
+        "spaced-arguments",
+        "web-search-call",
+        "error-event",
+        "context-compacted",
+        "mcp-tool-call-end",
+        "exec-command-end",
+        "patch-without-changes",
+        "completed-web-search",
+    ],
+)
+def test_each_rollout_shape_rewrites_to_its_own_bytes(native: str) -> None:
+    records = list(codex.normalize(StringIO(native)))
+    out = StringIO()
+
+    codex.denormalize(records, out)
+
+    assert out.getvalue() == native
+
+
+def test_a_first_line_launch_after_a_release_is_refused() -> None:
+    """The first line's slot is overwritten only while nothing was handed over."""
+    reader = codex._Reader()
+    _ = list(reader.read(META))
+    reader._base = 1
+
+    with pytest.raises(ValueError, match="_base == 0"):
+        reader._launch(({}, None), {}, 0)
+
+
+def test_a_record_without_a_session_writes_nothing() -> None:
+    out = StringIO()
+
+    codex.denormalize([], out)
+
+    assert out.getvalue() == ""
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        (
+            WebSearchResults(
+                call_id="c",
+                content=(WebSearchResult(url="u"),),
+                extra={"$echoes": "web_search_end", "$rows": [], "$row_order": [7]},
+            ),
+            '"results":[{"url":"u"}]',
+        ),
+        (
+            WebSearchResults(
+                call_id="c",
+                content=(WebSearchResult(url="u"),),
+                extra={
+                    "$echoes": "web_search_end",
+                    "$rows": ["kept"],
+                    "$row_order": ["row"],
+                },
+            ),
+            '"results":["kept"]',
+        ),
+        (
+            UserMessage(content="hi", extra={"$parts": ["x"], "$order": [7]}),
+            '"content":[{"type":"input_text","text":"hi"}]',
+        ),
+    ],
+    ids=["malformed-row-order", "scalar-row-template", "malformed-parts-and-order"],
+)
+def test_a_malformed_replay_hint_falls_back_to_the_records_fields(
+    record: SessionRecord,
+    expected: str,
+) -> None:
+    """``denormalize`` takes any record, so a hint it cannot read is ignored."""
+    out = StringIO()
+
+    codex.denormalize([record], out)
+
+    assert expected in out.getvalue()
+
+
+def test_an_uncategorized_line_state_without_an_outer_line_stays_payload() -> None:
+    record = UncategorizedRecord(
+        kind="response_item/x",
+        payload={"type": "x", "$codex_line": {"outer": 7}},
+    )
+
+    state, restored = codex._pop_line_state(record)
+
+    assert (state, restored) == ({}, record)
+
+
 def test_content_without_native_order_is_not_dropped() -> None:
     records = (
         SystemMessage(content="instructions", subtype="developer"),
@@ -1310,6 +1444,51 @@ def test_a_compaction_states_the_summary_the_next_turn_reads() -> None:
     window = records[-1]
     assert isinstance(window, ContextClear)
     assert window.summary == "sealed"
+
+
+@pytest.mark.parametrize(
+    "native",
+    [
+        '{"type":"compacted","payload":{"message":"said","replacement_history":[]}}\n',
+        (
+            '{"type":"compacted","payload":{"message":"said","replacement_history":'
+            '[{"type":"compaction","encrypted_content":"sealed"}]}}\n'
+        ),
+        '{"type":"compacted","payload":{"message":7,"replacement_history":[]}}\n',
+        '{"type":"compacted","payload":{"replacement_history":[],"message":""}}\n',
+    ],
+    ids=[
+        "message-and-empty-history",
+        "message-and-sealed",
+        "malformed-message",
+        "history-first",
+    ],
+)
+def test_a_compaction_message_beside_its_history_round_trips(native: str) -> None:
+    """A line stating both a summary and a history writes both back."""
+    out = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(META + native)), out)
+
+    assert out.getvalue() == META + native
+
+
+def test_a_synthesized_compaction_writes_its_history_in_codex_key_order() -> None:
+    """A clear built by hand states its history; its summary stays sealed."""
+    records = [
+        ContextCompaction(extra={"future": 1}),
+        ContextClear(summary="s", history=(UserMessage(content="kept"),)),
+    ]
+    out = StringIO()
+
+    codex.denormalize(records, out)
+
+    line = json_loads(out.getvalue(), dict[str, object])
+    payload = from_plain(line["payload"], dict[str, object])
+    assert list(payload) == ["message", "replacement_history", "future"]
+    assert payload["message"] == ""
+    (entry,) = from_plain(payload["replacement_history"], list[dict[str, object]])
+    assert entry["role"] == "user"
 
 
 def test_a_compaction_rewrites_to_the_bytes_it_was_read_from() -> None:

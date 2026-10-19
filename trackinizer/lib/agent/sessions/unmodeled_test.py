@@ -14,6 +14,7 @@ from treekle.absent import ABSENT
 
 import pytest
 
+from trackinizer.lib.agent.sessions import unmodeled
 from trackinizer.lib.agent.sessions.unmodeled import (
     extract_unmodeled_fields,
     read_field_keeping_invalid,
@@ -286,6 +287,12 @@ def _d(value: object) -> dict[str, object]:
     return {
         str(key): member for key, member in cast(dict[object, object], value).items()
     }
+
+
+def test_listing_a_non_iterable_raises_the_builtin_message() -> None:
+    with pytest.raises(TypeError, match="'int' object is not iterable"):
+        unmodeled._listed(7)
+    assert unmodeled._listed((1, "a")) == [1, "a"]
 
 
 if __name__ == "__main__":

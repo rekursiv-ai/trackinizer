@@ -12,7 +12,7 @@ import threading
 import pytest
 
 from trackinizer.lib.agent.sessions import tail
-from trackinizer.lib.agent.types.sessions import SessionRecord, UserMessage
+from trackinizer.lib.agent.types.sessions import SessionRecord, TurnContext, UserMessage
 
 
 if TYPE_CHECKING:
@@ -131,6 +131,25 @@ def test_a_stray_signal_is_never_returned_as_a_record() -> None:
         _ = reader._collect()
 
 
+def test_the_encoding_follows_the_last_stated_context() -> None:
+    reader = tail.Tail(_contexts)
+    try:
+        assert reader.feed("ascii") == [TurnContext(encoding={"escape": "ascii"})]
+        assert reader.encoding == {"escape": "ascii"}
+        assert reader.feed("bare") == [TurnContext()]
+        assert reader.encoding == {"escape": "ascii"}
+        assert reader.feed("utf8") == [TurnContext(encoding={"escape": "utf8"})]
+        assert reader.encoding == {"escape": "utf8"}
+    finally:
+        _finish_reader(reader)
+
+
+def test_a_whole_file_reader_remembers_the_encoding_it_read() -> None:
+    reader = tail.Tail(_contexts, whole_file=True)
+    assert reader.feed("ascii\n") == [TurnContext(encoding={"escape": "ascii"})]
+    assert reader.encoding == {"escape": "ascii"}
+
+
 def test_a_pushed_stream_cannot_be_read_whole() -> None:
     stream = tail._Pulled[SessionRecord](queue.SimpleQueue(), queue.SimpleQueue())
     with pytest.raises(NotImplementedError, match="read by lines"):
@@ -160,6 +179,12 @@ def _records(stream: TextIO) -> Iterator[SessionRecord]:
             break
         yield UserMessage(content=text)
     yield UserMessage(content="EOF")
+
+
+def _contexts(stream: TextIO) -> Iterator[SessionRecord]:
+    for line in stream:
+        text = line.rstrip("\n")
+        yield TurnContext(encoding={"escape": text} if text != "bare" else {})
 
 
 class _PausingQueue(queue.SimpleQueue[SessionRecord | tail._Signal]):

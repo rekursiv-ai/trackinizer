@@ -24,6 +24,7 @@ from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
     Attachment,
     ContextClear,
+    ContextCompaction,
     ContextState,
     FileEditResult,
     FileReadResult,
@@ -2076,6 +2077,246 @@ def test_claude_user_shape_replays_results_and_stencils() -> None:
     assert from_plain(result_line["message"], dict[str, object])["content"] == [
         {"type": "other"},
     ]
+
+
+def test_a_foreign_call_restated_after_its_typed_result_is_written_once() -> None:
+    """A real call arriving after its synthesized one is not a second ``tool_use``.
+
+    Codex can state the same call twice -- once ahead of its result, once
+    after -- and only the first sighting of a written-ahead id may register.
+    """
+    records = [
+        _FOREIGN,
+        ShellCommandResult(call_id="a", command=("ls",)),
+        ToolCall(call_id="a", name="shell"),
+        ToolCall(call_id="a", name="shell"),
+    ]
+
+    assert _tool_uses(records) == ["a"]
+
+
+def test_a_foreign_call_before_its_result_takes_the_claude_tool_name() -> None:
+    """The call stays where it was said, ahead of the prose after it."""
+    records = [
+        _FOREIGN,
+        ToolCall(call_id="a", name="shell"),
+        AssistantMessage(content="running"),
+        ShellCommandResult(call_id="a", command=("ls",)),
+    ]
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    written = output.getvalue()
+    assert written.count('"type":"tool_use"') == 1
+    assert '"name":"Bash"' in written
+    assert written.index('"type":"tool_use"') < written.index('"running"')
+
+
+def test_a_session_with_no_lines_writes_nothing() -> None:
+    output = StringIO()
+
+    claude.denormalize([TurnContext()], output)
+
+    assert output.getvalue() == ""
+
+
+def test_a_foreign_cwd_stated_on_the_launch_settings_names_the_project() -> None:
+    records = [
+        TurnContext(
+            encoding={"newline_terminated": True},
+            extra={"payload": {"cwd": "/launch"}},
+        ),
+        UserMessage(content="hi"),
+    ]
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    assert '"cwd":"/launch"' in output.getvalue()
+
+
+def test_a_long_session_streams_through_a_bounded_window() -> None:
+    """More lines than the edit window flush as they pass, still in order."""
+    native = "".join(
+        _line(type='"user"', message=f'{{"role":"user","content":"m{index}"}}')
+        for index in range(40)
+    )
+
+    assert _round_trip(native) == native
+
+
+def test_a_shell_edit_for_a_call_that_left_the_window_replays_unedited() -> None:
+    """A lifted result whose call already flushed cannot reach back to it."""
+    call = _line(
+        type='"assistant"',
+        message=(
+            '{"role":"assistant","content":[{"type":"tool_use","id":"c1",'
+            '"name":"Bash","input":{"command":"/bin/cat old.txt"}}]}'
+        ),
+    )
+    filler = "".join(
+        _line(type='"user"', message=f'{{"role":"user","content":"m{index}"}}')
+        for index in range(40)
+    )
+    result = _line(
+        type='"user"',
+        message=(
+            '{"role":"user","content":[{"type":"tool_result",'
+            '"tool_use_id":"c1","content":"body\\n"}]}'
+        ),
+        toolUseResult='{"stdout":"body\\n","stderr":"","interrupted":false}',
+    )
+    records = list(claude.normalize(StringIO(call + filler + result)))
+    read = _last_act(records)
+    assert isinstance(read, FileReadResult)
+    changed = [
+        replace(record, path="new.txt") if record is read else record
+        for record in records
+    ]
+    output = StringIO()
+
+    claude.denormalize(changed, output)
+
+    assert '"command":"/bin/cat old.txt"' in output.getvalue()
+
+
+def test_another_providers_uncategorized_record_writes_no_claude_line() -> None:
+    records = [UserMessage(content="hi"), UncategorizedRecord(kind="event_msg/x")]
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    assert output.getvalue().count("\n") == 1
+
+
+def test_edited_text_beyond_the_stated_blocks_is_not_invented() -> None:
+    """A line led by a result refills its text slots, and drops ones left empty."""
+    native = _line(
+        type='"user"',
+        message=(
+            '{"role":"user","content":['
+            '{"type":"tool_result","tool_use_id":"c","content":"x"},'
+            '{"type":"text","text":"a"}]}'
+        ),
+    )
+    records = list(claude.normalize(StringIO(native)))
+    edited = [
+        replace(record, content=None) if isinstance(record, UserMessage) else record
+        for record in records
+    ]
+    output = StringIO()
+
+    claude.denormalize(edited, output)
+
+    assert _round_trip(native) == native
+    assert '"type":"text"' not in output.getvalue()
+
+
+def test_search_groups_replay_prose_and_scalar_rows_around_groups() -> None:
+    payload = (
+        '{"query":"q","results":["summary",{"tool_use_id":"s1","content":'
+        '[7,{"url":"u1"}]}]}'
+    )
+    native = _line(
+        type='"assistant"',
+        message=(
+            '{"role":"assistant","content":[{"type":"tool_use","id":"c1",'
+            '"name":"WebSearch","input":{}}]}'
+        ),
+    ) + _line(
+        type='"user"',
+        message=(
+            '{"role":"user","content":[{"type":"tool_result",'
+            '"tool_use_id":"c1","content":"ok"}]}'
+        ),
+        toolUseResult=payload,
+    )
+
+    assert _round_trip(native) == native
+
+
+def test_a_search_shape_entry_without_a_template_replays_verbatim() -> None:
+    search = WebSearchResults(
+        call_id="c1",
+        query="q",
+        extra={"$result": {"tool_name": "WebSearch", "rows": [{"loose": 1}]}},
+    )
+    output = StringIO()
+
+    claude.denormalize([search], output)
+
+    assert '"results":[{"loose":1}]' in output.getvalue()
+
+
+def test_the_turns_model_and_effort_fill_a_line_that_states_neither() -> None:
+    records = [
+        TurnContext(model="claude-opus-5", effort="high"),
+        AssistantMessage(content="hi"),
+    ]
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    line = json_loads(output.getvalue(), dict[str, object])
+    assert line["effort"] == "high"
+    assert from_plain(line["message"], dict[str, object])["model"] == "claude-opus-5"
+
+
+def test_a_compact_summary_line_opens_a_window_carrying_it() -> None:
+    native = _line(type='"user"', message='{"role":"user","content":"hi"}') + _line(
+        type='"user"',
+        isCompactSummary="true",
+        message='{"role":"user","content":"the summary"}',
+    )
+
+    records = list(claude.normalize(StringIO(native)))
+
+    clears = [record for record in records if isinstance(record, ContextClear)]
+    assert clears[-1].summary == "the summary"
+    assert any(isinstance(record, ContextCompaction) for record in records)
+    assert _round_trip(native) == native
+
+
+@pytest.mark.parametrize("native", ["\n", "[1]\n"], ids=["blank", "non-object"])
+def test_a_line_holding_no_record_survives_verbatim(native: str) -> None:
+    records = list(claude.normalize(StringIO(native)))
+
+    assert IncompleteRecord(text=native) in records
+    assert _round_trip(native) == native
+
+
+@pytest.mark.parametrize(
+    ("parts", "blocks"),
+    [
+        (2, [{"type": "text", "text": "a b"}, {"type": "text", "text": "c"}]),
+        (1, [{"type": "text", "text": "a b\nc"}]),
+        (3, [{"type": "text", "text": "a b\nc"}]),
+    ],
+)
+def test_prose_splits_into_its_stated_blocks_on_line_breaks_only(
+    parts: int,
+    blocks: list[dict[str, str]],
+) -> None:
+    """A block count that does not match the line breaks keeps the prose whole."""
+    output = StringIO()
+
+    claude.denormalize(
+        [AssistantMessage(content="a b\nc", extra={"$parts": parts})],
+        output,
+    )
+
+    message = json_loads(output.getvalue(), dict[str, object])["message"]
+    assert from_plain(message, dict[str, object])["content"] == blocks
+
+
+def test_an_assistant_line_writing_keys_out_of_order_round_trips() -> None:
+    native = _line(
+        type='"assistant"',
+        message='{"content":[{"type":"text","text":"hi"}],"role":"assistant"}',
+    )
+
+    assert _round_trip(native) == native
 
 
 def test_claude_user_reader_preserves_unknown_blocks() -> None:

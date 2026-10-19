@@ -559,6 +559,7 @@ def test_sagent_is_recognized_by_its_record_kinds() -> None:
     assert sagent.is_sagent("\n" + json.dumps(_meta()) + "\n")
     assert not sagent.is_sagent("{truncated\n")
     assert not sagent.is_sagent(json.dumps({"kind": ["meta"]}) + "\n")
+    assert not sagent.is_sagent(json.dumps(["kind", "meta"]) + "\n")
     assert not sagent.is_sagent("")
 
 
