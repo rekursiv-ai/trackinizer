@@ -283,7 +283,7 @@ test("a smaller window holds a saved place inside the page", async ({ page, requ
 test("a phone shows a floating tile as a full-width header and keeps its desktop geometry", async ({ page, request }) => {
   await floatGraph(request);
   const { tile, bar } = await open(page);
-  // At 760 px and below the app shows Chat alone and hides the workbench.
+  // Above 760 px both Chat and the workbench show; the tile stacks as a header from 900 px down.
   await page.setViewportSize({ width: 800, height: 844 });
   const unsizedStage = await box(page.locator(".visual-stage"));
   const unsized = await box(tile);

@@ -21,7 +21,7 @@ async function open(page: Page, size = { width: 1280, height: 800 }): Promise<{ 
   await page.goto("/app/#/list/Issue");
   const column = page.locator(".chat-column");
   await expect(column.getByRole("region", { name: "Chat" })).toBeVisible();
-  // A phone shows Chat alone; elsewhere the canvas stands beside it.
+  // A phone shows Chat first; elsewhere the canvas stands beside it.
   if (size.width > 760) await expect(page.locator(".visual-stage")).toBeVisible();
   return { column, stage: page.locator(".visual-stage") };
 }

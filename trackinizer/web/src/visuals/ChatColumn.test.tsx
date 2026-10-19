@@ -9,7 +9,7 @@ import { CommandRegistry, CommandRegistryContext, Shortcuts, useCommandList } fr
 import { setStation } from "../stations/store";
 import { ChatColumn } from "./ChatColumn";
 import { preferences, receivePreferences } from "../preferences";
-import { currentChatColumn, setChatFullscreen, setChatHidden } from "./chatColumnState";
+import { currentChatColumn, setChatFullscreen, setChatHidden, setPhoneView } from "./chatColumnState";
 import { FOLD_AFTER_MS, OPEN_AFTER_MS } from "./hoverOpen";
 import { flushLayouts, forgetLayouts, type Layout } from "./stationLayout";
 
@@ -52,6 +52,7 @@ afterEach(() => {
   receivePreferences({ ...preferences(), chat_side: "left" });
   setChatHidden(false);
   setChatFullscreen(false);
+  setPhoneView("chat");
 });
 
 function Palette() {
@@ -104,13 +105,27 @@ test("a sheet opens in the stage, beside the page; full screen, over the row", a
   expect(order(row)).toEqual(["chat-column", "chat-workbench", "sheet"]);
 });
 
-test("on a phone Chat is the whole app: shown even if hidden, the workbench hidden, and no strip or divider", async () => {
+test("on a phone Chat shows first, even if hidden, the workbench hidden, no strip or divider; the switch swaps them, both staying mounted", async () => {
   vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(max-width: 760px)", addEventListener() {}, removeEventListener() {} }));
   setChatHidden(true);
-  const { row, column, workbench } = await show(workspace);
-  expect(order(row)).toEqual(["chat-column", "chat-workbench"]);
+  const { row, column, workbench, user } = await show(workspace);
+  expect(order(row)).toEqual(["chat-column", "chat-workbench", "chat-phone-switch"]);
   expect(column.hidden).toBe(false);
   expect(workbench.hidden).toBe(true);
+  expect(screen.getByRole("button", { name: "Chat" }).getAttribute("aria-pressed")).toBe("true");
+  await user.click(screen.getByRole("button", { name: "Canvas" }));
+  expect(column.hidden).toBe(true);
+  expect(workbench.hidden).toBe(false);
+  expect(screen.getByRole("button", { name: "Canvas" }).getAttribute("aria-pressed")).toBe("true");
+  expect(screen.getByLabelText("Message")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Chat" }));
+  expect(column.hidden).toBe(false);
+  expect(workbench.hidden).toBe(true);
+});
+
+test("beyond a phone's width there is no switch", async () => {
+  const { row } = await show();
+  expect(row.querySelector(".chat-phone-switch")).toBeNull();
 });
 
 test("the divider resizes by pointer, never under 280 px or over seven tenths of the row, and the width is kept", async () => {

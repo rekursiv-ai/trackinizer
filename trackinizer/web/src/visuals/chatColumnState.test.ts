@@ -81,3 +81,16 @@ test("a full screen Chat is not hidden by the workbench's columns", async () => 
   column.followColumns(true);
   expect(column.currentChatColumn()).toMatchObject({ hidden: false, fullscreen: true });
 });
+
+test("a phone shows Chat first; the choice is this tab's alone and never kept", async () => {
+  const column = await fresh();
+  const seen: string[] = [];
+  const { renderHook, act } = await import("@testing-library/react");
+  const { result } = renderHook(() => column.usePhoneView());
+  seen.push(result.current);
+  act(() => column.setPhoneView("canvas"));
+  seen.push(result.current);
+  expect(seen).toEqual(["chat", "canvas"]);
+  expect(localStorage.length).toBe(0);
+  expect((await fresh()).currentChatColumn()).toEqual({ side: "left", hidden: false, fullscreen: false });
+});

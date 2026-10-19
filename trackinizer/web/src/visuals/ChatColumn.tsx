@@ -8,7 +8,7 @@ import { useCommands } from "../commands/registry";
 import { Icon } from "../ui/icons";
 import { Chat } from "./Chat";
 import { dropLegacySizes, fitWidth, heldWidth, MIN_CHAT, readLegacySizes } from "./canvasSizes";
-import { type ChatSide, flipChatSide, setChatFullscreen, setChatHidden, toggleChatFullscreen, toggleChatHidden, useChatColumn } from "./chatColumnState";
+import { type ChatSide, flipChatSide, setChatFullscreen, setChatHidden, setPhoneView, toggleChatFullscreen, toggleChatHidden, useChatColumn, usePhoneView } from "./chatColumnState";
 import { useHoverOpen } from "./hoverOpen";
 import { useLayout } from "./stationLayout";
 import { showNewTerminal } from "./newTerminal";
@@ -35,8 +35,9 @@ type Drag = {
  * resizes it by pointer and by arrow keys; hidden, it leaves a strip at its
  * edge that shows it again, or opens it over the workbench while the pointer
  * rests on the strip, and a click in it pins it there; full screen, it takes the whole row and the
- * workbench stays mounted, hidden. On a phone Chat is the whole app, shown
- * even if hidden elsewhere, and the workbench stays mounted, hidden.
+ * workbench stays mounted, hidden. On a phone one of Chat and the workbench is shown
+ * at a time, Chat first, by a switch along the bottom; Chat is shown even if hidden
+ * elsewhere, and the other stays mounted, hidden.
  *
  * Chat stays mounted through all of it, so its draft, scroll and stream are
  * kept. It owns the column's commands, which exist only where Chat does.
@@ -50,6 +51,7 @@ export function ChatColumn({
 }) {
   const { side, hidden, fullscreen } = useChatColumn();
   const phone = usePhone();
+  const view = usePhoneView();
   const queryClient = useQueryClient();
   const workspace = useStation().data ?? null;
   usePageSync();
@@ -157,7 +159,7 @@ export function ChatColumn({
       <Icon name="chat" />
     </button>
   );
-  const shown = !hidden || fullscreen || peeking || phone;
+  const shown = phone ? view === "chat" : !hidden || fullscreen || peeking;
   const parts = [
     <div key="column" ref={column} className={`chat-column${peeking ? " chat-column-peek" : ""}`} hidden={!shown}
       style={width ? { "--chat-width": `${width}px` } as CSSProperties : undefined}
@@ -180,7 +182,7 @@ export function ChatColumn({
   return (
     <div ref={row} className={`chat-row chat-row-${side}${fullscreen ? " chat-row-fullscreen" : ""}`}>
       {side === "left" ? parts : null}
-      <div className="chat-workbench" hidden={fullscreen || phone}>
+      <div className="chat-workbench" hidden={fullscreen || (phone && view === "chat")}>
         <div className="chat-stage">
           {children}
           {fullscreen || phone ? null : sheet}
@@ -188,6 +190,13 @@ export function ChatColumn({
       </div>
       {side === "right" ? [...parts].reverse() : null}
       {fullscreen || phone ? sheet : null}
+      {phone && (
+        <div className="chat-phone-switch" role="group" aria-label="Chat or canvas">
+          {(["chat", "canvas"] as const).map((name) => (
+            <button key={name} type="button" aria-pressed={view === name} onClick={() => setPhoneView(name)}>{name === "chat" ? "Chat" : "Canvas"}</button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -197,7 +206,7 @@ function reach(x: number, { side, row }: { readonly side: ChatSide; readonly row
   return side === "left" ? x - row.left : row.right - x;
 }
 
-/** A phone's width: the stylesheet's breakpoint for the sidebar's drawer, where Chat is the whole app. */
+/** A phone's width: the stylesheet's breakpoint for the sidebar's drawer, where Chat and the workbench take turns. */
 const PHONE = "(max-width: 760px)";
 
 /** Whether the window is a phone's width, followed as it changes; never where there is no `matchMedia`, as in a test. */

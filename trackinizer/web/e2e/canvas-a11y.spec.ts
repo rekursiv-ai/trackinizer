@@ -73,7 +73,7 @@ for (const theme of ["dark", "light"] as const) {
         const { issue } = await seed(page, request);
         await page.goto("/app/#/list/Issue");
         await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
-        // A phone shows Chat alone, the page kept mounted and hidden.
+        // A phone shows Chat first, the page kept mounted and hidden until the switch shows it.
         const phone = size.width <= 760;
         if (phone) await expect(page.locator(".visual-stage")).toBeHidden();
         else await expect(page.locator("a.row").first()).toBeVisible();
@@ -82,6 +82,11 @@ for (const theme of ["dark", "light"] as const) {
         if (phone) await expect(page.getByRole("heading", { level: 1 })).toBeHidden();
         else await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
         await audit(page, theme, `a detail with Chat, ${size.width} px`);
+        if (phone) {
+          await page.getByRole("group", { name: "Chat or canvas" }).getByRole("button", { name: "Canvas" }).click();
+          await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+          await audit(page, theme, `a detail on the canvas, ${size.width} px`);
+        }
       });
 
       test("Chat with a conversation open, and the chat menu open", async ({ page, request }) => {
