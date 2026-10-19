@@ -17,6 +17,7 @@ from trackinizer.lib.postgres import DatabaseEngine, PGliteEngine, PostgresEngin
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
+from trackinizer.wire import wire_terminals
 
 
 if TYPE_CHECKING:
@@ -36,6 +37,7 @@ __all__ = [
     "parse_chat_streaming",
     "parse_engine",
     "parse_staff",
+    "parse_terminal_stun",
 ]
 
 
@@ -141,6 +143,10 @@ class Config:
         the chat's readers to read as it grows. Off refuses its routes with 404
         ``chat_partials_off``, and the assistant stops sending it. Environment
         only (``TRACKINIZER_CHAT_STREAMING``, ``on`` or ``off``).
+      terminal_stun: STUN servers the browser and a machine host use to reach each
+        other direct, as ``stun:HOST[:PORT]`` URLs. Empty (the default) means a
+        direct link forms on one network only. Environment only
+        (``TRACKINIZER_TERMINAL_STUN``, comma separated).
 
     """
 
@@ -181,6 +187,7 @@ class Config:
     staff: tuple[str, ...] = ()
     chat_orgs: ChatOrgs = "individual"
     chat_streaming: bool = True
+    terminal_stun: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> Self:
@@ -216,6 +223,9 @@ class Config:
             chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
             chat_streaming=parse_chat_streaming(
                 os.environ.get("TRACKINIZER_CHAT_STREAMING", ""),
+            ),
+            terminal_stun=parse_terminal_stun(
+                os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
             ),
         )
 
@@ -253,6 +263,9 @@ class Config:
             chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
             chat_streaming=parse_chat_streaming(
                 os.environ.get("TRACKINIZER_CHAT_STREAMING", ""),
+            ),
+            terminal_stun=parse_terminal_stun(
+                os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
             ),
         )
 
@@ -394,6 +407,31 @@ def parse_chat_orgs(value: str) -> ChatOrgs:
                 "TRACKINIZER_CHAT_ORGS must be single, domain or individual, "
                 f"got {other!r}",
             )
+
+
+def parse_terminal_stun(value: str) -> tuple[str, ...]:
+    """Parse ``$TRACKINIZER_TERMINAL_STUN``: up to four ``stun:HOST[:PORT]`` URLs.
+
+    Args:
+      value: The variable, comma separated; blank means none.
+
+    Returns:
+      servers: The URLs, in order.
+
+    Raises:
+      ConfigError: An entry is not a ``stun:`` URL, or there are too many.
+
+    """
+    servers = tuple(each.strip() for each in value.split(",") if each.strip())
+    if len(servers) > wire_terminals.MAX_ICE_SERVERS or any(
+        re.fullmatch(r"stun:\S{1,200}", each) is None for each in servers
+    ):
+        raise ConfigError(
+            "TRACKINIZER_TERMINAL_STUN takes at most "
+            f"{wire_terminals.MAX_ICE_SERVERS} comma separated stun:HOST[:PORT] URLs, "
+            f"got {value!r}",
+        )
+    return servers
 
 
 def parse_chat_streaming(value: str) -> bool:

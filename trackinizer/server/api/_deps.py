@@ -95,8 +95,10 @@ def terminal_hub(app: FastAPI) -> TerminalHub:
     held: object = getattr(app.state, "terminals", None)
     if isinstance(held, TerminalHub):
         return held
+    config: object = getattr(app.state, "config", None)
     hub = TerminalHub(
         alive=functools.partial(_alive, store=cast("_State", app.state).store),
+        ice_servers=config.terminal_stun if isinstance(config, Config) else (),
     )
     app.state.terminals = hub
     return hub

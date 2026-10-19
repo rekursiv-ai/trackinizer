@@ -24,6 +24,7 @@ from trackinizer.server.config import (
     parse_chat_streaming,
     parse_engine,
     parse_staff,
+    parse_terminal_stun,
 )
 from trackinizer.server.embedders.stub import StubEmbedder
 
@@ -558,6 +559,41 @@ def _server_args(**overrides: object) -> ConfigFlags:
     }
     base.update(overrides)
     return cast(ConfigFlags, argparse.Namespace(**base))
+
+
+class TestTerminalStun:
+    """``$TRACKINIZER_TERMINAL_STUN`` names the STUN servers a direct link may use."""
+
+    def test_the_default_is_no_server_and_a_list_is_comma_separated(self) -> None:
+        assert parse_terminal_stun("") == ()
+        assert parse_terminal_stun(" stun:a.test:3478 , stun:b.test ") == (
+            "stun:a.test:3478",
+            "stun:b.test",
+        )
+        assert Config().terminal_stun == ()
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "turn:relay.test",
+            "a.test:3478",
+            "stun:a b",
+            "stun:a,stun:b,stun:c,stun:d,stun:e",
+        ],
+    )
+    def test_anything_but_a_few_stun_urls_is_a_config_error(self, value: str) -> None:
+        with pytest.raises(ConfigError, match="TRACKINIZER_TERMINAL_STUN"):
+            parse_terminal_stun(value)
+
+    def test_both_ways_to_build_a_config_read_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_TERMINAL_STUN", "stun:a.test:3478")
+        assert Config.from_env().terminal_stun == ("stun:a.test:3478",)
+        assert Config.from_args(_server_args(assistant="")).terminal_stun == (
+            "stun:a.test:3478",
+        )
 
 
 if __name__ == "__main__":

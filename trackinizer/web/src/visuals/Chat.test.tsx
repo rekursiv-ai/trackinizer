@@ -2052,3 +2052,16 @@ test("the terminal side belongs to its station: another station never shows this
   station.again(workspace);
   expect(document.querySelector(".chat-terminal-side")).not.toBeNull();
 });
+
+test("Terminal help is in the ⋯ menu only on the terminal side, and reopens a dismissed help", async () => {
+  shell();
+  openMore();
+  expect(screen.queryByRole("button", { name: "Terminal help" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
+  const side = await screen.findByRole("region", { name: "Terminal", hidden: true });
+  localStorage.setItem("trackinizer.chat.terminalBar.dismissed", "1");
+  fireEvent.click(within(side).getByRole("button", { name: "More chat actions" }));
+  fireEvent.click(within(side).getByRole("button", { name: "Terminal help" }));
+  expect(localStorage.getItem("trackinizer.chat.terminalBar.dismissed")).toBe("open");
+  expect(within(side).queryByRole("button", { name: "Terminal help" })).toBeNull();
+});

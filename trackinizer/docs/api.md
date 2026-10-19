@@ -1365,6 +1365,21 @@ offset that fell out of the 256 KiB ring gets the whole ring after a
 (60 minutes without input), 4003 lifetime (24 hours), 4004 host lost, 4403
 refused, 4410 machine revoked.
 
+A direct link (an optional speed-up for a slow server path). The open, `attach` and
+the host's `wait` also return `ice_servers`, the STUN URLs from the server's
+`TRACKINIZER_TERMINAL_STUN` (up to four `stun:HOST[:PORT]`, comma separated; empty
+by default, which keeps a link to one network). Once attached, the browser may offer
+a WebRTC data channel over the same sockets: `SIGNAL` (9) carries JSON
+`{gen, type: offer|answer|abandon, sdp}` between browser and host, up to 16 KiB and 6
+a minute; the server forwards it without reading it. The channel carries the same
+frames. The browser says which path output takes with `ROUTE` (10, a route byte and a
+u64 offset; the server forwards it to the host unread). While output goes direct the
+host sends `KEEPALIVE` (11, a u32 of milliseconds since it last saw input) every 10
+seconds, so the idle limit holds, and the server asks the host back to the relay
+when a browser attaches. A host without aiortc answers an offer with `abandon`, and
+the terminal stays on the relay. The server learns neither the bytes nor the
+addresses on a direct link.
+
 The host holds `wait` (at most 25 seconds; `null` when nothing came) and dials the
 host WebSocket with its machine credential and its current `instance`; a second
 claim of one terminal, a stale instance or an unknown credential closes 4403, a

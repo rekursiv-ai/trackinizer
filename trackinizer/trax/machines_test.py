@@ -14,8 +14,15 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.trax import cli, machine_host, machines, profile
+from trackinizer.trax import (
+    cli,
+    machine_host,
+    machines,
+    profile,
+    terminal_direct_aiortc,
+)
 from trackinizer.trax.machines import MACHINE_WORD, Machines
+from trackinizer.trax.terminal_direct_aiortc import AiortcPeer
 from trackinizer.wire.wire_machine_host import EnrollResponse, JoinResponse
 from trackinizer.wire.wire_machines import (
     MAX_HOW_CHARS,
@@ -643,6 +650,64 @@ def test_a_malformed_connect_is_refused_before_any_request() -> None:
 def test_top_level_help_names_the_verb(capsys: pytest.CaptureFixture[str]) -> None:
     cli.parse_and_run(["help", MACHINE_WORD])
     assert f"Usage: trax {MACHINE_WORD}" in capsys.readouterr().out
+
+
+def _terminals_started(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    installed: bool,
+    switch: str | None,
+) -> TerminalHost:
+    monkeypatch.setenv("TRAX_MACHINE_TERMINAL", "1")
+    if switch is None:
+        monkeypatch.delenv("TRAX_MACHINE_TERMINAL_DIRECT", raising=False)
+    else:
+        monkeypatch.setenv("TRAX_MACHINE_TERMINAL_DIRECT", switch)
+    monkeypatch.setattr(
+        terminal_direct_aiortc,
+        "aiortc_peer_factory",
+        lambda: AiortcPeer if installed else None,
+    )
+    seen = _connect_seen(monkeypatch, ["gx10", "connect"], _StubClient())
+    terminals_for = cast(
+        "Callable[[JoinResponse], TerminalHost]",
+        seen["terminals_for"],
+    )
+    return terminals_for(
+        JoinResponse(machine_id=uuid.uuid4(), credential="trax_machine_c"),
+    )
+
+
+def test_the_host_offers_a_direct_link_when_the_library_is_installed_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    host = _terminals_started(monkeypatch, installed=True, switch=None)
+
+    assert host.direct is AiortcPeer
+    assert "direct terminal link: on" in capsys.readouterr().out
+
+
+def test_the_host_stays_on_the_relay_and_names_the_fix_when_the_library_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    host = _terminals_started(monkeypatch, installed=False, switch=None)
+
+    assert host.direct is None
+    out = capsys.readouterr().out
+    assert "direct terminal link: off" in out
+    assert "uv tool install --with aiortc trackinizer" in out
+
+
+def test_the_direct_link_can_be_switched_off_though_the_library_is_installed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    host = _terminals_started(monkeypatch, installed=True, switch="0")
+
+    assert host.direct is None
+    assert "TRAX_MACHINE_TERMINAL_DIRECT=0" in capsys.readouterr().out
 
 
 if __name__ == "__main__":

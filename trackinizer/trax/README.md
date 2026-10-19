@@ -99,6 +99,20 @@ copies (with `LC_TRAX_SERVER`, the server URL, never a key) that `ssh` forwards,
 `trax` on the far side reports to the same server. Closing a terminal ends the shell's
 process group, as closing ssh does: `nohup`, `setsid` and `tmux` jobs keep running.
 
+If typing in the web terminal feels slow because the server is far from you, the
+terminal can talk to your browser directly (a WebRTC data channel the server only
+introduces; the server stays the fallback). Install aiortc into the environment
+`trax` runs from, then restart `trax machine connect`:
+
+```bash
+uv tool install --with aiortc trackinizer
+```
+
+`trax machine connect` prints `direct terminal link: on` or `off` at start. An
+install from a local checkout needs the same source: `uv tool install --with aiortc
+/path/to/that/checkout` (`uv tool list --show-paths` and the tool's `uv-receipt.toml`
+name it). `TRAX_MACHINE_TERMINAL_DIRECT=0` turns the link off.
+
 ```bash
 trax machine                                           # list
 trax machine gpu-box                                   # show one

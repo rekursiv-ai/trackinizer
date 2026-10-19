@@ -4469,6 +4469,14 @@
         "pattern": "^[^\\x00]*$",
         "type": "string"
       },
+      "IceServers": {
+        "items": {
+          "pattern": "^stun:\\S{1,200}$",
+          "type": "string"
+        },
+        "maxItems": 4,
+        "type": "array"
+      },
       "InboundDrainItem": {
         "description": "One message drained for a session, with its attested sender.\n\nThe drain **response** item: unlike the enqueue request, it carries\n``source`` -- the producer's attested ``--as`` / principal -- so the\npoller can render the ``[room] sender:`` injection context. Inbound-only\nand transient: it is **not** an ``agent_session_events`` row; when the\nagent consumes it, the capture path logs it as a normal turn.",
         "properties": {
@@ -10163,6 +10171,9 @@
         "additionalProperties": false,
         "description": "A terminal was queued for the host; attach with the ticket.",
         "properties": {
+          "ice_servers": {
+            "$ref": "#/components/schemas/IceServers"
+          },
           "terminal_id": {
             "format": "uuid",
             "title": "Terminal Id",
@@ -10184,6 +10195,9 @@
         "additionalProperties": false,
         "description": "A one-use ticket to attach to a live terminal.",
         "properties": {
+          "ice_servers": {
+            "$ref": "#/components/schemas/IceServers"
+          },
           "ticket": {
             "title": "Ticket",
             "type": "string"
@@ -10202,6 +10216,9 @@
           "cols": {
             "title": "Cols",
             "type": "integer"
+          },
+          "ice_servers": {
+            "$ref": "#/components/schemas/IceServers"
           },
           "opener": {
             "title": "Opener",

@@ -85,6 +85,9 @@ class Frame(enum.IntEnum):
     OUTPUT = 6
     ACK = 7
     EXIT = 8
+    SIGNAL = 9
+    ROUTE = 10
+    KEEPALIVE = 11
 
 
 # The header is one byte of kind and a four-byte payload length. Every integer on the
@@ -413,7 +416,14 @@ class Host:
                 writer.write(encode_frame(Frame.ACK, bytes([submitted])))
             case Frame.STOP:
                 self._stop()
-            case Frame.OUTPUT | Frame.ACK | Frame.EXIT:
+            case (
+                Frame.OUTPUT
+                | Frame.ACK
+                | Frame.EXIT
+                | Frame.SIGNAL
+                | Frame.ROUTE
+                | Frame.KEEPALIVE
+            ):
                 raise ValueError(f"{kind.name} is a host frame, not a client's")
 
     def _send(self, writer: asyncio.StreamWriter, frame: bytes) -> None:

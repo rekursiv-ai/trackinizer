@@ -24,7 +24,7 @@ import "./Terminal.css";
 export type LiveTerminal = { readonly terminal_id: string };
 
 /** A terminal to connect to: `created` when this call opened it (and so must close it if it is let go of first). */
-type Opened = LiveTerminal & { readonly ticket: string; readonly created?: boolean };
+type Opened = LiveTerminal & { readonly ticket: string; readonly ice_servers?: readonly string[]; readonly created?: boolean };
 
 type Phase = { readonly state: "idle" } | { readonly state: "starting" } | { readonly state: "failed"; readonly note: string } | LinkStatus;
 
@@ -70,12 +70,23 @@ export function TerminalView({ machine, workspace, surface = null, resume = null
   const [phase, setPhase] = useState<Phase>({ state: "idle" });
   const [session, setSession] = useState<LiveTerminal | null>(resume);
   const [maximized, setMaximized] = useState(false);
+  // Whether output goes direct, and for a few seconds after it fell back, why.
+  const [direct, setDirect] = useState(false);
+  const [fellBack, setFellBack] = useState<string | null>(null);
+  const fellBackTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   // OSC 52 may write the clipboard only just after the user's own key or click here (`terminalClipboard.ts`).
   const lastInput = useRef(0);
   const [copied, setCopied] = useState(false);
   const noteCopied = useCallback(() => {
     setCopied(true);
     setTimeout(() => setCopied(false), 3_000);
+  }, []);
+  // The direct link came up or fell back to the server; a fall back is said for a few seconds, then the badge is simply gone.
+  const onPath = useCallback((path: "relay" | "direct", note?: string) => {
+    clearTimeout(fellBackTimer.current);
+    setDirect(path === "direct");
+    setFellBack(note ?? null);
+    if (note) fellBackTimer.current = setTimeout(() => setFellBack(null), 15_000);
   }, []);
   const [fill, setFill] = useState<CSSProperties>({});
   const fontSize = prefs.terminal_font_size;
@@ -87,6 +98,9 @@ export function TerminalView({ machine, workspace, surface = null, resume = null
     live.current?.typeahead.dispose();
     live.current?.term.dispose();
     live.current = null;
+    clearTimeout(fellBackTimer.current);
+    setDirect(false);
+    setFellBack(null);
   }, []);
 
   // Fit only a screen that is shown: a hidden element has no size, and a fit would report 24 x 80 as if it were real.
@@ -156,7 +170,7 @@ export function TerminalView({ machine, workspace, surface = null, resume = null
       setSession({ terminal_id: opened.terminal_id });
       onOpened?.({ terminal_id: opened.terminal_id });
       live.current.link = connectTerminal({
-        id: opened.terminal_id, ticket: opened.ticket, onOutput: typeahead.output, onEcho: typeahead.echo, onStatus: setPhase,
+        id: opened.terminal_id, ticket: opened.ticket, iceServers: opened.ice_servers, onOutput: typeahead.output, onEcho: typeahead.echo, onStatus: setPhase, onPath,
         size: () => ({ rows: term.rows, cols: term.cols }),
       });
     } catch (error) {
@@ -166,7 +180,7 @@ export function TerminalView({ machine, workspace, surface = null, resume = null
     }
   }, [fontSize, onOpened, release, fitNow]);
 
-  const attach = (id: LiveTerminal, focus: boolean) => begin(async () => ({ ...id, ticket: await attachTerminal(id.terminal_id) }), focus);
+  const attach = (id: LiveTerminal, focus: boolean) => begin(async () => ({ ...id, ...await attachTerminal(id.terminal_id) }), focus);
   const open = async (rows: number, cols: number): Promise<Opened> => ({ ...await openTerminal(machine!, workspace, rows, cols, surface), created: true });
   const start = (focus: boolean) => {
     if (machine) void begin(open, focus);
@@ -244,6 +258,8 @@ export function TerminalView({ machine, workspace, surface = null, resume = null
       <button type="button" className="btn ghost terminal-maximize" aria-label={maximized ? "Restore terminal" : "Maximize terminal"}
         title={maximized ? "Restore" : "Fill the canvas"} onClick={() => setMaximized(!maximized)}>{maximized ? "⤡" : "⤢"}</button>
       <div ref={host} className="terminal-screen" hidden={state === "idle" || state === "failed"} />
+      {direct && <span className="terminal-path" title="Typing goes straight to your machine, not through the server.">Direct link</span>}
+      {fellBack && <p className="terminal-note" role="status">{fellBack}</p>}
       {copied && <p className="terminal-note" role="status">Copied from terminal</p>}
       {asked && requestedBy && <p className="terminal-note" role="status">Opened at {requestedBy}'s request.</p>}
       {state === "reconnecting" && <p className="terminal-note" role="status">Reconnecting…</p>}

@@ -32,6 +32,12 @@ All notable trackinizer changes are documented here. This project follows
   session and never with a key;
   the host opts in with `TRAX_MACHINE_TERMINAL=1` and logs every open locally.
   Adds the `websockets` dependency.
+- Direct terminal link: a browser may offer the host a WebRTC data channel over the
+  terminal sockets, so typing no longer crosses a distant server. The server only
+  forwards the offer and keeps the idle and lifetime limits (`KEEPALIVE`); it still
+  relays when no direct path forms. The host needs aiortc, which is not a dependency:
+  `uv tool install --with aiortc trackinizer`. `TRACKINIZER_TERMINAL_STUN` names the
+  STUN servers (none by default).
 - A writer can enroll a machine of their own: `trax machine connect` with no name
   uses the short hostname, enrolls it as a personal machine only its owner and
   admins see, and serves terminals. Machines gain an `owner`; the owner (or an
@@ -65,6 +71,11 @@ All notable trackinizer changes are documented here. This project follows
   `redact_mapping` returns `Mapping[str, PlainTree]`.
 - **Breaking:** the `trax run` `Adapter` protocol gains `resumed_session`
   (which session a command line continues) and `session_switch_commands`.
+- trackinizer declares `pydantic-core`, which `server.preferences` imports.
+- The wheel no longer ships test support: `trackinizer.lib.testing`,
+  `lib.agent.sessions.testdata`, `lib.posix.testing`, `lib.postgres.testing`,
+  `server.api.canvas_test_support`, `server.embedders.qwen_fakes` and
+  `trax.run.fake_chat_server`.
 
 ### Fixed
 

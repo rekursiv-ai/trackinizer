@@ -10,9 +10,9 @@ import uuid
 import pytest
 
 from trackinizer.lib.posix.host import Frame, decode_frame, encode_frame, encode_winsize
+from trackinizer.lib.posix.ring import Ring
 from trackinizer.server.terminals import (
     Opening,
-    Ring,
     SocketClosedError,
     Terminal,
     TerminalHub,
@@ -664,6 +664,203 @@ def test_the_ring_keeps_the_tail_and_the_attach_payload_decodes() -> None:
     with pytest.raises(ValueError, match="ATTACH"):
         decode_attach(b"short")
     assert encode_frame(Frame.STOP) == b"\x05\x00\x00\x00\x00"
+
+
+@pytest.mark.asyncio
+async def test_a_signal_passes_between_the_browser_and_the_host_unread() -> None:
+    world = _World()
+    term, host, browser = await world.live()
+    del browser.sent[:]
+
+    assert await world.hub.from_browser(term, Frame.SIGNAL, b"offer-bytes")
+    await world.hub.from_host(term, Frame.SIGNAL, b"answer-bytes")
+
+    assert host.sent == [(Frame.SIGNAL, b"offer-bytes")]
+    assert browser.sent == [(Frame.SIGNAL, b"answer-bytes")]
+
+
+@pytest.mark.asyncio
+async def test_a_signal_with_no_host_or_no_browser_goes_nowhere() -> None:
+    world = _World()
+    term = world.open()
+    assert await world.hub.from_browser(term, Frame.SIGNAL, b"x")
+    host = _Socket()
+    assert await world.hub.host_connected(term, host)
+
+    await world.hub.from_host(term, Frame.SIGNAL, b"y")
+
+    assert host.sent == []
+
+
+@pytest.mark.asyncio
+async def test_an_oversize_signal_or_the_seventh_in_a_minute_closes_the_browser() -> (
+    None
+):
+    world = _World()
+    term, host, _ = await world.live()
+
+    assert not await world.hub.from_browser(
+        term,
+        Frame.SIGNAL,
+        b"x" * (wire_terminals.MAX_SIGNAL_BYTES + 1),
+    )
+    for _ in range(wire_terminals.MAX_SIGNALS_PER_MIN):
+        assert await world.hub.from_browser(term, Frame.SIGNAL, b"x")
+    assert not await world.hub.from_browser(term, Frame.SIGNAL, b"x")
+    world.clock.now += 61
+    assert await world.hub.from_browser(term, Frame.SIGNAL, b"x")
+    assert len(host.sent) == wire_terminals.MAX_SIGNALS_PER_MIN + 1
+
+
+@pytest.mark.asyncio
+async def test_a_route_passes_to_the_host_and_a_malformed_one_is_refused() -> None:
+    world = _World()
+    term, host, _ = await world.live()
+    route = wire_terminals.encode_route(wire_terminals.ROUTE_DIRECT, 5)
+
+    assert await world.hub.from_browser(term, Frame.ROUTE, route)
+    assert not await world.hub.from_browser(term, Frame.ROUTE, route[:-1])
+
+    assert host.sent == [(Frame.ROUTE, route)]
+
+
+@pytest.mark.asyncio
+async def test_a_keepalive_keeps_a_direct_terminal_from_idling_out() -> None:
+    world = _World()
+    term, host, _ = await world.live()
+    world.clock.now += wire_terminals.IDLE_SEC + 10
+
+    await world.hub.from_host(
+        term,
+        Frame.KEEPALIVE,
+        wire_terminals.encode_keepalive(1_000),
+    )
+    await world.hub.sweep()
+
+    assert (term.ended, host.closed) == (False, [])
+    world.clock.now += wire_terminals.IDLE_SEC
+    await world.hub.sweep()
+    assert term.ended
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_keepalive_changes_nothing() -> None:
+    world = _World()
+    term, _, _ = await world.live()
+    before = term.last_input_at
+
+    await world.hub.from_host(term, Frame.KEEPALIVE, b"\x00")
+
+    assert (term.last_input_at, term.direct_until) == (before, 0.0)
+
+
+@pytest.mark.asyncio
+async def test_a_host_that_returns_to_the_relay_restarts_the_ring_where_it_resumes() -> (
+    None
+):
+    world = _World()
+    term, _, browser = await world.live()
+    await world.hub.from_host(term, Frame.OUTPUT, b"abc")
+    del browser.sent[:]
+
+    await world.hub.from_host(term, Frame.ACK, (10).to_bytes(8))
+    await world.hub.from_host(term, Frame.OUTPUT, b"xy")
+
+    assert browser.sent == [(Frame.ACK, (10).to_bytes(8)), (Frame.OUTPUT, b"xy")]
+    assert term.ring.since(10) == (b"xy", 10, False)
+
+
+@pytest.mark.asyncio
+async def test_a_browser_attaching_to_a_direct_terminal_asks_the_host_back_to_the_relay() -> (
+    None
+):
+    world = _World()
+    term, host, first = await world.live()
+    await world.hub.from_host(term, Frame.OUTPUT, b"abc")
+    await world.hub.from_host(term, Frame.KEEPALIVE, wire_terminals.encode_keepalive(0))
+    world.hub.detach_browser(term, first)
+    del host.sent[:]
+
+    await world.hub.attach_browser(term, _Socket(), offset=0)
+
+    assert host.sent == [
+        (Frame.ROUTE, wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, 3)),
+    ]
+    assert term.direct_until == 0.0
+
+
+@pytest.mark.asyncio
+async def test_a_browser_attaching_to_a_relayed_terminal_asks_the_host_nothing() -> (
+    None
+):
+    world = _World()
+    term, host, first = await world.live()
+    await world.hub.from_host(term, Frame.KEEPALIVE, wire_terminals.encode_keepalive(0))
+    world.clock.now += 3 * wire_terminals.KEEPALIVE_SEC + 1
+    world.hub.detach_browser(term, first)
+    del host.sent[:]
+
+    await world.hub.attach_browser(term, _Socket(), offset=0)
+
+    assert host.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_signal_of_exactly_the_cap_passes_and_the_window_is_exactly_a_minute() -> (
+    None
+):
+    world = _World()
+    term, host, _ = await world.live()
+
+    assert await world.hub.from_browser(
+        term,
+        Frame.SIGNAL,
+        b"x" * wire_terminals.MAX_SIGNAL_BYTES,
+    )
+    for _ in range(wire_terminals.MAX_SIGNALS_PER_MIN - 1):
+        assert await world.hub.from_browser(term, Frame.SIGNAL, b"x")
+    world.clock.now += 59.9
+    assert not await world.hub.from_browser(term, Frame.SIGNAL, b"x")
+    world.clock.now += 0.1
+    assert await world.hub.from_browser(term, Frame.SIGNAL, b"x")
+    assert len(host.sent) == wire_terminals.MAX_SIGNALS_PER_MIN + 1
+
+
+@pytest.mark.asyncio
+async def test_a_keepalive_dates_the_last_input_and_holds_the_direct_mark_for_three_periods() -> (
+    None
+):
+    world = _World()
+    term, host, first = await world.live()
+    await world.hub.from_host(
+        term,
+        Frame.KEEPALIVE,
+        wire_terminals.encode_keepalive(2_500),
+    )
+    world.hub.detach_browser(term, first)
+
+    assert term.last_input_at == world.clock.now - 2.5
+    world.clock.now += 3 * wire_terminals.KEEPALIVE_SEC - 1
+    await world.hub.attach_browser(term, _Socket(), offset=0)
+    assert [kind for kind, _ in host.sent] == [Frame.ROUTE]
+
+    await world.hub.from_host(term, Frame.KEEPALIVE, wire_terminals.encode_keepalive(0))
+    del host.sent[:]
+    world.clock.now += 3 * wire_terminals.KEEPALIVE_SEC
+    await world.hub.attach_browser(term, _Socket(), offset=0)
+    assert host.sent == []
+
+
+@pytest.mark.asyncio
+async def test_only_an_ack_of_eight_bytes_restarts_the_ring() -> None:
+    world = _World()
+    term, _, _ = await world.live()
+    await world.hub.from_host(term, Frame.OUTPUT, b"abc")
+
+    await world.hub.from_host(term, Frame.INPUT, (99).to_bytes(8))
+    await world.hub.from_host(term, Frame.ACK, b"\x01")
+
+    assert term.ring.since(0) == (b"abc", 0, False)
 
 
 if __name__ == "__main__":

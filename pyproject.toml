@@ -40,6 +40,8 @@ dependencies = [
     # data models
     "configgle>=1.4.0",
     "pydantic>=2.0",
+    # server/preferences.py serializes with pydantic's core directly.
+    "pydantic-core",
     # trax grammar
     "lark>=1.1",
     # shell parsing: lifts a captured `cat`/`echo >` into a typed file result
@@ -83,6 +85,10 @@ dependencies = [
     "peft>=0.21.0",
 ]
 
+[project.scripts]
+trackinizer = "trackinizer.server.server:main"
+trax = "trackinizer.trax.cli:main"
+
 [dependency-groups]
 # NEVER ADD MORE DEPENDENCIES!
 
@@ -123,10 +129,6 @@ dev = [
 
 # NEVER ADD MORE DEPENDENCY GROUPS!
 
-[project.scripts]
-trackinizer = "trackinizer.server.server:main"
-trax = "trackinizer.trax.cli:main"
-
 [project.urls]
 Homepage = "https://www.rekursiv.ai"
 Repository = "https://github.com/rekursiv-ai/trackinizer"
@@ -157,7 +159,19 @@ packages = ["trackinizer"]
 # not a force-include: hatch applies a force-include to the editable install too,
 # so `uv sync` would fail in every checkout that has not built the app yet.
 # Package validation checks that the wheel carries it.
-exclude = ["**/*_test.py", "**/conftest.py", "trackinizer/web/**"]
+exclude = [
+    "**/*_test.py",
+    "**/conftest.py",
+    "trackinizer/web/**",
+    # Test support no shipped module imports.
+    "trackinizer/lib/testing/**",
+    "trackinizer/lib/agent/sessions/testdata/**",
+    "trackinizer/lib/posix/testing.py",
+    "trackinizer/lib/postgres/testing.py",
+    "trackinizer/server/api/canvas_test_support.py",
+    "trackinizer/server/embedders/qwen_fakes.py",
+    "trackinizer/trax/run/fake_chat_server.py",
+]
 artifacts = ["trackinizer/web/dist/**"]
 
 [tool.hatch.build.targets.sdist]
@@ -346,28 +360,6 @@ extend-include = ["*.ipynb"]
 
 select = ["ALL"]
 
-extend-safe-fixes = [
-    "C4",     # Collection and comprehension rewrites.
-    "D301",   # Use `r"""` if any backslashes in a docstring.
-    "E711",   # Compare to None with identity.
-    "E712",   # Compare booleans by truthiness.
-    "E731",   # Do not assign a `lambda` expression, use a `def`.
-    "F401",   # Remove unused imports.
-    "F601",   # Remove overwritten dictionary entries.
-    "F841",   # Remove unused local bindings.
-    "ISC004", # Unparenthesized implicit string concatenation in collection.
-    "PT006",  # Use tuple for pytest.mark.parametrize names.
-    "PT007",  # Use tuple/list consistently for pytest values.
-    "PT018",  # Split composite assertions.
-    "PYI034", # Annotate __enter__/__new__/__iadd__ returns as Self.
-    "RET504", # Remove unnecessary local assignment directly before return.
-    "RUF007", # Prefer `itertools.pairwise()` over `zip()` when iterating over successive pairs.
-    "SIM102", # Collapse nested if statements.
-    "SIM105", # Use contextlib.suppress instead of try-except-pass.
-    "TC",     # Type-checking import and annotation rewrites.
-    "UP",     # Python syntax upgrades.
-]
-
 ignore = [
     # COM812 is deliberately ignored here and re-enabled only by the
     # pre-commit `ruff-check` hook (`--extend-select COM812`). Selecting it in
@@ -425,6 +417,28 @@ ignore = [
     # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 ]
 
+extend-safe-fixes = [
+    "C4",     # Collection and comprehension rewrites.
+    "D301",   # Use `r"""` if any backslashes in a docstring.
+    "E711",   # Compare to None with identity.
+    "E712",   # Compare booleans by truthiness.
+    "E731",   # Do not assign a `lambda` expression, use a `def`.
+    "F401",   # Remove unused imports.
+    "F601",   # Remove overwritten dictionary entries.
+    "F841",   # Remove unused local bindings.
+    "ISC004", # Unparenthesized implicit string concatenation in collection.
+    "PT006",  # Use tuple for pytest.mark.parametrize names.
+    "PT007",  # Use tuple/list consistently for pytest values.
+    "PT018",  # Split composite assertions.
+    "PYI034", # Annotate __enter__/__new__/__iadd__ returns as Self.
+    "RET504", # Remove unnecessary local assignment directly before return.
+    "RUF007", # Prefer `itertools.pairwise()` over `zip()` when iterating over successive pairs.
+    "SIM102", # Collapse nested if statements.
+    "SIM105", # Use contextlib.suppress instead of try-except-pass.
+    "TC",     # Type-checking import and annotation rewrites.
+    "UP",     # Python syntax upgrades.
+]
+
 [tool.ruff.lint.per-file-ignores]
 # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 
@@ -446,6 +460,22 @@ ignore = [
     "S101",    # Use of `assert` detected.
     "S301",    # Pickle usage.
     "SLF001",  # Private member access.
+    # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
+]
+
+
+"*.ipynb" = [
+    "ARG001",  # Unused function argument (callbacks).
+    "BLE001",  # Blind exception (sandboxed exec).
+    "E402",    # Module level import not at top of file.
+    "F811",    # Redefinition across cells.
+    "F821",    # Undefined name (e.g., `display` from IPython).
+    "INP001",  # Implicit namespace package.
+    "PLC0415", # Import not at top level.
+    "RUF100",  # Preserve noqa for jupytext-synced .py files.
+    "S102",    # Use of exec.
+    "S301",    # Pickle usage.
+    "T201",    # Print found.
     # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 ]
 
@@ -505,27 +535,12 @@ ignore = [
     "TID251",  # Banned API.
     # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 ]
-
-"*.ipynb" = [
-    "ARG001",  # Unused function argument (callbacks).
-    "BLE001",  # Blind exception (sandboxed exec).
-    "E402",    # Module level import not at top of file.
-    "F811",    # Redefinition across cells.
-    "F821",    # Undefined name (e.g., `display` from IPython).
-    "INP001",  # Implicit namespace package.
-    "PLC0415", # Import not at top level.
-    "RUF100",  # Preserve noqa for jupytext-synced .py files.
-    "S102",    # Use of exec.
-    "S301",    # Pickle usage.
-    "T201",    # Print found.
-    # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
-]
-
 "{**/docs/**,**/scripts/**}" = [
     "INP001",  # Standalone example scripts.
     "T201",    # Print found. (Eval scripts use print for output.)
     # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 ]
+
 
 # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 
@@ -635,8 +650,8 @@ exclude = [
     "build/",
     "dist/",
     "**/third_party/",
-    "**/typings/",
     # NEVER ADD MORE EXCLUSIONS! SUPPRESS IN FILE!
+    "**/typings/",
 ]
 ignore = [
     "**/.venv/",
@@ -648,8 +663,8 @@ ignore = [
     "build/",
     "dist/",
     "**/third_party/",
-    "**/typings/",
     # NEVER ADD MORE IGNORES! SUPPRESS IN FILE!
+    "**/typings/",
 ]
 pythonPlatform = "Linux"
 pythonVersion = "3.12"  # Intentional; test at 3.12 for exports.
@@ -667,6 +682,7 @@ reportInvalidCast = false                  # All cast() calls are intentional.
 # Extra.
 reportUnknownMemberType = false
 # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
+
 
 [tool.ty.environment]
 python-version = "3.12"  # Intentional; test at 3.12 for exports.
@@ -686,8 +702,8 @@ exclude = [
     "build/",
     "dist/",
     "**/third_party/",
-    "**/typings/",
     # NEVER ADD MORE EXCLUSIONS! SUPPRESS IN FILE!
+    "**/typings/",
 ]
 
 [tool.ty.rules]
@@ -695,6 +711,7 @@ all = "warn"
 
 [[tool.ty.overrides]]
 include = ["*_test.py"]
+
 [tool.ty.overrides.rules]
 invalid-key = "ignore"
 
@@ -753,11 +770,11 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
-treekle = { git = "https://github.com/rekursiv-ai/treekle", branch = "main" }
-rekursiv-ai-typeshed = { git = "https://github.com/rekursiv-ai/typings", subdirectory = "typeshed", branch = "main" }
-rekursiv-ai-typings = { git = "https://github.com/rekursiv-ai/typings", branch = "main" }
 # uv-only (stripped from the built wheel). Linux -> CPU wheel for lock/CI;
 # non-linux falls through to PyPI (macOS torch has no +cpu variant).
 torch = [
     { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
 ]
+rekursiv-ai-typeshed = { git = "https://github.com/rekursiv-ai/typings", subdirectory = "typeshed", branch = "main" }
+treekle = { git = "https://github.com/rekursiv-ai/treekle", branch = "main" }
+rekursiv-ai-typings = { git = "https://github.com/rekursiv-ai/typings", branch = "main" }

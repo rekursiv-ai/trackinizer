@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { confirmTerminalMachine, listTerminalMachines, type LiveTerminal, type TerminalMachine } from "../api/terminals";
 import type { WorkspaceState } from "../api/workspaces";
@@ -54,7 +54,7 @@ test("no machine: the bar offers `trax machine connect` and Copy writes it", asy
   vi.stubGlobal("navigator", { clipboard: { writeText } });
   mount([]);
   await screen.findByText(/Connect this laptop/);
-  fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+  fireEvent.click(within(screen.getByRole("note")).getByRole("button", { name: "Copy" }));
   await waitFor(() => expect(writeText).toHaveBeenCalledWith("trax machine connect"));
   vi.unstubAllGlobals();
 });
@@ -147,4 +147,55 @@ test("a failed Allow says so and leaves the machine unoffered", async () => {
   await screen.findByText("terminal view");
   fireEvent.click(screen.getByRole("button", { name: "Allow" }));
   expect((await screen.findByRole("alert")).textContent).toBe("Could not allow fresh.");
+});
+
+const help = () => document.querySelector<HTMLDetailsElement>("details.chat-terminal-help")!;
+const SECTIONS: readonly (readonly [string, readonly string[]])[] = [
+  ["Connect this machine", [`uv tool install trackinizer && trax profile url to ${location.origin} && trax profile token to <TOKEN>`]],
+  ["Over ssh", ["ssh HOST"]],
+  ["Detached agents", ["trax run --detach --name NAME claude", "trax run ls", "trax run attach NAME", "trax run log NAME --follow", "trax run stop NAME"]],
+  ["Typing feels slow?", ["uv tool install --with aiortc trackinizer"]],
+];
+
+test("the help has a section per job, each command in code with its own Copy that writes it", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { clipboard: { writeText } });
+  mount([machine("gx10")]);
+  await screen.findByText("terminal view");
+  expect(within(help()).getByRole("region", { name: "Reconnecting", hidden: true }).textContent).toContain("60 minutes");
+  for (const [name, commands] of SECTIONS) {
+    const section = within(help()).getByRole("region", { name, hidden: true });
+    const buttons = within(section).getAllByRole("button", { name: "Copy", hidden: true });
+    expect(Array.from(section.querySelectorAll("code")).map((each) => each.textContent)).toEqual(expect.arrayContaining([...commands]));
+    expect(buttons).toHaveLength(commands.length);
+    for (const [index, command] of commands.entries()) {
+      fireEvent.click(buttons[index]!);
+      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(command));
+    }
+  }
+  vi.unstubAllGlobals();
+});
+
+test("the setup command names the page's own origin", async () => {
+  mount([machine("gx10")]);
+  await screen.findByText("terminal view");
+  expect(help().textContent).toContain(`trax profile url to ${location.origin} `);
+});
+
+test("dismissing hides the help with the bar, and the dismissal is remembered", async () => {
+  mount([machine("gx10")]);
+  await screen.findByText("terminal view");
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(document.querySelector("details.chat-terminal-help")).toBeNull();
+});
+
+test("the help is a closed disclosure under the bar, open once reopened from the menu", async () => {
+  const first = mount([machine("gx10")]);
+  await screen.findByText("terminal view");
+  expect(help().open).toBe(false);
+  first.unmount();
+  localStorage.setItem("trackinizer.chat.terminalBar.dismissed", "open");
+  mount([machine("gx10")]);
+  await screen.findByText("terminal view");
+  expect(help().open).toBe(true);
 });
