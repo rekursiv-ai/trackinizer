@@ -247,7 +247,7 @@ VERB_ARG: /\S+/
 //   run attach NAME
 //   run claude|gemini|codex|sh [--out V] [--verbose] [--dry-run] [--no-sync] [--as V] [--room V] [--private] [--diff] [--detach] [--name V]
 //   run log NAME [-f/--follow]
-//   run ls
+//   run ls [-a/--all]
 //   run send NAME TEXT...
 //   run stop NAME
 //   search-sessions QUERY [--limit V] [--semantic/--no-semantic] [--format text|json]

@@ -13,7 +13,7 @@ exactly as in a foreground run. Each host has a name and a directory,
 
 These reach a host by name:
 
-- ``trax run ls`` lists hosts and their state.
+- ``trax run ls`` lists the live hosts; ``--all`` lists every host and its state.
 - ``trax run attach NAME`` drives it from this terminal; Ctrl-\ detaches.
 - ``trax run log NAME [--follow]`` prints its scrollback.
 - ``trax run send NAME TEXT`` types a message in and presses Enter.
@@ -60,6 +60,9 @@ _logger = logging.getLogger(__name__)
 
 HOST_COMMANDS: Final = frozenset({"attach", "log", "ls", "send", "stop"})
 """``trax run`` first words that reach an existing host rather than wrap a CLI."""
+
+_LIVE: Final = frozenset({"starting", "running", "exiting"})
+"""The states ``trax run ls`` lists without ``--all``: a host that is still there."""
 
 # A path component: no separator, no leading dot, and short enough that the
 # directory stays far inside every filesystem's 255-byte name limit. ``#`` and
@@ -177,7 +180,7 @@ def main(argv: Sequence[str]) -> int:
     """
     flags = cast(_Flags, build_parser().parse_args(argv))
     if flags.command == "ls":
-        return _ls()
+        return _ls(every=flags.all)
     if flags.command == "attach":
         return _attach(flags.name)
     if flags.command == "log":
@@ -213,12 +216,19 @@ class _Flags(Protocol):
     name: str
     follow: bool
     text: list[str]
+    all: bool
 
 
 def _add_arguments(parser: argparse.ArgumentParser) -> None:
     """Register the host commands on ``parser``."""
     commands = parser.add_subparsers(dest="command", required=True)
-    _ = commands.add_parser("ls", help="List hosts and their state.")
+    ls_parser = commands.add_parser("ls", help="List the live hosts and their state.")
+    ls_parser.add_argument(
+        "-a",
+        "--all",
+        action="store_true",
+        help="List every host, those that exited or were lost too.",
+    )
     attach_parser = commands.add_parser(
         "attach",
         help="Drive a host from this terminal; Ctrl-\\ detaches.",
@@ -365,20 +375,25 @@ def _await_ready(fd: int) -> bytes | None:
         os.close(fd)
 
 
-def _ls() -> int:
-    """Print every host's name, state, pid, start time, and command."""
+def _ls(*, every: bool) -> int:
+    """List the live hosts, or with ``every`` all of them, one per line."""
     rows = [("NAME", "STATE", "PID", "STARTED", "COMMAND")]
     hosts = state_dir() / "rekursiv-ai" / "trax" / "run" / "hosts"
     for directory in sorted(hosts.iterdir() if hosts.is_dir() else ()):
         record = _read_record(directory)
-        if record is not None:
+        if record is None:
+            continue
+        state = _state(record)
+        if every or state in _LIVE:
             rows.append(
                 (
                     record.name,
-                    _state(record),
+                    state,
                     str(record.pid),
                     record.started,
-                    record.command,
+                    # One host, one line: a command with a newline in it (a script
+                    # given to ``bash -c``) would spill lines that read as hosts.
+                    " ".join(record.command.split()),
                 ),
             )
     # The command, last, is left ragged: padding it would only trail spaces.
@@ -466,7 +481,7 @@ def _require_record(name: str) -> HostRecord:
     """Return ``name``'s record, or exit naming the missing host."""
     record = _read_record(_paths(name))
     if record is None:
-        raise SystemExit(f"trax run: no host named {name!r}; see trax run ls")
+        raise SystemExit(f"trax run: no host named {name!r}; see trax run ls --all")
     return record
 
 

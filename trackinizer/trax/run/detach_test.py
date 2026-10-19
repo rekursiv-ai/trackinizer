@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -186,14 +187,50 @@ class TestReadiness:
 class TestCommands:
     """``trax run ls|attach|log|send|stop`` against recorded hosts."""
 
-    def test_ls_lists_each_host(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_ls_lists_the_live_hosts_one_line_each_and_all_lists_every_host(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        # A host directory with no record yet, listed first, is passed over.
+        detach._paths("a-new").mkdir(parents=True)
+        alpha = detach._paths("alpha")
+        alpha.mkdir(parents=True)
+        detach._write_record(
+            alpha,
+            _record(alpha, name="alpha", state="exited", exit_code=0),
+        )
+        beta = detach._paths("beta")
+        beta.mkdir(parents=True)
+        # This test's own pid: a starting host whose process is still there, running
+        # a script that spans lines.
+        detach._write_record(
+            beta,
+            replace(
+                _record(beta, name="beta", state="starting", pid=os.getpid()),
+                command="bash -c 'echo a\necho b'",
+            ),
+        )
+
+        assert main(["ls"]) == 0
+        live = capsys.readouterr().out.splitlines()[1:]
+        assert main(["ls", "--all"]) == 0
+        every = capsys.readouterr().out.splitlines()[1:]
+
+        assert [line.split()[:2] for line in live] == [["beta", "starting"]]
+        assert live[0].endswith("bash -c 'echo a echo b'")
+        assert [line.split()[:2] for line in every] == [
+            ["alpha", "exited"],
+            ["beta", "starting"],
+        ]
+
+    def test_ls_all_lists_each_host(self, capsys: pytest.CaptureFixture[str]) -> None:
         root = detach._paths("alpha")
         root.mkdir(parents=True)
         detach._write_record(
             root,
             _record(root, name="alpha", state="exited", exit_code=0),
         )
-        assert main(["ls"]) == 0
+        assert main(["ls", "--all"]) == 0
         header, row = capsys.readouterr().out.splitlines()
         assert row.split() == [
             "alpha",
@@ -257,7 +294,7 @@ class TestCommands:
         assert exited.value.code == 0
         out = " ".join(capsys.readouterr().out.split())
         for line in (
-            "ls List hosts and their state.",
+            "ls List the live hosts and their state.",
             "attach Drive a host from this terminal; Ctrl-\\ detaches.",
             "log Print a host's scrollback.",
             "send Type a message into a host and press Enter.",
@@ -351,7 +388,7 @@ class TestDetachedLifecycle:
         stopped = _trax("run", "stop", name)
         assert stopped.returncode == 0, stopped.stderr
         assert "stopped (status 143)" in stopped.stderr
-        final = _trax("run", "ls")
+        final = _trax("run", "ls", "--all")
         assert any(
             line.split()[:3] == [name, "exited", "143"]
             for line in final.stdout.splitlines()
@@ -374,7 +411,7 @@ class TestDetachedLifecycle:
         assert launched.returncode == 1
         assert "failed to start" in launched.stderr
         assert "definitely-not-a-real-binary-xyz not found in PATH" in launched.stderr
-        assert "exited 1" in _trax("run", "ls").stdout
+        assert "exited 1" in _trax("run", "ls", "--all").stdout
 
 
 class _Completed:

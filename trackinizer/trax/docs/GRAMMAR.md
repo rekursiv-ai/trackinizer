@@ -522,9 +522,10 @@ kinds resolve first, so a field can never shadow a command.
   it; a server that will not hide it stops the run before the CLI starts.
   `--detach` runs it in a background host that outlives the terminal, named
   by `--name` (else the `--as` name, else the CLI).
-- `trax run ls | attach NAME | log NAME [-f] | send NAME TEXT... | stop NAME`
-  -- reach a detached host: list hosts, drive one from this terminal
-  (Ctrl-\ detaches), print its scrollback, type a message in, or stop it.
+- `trax run ls [--all] | attach NAME | log NAME [-f] | send NAME TEXT... | stop NAME`
+  -- reach a detached host: list the live hosts (`--all`: every host, exited
+  and lost too), drive one from this terminal (Ctrl-\ detaches), print its
+  scrollback, type a message in, or stop it.
 
 ## 8. Profile command
 
