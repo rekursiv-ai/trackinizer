@@ -374,7 +374,7 @@ a long-running agent needs no tmux:
 
 ```bash
 trax run --detach --name lead claude
-trax run ls                    # hosts: running, exited or lost
+trax run ls                    # live hosts; --all adds exited and lost ones
 trax run attach lead           # drive it here; Ctrl-\ detaches
 trax run log lead --follow     # scrollback, then live output
 trax run send lead "status?"   # type a line in and press Enter

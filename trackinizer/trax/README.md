@@ -158,7 +158,7 @@ its scrollback.
 
 ```bash
 trax run --detach --name lead --as lead claude -- --model haiku
-trax run ls                         # hosts: running / exited N / lost
+trax run ls                         # live hosts; --all adds exited N / lost
 trax run attach lead                # drive it here; Ctrl-\ detaches
 trax run log lead --follow          # scrollback, then live output
 trax run send lead "status?"        # type a message in and press Enter
