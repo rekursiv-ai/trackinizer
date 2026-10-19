@@ -30,6 +30,7 @@ import shutil
 import sys
 import threading
 import time
+import tomllib
 import uuid
 
 from treekle import from_plain, json_loads
@@ -60,6 +61,7 @@ from trackinizer.trax.run.adapters.iostream import IOStreamAdapter
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.inbound import render_inbound
 from trackinizer.trax.run.session import (
+    _CANVAS_NOTE,
     RunConfig,
     _cli_argv,
     _drain_filesystem_loop,
@@ -72,6 +74,7 @@ from trackinizer.trax.run.session import (
     _session_owner,
     _Stats,
     _with_box_hook,
+    _with_canvas_note,
     resume_argv,
     run,
 )
@@ -2975,6 +2978,73 @@ class TestSessionOwnerAndArgv:
             None,
         )
 
+    def test_a_placed_claude_or_codex_is_told_its_station_by_its_own_flag(self) -> None:
+        placed = {"TRAX_WORKSPACE": "w"}
+        # A codex ``-c`` of another key, and one left dangling, are not the person's.
+        codex_args = ["--no-daemon", "-c", 'model="o3"', "-c"]
+
+        claude = _with_canvas_note(
+            ["claude", "--model", "haiku"],
+            adapter=ClaudeAdapter(),
+            placed=placed,
+        )
+        codex = _with_canvas_note(
+            ["codex", *codex_args],
+            adapter=CodexAdapter(),
+            placed=placed,
+        )
+
+        assert claude == [
+            "claude",
+            "--append-system-prompt",
+            _CANVAS_NOTE,
+            "--model",
+            "haiku",
+        ]
+        assert codex[:2] == ["codex", "-c"]
+        assert codex[3:] == codex_args
+        assert tomllib.loads(codex[2]) == {"developer_instructions": _CANVAS_NOTE}
+        assert "$TRAX_WORKSPACE" in _CANVAS_NOTE
+
+    @pytest.mark.parametrize(
+        ("adapter", "placed", "args"),
+        [
+            (ClaudeAdapter(), {}, []),
+            (CodexAdapter(), {"TRAX_WORKSTREAM": "s"}, []),
+            (GeminiAdapter(), {"TRAX_WORKSPACE": "w"}, []),
+            (ClaudeAdapter(), {"TRAX_WORKSPACE": "w"}, ["--append-system-prompt", "x"]),
+            (
+                ClaudeAdapter(),
+                {"TRAX_WORKSPACE": "w"},
+                ["--append-system-prompt-file=f"],
+            ),
+            (
+                CodexAdapter(),
+                {"TRAX_WORKSPACE": "w"},
+                ["-c", 'developer_instructions="x"'],
+            ),
+            (
+                CodexAdapter(),
+                {"TRAX_WORKSPACE": "w"},
+                ["--config", "developer_instructions=1"],
+            ),
+            (
+                CodexAdapter(),
+                {"TRAX_WORKSPACE": "w"},
+                ['--config=developer_instructions="x"'],
+            ),
+        ],
+    )
+    def test_no_note_without_a_station_for_gemini_or_over_the_persons_own(
+        self,
+        adapter: Adapter,
+        placed: dict[str, str],
+        args: list[str],
+    ) -> None:
+        argv = [adapter.cli_binary, *args]
+
+        assert _with_canvas_note(argv, adapter=adapter, placed=placed) == argv
+
     def test_codex_claims_only_a_resumed_id(self) -> None:
         fresh = _session_owner(CodexAdapter(), RunConfig(cli_name="codex"))
         resumed = _session_owner(
@@ -3373,6 +3443,7 @@ class TestSpawnWiring:
             str(uuid.UUID(int=7)),
             str(uuid.UUID(int=8)),
         )
+        assert wiring.argv[1:3] == ["--append-system-prompt", _CANVAS_NOTE]
         assert client.asked == [
             (
                 f"/api/sessions/{_SESSION}/place",
