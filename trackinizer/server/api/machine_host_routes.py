@@ -4,9 +4,9 @@ An admin enrolls a machine by name and hands the host a one-use, 15-minute token
 A writer may enroll a machine of their own the same way: it is theirs (``owner``) and
 personal, so only they and admins see it. The host joins with the token, once, and
 receives a machine credential. It then heartbeats with that credential, and its
-machine reads online until it has been silent for 180 seconds. An admin, or the owner,
-revokes the machine; the credential's row is kept, so every host route then answers
-it 410 instead of 401.
+machine reads online until it has been silent for 180 seconds or has released it.
+An admin, or the owner, revokes the machine; the credential's row is kept, so every
+host route then answers it 410 instead of 401.
 """
 
 from __future__ import annotations
@@ -281,11 +281,14 @@ async def heartbeat_machine_route(
 ) -> HeartbeatResponse:
     """Record that the host is alive, and what it reports about itself.
 
-    One host instance holds a machine at a time. A different instance is refused
-    until the connected one has been silent for 180 seconds, then takes over.
+    One host instance holds a machine at a time. Under ``keep`` a different instance
+    is refused until the connected one has been silent for 180 seconds, then takes
+    over; under ``take`` it takes over at once. ``release`` from the instance that
+    holds the machine leaves it held by none, so it reads offline; from any other
+    instance it changes nothing.
 
     Args:
-      body: The host's instance, version, and facts when they changed.
+      body: The host's instance, version, claim, and facts when they changed.
       request: Request carrying the database engine.
       machine: The machine the credential authenticated as.
 
@@ -313,10 +316,20 @@ async def heartbeat_machine_route(
         )
         if not live:
             raise machine_revoked()
+        if body.claim == "release":
+            # Matches the row whoever holds it, so the answer always has a clock.
+            beat = await conn.fetchval(
+                "UPDATE machines SET host_instance = CASE WHEN host_instance = $2 "
+                "THEN NULL ELSE host_instance END WHERE id = $1 RETURNING now()",
+                machine.machine_id,
+                body.instance,
+            )
+            return HeartbeatResponse(server_time=from_plain(beat, datetime))
         beat = await conn.fetchval(
             "UPDATE machines SET host_instance = $2, last_heartbeat = now(), "
             "host_version = $3, facts = COALESCE($4, facts) "
-            "WHERE id = $1 AND (host_instance IS NULL OR host_instance = $2 "
+            "WHERE id = $1 AND ($6::boolean OR host_instance IS NULL "
+            "OR host_instance = $2 "
             "OR last_heartbeat IS NULL "
             "OR last_heartbeat < now() - make_interval(secs => $5)) "
             "RETURNING last_heartbeat",
@@ -325,6 +338,7 @@ async def heartbeat_machine_route(
             body.host_version,
             body.facts,
             OFFLINE_AFTER_SEC,
+            body.claim == "take",
         )
     if beat is None:
         raise AnotherHostConnectedError("another host is connected")

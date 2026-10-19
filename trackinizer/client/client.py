@@ -85,6 +85,7 @@ if TYPE_CHECKING:
     from trackinizer.wire.filters import Filter
     from trackinizer.wire.wire_code import CodeSnapshot, CodeSnapshotHead
     from trackinizer.wire.wire_machine_host import (
+        Claim,
         EnrollResponse,
         HeartbeatResponse,
         JoinResponse,
@@ -2154,7 +2155,7 @@ class Client:
         Args:
           name: Machine name the token was issued for.
           token: The enrollment token; never shown in an error.
-          instance: The host's own id, kept across its restarts.
+          instance: The host's id, new each time ``connect`` starts.
           host_version: The host software's version.
           facts: What the host reports about itself.
 
@@ -2187,14 +2188,17 @@ class Client:
         instance: uuid.UUID,
         host_version: str,
         facts: Facts | None = None,
+        claim: Claim = "keep",
     ) -> HeartbeatResponse:
         """Report that the host is alive, authenticated by its machine credential.
 
         Args:
           machine_id: The machine's id, from joining.
-          instance: The host's id; a second id is refused until the first is silent.
+          instance: The host's id; ``keep`` refuses a second id until the first is
+            silent.
           host_version: The host software's version.
           facts: What changed about the host, or ``None`` to keep the stored facts.
+          claim: Keep the machine, take it from another instance, or release it.
 
         Returns:
           beat: The server's clock at the heartbeat.
@@ -2207,11 +2211,12 @@ class Client:
             instance=instance,
             host_version=host_version,
             facts=facts,
+            claim=claim,
         )
         response = self._request(
             "POST",
             where,
-            body=body.model_dump(mode="json", exclude_none=True),
+            body=body.model_dump(mode="json", exclude_defaults=True),
         )
         return _validate_model(wire_machine_host.HeartbeatResponse, response, where)
 

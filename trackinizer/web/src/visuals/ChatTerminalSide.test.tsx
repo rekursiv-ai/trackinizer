@@ -1,12 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { confirmTerminalMachine, listTerminalMachines, type LiveTerminal, type TerminalMachine } from "../api/terminals";
+import { closeTerminal, confirmTerminalMachine, listTerminalMachines, type LiveTerminal, type TerminalMachine } from "../api/terminals";
 import type { WorkspaceState } from "../api/workspaces";
 import { listWorkstreams } from "../api/workstreams";
-import { ChatTerminalSide } from "./ChatTerminalSide";
+import { ChatTerminalSide, type TerminalHead } from "./ChatTerminalSide";
 
-vi.mock("../api/terminals", () => ({ listTerminalMachines: vi.fn(), confirmTerminalMachine: vi.fn() }));
+vi.mock("../api/terminals", () => ({ listTerminalMachines: vi.fn(), confirmTerminalMachine: vi.fn(), closeTerminal: vi.fn(async () => undefined) }));
 vi.mock("../api/workstreams", () => ({ listWorkstreams: vi.fn() }));
 const view = vi.fn();
 vi.mock("./Terminal", () => ({ TerminalView: (props: object) => { view(props); return <div>terminal view</div>; } }));
@@ -14,11 +14,13 @@ vi.mock("./Terminal", () => ({ TerminalView: (props: object) => { view(props); r
 const workspace = { id: "w1", workstream_id: "g1" } as WorkspaceState;
 const machine = (name: string, extra: Partial<TerminalMachine> = {}): TerminalMachine => ({ name, status: "online", terminal_ready: true, confirmed: true, ...extra });
 
+// What the flipped header was last given.
+let head: TerminalHead;
 function mount(machines: TerminalMachine[], terminals: LiveTerminal[] = []) {
   vi.mocked(listTerminalMachines).mockResolvedValue({ machines, terminals });
   vi.mocked(listWorkstreams).mockResolvedValue([{ id: "g1", title: "ARC3", scratch: false } as never]);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return { client, ...render(<QueryClientProvider client={client}><ChatTerminalSide workspace={workspace} shown header={<header>chat header</header>} /></QueryClientProvider>) };
+  return { client, ...render(<QueryClientProvider client={client}><ChatTerminalSide workspace={workspace} shown header={(terminal) => { head = terminal; return <header>chat header</header>; }} /></QueryClientProvider>) };
 }
 
 beforeEach(() => view.mockClear());
@@ -34,13 +36,38 @@ test("one machine: the bar names it and the workstream, with no picker", async (
   expect(screen.queryByRole("combobox", { name: "Machine" })).toBeNull();
 });
 
-test("two machines: a picker, first ready one chosen, and the choice reaches Start", async () => {
+test("two machines: the first ready one is in view, and the header starts a new terminal on the other", async () => {
   mount([machine("gx10"), machine("laptop")]);
   await screen.findByText("terminal view");
-  const picker = screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement;
-  expect(picker.value).toBe("gx10");
-  fireEvent.change(picker, { target: { value: "laptop" } });
-  expect(view).toHaveBeenLastCalledWith(expect.objectContaining({ machine: "laptop", workspace: "w1" }));
+  expect(screen.queryByRole("combobox", { name: "Machine" })).toBeNull();
+  expect(head.label).toBe("Terminal");
+  expect(head.machines).toEqual(["gx10", "laptop"]);
+  act(() => head.create("laptop"));
+  expect(view).toHaveBeenLastCalledWith(expect.objectContaining({ machine: "laptop", workspace: "w1", resume: null, autoStart: expect.stringContaining("w1:") }));
+});
+
+test("the header lists this side's terminals by machine and number, and switching re-attaches the other", async () => {
+  const mine = [{ terminal_id: "a", machine: "gx10", surface: "chat" }, { terminal_id: "b", machine: "laptop", surface: "chat" }, { terminal_id: "c", machine: "gx10", surface: "chat" }];
+  mount([machine("gx10"), machine("laptop")], [...mine, { terminal_id: "t", machine: "gx10", surface: "tile" }]);
+  await screen.findByText("terminal view");
+  expect(head.terminals.map((each) => each.label)).toEqual(["gx10 1", "laptop 1", "gx10 2"]);
+  expect(head.label).toBe("gx10 2");
+  expect(head.selected).toBe("c");
+  act(() => head.select("b"));
+  expect(head.label).toBe("laptop 1");
+  expect(view).toHaveBeenLastCalledWith(expect.objectContaining({ machine: "laptop", resume: mine[1] }));
+});
+
+test("Close terminal stops the shell in view and leaves Start on offer; none in view, none to close", async () => {
+  mount([machine("gx10")], [{ terminal_id: "a", machine: "gx10", surface: "chat" }]);
+  await screen.findByText("terminal view");
+  act(() => head.close!());
+  await waitFor(() => expect(closeTerminal).toHaveBeenCalledWith("a"));
+  await waitFor(() => expect(view).toHaveBeenLastCalledWith(expect.objectContaining({ resume: null, machine: "gx10" })));
+  cleanup();
+  mount([machine("gx10")]);
+  await screen.findByText("terminal view");
+  expect(head.close).toBeNull();
 });
 
 test("a machine that is not ready is not offered", async () => {
@@ -106,7 +133,7 @@ test("a machines refetch that fails does not unmount a live terminal view", asyn
 test("hidden, the side asks the server for nothing", async () => {
   vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [], terminals: [] });
   vi.mocked(listWorkstreams).mockResolvedValue([]);
-  render(<QueryClientProvider client={new QueryClient()}><ChatTerminalSide workspace={workspace} shown={false} header={null} /></QueryClientProvider>);
+  render(<QueryClientProvider client={new QueryClient()}><ChatTerminalSide workspace={workspace} shown={false} header={() => null} /></QueryClientProvider>);
   await Promise.resolve();
   expect(listTerminalMachines).not.toHaveBeenCalled();
 });
@@ -122,7 +149,7 @@ test("a machine enrolled with a key is never offered until Allow: one click conf
   fireEvent.click(screen.getByRole("button", { name: "Allow" }));
   await waitFor(() => expect(confirmTerminalMachine).toHaveBeenCalledWith("fresh"));
   await waitFor(() => expect(screen.queryByRole("group", { name: "Allow fresh" })).toBeNull());
-  expect(screen.getByRole("combobox", { name: "Machine" })).toBeTruthy();
+  expect(head.machines).toEqual(["fresh", "gx10"]);
   shown.unmount();
 });
 
@@ -133,12 +160,19 @@ test("only unconfirmed machines: the bar points at Allow, and nothing is offered
   expect(screen.getByRole("note").textContent).toContain("Allow a machine above");
 });
 
-test("the machines keep the server's newest-first order in the picker, and the first ready one is the default", async () => {
+test("the machines keep the server's newest-first order in the header's menu, and the first ready one is the default", async () => {
   mount([machine("newest"), machine("middle"), machine("oldest")]);
   await screen.findByText("terminal view");
-  const picker = screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement;
-  expect(Array.from(picker.options, (option) => option.value)).toEqual(["newest", "middle", "oldest"]);
-  expect(picker.value).toBe("newest");
+  expect(head.machines).toEqual(["newest", "middle", "oldest"]);
+  expect(view).toHaveBeenLastCalledWith(expect.objectContaining({ machine: "newest" }));
+});
+
+test("dismissing the bar leaves the machine choice in the header", async () => {
+  mount([machine("gx10"), machine("laptop")]);
+  await screen.findByText("terminal view");
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(head.machines).toEqual(["gx10", "laptop"]);
+  expect(screen.queryByRole("note")).toBeNull();
 });
 
 test("a failed Allow says so and leaves the machine unoffered", async () => {

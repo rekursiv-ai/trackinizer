@@ -618,6 +618,12 @@ async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_mac
             "UPDATE machines SET last_heartbeat = now(), owner = NULL",
         )
     assert (await world.open(cookie)).status_code == 404
+    # A host that released the machine on Ctrl-C leaves it offline at once.
+    async with world.store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE machines SET owner = 'ada@x.y', host_instance = NULL",
+        )
+    assert (await world.open(cookie)).status_code == 404
 
 
 async def _key_enrolled(world: _World, key: str, name: str) -> uuid.UUID:

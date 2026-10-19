@@ -278,20 +278,20 @@ export function TerminalView({ machine, workspace, surface = null, resume = null
 }
 
 /** One tab of the tile: a terminal that was live when the tile mounted, or one opened since. */
-type Tab = { readonly key: string; readonly resume: LiveTerminal | null; readonly auto: boolean; readonly id: string | null };
+type Tab = { readonly key: string; readonly resume: LiveTerminal | null; readonly auto: boolean; readonly id: string | null; readonly machine: string | null };
 
 /**
- * The `trax.terminal` tile: a machine picker and tabs, one shell each, placed by a person or an agent. Every
+ * The `trax.terminal` tile: tabs, one shell each on its own machine, placed by a person or an agent. Every
  * terminal it opens carries the tile's id as its surface, so a reload re-attaches the tile's own tabs.
  */
 export function TerminalTile({ instance, workspace }: RendererProps) {
   const viewer = useContext(ProfileContext)?.email ?? null;
   const params = instance.params ?? {};
   const given = typeof params.machine === "string" && params.machine ? params.machine : null;
-  const [picked, setPicked] = useState<string | null>(null);
+  const [choosing, setChoosing] = useState(false);
   const machines = useQuery({ queryKey: ["terminal-machines", workspace?.id ?? null], queryFn: ({ signal }) => listTerminalMachines(workspace?.id, { signal }), staleTime: 5_000 });
   const ready = (machines.data?.machines ?? []).filter((each) => each.terminal_ready && each.confirmed);
-  const machine = given ?? picked ?? ready[0]?.name ?? null;
+  const first = given ?? ready[0]?.name ?? null;
   // An agent's `start`: only for the machine it names, one of the user's that is ready, and never once a terminal is live.
   // It needs the `machine` param to name one: never a default, so an agent cannot pick which of the user's machines opens.
   const resumed = (machines.data?.terminals ?? []).filter((each) => each.surface === instance.id);
@@ -306,9 +306,13 @@ export function TerminalTile({ instance, workspace }: RendererProps) {
   };
   const count = useRef(0);
   const queryClient = useQueryClient();
-  const fresh = (auto: boolean): Tab => ({ key: `new-${count.current++}`, resume: null, auto, id: null });
-  const add = () => {
-    const tab = fresh(true);
+  const fresh = (auto: boolean, machine: string | null): Tab => ({ key: `new-${count.current++}`, resume: null, auto, id: null, machine });
+  // A tab's own machine: an agent's named one wins, else the one it was opened on.
+  const machineOf = (tab: Tab) => given ?? tab.machine ?? first;
+  // A new tab opens on `machine`, else the active tab's, else the first ready one.
+  const add = (machine?: string) => {
+    const tab = fresh(true, given ?? machine ?? (tabs?.find((each) => each.key === active) ?? null)?.machine ?? first);
+    setChoosing(false);
     setTabs((held) => [...(held ?? []), tab]);
     bring(tab.key);
   };
@@ -316,11 +320,11 @@ export function TerminalTile({ instance, workspace }: RendererProps) {
   // The tabs are set once, when the listing first arrives: each live terminal of this tile, else one to Start.
   useEffect(() => {
     if (tabs !== null || machines.isPending) return;
-    const first: Tab[] = resumed.map((each) => ({ key: each.terminal_id, resume: { terminal_id: each.terminal_id }, auto: false, id: each.terminal_id }));
-    if (first.length === 0) first.push(fresh(requested));
-    if (requested && first.length === 1 && first[0]!.auto) takeNewTerminalRequest();
-    setTabs(first);
-    setActive(first[0]!.key);
+    const opening: Tab[] = resumed.map((each) => ({ key: each.terminal_id, resume: { terminal_id: each.terminal_id }, auto: false, id: each.terminal_id, machine: each.machine }));
+    if (opening.length === 0) opening.push(fresh(requested, first));
+    if (requested && opening.length === 1 && opening[0]!.auto) takeNewTerminalRequest();
+    setTabs(opening);
+    setActive(opening[0]!.key);
   }, [machines.isPending, tabs]);
   useEffect(() => {
     if (tabs !== null && requested && takeNewTerminalRequest()) add();
@@ -328,7 +332,7 @@ export function TerminalTile({ instance, workspace }: RendererProps) {
   const close = (tab: Tab) => {
     if (tab.id) void closeTerminal(tab.id).catch(() => undefined);
     const rest = (tabs ?? []).filter((each) => each.key !== tab.key);
-    const next = rest.length > 0 ? rest : [fresh(false)];
+    const next = rest.length > 0 ? rest : [fresh(false, machineOf(tab))];
     setTabs(next);
     if (active === tab.key) bring(next.at(-1)!.key);
   };
@@ -341,19 +345,23 @@ export function TerminalTile({ instance, workspace }: RendererProps) {
   };
   if (tabs === null) return <div className="visual-loading" aria-busy="true">Loading machines…</div>;
   return <div className="terminal-tile">
-    {!given && ready.length > 1 && <select aria-label="Machine" value={machine ?? ""} onChange={(event) => setPicked(event.target.value)}>
-      {ready.map((each) => <option key={each.name} value={each.name}>{each.name}</option>)}
-    </select>}
     <div className="terminal-panes">
       <div className="terminal-tabs" role="tablist" aria-label="Terminals">
-        {tabs.map((tab, index) => <span key={tab.key} className="terminal-tab" data-active={tab.key === active}>
-          <button type="button" role="tab" className="btn ghost" aria-selected={tab.key === active} onClick={() => bring(tab.key)}>Terminal {index + 1}</button>
-          <button type="button" className="btn ghost" aria-label={`Close terminal ${index + 1}`} onClick={() => close(tab)}>×</button>
-        </span>)}
-        <button type="button" className="btn ghost" aria-label="New terminal" title="New terminal" onClick={add}>+</button>
+        {tabs.map((tab, index) => {
+          const name = machineOf(tab) ?? "Terminal";
+          const label = `${name} ${tabs.slice(0, index + 1).filter((each) => (machineOf(each) ?? "Terminal") === name).length}`;
+          return <span key={tab.key} className="terminal-tab" data-active={tab.key === active}>
+            <button type="button" role="tab" className="btn ghost" aria-selected={tab.key === active} onClick={() => bring(tab.key)}>{label}</button>
+            <button type="button" className="btn ghost" aria-label={`Close ${label}`} onClick={() => close(tab)}>×</button>
+          </span>;
+        })}
+        {/* With more than one machine ready, + asks which; with one there is nothing to ask. */}
+        <button type="button" className="btn ghost" aria-label="New terminal" title="New terminal" aria-expanded={!given && ready.length > 1 ? choosing : undefined}
+          onClick={() => !given && ready.length > 1 ? setChoosing(!choosing) : add()}>+</button>
+        {choosing && ready.map((each) => <button key={each.name} type="button" className="btn ghost" onClick={() => add(each.name)}>{each.name}</button>)}
       </div>
       {tabs.map((tab) => <div key={tab.key} className="terminal-pane" hidden={tab.key !== active}>
-        <TerminalView machine={machine} workspace={workspace?.id ?? null} surface={instance.id} resume={tab.resume} shown={tab.key === active}
+        <TerminalView machine={machineOf(tab)} workspace={workspace?.id ?? null} surface={instance.id} resume={tab.resume} shown={tab.key === active}
           onChord={chord} keyboard={summon[tab.key] ?? 0}
           autoStart={tab.auto ? `${instance.id}:${tab.key}` : asked && tab === tabs[0] ? instance.id : null}
           requestedBy={tab.auto ? undefined : requester(instance.placed_by, viewer, workspace)}

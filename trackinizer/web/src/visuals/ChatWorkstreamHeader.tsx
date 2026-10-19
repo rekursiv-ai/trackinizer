@@ -12,6 +12,7 @@ import { setChatHidden, setChatSide, useChatColumn } from "./chatColumnState";
 import { Icon } from "../ui/icons";
 import { useBarDismissed } from "./terminalFlip";
 import { DeleteChat, PrivacySwitch, ShareChat } from "./ChatSharing";
+import type { TerminalHead } from "./ChatTerminalSide";
 
 type Props = {
   readonly workspace: WorkspaceState | null;
@@ -23,12 +24,17 @@ type Props = {
   readonly onFlip?: () => void;
   /** The column shows the terminal: the header names it and its flip button returns to chat. */
   readonly flipped?: boolean;
+  /** What the terminal side shows, for the flipped header's terminals menu. */
+  readonly terminal?: TerminalHead;
 };
 
-type HeaderMenu = "name" | "workstream" | "more" | "info";
+/** Why a chat-only item is grayed while the terminal shows. */
+const ON_CHAT = "Applies to the chat; flip back to use it";
+
+type HeaderMenu = "name" | "workstream" | "more" | "info" | "terminals";
 
 /** Chat naming, switching, workstream placement, and its compact header controls. */
-export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDeleted, onFlip, flipped = false }: Props) {
+export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDeleted, onFlip, flipped = false, terminal }: Props) {
   const queryClient = useQueryClient();
   const { side, hidden } = useChatColumn();
   const [, , reopenTerminalHelp] = useBarDismissed();
@@ -42,6 +48,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
   const workstreamOpen = menu === "workstream";
   const moreOpen = menu === "more";
   const infoOpen = menu === "info";
+  const terminalsOpen = menu === "terminals";
   const root = useRef<HTMLDivElement>(null);
   const renameInput = useRef<HTMLInputElement>(null);
   const workstreamInput = useRef<HTMLInputElement>(null);
@@ -74,7 +81,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
     if (workstreamOpen) workstreamInput.current?.focus();
   }, [workstreamOpen]);
   useEffect(() => {
-    if (!nameOpen && !workstreamOpen && !moreOpen && !infoOpen) return;
+    if (!nameOpen && !workstreamOpen && !moreOpen && !infoOpen && !terminalsOpen) return;
     const outside = (event: PointerEvent) => {
       if (event.target instanceof Node && root.current?.contains(event.target)) return;
       if (nameOpen) void saveName();
@@ -184,7 +191,9 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
         {head?.audience === "private" && <span>Private</span>}
       </span>
       <div className="chat-name-pick">
-        {flipped ? <strong>Terminal</strong> : nameOpen ? <input ref={renameInput} className="chat-name-input" aria-label="Chat name" value={nameDraft}
+        {flipped ? <button type="button" className="chat-name-button" title="Switch terminals or start a new one" aria-label={terminal?.label ?? "Terminal"}
+          aria-expanded={terminalsOpen} onClick={() => setMenu(terminalsOpen ? null : "terminals")}>{terminal?.label ?? "Terminal"}<span className="chat-name-caret">▾</span></button>
+          : nameOpen ? <input ref={renameInput} className="chat-name-input" aria-label="Chat name" value={nameDraft}
           onChange={(event) => { setNameDraft(event.target.value); setNameProblem(null); }}
           onKeyDown={(event) => {
             if (event.key === "Enter") { event.preventDefault(); void saveName(); }
@@ -193,6 +202,18 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
           }} />
           : <button type="button" className="chat-name-button" title="Rename, switch chats or search" aria-label={shownName}
             onClick={() => { setNameDraft(workspace?.name ?? ""); setNameProblem(null); setMenu("name"); }}>{shownName}<span className="chat-name-caret hover-only">▾</span></button>}
+        {terminalsOpen && flipped && terminal && <div className="station-menu chat-name-menu" role="dialog" aria-label="Terminals">
+          <p className="chat-menu-label">Terminals in this chat</p>
+          <ul className="station-list" aria-label="Terminals in this chat">
+            {terminal.terminals.map((each) => <li key={each.id} className="chat-name-row">
+              <button type="button" className="station-option" aria-current={each.id === terminal.selected} onClick={() => { terminal.select(each.id); setMenu(null); }}>{each.label}</button>
+            </li>)}
+            {terminal.terminals.length === 0 && <li className="muted">No terminals yet.</li>}
+          </ul>
+          {terminal.machines.map((name) => <button key={name} type="button" className="station-option"
+            onClick={() => { terminal.create(name); setMenu(null); }}>{terminal.machines.length > 1 ? `+ New terminal on ${name}` : "+ New terminal"}</button>)}
+          {terminal.machines.length === 0 && <p className="muted">No machine is ready: run <code>trax machine connect</code> on one.</p>}
+        </div>}
         {nameOpen && !flipped && <div className="station-menu chat-name-menu" role="dialog" aria-label="Chats">
           {nameProblem && <p className="station-problem" role="status">{nameProblem}</p>}
           <p className="chat-menu-label">Chats in {currentGroup?.title ?? "Scratch"}</p>
@@ -248,15 +269,16 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
         title="Dock on the other side" onClick={() => setChatSide(side === "left" ? "right" : "left")}>{side === "left" ? "▷" : "◁"}</button>
       <button className="btn ghost hover-only" type="button" aria-label="More chat actions" aria-expanded={moreOpen} onClick={() => setMenu(moreOpen ? null : "more")}>⋯</button>
       {moreOpen && <div className="chat-more-menu" aria-label="Chat actions">
-        <button className="chat-menu-item" type="button" title="New chat, same canvas" onClick={() => { setMenu(null); void onClear(); }}>Clear chat</button>
+        <button className="chat-menu-item" type="button" title={flipped ? ON_CHAT : "New chat, same canvas"} disabled={flipped} onClick={() => { setMenu(null); void onClear(); }}>Clear chat</button>
         {hidden
           ? <button className="chat-menu-item" type="button" aria-label="Pin Chat beside the page" title="Pin Chat beside the page" onClick={() => { setMenu(null); setChatHidden(false); }}>Pin panel</button>
           : <button className="chat-menu-item" type="button" aria-label="Hide Chat" title="Hide the chat panel" onClick={() => { setMenu(null); setChatHidden(true); }}>Hide panel</button>}
-        {head?.may_delete && <DeleteChat head={head} onDeleted={onDelete} />}
+        {flipped && terminal?.close && <button className="chat-menu-item" type="button" title="Stop the shell in view" onClick={() => { setMenu(null); terminal.close?.(); }}>Close terminal</button>}
+        {head?.may_delete && <DeleteChat head={head} onDeleted={onDelete} disabled={flipped ? ON_CHAT : ""} />}
         {flipped && <button className="chat-menu-item" type="button" title="Show how to connect, use ssh and detach agents" onClick={() => { setMenu(null); reopenTerminalHelp(); }}>Terminal help</button>}
         <button className="chat-menu-item" type="button" onClick={() => setMenu("info")}>Info</button>
         {head?.may_hide && <PrivacySwitch head={head} />}
-        {head?.may_share && <ShareChat head={head} />}
+        {head?.may_share && <ShareChat head={head} disabled={flipped ? ON_CHAT : ""} />}
       </div>}
       {infoOpen && <div className="chat-info-menu" role="dialog" aria-label="Chat info">
         <button type="button" className="btn ghost" onClick={() => setMenu(null)}>Close</button>

@@ -671,6 +671,45 @@ async def test_second_instance_is_409_until_first_is_stale(
     assert from_plain(rival.json(), dict[str, str])["code"] == "another_host_connected"
 
 
+async def test_a_take_displaces_a_live_instance_at_once_and_it_cannot_keep(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, _ = pglite_route_client
+    joined = await _joined(client, "dev-1", instance=_INSTANCE)
+
+    take = await _heartbeat(client, joined, instance=_OTHER_INSTANCE, claim="take")
+    displaced = await _heartbeat(client, joined, instance=_INSTANCE)
+    kept = await _heartbeat(client, joined, instance=_OTHER_INSTANCE)
+
+    assert [r.status_code for r in (take, displaced, kept)] == [200, 409, 200]
+    assert (await _detail(client, "dev-1")).status == "online"
+
+
+async def test_a_release_by_the_holder_reads_offline_at_once_and_frees_the_machine(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, _ = pglite_route_client
+    joined = await _joined(client, "dev-1", instance=_INSTANCE)
+    statuses: list[str] = []
+
+    stranger = await _heartbeat(
+        client,
+        joined,
+        instance=_OTHER_INSTANCE,
+        claim="release",
+    )
+    statuses.append((await _detail(client, "dev-1")).status)
+    release = await _heartbeat(client, joined, instance=_INSTANCE, claim="release")
+    statuses.append((await _detail(client, "dev-1")).status)
+    listed = {m.name: m.status for m in (await _listed(client)).machines}
+    successor = await _heartbeat(client, joined, instance=_OTHER_INSTANCE)
+    statuses.append((await _detail(client, "dev-1")).status)
+
+    assert [r.status_code for r in (stranger, release, successor)] == [200, 200, 200]
+    assert statuses == ["online", "offline", "online"]
+    assert listed == {"dev-1": "offline"}
+
+
 async def test_a_refused_heartbeat_changes_nothing(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
@@ -790,6 +829,7 @@ async def _heartbeat(
     host_version: str = "",
     facts: dict[str, object] | None = None,
     bearer: str | None = None,
+    claim: str | None = None,
 ) -> httpx2.Response:
     body: dict[str, object] = {
         "instance": str(instance),
@@ -797,6 +837,8 @@ async def _heartbeat(
     }
     if facts is not None:
         body["facts"] = facts
+    if claim is not None:
+        body["claim"] = claim
     return await client.post(
         HEARTBEAT_PATH.format(machine_id=joined.machine_id),
         json=body,

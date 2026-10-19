@@ -28,6 +28,7 @@ from trackinizer.wire.wire_machine_host import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from trackinizer.wire.wire_machine_host import Claim
     from trackinizer.wire.wire_machines import Facts
 
 
@@ -37,6 +38,8 @@ _TOKEN: Final = "enr_" + "0" * 32 + "_" + "S" * 43
 _NOW: Final = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
 
 _REVOKED: Final = ClientError("-> 410", status_code=410)
+_TAKEN: Final = ClientError("-> 409", status_code=409, code="another_host_connected")
+_REFUSED: Final = ClientError("POST /x failed: connection refused")
 
 
 class _Host:
@@ -79,8 +82,9 @@ class _Host:
         instance: uuid.UUID,
         host_version: str,
         facts: Facts | None = None,
+        claim: Claim = "keep",
     ) -> HeartbeatResponse:
-        self.calls.append(("beat", machine_id, instance, host_version, facts))
+        self.calls.append(("beat", machine_id, instance, host_version, facts, claim))
         outcome = self.beats.pop(0)
         if outcome is not None:
             raise outcome
@@ -174,31 +178,20 @@ def test_lost_contact_is_retried_sooner_at_first_and_never_ends_the_host(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _save()
-    refused = ClientError("POST /x failed: connection refused")
     down = ClientError("-> 503", status_code=503)
-    rival = ClientError("-> 409", status_code=409, code="another_host_connected")
     host = _Host(
-        beats=[
-            refused,
-            down,
-            rival,
-            refused,
-            refused,
-            refused,
-            None,
-            refused,
-            _REVOKED,
-        ],
+        beats=[_REFUSED, down, _REFUSED, _REFUSED, _REFUSED, None, _REFUSED, _REVOKED],
     )
     delays: list[float] = []
 
     connect("box-1", client_for=host, read_token=_no_token, sleep=delays.append)
 
-    assert delays == [2.0, 4.0, 8.0, 15.0, 15.0, 15.0, HEARTBEAT_SEC, 2.0]
-    # Facts ride the first heartbeat that lands, not the first one tried.
-    assert [call[4] is not None for call in host.calls[:7]] == [True] * 7
-    assert host.calls[7][4] is None
-    assert capsys.readouterr().err.count("retrying") == 7
+    assert delays == [2.0, 4.0, 8.0, 15.0, 15.0, HEARTBEAT_SEC, 2.0]
+    # Facts and the take ride the first heartbeat that lands, not the first one tried.
+    assert [call[4] is not None for call in host.calls[:6]] == [True] * 6
+    assert [call[5] for call in host.calls] == [*["take"] * 6, "keep", "keep"]
+    assert host.calls[6][4] is None
+    assert capsys.readouterr().err.count("retrying") == 6
 
 
 def test_hours_offline_never_overflow_the_backoff() -> None:
@@ -345,6 +338,56 @@ def test_a_host_that_did_not_opt_in_serves_no_terminals_and_says_so() -> None:
     assert "terminal" not in host_facts()
     assert [call[0] for call in host.calls] == ["beat"]
     assert host.calls[0][4] == host_facts()
+
+
+def test_a_host_a_newer_connect_took_over_stops_its_terminals_and_returns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _save()
+    host = _Host(beats=[None, _TAKEN])
+    slept: list[float] = []
+
+    connect(
+        "box-1",
+        client_for=host,
+        read_token=_no_token,
+        sleep=slept.append,
+        terminals_for=lambda _joined: _Terminals(host.calls),
+    )
+
+    kinds = [call[0] for call in host.calls]
+    assert kinds == ["terminals-start", "beat", "beat", "terminals-stop"]
+    assert slept == [HEARTBEAT_SEC]
+    assert capsys.readouterr().out == (
+        "taken over: machine box-1 is served by a newer connect\n"
+    )
+
+
+@pytest.mark.parametrize("answer", [None, _REFUSED])
+def test_ctrl_c_releases_the_machine_once_then_stops_terminals_and_goes_on(
+    answer: ClientError | None,
+) -> None:
+    _save()
+    host = _Host(beats=[None, answer])
+
+    def interrupt(seconds: float) -> None:
+        del seconds
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        connect(
+            "box-1",
+            client_for=host,
+            read_token=_no_token,
+            sleep=interrupt,
+            terminals_for=lambda _joined: _Terminals(host.calls),
+        )
+
+    _, beat, release, stop = host.calls
+    assert (beat[5], release[5]) == ("take", "release")
+    assert release[2] == beat[2]
+    assert stop == ("terminals-stop",)
+    assert host.closed == 1
 
 
 def _no_token() -> str:

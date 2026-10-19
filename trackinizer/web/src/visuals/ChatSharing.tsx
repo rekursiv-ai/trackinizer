@@ -26,7 +26,7 @@ function useCloseOutside(open: boolean, root: RefObject<HTMLElement | null>, set
  * Chat's Share control: a panel with the people the chat is shared with, each
  * with Remove, and a field to add an address. Only the head's `may_share` shows it.
  */
-export function ShareChat({ head }: { readonly head: ChatHead }) {
+export function ShareChat({ head, disabled = "" }: { readonly head: ChatHead; readonly disabled?: string }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [open, setOpen] = useState(false);
@@ -53,7 +53,7 @@ export function ShareChat({ head }: { readonly head: ChatHead }) {
   return (
     <div className="station chat-head-pop" ref={root}>
       <button className="chat-menu-item" type="button" aria-haspopup="dialog" aria-expanded={open}
-        title="Share this chat" onClick={() => setOpen(!open)}>Share</button>
+        title={disabled || "Share this chat"} disabled={disabled !== ""} onClick={() => setOpen(!open)}>Share</button>
       {open && <div className="station-menu" role="dialog" aria-label="Share chat"
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setOpen(false); } }}>
         <ul className="station-list" aria-label="Shared with">
@@ -117,7 +117,7 @@ export function PrivacySwitch({ head }: { readonly head: ChatHead }) {
  * Chat's Delete control, behind a confirm. Only the head's `may_delete` shows it.
  * `onDeleted` runs once the server has removed the chat.
  */
-export function DeleteChat({ head, onDeleted }: { readonly head: ChatHead; readonly onDeleted: () => void }) {
+export function DeleteChat({ head, onDeleted, disabled = "" }: { readonly head: ChatHead; readonly onDeleted: () => void; readonly disabled?: string }) {
   const toast = useToast();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -140,7 +140,7 @@ export function DeleteChat({ head, onDeleted }: { readonly head: ChatHead; reado
   return (
     <div className="station chat-head-pop" ref={root}>
       <button className="chat-menu-item" type="button" aria-haspopup="dialog" aria-expanded={confirming}
-        title="Delete chat forever" onClick={() => setConfirming(!confirming)}>Delete chat forever</button>
+        title={disabled || "Delete chat forever"} disabled={disabled !== ""} onClick={() => setConfirming(!confirming)}>Delete chat forever</button>
       {confirming && <div className="station-menu" role="alertdialog" aria-label="Delete chat forever"
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setConfirming(false); } }}>
         <p className="chat-note">Delete this chat? Its forks keep their copies.</p>
