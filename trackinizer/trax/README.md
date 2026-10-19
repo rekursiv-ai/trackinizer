@@ -25,8 +25,8 @@ trax profile                                           # active profile + URL
 ## Profiles
 
 `trax` keeps named server profiles under
-`~/.config/trax/`. Use `trax profile` to list, show, set,
-or switch.
+`config_dir()/rekursiv-ai/trax/profiles/`. Use `trax profile` to list, show,
+set, or switch.
 
 ```bash
 trax profile                                           # list all (active *)
@@ -105,7 +105,7 @@ introduces; the server stays the fallback). Install aiortc into the environment
 `trax` runs from, then restart `trax machine connect`:
 
 ```bash
-uv tool install --with aiortc trackinizer
+uv tool install --with aiortc git+https://github.com/rekursiv-ai/trackinizer
 ```
 
 `trax machine connect` prints `direct terminal link: on` or `off` at start. An

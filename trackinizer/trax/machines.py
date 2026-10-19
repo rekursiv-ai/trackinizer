@@ -321,6 +321,7 @@ class Machines(Command):
         direct = _direct_link() if serve else None
         machine_host.connect(
             name,
+            server=url,
             client_for=lambda key: Client(url, api_key=key),
             read_token=(
                 (lambda: client.enroll_machine(name).token)
@@ -377,7 +378,8 @@ def _direct_link() -> PeerFactory | None:
     if factory is None:
         echo(
             "direct terminal link: off (relay only). Typing feels slow? "
-            "Run: uv tool install --with aiortc trackinizer, then restart "
+            "Run: uv tool install --with aiortc "
+            "git+https://github.com/rekursiv-ai/trackinizer, then restart "
             "`trax machine connect`.",
         )
     else:

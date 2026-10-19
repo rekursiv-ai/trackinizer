@@ -6,7 +6,7 @@ import { closeTerminal, confirmTerminalMachine, listTerminalMachines } from "../
 import type { WorkspaceState } from "../api/workspaces";
 import { listWorkstreams } from "../api/workstreams";
 import { lazyView } from "../router/lazy";
-import { Command, setupCommand } from "../settings/ChatPartner";
+import { Command, setupCommand, TRAX_SOURCE } from "../settings/ChatPartner";
 import { useBarDismissed } from "./terminalFlip";
 import "./Terminal.css";
 
@@ -43,13 +43,13 @@ function TerminalHelp({ open }: { readonly open: boolean }) {
     </section>
     <section aria-label="Reconnecting">
       <h4>Reconnecting</h4>
-      <p className="muted">A reload re-attaches this view's shells. A shell left alone for 60 minutes is closed, so long work belongs in tmux or a detached run.</p>
+      <p className="muted">A reload re-attaches this view's shells. A shell with no browser attached for a minute ends, and one left alone for 60 minutes is closed, so long work belongs in tmux or a detached run.</p>
     </section>
     <section aria-label="Typing feels slow?">
       <h4>Typing feels slow?</h4>
       <p className="muted">Let the terminal talk to your browser directly: on the machine, add the direct-link library to trax, then restart <code>{CONNECT}</code>.</p>
-      <Command command="uv tool install --with aiortc trackinizer" />
-      <p className="muted">Installed trax from a local checkout? Use that checkout's path in place of <code>trackinizer</code>. A "Direct link" badge on the terminal shows it worked; if the link drops, the terminal carries on through the server.</p>
+      <Command command={`uv tool install --with aiortc ${TRAX_SOURCE}`} />
+      <p className="muted">Installed trax from a local checkout? Use that checkout's path in place of <code>{TRAX_SOURCE}</code>. A "Direct link" badge on the terminal shows it worked; if the link drops, the terminal carries on through the server.</p>
     </section>
   </details>;
 }

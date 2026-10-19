@@ -56,7 +56,7 @@ The canvas is on by default (Settings turns it off). `POST /api/workspaces` with
 user's browser session. It returns the default workspace id and revision.
 Besides the browser, only the server's Chat assistant may change a canvas, and
 only one whose owner has talked to it there. Its key shows a visual through the
-same operation the Configure panel uses:
+same operation the top bar's Workbench menu uses:
 
 ```http
 POST /api/workspaces/<workspace-id>/operations
@@ -122,17 +122,18 @@ same key.
 
 A conversation is an AgentSession (label `science-chat`). Chat reads its
 records and refreshes when the canvas event stream says the session changed;
-a line by another poster shows its sender. The station menu lists the user's stations, each holding one chat; the
-composer says a chat is read by its members alone. A science
+a line by another poster shows its sender. Chat's header lists the chats of the
+station's workstream, each a station holding one chat; the composer says who
+reads the chat, by its audience and the server's org mode. A science
 chat's session in the Console or on its detail page offers Continue in Chat.
 Subgraph, timeline, Artifact and files visuals use the same catalog and
 operation path.
 
 ## Lineage and timeline
 
-`trax.timeline` is one view, off in a new canvas; Configure shows or hides it
-and `trax workspace W show trax.timeline --record R` or the Chat assistant
-opens it. Time runs across; lineage runs down: up to three lead issues pinned
+`trax.timeline` is one view, off in a new canvas; the Workbench menu shows or
+hides it and `trax workspace W show trax.timeline --record R` or the Chat
+assistant opens it. Time runs across; lineage runs down: up to three lead issues pinned
 at the axis's left edge with their own dates, the record, then its directions
 as rows. Each row's results sit on it by date, and their signed evidence is
 marked for or against by the sign of its valence. A card or square moves the
