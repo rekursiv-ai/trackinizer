@@ -2988,14 +2988,22 @@ class TestMachineHostMethods:
                 host_version="0.1",
                 facts={"cpus": 4},
             )
+            client.heartbeat_machine(
+                _MACHINE_ID,
+                instance=_INSTANCE,
+                host_version="",
+                claim="take",
+            )
 
         assert [(r.method, r.url.path) for r in seen] == [
             ("POST", HEARTBEAT_PATH.format(machine_id=_MACHINE_ID)),
-        ] * 2
+        ] * 3
         assert seen[0].headers["Authorization"] == f"Bearer {_CREDENTIAL}"
+        # ``keep`` is the default and stays off the wire; an empty version does not.
         assert [json_loads(r.content) for r in seen] == [
             {"instance": str(_INSTANCE), "host_version": "0.1"},
             {"instance": str(_INSTANCE), "host_version": "0.1", "facts": {"cpus": 4}},
+            {"instance": str(_INSTANCE), "host_version": "", "claim": "take"},
         ]
         assert beat.server_time.year == 2026
 

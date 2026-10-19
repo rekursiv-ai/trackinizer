@@ -1,8 +1,8 @@
 // The back of the Chat column: a terminal on one of the user's machines, with a bar saying how to start a
 // session there, and the help behind it (the menu's "Terminal help" reopens it). Chat's header, passed in, tops this side too: it flips back.
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, Suspense, useState } from "react";
-import { confirmTerminalMachine, listTerminalMachines, type TerminalMachine } from "../api/terminals";
+import { type ReactNode, Suspense, useRef, useState } from "react";
+import { closeTerminal, confirmTerminalMachine, listTerminalMachines } from "../api/terminals";
 import type { WorkspaceState } from "../api/workspaces";
 import { listWorkstreams } from "../api/workstreams";
 import { lazyView } from "../router/lazy";
@@ -57,11 +57,28 @@ function TerminalHelp({ open }: { readonly open: boolean }) {
 /** What this side tags its terminals with, so a reload re-attaches this side to its own. */
 const SURFACE = "chat";
 
+/** What the flipped header shows of this side: the terminal in view, the ones to switch to, and how to start or stop one. */
+export type TerminalHead = {
+  /** "gx10 2": the machine and which of its terminals this is; "Terminal" before one has started. */
+  readonly label: string;
+  readonly terminals: readonly { readonly id: string; readonly label: string }[];
+  readonly selected: string | null;
+  /** The ready machines a terminal can start on. */
+  readonly machines: readonly string[];
+  readonly select: (id: string) => void;
+  readonly create: (machine: string) => void;
+  /** Stops the terminal in view; none while there is not one. */
+  readonly close: (() => void) | null;
+};
+
+/** The terminal in view: a key that stays while it runs, the machine, the live terminal it re-attaches to, and a start request. */
+type View = { readonly key: string; readonly machine: string | null; readonly id: string | null; readonly auto: string | null };
+
 type Props = {
   readonly workspace: WorkspaceState;
   readonly shown: boolean;
-  /** Chat's header, in its flipped form. */
-  readonly header: ReactNode;
+  /** Chat's header, in its flipped form, given what this side shows. */
+  readonly header: (terminal: TerminalHead) => ReactNode;
 };
 
 /** The terminal side of `workspace`'s Chat. */
@@ -70,7 +87,8 @@ export function ChatTerminalSide({ workspace, shown, header }: Props) {
     enabled: shown, staleTime: 5_000 });
   const workstreams = useQuery({ queryKey: ["workstreams"], queryFn: ({ signal }) => listWorkstreams({}, { signal }), enabled: shown, staleTime: 2_000 });
   const [dismissed, dismiss, , helpOpen] = useBarDismissed();
-  const [chosen, setChosen] = useState<string | null>(null);
+  const [chosen, setChosen] = useState<View | null>(null);
+  const count = useRef(0);
   const [copied, setCopied] = useState<"copied" | "refused" | null>(null);
   const queryClient = useQueryClient();
   const [allowing, setAllowing] = useState<string | null>(null);
@@ -79,8 +97,14 @@ export function ChatTerminalSide({ workspace, shown, header }: Props) {
   const ready = (machines.data?.machines ?? []).filter((each) => each.terminal_ready && each.confirmed);
   const unconfirmed = (machines.data?.machines ?? []).filter((each) => !each.confirmed);
   // The newest terminal this side opened; the tile's own are not its to re-attach.
-  const live = machines.data?.terminals?.filter((each) => each.surface === SURFACE).at(-1) ?? null;
-  const machine = ready.find((each) => each.name === chosen) ?? ready.find((each) => each.name === live?.machine) ?? ready[0] ?? null;
+  const mine = machines.data?.terminals?.filter((each) => each.surface === SURFACE) ?? [];
+  const live = mine.at(-1) ?? null;
+  // Until the user picks one, the newest this side opened is in view.
+  const view: View = chosen ?? { key: "newest", machine: live?.machine ?? null, id: live?.terminal_id ?? null, auto: null };
+  const machine = ready.find((each) => each.name === view.machine) ?? ready[0] ?? null;
+  const resume = view.id ? mine.find((each) => each.terminal_id === view.id) ?? { terminal_id: view.id } : null;
+  const labels = mine.map((each, index) => ({ id: each.terminal_id, label: `${each.machine} ${mine.slice(0, index + 1).filter((other) => other.machine === each.machine).length}` }));
+  const label = labels.find((each) => each.id === view.id)?.label ?? "Terminal";
   const group = workstreams.data?.find((each) => each.id === workspace.workstream_id) ?? workstreams.data?.find((each) => each.scratch);
 
   const allow = async (name: string) => {
@@ -95,10 +119,26 @@ export function ChatTerminalSide({ workspace, shown, header }: Props) {
       setAllowing(null);
     }
   };
+  const onOpened = (opened: { readonly terminal_id: string }) => {
+    setChosen({ ...view, machine: machine?.name ?? null, id: opened.terminal_id });
+    void queryClient.invalidateQueries({ queryKey: ["terminal-machines", workspace.id] });
+  };
+  const fresh = (name: string | null): View => ({ key: `new-${count.current++}`, machine: name, id: null, auto: null });
+  const close = async () => {
+    if (view.id) await closeTerminal(view.id).catch(() => undefined);
+    setChosen(fresh(machine?.name ?? null));
+    await queryClient.invalidateQueries({ queryKey: ["terminal-machines", workspace.id] });
+  };
+  const head: TerminalHead = {
+    label, terminals: labels, selected: view.id, machines: ready.map((each) => each.name),
+    select: (id) => setChosen({ key: id, machine: mine.find((each) => each.terminal_id === id)?.machine ?? null, id, auto: null }),
+    create: (name) => { const next = fresh(name); setChosen({ ...next, auto: `${workspace.id}:${next.key}` }); },
+    close: view.id ? () => void close() : null,
+  };
   const copy = () => Promise.resolve().then(() => navigator.clipboard.writeText(CONNECT)).then(() => setCopied("copied"), () => setCopied("refused"));
 
   return <section className="chat-terminal-side" aria-label="Terminal" hidden={!shown}>
-    {header}
+    {header(head)}
     {machines.data && unconfirmed.map((each) => <div key={each.name} className="chat-terminal-bar" role="group" aria-label={`Allow ${each.name}`}>
       <span>New machine <strong>{each.name}</strong> wants terminals.</span>
       <button type="button" className="btn" disabled={allowing !== null} onClick={() => void allow(each.name)}>Allow</button>
@@ -107,13 +147,7 @@ export function ChatTerminalSide({ workspace, shown, header }: Props) {
     {!dismissed && machines.data && <>
     <div className="chat-terminal-bar" role="note">
       {machine ? <>
-        <span>Start a session here with <code>trax run claude</code> on{" "}
-          {ready.length > 1
-            ? <select aria-label="Machine" value={machine.name} onChange={(event) => setChosen(event.target.value)}>
-              {ready.map((each: TerminalMachine) => <option key={each.name} value={each.name}>{each.name}</option>)}
-            </select>
-            : <strong>{machine.name}</strong>}
-          , or <code>ssh &lt;host&gt;</code> first. Sessions land in <strong>{group?.title ?? "Scratch"}</strong>.</span>
+        <span>Start a session here with <code>trax run claude</code> on <strong>{machine.name}</strong>, or <code>ssh &lt;host&gt;</code> first. Sessions land in <strong>{group?.title ?? "Scratch"}</strong>.</span>
       </> : unconfirmed.length > 0 ? <span>Allow a machine above to start a terminal on it.</span> : <>
         <span>Connect this laptop: <code>{CONNECT}</code></span>
         <button type="button" className="btn ghost" onClick={() => void copy()}>{copied === "copied" ? "Copied" : copied === "refused" ? "Copy refused" : "Copy"}</button>
@@ -125,7 +159,8 @@ export function ChatTerminalSide({ workspace, shown, header }: Props) {
     </>}
     {machines.isError && !machines.data && <p role="alert" className="chat-error">Could not list your machines.</p>}
     {machines.data && <Suspense fallback={<div className="visual-loading" aria-busy="true">Loading terminal…</div>}>
-      <TerminalView machine={machine?.name ?? null} workspace={workspace.id} surface={SURFACE} resume={live} shown={shown} />
+      <TerminalView key={view.key} machine={machine?.name ?? null} workspace={workspace.id} surface={SURFACE} resume={resume} shown={shown}
+        autoStart={view.auto} onOpened={onOpened} />
     </Suspense>}
   </section>;
 }

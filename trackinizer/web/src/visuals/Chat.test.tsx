@@ -2027,13 +2027,46 @@ test("flipped, the terminal side keeps the Chat header's buttons and only names 
   fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
   const side = await screen.findByRole("region", { name: "Terminal", hidden: true });
   const head = within(side).getByRole("banner");
-  expect(head.querySelector(".chat-name-pick strong")!.textContent).toBe("Terminal");
+  expect(within(head).getByRole("button", { name: "Terminal" }).textContent).toContain("Terminal");
   expect(within(head).queryByRole("button", { name: workspace.name })).toBeNull();
   expect(within(head).getByRole("button", { name: /^Move Chat to the/ })).toBeTruthy();
   expect(within(head).getByRole("button", { name: "More chat actions" })).toBeTruthy();
   expect(within(head).getByRole("button", { name: /^Workstream:/ })).toBeTruthy();
   expect(within(head).queryByRole("button", { name: "Open terminal" })).toBeNull();
   expect(within(head).getByRole("button", { name: "Back to chat" })).toBeTruthy();
+});
+
+test("flipped, the More menu keeps every item, graying those that act on the chat only", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_share: true, may_delete: true, may_hide: true }));
+  shell();
+  const more = () => within(screen.getByRole("region", { name: "Terminal", hidden: true })).getByRole("button", { name: "More chat actions" });
+  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
+  await screen.findByRole("region", { name: "Terminal", hidden: true });
+  fireEvent.click(more());
+  await screen.findByRole("button", { name: "Delete chat forever" });
+  const state = (root: string) => Object.fromEntries(Array.from(document.querySelectorAll<HTMLButtonElement>(`${root} .chat-more-menu .chat-menu-item`), (each) => [each.textContent, each.disabled]));
+  const flippedState = state(".chat-terminal-side");
+  const grayed = ["Clear chat", "Delete chat forever", "Share"];
+  expect(Object.entries(flippedState).filter(([, off]) => off).map(([name]) => name)).toEqual(grayed);
+  expect(Object.keys(flippedState)).toEqual(["Clear chat", "Hide panel", "Delete chat forever", "Terminal help", "Info", "Public", "Share"]);
+  expect(screen.getByRole("button", { name: "Clear chat" }).title).toBe("Applies to the chat; flip back to use it");
+  fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
+  fireEvent.click(screen.getAllByRole("button", { name: "More chat actions" })[0]!);
+  const chatState = state(".chat-panel");
+  expect(Object.values(chatState).some((off) => off)).toBe(false);
+  expect(Object.keys(chatState)).toEqual(["Clear chat", "Hide panel", "Delete chat forever", "Info", "Public", "Share"]);
+});
+
+test("flipped, the name opens the terminals menu, which says when no machine is ready", async () => {
+  shell();
+  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
+  await screen.findByRole("region", { name: "Terminal", hidden: true });
+  fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+  const menu = screen.getByRole("dialog", { name: "Terminals" });
+  expect(within(menu).getByText("No terminals yet.")).toBeTruthy();
+  expect(menu.textContent).toContain("No machine is ready");
 });
 
 test("the flip is remembered for the station and no terminal side is mounted before the first flip", () => {

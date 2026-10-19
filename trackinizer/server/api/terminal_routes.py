@@ -530,6 +530,7 @@ async def _owned_machine(
         machine = await conn.fetchrow(
             "SELECT m.id, m.confirmed_at IS NOT NULL AS confirmed "
             "FROM machines m WHERE m.name = $1 AND m.owner = $2 "
+            "AND m.host_instance IS NOT NULL "
             "AND m.last_heartbeat > now() - make_interval(secs => $3) "
             "AND EXISTS (SELECT 1 FROM machine_credentials c "
             "WHERE c.machine_id = m.id AND c.revoked_at IS NULL)",

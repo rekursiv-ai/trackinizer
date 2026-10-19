@@ -94,7 +94,8 @@ type Facts = Annotated[
 
 type MachineStatus = Literal["revoked", "never", "online", "offline"]
 """Derived, never stored: ``revoked`` when every credential was revoked, ``never``
-before a first heartbeat, ``online`` within 180 s of the last one, else ``offline``."""
+before a first heartbeat, ``online`` within 180 s of the last one unless the host
+released the machine since, else ``offline``."""
 
 MACHINES_PATH: Final = "/api/machines"
 MACHINE_PATH: Final = "/api/machines/{name}"

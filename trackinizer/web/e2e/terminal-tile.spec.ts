@@ -64,7 +64,7 @@ test("New terminal opens a second shell in its own tab, and switching shows each
   await tile.getByRole("button", { name: "New terminal" }).click();
   await expect(tile.getByRole("tab")).toHaveCount(2);
   await expect(tile.locator(".xterm-screen:visible")).toHaveCount(1);
-  await tile.getByRole("tab", { name: "Terminal 1" }).click();
+  await tile.getByRole("tab", { name: "gx10 1" }).click();
   await expect(tile.locator(".xterm-screen:visible")).toHaveCount(1);
-  await expect(tile.getByRole("tab", { name: "Terminal 1" })).toHaveAttribute("aria-selected", "true");
+  await expect(tile.getByRole("tab", { name: "gx10 1" })).toHaveAttribute("aria-selected", "true");
 });

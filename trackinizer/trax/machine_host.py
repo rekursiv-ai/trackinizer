@@ -4,8 +4,10 @@
 stdin (never argv, which any user on the host can read in a process listing) and
 saves the machine credential it receives, readable by this user only. It then
 heartbeats every 15 s until the server answers 410, which means the machine was
-revoked. Lost contact never stops it: a refused connection, a server
-error, or another host still holding the machine is retried, sooner at first.
+revoked. Lost contact never stops it: a refused connection or a server error is
+retried, sooner at first. Its first heartbeat takes the machine from any host still
+holding it, so a restart starts serving at once; the host it replaced stops at its
+next heartbeat. Ctrl-C releases the machine, which then reads offline at once.
 
 It uses the machine's own credential, never the profile's key, so it runs in the
 calling process rather than in traxd.
@@ -16,7 +18,7 @@ long as it stays connected, and kills every shell when the machine is revoked.
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, suppress
 from importlib import metadata
 from typing import TYPE_CHECKING, Final, Protocol
 
@@ -37,7 +39,7 @@ if TYPE_CHECKING:
 
     import pydantic
 
-    from trackinizer.wire.wire_machine_host import HeartbeatResponse
+    from trackinizer.wire.wire_machine_host import Claim, HeartbeatResponse
     from trackinizer.wire.wire_machines import Facts
 else:
     from wrapt import lazy_import
@@ -80,8 +82,9 @@ class HostClient(Protocol):
         instance: uuid.UUID,
         host_version: str,
         facts: Facts | None = None,
+        claim: Claim = "keep",
     ) -> HeartbeatResponse:
-        """Report that the host is alive."""
+        """Report that the host is alive, or that it lets go of the machine."""
         ...
 
     def close(self) -> None:
@@ -110,6 +113,9 @@ def connect(
     terminals_for: Callable[[JoinResponse], TerminalServing] | None = None,
 ) -> None:
     """Join ``name`` when no credential is saved, then heartbeat until it is revoked.
+
+    It also returns when a newer host took the machine over, and releases the machine
+    on Ctrl-C before the interrupt goes on.
 
     Args:
       name: The machine's name, already checked against the name rules.
@@ -152,25 +158,27 @@ def connect(
         terminals.start(saved.machine_id, instance)
     try:
         with closing(client_for(saved.credential)) as client:
-            failures = 0
-            while True:
-                try:
+            try:
+                _heartbeat(
+                    client,
+                    name=name,
+                    machine_id=saved.machine_id,
+                    instance=instance,
+                    version=version,
+                    facts=unsent,
+                    sleep=sleep,
+                )
+            except KeyboardInterrupt:
+                # Once and best effort: a server out of reach leaves the machine to
+                # read offline after 180 s of silence, as a crash does.
+                with suppress(ClientError):
                     client.heartbeat_machine(
                         saved.machine_id,
                         instance=instance,
                         host_version=version,
-                        facts=unsent,
+                        claim="release",
                     )
-                except ClientError as err:
-                    if err.status_code == 410:
-                        echo(f"revoked: machine {name}")
-                        return
-                    failures += 1
-                    sleep(_retry_delay(err, failures=failures))
-                    continue
-                unsent = None
-                failures = 0
-                sleep(HEARTBEAT_SEC)
+                raise
     finally:
         if terminals is not None:
             terminals.stop()
@@ -199,17 +207,54 @@ def host_facts(*, terminal: bool = False) -> Facts:
     }
 
 
-# A transport failure carries no status. A 409 here is another host instance still
-# holding the machine, which lets go after 180 s of silence. Anything else in the
-# 4xx range is an answer a retry cannot change. The exponent is capped: a host offline
-# for hours counts past a thousand failures, and 2.0 ** 1024 raises OverflowError.
+# The first heartbeat that lands takes the machine, so a restart never waits out the
+# host it replaced; every later one keeps it. A keep refused with 409 means a newer
+# host took the machine, and this one stops rather than fight it for the machine.
+def _heartbeat(
+    client: HostClient,
+    *,
+    name: str,
+    machine_id: uuid.UUID,
+    instance: uuid.UUID,
+    version: str,
+    facts: Facts | None,
+    sleep: Callable[[float], None],
+) -> None:
+    """Heartbeat until the machine is revoked or another host takes it over."""
+    claim: Claim = "take"
+    unsent = facts
+    failures = 0
+    while True:
+        try:
+            client.heartbeat_machine(
+                machine_id,
+                instance=instance,
+                host_version=version,
+                facts=unsent,
+                claim=claim,
+            )
+        except ClientError as err:
+            if err.status_code == 410:
+                echo(f"revoked: machine {name}")
+                return
+            if err.code == "another_host_connected":
+                echo(f"taken over: machine {name} is served by a newer connect")
+                return
+            failures += 1
+            sleep(_retry_delay(err, failures=failures))
+            continue
+        unsent = None
+        claim = "keep"
+        failures = 0
+        sleep(HEARTBEAT_SEC)
+
+
+# A transport failure carries no status. Anything in the 4xx range is an answer a
+# retry cannot change. The exponent is capped: a host offline for hours counts past a
+# thousand failures, and 2.0 ** 1024 raises OverflowError.
 def _retry_delay(err: ClientError, *, failures: int) -> float:
     """Return how long to wait before the next try, or re-raise ``err``."""
-    if (
-        err.status_code is not None
-        and 400 <= err.status_code < 500
-        and err.code != "another_host_connected"
-    ):
+    if err.status_code is not None and 400 <= err.status_code < 500:
         raise err
     echo(f"trax: retrying after failure {failures}: {err}", err=True)
     return min(2.0 ** min(failures, 4), float(HEARTBEAT_SEC))

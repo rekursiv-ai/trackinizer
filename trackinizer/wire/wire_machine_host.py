@@ -16,7 +16,7 @@ not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 
 import uuid
 
@@ -35,6 +35,7 @@ __all__ = [
     "JOIN_PATH",
     "OFFLINE_AFTER_SEC",
     "REVOKE_PATH",
+    "Claim",
     "EnrollRequest",
     "EnrollResponse",
     "HeartbeatRequest",
@@ -57,7 +58,7 @@ HEARTBEAT_SEC: Final = 15
 """How often a host heartbeats, in seconds."""
 
 OFFLINE_AFTER_SEC: Final = 180
-"""Silence after which a machine reads ``offline``, and a second host may take over."""
+"""Silence after which a machine reads ``offline``."""
 
 ENROLL_PATH: Final = "/api/machines/enroll"
 JOIN_PATH: Final = "/api/machines/join"
@@ -69,6 +70,12 @@ type HostVersion = Annotated[
     StringConstraints(max_length=64, pattern=r"^[^\x00]*$"),
 ]
 """The host software's version, as the table holds it: no NUL, at most 64 characters."""
+
+type Claim = Literal["keep", "take", "release"]
+"""What a heartbeat does with the machine's host slot. ``keep`` holds it unless another
+instance beat within 180 s; ``take`` holds it whatever the other did, and is a host's
+first heartbeat, so a restarted host never waits out its old self; ``release`` lets
+go, so the machine reads ``offline`` at once, and is a stopping host's last call."""
 
 
 class EnrollRequest(BaseModel):
@@ -108,7 +115,7 @@ class JoinRequest(BaseModel):
     """The enrollment token; never echoed by a rejection."""
 
     instance: uuid.UUID
-    """The host's own id, kept across its restarts."""
+    """The host's id, new each time ``connect`` starts."""
 
     host_version: HostVersion
     """The host software's version."""
@@ -135,13 +142,16 @@ class HeartbeatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     instance: uuid.UUID
-    """The host's id; a second id is refused until the first goes silent."""
+    """The host's id; ``keep`` refuses a second id until the first goes silent."""
 
     host_version: HostVersion
     """The host software's version."""
 
     facts: Facts | None = None
     """Replaces the stored facts when present; absent keeps them."""
+
+    claim: Claim = "keep"
+    """Keep the machine, take it from another instance, or release it."""
 
 
 class HeartbeatResponse(BaseModel):

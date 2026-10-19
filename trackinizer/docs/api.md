@@ -1304,12 +1304,18 @@ credential first. Both responses are `Cache-Control: no-store`, and a 422 on
 `join` never echoes the token, not even as a body key.
 
 The host then calls `heartbeat` with the credential as its bearer token, about
-every 15 seconds, naming its `instance` (its own id, kept across restarts). One
-instance holds a machine at a time: a different instance answers 409 until the
-first has been silent for 180 seconds, and then takes over. A heartbeat whose
+every 15 seconds, naming its `instance` (a new id each time it starts) and a
+`claim`. One instance holds a machine at a time. Under `keep`, the default, a
+different instance answers 409 `another_host_connected` until the first has been
+silent for 180 seconds, and then takes over. `take` takes the machine at once
+whoever holds it; a host sends it with its first heartbeat, so a restart never waits
+out its old self, and the old host stops when its next `keep` answers 409.
+`release` from the holder leaves the machine held by none, so it reads `offline` at
+once; from any other instance it changes nothing. A heartbeat whose
 credential was revoked while it was in flight answers 410 and writes nothing.
 A machine's `status` is derived, never stored: `online` within 180 seconds of
-its last heartbeat, `offline` after, `never` before the first, and `revoked`
+its last heartbeat unless its host released it since, `offline` after, `never`
+before the first, and `revoked`
 once every credential it had was revoked. `GET /api/machines/<name>` adds
 `last_heartbeat`, `host_version` and `facts`.
 

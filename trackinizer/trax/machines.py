@@ -103,7 +103,8 @@ class Machines(Command):
             (
                 "connect reads the one-use enrollment token from stdin and saves the "
                 "machine credential for this user; it exits 0 once the machine is "
-                "revoked."
+                "revoked or a newer connect of it takes over. A restart serves at "
+                "once; Ctrl-C shows the machine offline at once."
             ),
             (
                 "'connect' with no NAME names this computer by its short hostname, "

@@ -25,7 +25,7 @@ import { useAnswerHighlights } from "./chatHighlights";
 import { useChatPartial } from "./chatPartial";
 import { useChatDraft } from "./chatDraft";
 import { ChatWorkstreamHeader } from "./ChatWorkstreamHeader";
-import { ChatTerminalSide } from "./ChatTerminalSide";
+import { ChatTerminalSide, type TerminalHead } from "./ChatTerminalSide";
 import { setFlipped, useFlipped } from "./terminalFlip";
 import { RecordField } from "./RecordField";
 
@@ -367,12 +367,12 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
     if (flip && workspace) setTerminalOpenedFor(workspace.id);
   }, [flip, workspace?.id]);
   // The same header on both sides, so its buttons stay; flipped, it names the terminal and flips back.
-  const header = (flipped: boolean) => <ChatWorkstreamHeader workspace={workspace} head={head.data ?? undefined} flipped={flipped}
+  const header = (flipped: boolean, terminal?: TerminalHead) => <ChatWorkstreamHeader workspace={workspace} head={head.data ?? undefined} flipped={flipped} terminal={terminal}
     onFlip={workspace ? () => setFlipped(workspace.id, !flipped) : undefined}
     onHide={hideCurrentStation} onClear={clearCurrentChat}
     onDeleted={(conversation) => chatDeleted(conversation)} />;
   const terminalSide = workspace && (terminalOpenedFor === workspace.id || flip)
-    && <ChatTerminalSide key={workspace.id} workspace={workspace} shown={flip} header={header(true)} />;
+    && <ChatTerminalSide key={workspace.id} workspace={workspace} shown={flip} header={(terminal) => header(true, terminal)} />;
 
   return (<>
     <section className="chat-panel" aria-label="Chat" hidden={flip}>

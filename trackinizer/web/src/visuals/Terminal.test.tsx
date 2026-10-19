@@ -202,10 +202,44 @@ test("closing a tab stops its shell and drops the tab; the last one is replaced 
   vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [{ terminal_id: "ta", machine: "gx10", surface: "v-close" }] });
   renderTile("v-close");
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
-  fireEvent.click(screen.getByRole("button", { name: "Close terminal 1" }));
+  fireEvent.click(screen.getByRole("button", { name: "Close gx10 1" }));
   expect(closeTerminal).toHaveBeenCalledWith("ta");
   expect(await screen.findByRole("button", { name: "Start terminal on gx10" })).toBeTruthy();
   expect(screen.getAllByRole("tab")).toHaveLength(1);
+});
+
+// A tile an agent did not name a machine for: each tab keeps the machine it opened on.
+const laptop = { ...ready, name: "laptop" };
+const renderOpenTile = (id: string) => render(<QueryClientProvider client={new QueryClient()}><TerminalTile instance={{ ...tileInstance(id), params: {} }} workspace={null} onWorkspaceChanged={vi.fn()} focused={false} /></QueryClientProvider>);
+
+test("tabs are named by their machine and count per machine", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready, laptop], terminals: [
+    { terminal_id: "ta", machine: "gx10", surface: "v-names" }, { terminal_id: "tb", machine: "laptop", surface: "v-names" }, { terminal_id: "tc", machine: "gx10", surface: "v-names" },
+  ] });
+  renderOpenTile("v-names");
+  await waitFor(() => expect(screen.getAllByRole("tab").map((each) => each.textContent)).toEqual(["gx10 1", "laptop 1", "gx10 2"]));
+  expect(screen.queryByRole("combobox", { name: "Machine" })).toBeNull();
+});
+
+test("with two machines ready + asks which, and the new tab keeps that machine", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready, laptop], terminals: [] });
+  renderOpenTile("v-which");
+  await screen.findByRole("button", { name: "Start terminal on gx10" });
+  fireEvent.click(screen.getByRole("button", { name: "New terminal" }));
+  expect(openTerminal).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "laptop" }));
+  await waitFor(() => expect(openTerminal).toHaveBeenCalledWith("laptop", null, 24, 80, "v-which"));
+  expect(screen.getAllByRole("tab").map((each) => each.textContent)).toEqual(["gx10 1", "laptop 1"]);
+  fireEvent.click(screen.getAllByRole("tab")[0]!);
+  expect(screen.getByRole("button", { name: "Start terminal on gx10" })).toBeTruthy();
+});
+
+test("with one machine ready + adds a tab at once, on that machine", async () => {
+  vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [] });
+  renderOpenTile("v-one");
+  await screen.findByRole("button", { name: "Start terminal on gx10" });
+  fireEvent.click(screen.getByRole("button", { name: "New terminal" }));
+  await waitFor(() => expect(openTerminal).toHaveBeenCalledWith("gx10", null, 24, 80, "v-one"));
 });
 
 test("the palette's request adds a tab that starts by itself, once", async () => {

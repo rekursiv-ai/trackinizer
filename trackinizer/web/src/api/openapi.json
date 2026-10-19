@@ -1584,6 +1584,14 @@
         "title": "Citation",
         "type": "object"
       },
+      "Claim": {
+        "enum": [
+          "keep",
+          "take",
+          "release"
+        ],
+        "type": "string"
+      },
       "ClaimNextIssue": {
         "description": "Body for ``POST /api/inquiries/next_issue``: claim the next Issue.\n\n``owner`` is who becomes responsible for the work; ``actor`` is who\nperformed the acquisition. They are usually the same agent, but an\norchestrator claiming on a worker's behalf needs them to differ, and the\naudit must record the real performer either way.",
         "properties": {
@@ -4374,6 +4382,10 @@
         "additionalProperties": false,
         "description": "One heartbeat: who is calling, and optionally what changed.",
         "properties": {
+          "claim": {
+            "$ref": "#/components/schemas/Claim",
+            "default": "keep"
+          },
           "facts": {
             "anyOf": [
               {
@@ -18158,7 +18170,7 @@
     },
     "/api/machines/{machine_id}/heartbeat": {
       "post": {
-        "description": "Record that the host is alive, and what it reports about itself.\n\nOne host instance holds a machine at a time. A different instance is refused\nuntil the connected one has been silent for 180 seconds, then takes over.\n\nArgs:\n  body: The host's instance, version, and facts when they changed.\n  request: Request carrying the database engine.\n  machine: The machine the credential authenticated as.\n\nReturns:\n  beat: The server's clock at the heartbeat.\n\nRaises:\n  AnotherHostConnectedError: Another instance is connected and live.\n  HTTPException: 410 when the credential was revoked after it authenticated.",
+        "description": "Record that the host is alive, and what it reports about itself.\n\nOne host instance holds a machine at a time. Under ``keep`` a different instance\nis refused until the connected one has been silent for 180 seconds, then takes\nover; under ``take`` it takes over at once. ``release`` from the instance that\nholds the machine leaves it held by none, so it reads offline; from any other\ninstance it changes nothing.\n\nArgs:\n  body: The host's instance, version, claim, and facts when they changed.\n  request: Request carrying the database engine.\n  machine: The machine the credential authenticated as.\n\nReturns:\n  beat: The server's clock at the heartbeat.\n\nRaises:\n  AnotherHostConnectedError: Another instance is connected and live.\n  HTTPException: 410 when the credential was revoked after it authenticated.",
         "operationId": "heartbeat_machine_route_api_machines__machine_id__heartbeat_post",
         "parameters": [
           {

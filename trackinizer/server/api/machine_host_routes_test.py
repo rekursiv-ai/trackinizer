@@ -305,7 +305,7 @@ def test_heartbeat_locks_the_machine_then_checks_the_credential_then_updates_the
     )
     assert live.args[1:] == (credential.id,)
     sql = from_plain(beat.args[0], str)
-    assert "host_instance IS NULL OR host_instance = $2" in sql
+    assert "($6::boolean OR host_instance IS NULL OR host_instance = $2" in sql
     assert "last_heartbeat < now() - make_interval(secs => $5)" in sql
     assert "facts = COALESCE($4, facts)" in sql
     assert beat.args[1:] == (
@@ -314,6 +314,7 @@ def test_heartbeat_locks_the_machine_then_checks_the_credential_then_updates_the
         "0.1",
         {"cpus": 4},
         OFFLINE_AFTER_SEC,
+        False,
     )
 
 
@@ -331,6 +332,26 @@ def test_a_heartbeat_the_instance_rule_refuses_is_409(
     assert (
         from_plain(response.json(), dict[str, str])["code"] == "another_host_connected"
     )
+
+
+def test_a_take_passes_the_instance_rule_by_and_a_release_only_lets_go(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    credential = mint_secret(CREDENTIAL_PREFIX)
+    set_field_row(engine.conn, _credential_row(credential))
+    engine.conn.fetchval.side_effect = [_MACHINE_ID, True, _BEAT] * 2
+
+    take = _heartbeat(client, credential.token, claim="take")
+    release = _heartbeat(client, credential.token, claim="release")
+
+    assert (take.status_code, release.status_code) == (200, 200)
+    took, let_go = engine.conn.fetchval.call_args_list[2::3]
+    assert took.args[-1] is True
+    sql = from_plain(let_go.args[0], str)
+    assert "CASE WHEN host_instance = $2 THEN NULL ELSE host_instance END" in sql
+    assert "last_heartbeat" not in sql
+    assert let_go.args[1:] == (_MACHINE_ID, uuid.UUID(_INSTANCE))
 
 
 def test_a_heartbeat_whose_credential_was_revoked_meanwhile_is_410_and_writes_nothing(
@@ -539,10 +560,13 @@ def _heartbeat(
     bearer: str,
     *,
     facts: dict[str, object] | None = None,
+    claim: str | None = None,
 ) -> Response:
     body: dict[str, object] = {"instance": _INSTANCE, "host_version": "0.1"}
     if facts is not None:
         body["facts"] = facts
+    if claim is not None:
+        body["claim"] = claim
     return client.post(
         HEARTBEAT_PATH.format(machine_id=_MACHINE_ID),
         json=body,

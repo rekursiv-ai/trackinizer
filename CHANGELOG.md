@@ -63,6 +63,10 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Changed
 
+- A restarted `trax machine connect` serves at once instead of waiting 180 s for
+  its old self to go silent: its first heartbeat takes the machine (`claim:
+  take`), and the host it replaced stops. Ctrl-C releases the machine, which
+  reads offline at once.
 - `trax env NAME del` reports success when the variable is already gone.
   Variable rows are written before secret values.
 - `trax run` no longer masks a bare PEM armour fragment; full armour lines of
