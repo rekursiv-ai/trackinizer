@@ -63,7 +63,7 @@ test("a user the staff setting names carries a staff chip beside the role, and n
   renderScreen(<AdminView />, ADMIN);
   const josh = await shownRow("josh@example.com");
   expect(josh.getByText("staff").getAttribute("title")).toBe(
-    "Staff: reads campaign transcripts. Set by the deployment's STAFF setting, not here.",
+    "Staff: reads staff-only sessions. Set by the deployment's STAFF setting, not here.",
   );
   expect(rowOf("ming@example.com").queryByText("staff")).toBeNull();
   expect(rowOf("ada@example.com").queryByText("staff")).toBeNull();
