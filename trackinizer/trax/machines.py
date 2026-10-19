@@ -28,7 +28,12 @@ from trackinizer.trax.render import echo
 
 
 if TYPE_CHECKING:
-    from trackinizer.trax import machine_host, terminal_host
+    from trackinizer.trax import (
+        machine_host,
+        terminal_direct_aiortc,
+        terminal_host,
+    )
+    from trackinizer.trax.terminal_direct import PeerFactory
     from trackinizer.trax.terminal_host import TerminalHost
     from trackinizer.wire import wire_machines
     from trackinizer.wire.wire_machine_host import JoinResponse
@@ -41,6 +46,7 @@ else:
     wire_machines = lazy_import("trackinizer.wire.wire_machines")
     machine_host = lazy_import("trackinizer.trax.machine_host")
     terminal_host = lazy_import("trackinizer.trax.terminal_host")
+    terminal_direct_aiortc = lazy_import("trackinizer.trax.terminal_direct_aiortc")
 
 
 MACHINE_WORD: Final = "machine"
@@ -311,6 +317,7 @@ class Machines(Command):
         own = name is None
         name = _host_name() if name is None else name
         serve = own or env("TRAX_MACHINE_TERMINAL") == "1"
+        direct = _direct_link() if serve else None
         machine_host.connect(
             name,
             client_for=lambda key: Client(url, api_key=key),
@@ -321,7 +328,9 @@ class Machines(Command):
             ),
             sleep=time.sleep,
             terminals_for=(
-                (lambda joined: _terminal_host(name, url, joined)) if serve else None
+                (lambda joined: _terminal_host(name, url, joined, direct=direct))
+                if serve
+                else None
             ),
         )
 
@@ -334,7 +343,13 @@ def _host_name() -> str:
     return name
 
 
-def _terminal_host(name: str, url: str, joined: JoinResponse) -> TerminalHost:
+def _terminal_host(
+    name: str,
+    url: str,
+    joined: JoinResponse,
+    *,
+    direct: PeerFactory | None = None,
+) -> TerminalHost:
     """Make the terminal server for a joined machine; its shells name the server."""
     # A URL with credentials in it would be sent to every ssh server by ``SendEnv LC_*``.
     trax_env = {} if "@" in urlsplit(url).netloc else {"LC_TRAX_SERVER": url}
@@ -346,7 +361,27 @@ def _terminal_host(name: str, url: str, joined: JoinResponse) -> TerminalHost:
         credential=joined.credential,
         client_for=lambda key: Client(url, api_key=key),
         trax_env=trax_env,
+        direct=direct,
     )
+
+
+# The link needs aiortc, which this package does not depend on: a user whose terminal
+# feels slow installs it into their own tool environment.
+def _direct_link() -> PeerFactory | None:
+    """Return the peer factory for a direct terminal link, and say which way it is."""
+    if env("TRAX_MACHINE_TERMINAL_DIRECT") == "0":
+        echo("direct terminal link: off (TRAX_MACHINE_TERMINAL_DIRECT=0)")
+        return None
+    factory = terminal_direct_aiortc.aiortc_peer_factory()
+    if factory is None:
+        echo(
+            "direct terminal link: off (relay only). Typing feels slow? "
+            "Run: uv tool install --with aiortc trackinizer, then restart "
+            "`trax machine connect`.",
+        )
+    else:
+        echo("direct terminal link: on")
+    return factory
 
 
 def _check_name(name: str) -> None:

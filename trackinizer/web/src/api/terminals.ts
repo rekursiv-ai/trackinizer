@@ -1,4 +1,5 @@
 import { ApiError, type CallOptions, client, send, TIMEOUT_MS } from "./client";
+import { DirectChannel, type DirectPath } from "../visuals/terminalDirect";
 import { decodeFrame, decodeOffset, encodeAttach, encodeFrame, encodeWinsize, Frame } from "../visuals/terminalFrames";
 
 /** A machine the caller owns, and whether a terminal can open on it now. */
@@ -16,8 +17,8 @@ export type LiveTerminal = { readonly terminal_id: string; readonly machine: str
 /** The caller's machines, newest ready first, and their live terminals opened from the asked station, oldest first. */
 export type TerminalMachines = { readonly machines: readonly TerminalMachine[]; readonly terminals?: readonly LiveTerminal[] };
 
-/** What opening a terminal returns: its id and the one-use ticket. */
-export type OpenedTerminal = { readonly terminal_id: string; readonly ticket: string };
+/** What opening a terminal returns: its id, the one-use ticket, and the STUN servers a direct link may use. */
+export type OpenedTerminal = { readonly terminal_id: string; readonly ticket: string; readonly ice_servers?: readonly string[] };
 
 /** The caller's machines, newest first; `workspace` asks for that station's live terminals too. */
 export async function listTerminalMachines(workspace?: string, { signal }: CallOptions = {}): Promise<TerminalMachines> {
@@ -33,12 +34,12 @@ export async function openTerminal(machine: string, workspace: string | null, ro
   }));
 }
 
-/** A fresh one-use ticket to attach to a live terminal again. */
-export async function attachTerminal(id: string): Promise<string> {
-  const { ticket } = await send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/terminals/{terminal_id}/attach", {
+/** A fresh one-use ticket to attach to a live terminal again, and the STUN servers a direct link may use. */
+export async function attachTerminal(id: string): Promise<{ readonly ticket: string; readonly ice_servers: readonly string[] }> {
+  const { ticket, ice_servers = [] } = await send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/terminals/{terminal_id}/attach", {
     params: { path: { terminal_id: id } }, signal,
   }));
-  return ticket;
+  return { ticket, ice_servers };
 }
 
 /** Allow terminals on one of the user's machines (cookie only: no key can). */
@@ -90,8 +91,14 @@ export type LinkOptions = {
   readonly fresh?: (id: string) => Promise<string>;
   /** The screen's size now: sent as a RESIZE after every ACK, so the shell has the real size whatever size it opened at. */
   readonly size?: () => { readonly rows: number; readonly cols: number };
-  /** Told, in ms, how long the first INPUT frame still unanswered waited for the next OUTPUT: the echo's round trip. */
-  readonly onEcho?: (ms: number) => void;
+  /** Told, in ms, how long the first INPUT frame still unanswered waited for the next OUTPUT, and which path carried the echo. */
+  readonly onEcho?: (ms: number, path: DirectPath) => void;
+  /** The STUN servers a direct link may use; none keeps it to one network. */
+  readonly iceServers?: readonly string[];
+  /** Told when output starts going direct, and when it falls back to the relay (`note` says why). */
+  readonly onPath?: (path: DirectPath, note?: string) => void;
+  /** For tests: makes the peer connection. */
+  readonly peer?: (config: RTCConfiguration) => RTCPeerConnection;
 };
 
 /** The live link to one terminal. */
@@ -110,19 +117,23 @@ function socketUrl(id: string): string {
   return url.toString();
 }
 
+const encoder = new TextEncoder();
+
 /**
  * Attach to a terminal: send `ATTACH` (ticket and the offset to resume at) first, relay frames, and
  * on a lost socket attach again with a fresh ticket from the last offset, 0.5 to 8 s apart for up to
- * 60 s. The ticket never rides the URL.
+ * 60 s. The ticket never rides the URL. Once attached it offers a direct link over the socket
+ * (`terminalDirect.ts`); the socket stays up, so the link can fall back to it at any moment.
  */
 export function connectTerminal(options: LinkOptions): TerminalLink {
-  const { id, onOutput, onStatus, socket = (url) => new WebSocket(url), fresh = attachTerminal, size, onEcho } = options;
+  const { id, onOutput, onStatus, socket = (url) => new WebSocket(url), size, onEcho, onPath, peer } = options;
+  const fresh = options.fresh ?? (async (given: string) => (await attachTerminal(given)).ticket);
   let ws: WebSocket | null = null;
   // When the first INPUT frame not yet answered went out. Dropped at every ACK and close, so output replayed after
   // an attach is never taken for an echo.
   let typedAt: number | null = null;
   let ticket: string | null = options.ticket;
-  let offset = 0;
+  const stream = { offset: 0 };
   let attempt = 0;
   let lostAt = 0;
   let closed = false;
@@ -131,12 +142,33 @@ export function connectTerminal(options: LinkOptions): TerminalLink {
   const finish = (status: LinkStatus) => {
     closed = true;
     clearTimeout(timer);
+    direct.dispose();
     onStatus(status);
   };
 
   const send = (frame: Uint8Array) => {
     if (ws?.readyState === WebSocket.OPEN) ws.send(frame);
   };
+
+  const deliver = (bytes: Uint8Array, path: DirectPath) => {
+    stream.offset += bytes.length;
+    if (typedAt !== null) {
+      onEcho?.(performance.now() - typedAt, path);
+      typedAt = null;
+    }
+    onOutput(bytes);
+  };
+
+  const direct: DirectChannel = new DirectChannel({
+    iceServers: options.iceServers ?? [], ...(peer ? { peer } : {}), relay: send, stream,
+    output: (bytes) => deliver(bytes, "direct"),
+    notice: (text) => onOutput(encoder.encode(text)),
+    onPath: (path, note) => {
+      typedAt = null;
+      onPath?.(path, note);
+    },
+    onExit: (code) => finish({ state: "ended", note: "The shell exited.", ...(code === undefined ? {} : { exit: code }) }),
+  });
 
   function dial(): void {
     if (closed || ticket === null) return;
@@ -145,13 +177,17 @@ export function connectTerminal(options: LinkOptions): TerminalLink {
     const next = socket(socketUrl(id));
     next.binaryType = "arraybuffer";
     ws = next;
+    // The first ACK of this socket starts a direct link; one after it is the host resuming on the relay.
+    let attached = false;
     onStatus({ state: attempt === 0 ? "connecting" : "reconnecting" });
-    next.onopen = () => next.send(encodeFrame(Frame.ATTACH, encodeAttach(mine, offset)));
+    next.onopen = () => next.send(encodeFrame(Frame.ATTACH, encodeAttach(mine, stream.offset)));
     next.onmessage = (event: MessageEvent) => {
       if (!(event.data instanceof ArrayBuffer)) return;
       const frame = decodeFrame(new Uint8Array(event.data));
       if (frame.kind === Frame.ACK) {
-        offset = decodeOffset(frame.payload);
+        const resume = decodeOffset(frame.payload);
+        if (attached && resume > stream.offset) onOutput(encoder.encode(LOST_OUTPUT));
+        stream.offset = resume;
         typedAt = null;
         attempt = 0;
         lostAt = 0;
@@ -160,13 +196,12 @@ export function connectTerminal(options: LinkOptions): TerminalLink {
           const { rows, cols } = size();
           send(encodeFrame(Frame.RESIZE, encodeWinsize(rows, cols)));
         }
+        if (!attached) direct.begin();
+        attached = true;
       } else if (frame.kind === Frame.OUTPUT) {
-        offset += frame.payload.length;
-        if (typedAt !== null) {
-          onEcho?.(performance.now() - typedAt);
-          typedAt = null;
-        }
-        onOutput(frame.payload);
+        if (!direct.muted) deliver(frame.payload, "relay");
+      } else if (frame.kind === Frame.SIGNAL) {
+        direct.signal(frame.payload);
       } else if (frame.kind === Frame.EXIT) {
         const code = frame.payload.length === 4 ? new DataView(frame.payload.buffer, frame.payload.byteOffset, 4).getUint32(0) : undefined;
         finish({ state: "ended", note: "The shell exited.", ...(code === undefined ? {} : { exit: code }) });
@@ -175,6 +210,7 @@ export function connectTerminal(options: LinkOptions): TerminalLink {
     next.onclose = (event: CloseEvent) => {
       if (closed || ws !== next) return;
       typedAt = null;
+      direct.reset();
       const known = FINAL[event.code];
       if (known) finish(known);
       else retry();
@@ -204,14 +240,22 @@ export function connectTerminal(options: LinkOptions): TerminalLink {
     // A paste arrives as one string: the server refuses an INPUT frame over 64 KiB, so it goes in frames of at most that.
     input: (bytes) => {
       typedAt ??= performance.now();
+      if (direct.input(bytes)) return;
       for (let at = 0; at < bytes.length; at += MAX_INPUT_FRAME) send(encodeFrame(Frame.INPUT, bytes.subarray(at, at + MAX_INPUT_FRAME)));
     },
-    resize: (rows, cols) => send(encodeFrame(Frame.RESIZE, encodeWinsize(rows, cols))),
+    resize: (rows, cols) => {
+      const payload = encodeWinsize(rows, cols);
+      if (!direct.resize(payload)) send(encodeFrame(Frame.RESIZE, payload));
+    },
     stop: () => send(encodeFrame(Frame.STOP)),
     dispose: () => {
       closed = true;
       clearTimeout(timer);
+      direct.dispose();
       ws?.close(1000);
     },
   };
 }
+
+/** What the screen shows where a host resumed past the output the screen reached. */
+const LOST_OUTPUT = "\r\n--- output lost ---\r\n";

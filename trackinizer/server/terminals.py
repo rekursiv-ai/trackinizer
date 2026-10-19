@@ -32,6 +32,7 @@ from trackinizer.lib.posix.host import (
     encode_frame,
     encode_winsize,
 )
+from trackinizer.lib.posix.ring import Ring
 from trackinizer.wire import wire_terminals
 
 
@@ -41,7 +42,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Opening",
-    "Ring",
     "Socket",
     "SocketClosedError",
     "Terminal",
@@ -72,44 +72,6 @@ class Socket(Protocol):
     async def close(self, code: int) -> None:
         """Close with a code; closing a closed socket is a no-op."""
         ...
-
-
-class Ring:
-    """The last ``capacity`` bytes of a stream, addressed by absolute offset."""
-
-    def __init__(self, capacity: int = wire_terminals.RING_BYTES) -> None:
-        self._capacity = capacity
-        self._data = bytearray()
-        self.end = 0
-        """Offset one past the last byte appended."""
-
-    @property
-    def start(self) -> int:
-        """Offset of the oldest byte kept."""
-        return self.end - len(self._data)
-
-    def append(self, data: bytes) -> None:
-        """Append ``data``, dropping the oldest bytes past the capacity."""
-        self._data.extend(data)
-        self.end += len(data)
-        del self._data[: max(0, len(self._data) - self._capacity)]
-
-    def since(self, offset: int) -> tuple[bytes, int, bool]:
-        """Return the bytes from ``offset``, where they start, and whether some were lost.
-
-        Args:
-          offset: The stream position the caller has reached.
-
-        Returns:
-          data: The bytes from the later of ``offset`` and the ring's start.
-          resume: The offset ``data`` starts at.
-          lost: Whether ``offset`` had fallen out of the ring.
-
-        """
-        offset = min(offset, self.end)
-        lost = offset < self.start
-        offset = max(offset, self.start)
-        return bytes(self._data[offset - self.start :]), offset, lost
 
 
 class _Rate:
@@ -166,7 +128,13 @@ class Terminal:
     pre_resize: bytes | None = None
     """The latest geometry sent before the host dialled in."""
 
-    ring: Ring = field(default_factory=Ring)
+    ring: Ring = field(default_factory=lambda: Ring(capacity=wire_terminals.RING_BYTES))
+    direct_until: float = 0.0
+    """Until when the host's last ``KEEPALIVE`` says output goes to the browser direct."""
+
+    signals: deque[float] = field(default_factory=deque)
+    """When the browser's recent ``SIGNAL`` frames came, for the rate limit."""
+
     input_rate: _Rate = field(
         default_factory=lambda: _Rate(wire_terminals.MAX_INPUT_BYTES_PER_SEC),
     )
@@ -227,6 +195,7 @@ class TerminalHub:
         asked by the sweep.
       clock: Monotonic seconds.
       sleep: Waits the given seconds; only the rate limits use it.
+      ice_servers: STUN URLs handed to the browser and the host for a direct link.
 
     """
 
@@ -236,10 +205,13 @@ class TerminalHub:
         alive: Callable[[Terminal], Awaitable[bool]],
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        ice_servers: tuple[str, ...] = (),
     ) -> None:
         self._alive = alive
         self._clock = clock
         self._sleep = sleep
+        self.ice_servers = ice_servers
+        """The STUN URLs the open, the attach and the host's wait return."""
         self._terminals: dict[UUID, Terminal] = {}
         self._pending: dict[UUID, deque[Terminal]] = {}
         self._waiters: dict[UUID, list[asyncio.Future[None]]] = {}
@@ -438,6 +410,10 @@ class TerminalHub:
         previous, term.browser = term.browser, socket
         term.detached_at = None
         data, resume, lost = term.ring.since(offset)
+        # The host sent KEEPALIVE, so it has been sending output direct, and this ring
+        # is behind it. It resumes on the relay from where the ring ends.
+        relay_from = term.ring.end if self._clock() < term.direct_until else None
+        term.direct_until = 0.0
         backlog: list[tuple[Frame, bytes]] = []
         term.replaying = backlog
         try:
@@ -456,6 +432,12 @@ class TerminalHub:
             while backlog:
                 kind, payload = backlog.pop(0)
                 await self._to_browser(term, socket, kind, payload)
+            if relay_from is not None:
+                await self._to_host(
+                    term,
+                    Frame.ROUTE,
+                    wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, relay_from),
+                )
         finally:
             if term.replaying is backlog:
                 term.replaying = None
@@ -501,7 +483,7 @@ class TerminalHub:
             await self.end(term, code=wire_terminals.CLOSE_HOST_LOST)
 
     async def from_host(self, term: Terminal, kind: Frame, payload: bytes) -> None:
-        """Take one frame from the host: output, or the shell's exit.
+        """Take one frame from the host: output, the shell's exit, or a link frame.
 
         Args:
           term: The terminal.
@@ -520,6 +502,15 @@ class TerminalHub:
         elif kind is Frame.EXIT:
             await self._live(term, Frame.EXIT, payload)
             await self.end(term, code=wire_terminals.CLOSE_ENDED)
+        elif kind is Frame.SIGNAL:
+            await self._live(term, Frame.SIGNAL, payload)
+        elif kind is Frame.KEEPALIVE:
+            self._keepalive(term, payload)
+        elif kind is Frame.ACK and len(payload) == 8:
+            # The host resumes on the relay at an offset the ring never saw: output went
+            # direct meanwhile. Later offsets stay contiguous from here.
+            term.ring.reset(int.from_bytes(payload))
+            await self._live(term, Frame.ACK, payload)
 
     async def from_browser(self, term: Terminal, kind: Frame, payload: bytes) -> bool:
         """Take one frame from the browser; return False when it broke a rule.
@@ -556,6 +547,16 @@ class TerminalHub:
                     min(max(cols, 1), wire_terminals.MAX_COLS),
                 ),
             )
+        elif kind is Frame.SIGNAL:
+            if not self._signal_allowed(term, size=len(payload)):
+                return False
+            await self._to_host(term, Frame.SIGNAL, payload)
+        elif kind is Frame.ROUTE:
+            try:
+                _ = wire_terminals.decode_route(payload)
+            except ValueError:
+                return False
+            await self._to_host(term, Frame.ROUTE, payload)
         elif kind is Frame.STOP:
             await self.stop(term)
         else:
@@ -613,6 +614,29 @@ class TerminalHub:
                     await self.end(term, code=code)
             except Exception:
                 _logger.warning("terminal %s: sweep failed", term.id, exc_info=True)
+
+    def _signal_allowed(self, term: Terminal, *, size: int) -> bool:
+        """Count a ``SIGNAL`` from the browser; False when it is too big or too many."""
+        now = self._clock()
+        while term.signals and now - term.signals[0] >= 60.0:
+            _ = term.signals.popleft()
+        if (
+            size > wire_terminals.MAX_SIGNAL_BYTES
+            or len(term.signals) >= wire_terminals.MAX_SIGNALS_PER_MIN
+        ):
+            return False
+        term.signals.append(now)
+        return True
+
+    def _keepalive(self, term: Terminal, payload: bytes) -> None:
+        """Take the host's report that output goes direct and input was last seen so long ago."""
+        try:
+            idle_ms = wire_terminals.decode_keepalive(payload)
+        except ValueError:
+            return
+        now = self._clock()
+        term.last_input_at = now - idle_ms / 1_000
+        term.direct_until = now + 3 * wire_terminals.KEEPALIVE_SEC
 
     async def _still_alive(self, term: Terminal) -> bool:
         """Ask whether the credential and owner stand; a failed question says yes."""

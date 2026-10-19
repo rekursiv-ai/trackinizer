@@ -26,6 +26,8 @@ from trackinizer.wire.wire_terminals import TerminalWait
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
+    from trackinizer.trax.terminal_direct import PeerFactory
+
 pytestmark = pytest.mark.asyncio
 
 _MACHINE = uuid.UUID(int=1)
@@ -81,6 +83,7 @@ def _host(
     client: _Client | None = None,
     trax_env: dict[str, str] | None = None,
     drain_sec: float = 0.5,
+    direct: PeerFactory | None = None,
 ) -> TerminalHost:
     return TerminalHost(
         name="box",
@@ -90,6 +93,7 @@ def _host(
         trax_env=trax_env or {},
         shell=shell,
         drain_sec=drain_sec,
+        direct=direct,
     )
 
 
@@ -349,6 +353,68 @@ async def test_a_410_ends_the_listener_and_any_other_failure_is_retried() -> Non
     await asyncio.to_thread(client.closed.wait, 10)
 
     assert client.closed.is_set()
+
+
+class _ScriptedPeer:
+    """A peer that, once it has answered, plays the browser: switch the route, type."""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[Frame, bytes]] = []
+        self.ice_servers: tuple[str, ...] = ()
+        self.is_open = True
+
+    async def accept(
+        self,
+        offer_sdp: str,
+        *,
+        ice_servers: tuple[str, ...],
+        on_message: Callable[[bytes], None],
+        on_close: Callable[[], None],
+    ) -> str:
+        del offer_sdp, on_close
+        self.ice_servers = ice_servers
+        loop = asyncio.get_running_loop()
+        route = wire_terminals.encode_route(wire_terminals.ROUTE_DIRECT, 0)
+        loop.call_later(0.05, on_message, encode_frame(Frame.ROUTE, route))
+        loop.call_later(0.1, on_message, encode_frame(Frame.INPUT, b"go\n"))
+        return "answer-sdp"
+
+    def send(self, data: bytes) -> None:
+        self.sent.append(decode_frame(data))
+
+    async def close(self) -> None:
+        self.is_open = False
+
+
+async def test_an_offer_is_answered_and_the_shells_output_then_goes_direct() -> None:
+    peer = _ScriptedPeer()
+    relayed: list[tuple[Frame, bytes]] = []
+
+    async def handler(ws: ServerConnection) -> None:
+        offer = wire_terminals.DirectSignal(gen=1, type="offer", sdp="offer-sdp")
+        await ws.send(encode_frame(Frame.SIGNAL, offer.model_dump_json().encode()))
+        async for message in ws:
+            assert isinstance(message, bytes)
+            relayed.append(decode_frame(message))
+            if relayed[-1][0] is Frame.EXIT:
+                return
+
+    server, url = await _listening(handler)
+    host = _host(url, "/bin/sh", "-c", "read x; echo got-$x", direct=lambda: peer)
+    await _run(host, _opened(ice_servers=["stun:s.test:3478"]))
+    server.close()
+
+    answer = wire_terminals.DirectSignal.model_validate_json(relayed[0][1])
+    assert (relayed[0][0], answer.type, answer.sdp) == (
+        Frame.SIGNAL,
+        "answer",
+        "answer-sdp",
+    )
+    assert peer.ice_servers == ("stun:s.test:3478",)
+    assert b"got-go" in b"".join(p for kind, p in peer.sent if kind is Frame.OUTPUT)
+    assert (Frame.EXIT, (0).to_bytes(4)) in peer.sent
+    assert all(kind is not Frame.OUTPUT for kind, _ in relayed)
+    assert relayed[-1] == (Frame.EXIT, (0).to_bytes(4))
 
 
 if __name__ == "__main__":

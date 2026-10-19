@@ -48,8 +48,11 @@ export function useFlipped(station: string | undefined): boolean {
   return useSyncExternalStore(subscribe, () => station !== undefined && flipped(station));
 }
 
-/** Whether this viewer dismissed the terminal side's bar. */
-export function useBarDismissed(): readonly [boolean, () => void] {
-  const dismissed = useSyncExternalStore(subscribe, () => read(BAR_KEY) === "1");
-  return [dismissed, () => write(BAR_KEY, "1")];
+/**
+ * Whether this viewer dismissed the terminal side's bar, how to dismiss it, how to reopen it with its help
+ * disclosure open, and whether it was reopened that way.
+ */
+export function useBarDismissed(): readonly [boolean, () => void, () => void, boolean] {
+  const state = useSyncExternalStore(subscribe, () => read(BAR_KEY));
+  return [state === "1", () => write(BAR_KEY, "1"), () => write(BAR_KEY, "open"), state === "open"];
 }

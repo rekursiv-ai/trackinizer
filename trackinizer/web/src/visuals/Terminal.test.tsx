@@ -50,7 +50,7 @@ beforeEach(() => {
   vi.mocked(closeTerminal).mockResolvedValue(undefined);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.mocked(openTerminal).mockResolvedValue({ terminal_id: "t1", ticket: "tk" });
-  vi.mocked(attachTerminal).mockResolvedValue("tk2");
+  vi.mocked(attachTerminal).mockResolvedValue({ ticket: "tk2", ice_servers: [] });
   vi.mocked(connectTerminal).mockImplementation((given) => { options = given; return link; });
 });
 afterEach(() => { cleanup(); takeNewTerminalRequest(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
@@ -95,7 +95,7 @@ test("on a slow link what is typed is drawn dim at once; the link's echo times t
   screen.data("a");
   expect(screen.written).toEqual([]);
   act(() => options.onOutput(new Uint8Array([120, 97])));
-  for (let i = 0; i < 5; i++) act(() => options.onEcho!(300));
+  for (let i = 0; i < 5; i++) act(() => options.onEcho!(300, "relay"));
   screen.data("b");
   expect(screen.written.at(-1)).toContain("\x1b[2mb");
   expect(link.input).toHaveBeenCalledTimes(3);
@@ -384,12 +384,12 @@ test("an unmount while the terminal is still opening closes the one that arrives
   arrive({ terminal_id: "t5", ticket: "tk" });
   await waitFor(() => expect(closeTerminal).toHaveBeenCalledWith("t5"));
   expect(connectTerminal).not.toHaveBeenCalled();
-  let attached: (ticket: string) => void = () => {};
+  let attached: (opened: { ticket: string; ice_servers: string[] }) => void = () => {};
   vi.mocked(attachTerminal).mockReturnValue(new Promise((resolve) => { attached = resolve; }));
   const second = render(<TerminalView machine="gx10" workspace="w1" resume={{ terminal_id: "t9" }} />);
   await waitFor(() => expect(attachTerminal).toHaveBeenCalledWith("t9"));
   second.unmount();
-  attached("tk");
+  attached({ ticket: "tk", ice_servers: [] });
   await Promise.resolve();
   expect(closeTerminal).toHaveBeenCalledTimes(1);
 });
@@ -502,4 +502,35 @@ test("a terminal outside the tile, with no tabs to act on, sends every chord to 
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(press(0, { ctrlKey: true, shiftKey: true, key: "T" })).toEqual({ sent: true, cancelled: false });
+});
+
+test("the STUN servers an open or an attach returns reach the link, for its direct channel", async () => {
+  vi.mocked(openTerminal).mockResolvedValue({ terminal_id: "t1", ticket: "tk", ice_servers: ["stun:s.test:3478"] });
+  render(<TerminalView machine="gx10" workspace="w1" />);
+  start();
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
+  expect(options.iceServers).toEqual(["stun:s.test:3478"]);
+  cleanup();
+
+  vi.mocked(attachTerminal).mockResolvedValue({ ticket: "tk2", ice_servers: ["stun:a.test"] });
+  render(<TerminalView machine="gx10" workspace="w1" resume={{ terminal_id: "t9" }} />);
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(2));
+  expect(options.iceServers).toEqual(["stun:a.test"]);
+});
+
+test("the view says when output goes direct, and for a while after the link falls back to the server", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  render(<TerminalView machine="gx10" workspace="w1" />);
+  start();
+  await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
+  expect(screen.queryByText("Direct link")).toBeNull();
+
+  act(() => options.onPath!("direct"));
+  expect(screen.getByText("Direct link")).toBeTruthy();
+  act(() => options.onPath!("relay", "Direct link lost; using the server."));
+  expect(screen.queryByText("Direct link")).toBeNull();
+  expect(screen.getByText("Direct link lost; using the server.")).toBeTruthy();
+  act(() => { vi.advanceTimersByTime(15_000); });
+  expect(screen.queryByText(/Direct link lost/)).toBeNull();
+  vi.useRealTimers();
 });

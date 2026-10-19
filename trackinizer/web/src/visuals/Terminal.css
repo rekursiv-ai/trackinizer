@@ -1,10 +1,12 @@
 /* The terminal view and the Chat column's terminal side. Black and green whatever Chat's style: it is a terminal. */
-.terminal { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; background: #000; color: #00ff00; font: 13px/1.25 "DejaVu Sans Mono", monospace; }
+.terminal { position: relative; display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; background: #000; color: #00ff00; font: 13px/1.25 "DejaVu Sans Mono", monospace; }
 .terminal-screen { flex: 1; min-height: 0; padding: 4px; overflow: hidden; }
 .terminal-screen[hidden] { display: none; }
 .terminal-start { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 12px; text-align: center; }
 .terminal-start .muted { color: #5e5c64; }
 .terminal-note { margin: 0; padding: 4px 8px; border-top: 1px solid #5e5c64; }
+/* A badge over the screen's top right, left of the maximize button, that says typing skips the server. */
+.terminal-path { position: absolute; top: 4px; right: 44px; z-index: 1; padding: 0 6px; border: 1px solid #00ff00; border-radius: 4px; font-size: 11px; line-height: 16px; opacity: .6; pointer-events: none; }
 .terminal a { color: #2a7bde; }
 /* The canvas tile: the terminal takes the tile's height, so the shell gets the rows it can show. */
 .terminal-tile { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; min-width: 0; }
@@ -28,3 +30,8 @@
 .terminal-tab[data-active="true"] { background: rgba(0, 255, 0, .18); }
 .terminal-pane { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; min-width: 0; }
 .terminal-pane[hidden] { display: none; }
+.chat-terminal-help { max-height: 40%; overflow-y: auto; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.chat-terminal-help summary { cursor: pointer; }
+.chat-terminal-help h4 { margin: 8px 0 4px; font-size: 12px; }
+.chat-terminal-help p { margin: 4px 0; }
+.chat-terminal-help .helper-command { margin: 4px 0; }

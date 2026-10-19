@@ -19,13 +19,21 @@ equal that module's ``Frame`` values; a test holds them equal.
   (u32 status).
 - Server to host: ``INPUT``, ``RESIZE``, ``STOP``. Host to server: ``OUTPUT``, ``EXIT``.
 
+A direct link (a WebRTC data channel between the browser and the host) is set up
+over these same sockets. The server forwards ``SIGNAL`` (a :class:`DirectSignal`)
+and the browser's ``ROUTE`` (u8 route, u64 offset) without reading them. The host
+sends ``KEEPALIVE`` (u32 milliseconds since it last saw input) every
+:data:`KEEPALIVE_SEC` while output goes direct, so the idle limit still holds. A
+host that returns to the relay answers with ``ACK`` (the offset it resumes at)
+then ``OUTPUT``; the server restarts its ring there.
+
 This package is part of the publishable client distribution, so it must
 not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 
 import uuid
 
@@ -43,28 +51,39 @@ __all__ = [
     "CLOSE_REFUSED",
     "CLOSE_TAKEN_OVER",
     "DETACH_GRACE_SEC",
+    "DIRECT_FRAME_BYTES",
+    "DIRECT_OPEN_TIMEOUT_SEC",
     "FINAL_CLOSE_CODES",
     "FRAME_ACK",
     "FRAME_ATTACH",
     "FRAME_EXIT",
     "FRAME_INPUT",
+    "FRAME_KEEPALIVE",
     "FRAME_OUTPUT",
     "FRAME_RESIZE",
+    "FRAME_ROUTE",
+    "FRAME_SIGNAL",
     "FRAME_STOP",
     "IDLE_SEC",
+    "KEEPALIVE_SEC",
     "LIFETIME_SEC",
     "MACHINE_TERMINAL_WAIT_PATH",
     "MACHINE_TERMINAL_WS_PATH",
     "MAX_COLS",
+    "MAX_ICE_SERVERS",
     "MAX_INPUT_BYTES_PER_SEC",
     "MAX_INPUT_FRAME_BYTES",
     "MAX_OPENS_PER_MIN_PER_USER",
     "MAX_OUTPUT_BYTES_PER_SEC",
     "MAX_ROWS",
+    "MAX_SIGNALS_PER_MIN",
+    "MAX_SIGNAL_BYTES",
     "OPEN_TTL_SEC",
     "RECONNECT_BACKOFF_SEC",
     "RECONNECT_WINDOW_SEC",
     "RING_BYTES",
+    "ROUTE_DIRECT",
+    "ROUTE_RELAY",
     "SWEEP_SEC",
     "TERMINALS_PATH",
     "TERMINAL_ATTACH_PATH",
@@ -76,6 +95,7 @@ __all__ = [
     "TICKET_TTL_SEC",
     "WAIT_LEASE_SEC",
     "WAIT_MAX_SEC",
+    "DirectSignal",
     "LiveTerminal",
     "OpenTerminal",
     "TerminalMachine",
@@ -83,6 +103,10 @@ __all__ = [
     "TerminalOpened",
     "TerminalTicket",
     "TerminalWait",
+    "decode_keepalive",
+    "decode_route",
+    "encode_keepalive",
+    "encode_route",
 ]
 
 TERMINALS_PATH: Final = "/api/terminals"
@@ -119,6 +143,28 @@ FRAME_STOP: Final = 5
 FRAME_OUTPUT: Final = 6
 FRAME_ACK: Final = 7
 FRAME_EXIT: Final = 8
+FRAME_SIGNAL: Final = 9
+FRAME_ROUTE: Final = 10
+FRAME_KEEPALIVE: Final = 11
+
+ROUTE_RELAY: Final = 0
+ROUTE_DIRECT: Final = 1
+"""The path output takes: the server's relay, or the direct link."""
+
+MAX_SIGNAL_BYTES: Final = 16_384
+"""The most a ``SIGNAL`` payload may carry: far above an SDP with a few candidates."""
+
+MAX_SIGNALS_PER_MIN: Final = 6
+"""``SIGNAL`` frames the server forwards from a terminal's browser in a minute."""
+
+DIRECT_FRAME_BYTES: Final = 16_384
+"""The most a frame may carry on the data channel: the size every browser accepts."""
+
+DIRECT_OPEN_TIMEOUT_SEC: Final = 8
+"""How long the browser waits for the data channel before it stays on the relay."""
+
+KEEPALIVE_SEC: Final = 10
+MAX_ICE_SERVERS: Final = 4
 
 TICKET_CHARS: Final = 43
 """Length of a ticket (256 random bits, url-safe base64) in the ``ATTACH`` payload."""
@@ -162,6 +208,12 @@ MAX_OPENS_PER_MIN_PER_USER: Final = 10
 RECONNECT_BACKOFF_SEC: Final = (0.5, 1.0, 2.0, 4.0, 8.0)
 RECONNECT_WINDOW_SEC: Final = 60
 
+type IceServers = Annotated[
+    list[Annotated[str, Field(pattern=r"^stun:\S{1,200}$")]],
+    Field(max_length=MAX_ICE_SERVERS),
+]
+"""STUN servers the browser and the host both use to find each other's address."""
+
 
 class OpenTerminal(BaseModel):
     """Open a terminal on one of the caller's machines."""
@@ -192,6 +244,9 @@ class TerminalOpened(BaseModel):
     terminal_id: uuid.UUID
     ticket: str = Field(repr=False)
 
+    ice_servers: IceServers = Field(default_factory=list)
+    """The STUN servers to find the host with; empty means the same network only."""
+
 
 class TerminalTicket(BaseModel):
     """A one-use ticket to attach to a live terminal."""
@@ -199,6 +254,8 @@ class TerminalTicket(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     ticket: str = Field(repr=False)
+
+    ice_servers: IceServers = Field(default_factory=list)
 
 
 class TerminalMachine(BaseModel):
@@ -253,5 +310,69 @@ class TerminalWait(BaseModel):
 
     rows: int
     cols: int
+    ice_servers: IceServers = Field(default_factory=list)
+    """The STUN servers to find the browser with."""
+
     workspace: uuid.UUID | None = None
     workstream: uuid.UUID | None = None
+
+
+class DirectSignal(BaseModel):
+    """One step of setting up a direct link, carried in a ``SIGNAL`` frame as JSON."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    gen: Annotated[int, Field(ge=1)]
+    """The browser's attempt counter; the host ignores one not above the last it took."""
+
+    type: Literal["offer", "answer", "abandon"]
+    """``abandon``: the host cannot or will not take a direct link."""
+
+    sdp: str = Field(default="", max_length=MAX_SIGNAL_BYTES)
+
+
+def encode_route(route: int, offset: int) -> bytes:
+    """Return the ``ROUTE`` payload: a route byte, then the u64 stream offset."""
+    return bytes([route]) + offset.to_bytes(8)
+
+
+def decode_route(payload: bytes) -> tuple[int, int]:
+    """Return the route and offset a ``ROUTE`` payload carries.
+
+    Args:
+      payload: The frame's bytes.
+
+    Returns:
+      route: :data:`ROUTE_RELAY` or :data:`ROUTE_DIRECT`.
+      offset: The stream offset the sender has reached.
+
+    Raises:
+      ValueError: The payload is not a known route and a u64.
+
+    """
+    if len(payload) != 9 or payload[0] not in {ROUTE_RELAY, ROUTE_DIRECT}:
+        raise ValueError(f"ROUTE payload of {len(payload)} bytes")
+    return payload[0], int.from_bytes(payload[1:])
+
+
+def encode_keepalive(idle_ms: int) -> bytes:
+    """Return the ``KEEPALIVE`` payload: milliseconds since the host last saw input."""
+    return min(idle_ms, 2**32 - 1).to_bytes(4)
+
+
+def decode_keepalive(payload: bytes) -> int:
+    """Return the idle milliseconds a ``KEEPALIVE`` payload carries.
+
+    Args:
+      payload: The frame's bytes.
+
+    Returns:
+      idle_ms: Milliseconds since the host last saw input.
+
+    Raises:
+      ValueError: The payload is not a u32.
+
+    """
+    if len(payload) != 4:
+        raise ValueError(f"KEEPALIVE payload of {len(payload)} bytes")
+    return int.from_bytes(payload)

@@ -141,7 +141,7 @@ def _configure_app(flags: _Flags) -> None:
 
 
 # The wheel carries the web app's build here (an `artifacts` entry in
-# ``.export/pyproject.toml``); a checkout has one once `npm run build` has run in
+# ``.export/pyproject.delta.toml``); a checkout has one once `npm run build` has run in
 # web/.
 def _packaged_app(package: Path) -> Path | None:
     """Return the web app build beside ``package``, or ``None`` without one."""

@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { decodeFrame, decodeOffset, encodeAttach, encodeFrame, encodeWinsize, Frame } from "./terminalFrames";
+import { decodeFrame, decodeOffset, decodeRoute, encodeAttach, encodeFrame, encodeRoute, encodeWinsize, Frame, Route } from "./terminalFrames";
 
 test("every kind round-trips, with an empty payload and a 64 KiB one", () => {
   for (const kind of Object.values(Frame)) {
@@ -29,4 +29,16 @@ test("the attach payload is the ticket then a big-endian u64 offset, past 2^32",
   expect(new TextDecoder().decode(payload.subarray(0, 43))).toBe(ticket);
   expect(decodeOffset(payload.subarray(43))).toBe(2 ** 33 + 5);
   expect(() => decodeOffset(new Uint8Array(3))).toThrow("eight");
+});
+
+test("the link kinds equal the server's: SIGNAL 9, ROUTE 10, KEEPALIVE 11", () => {
+  expect([Frame.SIGNAL, Frame.ROUTE, Frame.KEEPALIVE]).toEqual([9, 10, 11]);
+});
+
+test("the route payload is a route byte then a big-endian u64, and a malformed one is refused", () => {
+  const payload = encodeRoute(Route.DIRECT, 2 ** 33 + 1);
+  expect([...payload.subarray(0, 1)]).toEqual([1]);
+  expect(decodeRoute(payload)).toEqual({ route: Route.DIRECT, offset: 2 ** 33 + 1 });
+  expect(() => decodeRoute(payload.subarray(1))).toThrow("route");
+  expect(() => decodeRoute(new Uint8Array([2, 0, 0, 0, 0, 0, 0, 0, 0]))).toThrow("route");
 });

@@ -57,14 +57,18 @@ export function ChatPartnerSection() {
   );
 }
 
+/** Install trax and point it at this server: the page's own origin, so every deployment shows its own. */
+export function setupCommand(): string {
+  return `uv tool install trackinizer && trax profile url to ${location.origin} && trax profile token to <TOKEN>`;
+}
+
 /**
  * The two commands that start a local helper against this server, each with
  * Copy. The token is the user's own, from API tokens: a link to Settings in
  * Chat, the section below it in Settings.
  */
 export function HelperCommands({ tokens }: { readonly tokens: "link" | "below" }) {
-  const setup = `uv tool install trackinizer && trax profile url to ${location.origin} && trax profile token to <TOKEN>`;
-  const commands = [setup, "trax helper claude"];
+  const commands = [setupCommand(), "trax helper claude"];
   return (
     <div className="helper-commands">
       {commands.map((command) => <Command key={command} command={command} />)}
@@ -80,7 +84,7 @@ export function HelperCommands({ tokens }: { readonly tokens: "link" | "below" }
  * One command and its Copy. Chat shows it where no toast is mounted, so the
  * outcome is said beside the button.
  */
-function Command({ command }: { readonly command: string }) {
+export function Command({ command }: { readonly command: string }) {
   const [outcome, setOutcome] = useState<"copied" | "refused" | null>(null);
   const copy = () => Promise.resolve().then(() => navigator.clipboard.writeText(command)).then(() => setOutcome("copied"), () => setOutcome("refused"));
   return <div className="helper-command">

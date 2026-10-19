@@ -140,7 +140,11 @@ async def open_terminal_route(
             code="terminal_limit",
             message="too many terminals opened just now; wait a minute",
         ) from error
-    return TerminalOpened(terminal_id=term.id, ticket=hub.mint_ticket(term))
+    return TerminalOpened(
+        terminal_id=term.id,
+        ticket=hub.mint_ticket(term),
+        ice_servers=list(hub.ice_servers),
+    )
 
 
 @router.get(TERMINAL_MACHINES_PATH)
@@ -250,7 +254,11 @@ async def attach_terminal_route(
 
     """
     term = _own_terminal(request, identity, terminal_id=terminal_id)
-    return TerminalTicket(ticket=get_terminal_hub(request).mint_ticket(term))
+    hub = get_terminal_hub(request)
+    return TerminalTicket(
+        ticket=hub.mint_ticket(term),
+        ice_servers=list(hub.ice_servers),
+    )
 
 
 @router.post(TERMINAL_CLOSE_PATH, status_code=204)
@@ -301,7 +309,8 @@ async def terminal_wait_route(
         )
     await current_machine(request, machine_id)
     await _require_instance(request, machine_id, instance=instance)
-    term = await get_terminal_hub(request).wait(
+    hub = get_terminal_hub(request)
+    term = await hub.wait(
         machine_id,
         wait_sec=min(wait_sec, wire_terminals.WAIT_MAX_SEC),
     )
@@ -315,6 +324,7 @@ async def terminal_wait_route(
         workspace=term.workspace,
         workstream=term.workstream,
         requested_by=term.requested_by,
+        ice_servers=list(hub.ice_servers),
     )
 
 

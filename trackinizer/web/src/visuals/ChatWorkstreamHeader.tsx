@@ -10,6 +10,7 @@ import { hideStation, nameStation, openStation, STATIONS_KEY } from "../stations
 import { showStation } from "../stations/useStation";
 import { setChatHidden, setChatSide, useChatColumn } from "./chatColumnState";
 import { Icon } from "../ui/icons";
+import { useBarDismissed } from "./terminalFlip";
 import { DeleteChat, PrivacySwitch, ShareChat } from "./ChatSharing";
 
 type Props = {
@@ -30,6 +31,7 @@ type HeaderMenu = "name" | "workstream" | "more" | "info";
 export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDeleted, onFlip, flipped = false }: Props) {
   const queryClient = useQueryClient();
   const { side, hidden } = useChatColumn();
+  const [, , reopenTerminalHelp] = useBarDismissed();
   const [menu, setMenu] = useState<HeaderMenu | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [nameProblem, setNameProblem] = useState<string | null>(null);
@@ -251,6 +253,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
           ? <button className="chat-menu-item" type="button" aria-label="Pin Chat beside the page" title="Pin Chat beside the page" onClick={() => { setMenu(null); setChatHidden(false); }}>Pin panel</button>
           : <button className="chat-menu-item" type="button" aria-label="Hide Chat" title="Hide the chat panel" onClick={() => { setMenu(null); setChatHidden(true); }}>Hide panel</button>}
         {head?.may_delete && <DeleteChat head={head} onDeleted={onDelete} />}
+        {flipped && <button className="chat-menu-item" type="button" title="Show how to connect, use ssh and detach agents" onClick={() => { setMenu(null); reopenTerminalHelp(); }}>Terminal help</button>}
         <button className="chat-menu-item" type="button" onClick={() => setMenu("info")}>Info</button>
         {head?.may_hide && <PrivacySwitch head={head} />}
         {head?.may_share && <ShareChat head={head} />}

@@ -3,7 +3,8 @@
 A machine host that opted in (``TRAX_MACHINE_TERMINAL=1``) holds a request on the
 server for the next terminal to open. Each open runs one bridge: a login shell on a
 pty, and a WebSocket the host dials out to the server, which relays it to the owner's
-browser. The host listens on nothing.
+browser. The host listens on nothing, except that a browser may offer it a direct link
+(``trax/terminal_direct.py``) when a WebRTC library is installed.
 
 Every open and close is written to a log only this user can read, with who the server
 says opened it, so a dishonest server can lie about the opener but cannot hide an open.
@@ -27,16 +28,18 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.posix.host import Frame, decode_frame, decode_winsize, encode_frame
+from trackinizer.lib.posix.host import Frame, decode_frame
 from trackinizer.lib.posix.terminal import Terminal
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.render import echo
+from trackinizer.trax.terminal_direct import DirectRouter
 from trackinizer.wire import wire_terminals
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from trackinizer.trax.terminal_direct import PeerFactory
     from trackinizer.wire.wire_terminals import TerminalWait
 
 
@@ -73,6 +76,8 @@ class TerminalHost:
       shell: The command a terminal runs; the user's login shell when empty.
       drain_sec: How long output may keep flowing after the shell exits, which a job
         it left running on the pty can prolong, before the exit is reported anyway.
+      direct: Makes the peer that answers a browser's offer of a direct link; ``None``
+        when no WebRTC library is installed, which keeps every terminal on the relay.
 
     """
 
@@ -86,7 +91,10 @@ class TerminalHost:
         trax_env: dict[str, str],
         shell: Sequence[str] = (),
         drain_sec: float = 0.5,
+        direct: PeerFactory | None = None,
     ) -> None:
+        self.direct = direct
+        """Makes the peer for a browser's offer; ``None`` keeps every terminal on the relay."""
         self._name = name
         self._url = server_url.replace("http", "ws", 1).rstrip("/")
         self._credential = credential
@@ -243,7 +251,13 @@ class TerminalHost:
                 if self._stop.is_set():
                     ended.set()
                 try:
-                    status = await self._relay(terminal, socket, ended)
+                    router = DirectRouter(
+                        relay=socket.send,
+                        shell=terminal,
+                        factory=self.direct,
+                        ice_servers=tuple(opened.ice_servers),
+                    )
+                    status = await self._relay(terminal, socket, ended, router)
                 finally:
                     with self._lock:
                         self._loops.pop(opened.terminal_id, None)
@@ -254,10 +268,11 @@ class TerminalHost:
         terminal: Terminal,
         socket: ClientConnection,
         ended: asyncio.Event,
+        router: DirectRouter,
     ) -> int:
         """Relay until the shell exits, the server stops it, or the socket closes."""
-        pump = asyncio.create_task(_pump(terminal, socket))
-        reader = asyncio.create_task(_read(terminal, socket))
+        pump = asyncio.create_task(_pump(terminal, router))
+        reader = asyncio.create_task(_read(router, socket))
         stopped = asyncio.create_task(ended.wait())
         # The shell's own exit counts, not only the pty closing: a job it left running
         # keeps the pty open, and would otherwise hide that the shell is gone.
@@ -274,7 +289,8 @@ class TerminalHost:
         for task in (pump, reader, stopped, exited):
             task.cancel()
         with contextlib.suppress(ConnectionClosed):
-            await socket.send(encode_frame(Frame.EXIT, status.to_bytes(4)))
+            await router.exit(status)
+        await router.close()
         return status
 
     def _argv(self) -> list[str]:
@@ -329,16 +345,16 @@ class TerminalHost:
             echo(f"terminal opened by {opened.opener}")
 
 
-async def _pump(terminal: Terminal, socket: ClientConnection) -> None:
+async def _pump(terminal: Terminal, router: DirectRouter) -> None:
     """Send the shell's output until the pty closes."""
     try:
         async for chunk in terminal.output():
-            await socket.send(encode_frame(Frame.OUTPUT, chunk))
+            await router.output(chunk)
     except ConnectionClosed:
         return
 
 
-async def _read(terminal: Terminal, socket: ClientConnection) -> None:
+async def _read(router: DirectRouter, socket: ClientConnection) -> None:
     """Apply the server's frames to the shell; return on STOP or a closed socket."""
     try:
         async for message in socket:
@@ -346,12 +362,9 @@ async def _read(terminal: Terminal, socket: ClientConnection) -> None:
             if frame is None:
                 return
             kind, payload = frame
-            if kind is Frame.INPUT:
-                _ = await terminal.write(payload)
-            elif kind is Frame.RESIZE:
-                _resize(terminal, payload)
-            elif kind is Frame.STOP:
+            if kind is Frame.STOP:
                 return
+            await router.from_relay(kind, payload)
     except ConnectionClosed:
         return
 
@@ -364,18 +377,6 @@ def _decode(message: str | bytes) -> tuple[Frame, bytes] | None:
         return decode_frame(message)
     except ValueError:
         return None
-
-
-def _resize(terminal: Terminal, payload: bytes) -> None:
-    """Resize the pty to a geometry clamped to the limits; ignore a malformed one."""
-    try:
-        rows, cols = decode_winsize(payload)
-    except ValueError:
-        return
-    terminal.set_winsize(
-        min(max(rows, 1), wire_terminals.MAX_ROWS),
-        min(max(cols, 1), wire_terminals.MAX_COLS),
-    )
 
 
 class _LogLine(BaseModel):

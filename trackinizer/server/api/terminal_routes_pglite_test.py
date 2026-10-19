@@ -321,8 +321,11 @@ def _attach(ticket: str, offset: int = 0) -> bytes:
 
 def _opened(response: httpx2.Response) -> tuple[uuid.UUID, str]:
     assert response.status_code == 201, response.text
-    body = from_plain(response.json(), dict[str, str])
-    return uuid.UUID(body["terminal_id"]), body["ticket"]
+    body = from_plain(response.json(), dict[str, object])
+    return uuid.UUID(from_plain(body["terminal_id"], str)), from_plain(
+        body["ticket"],
+        str,
+    )
 
 
 def _code(response: httpx2.Response) -> str:
@@ -438,7 +441,11 @@ async def test_opening_and_using_a_terminal_stores_no_session_and_no_record(
     await asyncio.sleep(0)
 
     assert await _stored(world) == before
-    assert set(from_plain(opened.json(), dict[str, str])) == {"terminal_id", "ticket"}
+    assert set(from_plain(opened.json(), dict[str, object])) == {
+        "terminal_id",
+        "ticket",
+        "ice_servers",
+    }
 
 
 async def _connected(
@@ -503,7 +510,10 @@ async def test_a_browser_that_reconnects_with_an_offset_gets_only_what_it_missed
     task = asyncio.create_task(_run_browser(second, terminal_id))
     second.push(
         Frame.ATTACH,
-        _attach(from_plain(minted.json(), dict[str, str])["ticket"], 2),
+        _attach(
+            from_plain(from_plain(minted.json(), dict[str, object])["ticket"], str),
+            2,
+        ),
     )
 
     assert await second.frame() == (Frame.ACK, (2).to_bytes(8))
@@ -822,7 +832,7 @@ async def test_the_browser_socket_refuses_a_bad_ticket_a_reuse_a_stranger_and_a_
         wire_terminals.TERMINAL_ATTACH_PATH.format(terminal_id=terminal_id),
         headers=world.browser(cookie),
     )
-    ticket = from_plain(minted.json(), dict[str, str])["ticket"]
+    ticket = from_plain(from_plain(minted.json(), dict[str, object])["ticket"], str)
     good = _browser_peer(world, cookie, terminal_id)
     task = asyncio.create_task(_run_browser(good, terminal_id))
     good.push(Frame.ATTACH, _attach(ticket))
@@ -939,7 +949,10 @@ async def test_attach_mints_a_ticket_for_the_opener_and_close_stops_the_shell(
     closed = await world.call("POST", close, headers=world.browser(cookie))
 
     assert (stranger.status_code, no_origin.status_code) == (404, 403)
-    assert len(from_plain(minted.json(), dict[str, str])["ticket"]) == 43
+    assert (
+        len(from_plain(from_plain(minted.json(), dict[str, object])["ticket"], str))
+        == 43
+    )
     assert closed.status_code == 204
     assert await host.frame() == (Frame.STOP, b"")
     host.leave()
@@ -1017,6 +1030,29 @@ async def test_a_token_joins_while_its_owner_is_active_and_not_after(
     )
 
     assert refused.status_code == 401
+
+
+async def test_the_servers_stun_list_reaches_the_open_the_attach_and_the_host_wait(
+    world: _World,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie)
+    await world.wait()
+    monkeypatch.setattr(terminal_hub(app), "ice_servers", ("stun:s.test:3478",))
+
+    opened = await world.open(cookie)
+    offered = await world.wait()
+    attach = wire_terminals.TERMINAL_ATTACH_PATH.format(
+        terminal_id=_opened(opened)[0],
+    )
+    minted = await world.call("POST", attach, headers=world.browser(cookie))
+
+    for response in (opened, offered, minted):
+        assert from_plain(response.json(), dict[str, object])["ice_servers"] == [
+            "stun:s.test:3478",
+        ]
 
 
 if __name__ == "__main__":
