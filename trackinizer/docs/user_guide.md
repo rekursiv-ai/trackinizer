@@ -386,6 +386,14 @@ running is refused. Hosts belong to the computer that started them, so run
 `ls`, `attach` and the rest there. A detached run started in a web terminal is
 still filed in that chat, and outlives the tab and the terminal's limits.
 
+### The agent knows its canvas
+
+A `trax run claude` or `trax run codex` session filed in a chat is told, when
+it starts, that "the canvas" means that chat's, and how to read and change it
+with `trax workspace`. Claude hears it through `--append-system-prompt`, codex
+through `-c developer_instructions`; one you pass yourself wins, and then the
+session is not told. Reattaching to a detached session keeps its canvas.
+
 ### Red boxes reach claude
 
 A `trax run claude` session filed in a chat hears of the red boxes drawn on

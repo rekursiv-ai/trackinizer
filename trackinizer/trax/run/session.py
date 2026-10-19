@@ -135,6 +135,20 @@ _INBOUND_WAIT_SEC: Final = 25.0
 _JOIN_DEADLINE_SEC: Final = 30.0
 
 
+# What a CLI placed on a station is told of it. Its own product may have a canvas too,
+# so "the canvas" is named as the station's. One line with no double quote or
+# backslash, so it is a TOML string as it stands, for codex's ``-c``.
+_CANVAS_NOTE: Final = (
+    "You run under trax run, placed on a Trackinizer station: when the person says "
+    "the canvas, they mean that station's, which $TRAX_WORKSPACE names "
+    "(the workstream is $TRAX_WORKSTREAM), not one of your own product's. "
+    "Read it with `trax workspace`; change it with `trax workspace show trax.subgraph "
+    "--record UUID` (or trax.timeline), `trax workspace navigate ROUTE`, "
+    "`trax workspace highlight UUID,UUID` and `trax workspace hide ID`; "
+    "`trax workspace --help` lists the rest."
+)
+
+
 # The part name a PTY scrape is stored under. A stream adapter follows no
 # file, but every record still belongs to a part and the server resolves one
 # from a basename -- so the stream names itself. A constant rather than a
@@ -946,6 +960,7 @@ def _spawn_and_drain(
         placed=placement_env(placement),
         profile=config.profile,
     )
+    argv = _with_canvas_note(argv, adapter=adapter, placed=placement_env(placement))
     # Run the CLI on a PTY we own rather than letting it inherit the terminal:
     # owning the master fd is what lets the server splice messages into the
     # live session (the human still drives the native TUI). Byte-transparent,
@@ -1093,6 +1108,41 @@ def _with_box_hook(
         return argv, None
     settings = hook.prepare(profile=profile)
     return [argv[0], "--settings", str(settings), *argv[1:]], settings
+
+
+# A placed agent has a canvas only its environment names, and one never told of it looks
+# for its own product's: asked for "the canvas", codex built a ChatGPT page. Each CLI
+# hears of it through its own instruction flag, and one the person passed wins: theirs
+# is deliberate, and a codex ``-c`` of the same key would replace it.
+def _with_canvas_note(
+    argv: list[str],
+    *,
+    adapter: Adapter,
+    placed: Mapping[str, str],
+) -> list[str]:
+    """Return ``argv`` telling the CLI of the station it was placed on, if any."""
+    if "TRAX_WORKSPACE" not in placed:
+        return argv
+    given = tuple(argv[1:])
+    if adapter.name == "claude" and not any(
+        _cli_arg_value(given, flag=flag) is not None
+        for flag in ("--append-system-prompt", "--append-system-prompt-file")
+    ):
+        return [argv[0], "--append-system-prompt", _CANVAS_NOTE, *argv[1:]]
+    if adapter.name == "codex" and not _sets_codex_instructions(given):
+        return [argv[0], "-c", f'developer_instructions="{_CANVAS_NOTE}"', *argv[1:]]
+    return argv
+
+
+def _sets_codex_instructions(args: tuple[str, ...]) -> bool:
+    """Whether a ``-c``/``--config`` in ``args`` sets codex's developer instructions."""
+    values = [
+        arg.partition("=")[2] if arg.startswith("--config=") else args[index + 1]
+        for index, arg in enumerate(args)
+        if arg.startswith("--config=")
+        or (arg in {"-c", "--config"} and index + 1 < len(args))
+    ]
+    return any(value.startswith("developer_instructions") for value in values)
 
 
 def _cli_arg_value(args: tuple[str, ...], flag: str) -> str | None:
