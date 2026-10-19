@@ -1805,16 +1805,20 @@ def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(index: int) -> N
     """
     record = json_loads(FIXTURE[index], dict[str, object])
     failed: list[str] = []
+    # Each path is mistyped several ways; its without-the-field read is one.
+    baselines: dict[object, int] = {}
     for path, changed in mistyped(record):
         records = list(codex.normalize(StringIO(_swapped(index, changed))))
-        missing = _swapped(index, without(record, path))
         try:
             codex.denormalize(records, StringIO())
         except TypeError as error:
             failed.append(f"{path}: {error}")
-        if path not in _KEPT_AS_TEXT and unread(records) > unread(
-            codex.normalize(StringIO(missing)),
-        ):
+        if path in _KEPT_AS_TEXT:
+            continue
+        if path not in baselines:
+            missing = _swapped(index, without(record, path))
+            baselines[path] = unread(codex.normalize(StringIO(missing)))
+        if unread(records) > baselines[path]:
             failed.append(f"{path}: the line reads worse than without the field")
 
     assert failed == [], "\n".join(failed)
