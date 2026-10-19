@@ -21,7 +21,7 @@ export type User = {
   readonly last_login: string | null;
   /**
    * Whether the deployment's staff setting (`STAFF`) names the user, so they read
-   * campaign transcripts. Set on the server, not by any route; it is no role.
+   * staff-only sessions. Set on the server, not by any route; it is no role.
    */
   readonly staff: boolean;
 };

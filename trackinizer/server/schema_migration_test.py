@@ -1623,6 +1623,72 @@ async def test_migration_049_gives_a_machine_the_owner_who_enrolled_it_last(
     assert kept == "kept@x.y"
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_050_opens_every_staff_session_and_audits_the_move(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """A 049 database's ``staff`` sessions come out ``open``, each move logged.
+
+    A ``private`` session stays hidden and an ``open`` one is untouched, so neither
+    is logged. A replay moves nothing and logs nothing more.
+    """
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        sessions = await _seed_audiences(conn)
+
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        audiences = await conn.fetch(
+            "SELECT id, agentsession_audience AS audience FROM inquiries "
+            "WHERE id = ANY($1::uuid[])",
+            list(sessions.values()),
+        )
+        logged = await conn.fetch(
+            "SELECT subject_id, actor, reason, old_agentsession_audience AS old, "
+            "new_agentsession_audience AS new FROM change_log "
+            "WHERE kind = 'agentsession_audience'",
+        )
+        await conn.execute(load_sql("schema.050"))
+        replayed = await conn.fetchval(
+            "SELECT count(*) FROM change_log WHERE kind = 'agentsession_audience'",
+        )
+
+    assert {row["id"]: row["audience"] for row in audiences} == {
+        sessions["staff"]: "open",
+        sessions["private"]: "private",
+        sessions["open"]: "open",
+    }
+    assert [tuple(row) for row in logged] == [
+        (
+            sessions["staff"],
+            "schema.050",
+            "campaign transcripts opened to every reader",
+            "staff",
+            "open",
+        ),
+    ]
+    assert replayed == 1
+
+
+async def _seed_audiences(conn: Conn) -> dict[str, uuid.UUID]:
+    """Insert one session per audience, as 049 left them; return their ids."""
+    sessions = {audience: uuid.uuid4() for audience in ("staff", "private", "open")}
+    for audience, session_id in sessions.items():
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
+            "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
+            "'campaign@service.invalid', 'lead', $2)",
+            session_id,
+            audience,
+        )
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.050.sql'")
+    return sessions
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

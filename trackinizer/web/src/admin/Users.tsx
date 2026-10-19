@@ -166,4 +166,4 @@ function UserRow({ user, now }: { user: User; now: number }) {
 }
 
 /** What the "staff" chip means, as its tooltip. */
-const STAFF_TITLE = "Staff: reads campaign transcripts. Set by the deployment's STAFF setting, not here.";
+const STAFF_TITLE = "Staff: reads staff-only sessions. Set by the deployment's STAFF setting, not here.";
