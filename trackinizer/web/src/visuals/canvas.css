@@ -141,6 +141,11 @@
   /* A floating tile is a header in its strip's flow. */
   .visual-main-strip > .visual-tile-floating, .visual-side-column > .visual-tile-floating { flex: 0 0 auto; }
 }
+/* A phone shows every tile, as the page's own are: a floating one is no header to unfold. */
+@media (max-width: 760px) {
+  .visual-tile-floating { height: min(400px, 48vh) !important; }
+  .visual-mobile-tab-toggle { display: none !important; }
+}
 /* A column that holds nothing in the flow takes no room. */
 @media (min-width: 901px) {
   .visual-side-column-vacant { flex: 0 0 0; min-width: 0; border: 0; overflow: visible; }

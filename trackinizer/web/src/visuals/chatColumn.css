@@ -41,7 +41,11 @@
   .chat-row .chat-strip { order: 2; align-items: center; padding: 0; border: 0; border-top: 2px solid var(--accent); }
   .chat-column-peek { top: auto; right: 0; bottom: 0; left: 0; width: 100%; height: min(480px, 60vh); }
 }
-/* A phone shows Chat alone (ChatColumn hides the workbench): it takes the whole height. */
+/* A phone shows Chat or the workbench (ChatColumn hides the other), whichever takes the whole height; a switch along the bottom takes its own room. */
 @media (max-width: 760px) {
   .chat-column { flex: 1 1 auto; border: 0; }
+  .chat-workbench { flex: 1 1 0; }
+  .chat-phone-switch { order: 3; display: flex; flex: 0 0 auto; border-top: 1px solid var(--line); background: var(--surface); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .chat-phone-switch button { flex: 1; padding: 10px 0; border: 0; background: none; color: var(--muted); font-size: 13px; }
+  .chat-phone-switch button[aria-pressed="true"] { color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
 }

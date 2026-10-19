@@ -99,3 +99,21 @@ export function useChatColumn(): ChatColumnState {
 export function currentChatColumn(): ChatColumnState {
   return state;
 }
+
+/** What a phone shows, one at a time: Chat or the canvas. */
+export type PhoneView = "chat" | "canvas";
+
+/** This tab's alone and never kept, so a reload shows Chat. */
+let phoneView: PhoneView = "chat";
+
+/** Show Chat or the canvas on a phone. */
+export function setPhoneView(view: PhoneView): void {
+  if (view === phoneView) return;
+  phoneView = view;
+  listeners.forEach((listener) => listener());
+}
+
+/** What a phone shows now, kept current wherever it changes. */
+export function usePhoneView(): PhoneView {
+  return useSyncExternalStore(subscribe, () => phoneView);
+}
