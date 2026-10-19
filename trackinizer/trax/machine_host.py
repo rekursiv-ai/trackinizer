@@ -2,7 +2,8 @@
 
 ``trax machine NAME connect`` joins once with the one-use ``enr_`` token read from
 stdin (never argv, which any user on the host can read in a process listing) and
-saves the machine credential it receives, readable by this user only. It then
+saves the machine credential it receives, readable by this user only, under the
+server it joined: one computer may be a machine of several servers. It then
 heartbeats every 15 s until the server answers 410, which means the machine was
 revoked. Lost contact never stops it: a refused connection or a server error is
 retried, sooner at first. Its first heartbeat takes the machine from any host still
@@ -21,6 +22,7 @@ from __future__ import annotations
 from contextlib import closing, suppress
 from importlib import metadata
 from typing import TYPE_CHECKING, Final, Protocol
+from urllib.parse import urlsplit
 
 import getpass
 import os
@@ -107,6 +109,7 @@ class TerminalServing(Protocol):
 def connect(
     name: str,
     *,
+    server: str,
     client_for: Callable[[str], HostClient],
     read_token: Callable[[], str],
     sleep: Callable[[float], None],
@@ -119,6 +122,7 @@ def connect(
 
     Args:
       name: The machine's name, already checked against the name rules.
+      server: The server's URL, which keeps its own credential for ``name``.
       client_for: Returns a client that sends the given key; ``""`` sends none.
       read_token: Returns the enrollment token, read from stdin.
       sleep: Waits the given seconds between heartbeats.
@@ -135,7 +139,7 @@ def connect(
     facts = host_facts(terminal=terminals_for is not None)
     # Sent with the first heartbeat only, and not after a join, which stored them.
     unsent: Facts | None = facts
-    saved = _saved_credential(name)
+    saved = _saved_credential(name, server=server)
     if saved is None:
         token = read_token().strip()
         if not token:
@@ -150,7 +154,7 @@ def connect(
                 host_version=version,
                 facts=facts,
             )
-        _save_credential(name, saved)
+        _save_credential(name, joined=saved, server=server)
         echo(f"joined: machine {name}")
         unsent = None
     terminals = None if terminals_for is None else terminals_for(saved)
@@ -268,9 +272,16 @@ def _host_version() -> str:
         return ""
 
 
-def _saved_credential(name: str) -> JoinResponse | None:
-    """Return the credential saved for ``name``, or ``None`` when none is."""
-    path = state_dir() / "rekursiv-ai" / "trax" / "machines" / f"{name}.credential"
+def _saved_credential(name: str, *, server: str) -> JoinResponse | None:
+    """Return ``name``'s credential from ``server``, or ``None`` when none is saved."""
+    path = (
+        state_dir()
+        / "rekursiv-ai"
+        / "trax"
+        / "machines"
+        / _server_dir(server)
+        / f"{name}.credential"
+    )
     try:
         text = path.read_text()
     except FileNotFoundError:
@@ -286,12 +297,30 @@ def _saved_credential(name: str) -> JoinResponse | None:
 
 # Created with mode 0600 in a 0700 directory before any byte lands, so the secret is
 # never readable by another user; ``O_EXCL`` refuses to overwrite one saved meanwhile.
-def _save_credential(name: str, joined: JoinResponse) -> None:
+def _save_credential(name: str, *, joined: JoinResponse, server: str) -> None:
     """Save the credential the join returned, readable by this user only."""
-    path = state_dir() / "rekursiv-ai" / "trax" / "machines" / f"{name}.credential"
+    path = (
+        state_dir()
+        / "rekursiv-ai"
+        / "trax"
+        / "machines"
+        / _server_dir(server)
+        / f"{name}.credential"
+    )
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as file:
         file.write(joined.model_dump_json())
         file.flush()
         os.fsync(file.fileno())
+
+
+# A credential belongs to the server that issued it: the same name on another server is
+# another machine, which would refuse it. The host and port name the server's directory.
+def _server_dir(url: str) -> str:
+    """Return the directory of the server at ``url``: its host, and its port if set."""
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if not host:
+        raise ClientError(f"{url!r} names no server host")
+    return host if parts.port is None else f"{host}_{parts.port}"

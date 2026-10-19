@@ -67,6 +67,10 @@ All notable trackinizer changes are documented here. This project follows
   its old self to go silent: its first heartbeat takes the machine (`claim:
   take`), and the host it replaced stops. Ctrl-C releases the machine, which
   reads offline at once.
+- `trax machine connect` keeps a machine's credential per server
+  (`machines/<host>[_<port>]/<name>.credential`), so one computer can be a
+  machine of several servers. A credential saved under the old layout is not
+  read: the next `connect` with no NAME enrolls and joins again by itself.
 - `trax env NAME del` reports success when the variable is already gone.
   Variable rows are written before secret values.
 - `trax run` no longer masks a bare PEM armour fragment; full armour lines of

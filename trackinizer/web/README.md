@@ -339,7 +339,7 @@ with one response shape, so the fixtures take one per verb.
   A button in Chat's header moves it to the other side, kept under
   `trackinizer.chat.side`. State that lasts only for the page, hidden and full
   screen, lives with the side in one store (`src/visuals/chatColumnState.ts`), so a
-  reload shows Chat. `Ctrl+\` (⌘\) and the Hide button in its header hide it,
+  reload shows Chat. `Ctrl+\` (⌘\) and Hide panel in its header's ⋯ menu hide it,
   and three docked columns in the workbench hide it until one goes; hidden,
   it leaves a 16 px strip in the accent colour at its edge, and a press on the
   strip shows it. An agent hides and shows it with a `chat` frame
@@ -348,14 +348,20 @@ with one response shape, so the fixtures take one per verb.
   on the strip for 120 ms opens Chat over the canvas at its column width, with no
   reflow, under the top bar and over anything else the workbench draws; it
   folds 300 ms after the pointer and the keyboard have left (`hoverOpen.ts`), and a
-  click anywhere in it, its Pin button, a click on the strip or the hide key stand
-  it beside the canvas again. Alt+Enter makes it fill the main area, the canvas kept
-  mounted and hidden; Esc or Alt+Enter returns. Alt+Enter never sends from a
-  composer. All three are commands in the ⌘K palette, mounted with the column,
-  so they exist only where Chat does. Under 900 px Chat stands under the page at
-  full width. Nothing of Chat covers the canvas while an agent moves it.
-- A station is a named workstream: a canvas with at most one chat, a name and the
-  page it last showed (`src/stations/`). The tab shows one at a time. Its id is the
+  click anywhere in it, Pin panel in its ⋯ menu, a click on the strip or the hide
+  key stand it beside the canvas again. Alt+Enter makes it fill the main area,
+  the canvas kept mounted and hidden; Esc or Alt+Enter returns. Alt+Enter never
+  sends from a composer. All three are commands in the ⌘K palette, mounted with
+  the column, so they exist only where Chat does. At 900 px and narrower Chat
+  stands under the canvas at full width, 480 px or 60% of the screen high,
+  whichever is less. At 760 px and narrower (a phone) Chat and the canvas show
+  one at a time, by a switch along the bottom (Chat | Canvas), Chat first; the
+  other stays mounted, hidden, so Chat's draft, scroll and stream survive a swap,
+  and a reload shows Chat.
+  Nothing of Chat covers the canvas while an agent moves it.
+- A station is a chat: a canvas with at most one conversation, a name and the
+  page it last showed (`src/stations/`), in one of the user's workstreams, or in
+  Scratch when in none. The tab shows one at a time. Its id is the
   one `stations/store.ts` holds, kept in the tab's `sessionStorage` so a reload
   keeps it; a tab with none (a new tab) asks the server (`POST /api/workspaces`,
   the station changed last, or the first), and a station that is gone is
@@ -367,49 +373,41 @@ with one response shape, so the fixtures take one per verb.
   by `usePageSync` at most once every 500 ms, and not for a switch until the
   address is where the switch sent it. The tab's title is `<station name> ·
   Trackinizer`.
-- The stations stand in the app's top bar as a browser's tab groups
-  (`src/topbar/StationGroups.tsx`), one per station in the order they were made,
-  each a coloured title (`--group-1` to `--group-4`, in turn) with its canvas tabs
-  folded behind it; opening one moves no group. Folded, a title counts its tabs,
-  and the open station's names its open tab. The pointer resting on a group, or
-  the keyboard in it, slides its tabs out: the width springs to what they need
-  and each tab follows a beat behind the one before; leaving the bar folds them
-  140 ms later (`FOLD_AFTER_MS`). Folded tabs are inert. A click on another
-  station's title opens it and keeps its tabs out; a click on the open station's
-  keeps them out, and a second folds them. Only the open station's group stays
-  out: one left for another station folds, however the switch came. Another station's tabs come from the
-  station list (`GET /api/workspaces` names each station's tabs and its open one);
-  a click on one asks for that tab (`requestTab` in `src/stations/canvasTabs.ts`)
-  and opens the station, and its canvas opens the tab once the station is on show,
-  since a station's canvas is its open tab and only it knows what that shows. Opening
-  it ends the switch for `usePageSync`, which otherwise waits for the address to
-  show the station's own page, which the tab moves past: every page after would go
-  unwritten, and lost on coming back. A station left while a tab's steps are
-  on their way gets none of the rest: they stay its own, and the canvas finishes them
-  when the station is on show again, before anything can keep the half-restored
-  canvas as the tab's (`interrupt` in `src/visuals/canvasHistory.ts`). The
-  open station's tabs come from its canvas (`publishCanvasTabs`), which makes
-  every change: a click opens one, × closes one while another is left, + makes
-  one, and a double click renames one in place. A double click on the open
-  station's title edits its name in place: Enter or leaving the field saves, Esc
-  keeps the old name, a blank or unchanged name sends nothing, and a taken name
-  says "That name is taken" and keeps the field. `+ Station` makes a fresh station
-  (`unnamed-workstream#N`, no chat yet) and opens it. The chevron opens the
-  station menu (`StationMenu`): a search by name (any case), every station newest
-  opened first, Enter or a click to open one, Esc to close. A press outside the
-  menu, or the keyboard leaving it, closes it; a blur alone does not, since Safari
-  focuses no clicked button. `g ]` and `g [` walk the renamed stations (names that
-  are not `unnamed-workstream#N`) in the order they were made, wrapping; `g s`
-  opens the menu with the search focused; each station is a palette command,
-  "Open station <name>". Chat's header names the station it belongs to. There is
-  no History and no Clear chat: the groups and search replace the first, `+
-  Station` the second.
+- The user's workstreams stand in the app's top bar
+  (`src/topbar/WorkstreamBar.tsx`, `GET /api/workstreams`), pinned ones first,
+  then the rest, in the order the user left them (`PUT /api/workstreams/order`).
+  Each is an Issue; Scratch holds the stations in none. A click on one opens its
+  pinned station, else the one changed last, or makes one when it has none. A
+  double click renames it in place (Enter or leaving the field saves, Esc keeps
+  the old name), and a drag moves it. Its right-click menu has Info (its Issue,
+  and its stations with their sessions), Pin or Unpin, Move left, Move right,
+  Rename and Hide; Scratch's has Info and Rename alone. `+ Workstream` makes
+  `Workstream N`, opens it and edits its name. A station left while a canvas
+  tab's steps are on their way gets none of the rest: they stay its own, and the
+  canvas finishes them when the station is on show again, before anything can
+  keep the half-restored canvas as the tab's (`interrupt` in
+  `src/visuals/canvasHistory.ts`).
+- Chat's header switches stations (`src/visuals/ChatWorkstreamHeader.tsx`). Its
+  name, "Scratch chat" for one never named (`unnamed-workstream#N`), edits the
+  name in place (Enter or leaving the field saves, Esc keeps the old name, a
+  taken name says "You already have a chat with that name") over the chat menu:
+  the stations of its workstream, the pinned ones and then the five changed last,
+  each with Pin and Hide, then `+ New chat` and a search of every station by name,
+  hidden ones too (opening a hidden one shows it again). The workstream chip moves
+  the station to another workstream, made when none has the typed name, and a
+  chip offers the workstream the server suggests. The palette has New chat. There
+  is no History: the chat menu's search replaces it.
 - Chat talks to the server's assistant (`src/visuals/Chat.tsx`). A conversation is
   a science chat: an AgentSession (label `science-chat`, `cli_session_id`
   `chat:<conversation id>`) that the assistant opens. Chat reads the session's
   records; there is no chat store. Its header names the partner
-  (`workspace.partner`) and has the side button, plus Hide, Share and Delete when
-  the head allows them (below). Which conversation Chat shows is
+  (`workspace.partner`) and holds the chat menu and the workstream chip (above),
+  the flip to the station's terminal (`ChatTerminalSide.tsx`), the side button and
+  a ⋯ menu: Clear chat (a new chat on the same canvas), Hide panel or Pin panel,
+  Delete chat forever, Info (the station's and the chat's ids, and the session
+  the station was made for), and Public or Private and Share when the head allows
+  them (below). Flipped, the ⋯ menu adds Close terminal and Terminal help, and
+  grays the items that act on the chat. Which conversation Chat shows is
   the station's `conversation_id`, which the first line binds (the receipt's
   `workspace_id` names the station it went to; a fork is a station of its own, which
   the tab then shows on the page it is on). Any other science chat opens by link: a
@@ -487,24 +485,24 @@ with one response shape, so the fixtures take one per verb.
   opens with the original's lines up to the one picked, so mine among them are
   not waited for as a new line (`linesThrough`). The head also says how often a chat
   was forked and which chat a fork came from.
-- A hidden chat's header says Hidden and a staff chat's Staff only. The head's
-  `may_hide` (its starter, while it is not staff) shows Hide (`HideChat`), which
-  makes it `private` (`setSessionAudience` on its session, which moves every
-  session of the chat), or Unhide once hidden; the head is then read again, and a
-  refusal is one toast line, `session_not_owner` and `session_staff` in sentences
-  of their own.
+- A private chat's header says Private and a staff chat's Staff only. The head's
+  `may_hide` (its starter, while it is not staff) shows the Public or Private
+  switch in the ⋯ menu (`PrivacySwitch`), which says which the chat is; a click
+  makes a public chat `private` (`setSessionAudience` on its session, which moves
+  every session of the chat), or a private one `open` again; the head is then
+  read again, and a refusal is one toast line, `session_not_owner` and
+  `session_staff` in sentences of their own.
 - The head says what the caller may do (`may_share`, `may_delete`,
   `shared_with`), and Chat's header shows only that. Share (`ShareChat`,
   `src/visuals/ChatSharing.tsx`) opens a panel listing `shared_with`, each with
   Remove, and a field to add an address; each change is `PUT`/`DELETE
   /api/chats/<id>/shares/<email>`, after which the head is read again, since it
-  is the list. Delete (`DeleteChat`) asks "Delete this chat? Its forks keep
-  their copies." first; once the server has deleted it the station holds no
-  conversation (its cached `conversation_id` is null), and Chat closes its tab the
-  way closing any tab does (`closeStation`): it deletes the now-empty station
-  (`DELETE /api/workspaces/<id>`, refused 409 while a chat is still held) and opens
-  the station beside it (`neighbourOf`). When it was the only station it stays, on
-  an empty chat whose next line starts a new one. A refused share or delete is one
+  is the list. Delete chat forever (`DeleteChat`) asks "Delete this chat? Its
+  forks keep their copies." first; once the server has deleted it the station
+  holds no conversation (its cached `conversation_id` is null), and Chat hides the
+  now-empty station (`hideStation`, `PATCH /api/workspaces/<id>`) and opens the
+  visible station beside it (`neighbourOf`). When there is none it stays, on an
+  empty chat whose next line starts a new one. A refused share or delete is one
   toast line:
   `chat_not_starter`, `chat_has_other_posters` and `chat_staff_only` (a share of a
   staff chat with someone who holds no staff; the code is the error's `code`, which
@@ -644,9 +642,14 @@ with one response shape, so the fixtures take one per verb.
   or expanding one frames the graph again.
 - The app has one bar, along the top over Chat and the canvas
   (`src/topbar/TopBar.tsx`), and no sidebar: the logo (home, the graph), Go,
-  Search (⌘K), New for the kind on screen (its icon alone), the stations as tab
-  groups (with the canvas only), the Workbench and the account. Go is a menu of
-  the pages: Graph, Console, Activity, then each kind, the page on show marked,
+  Search (⌘K), New for the kind on screen (its icon alone), the user's
+  workstreams and `+ Workstream` (with the canvas only), the pin, the Workbench
+  and the account. It folds away, leaving an 8 px strip along the window's top
+  (Open app bar): the pointer resting on the strip or the bar for 120 ms, or a
+  click or tap on the strip, opens it, and it folds 300 ms after the pointer and
+  the keyboard have left (`hoverOpen.ts`), or, on a touch screen, at a press
+  outside it. The pin (Keep the bar open) holds it open until a reload. Go is a
+  menu of the pages: Graph, Console, Activity, then each kind, the page on show marked,
   each with its `g` keys where it has them; a link followed closes it, and so do
   a press outside and Esc, which gives focus back to its button. While a
   workbench is mounted, the sliders button opens the Workbench menu: the visual
@@ -654,9 +657,8 @@ with one response shape, so the fixtures take one per verb.
   `src/app/workbenchSlot.tsx`, that the canvas draws into, mounted while the
   menu is closed). Settings has a Close link in its header, back to the last page
   before Settings or Admin, or the graph; the page is as wide as its sections, so
-  Close stands at their edge. On a phone the bar keeps the width, the open
-  station's tab name and the account's email are left out, and Go reaches every
-  page.
+  Close stands at their edge. On a phone (760 px and narrower) `+ Workstream`
+  shows its + alone, the account's email stays hidden, and Go reaches every page.
 - The account stands at the bar's end, as Google's does (`AccountMenu.tsx`): the
   avatar alone at rest, which the pointer resting on it widens to show the email
   and the role. A click opens the menu: the account, Your settings, Admin (for
@@ -890,8 +892,10 @@ with one response shape, so the fixtures take one per verb.
   ⠿ handle, which also moves by the arrow keys (16 px, 48 with Shift) and never
   docks. A press on the bar that stays within 4 px is a click, which focuses;
   the fold button folds the tile to its bar and unfolds it. Controls on the bar
-  are not part of the bar: a press on one starts nothing. Under 900 px the tile
-  is a plain header in the page's flow and does not move by the bar. A move
+  are not part of the bar: a press on one starts nothing. At 900 px and narrower
+  the tile stands in the page's flow and does not move by the bar: a header whose
+  Expand shows it 400 px or 48% of the screen high, whichever is less, and at
+  760 px and narrower (a phone) that high from the start, with no Expand. A move
   is a transform on the tile alone, kept inside the stage, and the canvas takes
   the place once, on release. The place and the fold are kept per visual type in
   `ui.tiles` (`{collapsed, place: {left, top} | null}`), so they survive a

@@ -52,6 +52,10 @@ that contract over Postgres + HTTP.
 
 ## The UI
 
+New to the web app? [`docs/user_guide.md`](trackinizer/docs/user_guide.md)
+walks through it and `trax` end to end: signing in, Chat and the canvas,
+terminals on your own machine, and agent sessions.
+
 The web app browses the same records the API serves. Its source is `web/`
 ([`web/README.md`](trackinizer/web/README.md)), and the package ships it
 built: `trackinizer` serves it at `/app/`, and `/` leads there. To use it on
@@ -107,12 +111,12 @@ assistant or your own helper:
 3. Run your helper in a terminal, with your Claude or Codex CLI:
 
 ```bash
-uv tool install trackinizer && trax profile url to <server URL> && trax profile token to <TOKEN>
+uv tool install git+https://github.com/rekursiv-ai/trackinizer && trax profile url to <server URL> && trax profile token to <TOKEN>
 trax helper claude
 ```
 
 With "My local helper" chosen and no helper running, Chat says so and sends
-nothing. [`docs/api.md`](docs/api.md) has the rules.
+nothing. [`docs/api.md`](trackinizer/docs/api.md) has the rules.
 
 ## The model
 

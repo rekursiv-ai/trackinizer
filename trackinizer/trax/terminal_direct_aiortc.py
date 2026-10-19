@@ -1,7 +1,8 @@
 """The aiortc peer for a direct terminal link, present only where aiortc is installed.
 
 aiortc is not a dependency of this package: a user who wants the direct link installs
-it into their own tool environment (``uv tool install --with aiortc trackinizer``).
+it into their own tool environment
+(``uv tool install --with aiortc git+https://github.com/rekursiv-ai/trackinizer``).
 Nothing here imports it until a browser offers a link, and :func:`aiortc_peer_factory`
 says whether it is installed without importing it.
 """

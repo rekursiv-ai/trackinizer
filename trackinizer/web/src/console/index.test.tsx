@@ -894,7 +894,7 @@ test("My campaigns reads the sessions of the campaigns the person launched, and 
   }
 });
 
-test("an empty My campaigns says a campaign's sessions are staff only to a person who holds no staff", async () => {
+test("an empty My campaigns says only that nothing matches, staff or not: campaign sessions are open", async () => {
   const said = async (profile: typeof PROFILE) => {
     serve();
     const { unmount } = renderConsole(profile);
@@ -905,7 +905,7 @@ test("an empty My campaigns says a campaign's sessions are staff only to a perso
     return note.textContent;
   };
 
-  expect(await said(PROFILE)).toBe("No records match this view: your campaigns' sessions are staff only, and you hold no staff.");
+  expect(await said(PROFILE)).toBe("No records match this view.");
   expect(await said({ ...PROFILE, read_audiences: ["open", "private", "staff"] })).toBe("No records match this view.");
 });
 

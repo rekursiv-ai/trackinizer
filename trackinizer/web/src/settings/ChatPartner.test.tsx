@@ -41,7 +41,7 @@ test("choosing the local helper writes a partner operation at the canvas's revis
     call: "POST /api/workspaces/w-ada/operations", body: { revision: 4, operation: { kind: "partner", choice: "local" } },
   }), FAST);
   await waitFor(() => expect(region.getByRole("radio", { name: /My local helper/ })).toHaveProperty("checked", true), FAST);
-  const setup = `uv tool install trackinizer && trax profile url to ${location.origin} && trax profile token to <TOKEN>`;
+  const setup = `uv tool install git+https://github.com/rekursiv-ai/trackinizer && trax profile url to ${location.origin} && trax profile token to <TOKEN>`;
   expect(region.getByText(setup)).toBeTruthy();
   expect(region.getByText("trax helper claude")).toBeTruthy();
   fireEvent.click(region.getAllByRole("button", { name: "Copy" })[0]!);

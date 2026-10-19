@@ -185,10 +185,10 @@ test("a failed Allow says so and leaves the machine unoffered", async () => {
 
 const help = () => document.querySelector<HTMLDetailsElement>("details.chat-terminal-help")!;
 const SECTIONS: readonly (readonly [string, readonly string[]])[] = [
-  ["Connect this machine", [`uv tool install trackinizer && trax profile url to ${location.origin} && trax profile token to <TOKEN>`]],
+  ["Connect this machine", [`uv tool install git+https://github.com/rekursiv-ai/trackinizer && trax profile url to ${location.origin} && trax profile token to <TOKEN>`]],
   ["Over ssh", ["ssh HOST"]],
   ["Detached agents", ["trax run --detach --name NAME claude", "trax run ls", "trax run attach NAME", "trax run log NAME --follow", "trax run stop NAME"]],
-  ["Typing feels slow?", ["uv tool install --with aiortc trackinizer"]],
+  ["Typing feels slow?", ["uv tool install --with aiortc git+https://github.com/rekursiv-ai/trackinizer"]],
 ];
 
 test("the help has a section per job, each command in code with its own Copy that writes it", async () => {
@@ -196,7 +196,9 @@ test("the help has a section per job, each command in code with its own Copy tha
   vi.stubGlobal("navigator", { clipboard: { writeText } });
   mount([machine("gx10")]);
   await screen.findByText("terminal view");
-  expect(within(help()).getByRole("region", { name: "Reconnecting", hidden: true }).textContent).toContain("60 minutes");
+  const reconnecting = within(help()).getByRole("region", { name: "Reconnecting", hidden: true }).textContent;
+  expect(reconnecting).toContain("no browser attached for a minute ends");
+  expect(reconnecting).toContain("60 minutes");
   for (const [name, commands] of SECTIONS) {
     const section = within(help()).getByRole("region", { name, hidden: true });
     const buttons = within(section).getAllByRole("button", { name: "Copy", hidden: true });

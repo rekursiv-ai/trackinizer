@@ -549,6 +549,7 @@ def test_connect_hands_the_host_loop_stdin_and_a_client_per_key(
     with client_for("trax_machine_x") as host:
         assert (host.base_url, host.api_key) == ("https://server", "trax_machine_x")
     assert seen["name"] == "cloud-ab12cd34"
+    assert seen["server"] == "https://server"
     assert seen["read_token"] == sys.stdin.readline
 
 
@@ -697,7 +698,10 @@ def test_the_host_stays_on_the_relay_and_names_the_fix_when_the_library_is_missi
     assert host.direct is None
     out = capsys.readouterr().out
     assert "direct terminal link: off" in out
-    assert "uv tool install --with aiortc trackinizer" in out
+    assert (
+        "uv tool install --with aiortc git+https://github.com/rekursiv-ai/trackinizer"
+        in out
+    )
 
 
 def test_the_direct_link_can_be_switched_off_though_the_library_is_installed(

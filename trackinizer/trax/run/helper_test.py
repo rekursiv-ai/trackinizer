@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, cast, override
 
 import json
@@ -37,7 +38,6 @@ from trackinizer.wire.wire_sessions import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
     from treekle import PlainTree
 
@@ -678,6 +678,26 @@ def test_memory_survives_a_corrupt_or_missing_file(tmp_path: Path) -> None:
     assert Memory(path).get(FIRST) is None
     Memory(path).put(FIRST, "c1")
     assert Memory(path).get(FIRST) == "c1"
+
+
+def test_memory_writes_sorted_utf8_json_through_a_temp_file_in_new_parents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "state" / "trax" / "helper.json"
+    written: list[tuple[str, str | None]] = []
+    write_text = Path.write_text
+
+    def record(self: Path, data: str, encoding: str | None = None) -> int:
+        written.append((self.name, encoding))
+        return write_text(self, data=data, encoding=encoding)
+
+    monkeypatch.setattr(Path, name="write_text", value=record)
+    Memory(path).put(SECOND, cli_session_id="c2")
+    Memory(path).put(FIRST, cli_session_id="c1")
+    assert written == [("helper.tmp", "utf-8")] * 2
+    assert path.read_text(encoding="utf-8") == f'{{"{FIRST}": "c1", "{SECOND}": "c2"}}'
+    assert not path.with_suffix(".tmp").exists()
 
 
 def test_main_splits_its_own_flags_from_the_clis(

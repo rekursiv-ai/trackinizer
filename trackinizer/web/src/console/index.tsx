@@ -272,7 +272,6 @@ export function ConsoleView() {
               filter={filter}
               state={state}
               empty={!visible.length}
-              staffOnly={scope === "campaigns" && !profile.read_audiences?.includes("staff")}
             />
             <Lines
               key={`${JSON.stringify(filter)}|${view.level}`}
@@ -473,21 +472,11 @@ const RAIL: PanelSpec = { id: "console.rail", name: "views and filters", side: "
 const RANGE_FACETS_MS = 7 * 24 * 3_600_000;
 
 /** Why the feed shows nothing, when it does not: still loading, no agent picked, or nothing matching. */
-/**
- * Why the feed shows nothing, if it does not. A campaign's sessions are staff only, so
- * My campaigns of a person who holds no staff (`staffOnly`) says so.
- */
-function FeedNote({ filter, state, empty, staffOnly }: { filter: FeedFilters | null | undefined; state: FeedState; empty: boolean; staffOnly: boolean }) {
+function FeedNote({ filter, state, empty }: { filter: FeedFilters | null | undefined; state: FeedState; empty: boolean }) {
   if (filter === null) return <p className="unset">No agent matches this view's picks.</p>;
   if (filter === undefined || (state.loading && !state.held.length)) return <p className="unset">Loading…</p>;
   if (state.error || !empty) return null;
-  return (
-    <p className="unset">
-      {staffOnly
-        ? "No records match this view: your campaigns' sessions are staff only, and you hold no staff."
-        : "No records match this view."}
-    </p>
-  );
+  return <p className="unset">No records match this view.</p>;
 }
 
 /** Where a line with no target goes, each chip with a button that leaves it out of this view's sends. */

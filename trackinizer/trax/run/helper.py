@@ -9,7 +9,7 @@ session of its own (``cli_session_id`` ``chat:<id>``, label ``science-chat``,
 account the first poster), and the helper records the lines posted there, and its
 answers, as that session's records. Each conversation is also one CLI conversation:
 its first line starts one and every later one resumes it (``claude --resume``,
-``codex exec resume``), so a chat reopened from History goes on where it left off.
+``codex exec resume``), so a chat opened again later goes on where it left off.
 The first line of a fork names the line of another chat it starts from: the helper
 opens the fork's session with that chat's lines up to it, links the two, and tells the
 CLI those lines with the first turn, since a new CLI conversation has not heard them.

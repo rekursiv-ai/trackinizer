@@ -1229,7 +1229,7 @@ test("every part of the session is read, in order", async () => {
 });
 
 const SHARED_LINE = "Ask your admin to set up a shared Chat assistant, or set up a local one:";
-const SETUP = `uv tool install trackinizer && trax profile url to ${location.origin} && trax profile token to <TOKEN>`;
+const SETUP = `uv tool install git+https://github.com/rekursiv-ai/trackinizer && trax profile url to ${location.origin} && trax profile token to <TOKEN>`;
 const emptyPanel = () => document.querySelector(".chat-panel")!.textContent!;
 
 test.each([

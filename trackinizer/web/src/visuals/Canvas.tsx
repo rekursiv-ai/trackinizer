@@ -889,7 +889,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         )}
         {sideColumn("side")}
         {workspace && panes.length === 0 && <p className="visual-empty">
-          Nothing on this canvas. Go to a page, or open a visual from Workbench in the sidebar.
+          Nothing on this canvas. Go to a page, or open a visual from the Workbench menu in the top bar.
         </p>}
         {panes.map((pane, index) => pane.placement === "floating" && pane.type !== PAGE ? renderTile(pane, index) : null)}
         {browse && renderTile(browse, panes.indexOf(browse))}

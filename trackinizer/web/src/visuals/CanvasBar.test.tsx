@@ -307,7 +307,7 @@ test("with home set to empty, Home clears the canvas", async () => {
 
   fireEvent.click(button("Home"));
 
-  await waitFor(() => expect(screen.getByText(/Nothing on this canvas/)).toBeTruthy(), { interval: 1 });
+  await waitFor(() => expect(screen.getByText(/Nothing on this canvas\. .*Workbench menu in the top bar\./)).toBeTruthy(), { interval: 1 });
   expect(sent()).toEqual([{ kind: "hide", instance_id: "page" }, { kind: "hide", instance_id: "timeline" }]);
   expect(location.hash).toBe("#/list/Issue");
 });
