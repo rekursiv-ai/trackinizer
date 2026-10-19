@@ -21,7 +21,14 @@ from treekle import from_plain, json_loads
 import psutil
 import pytest
 
-from trackinizer.lib.agent.sessions import claude, convert, fuse, normalized
+from trackinizer.lib.agent.sessions import (
+    claude,
+    codex,
+    convert,
+    fuse,
+    gemini,
+    normalized,
+)
 from trackinizer.lib.agent.sessions.convert import (
     FileResult,
     _diff,
@@ -824,6 +831,13 @@ def test_a_known_but_unconvertible_format_is_refused_by_name(tmp_path: Path) -> 
     assert convert_file(path, "auto", "json", False).error == (
         "unsupported session format: sagent"
     )
+
+
+def test_each_format_names_its_own_adapter() -> None:
+    assert convert._adapter("claude") is claude
+    assert convert._adapter("codex") is codex
+    assert convert._adapter("gemini") is gemini
+    assert convert._adapter("json") is normalized
 
 
 def test_an_empty_normalized_document_is_readable(tmp_path: Path) -> None:

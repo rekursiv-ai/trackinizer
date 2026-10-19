@@ -391,13 +391,15 @@ def _write_line(
 def _codex_residual(
     source: Mapping[str, object],
     consumed: Iterable[str] = (),
+    *,
+    kind: str = "",
 ) -> dict[str, PlainTree]:
     """Preserve residual fields while escaping provider dollar keys."""
     extra = extract_unmodeled_fields(source, consumed)
     dollar = {key: extra.pop(key) for key in tuple(extra) if key.startswith("$")}
     if dollar:
         extra["$wire"] = {"order": list(source), "values": dollar}
-    if list(source) != _canonical_order(source):
+    if list(source) != _canonical_order(source, kind=kind):
         extra["$native_order"] = list(source)
     return extra
 
@@ -405,9 +407,16 @@ def _codex_residual(
 # The writer's own rule, so the reader can ask whether storing the line's order would
 # say anything the table does not: table keys the payload has, then anything the table
 # never named, which is how :func:`_ordered` splices.
-def _canonical_order(source: Mapping[str, object]) -> list[str]:
+#
+# ``kind`` names a payload that carries no ``type`` of its own -- a ``compacted`` line
+# -- since the writer orders it by the line's kind; without it such a line's order was
+# never stored, and one written in another order came back in the table's.
+def _canonical_order(source: Mapping[str, object], *, kind: str = "") -> list[str]:
     """Return the key order :data:`_ORDER` reproduces for this payload."""
-    order = payload_orders().get(from_plain(source.get("type"), str, default=""), ())
+    order = payload_orders().get(
+        kind or from_plain(source.get("type"), str, default=""),
+        (),
+    )
     return [key for key in order if key in source] + [
         key for key in source if key not in order
     ]
@@ -555,7 +564,9 @@ def _write_compacted(
     stated = "$history" in extra or bool(item.history)
     markers = from_plain(extra.pop("$history", []), list[object])
     payload: dict[str, object] = {}
-    if (item.summary is not None and "message" in extra) or not stated:
+    if (
+        item.summary is not None and ("message" in extra or "$message" in extra)
+    ) or not stated:
         # ``message`` only where the line stated one. Codex seals the summary
         # in the trailing marker instead, and writing it to both would invent a
         # key 8 of 8 captured lines leave empty.
@@ -1732,7 +1743,10 @@ def _read_compacted(
         consumed.add("message")
     if isinstance(payload.get("replacement_history"), list):
         consumed.add("replacement_history")
-    extra = _codex_residual(payload, consumed)
+    extra = _codex_residual(payload, consumed, kind="compacted")
+    # Only a non-empty ``message`` is the summary; an empty one leaves it sealed.
+    if stated is not None and stated != "":
+        extra["$message"] = True
     # WHICH shape the history was stored in, so the writer rebuilds the entry
     # list rather than inventing one. Axiom 2: an empty list is a value.
     if "replacement_history" in consumed:

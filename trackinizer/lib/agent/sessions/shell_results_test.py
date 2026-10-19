@@ -465,6 +465,22 @@ def test_a_bare_utility_name_lifts() -> None:
     assert lifted.path == "a.txt"
 
 
+@pytest.mark.parametrize("path", ["XX.txt", "a{b.txt", "a}b.txt"])
+def test_a_word_bash_does_not_expand_is_a_literal_path(path: str) -> None:
+    """Only a glob character or a ``{...}`` PAIR expands; a lone brace is literal."""
+    shell = ShellCommandResult(
+        call_id="c1",
+        command=("/bin/bash", "-lc", f"cat {path}"),
+        stdout="body\n",
+        exit_code=0,
+    )
+
+    lifted = lift_shell_result(shell)
+
+    assert isinstance(lifted, FileReadResult)
+    assert lifted.path == path
+
+
 def test_a_utility_from_an_unexpected_directory_returns_none() -> None:
     """A path ending in the name but living elsewhere is another program."""
     shell = ShellCommandResult(
@@ -631,6 +647,61 @@ def test_an_edited_quoted_heredoc_write_rewrites_its_content() -> None:
     assert shell_results.rewrite_shell_source(script, result) == (
         "/usr/bin/printf %s 'new\n' > f\n"
     )
+
+
+def test_a_write_keeps_the_stdout_it_printed_and_a_read_leaves_it_to_content() -> None:
+    """A write's own output survives replay; a read's IS the file, so it is not kept.
+
+    Storing a read's stdout in ``$shell`` too would hold the file's bytes twice.
+    """
+    write = ShellCommandResult(
+        call_id="c1",
+        command=("/usr/bin/tee", "a.txt"),
+        stdout="echoed\n",
+        exit_code=0,
+    )
+    read = replace(write, command=("/bin/cat", "a.txt"))
+    lifted_write = lift_shell_result(write)
+    lifted_read = lift_shell_result(read)
+    assert lifted_write is not None
+    assert lifted_read is not None
+
+    assert shell_result_for_replay(lifted_write) == write
+    assert dict(lifted_read.extra)["$shell"] == {
+        "command": ("/bin/cat", "a.txt"),
+        "exit_code": 0,
+    }
+    assert shell_result_for_replay(lifted_read) == read
+
+
+def test_a_write_row_that_states_no_content_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every write row states its bytes; a matcher that did not is a defect."""
+    operation = shell_results.Operation(
+        act="write",
+        path="a.txt",
+        span=(0, 0),
+        content=None,
+        ranges=(),
+        chdir=None,
+        command=(0, 0),
+        redirect=">",
+    )
+
+    def classify(script: str) -> shell_results.Operation:
+        del script
+        return operation
+
+    monkeypatch.setattr(shell_results, "_operation", classify)
+    shell = ShellCommandResult(call_id="c1", command=("printf",), exit_code=0)
+
+    with pytest.raises(ValueError, match="content is not None"):
+        lift_shell_result(shell)
+
+
+def test_a_native_file_result_has_no_shell_to_replay() -> None:
+    assert shell_result_for_replay(FileReadResult(call_id="c1", path="a")) is None
 
 
 def test_replay_preserves_stderr_from_the_shell_result() -> None:

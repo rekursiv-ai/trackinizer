@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, cast, override
 from unittest import mock
 
 import asyncio
@@ -706,6 +706,25 @@ class TestRelayBranchEdges:
         asyncio.run(relay._forward_input(3))
         assert child.written == []
 
+    def test_forward_input_stops_when_the_child_refuses_keystrokes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        child = _RefusingChild()
+        observed: list[bytes] = []
+        relay = Relay(child, on_input=observed.append)
+        reads = iter([b"keys", b""])
+
+        def read(fd: int, size: int) -> bytes:
+            del fd, size
+            return next(reads)
+
+        monkeypatch.setattr("trackinizer.lib.posix.relay._readable", _true_async)
+        monkeypatch.setattr(os, "read", read)
+        asyncio.run(relay._forward_input(3))
+        assert child.written == [b"keys"]
+        assert observed == []
+
     def test_threaded_submit_logs_master_death(
         self,
         caplog: pytest.LogCaptureFixture,
@@ -818,6 +837,15 @@ class _FakeChild:
 
     async def close(self) -> None:
         self.calls.append("close")
+
+
+class _RefusingChild(_FakeChild):
+    """A :class:`Child` whose pty has closed: it accepts no more keystrokes."""
+
+    @override
+    async def write(self, data: bytes) -> bool:
+        self.written.append(data)
+        return False
 
 
 async def _false_async(*_args: object) -> bool:
