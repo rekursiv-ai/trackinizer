@@ -1263,15 +1263,13 @@ async def settings_refs_for_chat(
 
     """
     async with store.engine.acquire() as conn:
-        station = await conn.fetchrow(
-            "SELECT id, station->>'name' AS name, station->>'workstream_id' "
-            "AS workstream_id, station->'suggestion' AS suggestion, "
-            "station->'campaign' AS campaign FROM visual_workspaces "
+        row = await conn.fetchrow(
+            "SELECT id, station FROM visual_workspaces "
             "WHERE user_id = $1 AND station->>'conversation_id' = $2",
             user_id,
             str(conversation_id),
         )
-    if station is None:
+    if row is None:
         workstream_id = await open_scratch(
             store.engine,
             store=store,
@@ -1283,8 +1281,12 @@ async def settings_refs_for_chat(
             workstream_issue_id=workstream_id,
             personal_artifact_id=await open_personal_settings(store, email=email),
         )
-    legacy = from_plain(station["campaign"], dict[str, object], default=None)
-    station_id = from_plain(station["id"], uuid.UUID)
+    stored = from_plain(row["station"], dict[str, object])
+    # The station model reads every key, the suggestion included: treekle builds
+    # dataclasses only, so ``from_plain`` refuses any stored pydantic value.
+    station = StationData.model_validate(stored)
+    legacy = from_plain(stored.get("campaign"), dict[str, object], default=None)
+    station_id = from_plain(row["id"], uuid.UUID)
     if legacy is not None and session_id is not None:
         moved = await _seed_legacy_campaign(
             store,
@@ -1300,7 +1302,7 @@ async def settings_refs_for_chat(
                     station_id,
                     user_id,
                 )
-    workstream_id = from_plain(station["workstream_id"], uuid.UUID, default=None)
+    workstream_id = station.workstream_id
     if workstream_id is None:
         workstream_id = await open_scratch(
             store.engine,
@@ -1308,17 +1310,12 @@ async def settings_refs_for_chat(
             user_id=user_id,
             email=email,
         )
-    suggestion = from_plain(
-        station["suggestion"],
-        WorkstreamSuggestion,
-        default=None,
-    )
     return WorkspaceSettingsRefs(
         workstream_issue_id=workstream_id,
         session_id=session_id,
         personal_artifact_id=await open_personal_settings(store, email=email),
-        name=from_plain(station["name"], str, default=None),
-        suggestion=suggestion,
+        name=station.name,
+        suggestion=station.suggestion,
     )
 
 
