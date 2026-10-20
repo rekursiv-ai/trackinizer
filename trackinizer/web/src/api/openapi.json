@@ -20781,7 +20781,7 @@
     },
     "/api/terminals/machines": {
       "get": {
-        "description": "List the caller's own machines, and their live terminals for a station.\n\nArgs:\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n  workspace: The station whose live terminals to list.\n\nReturns:\n  machines: The caller's machines, each with whether it can take a terminal now;\n    and ``terminals``, the caller's live terminals opened from ``workspace``.",
+        "description": "List the caller's own machines, and their live terminals for a station.\n\nThe configured assistant names the person it answers as ``owner`` and lists that\nperson's machines, so it offers a terminal only on one they have. It opens none:\nonly the person's own browser does.\n\nArgs:\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner, or the assistant's agent key.\n  workspace: The station whose live terminals to list.\n  owner: The person the assistant lists for, a writer or admin; only the\n    assistant may name one.\n\nReturns:\n  machines: The owner's machines, newest first, each with whether it can take a\n    terminal now; and ``terminals``, the owner's live terminals opened from\n    ``workspace``.\n\nRaises:\n  HTTPException: 403 ``terminal_forbidden`` for a key, a service account, anyone\n    but the assistant naming an ``owner``, and an owner who is not a writer.",
         "operationId": "list_terminal_machines_route_api_terminals_machines_get",
         "parameters": [
           {
@@ -20799,6 +20799,22 @@
                 }
               ],
               "title": "Workspace"
+            }
+          },
+          {
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Owner"
             }
           }
         ],

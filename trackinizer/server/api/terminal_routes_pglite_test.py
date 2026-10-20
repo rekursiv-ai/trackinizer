@@ -24,7 +24,7 @@ from trackinizer.server.api._deps import terminal_hub
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import clear_identity_override
 from trackinizer.server.auth import create_api_key
-from trackinizer.server.config import Config
+from trackinizer.server.config import Assistant, Config
 from trackinizer.server.session import SESSION_COOKIE_NAME, set_session_cookie
 from trackinizer.wire import wire_terminals
 from trackinizer.wire.wire_machine_host import (
@@ -574,6 +574,75 @@ async def test_the_listing_names_every_live_terminal_of_the_station_with_its_sur
         {"terminal_id": str(second), "machine": "gx10", "surface": "tile-1"},
     ]
     assert (other["machines"], other["terminals"]) == ([], [])
+
+
+async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
+    world: _World,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        app.state,
+        "config",
+        Config(
+            session_secret=_SESSION_KEY,
+            session_max_age_seconds=600,
+            assistant=Assistant(actor="kb", email="kb@x.y"),
+        ),
+        raising=False,
+    )
+    ada = await world.person("ada@x.y")
+    bob = await world.person("bob@x.y")
+    _ = await world.person("vic@x.y", role="viewer")
+    assistant = {
+        "Authorization": f"Bearer {await world.key(await world.person('kb@x.y'))}",
+    }
+    cookie = world.cookie(ada)
+    await world.join(cookie, name="laptop")
+    await world.join(cookie, name="gx10")
+    await world.wait()
+    workspace, _ = await world.station(ada)
+    path = wire_terminals.TERMINAL_MACHINES_PATH
+
+    def owned(email: str) -> str:
+        return f"{path}?owner={email}&workspace={workspace}"
+
+    for_ada = await world.call("GET", owned("ada@x.y"), headers=assistant)
+    for_bob = await world.call("GET", owned("bob@x.y"), headers=assistant)
+    for_viewer = await world.call("GET", owned("vic@x.y"), headers=assistant)
+    as_itself = await world.call("GET", path, headers=assistant)
+    ada_names_herself = await world.call(
+        "GET",
+        owned("ada@x.y"),
+        headers=world.browser(cookie),
+    )
+    bob_names_ada = await world.call(
+        "GET",
+        owned("ada@x.y"),
+        headers=world.browser(world.cookie(bob)),
+    )
+
+    assert for_ada.status_code == 200, for_ada.text
+    assert from_plain(for_ada.json(), dict[str, object]) == {
+        "machines": [
+            {
+                "name": "gx10",
+                "status": "online",
+                "terminal_ready": True,
+                "confirmed": True,
+            },
+            {
+                "name": "laptop",
+                "status": "online",
+                "terminal_ready": False,
+                "confirmed": True,
+            },
+        ],
+        "terminals": [],
+    }
+    assert from_plain(for_bob.json(), dict[str, object])["machines"] == []
+    refused = (for_viewer, as_itself, ada_names_herself, bob_names_ada)
+    assert [each.status_code for each in refused] == [403] * 4
+    assert {_code(each) for each in refused} == {"terminal_forbidden"}
 
 
 async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_machine(
