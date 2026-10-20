@@ -4,8 +4,20 @@ import { FILES, TREE_DIFF } from "./testing";
 
 test("a files document reads back as written, its base too", () => {
   const doc = parseFilesDoc(JSON.stringify(FILES));
-  expect(doc).toEqual(FILES);
+  expect(doc).toEqual({ ...FILES, copied: [] });
   expect(doc?.base).toBe("origin/main");
+});
+
+test("a document filed before copied trees existed reads with none", () => {
+  expect(parseFilesDoc(JSON.stringify({ ...FILES, copied: undefined }))?.copied).toEqual([]);
+});
+
+test("a document's copied trees read back, a directory with its trailing slash and a single file alike", () => {
+  const copied = [
+    { path: "node_modules/", files: 1790 },
+    { path: "NOTES.md", files: 1 },
+  ];
+  expect(parseFilesDoc(JSON.stringify({ ...FILES, copied }))?.copied).toEqual(copied);
 });
 
 test.each([
@@ -17,6 +29,13 @@ test.each([
   ["a base that is not text", { ...FILES, base: 7 }],
   ["no more_files", { ...FILES, more_files: undefined }],
   ["no more_changes", { ...FILES, more_changes: "no" }],
+  ["copied trees that are not a list", { ...FILES, copied: "node_modules/" }],
+  ["copied trees that are null", { ...FILES, copied: null }],
+  ["a copied tree that is not an object", { ...FILES, copied: ["node_modules/"] }],
+  ["a copied tree with no path", { ...FILES, copied: [{ path: "", files: 1 }] }],
+  ["a copied tree with no count of files", { ...FILES, copied: [{ path: "node_modules/" }] }],
+  ["a copied tree of no file", { ...FILES, copied: [{ path: "node_modules/", files: 0 }] }],
+  ["a copied tree of a fraction of a file", { ...FILES, copied: [{ path: "node_modules/", files: 1.5 }] }],
   ["no count of hidden paths", { ...FILES, hidden: undefined }],
   ["a negative count of hidden paths", { ...FILES, hidden: -1 }],
   ["a count of hidden paths that is no whole number", { ...FILES, hidden: 1.5 }],

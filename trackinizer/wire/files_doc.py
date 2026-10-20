@@ -12,8 +12,11 @@ itself is filed under, and shows the newest. A ``files:of:`` label is a link tha
 every source of the record's documents writes, never a row key: a producer that
 refreshes its row in place finds it by a label only it writes, or it would overwrite
 another source's document. The shape names no source, so a work tree, a branch or a
-pull request is filed alike and read by one visual. It holds paths and diffs only,
-never a file's content, and no time, so an unchanged tree writes the same text.
+pull request is filed alike and read by one visual. Untracked files that are, byte for
+byte, a file of the base's tree are grouped as copied trees and never listed as
+changes, so a copied package does not bury the files a change made. It holds paths
+and diffs only, never a file's content, and no time, so an unchanged tree writes the
+same text.
 
 This package is part of the publishable client distribution, so it must not
 import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
@@ -34,6 +37,7 @@ __all__ = [
     "FILES_OF",
     "Change",
     "ChangedFile",
+    "CopiedTree",
     "FilesDoc",
     "Note",
     "dump_files",
@@ -79,6 +83,25 @@ class ChangedFile:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class CopiedTree:
+    """Untracked files that are, byte for byte, a file of the base's tree, grouped.
+
+    Attributes:
+      path: The directory holding them, ending in ``/``, or the one file's own path.
+      files: How many of them lie under ``path``; at least one.
+
+    """
+
+    path: str
+    files: int
+
+    def __post_init__(self) -> None:
+        """Refuse a group of no files."""
+        if self.files < 1:
+            raise ValueError(f"files must be at least 1, not {self.files}.")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class FilesDoc:
     """A tree's files and its changes against a base, read-only.
 
@@ -95,6 +118,9 @@ class FilesDoc:
       more_changes: Whether more changed files exist than ``changed`` lists.
       hidden: How many paths the source withheld from both lists by its own rule;
         never negative.
+      copied: The untracked files that are, byte for byte, a file of ``base``'s
+        tree, grouped under the shallowest directory that holds no other untracked
+        file; they are among ``files``, never among ``changed``.
       version: The shape's version; a reader refuses any other, as the page does.
 
     """
@@ -105,6 +131,7 @@ class FilesDoc:
     changed: tuple[ChangedFile, ...]
     more_changes: bool
     hidden: int
+    copied: tuple[CopiedTree, ...] = ()
     version: Literal[1] = 1
     kind: Literal["files"] = "files"
 
@@ -139,7 +166,8 @@ def load_files(text: str) -> FilesDoc:
 
     Raises:
       ValueError: ``text`` is not a files document, such as one with a field it
-        does not know, another version, or a negative ``hidden``.
+        does not know, another version, a negative ``hidden``, or a copied tree of
+        no files.
 
     """
     return json_loads(text, FilesDoc)

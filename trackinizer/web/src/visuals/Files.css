@@ -21,6 +21,10 @@
 .fv-changed, .fv-tree, .fv-tree ul { list-style: none; margin: 0; padding: 0; }
 .fv-changed summary, .fv-tree summary { display: flex; align-items: baseline; gap: 8px; cursor: pointer; padding: 2px 0; }
 .fv-changed details[open] > summary { margin-bottom: 4px; }
+/* Copied trees are the changed rows' shape, muted: no file in them differs from the base. */
+.fv-copied { list-style: none; margin: 0; padding: 0; }
+.fv-copied li { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; font-size: 12px; color: var(--muted); }
+.fv-copied .fv-path { color: var(--muted); }
 .fv-tree {
   max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 10px; background: var(--surface);
 }

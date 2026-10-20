@@ -15,6 +15,13 @@ export type ChangedFile = {
   readonly note: DiffNote;
 };
 
+/**
+ * Untracked files that already exist unchanged in the base, grouped under the shallowest
+ * directory holding no other untracked file: `path` ends in `/` for a directory, and a single
+ * file is its own path with `files: 1`.
+ */
+export type CopiedTree = { readonly path: string; readonly files: number };
+
 /** A record's tree, read-only: the paths it holds, and the files that differ from `base`. */
 export type FilesDoc = {
   readonly kind: "files";
@@ -26,6 +33,8 @@ export type FilesDoc = {
   readonly more_files: boolean;
   readonly changed: readonly ChangedFile[];
   readonly more_changes: boolean;
+  /** Trees of files copied unchanged from the base: in `files`, never in `changed`. */
+  readonly copied: readonly CopiedTree[];
   /** Paths the source withheld from both lists by its own rule. */
   readonly hidden: number;
 };
@@ -50,14 +59,16 @@ export function parseFilesDoc(text: string | null): FilesDoc | null {
     return null;
   }
   if (!isObj(value) || value.kind !== "files" || value.version !== 1) return null;
+  // A document filed before copied trees existed has none: an absent field is an empty list, a null one is no document.
   const ok =
     str(value.base) &&
     list(value.files, str) &&
     bool(value.more_files) &&
     list(value.changed, isChangedFile) &&
     bool(value.more_changes) &&
+    (value.copied === undefined || list(value.copied, isCopiedTree)) &&
     count(value.hidden);
-  return ok ? (value as unknown as FilesDoc) : null;
+  return ok ? ({ ...value, copied: value.copied ?? [] } as unknown as FilesDoc) : null;
 }
 
 /**
@@ -153,6 +164,18 @@ function isChangedFile(value: unknown): value is ChangedFile {
     str(value.diff) &&
     (value.change === "added" || value.change === "modified" || value.change === "deleted") &&
     (value.note === "" || value.note === "clipped" || value.note === "withheld" || value.note === "omitted")
+  );
+}
+
+// A copied tree always holds at least one file, so a count of zero is a bad entry, not an empty tree.
+function isCopiedTree(value: unknown): value is CopiedTree {
+  return (
+    isObj(value) &&
+    str(value.path) &&
+    value.path !== "" &&
+    typeof value.files === "number" &&
+    Number.isInteger(value.files) &&
+    value.files >= 1
   );
 }
 

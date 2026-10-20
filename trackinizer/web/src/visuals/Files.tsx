@@ -6,7 +6,17 @@ import { useTrustedRead } from "../api/trusted";
 import { CopyDetails } from "../debug/CopyDetails";
 import { languageOf } from "../detail/transcript/steps";
 import { ReadFailure } from "../ui/failure";
-import { type ChangedFile, type DiffNote, type FileChange, type FileNode, type FilesDoc, fileTree, openedPaths, pathMatcher } from "./filesDoc";
+import {
+  type ChangedFile,
+  type CopiedTree,
+  type DiffNote,
+  type FileChange,
+  type FileNode,
+  type FilesDoc,
+  fileTree,
+  openedPaths,
+  pathMatcher,
+} from "./filesDoc";
 import { useVisualMark } from "./marks";
 import { type DiffMode, DiffModeToggle, FileDiff, useDiffMode } from "./SplitDiff.tsx";
 import { patchFiles } from "./splitDiff";
@@ -171,10 +181,9 @@ function Narrowed({
     if (given.file !== params.file) setToggled(NOTHING_TOGGLED);
   }
   const path = draft.trim();
-  const changed = useMemo(() => {
-    const matches = pathMatcher(path);
-    return doc.changed.filter(({ path: each }) => matches(each));
-  }, [doc.changed, path]);
+  const matches = useMemo(() => pathMatcher(path), [path]);
+  const changed = useMemo(() => doc.changed.filter(({ path: each }) => matches(each)), [doc.changed, matches]);
+  const copied = useMemo(() => doc.copied.filter(({ path: each }) => matches(each)), [doc.copied, matches]);
   const opened = new Set(openedPaths(changed, params.file));
   const commit = (next: Partial<FilesParams>) => onParams({ ...params, path, ...next });
   const panel = useRef<HTMLDivElement>(null);
@@ -196,7 +205,7 @@ function Narrowed({
       <Controls draft={draft} setDraft={setDraft} params={params} commit={commit} busy={busy} />
       {count > 1 ? <p className="fv-hint">{`Newest of ${count} files documents for this record.`}</p> : null}
       {params.file && opened.size === 0 ? <p className="fv-hint">{`No listed changed file is named ${params.file}.`}</p> : null}
-      <ChangedList doc={doc} changed={changed} narrowing={path !== ""} opened={opened} openness={openness} />
+      <ChangedList doc={doc} changed={changed} copied={copied} narrowing={path !== ""} opened={opened} openness={openness} />
       {params.changed ? null : <Tree doc={doc} path={path} openness={openness} reveal={reveal} note={notes.tree} />}
       {doc.hidden > 0 ? (
         <p className="fv-hint">{`${doc.hidden} ${doc.hidden === 1 ? "path is" : "paths are"} withheld by the source that filed this list.`}</p>
@@ -266,16 +275,21 @@ function Controls({
   );
 }
 
-/** The changed files `path` leaves, each a fold that opens to its diff; those `file` names start open. */
+/**
+ * The changed files `path` leaves, each a fold that opens to its diff; those `file` names start open.
+ * Below them, the trees copied unchanged from the base: files that are listed but never changed.
+ */
 function ChangedList({
   doc,
   changed,
+  copied,
   narrowing,
   opened,
   openness,
 }: {
   readonly doc: FilesDoc;
   readonly changed: readonly ChangedFile[];
+  readonly copied: readonly CopiedTree[];
   readonly narrowing: boolean;
   readonly opened: ReadonlySet<string>;
   readonly openness: Openness;
@@ -317,6 +331,18 @@ function ChangedList({
           })}
         </ul>
       )}
+      {copied.length > 0 ? (
+        <ul className="fv-copied" aria-label="Copied unchanged">
+          {copied.map((tree) => (
+            <li key={tree.path}>
+              <span className="fv-path">{tree.path}</span>
+              <span>
+                {tree.files.toLocaleString("en")} {tree.files === 1 ? "file" : "files"} copied unchanged from {doc.base || "the base"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {doc.more_changes ? <p className="fv-hint">More files changed than are listed here.</p> : null}
     </div>
   );
