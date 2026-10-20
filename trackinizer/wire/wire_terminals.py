@@ -113,7 +113,8 @@ TERMINALS_PATH: Final = "/api/terminals"
 """``POST``: open a terminal (the owner's browser, cookie only)."""
 
 TERMINAL_MACHINES_PATH: Final = "/api/terminals/machines"
-"""``GET``: the caller's own machines; ``?workspace=ID`` also lists its live terminals."""
+"""``GET``: the caller's own machines; ``?workspace=ID`` also lists its live terminals.
+The configured assistant passes ``?owner=EMAIL`` to list the person it answers."""
 
 TERMINAL_CONFIRM_PATH: Final = "/api/terminals/machines/{name}/confirm"
 """``POST``: the owner confirms a machine enrolled with a key, so terminals may open."""

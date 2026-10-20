@@ -12,6 +12,7 @@ then refuse with a close code (``wire_terminals``).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
@@ -28,6 +29,7 @@ from trackinizer.server.api._deps import auth_is_disabled, get_terminal_hub
 from trackinizer.server.api._origin import is_strictly_same_origin
 from trackinizer.server.api._routes_shared import engine_of
 from trackinizer.server.api.machines_routes import MachineName, fetch_machines
+from trackinizer.server.api.session_access import resolve_asker
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.machine_auth import current_machine, machine_of
 from trackinizer.server.terminals import (
@@ -152,23 +154,40 @@ async def list_terminal_machines_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     workspace: UUID | None = None,
+    owner: str | None = None,
 ) -> TerminalMachines:
     """List the caller's own machines, and their live terminals for a station.
 
+    The configured assistant names the person it answers as ``owner`` and lists that
+    person's machines, so it offers a terminal only on one they have. It opens none:
+    only the person's own browser does.
+
     Args:
       request: Request carrying the store and the terminal hub.
-      identity: The signed-in owner.
+      identity: The signed-in owner, or the assistant's agent key.
       workspace: The station whose live terminals to list.
+      owner: The person the assistant lists for, a writer or admin; only the
+        assistant may name one.
 
     Returns:
-      machines: The caller's machines, each with whether it can take a terminal now;
-        and ``terminals``, the caller's live terminals opened from ``workspace``.
+      machines: The owner's machines, newest first, each with whether it can take a
+        terminal now; and ``terminals``, the owner's live terminals opened from
+        ``workspace``.
+
+    Raises:
+      HTTPException: 403 ``terminal_forbidden`` for a key, a service account, anyone
+        but the assistant naming an ``owner``, and an owner who is not a writer.
 
     """
-    _require_human(request, identity)
+    email = await _machines_owner(request, identity, owner=owner)
     hub = get_terminal_hub(request)
     async with engine_of(request).acquire() as conn:
-        rows = await fetch_machines(conn, name=None, viewer=identity)
+        # Read as the owner: a personal machine is listed to its owner alone.
+        rows = await fetch_machines(
+            conn,
+            name=None,
+            viewer=replace(identity, email=email),
+        )
     machines = [
         TerminalMachine.model_validate(
             {
@@ -180,16 +199,12 @@ async def list_terminal_machines_route(
             },
         )
         for row in sorted(
-            (
-                row
-                for row in rows
-                if from_plain(row["owner"], str | None) == identity.email
-            ),
+            (row for row in rows if from_plain(row["owner"], str | None) == email),
             key=lambda row: from_plain(row["created"], datetime),
             reverse=True,
         )
     ]
-    live = [] if workspace is None else hub.live_in(identity.email, workspace=workspace)
+    live = [] if workspace is None else hub.live_in(email, workspace=workspace)
     return TerminalMachines(
         machines=machines,
         terminals=[
@@ -302,11 +317,7 @@ async def terminal_wait_route(
 
     """
     if auth_is_disabled(request):
-        raise _refused(
-            403,
-            code="terminal_forbidden",
-            message="terminals are not available here",
-        )
+        raise _forbidden()
     await current_machine(request, machine_id)
     await _require_instance(request, machine_id, instance=instance)
     hub = get_terminal_hub(request)
@@ -478,6 +489,32 @@ def _parse_attach(frame: tuple[Frame, bytes] | None) -> tuple[str, int] | None:
         return None
 
 
+# The assistant is trusted to say whom it answers, as for a chat's settings, and the
+# server reads that person's role itself: a viewer opens no terminal, so the assistant
+# lists none for one. Anyone else naming an owner is refused, not ignored, so a person
+# never reads a listing they took for someone else's as their own.
+async def _machines_owner(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    owner: str | None,
+) -> str:
+    """Return whose machines the caller lists: its own, or the assistant's asker's."""
+    asker = (
+        None
+        if auth_is_disabled(request)
+        else await resolve_asker(request, identity, email=owner)
+    )
+    if asker is None:
+        if owner is not None:
+            raise _forbidden()
+        _require_human(request, identity)
+        return identity.email
+    if asker.role not in {"writer", "admin"}:
+        raise _forbidden()
+    return asker.email
+
+
 # Only a person's session opens a shell. With authentication off every caller is a
 # synthetic admin, and a rebound web page would pass the origin check.
 def _require_human(request: HTTPConnection, identity: AuthIdentity) -> None:
@@ -487,21 +524,22 @@ def _require_human(request: HTTPConnection, identity: AuthIdentity) -> None:
         or identity.api_key_id is not None
         or is_service_address(identity.email)
     ):
-        raise _refused(
-            403,
-            code="terminal_forbidden",
-            message="terminals are not available here",
-        )
+        raise _forbidden()
 
 
 def _require_origin(request: Request) -> None:
     """Refuse a request that does not carry this server's own ``Origin``."""
     if not is_strictly_same_origin(request):
-        raise _refused(
-            403,
-            code="terminal_forbidden",
-            message="terminals are not available here",
-        )
+        raise _forbidden()
+
+
+def _forbidden() -> HTTPException:
+    """Return the one refusal of a caller that may not reach terminals here."""
+    return _refused(
+        403,
+        code="terminal_forbidden",
+        message="terminals are not available here",
+    )
 
 
 def _own_terminal(
