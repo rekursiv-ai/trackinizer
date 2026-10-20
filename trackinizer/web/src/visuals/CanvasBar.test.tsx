@@ -276,28 +276,31 @@ test("Home shows the page on the graph and nothing else; Back brings the canvas 
   expect(served.visuals.map((visual) => visual.type)).toEqual(["trax.browse", "trax.timeline"]);
 });
 
-test("clearing a canvas tab closes the other tab and Back restores Browse", async () => {
+test("clearing a canvas tab clears only that tab, and Back restores Browse", async () => {
   await mountBrowseOnly();
 
   userNavigates("#/activity");
   await waitFor(() => expect(location.hash).toBe("#/activity"), { interval: 1 });
   await addTab();
   await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
-  const otherTab = written().tabs![1]!.id;
+  const tabs = written().tabs!.map((tab) => tab.id);
 
   fireEvent.click(button("Clear canvas"));
   const clearDialog = await screen.findByRole("alertdialog", { name: "Clear canvas?" });
   fireEvent.click(within(clearDialog).getByRole("button", { name: "Clear canvas" }));
   await waitFor(() => expect(sent().at(-1)).toEqual({ kind: "hide", instance_id: "page" }), { interval: 1 });
-  expect(written().tabs).toEqual([]);
-  expect(step(`${STATION}/1`, -1)).toBeNull();
+  expect(written().tabs!.map((tab) => tab.id)).toEqual(tabs);
   expect(document.querySelector('[data-visual-type="trax.browse"]')).toBeNull();
   expect(button("Back").disabled).toBe(false);
 
   fireEvent.click(button("Back"));
   await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
   await waitFor(() => expect(document.querySelector('[data-visual-type="trax.browse"]')).not.toBeNull(), { interval: 1 });
-  expect(step(`${STATION}/${otherTab}`, -1)).toBeNull();
+
+  // The other tab still shows what it showed before the clear.
+  fireEvent.click(button("Tab 1"));
+  await waitFor(() => expect(location.hash).toBe("#/activity"), { interval: 1 });
+  await waitFor(() => expect(document.querySelector('[data-visual-type="trax.browse"]')).not.toBeNull(), { interval: 1 });
 });
 
 test("with home set to empty, Home clears the canvas", async () => {
@@ -319,7 +322,7 @@ test("Clear canvas is danger-styled and Cancel or Escape leave the action alone"
 
   fireEvent.click(screen.getByRole("button", { name: "Clear canvas" }));
   let dialog = screen.getByRole("alertdialog", { name: "Clear canvas?" });
-  expect(within(dialog).getByText("This removes every visual, Browse included, and closes the other tabs. Back restores what this tab showed.")).toBeTruthy();
+  expect(within(dialog).getByText("This removes every visual on this tab, Browse included. Other tabs keep what they show. Back restores what this tab showed.")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Clear canvas" }).classList.contains("danger")).toBe(true);
   expect(within(dialog).getByRole("button", { name: "Clear canvas" }).classList.contains("danger")).toBe(true);
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));

@@ -327,12 +327,11 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     void restore(historyKey, target);
   }
 
+  // Only the open tab is cleared: the other tabs keep what they show and their history.
   function clearCanvas() {
     if (!workspaceId || !historyKey) return;
     const target = { page: null, visuals: [] } as const;
     go(historyKey, target);
-    changeLayout({ tabs: [], tab: openTab });
-    tabs.filter((tab) => tab.id !== openTab).forEach((tab) => forget(tabKey(workspaceId, tab.id)));
     void restore(historyKey, target);
   }
 
