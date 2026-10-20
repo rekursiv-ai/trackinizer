@@ -1,4 +1,4 @@
-/* The app's one bar (TopBar.tsx), over the main area: the logo, Go, Search and New, the stations as tab groups, then the Workbench and the account. */
+/* The app's one bar (TopBar.tsx), over the main area: the logo, Go, Search and New, the stations as tab groups, then the pin, Machines, the Workbench and the account. */
 .topbar {
   display: flex; flex: 0 0 auto; align-items: center; gap: 4px; height: 44px; min-width: 0;
   padding: 0 10px; padding-top: env(safe-area-inset-top, 0px); position: relative; z-index: 45;
@@ -33,6 +33,26 @@
 .topbar-item:disabled { opacity: .45; cursor: default; }
 .topbar-item > .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workbench-menu { left: auto; right: 0; width: 300px; }
+
+/* ---- Machines (MachinesMenu.tsx): your machines, how to connect one, what the server provides ---- */
+.machines-button { position: relative; }
+.machines-dot { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 2px var(--bg); }
+.machines-menu { left: auto; right: 0; width: 360px; max-width: calc(100vw - 20px); gap: 4px; }
+.machines-menu:focus { outline: none; }
+.machines-note { margin: 0; padding: 2px 8px 4px; font-size: 13px; color: var(--ink-muted); }
+.machines-list, .machines-provided ul { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0 4px; list-style: none; }
+.machines-row { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 2px 4px; font-size: 13px; }
+.machines-status { flex: none; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted); }
+.machines-status.is-online { border-color: var(--green); background: var(--green); }
+.machines-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.machines-state { flex: none; font-size: 12px; color: var(--muted); }
+.machines-connect { margin: 2px 4px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.machines-connect summary { cursor: pointer; font-weight: 500; }
+.machines-connect a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.machines-connect ol { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 2px; padding-left: 18px; color: var(--ink-muted); }
+.machines-connect .helper-command { margin-top: 4px; }
+.machines-provided li { display: flex; flex-direction: column; gap: 1px; padding: 4px; font-size: 13px; }
+.machines-provided li span { color: var(--ink-muted); }
 
 /* ---- Workstreams in the bar (WorkstreamBar.tsx) ---- */
 .workstream-bar-wrap { position: relative; display: flex; flex: 1; min-width: 0; align-items: center; gap: 4px; }

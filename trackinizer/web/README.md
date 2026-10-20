@@ -139,6 +139,7 @@ how it reads a frame or an answer.
 | | `shareChat`, `unshareChat` | `PUT`, `DELETE /api/chats/{id}/shares/{email}` |
 | | `deleteChat` | `DELETE /api/chats/{id}` |
 | | `readChatPartial` | `GET /api/sessions/{id}/partial?after=&wait_sec=25` (held until the partial's `seq` is not `after`, or 25 s; 404 when the server streams no replies) |
+| `compute` | `listCompute` | `GET /api/compute` |
 | `code` | `getCodeDiff` | `GET /api/code/diff?from=&to=` (404 when either record has no snapshot the reader may read: `null`) |
 | | `readCodeFile` | `GET /api/code/records/{id}/file?path=` |
 
@@ -643,8 +644,8 @@ with one response shape, so the fixtures take one per verb.
 - The app has one bar, along the top over Chat and the canvas
   (`src/topbar/TopBar.tsx`), and no sidebar: the logo (home, the graph), Go,
   Search (⌘K), New for the kind on screen (its icon alone), the user's
-  workstreams and `+ Workstream` (with the canvas only), the pin, the Workbench
-  and the account. It folds away, leaving an 8 px strip along the window's top
+  workstreams and `+ Workstream` (with the canvas only), the pin, Machines, the
+  Workbench and the account. It folds away, leaving an 8 px strip along the window's top
   (Open app bar): the pointer resting on the strip or the bar for 120 ms, or a
   click or tap on the strip, opens it, and it folds 300 ms after the pointer and
   the keyboard have left (`hoverOpen.ts`), or, on a touch screen, at a press
@@ -655,7 +656,18 @@ with one response shape, so the fixtures take one per verb.
   workbench is mounted, the sliders button opens the Workbench menu: the visual
   toggles and the Artifact link, focus on the first (the menu's body is a slot,
   `src/app/workbenchSlot.tsx`, that the canvas draws into, mounted while the
-  menu is closed). Settings has a Close link in its header, back to the last page
+  menu is closed). Machines (`MachinesMenu.tsx`, where commands run) opens
+  on the user's own machines, each online or offline, with Allow on one enrolled
+  with a token that waits for its owner, as the terminal side has it; then
+  Connect a machine, the steps of the user guide's "Connect a computer" with
+  this page's address in the setup command, open while the user has no
+  machine; then Provided by and the app's name, the notes the deployment set
+  (`TRACKINIZER_COMPUTE`, `GET /api/compute`), left out when it set none. The
+  machines are the terminal's read under `["terminal-machines", null]`, made
+  only while the bar is shown, and each minute it stays shown, so a page's
+  first reads stay its own; a dot on the button says one is online. A server
+  without sign-in and a viewer read none. The menu's body is a chunk of its
+  own. Settings has a Close link in its header, back to the last page
   before Settings or Admin, or the graph; the page is as wide as its sections, so
   Close stands at their edge. On a phone (760 px and narrower) `+ Workstream`
   shows its + alone, the account's email stays hidden, and Go reaches every page.
@@ -827,7 +839,8 @@ with one response shape, so the fixtures take one per verb.
   `["activity", ...]`, `["search", q, kind]` (kind `null` across every kind),
   `["ancestry", ids]` (an Issue list's `narrows` ancestry, by the ids it
   shows), `["graph", limit]`, `["graph", "focus", id, hops]` (a detail's graph
-  preview), `["settings", ...]` and `["admin", ...]`. Nothing refetches on window focus;
+  preview), `["compute"]` (the deployment's notes), `["settings", ...]` and
+  `["admin", ...]`. Nothing refetches on window focus;
   the stream keeps data current.
 - The entry chunk (`src/main.tsx`) starts the four boot reads and the first
   view's data (the graph's 1,000 newest, or a list's first page, when the tab
