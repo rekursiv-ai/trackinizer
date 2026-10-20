@@ -2502,7 +2502,7 @@ Options:
             groups.setdefault(str(row.get("status") or "?"), []).append(row)
         for status in cast(
             tuple[Inquiry.Status, ...],
-            get_args(cast(object, Inquiry.Status.__value__)),
+            get_args(Inquiry.Status.__value__),
         ):
             bucket = groups.get(status, [])
             if not bucket:

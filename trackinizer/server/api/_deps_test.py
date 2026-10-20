@@ -67,7 +67,7 @@ def _resolve(annotation: object) -> object:
     if isinstance(annotation, typing.TypeAliasType):
         # PEP 695 aliases (``type Actor = str``, ``type Status = Literal[...]``)
         # are values rather than types; unwrap to whatever they name.
-        value: object = annotation.__value__  # pyright: ignore[reportAny] -- TypeAliasType's stub exposes its value as Any.
+        value: object = annotation.__value__
         return _resolve(value)
     return annotation
 

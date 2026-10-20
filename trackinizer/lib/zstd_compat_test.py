@@ -2,236 +2,131 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from unittest.mock import Mock
+from types import SimpleNamespace
+from typing import cast
 
 import importlib
+import re
+import sys
 
 import pytest
+import zstandard
 
 from trackinizer.lib import zstd_compat
 
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
+try:
+    zstd = cast("zstd_compat._StdlibZstd", importlib.import_module("compression.zstd"))
+except ImportError:
+    # Python < 3.14, where exported packages run this file: the wheel stands in
+    # for the stdlib so the stdlib branch still runs, and its 100% floor holds.
+    zstd = cast(
+        "zstd_compat._StdlibZstd",
+        SimpleNamespace(
+            ZstdError=ValueError,
+            compress=zstandard.compress,
+            decompress=zstd_compat._decompress_frames,
+        ),
+    )
 
 
 _PAYLOAD = b"a durable zstandard payload" * 20
+# ``b"hello world " * 1000`` as one streaming-mode frame: no content size in
+# the header, the shape Cloudflare serves. One-shot ``compress`` cannot mint it.
+_STREAMING_FRAME = bytes.fromhex(
+    "28b52ffd0058a500006068656c6c6f20776f726c64200100d1ee7c4902",
+)
+
+# Each test runs on the stdlib and again with it hidden, as on Python 3.12.
+pytestmark = pytest.mark.parametrize("wheel", [False, True], ids=["stdlib", "wheel"])
 
 
-class _FailingDecoder:
-    eof = False
-    unused_data = b""
-
-    def decompress(self, data: bytes) -> bytes:
-        del data
-        raise RuntimeError("corrupt frame")
-
-    def decompressobj(self) -> _FailingDecoder:
-        return self
+@pytest.fixture(autouse=True)
+def _select_library(wheel: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(zstd_compat, "zstd", None if wheel else zstd)
 
 
-class _FakeModule:
-    ZstdError: type[Exception] = RuntimeError
-
-    def __init__(self) -> None:
-        self.ZstdDecompressor: Callable[[], zstd_compat._ZstdDecompressor] = (
-            _FailingDecoder
-        )
-        self.calls: list[tuple[bytes, int]] = []
-
-    def compress(self, data: bytes, level: int = 3) -> bytes:
-        self.calls.append((data, level))
-        return b"encoded"
-
-    def decompress(self, data: bytes) -> bytes:
-        return _FailingDecoder().decompress(data)
+@pytest.mark.parametrize("payload", [b"", _PAYLOAD])
+def test_round_trip(payload: bytes) -> None:
+    assert zstd_compat.decompress(zstd_compat.compress(payload, level=7)) == payload
 
 
-def test_round_trip() -> None:
-    encoded = zstd_compat.compress(_PAYLOAD, level=7)
+def test_level_is_forwarded() -> None:
+    payload = b" ".join(str(i * i).encode() for i in range(2_000))
+
+    assert len(zstd_compat.compress(payload, level=19)) < len(
+        zstd_compat.compress(payload, level=1),
+    )
+
+
+def test_default_level_is_the_zstandard_default() -> None:
+    assert zstd_compat.compress(_PAYLOAD) == zstd_compat.compress(_PAYLOAD, level=3)
+
+
+def test_decodes_a_streaming_frame() -> None:
+    assert not _STREAMING_FRAME[4] & 0b1110_0000  # No content size in the header.
+    assert zstd_compat.decompress(_STREAMING_FRAME) == b"hello world " * 1000
+
+
+@pytest.mark.parametrize("payload", [b"", _PAYLOAD])
+def test_concatenated_frames_round_trip(payload: bytes) -> None:
+    encoded = zstd_compat.compress(payload)
+
+    assert zstd_compat.decompress(encoded + _STREAMING_FRAME + encoded) == (
+        payload + b"hello world " * 1000 + payload
+    )
+
+
+@pytest.mark.parametrize("prefix_frames", [0, 1])
+def test_truncated_frames_are_rejected(wheel: bool, prefix_frames: int) -> None:
+    encoded = zstd_compat.compress(_PAYLOAD)
+    message = r"^Incomplete zstandard frame$" if wheel else r".+"
+
+    with pytest.raises(ValueError, match=message):
+        zstd_compat.decompress(encoded * prefix_frames + encoded[:-1])
+
+
+@pytest.mark.parametrize("data", [b"", b"not a zstandard frame"])
+def test_malformed_input_is_a_value_error(data: bytes) -> None:
+    """Callers catch one exception, whichever library decoded."""
+    with pytest.raises(ValueError, match=r".+"):
+        zstd_compat.decompress(data)
+
+
+def test_library_error_message_is_preserved(wheel: bool) -> None:
+    if wheel:
+        with pytest.raises(zstandard.ZstdError) as raw:
+            zstandard.ZstdDecompressor().decompressobj().decompress(b"junk")
+    else:
+        with pytest.raises(zstd.ZstdError) as raw:
+            zstd.decompress(b"junk")
+
+    with pytest.raises(ValueError, match=rf"^{re.escape(str(raw.value))}$"):
+        zstd_compat.decompress(b"junk")
+
+
+def test_wire_format_is_shared(wheel: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    encoded = zstd_compat.compress(_PAYLOAD)
+    monkeypatch.setattr(zstd_compat, "zstd", zstd if wheel else None)
 
     assert zstd_compat.decompress(encoded) == _PAYLOAD
 
 
-def test_backend_fallback_binding(monkeypatch: pytest.MonkeyPatch) -> None:
-    backend = Mock()
-    backend.compress.return_value = b"encoded"
-    backend.decompress.return_value = _PAYLOAD
-    monkeypatch.setattr(zstd_compat, "_backend", lambda: backend)
-
-    assert zstd_compat.compress(_PAYLOAD, level=9) == b"encoded"
-    assert zstd_compat.decompress(b"encoded") == _PAYLOAD
-    backend.compress.assert_called_once_with(_PAYLOAD, level=9)
-    backend.decompress.assert_called_once_with(b"encoded")
-
-
-@pytest.mark.parametrize(
-    "backend_type",
-    [zstd_compat._StdlibBackend, zstd_compat._PackageBackend],
-)
-@pytest.mark.parametrize("level", [None, 7])
-def test_compression_level_is_forwarded(
-    backend_type: type[zstd_compat._StdlibBackend | zstd_compat._PackageBackend],
-    level: int | None,
-) -> None:
-    module = _FakeModule()
-
-    assert backend_type(module).compress(_PAYLOAD, level=level) == b"encoded"
-    assert module.calls == [(_PAYLOAD, 3 if level is None else level)]
-
-
-@pytest.mark.parametrize(
-    "backend_type",
-    [zstd_compat._StdlibBackend, zstd_compat._PackageBackend],
-)
-def test_backend_error_message_is_preserved(
-    backend_type: type[zstd_compat._StdlibBackend | zstd_compat._PackageBackend],
-) -> None:
-    module = _FakeModule()
-
-    with pytest.raises(ValueError, match=r"^corrupt frame$"):
-        backend_type(module).decompress(b"corrupt")
-
-
-@pytest.mark.parametrize(
-    "make",
-    [zstd_compat._stdlib_backend, zstd_compat._package_backend],
-)
-def test_each_backend_round_trips_at_its_default_level(
-    make: Callable[[], zstd_compat._Backend | None],
-) -> None:
-    backend = make()
-    if backend is None:
-        pytest.skip("backend not importable")
-
-    assert backend.decompress(backend.compress(_PAYLOAD, level=None)) == _PAYLOAD
-
-
-@pytest.mark.parametrize(
-    "make",
-    [zstd_compat._stdlib_backend, zstd_compat._package_backend],
-)
-def test_corrupt_input_is_a_value_error_on_every_backend(
-    make: Callable[[], zstd_compat._Backend | None],
-) -> None:
-    """Callers catch one exception, whichever library decoded."""
-    backend = make()
-    if backend is None:
-        pytest.skip("backend not importable")
-
-    with pytest.raises(ValueError):  # noqa: PT011 -- the backends' messages differ.
-        backend.decompress(b"not a zstandard frame")
-
-
-@pytest.mark.parametrize(
-    "make",
-    [zstd_compat._stdlib_backend, zstd_compat._package_backend],
-)
-@pytest.mark.parametrize("prefix_frames", [0, 1])
-def test_truncated_frames_are_rejected(
-    make: Callable[[], zstd_compat._Backend | None],
-    prefix_frames: int,
-) -> None:
-    backend = make()
-    if backend is None:
-        pytest.skip("backend not importable")
-    encoded = backend.compress(_PAYLOAD, level=3)
-
-    message = (
-        "^Incomplete zstandard frame$"
-        if make is zstd_compat._package_backend
-        else r".+"
-    )
-    with pytest.raises(ValueError, match=message):
-        backend.decompress(encoded * prefix_frames + encoded[:-1])
-
-
-@pytest.mark.parametrize(
-    "make",
-    [zstd_compat._stdlib_backend, zstd_compat._package_backend],
-)
-def test_empty_compressed_input_is_rejected(
-    make: Callable[[], zstd_compat._Backend | None],
-) -> None:
-    backend = make()
-    if backend is None:
-        pytest.skip("backend not importable")
-
-    with pytest.raises(ValueError, match=r".+"):
-        backend.decompress(b"")
-
-
-@pytest.mark.parametrize(
-    "make",
-    [zstd_compat._stdlib_backend, zstd_compat._package_backend],
-)
-@pytest.mark.parametrize("payload", [b"", _PAYLOAD])
-def test_concatenated_frames_round_trip(
-    make: Callable[[], zstd_compat._Backend | None],
-    payload: bytes,
-) -> None:
-    backend = make()
-    if backend is None:
-        pytest.skip("backend not importable")
-    encoded = backend.compress(payload, level=3)
-
-    assert backend.decompress(encoded + encoded) == payload * 2
-
-
-@pytest.mark.parametrize(
-    ("missing", "available"),
-    [("compression.zstd", "_package_backend"), ("zstandard", "_stdlib_backend")],
-)
-def test_an_absent_library_yields_no_backend(
-    monkeypatch: pytest.MonkeyPatch,
-    missing: str,
-    available: str,
-) -> None:
-    module = Mock()
-
-    def without(name: str) -> object:
-        if name == missing:
-            raise ImportError(name)
-        return module
-
-    monkeypatch.setattr(importlib, "import_module", without)
-    absent = (
-        zstd_compat._stdlib_backend
-        if missing == "compression.zstd"
-        else zstd_compat._package_backend
-    )
-
-    assert absent() is None
-    assert getattr(zstd_compat, available)() is not None
-
-
-def test_no_library_at_all_names_what_to_install(
+@pytest.mark.usefixtures("wheel")
+def test_import_without_stdlib_zstd_selects_the_wheel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(zstd_compat, "_stdlib_backend", lambda: None)
-    monkeypatch.setattr(zstd_compat, "_package_backend", lambda: None)
-    zstd_compat._backend.cache_clear()
+    """Python 3.12 has no ``compression`` package; the module must still import."""
+    # Both entries: ``import_module`` returns a cached submodule without its parent.
+    monkeypatch.setitem(sys.modules, "compression", None)
+    monkeypatch.setitem(sys.modules, "compression.zstd", None)
     try:
-        with pytest.raises(ImportError, match="zstandard"):
-            zstd_compat.compress(_PAYLOAD)
-        with pytest.raises(ImportError, match="zstandard"):
-            zstd_compat.decompress(_PAYLOAD)
+        _ = importlib.reload(zstd_compat)
+        with pytest.raises(ValueError, match=r"^Incomplete zstandard frame$"):
+            zstd_compat.decompress(_STREAMING_FRAME[:-1])
     finally:
-        zstd_compat._backend.cache_clear()
-
-
-def test_cross_backend_interoperability() -> None:
-    stdlib = zstd_compat._stdlib_backend()
-    package = zstd_compat._package_backend()
-    if stdlib is None or package is None:
-        pytest.skip("both zstandard backends are not importable")
-
-    stdlib_wire = stdlib.compress(_PAYLOAD, level=3)
-    package_wire = package.compress(_PAYLOAD, level=3)
-
-    assert package.decompress(stdlib_wire) == _PAYLOAD
-    assert stdlib.decompress(package_wire) == _PAYLOAD
+        monkeypatch.undo()
+        importlib.reload(zstd_compat)
 
 
 if __name__ == "__main__":

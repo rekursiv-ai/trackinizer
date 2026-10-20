@@ -18,6 +18,8 @@ from trackinizer.server.config import ChatOrgs, Config
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
@@ -36,7 +38,7 @@ def auth_identity() -> AuthIdentity:
 
 
 @pytest.fixture(autouse=True)
-def override_current_user(auth_identity: AuthIdentity) -> object:
+def override_current_user(auth_identity: AuthIdentity) -> Iterator[None]:
     """Replace :func:`current_user` with a static-identity stub for these tests.
 
     Bearer-header parsing has its own test coverage in ``auth_test.py``;

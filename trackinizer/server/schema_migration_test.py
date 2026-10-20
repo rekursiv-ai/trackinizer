@@ -1283,7 +1283,7 @@ def _change_kinds(*left_out: str) -> str:
     """Return the change kinds but ``left_out``, quoted for a SQL ``IN`` list."""
     return ", ".join(
         f"'{kind}'"
-        for kind in cast(tuple[str, ...], get_args(cast(object, Change.Kind.__value__)))
+        for kind in cast(tuple[str, ...], get_args(Change.Kind.__value__))
         if kind not in left_out
     )
 

@@ -197,7 +197,7 @@ def _pull_nodes(source: Client, *, limit: int) -> list[dict[str, object]]:
     by_kind: dict[str, list[dict[str, object]]] = {}
     for kind in cast(
         tuple[Inquiry.InquiryKind, ...],
-        get_args(cast(object, Inquiry.InquiryKind.__value__)),
+        get_args(Inquiry.InquiryKind.__value__),
     ):
         rows = source.list_kind_all(kind)
         by_kind[kind] = [_node_from_row(row, kind) for row in rows]
@@ -241,7 +241,7 @@ def _pull_edges(
     node_ids: list[str],
 ) -> list[tuple[str, str, str, float | None]]:
     """Outbound edges for each node, as ``(from_id, to_id, kind, valence)``."""
-    valid_kinds = set(get_args(cast(object, Edge.Kind.__value__)))
+    valid_kinds = set(get_args(Edge.Kind.__value__))
     known = set(node_ids)
     out: list[tuple[str, str, str, float | None]] = []
     for index, node_id in enumerate(node_ids):
@@ -296,7 +296,7 @@ def _crawl_and_insert(
     chunk: int = 5,
 ) -> int:
     """Crawl the connected subgraph from ``seeds`` and stream it in, in order."""
-    valid_kinds = set(get_args(cast(object, Edge.Kind.__value__)))
+    valid_kinds = set(get_args(Edge.Kind.__value__))
     seen: dict[str, dict[str, object]] = {}
     id_map: dict[str, str] = {}
 

@@ -70,22 +70,22 @@ def test_enums_route_reflects_the_type_literals(client: TestClient) -> None:
     assert r.status_code == 200
     body = json_loads(r.content, dict[str, object])
     assert from_plain(body["status"], list[str]) == list(
-        map(str, get_args(cast(object, Issue.Status.__value__))),
+        map(str, get_args(Issue.Status.__value__)),
     )
     assert from_plain(body["judgement"], list[str]) == list(
-        map(str, get_args(cast(object, Belief.Judgement.__value__))),
+        map(str, get_args(Belief.Judgement.__value__)),
     )
     assert from_plain(body["issue_kind"], list[str]) == list(
-        map(str, get_args(cast(object, Issue.Kind.__value__))),
+        map(str, get_args(Issue.Kind.__value__)),
     )
     assert from_plain(body["publication_type"], list[str]) == list(
-        map(str, get_args(cast(object, Paper.PublicationType.__value__))),
+        map(str, get_args(Paper.PublicationType.__value__)),
     )
     assert from_plain(body["edge_kind"], list[str]) == list(
-        map(str, get_args(cast(object, Edge.Kind.__value__))),
+        map(str, get_args(Edge.Kind.__value__)),
     )
     assert from_plain(body["inquiry_kind_all"], list[str]) == list(
-        map(str, get_args(cast(object, Inquiry.InquiryKind.__value__))),
+        map(str, get_args(Inquiry.InquiryKind.__value__)),
     )
 
 

@@ -1671,7 +1671,7 @@ def _split(content: str | None, parts: int) -> list[str]:
 
 def _effort(wire: object) -> ThinkingEffort | None:
     """Read a reported effort level."""
-    if wire not in get_args(ThinkingEffort.__value__):  # pyright: ignore[reportAny] -- PEP 695 alias values are exposed as Any by the typing stub.
+    if wire not in get_args(ThinkingEffort.__value__):
         return None
     return cast(ThinkingEffort, wire)
 

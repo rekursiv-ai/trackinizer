@@ -318,7 +318,7 @@ class TestKindToClass:
     """``KIND_TO_CLASS`` is the canonical row-discriminator -> class registry."""
 
     def test_covers_every_declared_kind(self) -> None:
-        declared = set(get_args(cast(object, Inquiry.InquiryKind.__value__)))
+        declared = set(get_args(Inquiry.InquiryKind.__value__))
         assert set(KIND_TO_CLASS) == declared
 
     def test_enumerates_every_concrete_subclass(self) -> None:
