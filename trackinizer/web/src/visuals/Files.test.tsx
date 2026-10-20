@@ -195,6 +195,45 @@ test("changed only hides the tree and keeps the changed files", async () => {
   expect(headers()).toEqual(["Changed from origin/main (3)"]);
 });
 
+test("copied trees list after the changed files, with their count and base, and no change counts them", async () => {
+  serve([filesRow({ ...FILES, copied: [{ path: "node_modules/", files: 1790 }, { path: "LICENSE", files: 1 }] })]);
+  mount();
+  await loaded();
+  const copied = screen.getByLabelText("Copied unchanged");
+  expect([...copied.querySelectorAll("li")].map((line) => line.textContent)).toEqual([
+    "node_modules/1,790 files copied unchanged from origin/main",
+    "LICENSE1 file copied unchanged from origin/main",
+  ]);
+  expect(screen.getByLabelText("Changed files").compareDocumentPosition(copied) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(headers()).toEqual(["Changed from origin/main (3)", "Files (3)"]);
+});
+
+test("copied trees stand above the hint that more files changed than are listed", async () => {
+  serve([filesRow({ ...FILES, more_changes: true, copied: [{ path: "node_modules/", files: 1790 }] })]);
+  mount();
+  await loaded();
+  const hint = screen.getByText("More files changed than are listed here.");
+  expect(screen.getByLabelText("Copied unchanged").compareDocumentPosition(hint) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("copied trees name the base as the base when none is known, and count a file in the singular", async () => {
+  serve([filesRow({ ...FILES, base: "", copied: [{ path: "build/", files: 1 }] })]);
+  mount();
+  await loaded();
+  expect(screen.getByLabelText("Copied unchanged").textContent).toBe("build/1 file copied unchanged from the base");
+});
+
+test("a path narrows the copied trees too, and none that it leaves shows no list", async () => {
+  serve([filesRow({ ...FILES, copied: [{ path: "node_modules/", files: 1790 }, { path: "src/gen/", files: 4 }] })]);
+  mount({ params: { path: "src/" } });
+  await loaded();
+  expect([...screen.getByLabelText("Copied unchanged").querySelectorAll("li")].map((line) => line.textContent)).toEqual([
+    "src/gen/4 files copied unchanged from origin/main",
+  ]);
+  fireEvent.change(screen.getByLabelText("Filter by path"), { target: { value: "bench/" } });
+  expect(screen.queryByLabelText("Copied unchanged")).toBeNull();
+});
+
 test("a file opens its diff by path, or every change of that name, among those the path leaves, and narrows nothing", async () => {
   serve([filesRow(NESTED)]);
   const { rerender } = mount({ params: { file: "bar.py" }, actions: canvasActions() });

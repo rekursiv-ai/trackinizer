@@ -14,6 +14,7 @@ from trackinizer.wire.files_doc import (
     FILES_LABEL,
     FILES_OF,
     ChangedFile,
+    CopiedTree,
     FilesDoc,
     dump_files,
     load_files,
@@ -41,6 +42,28 @@ def test_a_files_document_reads_back_as_written(hidden: int) -> None:
     assert load_files(dump_files(doc)) == doc
 
 
+def test_copied_trees_read_back_as_written() -> None:
+    doc = replace(
+        _doc(),
+        copied=(CopiedTree(path="x/priml/", files=2), CopiedTree(path="r.py", files=1)),
+    )
+
+    assert load_files(dump_files(doc)) == doc
+
+
+def test_a_document_without_copied_trees_reads_them_as_none() -> None:
+    tree = json_loads(dump_files(_doc()), dict[str, object])
+    del tree["copied"]
+
+    assert load_files(json.dumps(tree)).copied == ()
+
+
+@pytest.mark.parametrize("files", [0, -1])
+def test_a_copied_tree_of_no_files_is_refused(files: int) -> None:
+    with pytest.raises(ValueError, match="files must be at least 1"):
+        _ = CopiedTree(path="x/", files=files)
+
+
 def test_the_json_holds_exactly_the_contract_keys() -> None:
     text = dump_files(_doc())
     tree = json_loads(dump_files(_doc()), dict[str, object])
@@ -52,6 +75,7 @@ def test_the_json_holds_exactly_the_contract_keys() -> None:
         "changed",
         "more_changes",
         "hidden",
+        "copied",
         "version",
         "kind",
     ]
@@ -70,8 +94,16 @@ def test_the_json_holds_exactly_the_contract_keys() -> None:
         ({}, "base", "missing"),
         ({"version": 2}, "", "cannot read 2"),
         ({"hidden": -1}, "", "hidden must not be negative"),
+        ({"copied": [{"path": "x/", "files": 0}]}, "", "files must be at least 1"),
     ],
-    ids=["kind-not-files", "unknown-field", "no-base", "version-2", "hidden-negative"],
+    ids=[
+        "kind-not-files",
+        "unknown-field",
+        "no-base",
+        "version-2",
+        "hidden-negative",
+        "copied-no-files",
+    ],
 )
 def test_a_document_of_another_shape_is_not_read_as_files(
     change: dict[str, object],

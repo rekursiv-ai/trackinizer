@@ -49,6 +49,7 @@ export const FILES: FilesDoc = {
     { path: "old.py", change: "deleted", diff: "", note: "omitted" },
   ],
   more_changes: false,
+  copied: [],
   hidden: 0,
   version: 1,
   kind: "files",
