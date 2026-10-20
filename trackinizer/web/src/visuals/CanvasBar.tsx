@@ -78,7 +78,7 @@ export function CanvasBar({ tabs, open, back, forward, moving, home, canAdd, box
       <AlertDialog.Root>
         <AlertDialog.Trigger asChild>
           <button className="canvas-bar-button danger canvas-clear" type="button" aria-label="Clear canvas"
-            title="Clear the canvas and close its other tabs" disabled={moving}>
+            title="Clear this tab's canvas" disabled={moving}>
             <Icon name="trash" size={14} />
           </button>
         </AlertDialog.Trigger>
@@ -90,8 +90,8 @@ export function CanvasBar({ tabs, open, back, forward, moving, home, canAdd, box
                 <h3>Clear canvas?</h3>
               </AlertDialog.Title>
               <AlertDialog.Description>
-                This removes every visual, Browse included, and closes the other
-                tabs. Back restores what this tab showed.
+                This removes every visual on this tab, Browse included. Other tabs
+                keep what they show. Back restores what this tab showed.
               </AlertDialog.Description>
             </div>
             <div className="modal-f">
