@@ -1144,7 +1144,7 @@ def _parse_metric_mask(tokens: Sequence[str], index: int) -> tuple[MetricMask, i
     # take no value and apply only to the ``step`` axis (metric-grammar.md
     # Grammar summary).
     if op in frozenset(
-        get_args(cast(object, wire_metrics_query.MetricReduce.__value__)),
+        get_args(wire_metrics_query.MetricReduce.__value__),
     ):
         if field != "step":
             raise ClientError(f"{op} applies to step only, not {field!r}")

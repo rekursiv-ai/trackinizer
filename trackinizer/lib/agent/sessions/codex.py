@@ -1195,14 +1195,14 @@ def _effort(
     """Read a reported effort level, resolving a provider's own spelling."""
     if wire in aliases:
         return aliases[wire]
-    if wire not in get_args(ThinkingEffort.__value__):  # pyright: ignore[reportAny] -- PEP 695 aliases expose their target through __value__.
+    if wire not in get_args(ThinkingEffort.__value__):
         return None
     return cast(ThinkingEffort, wire)
 
 
 def _summary_kind(wire: str) -> SummaryKind | None:
     """Read a requested summary verbosity."""
-    if wire not in get_args(SummaryKind.__value__):  # pyright: ignore[reportAny] -- PEP 695 aliases expose their target through __value__.
+    if wire not in get_args(SummaryKind.__value__):
         return None
     return cast(SummaryKind, wire)
 

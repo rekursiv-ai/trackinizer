@@ -293,11 +293,11 @@ def kind_group_members(group: KindGroup) -> tuple[Inquiry.InquiryKind, ...]:
     """
     inquiry: tuple[Inquiry.InquiryKind, ...] = cast(
         tuple[Inquiry.InquiryKind, ...],
-        get_args(cast(object, Inquiry.InquiryKind.__value__)),
+        get_args(Inquiry.InquiryKind.__value__),
     )
     artifact: tuple[Inquiry.InquiryKind, ...] = cast(
         tuple[Inquiry.InquiryKind, ...],
-        get_args(cast(object, Artifact.Kind.__value__)),
+        get_args(Artifact.Kind.__value__),
     )
     match group:
         case "issue":
@@ -619,7 +619,7 @@ def edge_annotations() -> dict[str, list[str]]:
     }
 
 
-_MISSING_POLICY = set(get_args(cast(object, Edge.Kind.__value__))) - set(EDGE_POLICIES)
+_MISSING_POLICY = set(get_args(Edge.Kind.__value__)) - set(EDGE_POLICIES)
 if _MISSING_POLICY:
     raise RuntimeError(
         f"EDGE_POLICIES missing an entry for {sorted(_MISSING_POLICY)}; every "

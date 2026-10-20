@@ -2679,7 +2679,7 @@ def test_edge_labels_dict_is_pinned_to_edge_kind() -> None:
     extra key is dead code. Pin the constant's keys to the closed ``Edge.Kind``
     literal so adding a kind forces a label entry.
     """
-    assert set(LABELS_BY_EDGE_KIND) == set(get_args(cast(object, Edge.Kind.__value__)))
+    assert set(LABELS_BY_EDGE_KIND) == set(get_args(Edge.Kind.__value__))
 
 
 def test_blocked_render_builds_seq_index_once_no_nested_scan() -> None:

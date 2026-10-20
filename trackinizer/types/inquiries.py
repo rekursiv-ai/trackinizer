@@ -1310,7 +1310,7 @@ exported class (see :func:`_kind_to_class`).
 target) and is intentionally absent: it is never a stored row ``kind``.
 """
 
-_MISSING_KINDS = set(get_args(cast(object, Inquiry.InquiryKind.__value__))) - set(
+_MISSING_KINDS = set(get_args(Inquiry.InquiryKind.__value__)) - set(
     KIND_TO_CLASS,
 )
 if _MISSING_KINDS:

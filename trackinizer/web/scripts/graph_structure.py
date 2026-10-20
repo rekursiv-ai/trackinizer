@@ -235,7 +235,7 @@ def load(text: str) -> Structure:
 _KINDS: Final = tuple(KIND_TO_CLASS)
 _STATUSES: Final = cast(
     tuple[Inquiry.Status, ...],
-    get_args(cast(object, Inquiry.Status.__value__)),
+    get_args(Inquiry.Status.__value__),
 )
 _EDGE_KINDS: Final = tuple(EDGE_POLICIES)
 

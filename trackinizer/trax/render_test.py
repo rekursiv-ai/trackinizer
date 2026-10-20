@@ -415,7 +415,7 @@ class TestDetailFormats:
         """
         for kind in cast(
             tuple[Edge.Kind, ...],
-            get_args(cast(object, Edge.Kind.__value__)),
+            get_args(Edge.Kind.__value__),
         ):
             for inbound in (False, True):
                 title = _relation_title(kind, inbound=inbound)

@@ -344,12 +344,7 @@ def test_submit_tokens_are_kind_lowercased() -> None:
     """
     kinds = cast(
         tuple[str, ...],
-        get_args(
-            cast(
-                object,
-                Inquiry.InquiryKind.__value__,
-            ),
-        ),
+        get_args(Inquiry.InquiryKind.__value__),
     )
     assert set(SUBMIT_BODY) == {kind.lower() for kind in kinds}
 
