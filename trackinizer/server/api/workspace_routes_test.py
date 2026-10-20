@@ -2350,6 +2350,34 @@ async def test_settings_refs_for_chat_return_the_pinned_rows(
     assert refs.personal_artifact_id is not None
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_assistant_reads_settings_of_a_station_holding_a_suggestion(
+    settings_chat: _SettingsChat,
+) -> None:
+    """A stored workstream suggestion comes back with the settings, not as a 500."""
+    stored = {
+        "title": "Charm ARC1/2",
+        "workstream_id": "eca9d638-6a14-4f36-9037-4975511afc2f",
+    }
+    async with settings_chat.store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE visual_workspaces SET station = station || "
+            "jsonb_build_object('suggestion', $2::jsonb) WHERE id = $1",
+            settings_chat.workspace_id,
+            stored,
+        )
+    act_as_assistant("writer")
+
+    response = await settings_chat.client.get(
+        f"/api/workspaces/for-chat/{settings_chat.conversation_id}/settings",
+        params={"asker": TEST_USER_EMAIL},
+    )
+
+    assert response.status_code == 200, response.text
+    assert json_loads(response.content, dict[str, object])["suggestion"] == stored
+
+
 @pytest.mark.asyncio(loop_scope="session")
 async def test_assistant_settings_refs_reject_another_asker(
     monkeypatch: pytest.MonkeyPatch,

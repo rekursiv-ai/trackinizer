@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final, cast
+from unittest.mock import ANY, AsyncMock, MagicMock, call
 
 import asyncio
 import uuid
@@ -31,6 +32,7 @@ from trackinizer.server.visuals.workspace_store import (
     set_session_campaign,
     set_station_flags,
     set_station_workstream,
+    settings_refs_for_chat,
     suggest_workstream_for_chat,
     workspace_for_chat,
 )
@@ -39,13 +41,14 @@ from trackinizer.server.visuals.workspaces import (
     StationData,
     StationLayout,
     WorkspaceData,
+    WorkspaceSettingsRefs,
     WorkstreamSuggestion,
 )
+from trackinizer.wire.bodies import SubmitArtifact
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
-    from unittest.mock import AsyncMock
 
     from asyncpg import Record
 
@@ -56,6 +59,19 @@ if TYPE_CHECKING:
 _USER: Final = uuid.UUID("11111111-1111-1111-1111-111111111111")
 _WORKSPACE: Final = uuid.UUID("55555555-5555-5555-5555-555555555555")
 _OTHER_USER: Final = uuid.UUID("22222222-2222-2222-2222-222222222222")
+_SOURCE_SQL: Final = (
+    "SELECT id, revision, state, station FROM visual_workspaces "
+    "WHERE id = $1 AND user_id = $2 FOR UPDATE"
+)
+_CLEARED_SQL: Final = (
+    "SELECT id, revision, state, station FROM visual_workspaces "
+    "WHERE user_id = $1 AND station->>'clear_key' = $2 LIMIT 1"
+)
+_INSERT_SQL: Final = (
+    "INSERT INTO visual_workspaces (id, user_id, station, state) "
+    "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING "
+    "RETURNING id, revision, state, station"
+)
 
 
 def _flags_engine(
@@ -655,6 +671,156 @@ async def test_clear_chat_returns_none_for_another_users_source(
     assert count == 1
 
 
+def test_a_clear_copies_the_canvas_without_its_marks_into_a_new_station(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The copy keeps page, layout and workstream, takes the key, and drops marks."""
+    workstream_id, key = uuid.uuid4(), uuid.uuid4()
+    mark = {
+        "points": [{"x": 0.1, "y": 0.2}, {"x": 0.3, "y": 0.4}],
+        "id": str(uuid.uuid4()),
+        "seq": 3,
+        "author": "user@example.com",
+        "at": "2026-10-20T00:00:00Z",
+    }
+    source = _ROW | {
+        "id": _WORKSPACE,
+        "state": {"visuals": [], "marks": [mark], "marks_seq": 3},
+        "station": {
+            "name": "source",
+            "conversation_id": str(uuid.uuid4()),
+            "page": "#/source",
+            "layout": {"tab": "graph", "chat_ch": 96},
+            "hidden": True,
+            "pinned": True,
+            "workstream_id": str(workstream_id),
+        },
+    }
+    engine, partner = _clear_store(monkeypatch, source, None, _ROW)
+    inbound = InboundQueue()
+    assistant = Assistant(actor="scout", email="kb@example.com")
+
+    copied = _clear(engine, key=key, inbound=inbound, assistant=assistant)
+
+    assert copied is not None
+    assert copied.id == _STATION
+    fetched = engine.conn.fetchrow.await_args_list
+    assert fetched == [
+        call(_SOURCE_SQL, _WORKSPACE, _USER),
+        call(_CLEARED_SQL, _USER, str(key)),
+        call(
+            _INSERT_SQL,
+            ANY,
+            _USER,
+            {
+                "name": "unnamed-workstream#1",
+                "page": "#/source",
+                "layout": {"tab": "graph", "chat_ch": 96},
+                "hidden": False,
+                "pinned": False,
+                "workstream_id": str(workstream_id),
+                "clear_key": str(key),
+            },
+            ANY,
+        ),
+    ]
+    copied_data = WorkspaceData.model_validate(fetched[2].args[4])
+    assert (copied_data.marks, copied_data.marks_seq) == ([], 3)
+    assert partner.await_args_list == [
+        call(
+            engine.conn,
+            row=_ROW,
+            user_id=_USER,
+            inbound=inbound,
+            assistant=assistant,
+        ),
+    ]
+
+
+def _clear_store(
+    monkeypatch: pytest.MonkeyPatch,
+    *rows: object,
+) -> tuple[FakeEngine, AsyncMock]:
+    """Answer each fetchrow with the next of ``rows``; record every partner lookup."""
+    conn: AsyncMock = make_conn()
+    conn.fetchrow = AsyncMock(side_effect=list(rows))
+    partner = AsyncMock(side_effect=_station_state_without_partner)
+    monkeypatch.setattr(workspace_store, "_with_partner", partner)
+    return FakeEngine(conn), partner
+
+
+def _clear(
+    engine: FakeEngine,
+    *,
+    key: uuid.UUID,
+    inbound: InboundQueue,
+    assistant: Assistant | None = None,
+) -> WorkspaceState | None:
+    """Clear ``_WORKSPACE`` for ``_USER`` through the fast store."""
+    return asyncio.run(
+        clear_chat_station(
+            cast("DatabaseEngine", engine),
+            user_id=_USER,
+            workspace_id=_WORKSPACE,
+            key=key,
+            inbound=inbound,
+            assistant=assistant,
+        ),
+    )
+
+
+def test_a_retried_clear_returns_the_station_its_key_made(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A key already used answers with its station, and inserts nothing."""
+    key = uuid.uuid4()
+    made = _ROW | {"station": {"name": "made", "clear_key": str(key)}}
+    engine, partner = _clear_store(monkeypatch, _ROW | {"id": _WORKSPACE}, made)
+    inbound = InboundQueue()
+    assistant = Assistant(actor="scout", email="kb@example.com")
+
+    copied = _clear(engine, key=key, inbound=inbound, assistant=assistant)
+
+    assert copied is not None
+    assert copied.name == "made"
+    assert engine.conn.fetchrow.await_args_list == [
+        call(_SOURCE_SQL, _WORKSPACE, _USER),
+        call(_CLEARED_SQL, _USER, str(key)),
+    ]
+    assert partner.await_args_list == [
+        call(
+            engine.conn,
+            row=made,
+            user_id=_USER,
+            inbound=inbound,
+            assistant=assistant,
+        ),
+    ]
+
+
+def test_a_clear_of_a_station_the_user_does_not_own_reads_nothing_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source the user does not own ends the clear after its one owner-scoped read."""
+    engine, partner = _clear_store(monkeypatch, None)
+
+    assert _clear(engine, key=uuid.uuid4(), inbound=InboundQueue()) is None
+    assert engine.conn.fetchrow.await_args_list == [
+        call(_SOURCE_SQL, _WORKSPACE, _USER),
+    ]
+    assert partner.await_args_list == []
+
+
+def test_a_clear_whose_copy_never_lands_is_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An insert that no read ever sees raises instead of returning a missing station."""
+    engine, _ = _clear_store(monkeypatch, _ROW | {"id": _WORKSPACE}, None, *[None] * 8)
+
+    with pytest.raises(RuntimeError, match=r"^clear station insert was not visible$"):
+        _ = _clear(engine, key=uuid.uuid4(), inbound=InboundQueue())
+
+
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_session_campaign_keeps_other_app_settings(
@@ -700,6 +866,94 @@ async def test_session_campaign_keeps_other_app_settings(
             "campaign": {"hours": 2.0, "scientists": 3},
         },
     }
+
+
+def test_settings_refs_carry_the_stored_workstream_suggestion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The suggestion the assistant stored reads back with the station's settings."""
+    conversation_id, workstream_id, personal = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    suggested = uuid.UUID("eca9d638-6a14-4f36-9037-4975511afc2f")
+    conn: AsyncMock = make_conn()
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "id": _WORKSPACE,
+            "station": {
+                "name": "Charm",
+                "conversation_id": str(conversation_id),
+                "workstream_id": str(workstream_id),
+                "suggestion": {
+                    "title": "Charm ARC1/2",
+                    "workstream_id": str(suggested),
+                },
+            },
+        },
+    )
+    personal_settings = AsyncMock(return_value=personal)
+    monkeypatch.setattr(workspace_store, "open_personal_settings", personal_settings)
+    store = Store(cast("DatabaseEngine", FakeEngine(conn)), embed=StubEmbedder())
+
+    refs = asyncio.run(
+        settings_refs_for_chat(
+            store,
+            user_id=_USER,
+            email="user@example.com",
+            conversation_id=conversation_id,
+            session_id=None,
+        ),
+    )
+
+    assert refs == WorkspaceSettingsRefs(
+        workstream_issue_id=workstream_id,
+        personal_artifact_id=personal,
+        name="Charm",
+        suggestion=WorkstreamSuggestion(title="Charm ARC1/2", workstream_id=suggested),
+    )
+    assert conn.fetchrow.await_args_list == [
+        call(
+            (
+                "SELECT id, station FROM visual_workspaces "
+                "WHERE user_id = $1 AND station->>'conversation_id' = $2"
+            ),
+            _USER,
+            str(conversation_id),
+        ),
+    ]
+    assert personal_settings.await_args_list == [
+        call(store, email="user@example.com"),
+    ]
+
+
+def test_a_settings_artifact_is_submitted_as_its_owners_pinned_row() -> None:
+    """The settings row is submitted owned by its user and labelled as settings."""
+    conn = cast("Conn", object())
+    store = MagicMock()
+    store.submit_artifact = AsyncMock(return_value=_STATION)
+
+    made = asyncio.run(
+        workspace_store._make_settings_artifact(
+            cast("Store", store),
+            conn=conn,
+            owner="user@example.com",
+            title="Settings: user@example.com",
+            description="Defaults.",
+            app={"settings": {"notes": "kept"}},
+        ),
+    )
+
+    assert made == _STATION
+    assert store.submit_artifact.await_args == call(
+        SubmitArtifact(
+            title="Settings: user@example.com",
+            description="Defaults.",
+            owner="user@example.com",
+            account="user@example.com",
+            labels=["personal-settings"],
+            app={"settings": {"notes": "kept"}},
+        ),
+        actor="user@example.com",
+        conn=conn,
+    )
 
 
 def test_a_fork_copies_every_layout_tab_and_page() -> None:
