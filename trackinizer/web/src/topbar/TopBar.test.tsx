@@ -9,6 +9,7 @@ vi.mock("./AccountMenu", () => ({ AccountMenu: () => null }));
 vi.mock("./GoMenu", () => ({ GoMenu: () => null }));
 vi.mock("./WorkstreamBar", () => ({ WorkstreamBar: () => <nav aria-label="Workstreams" /> }));
 vi.mock("./useDismiss", () => ({ useDismiss: vi.fn() }));
+vi.mock("./MachinesMenu", () => ({ MachinesMenu: () => <button type="button" aria-label="Machines" /> }));
 
 afterEach(() => {
   cleanup();
@@ -34,6 +35,16 @@ test("the top bar opens at the pointer edge and its pin keeps it open", () => {
   fireEvent.pointerLeave(header, { pointerType: "mouse" });
   act(() => { vi.advanceTimersByTime(400); });
   expect(header.className).toContain("topbar-auto-open");
+});
+
+test("Machines sits between the pin and the Workbench", () => {
+  setHover(false);
+  const { container } = render(<TopBar stations={false} />);
+  const buttons = [...container.querySelectorAll("header.topbar button")];
+  const at = (selector: string) => buttons.indexOf(container.querySelector<HTMLButtonElement>(selector)!);
+  const pin = at(".topbar-pin");
+  expect(pin).toBeGreaterThanOrEqual(0);
+  expect([at("[aria-label='Machines']"), at("[aria-label='Workbench']")]).toEqual([pin + 1, pin + 2]);
 });
 
 test("a touch tap at the edge opens the bar and a tap elsewhere closes it", () => {

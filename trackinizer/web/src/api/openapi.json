@@ -2053,6 +2053,42 @@
         "title": "CodeSnapshotPut",
         "type": "object"
       },
+      "ComputeBody": {
+        "description": "The deployment's notes, in the order it gave them; none when it gave none.",
+        "properties": {
+          "notes": {
+            "items": {
+              "$ref": "#/components/schemas/ComputeNote"
+            },
+            "title": "Notes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "notes"
+        ],
+        "title": "ComputeBody",
+        "type": "object"
+      },
+      "ComputeNote": {
+        "description": "One thing this server provides to run commands on, as its deployment says.\n\nAttributes:\n  name: What it is called, a few words.\n  about: A sentence or two on what it is and how a person gets to use it.",
+        "properties": {
+          "about": {
+            "title": "About",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "about"
+        ],
+        "title": "ComputeNote",
+        "type": "object"
+      },
       "ConsoleLive": {
         "additionalProperties": false,
         "description": "A Console view that follows the feed as it grows.",
@@ -14410,6 +14446,25 @@
           }
         },
         "summary": "Set Sha Route"
+      }
+    },
+    "/api/compute": {
+      "get": {
+        "description": "List the compute this server provides, for the web app's Machines menu.",
+        "operationId": "compute_route_api_compute_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComputeBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Compute Route"
       }
     },
     "/api/edges/batch": {

@@ -13,6 +13,8 @@ import shutil
 import time
 import uuid
 
+from treekle import json_loads
+
 from trackinizer.lib.postgres import DatabaseEngine, PGliteEngine, PostgresEngine
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.embedders.stub import StubEmbedder
@@ -27,6 +29,7 @@ if TYPE_CHECKING:
 __all__ = [
     "Assistant",
     "ChatOrgs",
+    "ComputeNote",
     "Config",
     "ConfigError",
     "ConfigFlags",
@@ -35,6 +38,7 @@ __all__ = [
     "parse_assistant",
     "parse_chat_orgs",
     "parse_chat_streaming",
+    "parse_compute",
     "parse_engine",
     "parse_staff",
     "parse_terminal_stun",
@@ -74,6 +78,20 @@ class Assistant:
 
     actor: str
     email: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ComputeNote:
+    """One thing this server provides to run commands on, as its deployment says.
+
+    Attributes:
+      name: What it is called, a few words.
+      about: A sentence or two on what it is and how a person gets to use it.
+
+    """
+
+    name: str
+    about: str
 
 
 class ConfigFlags(Protocol):
@@ -147,6 +165,10 @@ class Config:
         other direct, as ``stun:HOST[:PORT]`` URLs. Empty (the default) means a
         direct link forms on one network only. Environment only
         (``TRACKINIZER_TERMINAL_STUN``, comma separated).
+      compute: What this server provides to run commands on, which the web app's
+        Machines menu shows beside the person's own machines. Empty (the default)
+        shows none. Environment only (``TRACKINIZER_COMPUTE``, a JSON list of
+        ``{"name", "about"}`` objects).
 
     """
 
@@ -188,6 +210,7 @@ class Config:
     chat_orgs: ChatOrgs = "individual"
     chat_streaming: bool = True
     terminal_stun: tuple[str, ...] = ()
+    compute: tuple[ComputeNote, ...] = ()
 
     @classmethod
     def from_env(cls) -> Self:
@@ -227,6 +250,7 @@ class Config:
             terminal_stun=parse_terminal_stun(
                 os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
             ),
+            compute=parse_compute(os.environ.get("TRACKINIZER_COMPUTE", "")),
         )
 
     @classmethod
@@ -267,6 +291,7 @@ class Config:
             terminal_stun=parse_terminal_stun(
                 os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
             ),
+            compute=parse_compute(os.environ.get("TRACKINIZER_COMPUTE", "")),
         )
 
     def maintained_embedders(self) -> tuple[str, ...]:
@@ -432,6 +457,36 @@ def parse_terminal_stun(value: str) -> tuple[str, ...]:
             f"got {value!r}",
         )
     return servers
+
+
+def parse_compute(value: str) -> tuple[ComputeNote, ...]:
+    """Parse ``$TRACKINIZER_COMPUTE``: a JSON list of ``{"name", "about"}`` objects.
+
+    Args:
+      value: The variable; blank means none.
+
+    Returns:
+      notes: The notes, in order, each field trimmed.
+
+    Raises:
+      ConfigError: The value is not such a list, or a name or an about is blank.
+
+    """
+    if not value.strip():
+        return ()
+    shape = 'TRACKINIZER_COMPUTE must be a JSON list of {"name", "about"} objects'
+    try:
+        read = json_loads(value, tuple[ComputeNote, ...])
+    except ValueError as error:
+        raise ConfigError(f"{shape}: {error}") from None
+    notes = tuple(
+        ComputeNote(name=each.name.strip(), about=each.about.strip()) for each in read
+    )
+    if blank := [
+        index for index, each in enumerate(notes) if "" in (each.name, each.about)
+    ]:
+        raise ConfigError(f"{shape}, each with text in both: entry {blank[0]} has none")
+    return notes
 
 
 def parse_chat_streaming(value: str) -> bool:

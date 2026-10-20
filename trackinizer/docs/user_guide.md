@@ -30,9 +30,10 @@ sign-in, and with no terminals: a terminal opens only for a signed-in person.
 The top bar folds into a thin strip along the top of the window. Rest the
 pointer on the strip, or tap it, to open the bar; the pin (📌) keeps it open.
 From left to right it holds the logo (the graph), **Go** (every page), Search
-(⌘K, or Ctrl+K), New, your workstreams, **Workbench** (the canvas's visuals) and
-your avatar. The avatar's menu has **Your settings**, Appearance, the other
-accounts this browser has used, **Add another account** and **Sign out**.
+(⌘K, or Ctrl+K), New, your workstreams, **Machines** (where commands run),
+**Workbench** (the canvas's visuals) and your avatar. The avatar's menu has
+**Your settings**, Appearance, the other accounts this browser has used,
+**Add another account** and **Sign out**.
 
 ### Install it as an app
 
@@ -180,6 +181,9 @@ the browser. `trax machine connect`, running on that computer, makes it
 possible. The computer dials out to the server and listens on nothing.
 
 ### Connect a computer
+
+The top bar's **Machines** menu (the server icon) lists your machines, with
+Allow, and these same steps with your server's address filled in.
 
 1. Make an API token: your avatar → **Your settings** → **API tokens** →
    **New token**. Give it a label, such as "laptop trax", keep the writer role,

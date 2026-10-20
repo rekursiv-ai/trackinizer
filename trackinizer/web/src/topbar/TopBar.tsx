@@ -8,6 +8,7 @@ import { Icon, Logo } from "../ui/icons";
 import { useWorkbenchPresent, WorkbenchSlot } from "../app/workbenchSlot";
 import { AccountMenu } from "./AccountMenu";
 import { GoMenu } from "./GoMenu";
+import { MachinesMenu } from "./MachinesMenu";
 import { WorkstreamBar } from "./WorkstreamBar";
 import { useDismiss } from "./useDismiss";
 import { useHoverOpen } from "../visuals/hoverOpen";
@@ -15,8 +16,9 @@ import "./topbar.css";
 
 /**
  * The app's one bar, along the top: the logo (home, the graph), Go (the pages),
- * Search, New, then the user's workstreams, the Workbench's visuals while a
- * canvas is mounted, and the account at the end.
+ * Search, New, then the user's workstreams, the pin, Machines (where commands
+ * run), the Workbench's visuals while a canvas is mounted, and the account at
+ * the end.
  */
 export function TopBar({ stations }: { readonly stations: boolean }) {
   const palette = usePalette();
@@ -53,6 +55,7 @@ export function TopBar({ stations }: { readonly stations: boolean }) {
       <div className="topbar-stations">{stations && <WorkstreamBar />}</div>
       <button type="button" className="icon-btn topbar-pin" aria-label={pinned ? "Unpin app bar" : "Keep app bar open"}
         title="Keep the bar open" aria-pressed={pinned} onClick={() => setPinned((value) => !value)}><span aria-hidden="true">📌</span></button>
+      <MachinesMenu shown={shown} />
       <WorkbenchMenu />
       <AccountMenu onNavigate={closeGo} />
     </header>

@@ -12,6 +12,7 @@ import pytest
 from trackinizer.lib.postgres import PGliteEngine, PostgresEngine
 from trackinizer.server.config import (
     Assistant,
+    ComputeNote,
     Config,
     ConfigError,
     ConfigFlags,
@@ -22,6 +23,7 @@ from trackinizer.server.config import (
     parse_assistant,
     parse_chat_orgs,
     parse_chat_streaming,
+    parse_compute,
     parse_engine,
     parse_staff,
     parse_terminal_stun,
@@ -594,6 +596,60 @@ class TestTerminalStun:
         assert Config.from_args(_server_args(assistant="")).terminal_stun == (
             "stun:a.test:3478",
         )
+
+
+class TestCompute:
+    """``$TRACKINIZER_COMPUTE``: what this server provides, for the Machines menu."""
+
+    def test_unset_or_an_empty_list_means_no_notes(self) -> None:
+        assert parse_compute("") == ()
+        assert parse_compute("  ") == ()
+        assert parse_compute("[]") == ()
+        assert Config().compute == ()
+
+    def test_a_list_of_names_and_abouts_reads_in_order_and_trimmed(self) -> None:
+        raw = (
+            '[{"name": " GPU jobs ", "about": "Campaigns run on a shared GPU."},'
+            ' {"name": "Shell", "about": "Each chat\'s \\"own\\" box."}]'
+        )
+
+        assert parse_compute(raw) == (
+            ComputeNote(name="GPU jobs", about="Campaigns run on a shared GPU."),
+            ComputeNote(name="Shell", about='Each chat\'s "own" box.'),
+        )
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "GPU",
+            "{}",
+            '{"name": "a", "about": "b"}',
+            '["a"]',
+            '[{"name": "a"}]',
+            '[{"name": "a", "about": "b", "url": "c"}]',
+            '[{"name": 1, "about": "b"}]',
+            '[{"name": " ", "about": "b"}]',
+            '[{"name": "a", "about": ""}]',
+        ],
+    )
+    def test_anything_else_is_a_config_error(self, raw: str) -> None:
+        with pytest.raises(
+            ConfigError,
+            match=r'TRACKINIZER_COMPUTE must be a JSON list of \{"name", "about"\}',
+        ):
+            parse_compute(raw)
+
+    def test_both_ways_to_build_a_config_read_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_COMPUTE", '[{"name": "a", "about": "b"}]')
+        notes = (ComputeNote(name="a", about="b"),)
+        assert Config.from_env().compute == notes
+        assert Config.from_args(_server_args()).compute == notes
+        monkeypatch.setenv("TRACKINIZER_COMPUTE", "not json")
+        with pytest.raises(ConfigError, match="TRACKINIZER_COMPUTE"):
+            Config.from_env()
 
 
 if __name__ == "__main__":
