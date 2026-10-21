@@ -2456,7 +2456,9 @@ class TestRedaction:
         sink.close()
         stored = _stored_by(client)
         assert "Trackinizer capture truncated" in stored
-        leaked = [n for n in range(len(secret) - 16) if secret[n : n + 16] in stored]
+        # Every 16-character run of the stored text, so each probe is one lookup.
+        runs = {stored[n : n + 16] for n in range(len(stored) - 15)}
+        leaked = [n for n in range(len(secret) - 16) if secret[n : n + 16] in runs]
         assert not leaked
 
 
