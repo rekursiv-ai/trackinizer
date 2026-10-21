@@ -36,6 +36,7 @@ escapes the ``ClientError`` contract.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Literal, NamedTuple, Self, cast
 from urllib.parse import quote, urlparse
 
@@ -231,6 +232,7 @@ class Client:
         self._created_at = time.monotonic()
         self._request_count = 0
         self._request_count_lock = threading.Lock()
+        self._pending_reads: dict[tuple[int, str], uuid.UUID] = {}
         headers: dict[str, str] = {"Accept": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
@@ -1820,9 +1822,9 @@ class Client:
 
         """
         where = wire_sessions.session_inbound_path(session_id)
-        response = self._request(
-            "GET",
+        drained = self._consume(
             where,
+            scope=where,
             # Each None is left out, so a run that knows none of these sends the query
             # an older server always took.
             params={
@@ -1832,8 +1834,12 @@ class Client:
                 "cwd": cwd,
             },
             timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            decode=partial(
+                _validate_model,
+                wire_sessions.DrainInboundResponse,
+                where=where,
+            ),
         )
-        drained = _validate_model(wire_sessions.DrainInboundResponse, response, where)
         return drained.messages
 
     def send_message(
@@ -2264,15 +2270,21 @@ class Client:
 
         """
         where = wire_terminals.MACHINE_TERMINAL_WAIT_PATH.format(machine_id=machine_id)
-        response = self._request(
-            "GET",
+        return self._consume(
             where,
+            scope=f"{where}/{instance}",
             params={"instance": str(instance), "wait_sec": wait_sec},
             timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            decode=lambda response: (
+                None
+                if response is None
+                else _validate_model(
+                    wire_terminals.TerminalWait,
+                    response,
+                    where,
+                )
+            ),
         )
-        if response is None:
-            return None
-        return _validate_model(wire_terminals.TerminalWait, response, where)
 
     def terminal_machines(
         self,
@@ -2445,6 +2457,26 @@ class Client:
             body={"op": op, "value": value, "actor": actor},
         )
 
+    def _consume[T](
+        self,
+        path: str,
+        *,
+        scope: str,
+        params: Mapping[str, object],
+        timeout: float | None,
+        decode: Callable[[PlainTree], T],
+    ) -> T:
+        """Keep a consuming read's identity until its response validates."""
+        pending = (threading.get_ident(), scope)
+        with self._request_count_lock:
+            key = self._pending_reads.setdefault(pending, uuid.uuid4())
+        result = decode(
+            self._request("GET", path, params=params, timeout=timeout, change_id=key),
+        )
+        with self._request_count_lock:
+            self._pending_reads.pop(pending, None)
+        return result
+
     def _request(
         self,
         method: str,
@@ -2459,17 +2491,17 @@ class Client:
         # ``retry_attempts`` is how many tries a mutating request gets after a
         # 5xx or read timeout. Three bounds the worst-case wait (~1s) while
         # covering the common cases: one bad pool socket, one transient 502.
-        # Only mutations need an Idempotency-Key (GETs are stateless).
-        # Mint one if the caller didn't, so every retry in this loop
+        # Consuming GETs supply their own key; ordinary reads need none.
+        # Mint one for a mutation if the caller didn't, so every retry in this loop
         # reuses the *same* UUID and the server sees a replay rather than
         # a duplicate operation.
         with self._request_count_lock:
             self._request_count += 1
             request_index = self._request_count
         headers: dict[str, str] = {}
-        if method != "GET":
-            if change_id is None:
-                change_id = uuid.uuid4()
+        if method != "GET" and change_id is None:
+            change_id = uuid.uuid4()
+        if change_id is not None:
             headers["Idempotency-Key"] = str(change_id)
         clean = _clean_params(params)
         for attempt in range(retry_attempts):

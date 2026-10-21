@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import override
 
 import asyncio
 import uuid
@@ -61,6 +62,25 @@ class _Clock:
 
     def __call__(self) -> float:
         return self.now
+
+
+class _BlockedSocket(_Socket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.sending = asyncio.Event()
+        self.release = asyncio.Event()
+
+    @override
+    async def send_bytes(self, data: bytes) -> None:
+        self.sending.set()
+        await self.release.wait()
+        await super().send_bytes(data)
+
+    @override
+    async def close(self, code: int) -> None:
+        self.gone = True
+        self.release.set()
+        await super().close(code)
 
 
 class _World:
@@ -614,6 +634,52 @@ async def test_a_reattach_while_output_flows_neither_repeats_nor_reorders() -> N
     streamed = b"".join(payload for kind, payload in fresh.sent if kind is Frame.OUTPUT)
     assert streamed == b"abcdefghi"
     assert old.closed == [wire_terminals.CLOSE_TAKEN_OVER]
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_replay_applies_backpressure_to_host_output() -> None:
+    world = _World()
+    term = world.open()
+    assert await world.hub.host_connected(term, _Socket())
+    browser = _BlockedSocket()
+    attaching = asyncio.create_task(world.hub.attach_browser(term, browser, offset=0))
+    await browser.sending.wait()
+    payload = b"x" * (wire_terminals.RING_BYTES + 1)
+    output = asyncio.create_task(world.hub.from_host(term, Frame.OUTPUT, payload))
+    try:
+        await asyncio.sleep(0)
+        assert not output.done()
+        assert term.ring.end == 0
+    finally:
+        browser.release.set()
+        await attaching
+        await output
+    assert browser.sent == [(Frame.ACK, (0).to_bytes(8)), (Frame.OUTPUT, payload)]
+
+
+@pytest.mark.asyncio
+async def test_takeover_unblocks_the_old_replay_without_repeating_pending_output() -> (
+    None
+):
+    world = _World()
+    term = world.open()
+    assert await world.hub.host_connected(term, _Socket())
+    blocked = _BlockedSocket()
+    attaching = asyncio.create_task(world.hub.attach_browser(term, blocked, offset=0))
+    await blocked.sending.wait()
+    output = asyncio.create_task(world.hub.from_host(term, Frame.OUTPUT, b"pending"))
+    try:
+        await asyncio.sleep(0)
+        assert not output.done()
+        fresh = _Socket()
+        await world.hub.attach_browser(term, fresh, offset=0)
+        await attaching
+        await output
+    finally:
+        blocked.release.set()
+        await attaching
+        await output
+    assert fresh.sent == [(Frame.ACK, (0).to_bytes(8)), (Frame.OUTPUT, b"pending")]
 
 
 @pytest.mark.asyncio

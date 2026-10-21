@@ -13,6 +13,7 @@ joining to ``inquiries``.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 from typing import Annotated, cast
 from uuid import UUID
 
@@ -25,6 +26,7 @@ from trackinizer.server.api._deps import (
     get_assistant,
     get_hub,
     get_inbound,
+    get_replays,
     get_store,
 )
 from trackinizer.server.api.session_access import (
@@ -43,7 +45,7 @@ from trackinizer.server.auth import (
     assert_account_active,
     require_role,
 )
-from trackinizer.server.inbound import Inbound
+from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.visuals.partners import (
     is_assistant_session,
@@ -535,18 +537,18 @@ async def session_inbound_drain_route(
     # a waiting caller re-arms rarely, short enough to stay under the idle timeout
     # of an intermediary that would otherwise cut the connection mid-wait.
     held = min(max(wait_sec, 0.0), 30.0)
-    # An end served while this request awaited the store revoked the lease just
-    # marked, and released only the holds already parked; one taken now would keep
-    # the exiting run waiting out all of it. No await separates this check from the
-    # hold registering, so an end cannot land between them.
-    if polling and not inbound.has_poller(session_id):
-        held = 0.0
-    drained = (
-        await inbound.await_messages(session_id, timeout_sec=held)
-        if held
-        else inbound.drain(session_id)
+    key = _idempotency_key(request)
+    drained = await get_replays(request).inbound.run(
+        None if key is None else (identity.user_id, identity.api_key_id, key),
+        fingerprint=str(session_id),
+        operation=partial(
+            _drain_inbound,
+            inbound,
+            session_id=session_id,
+            wait_sec=held,
+            taker=identity.api_key_id,
+        ),
     )
-    inbound.hand_out(drained, taker=identity.api_key_id)
     return DrainInboundResponse(
         messages=[
             InboundDrainItem(
@@ -854,3 +856,23 @@ def _idempotency_key(request: Request) -> UUID | None:
     if key is not None and not isinstance(key, UUID):
         raise ValueError("Expected key is None or isinstance(key, UUID).")
     return key
+
+
+async def _drain_inbound(
+    inbound: InboundQueue,
+    *,
+    session_id: UUID,
+    wait_sec: float,
+    taker: UUID | None,
+) -> list[Inbound]:
+    """Consume and attest a batch once, before its receipt can be replayed."""
+    # Receipt work starts on a task: an end may have revoked the lease since the
+    # route marked it. Keep this check beside waiter registration, with no yield
+    # between them, or shutdown can leave a new hold parked for its full timeout.
+    drained = (
+        await inbound.await_messages(session_id, timeout_sec=wait_sec)
+        if wait_sec and inbound.has_poller(session_id)
+        else inbound.drain(session_id)
+    )
+    inbound.hand_out(drained, taker=taker)
+    return drained

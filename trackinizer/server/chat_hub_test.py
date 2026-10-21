@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, TypedDict
 
 import asyncio
+import time
 import uuid
 
 from treekle import json_loads
 
 import pytest
 
+from trackinizer.server import chat_hub
 from trackinizer.server.chat_hub import (
     CaptureFrame,
     ChangedFrame,
@@ -216,6 +219,59 @@ async def test_a_nudge_rechecks_the_partner_at_once() -> None:
     hub.nudge()
     assert await _partner_status(events) == "unavailable"
     await events.aclose()
+
+
+@pytest.mark.asyncio
+async def test_busy_stream_checks_revocation_on_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(
+        chat_hub,
+        "time",
+        SimpleNamespace(monotonic=lambda: now[0], time_ns=time.time_ns),
+    )
+    hub = ChatHub()
+    canvas = _Canvas()
+    events = _events(hub, canvas=canvas)
+    await anext(events)
+    await anext(events)
+    hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/first"))
+    await anext(events)
+    now[0] = 61.0
+    canvas.is_active = False
+    hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/revoked"))
+    try:
+        with pytest.raises(StopAsyncIteration):
+            await anext(events)
+    finally:
+        await events.aclose()
+
+
+@pytest.mark.asyncio
+async def test_busy_stream_rechecks_partner_on_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(
+        chat_hub,
+        "time",
+        SimpleNamespace(monotonic=lambda: now[0], time_ns=time.time_ns),
+    )
+    hub = ChatHub()
+    canvas = _Canvas()
+    events = _events(hub, canvas=canvas)
+    await anext(events)
+    await anext(events)
+    hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/first"))
+    await anext(events)
+    now[0] = 61.0
+    canvas.partner = _partner("unavailable")
+    hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/busy"))
+    try:
+        assert await _partner_status(events) == "unavailable"
+    finally:
+        await events.aclose()
 
 
 @pytest.mark.asyncio

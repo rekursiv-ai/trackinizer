@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
+import asyncio
+
 from treekle import immutable, json_loads
 
 import pytest
@@ -557,6 +559,49 @@ async def test_a_second_file_gets_the_next_part(store: Store) -> None:
     )
 
     assert (first, second) == (0, 1)
+
+
+@pytest.mark.db_postgres
+@pytest.mark.asyncio(loop_scope="session")
+async def test_concurrent_new_files_keep_distinct_parts(store: Store) -> None:
+    session_id = await _session(store)
+    tasks: list[asyncio.Task[int]] = []
+    async with store.engine.acquire() as conn:
+        await conn.execute("BEGIN")
+        try:
+            # Before the fix both allocators read zero, then their INSERTs wait on
+            # this row's FK lock. Allocation itself must wait on the session instead.
+            _ = await conn.fetchval(
+                "SELECT id FROM inquiries WHERE id = $1 FOR UPDATE",
+                session_id,
+            )
+            tasks = [
+                asyncio.create_task(
+                    _upsert(store, session_id, name=name, key=None, records=records),
+                )
+                for name, records in (("first.jsonl", 2), ("second.jsonl", 3))
+            ]
+            async with asyncio.timeout(5):
+                while True:
+                    await conn.execute("SELECT pg_stat_clear_snapshot()")
+                    blocked = await conn.fetchval(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() "
+                        "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()",
+                    )
+                    assert isinstance(blocked, int)
+                    if blocked == 2:
+                        break
+                    await asyncio.sleep(0.001)
+        finally:
+            await conn.execute("COMMIT")
+            parts = await asyncio.gather(*tasks)
+    assert len(set(parts)) == 2
+    manifests = await store.read_session_manifests(session_id)
+    assert {m.name: m.records for m in manifests} == {
+        "first.jsonl": 2,
+        "second.jsonl": 3,
+    }
 
 
 @pytest.mark.db_pglite

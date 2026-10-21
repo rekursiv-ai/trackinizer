@@ -4519,6 +4519,7 @@ class TestDeliverOne:
             cast(ThreadedRelay, relay),
             InboundDrainItem(text=envelope, source="trackinizer", room="lab"),
             stream=True,
+            cli="sh",
         )
         assert relay.submitted == [f"[lab] trackinizer: {envelope}"]
 
@@ -4529,6 +4530,7 @@ class TestDeliverOne:
             cast(ThreadedRelay, relay),
             InboundDrainItem(text="look", source="alice@x", context=context),
             stream=False,
+            cli="claude",
         )
         assert relay.submitted == [
             render_inbound("look", "alice@x", None, context=context),
@@ -4559,7 +4561,12 @@ class TestDeliverOne:
 
         with caplog.at_level("INFO", logger=session.__name__):
             for item in items:
-                session._deliver_one(cast(ThreadedRelay, relay), item, stream=False)
+                session._deliver_one(
+                    cast(ThreadedRelay, relay),
+                    item,
+                    stream=False,
+                    cli="claude",
+                )
 
         assert relay.submitted == ["/compact"]
         assert relay.written == [b"\x1b"]
@@ -4580,6 +4587,7 @@ class TestDeliverOne:
                 cast(ThreadedRelay, _PickyRelay(reject="poison")),
                 InboundDrainItem(text="poison"),
                 stream=False,
+                cli="claude",
             )
         (record,) = [r for r in caplog.records if r.name == session.__name__]
         assert record.getMessage() == (
@@ -5293,6 +5301,7 @@ class TestDeliveredLinesAreStamped:
             cast(ThreadedRelay, relay),
             InboundDrainItem(text="hello\n  there", source="alice@x", room="lab"),
             stream=False,
+            cli="claude",
             inbound=state,
         )
         sink = _RecordingSink()
@@ -5327,6 +5336,7 @@ class TestDeliveredLinesAreStamped:
             cast(ThreadedRelay, _PickyRelay(reject="alice@x: poison")),
             InboundDrainItem(text="poison", source="alice@x"),
             stream=False,
+            cli="claude",
             inbound=state,
         )
 
@@ -5444,6 +5454,7 @@ class TestPromptBridge:
                 stream=False,
                 inbound=opened.inbound,
                 bridge=opened.bridge,
+                cli="claude",
             )
             reply = opened.reply()
         finally:
@@ -5526,6 +5537,7 @@ class TestPromptBridge:
                 slash_queue=deque(),
                 stream_queue=None,
                 run_records=records,
+                stream_part=Path("unused"),
             ),
         )
 
@@ -5837,6 +5849,7 @@ class TestATrustCardHoldsTheRun:
             inbound=opened.inbound,
             bridge=opened.bridge,
             gate=gate,
+            cli="codex",
         )
         try:
             deliver(
