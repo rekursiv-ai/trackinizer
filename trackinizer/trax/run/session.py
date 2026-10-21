@@ -19,6 +19,12 @@ Three things run side by side, and for claude a fourth:
    (:mod:`~trackinizer.trax.run.prompt_bridge`) that carries the permission
    and question prompts claude asks to Chat, and Chat's answers back.
 
+A run a chat's host starts (``--detach --attach``) drives claude or codex headless
+instead: no PTY, but a driver (:mod:`~trackinizer.trax.run.headless`) that sends
+the CLI Chat's lines and carries its asks to Chat as cards. The drain thread and the
+inbound poll are the same; the transcript is still the CLI's own session file. A person
+who runs ``trax run attach`` takes the CLI over in its own terminal.
+
 When the CLI exits, the wrapper drains pending lines for a short quiesce
 window, reads the session files to their ends, closes the sink, and exits
 with the CLI's status.
@@ -35,7 +41,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast
+from typing import TYPE_CHECKING, ClassVar, Final, Literal, Protocol, cast
 
 import argparse
 import asyncio
@@ -53,7 +59,7 @@ import threading
 import time
 import uuid
 
-from treekle import PlainTree, json_dumps, json_loads
+from treekle import PlainTree, from_plain, json_dumps, json_loads
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
@@ -70,6 +76,13 @@ from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.custom_types import Adapter, StreamAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter
+from trackinizer.trax.run.asks import answer_from_payload
+from trackinizer.trax.run.claude_stream import ClaudeStreamDriver
+from trackinizer.trax.run.codex_app import (
+    ApprovalPolicy,
+    CodexAppDriver,
+    SandboxMode,
+)
 from trackinizer.trax.run.commands import (
     GoalWatch,
     command_record,
@@ -78,7 +91,13 @@ from trackinizer.trax.run.commands import (
 )
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.errors import CiphertextDroppedError, NotResumableError
-from trackinizer.trax.run.inbound import render_inbound
+from trackinizer.trax.run.headless import (
+    HeadlessRun,
+    RunEndedError,
+    StateReporter,
+    TakenOverError,
+)
+from trackinizer.trax.run.inbound import render_inbound, settings_from_payload
 from trackinizer.trax.run.placement import place_run, placement_env
 from trackinizer.trax.run.prompt_bridge import PromptBridge
 from trackinizer.trax.run.redact import Redactor, redactor_from_environ
@@ -100,15 +119,25 @@ from trackinizer.trax.run.trust import (
 )
 from trackinizer.trax.run.worktree_diff import WorktreeDiff, open_worktree_diff
 from trackinizer.types.line_capture import LineCapture
-from trackinizer.wire.wire_sessions import InboundDrainItem
+from trackinizer.wire.wire_sessions import (
+    RUN_ENDING_REFUSALS,
+    InboundDrainItem,
+    SessionRunState,
+    session_run_state_path,
+)
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import (
+        Sequence,
+        Set as AbstractSet,
+    )
     from datetime import datetime
 
     from trackinizer.trax import machine_host
+    from trackinizer.trax.run.asks import Driver
     from trackinizer.trax.run.box_hook import hook
+    from trackinizer.trax.run.headless import HostState
     from trackinizer.trax.run.resume import prepare_resume
     from trackinizer.types.streams import TraxRecord
     from trackinizer.wire.wire_sessions import InboundKind
@@ -184,6 +213,11 @@ _RECORD_READY_SEC: Final = 15.0
 # a turn runs is folded into that turn and never gets a record of its own, so the
 # oldest are dropped rather than kept for the life of the run.
 _TYPED_REMEMBERED: Final = 32
+
+
+# The CLIs a chat's run drives headless: the two with a driver. Any other CLI a chat
+# attaches keeps its terminal.
+_HEADLESS_CLIS: Final = ("claude", "codex")
 
 
 # What a CLI placed on a station is told of it. Its own product may have a canvas too,
@@ -284,6 +318,10 @@ class _SessionOwner:
     def output(self, raw: bytes) -> None:
         """Retain the terminal's end for a clean-exit session ID banner."""
         self._output_tail = (self._output_tail + raw)[-512:]
+
+    def adopt(self, session_id: str) -> None:
+        """Capture the session a headless driver reports, which it names before any file."""
+        self.session_id = session_id
 
     def finish_output(self) -> None:
         """Use the final Codex banner if descriptor discovery missed the file."""
@@ -522,6 +560,16 @@ class RunConfig:
     run_name: str | None = None
     """The ``--detach`` host's name, which ``trax run attach`` takes; ``None`` for a run
     in this terminal. Each inbound drain names it, so Chat can say how to attach."""
+
+    instance: str = field(default_factory=lambda: uuid.uuid4().hex)
+    """This run's id, minted once per run. Its drains, its state reports and its
+    session end all name it, so the server can tell a run it replaced from the one that
+    holds the chat."""
+
+    headless: bool = False
+    """Drive the CLI through its driver instead of a terminal: a chat's run, started by
+    a machine's terminal host (``--detach --attach``) for claude or codex. The CLI's
+    own terminal is hosted only while a person has taken the run over."""
 
     diff: bool = False
     """Show the session's net ``git diff`` of the files it edits on its Trax
@@ -1065,6 +1113,18 @@ def _run_flags(
     run_name: str | None,
 ) -> int:
     """Run the parsed ``trax run`` invocation, served at ``host`` when given."""
+    # A chat's run that a person took over has a session its terminal went on with, and
+    # the run that replaces it goes on with that one: the turns typed there are in it.
+    if (
+        flags.attach is not None
+        and resume_path is None
+        and isinstance(host, detach.HeadlessSpec)
+        and host.resume
+    ):
+        taken = _session_file(_ADAPTERS[flags.cli](), host.resume)
+        if taken is not None:
+            resume_path, cli_session_id = taken, host.resume
+            prefix_bytes = taken.stat().st_size
     if (
         flags.attach is not None
         and resume_path is None
@@ -1078,21 +1138,29 @@ def _run_flags(
             flags.cli,
         )
     # Prepended, so a caller's own ``--`` args still win over it.
-    cli_args = (*resume_argv(flags.cli, cli_session_id), *cli_argv)
+    resuming = (*resume_argv(flags.cli, cli_session_id), *cli_argv)
     if not flags.dry_run:
         resume_path, cli_session_id = _continued_transcript(
             _ADAPTERS[flags.cli](),
-            cli_args,
+            resuming,
             resume_path=resume_path,
             cli_session_id=cli_session_id,
         )
+    # A chat's run is hosted: a person's own terminal run keeps its TUI. A driver
+    # resumes by the id it is handed, so the resume argument is not its argument.
+    headless = (
+        flags.attach is not None
+        and host is not None
+        and flags.cli in _HEADLESS_CLIS
+        and not flags.dry_run
+    )
     # ``syncing`` off the parsed flags, not off a half-built config: the client
     # is then an ordinary constructor argument and ``RunConfig`` stays frozen.
     syncing = flags.sync and flags.out is None and not flags.dry_run
     return run(
         RunConfig(
             cli_name=flags.cli,
-            cli_args=cli_args,
+            cli_args=cli_argv if headless else resuming,
             actor=flags.actor or os.environ.get("AGENTNAME", "Agent"),
             rooms=tuple(flags.rooms or ()),
             private=flags.private,
@@ -1110,6 +1178,7 @@ def _run_flags(
             profile=profile,
             host=host,
             run_name=run_name,
+            headless=headless,
         ),
     )
 
@@ -1139,6 +1208,7 @@ def _open_trackinizer_sink(
             private=config.private,
             attach=config.attach,
             redactor=redactor,
+            instance=config.instance,
         ),
         fallback_path=_default_out_path(adapter.name),
         redactor=redactor,
@@ -1198,6 +1268,8 @@ def _spawn_and_drain(
     stats: _Stats,
 ) -> int:
     """Run the CLI on a PTY while daemon threads drain logs and inject inbound."""
+    if config.headless:
+        return _headless_and_drain(config, adapter, sink, stats)
     owner = _session_owner(adapter, config)
     # A stream adapter names no binary of its own: the command is the ``--``
     # args verbatim (``trax run sh -- bash -c '...'``).
@@ -1273,40 +1345,20 @@ def _spawn_and_drain(
         run_records,
         Path(f"prompts-{uuid.uuid4().hex}"),
     )
-    # Set once the kernel watch is armed. ``Thread.start`` returns when the
-    # thread is SCHEDULED, not when it has run, and the relay forks the CLI on
-    # the next statement -- so without waiting here the child can write its
-    # first record into an unwatched directory. Codex does exactly that
-    # (``session_meta`` at launch), and no later event ever names it.
-    armed = threading.Event()
-    drain_thread = threading.Thread(
-        name="drain",
-        target=partial(
-            _drain_filesystem_loop,
-            adapter,
-            sink,
-            stats,
-            config,
-            stop,
-            baseline=baseline,
-            slash_queue=slash_queue,
-            stream_queue=stream_queue,
-            run_records=run_records,
-            armed=armed,
-            owner=owner,
-            worktree_diff=worktree_diff,
-            inbound=inbound,
-        ),
-        daemon=True,
+    drain_thread = _start_drain(
+        adapter,
+        sink,
+        stats,
+        config,
+        stop,
+        baseline=baseline,
+        slash_queue=slash_queue,
+        stream_queue=stream_queue,
+        run_records=run_records,
+        owner=owner,
+        worktree_diff=worktree_diff,
+        inbound=inbound,
     )
-    drain_thread.start()
-    if not armed.wait(_ARM_TIMEOUT_SEC):
-        # Spawn anyway: a run that captures nothing still beats one that never
-        # starts. Say so, since the alternative is a silently empty transcript.
-        sys.stderr.write(
-            f"[trax run] session-log watch not ready within {_ARM_TIMEOUT_SEC:.0f}s; "
-            "starting the CLI anyway (early output may not be captured)\n",
-        )
 
     # Open the session eagerly (before fork) so the server-granted routing
     # handle is in the child env from the start: an agent inside must know its
@@ -1321,18 +1373,12 @@ def _spawn_and_drain(
     # before it was reaped unstamped, and its next ``--resume`` stored it all twice.
     # An attached run's sink keeps none: the session it re-opens keeps its own id.
     named = owner.session_id if owner is not None else config.cli_session_id
-    if named is not None:
-        sink.set_cli_session_id(named)
-    try:
-        granted_actor = sink.open()
-    except PrivateNotHeldError:
-        # Nothing has spawned, so the drain has nothing to finish.
-        stop.set()
-        _join_with_watchdog(
-            drain_thread,
-            deadline=time.monotonic() + _JOIN_DEADLINE_SEC,
-        )
-        raise
+    granted_actor = _open_session(
+        sink,
+        named=named,
+        stop=stop,
+        drain_thread=drain_thread,
+    )
     # Placed before the fork, like the routing name, so the child's env holds its
     # workstream and station from the start. A failure leaves it unplaced.
     placement = (
@@ -1390,8 +1436,7 @@ def _spawn_and_drain(
         argv,
         env=_routing_env(config, granted_actor=granted_actor)
         | placement_env(placement),
-        drop_env=adapter.parent_session_env
-        | {"TRAX_ACTOR", "TRAX_ROOMS", "TRAX_WORKSTREAM", "TRAX_WORKSPACE"},
+        drop_env=_dropped_env(adapter),
         host=config.host,
         on_input=detector.feed,
         on_output=_observers(
@@ -1426,6 +1471,7 @@ def _spawn_and_drain(
                 cli=adapter.name,
                 record=record,
                 gate=gate,
+                instance=config.instance,
                 compact=(
                     f"the loaded conversation is past what {adapter.name} holds "
                     "comfortably"
@@ -1461,25 +1507,497 @@ def _spawn_and_drain(
             # this emit serializes with the drain thread's.
             stream_capture.close()
 
-        # Let the drain thread finish pending reads before stopping it.
-        time.sleep(config.quiesce_seconds)
-        stop.set()
-        # One deadline for the whole teardown: the workers normally stop well
-        # inside it, so a slow drain (a retrying server POST) finishes rather
-        # than racing ``sink.close`` (R2R-024), while a permanently wedged POST
-        # cannot hang the process. The LockedSink's ``close`` then acquires its
-        # lock with a short timeout and skips locked teardown rather than
-        # deadlocking against a straggler that outlived the deadline.
-        deadline = time.monotonic() + _JOIN_DEADLINE_SEC
-        _join_with_watchdog(drain_thread, deadline=deadline)
-        # Closed BEFORE the poller is joined: it is parked in a request the server
-        # holds until a message arrives or the session ends, and this close ends the
-        # session. Joined first, every exit would wait out the whole hold. ``run``
-        # closes again on every path; the second close is a no-op.
-        sink.close()
-        if poll_thread is not None:
-            _join_with_watchdog(poll_thread, deadline=deadline)
+        _wind_down(config, stop, drain_thread, poll_thread, sink)
     return rc
+
+
+# Set once the kernel watch is armed. ``Thread.start`` returns when the thread is
+# SCHEDULED, not when it has run, and the CLI is spawned on the caller's next
+# statement -- so without waiting here the child can write its first record into an
+# unwatched directory. Codex does exactly that (``session_meta`` at launch), and no later
+# event ever names it.
+def _start_drain(
+    adapter: Adapter,
+    sink: Sink,
+    stats: _Stats,
+    config: RunConfig,
+    stop: threading.Event,
+    *,
+    baseline: frozenset[Path],
+    slash_queue: deque[tuple[SlashCommand, datetime]],
+    stream_queue: deque[bytes] | None,
+    run_records: deque[Event],
+    owner: _SessionOwner | None,
+    worktree_diff: WorktreeDiff | None,
+    inbound: InboundState,
+) -> threading.Thread:
+    """Start the drain thread and wait until its watch is armed; return the thread."""
+    armed = threading.Event()
+    drain_thread = threading.Thread(
+        name="drain",
+        target=partial(
+            _drain_filesystem_loop,
+            adapter,
+            sink,
+            stats,
+            config,
+            stop,
+            baseline=baseline,
+            slash_queue=slash_queue,
+            stream_queue=stream_queue,
+            run_records=run_records,
+            armed=armed,
+            owner=owner,
+            worktree_diff=worktree_diff,
+            inbound=inbound,
+        ),
+        daemon=True,
+    )
+    drain_thread.start()
+    if not armed.wait(_ARM_TIMEOUT_SEC):
+        # Spawn anyway: a run that captures nothing still beats one that never
+        # starts. Say so, since the alternative is a silently empty transcript.
+        sys.stderr.write(
+            f"[trax run] session-log watch not ready within {_ARM_TIMEOUT_SEC:.0f}s; "
+            "starting the CLI anyway (early output may not be captured)\n",
+        )
+    return drain_thread
+
+
+def _open_session(
+    sink: Sink,
+    *,
+    named: str | None,
+    stop: threading.Event,
+    drain_thread: threading.Thread,
+) -> str | None:
+    """Open the run's session; return the routing handle the server granted, if any."""
+    if named is not None:
+        sink.set_cli_session_id(named)
+    try:
+        return sink.open()
+    except PrivateNotHeldError:
+        # Nothing has spawned, so the drain has nothing to finish.
+        stop.set()
+        _join_with_watchdog(
+            drain_thread,
+            deadline=time.monotonic() + _JOIN_DEADLINE_SEC,
+        )
+        raise
+
+
+def _wind_down(
+    config: RunConfig,
+    stop: threading.Event,
+    drain_thread: threading.Thread,
+    poll_thread: threading.Thread | None,
+    sink: Sink,
+) -> None:
+    """Stop the workers once the CLI is gone, and close the sink under them."""
+    # Let the drain thread finish pending reads before stopping it.
+    time.sleep(config.quiesce_seconds)
+    stop.set()
+    # One deadline for the whole teardown: the workers normally stop well
+    # inside it, so a slow drain (a retrying server POST) finishes rather than
+    # racing ``sink.close`` (R2R-024), while a permanently wedged POST cannot
+    # hang the process. The LockedSink's ``close`` then acquires its lock with a
+    # short timeout and skips locked teardown rather than deadlocking against a
+    # straggler that outlived the deadline.
+    deadline = time.monotonic() + _JOIN_DEADLINE_SEC
+    _join_with_watchdog(drain_thread, deadline=deadline)
+    # Closed BEFORE the poller is joined: it is parked in a request the server
+    # holds until a message arrives or the session ends, and this close ends the
+    # session. Joined first, every exit would wait out the whole hold. ``run``
+    # closes again on every path; the second close is a no-op.
+    sink.close()
+    # A poller whose run never came up was never started, and there is nothing to join.
+    if poll_thread is not None and poll_thread.ident is not None:
+        _join_with_watchdog(poll_thread, deadline=deadline)
+
+
+# The CLI is a new top-level session, so whatever names the LAUNCHING one stays behind:
+# the adapter's markers (see ``parent_session_env``) and our own routing pair -- a run
+# with no rooms would otherwise inherit its launcher's ``TRAX_ROOMS`` and believe it is
+# reachable where it is not.
+def _dropped_env(adapter: Adapter) -> frozenset[str]:
+    """Return the inherited variables the CLI must not see."""
+    return adapter.parent_session_env | {
+        "TRAX_ACTOR",
+        "TRAX_ROOMS",
+        "TRAX_WORKSTREAM",
+        "TRAX_WORKSPACE",
+    }
+
+
+# A chat's run has no terminal. The CLI runs through its driver, which hears Chat's
+# lines and reports the asks Chat answers, and the same drain and poll threads capture
+# and feed it as for a terminal run. The pieces a terminal needs are gone: no trust
+# screen (neither CLI asks in this mode), no prompt bridge (the driver is the channel
+# that carries an ask), no keystroke detector, no readiness wait (the driver is up
+# before the poller starts).
+def _headless_and_drain(
+    config: RunConfig,
+    adapter: Adapter,
+    sink: Sink,
+    stats: _Stats,
+) -> int:
+    """Drive the CLI through a driver while daemon threads drain logs and feed lines."""
+    # A computer the person declared a sandbox (``trax machine connect --sandbox``) is
+    # one where agents act freely, so a headless run there asks nothing.
+    sandboxed = machine_host.is_sandbox()
+    # A permission the run cannot start with ends it here, before any worker starts,
+    # not when the driver is built; the policy is read again, unchanged, then.
+    if adapter.name == "codex":
+        _ = _codex_policy(config.cli_args, sandboxed=sandboxed)
+    owner = _SessionOwner(session_id=config.cli_session_id)
+    _prepare_session_dirs(adapter)
+    baseline = _existing_session_files(adapter, config)
+    stop = threading.Event()
+    inbound = InboundState(fallback_sec=0.0)
+    worktree_diff = open_worktree_diff(Path.cwd()) if config.diff else None
+    run_records: deque[Event] = deque()
+    record = partial(
+        _queue_run_record,
+        run_records,
+        Path(f"prompts-{uuid.uuid4().hex}"),
+    )
+    drain_thread = _start_drain(
+        adapter,
+        sink,
+        stats,
+        config,
+        stop,
+        baseline=baseline,
+        slash_queue=deque(),
+        stream_queue=None,
+        run_records=run_records,
+        owner=owner,
+        worktree_diff=worktree_diff,
+        inbound=inbound,
+    )
+    granted_actor = _open_session(
+        sink,
+        named=owner.session_id,
+        stop=stop,
+        drain_thread=drain_thread,
+    )
+    placement = (
+        place_run(
+            config.client,
+            session_id=sink.session_id,
+            environ=os.environ,
+            cwd=Path.cwd(),
+        )
+        if config.syncing and config.client is not None and sink.session_id is not None
+        else None
+    )
+    placed = placement_env(placement)
+    env = _routing_env(config, granted_actor=granted_actor) | placed
+    argv, hook_files = _with_box_hook(
+        [
+            adapter.cli_binary,
+            *(
+                _claude_permission_args(config.cli_args)
+                if adapter.name == "claude"
+                else ()
+            ),
+        ],
+        adapter=adapter,
+        placed=placed,
+        profile=config.profile,
+    )
+    argv = _with_canvas_note(argv, adapter=adapter, placed=placed)
+    model, effort = _model_and_effort(config.cli_args)
+    host = config.host
+    instance = config.instance
+    reporter = (
+        None
+        if config.client is None
+        else StateReporter(partial(_report_state, config.client, sink, instance))
+    )
+    run = HeadlessRun(
+        cli=adapter.name,
+        cwd=Path.cwd(),
+        resume=config.cli_session_id or "",
+        model=model,
+        effort=effort,
+        make_driver=partial(
+            _make_driver,
+            config,
+            adapter,
+            argv=argv,
+            env=env,
+            sandboxed=sandboxed,
+        ),
+        make_tui=partial(_make_tui, config, adapter, env=env),
+        record=record,
+        on_session=owner.adopt,
+        on_listening=None if host is None else host.on_listening,
+        on_state=None if reporter is None else reporter.report,
+        on_takeover=host.on_takeover if isinstance(host, detach.HeadlessSpec) else None,
+        control=host.control if isinstance(host, detach.HeadlessSpec) else None,
+    )
+    poll_thread = (
+        threading.Thread(
+            name="inbound poll",
+            target=partial(
+                _inbound_poll_loop,
+                config.client,
+                sink,
+                run,
+                stop,
+                inbound=inbound,
+                run_name=config.run_name,
+                machine=_machine_name(),
+                cwd=_shown_cwd(Path.cwd()),
+                cli=adapter.name,
+                record=record,
+                instance=instance,
+                compact=(
+                    f"the loaded conversation is past what {adapter.name} holds "
+                    "comfortably"
+                    if config.compact_after_load
+                    else None
+                ),
+            ),
+            daemon=True,
+        )
+        if config.syncing and config.client is not None
+        else None
+    )
+    if reporter is not None:
+        reporter.start()
+    # The teardown runs even when the run raises, for the reason a terminal run's does.
+    try:
+        return run.run(on_started=None if poll_thread is None else poll_thread.start)
+    finally:
+        if hook_files is not None:
+            shutil.rmtree(hook_files.settings.parent, ignore_errors=True)
+        # Before the sink closes the session, which a report to it would follow.
+        if reporter is not None:
+            reporter.close()
+        _wind_down(config, stop, drain_thread, poll_thread, sink)
+
+
+# The server shows it, and never trusts it: a report from any run but the one holding the
+# session's lease changes nothing there, so a report made before the first drain is lost
+# and harmless.
+def _report_state(client: Client, sink: Sink, instance: str, state: HostState) -> None:
+    """Tell the server where the run stands."""
+    session_id = sink.session_id
+    if session_id is None:
+        return
+    body = SessionRunState(state=state, instance=instance)
+    _ = client.post(session_run_state_path(session_id), body=body.model_dump())
+
+
+# Claude and codex each have a flag for the model; only claude has one for the effort.
+def _model_and_effort(cli_args: tuple[str, ...]) -> tuple[str, str]:
+    """Return the model and effort the person passed after ``--``; empty for neither."""
+    model = _cli_arg_value(cli_args, "--model") or _cli_arg_value(cli_args, "-m")
+    return model or "", _cli_arg_value(cli_args, "--effort") or ""
+
+
+# Built on demand, once per start: a driver runs once, so a terminal that cannot start
+# asks for another.
+# Neither driver changes the person's own CLI config: they are a layer over a CLI the
+# person logged in to. On a computer declared a sandbox, nothing asks.
+def _make_driver(
+    config: RunConfig,
+    adapter: Adapter,
+    *,
+    argv: Sequence[str],
+    env: Mapping[str, str],
+    sandboxed: bool,
+) -> Driver:
+    """Build the driver that runs ``adapter``'s CLI headless."""
+    dropped = _dropped_env(adapter)
+    if adapter.name == "claude":
+        return ClaudeStreamDriver(
+            argv=_env_argv(argv, env={}, drop=dropped - env.keys()),
+            env=env,
+            permission_mode=_claude_mode(config.cli_args, sandboxed=sandboxed),
+        )
+    approval_policy, sandbox = _codex_policy(config.cli_args, sandboxed=sandboxed)
+    return CodexAppDriver(
+        argv=_codex_argv(
+            _env_argv(argv, env=env, drop=dropped),
+            cli_args=config.cli_args,
+        ),
+        approval_policy=approval_policy,
+        sandbox=sandbox,
+    )
+
+
+def _claude_mode(cli_args: tuple[str, ...], *, sandboxed: bool) -> str:
+    """Return the permission mode claude starts in; empty keeps the person's own."""
+    given = _cli_arg_value(cli_args, "--permission-mode")
+    if given is not None:
+        return given
+    if sandboxed or "--dangerously-skip-permissions" in cli_args:
+        return "bypassPermissions"
+    return ""
+
+
+# The person's own permission rules reach a Chat run of claude as they reach a terminal
+# one, even on a sandbox, where claude still refuses what they forbade. The rest of the
+# argv is the driver's: the session, the model and the mode it sets itself, and a
+# prompt it sends as a line. Each flag here takes this many values, as claude reads it.
+_CLAUDE_PERMISSION_FLAGS: Final = {
+    "--add-dir": sys.maxsize,
+    "--allow-dangerously-skip-permissions": 0,
+    "--allowed-tools": sys.maxsize,
+    "--allowedTools": sys.maxsize,
+    "--disallowed-tools": sys.maxsize,
+    "--disallowedTools": sys.maxsize,
+    "--settings": 1,
+    "--tools": sys.maxsize,
+}
+
+
+def _claude_permission_args(cli_args: tuple[str, ...]) -> list[str]:
+    """Return the permission flags in ``cli_args``, each with its values."""
+    kept: list[str] = []
+    room = 0
+    for arg in cli_args:
+        if arg.startswith("-"):
+            flag, equals, _ = arg.partition("=")
+            if flag in _CLAUDE_PERMISSION_FLAGS:
+                kept.append(arg)
+            room = 0 if equals else _CLAUDE_PERMISSION_FLAGS.get(flag, 0)
+        elif room:
+            kept.append(arg)
+            room -= 1
+    return kept
+
+
+# The person's own permission flags rule a Chat run as they rule a terminal one; the
+# computer's default fills only a half they left unset. Codex gives the flag and the
+# ``-c`` key the same meaning, and the flag wins when both are given.
+def _codex_policy(
+    cli_args: tuple[str, ...],
+    *,
+    sandboxed: bool,
+) -> tuple[ApprovalPolicy, SandboxMode]:
+    """Return when codex asks and what it may touch unasked."""
+    if _BYPASS_FLAGS.intersection(cli_args):
+        return "never", "danger-full-access"
+    if "--full-auto" in cli_args:
+        return "on-request", "workspace-write"
+    configured = _codex_config_pairs(cli_args)
+    approval = _cli_arg_value(cli_args, "--ask-for-approval") or _cli_arg_value(
+        cli_args,
+        "-a",
+    )
+    sandbox = _cli_arg_value(cli_args, "--sandbox") or _cli_arg_value(cli_args, "-s")
+    asked = approval or configured.get("approval_policy")
+    confined = sandbox or configured.get("sandbox_mode")
+    unasked: ApprovalPolicy = "never" if sandboxed else "on-request"
+    open_to: SandboxMode = "danger-full-access" if sandboxed else "workspace-write"
+    return (
+        unasked if asked is None else _approval_policy(asked),
+        open_to if confined is None else _sandbox_mode(confined),
+    )
+
+
+# A word outside the ones the driver knows (codex's deprecated ``on-failure``, a typo)
+# ends the run before anything starts: running another policy than the one asked for
+# would hide the mistake. A ``-c`` value may arrive quoted, as TOML.
+def _approval_policy(raw: str) -> ApprovalPolicy:
+    """Return ``raw`` as a codex approval policy, or refuse the run."""
+    match raw.strip("\"' "):
+        case "untrusted" | "on-request" | "never" as word:
+            return word
+        case _:
+            raise SystemExit(
+                f"trax run codex: a Chat run cannot start with approval policy {raw!r}; "
+                "use untrusted, on-request or never",
+            )
+
+
+def _sandbox_mode(raw: str) -> SandboxMode:
+    """Return ``raw`` as a codex sandbox mode, or refuse the run."""
+    match raw.strip("\"' "):
+        case "read-only" | "workspace-write" | "danger-full-access" as word:
+            return word
+        case _:
+            raise SystemExit(
+                f"trax run codex: a Chat run cannot start with sandbox {raw!r}; "
+                "use read-only, workspace-write or danger-full-access",
+            )
+
+
+_BYPASS_FLAGS: Final = frozenset(
+    {"--dangerously-bypass-approvals-and-sandbox", "--yolo"},
+)
+
+
+# A driver only adds to the environment the run inherited, so what names the launching
+# session is unset by ``env`` on the way in, as a terminal run drops it. ``env`` unsets
+# before it sets. The driver gives codex's app-server no environment of its own, so the
+# run's variables ride here too.
+def _env_argv(
+    prefix: Sequence[str],
+    *,
+    env: Mapping[str, str],
+    drop: AbstractSet[str],
+) -> list[str]:
+    """Return ``prefix`` started with ``drop`` unset and ``env`` set."""
+    return [
+        "env",
+        *(arg for name in sorted(drop) for arg in ("-u", name)),
+        *(f"{name}={value}" for name, value in env.items()),
+        *prefix,
+    ]
+
+
+# The person's own ``-c`` overrides and feature toggles reach the app-server as they
+# reach a terminal run. Goals are turned on for the run as they are for a terminal one,
+# unless the person said otherwise.
+def _codex_argv(prefix: Sequence[str], *, cli_args: tuple[str, ...]) -> list[str]:
+    """Return the command that starts codex's app-server."""
+    return [
+        *prefix,
+        "app-server",
+        *_codex_overrides(cli_args),
+        *([] if _sets_codex_goals(cli_args) else ["--enable", "goals"]),
+    ]
+
+
+# The CLI's own terminal, on the session the driver was on, for a person who took the run
+# over. A claude session with no turn yet has no file to resume, so it starts by its id;
+# a codex thread with none cannot be resumed at all.
+def _make_tui(
+    config: RunConfig,
+    adapter: Adapter,
+    *,
+    env: Mapping[str, str],
+    session_id: str,
+    listening: Callable[[], None],
+) -> ThreadedRelay:
+    """Build the terminal that continues ``session_id`` in ``adapter``'s own CLI."""
+    host = config.host
+    if host is None:
+        raise RuntimeError("this run has no terminal host to serve a terminal from")
+    if _session_file(adapter, session_id) is not None:
+        resume = resume_argv(adapter.name, session_id)
+    elif adapter.name == "claude":
+        resume = ("--session-id", session_id)
+    else:
+        raise RuntimeError(
+            f"{adapter.name} has no turn in this chat yet, so there is nothing to take over",
+        )
+    argv = _cli_argv(
+        adapter,
+        replace(config, cli_args=(*resume, *config.cli_args)),
+        None,
+    )
+    return ThreadedRelay(
+        _with_canvas_note(argv, adapter=adapter, placed=env),
+        env=env,
+        drop_env=_dropped_env(adapter),
+        host=replace(host, on_listening=listening),
+    )
 
 
 # Claude names its transcript after its session id, so knowing the id up front is what
@@ -1821,6 +2339,26 @@ def _codex_config_values(args: tuple[str, ...]) -> list[str]:
     ]
 
 
+def _codex_config_pairs(args: tuple[str, ...]) -> dict[str, str]:
+    """Return each ``-c key=value`` override in ``args`` by key; the last one wins."""
+    pairs = (value.partition("=") for value in _codex_config_values(args))
+    return {key.strip(): raw.strip() for key, _, raw in pairs}
+
+
+def _codex_overrides(args: tuple[str, ...]) -> list[str]:
+    """Return ``args``' config overrides and feature toggles, each as a flag and value."""
+    kept: list[str] = []
+    for index, arg in enumerate(args):
+        flag, equals, value = arg.partition("=")
+        if flag not in {"-c", "--config", "--enable", "--disable"}:
+            continue
+        if equals:
+            kept += ["-c" if flag == "--config" else flag, value]
+        elif index + 1 < len(args):
+            kept += ["-c" if flag == "--config" else flag, args[index + 1]]
+    return kept
+
+
 def _cli_arg_value(args: tuple[str, ...], flag: str) -> str | None:
     """Return a CLI flag's value in split or equals form, if supplied."""
     for index, arg in enumerate(args):
@@ -1934,11 +2472,21 @@ def _shown_cwd(cwd: Path) -> str | None:
 # the terminal, exactly like the capture sink's resilience.
 #
 # Every drain says where the run is -- its ``--detach`` host, machine and folder -- so
-# Chat shows it for as long as the lease the drain renews holds.
+# Chat shows it for as long as the lease the drain renews holds. It also names the CLI
+# this run is and an id the run minted for itself: the server routes and judges liveness
+# by that CLI, not by what the run wrote, and refuses a second run of one chat.
+#
+# A drain the chat refuses for good -- another provider now answers it, or another run
+# holds it -- ends the run: the poll would be refused again, and a CLI left running that
+# no line can reach is a second run in all but name.
+#
+# A headless run takes its messages by kind from the run itself rather than typing them:
+# a line goes to its driver, an answer to the ask it names. It has no dialog to hold a
+# line back from, so it holds none.
 def _inbound_poll_loop(
     client: Client,
     sink: Sink,
-    relay: ThreadedRelay,
+    relay: ThreadedRelay | HeadlessRun,
     stop: threading.Event,
     *,
     poll_interval: float = 0.5,
@@ -1953,19 +2501,25 @@ def _inbound_poll_loop(
     record: Callable[[SystemMessage], None] | None = None,
     gate: TrustGate | None = None,
     compact: str | None = None,
+    instance: str | None = None,
 ) -> None:
     """Wait on server-queued inbound messages and type them into the CLI."""
     warned = False
+    instance = instance or uuid.uuid4().hex
     held: deque[InboundDrainItem] = deque()
-    deliver = partial(
-        _deliver_one,
-        relay,
-        stream=stream,
-        inbound=inbound,
-        bridge=bridge,
-        cli=cli,
-        record=record,
-        gate=gate,
+    deliver = (
+        partial(_deliver_headless, relay, inbound=inbound, record=record)
+        if isinstance(relay, HeadlessRun)
+        else partial(
+            _deliver_one,
+            relay,
+            stream=stream,
+            inbound=inbound,
+            bridge=bridge,
+            cli=cli,
+            record=record,
+            gate=gate,
+        )
     )
     while not stop.is_set():
         session_id = sink.session_id
@@ -1979,14 +2533,28 @@ def _inbound_poll_loop(
         if gate is not None and inbound is not None:
             gate.check(ready=inbound.ready())
         if compact is not None and not _holding(inbound):
-            _deliver_command(
-                relay,
-                InboundDrainItem(text="/compact", kind="command", source="trax run"),
-                cli=cli,
-                inbound=inbound,
-                record=record,
-                reason=compact,
+            command = InboundDrainItem(
+                text="/compact",
+                kind="command",
+                source="trax run",
             )
+            if isinstance(relay, HeadlessRun):
+                _deliver_headless_command(
+                    relay,
+                    command,
+                    inbound=inbound,
+                    record=record,
+                    reason=compact,
+                )
+            else:
+                _deliver_command(
+                    relay,
+                    command,
+                    cli=cli,
+                    inbound=inbound,
+                    record=record,
+                    reason=compact,
+                )
             compact = None
         while held and not _holding(inbound):
             deliver(held.popleft())
@@ -1997,6 +2565,8 @@ def _inbound_poll_loop(
                 run=run_name,
                 machine=machine,
                 cwd=cwd,
+                cli=cli or None,
+                instance=instance,
             )
             # Each submission is guarded on its own. ``drain_inbound`` CONSUMES
             # server-side, so the batch is already gone from the queue: one
@@ -2011,7 +2581,19 @@ def _inbound_poll_loop(
             # No sleep: the request itself was the wait, so re-arming
             # immediately is what keeps the channel continuously parked.
             continue
-        except Exception:
+        except Exception as error:
+            if isinstance(error, ClientError) and (
+                error.status_code == 409 and error.code in RUN_ENDING_REFUSALS
+            ):
+                sys.stderr.write(
+                    "[trax run] this chat no longer takes lines from this run "
+                    f"({error.code}); stopping the run\n",
+                )
+                # The session is the chat's, shared with the run it keeps: this
+                # run's exit must not end it, or it takes that run's lines with it.
+                sink.keep_session_open()
+                relay.terminate()
+                return
             # Warn once per outage on stderr (mirrors the capture sink's
             # degrade banner) so a token expiry / network drop is visible,
             # not a silent stop; repeats stay at DEBUG to avoid flooding.
@@ -2141,6 +2723,98 @@ def _deliver_command(
                 source=item.source,
                 room=item.room,
                 state="refused" if refused else "typed",
+                reason=reason,
+            ),
+        )
+
+
+# What is sent is remembered BEFORE it is sent, as a typed line is: the CLI can write its
+# record of the line before the driver's call returns. A line a terminal has taken the CLI
+# from is refused, and forgotten again.
+def _deliver_headless(
+    run: HeadlessRun,
+    item: InboundDrainItem,
+    *,
+    inbound: InboundState | None,
+    record: Callable[[SystemMessage], None] | None,
+) -> None:
+    """Hand one inbound message to the headless run as its kind says; a failure is logged."""
+    try:
+        match item.kind:
+            case "answer":
+                payload = from_plain(item.payload or {}, dict[str, PlainTree])
+                answer = answer_from_payload(payload)
+                run.answer(replace(answer, who=item.source or ""))
+            case "interrupt":
+                run.interrupt()
+            case "settings":
+                model, effort = settings_from_payload(item.payload)
+                run.settings(model=model, effort=effort)
+            case "command":
+                _deliver_headless_command(run, item, inbound=inbound, record=record)
+            case "line":
+                _deliver_headless_line(run, item, inbound=inbound)
+    except (TakenOverError, RunEndedError) as error:
+        _logger.info("trax run: a %s message was not taken: %s", item.kind, error)
+    except Exception:
+        _logger.warning(
+            "trax run: could not deliver an inbound message; "
+            "continuing with the rest of the batch",
+            exc_info=True,
+        )
+
+
+def _deliver_headless_line(
+    run: HeadlessRun,
+    item: InboundDrainItem,
+    *,
+    inbound: InboundState | None,
+) -> None:
+    """Send a person's line to the driver, remembering who sent it."""
+    rendered = render_inbound(item.text, item.source, item.room, context=item.context)
+    if inbound is not None:
+        inbound.typed(rendered, source=item.source, room=item.room, kind="line")
+    try:
+        run.send_line(rendered)
+    except Exception:
+        if inbound is not None:
+            inbound.withdraw(rendered)
+        raise
+
+
+# Not remembered for stamping, as a typed command is not: no CLI writes a user message of
+# a command it ran. The run writes its own record instead, typed or refused, which is how
+# Chat settles the line it sent. A driver runs a goal over an open one, where codex's
+# terminal asks first, so no command is refused for that.
+def _deliver_headless_command(
+    run: HeadlessRun,
+    item: InboundDrainItem,
+    *,
+    inbound: InboundState | None,
+    record: Callable[[SystemMessage], None] | None,
+    reason: str | None = None,
+) -> None:
+    """Run one command on the driver, or refuse it; record which, if a record is kept."""
+    command = parse_command(item.text)
+    state: Literal["typed", "refused"] = "typed"
+    try:
+        run.command(command.command, command.args)
+    except RunEndedError:
+        _logger.warning("trax run: could not run a command; the run has ended")
+        return
+    except (TakenOverError, ValueError) as error:
+        state = "refused"
+        reason = str(error)
+    else:
+        if inbound is not None and command == parse_command("/goal clear"):
+            inbound.goal.cleared()
+    if record is not None:
+        record(
+            command_record(
+                item.text,
+                source=item.source,
+                room=item.room,
+                state=state,
                 reason=reason,
             ),
         )

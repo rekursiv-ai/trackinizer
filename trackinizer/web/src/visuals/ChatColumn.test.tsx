@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { listStations, setStationLayout, setStationPage } from "../api/stations";
-import { createDefaultWorkspace, type WorkspaceState } from "../api/workspaces";
+import { createDefaultWorkspace, type WorkspacePartner, type WorkspaceState } from "../api/workspaces";
 import { CommandRegistry, CommandRegistryContext, Shortcuts, useCommandList } from "../commands/registry";
 import { setStation } from "../stations/store";
 import { ChatColumn } from "./ChatColumn";
@@ -17,8 +17,9 @@ vi.mock("../api/workspaces", () => ({ createDefaultWorkspace: vi.fn(), getWorksp
 vi.mock("../api/stations", () => ({ listStations: vi.fn(), setStationPage: vi.fn(), setStationLayout: vi.fn(), createStation: vi.fn() }));
 // Chat itself is tested in Chat.test.tsx; here it is a panel with a box.
 vi.mock("./Chat", () => ({
-  Chat: ({ workspace }: { workspace: WorkspaceState | null }) => (
-    <section aria-label="Chat"><span>{workspace?.id ?? "no workspace"}</span><textarea aria-label="Message" /></section>
+  Chat: ({ workspace, onWaiting }: { workspace: WorkspaceState | null; onWaiting?: (waiting: boolean) => void }) => (
+    <section aria-label="Chat"><span>{workspace?.id ?? "no workspace"}</span><textarea aria-label="Message" />
+      <button type="button" onClick={() => onWaiting?.(true)}>Report waiting</button></section>
   ),
 }));
 
@@ -398,4 +399,31 @@ test("full screen Chat is never a peek, and hidden Chat that a frame shows is a 
   expect(column.hidden).toBe(false);
   act(() => setChatHidden(false));
   expect(column.classList).not.toContain("chat-column-peek");
+});
+
+const CODEX: WorkspacePartner = { session_id: "s1", actor: "codex", cli: "codex", status: "live", provider: "codex", label: "codex · gx10" };
+
+/** The station "Ship it" with a codex run as `run` says. */
+function shipIt(run: Partial<WorkspacePartner> = {}): WorkspaceState {
+  const partner: WorkspacePartner = { ...CODEX, ...run };
+  return { ...workspace, name: "Ship it", partner };
+}
+
+test("a chat that waits on the person marks the browser tab's title and the strip of a hidden Chat; one that does not marks neither", async () => {
+  setChatHidden(true);
+  await show(shipIt({ state: "requires_action" }));
+  expect(document.title).toBe("● Ship it · Trackinizer");
+  expect(screen.getByRole("button", { name: "Show Chat" }).querySelector(".chat-waiting")).not.toBeNull();
+  cleanup();
+  setStation(null);
+  await show(shipIt({ state: "running" }));
+  expect(document.title).toBe("Ship it · Trackinizer");
+  expect(screen.getByRole("button", { name: "Show Chat" }).querySelector(".chat-waiting")).toBeNull();
+});
+
+test("Chat's own word that it waits, from the cards it holds, marks the tab whatever state the server last gave", async () => {
+  await show(shipIt({ state: "idle" }));
+  expect(document.title).toBe("Ship it · Trackinizer");
+  fireEvent.click(screen.getByRole("button", { name: "Report waiting" }));
+  expect(document.title).toBe("● Ship it · Trackinizer");
 });

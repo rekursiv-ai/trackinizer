@@ -55,6 +55,7 @@ import { useViews } from "./views";
 import { UNNAMED } from "../stations/names";
 import { useStation } from "../stations/useStation";
 import { useContinueInChat } from "../visuals/continueChat";
+import { useReattach } from "../visuals/reattach";
 import { ViewsSection } from "./ViewsRail";
 import "./console.css";
 
@@ -121,6 +122,8 @@ export function ConsoleView() {
   // Bumped by a hide or an unhide, which changes what every read lists: the feed is then read afresh.
   const [reread, setReread] = useState(0);
   const hide = useHide(() => setReread((n) => n + 1));
+  const toast = useToast();
+  const { reattach, busy: reattaching } = useReattach(useCallback((message: string) => toast(message, { failed: true }), [toast]));
   const feed = useFeed(view.range, filter, view.level, reread);
   const state = useSyncExternalStore(feed?.subscribe ?? noSubscription, feed?.getSnapshot ?? emptyFeed);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -208,6 +211,8 @@ export function ConsoleView() {
             active={active}
             onActive={view.range.live ? setActive : null}
             onHide={hide}
+            onReattach={mode === "enabled" ? (agent) => void reattach(agent.session_id).then((done) => done && toast(`Reattached ${agent.actor} to Chat.`)) : null}
+            reattaching={reattaching}
           />
           <PickSection
             label="Rooms"

@@ -1305,6 +1305,7 @@ async def test_a_post_to_a_claude_station_reaches_its_run_with_kind_and_payload(
         cli="claude",
         cli_session_id=chat_session_id(conversation),
         labels=[SCIENCE_CHAT_LABEL],
+        drained_by="claude",
     )
     answer: dict[str, object] = {"prompt_id": "p1", "decision": "allow"}
 
@@ -1321,7 +1322,7 @@ async def test_a_post_to_a_claude_station_reaches_its_run_with_kind_and_payload(
     sent = ChatSent.model_validate_json(answered.content)
     assert (sent.conversation_id, sent.session_id) == (conversation, run)
     act_as_user_agent("writer")
-    taken = await drain(client, session_id=run)
+    taken = await drain(client, session_id=run, cli="claude")
     assert taken.status_code == 200
     messages = from_plain(
         json_loads(taken.content, dict[str, object])["messages"],
@@ -1354,6 +1355,7 @@ async def test_a_claude_station_queues_goal_as_a_command_and_refuses_model(
         cli="claude",
         cli_session_id=chat_session_id(conversation),
         labels=[SCIENCE_CHAT_LABEL],
+        drained_by="claude",
     )
 
     goal = await _post(
@@ -1379,7 +1381,7 @@ async def test_a_claude_station_queues_goal_as_a_command_and_refuses_model(
         },
     }
     act_as_user_agent("writer")
-    taken = await drain(client, session_id=run)
+    taken = await drain(client, session_id=run, cli="claude")
     assert taken.status_code == 200
     [heard] = from_plain(
         json_loads(taken.content, dict[str, object])["messages"],
@@ -1426,7 +1428,7 @@ async def test_a_post_to_a_cli_station_with_no_run_is_refused_as_offline(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_the_assistant_takes_a_persons_line_and_nothing_else(
+async def test_the_assistant_takes_a_persons_line_or_an_answer_and_nothing_else(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
@@ -1442,8 +1444,134 @@ async def test_the_assistant_takes_a_persons_line_and_nothing_else(
     )
 
     assert refused.status_code == 422
-    assert "The assistant takes a person's line, not a command" in refused.text
+    assert "The assistant takes a person's line or an answer, not a command" in (
+        refused.text
+    )
     assert await _drained(client, session_id=kb) == []
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_answer_to_the_assistants_card_reaches_the_chat_it_asked_in(
+    pglite_route_client: _Client,
+) -> None:
+    """A choice on a question card is queued for the chat's own session, as posted."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    await seed_session(store, ASSISTANT, actor=KB_ACTOR)
+    workspace_id = await _canvas(client)
+    browser()
+    conversation = conversation_of(
+        await send_chat(client, workspace_id=workspace_id, text="hello"),
+    )
+    chat = await seed_science_chat(store, conversation_id=conversation)
+    answer: dict[str, object] = {"prompt_id": "q1", "option": "2"}
+
+    answered = await _post(
+        client,
+        workspace_id=workspace_id,
+        text="Blue",
+        kind="answer",
+        payload=answer,
+    )
+
+    assert answered.status_code == 200, answered.text
+    assert ChatSent.model_validate_json(answered.content).session_id == chat
+    heard = await _drained(client, session_id=chat)
+    assert [(m["text"], m["kind"], m["payload"], m["source"]) for m in heard] == [
+        ("Blue", "answer", answer, TEST_USER_EMAIL),
+    ]
+    # The pick is heard as the person's line, so the turn it starts reads the canvas
+    # they picked on, as a typed line's does.
+    context = heard[0]["context"]
+    assert isinstance(context, dict)
+    assert context["workspace_id"] == str(
+        ChatSent.model_validate_json(answered.content).workspace_id,
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_answer_to_a_chat_the_assistant_has_not_open_is_refused(
+    pglite_route_client: _Client,
+) -> None:
+    """Its cards are released when it closes the chat, so there is nothing to answer."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    kb = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
+    workspace_id = await _canvas(client)
+
+    refused = await _post(
+        client,
+        workspace_id=workspace_id,
+        text="Blue",
+        kind="answer",
+        payload={"prompt_id": "q1", "option": "2"},
+    )
+
+    assert refused.status_code == 409, refused.text
+    assert from_plain(
+        json_loads(refused.content, dict[str, object])["detail"],
+        dict[str, object],
+    ) == {
+        "code": "provider_offline",
+        "message": "The assistant does not have this chat open",
+    }
+    assert await _drained(client, session_id=kb) == []
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_chat_taken_over_in_a_terminal_refuses_every_post(
+    pglite_route_client: _Client,
+) -> None:
+    """Its headless run is stopped, so a post would be queued for no one."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    workspace_id = await _canvas(client)
+    conversation = await _on_cli(store, workspace_id=workspace_id)
+    run = await seed_session(
+        store,
+        USER_AGENT,
+        actor=f"chat-{conversation.hex[:12]}",
+        cli="claude",
+        cli_session_id=chat_session_id(conversation),
+        labels=[SCIENCE_CHAT_LABEL],
+    )
+    inbound = app.state.inbound
+    assert isinstance(inbound, InboundQueue)
+    instance = "a" * 32
+    inbound.mark_poller(run, cli="claude", instance=instance)
+    assert inbound.report_state(run, instance=instance, state="taken_over")
+    answer: dict[str, object] = {"prompt_id": "p1", "option": "allow_once"}
+
+    refused = [
+        await _post(client, workspace_id=workspace_id, text="go on", kind="line"),
+        await _post(client, workspace_id=workspace_id, text="/goal x", kind="line"),
+        await _post(
+            client,
+            workspace_id=workspace_id,
+            text="Yes",
+            kind="answer",
+            payload=answer,
+        ),
+        await _post(client, workspace_id=workspace_id, text="stop", kind="interrupt"),
+    ]
+
+    for response in refused:
+        assert response.status_code == 409, response.text
+        assert from_plain(
+            json_loads(response.content, dict[str, object])["detail"],
+            dict[str, object],
+        ) == {
+            "code": "chat_taken_over",
+            "message": "taken over in a terminal; reattach from Chat or Console",
+        }
+    assert inbound.pending(run) == 0
+    assert inbound.report_state(run, instance=instance, state="idle")
+    said = await _post(client, workspace_id=workspace_id, text="back", kind="line")
+    assert said.status_code == 200, said.text
+    assert inbound.pending(run) == 1
 
 
 @pytest.mark.db_pglite
@@ -1463,6 +1591,7 @@ async def test_a_fork_of_a_claude_station_is_one_whose_line_waits_for_its_run(
         cli="claude",
         cli_session_id=chat_session_id(conversation),
         labels=[SCIENCE_CHAT_LABEL],
+        drained_by="claude",
     )
     part = await store.upsert_session_manifest(
         chat,
@@ -1517,7 +1646,7 @@ async def test_a_fork_of_a_claude_station_is_one_whose_line_waits_for_its_run(
         USER_AGENT.key_id,
     )
     act_as_user_agent("writer")
-    taken = await drain(client, session_id=sent.session_id)
+    taken = await drain(client, session_id=sent.session_id, cli="claude")
     assert taken.status_code == 200, taken.text
     [waiting] = from_plain(
         json_loads(taken.content, dict[str, object])["messages"],

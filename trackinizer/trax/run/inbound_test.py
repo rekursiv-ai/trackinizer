@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import uuid
 
+import pytest
+
 from trackinizer.trax.run.inbound import (
     Box,
     render_box_lines,
     render_inbound,
+    settings_from_payload,
 )
 from trackinizer.wire.wire_sessions import (
     ConsoleRelay,
@@ -307,6 +310,41 @@ class TestRenderInboundEnvelopes:
         # lacks agent_message) must still be delivered, not dropped.
         rendered = render_inbound("not json", "trackinizer", None, stream=False)
         assert rendered == "trackinizer: not json"
+
+
+class TestSettingsFromPayload:
+    """A ``settings`` message names a model, an effort, or both."""
+
+    def test_both_are_read(self) -> None:
+        assert settings_from_payload({"model": "opus", "effort": "high"}) == (
+            "opus",
+            "high",
+        )
+
+    @pytest.mark.parametrize(
+        ("payload", "read"),
+        [
+            ({"model": "opus", "effort": None}, ("opus", "")),
+            ({"model": None, "effort": "low"}, ("", "low")),
+            ({"effort": "low"}, ("", "low")),
+            ({}, ("", "")),
+            (None, ("", "")),
+        ],
+    )
+    def test_what_is_left_out_is_left_alone(
+        self,
+        payload: dict[str, object] | None,
+        read: tuple[str, str],
+    ) -> None:
+        assert settings_from_payload(payload) == read
+
+    def test_a_field_it_has_no_place_for_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="mode"):
+            _ = settings_from_payload({"model": "m", "mode": "plan"})
+
+    def test_a_field_of_the_wrong_type_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="model"):
+            _ = settings_from_payload({"model": 3})
 
 
 if __name__ == "__main__":

@@ -342,6 +342,15 @@ class Sink(Protocol):
         """
         return {}
 
+    def keep_session_open(self) -> None:
+        """Make :meth:`close` flush but leave the server session open.
+
+        For a run that stops because the session it writes into belongs to another
+        run now: a chat's session is shared by the chat's runs, and ending it would
+        end theirs. A sink with no server session has nothing to keep.
+        """
+        return
+
     def close(self) -> None:
         """Flush and release resources; idempotent."""
         ...
@@ -545,6 +554,10 @@ class TrackinizerSink(Sink):
     ``attach`` names an existing AgentSession this run re-opens, writing its files
     as new parts of it. Such a session keeps the CLI session id it has, a chat's
     ``chat:<id>`` above all, so this sink never sends one, at the start or at close.
+
+    ``instance`` is the run's id, as its inbound drains name it. Each end names it with
+    the CLI, so the server can tell the exit of a run a reattach replaced, which must
+    leave the chat open, from the end of the run that holds the chat.
     """
 
     def __init__(
@@ -557,6 +570,7 @@ class TrackinizerSink(Sink):
         private: bool = False,
         attach: UUID | None = None,
         redactor: Redactor | None = None,
+        instance: str | None = None,
         batch_size: int = 50,
         batch_bytes: int = 4 << 20,
         flush_interval_sec: float = 1.0,
@@ -569,6 +583,7 @@ class TrackinizerSink(Sink):
         self._rooms = rooms
         self._private = private
         self._attach = attach
+        self._instance = instance
         # Why the server would not hold a session asked to be private as private;
         # set, no session is opened again.
         self._refusal = ""
@@ -607,6 +622,8 @@ class TrackinizerSink(Sink):
         # Set whenever the buffer fills from empty, so this value is never read.
         self._oldest_buffered_at: float | None = None  # pragma: no mutate
         self._closed = False  # pragma: no mutate -- read only for truthiness.
+        # Set by a run that leaves a session which is no longer only its own.
+        self._keep_open = False
 
     @property
     def granted_actor(self) -> str | None:
@@ -770,7 +787,14 @@ class TrackinizerSink(Sink):
                 "the server predates hiding a session, so the session it opened for "
                 "this run was ended"
             )
-            self._client.session_end(resp.id, SessionEnd(ended=datetime.now(UTC)))
+            self._client.session_end(
+                resp.id,
+                SessionEnd(
+                    ended=datetime.now(UTC),
+                    cli=self._cli,
+                    instance=self._instance,
+                ),
+            )
             raise PrivateNotHeldError(self._refusal)
         self._session_id = resp.id
         # ``resp.seq`` is deliberately unread. It continued the legacy event
@@ -894,6 +918,10 @@ class TrackinizerSink(Sink):
         return immutable(reader.encoding)
 
     @override
+    def keep_session_open(self) -> None:
+        self._keep_open = True
+
+    @override
     def close(self) -> None:
         if self._closed:
             return
@@ -909,12 +937,14 @@ class TrackinizerSink(Sink):
         try:
             self._flush()
         finally:
-            if self._session_id is not None:
+            if self._session_id is not None and not self._keep_open:
                 self._client.session_end(
                     self._session_id,
                     SessionEnd(
                         ended=datetime.now(UTC),
                         cli_session_id=self._cli_session_id,
+                        cli=self._cli,
+                        instance=self._instance,
                     ),
                 )
         self._closed = True
@@ -1107,6 +1137,10 @@ class ResilientSink(Sink):
         # The local file writes through, and what the primary holds is its own to
         # report; nothing is ever pending at this layer.
         return []
+
+    @override
+    def keep_session_open(self) -> None:
+        self._primary.keep_session_open()
 
     # A run still down at exit tries once more, whatever the backoff says, and still
     # ends the session it opened, or that session stays ``active`` for good. Ending
@@ -1334,6 +1368,13 @@ class LockedSink(Sink):
     def positions(self) -> dict[Path, int]:
         with self._lock:
             return self._inner.positions()
+
+    # Not under the lock: the poll thread says it while the drain thread may sit in a
+    # locked send, and a flag the inner sink only reads at ``close`` needs no
+    # exclusion, whereas waiting here would hold the run's exit behind that send.
+    @override
+    def keep_session_open(self) -> None:
+        self._inner.keep_session_open()
 
     @override
     def close(self) -> None:

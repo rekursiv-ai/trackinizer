@@ -22,6 +22,7 @@
         "aliases": [],
         "chat_provider": "assistant",
         "chat_side": "left",
+        "chat_tool_calls": false,
         "collapsed": [],
         "console_views": [],
         "create_draft": null,

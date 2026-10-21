@@ -130,3 +130,4 @@
 }
 
 .console-continue { padding: 0 6px; font-size: 11px; }
+.console-waiting { border-color: var(--accent); color: var(--accent-hover); }

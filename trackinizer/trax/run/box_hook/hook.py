@@ -11,10 +11,11 @@ Three kinds of hook, one entry point:
   through the server, so this is the only place the agent can hear of a box: the
   same words, and the same rule (once, the first time after it is drawn), that a
   Chat partner follows.
-- ``PreToolUse``, ``PermissionRequest``, ``PostToolUse``, ``Stop`` and ``SessionEnd``,
-  for a run that syncs, hand each event to the run's prompt bridge
-  (:mod:`~trackinizer.trax.run.prompt_bridge`), so a prompt claude asks reaches
-  Chat and an answer from Chat reaches claude.
+- ``PreToolUse``, ``PermissionRequest``, ``PermissionDenied``, ``PostToolUse``,
+  ``UserPromptSubmit``, ``Stop`` and ``SessionEnd``, for a run that syncs, hand each
+  event to the run's prompt bridge (:mod:`~trackinizer.trax.run.prompt_bridge`),
+  so a prompt claude asks reaches Chat, an answer from Chat reaches claude, and an
+  answer given in the terminal closes the card.
 
 The hook never gets in the way of a prompt: any failure, or a server slower than
 :data:`_BUDGET_SEC`, prints nothing and exits 0.
@@ -66,7 +67,9 @@ ends the hook and asks in its TUI alone, as it would with no hook."""
 _BRIDGED: Final = (
     "PreToolUse",
     "PermissionRequest",
+    "PermissionDenied",
     "PostToolUse",
+    "UserPromptSubmit",
     "Stop",
     "SessionEnd",
 )
@@ -155,7 +158,7 @@ def read_settings(value: str) -> dict[str, PlainTree] | None:
         text = value
     try:
         settings = json_loads(text, dict[str, PlainTree])
-        _ = from_plain(settings.get("hooks"), dict[str, list[PlainTree]], default={})
+        _ = from_plain(settings.get("hooks", {}), dict[str, list[PlainTree]])
     except ValueError:
         return None
     return settings
@@ -188,7 +191,9 @@ def settings_json(
     """
     # This package's own name, so an export that renames the package still runs it.
     argv = [sys.executable, "-m", __name__.rpartition(".")[0], "--seen", str(seen)]
-    ours = {"SessionStart": [_hook_entry([*argv, "--event", "session-start"])]}
+    ours: dict[str, list[PlainTree]] = {
+        "SessionStart": [_hook_entry([*argv, "--event", "session-start"])],
+    }
     if boxes:
         prompt = argv if profile is None else [*argv, "--profile", profile]
         ours["UserPromptSubmit"] = [_hook_entry(prompt)]
@@ -201,7 +206,8 @@ def settings_json(
                 if event == "PermissionRequest"
                 else _HOOK_TIMEOUT_SEC
             )
-            ours[event] = [_hook_entry(bridged, timeout=timeout)]
+            # ``UserPromptSubmit`` has the box hook already, when the run has boxes.
+            ours.setdefault(event, []).append(_hook_entry(bridged, timeout=timeout))
     kept = dict(user or {})
     theirs = from_plain(kept.get("hooks"), dict[str, list[PlainTree]], default={})
     kept["hooks"] = {

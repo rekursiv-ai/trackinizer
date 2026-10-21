@@ -1,5 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { APP } from "../appName";
+import { waitingOf } from "../api/runState";
 import { type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { newChat } from "../stations/actions";
 import { usePageSync } from "../stations/usePageSync";
@@ -55,10 +56,13 @@ export function ChatColumn({
   const queryClient = useQueryClient();
   const workspace = useStation().data ?? null;
   usePageSync();
-  // The tab is titled by its station, as a terminal's is by its directory.
+  // Whether an agent waits on the person: the server says so, or Chat reads a card still open in its log.
+  const [reported, setReported] = useState(false);
+  const waiting = waitingOf(workspace?.partner) === true || reported;
+  // The tab is titled by its station, as a terminal's is by its directory, and marked while the station waits on the person.
   useEffect(() => {
-    if (workspace) document.title = `${workspace.name} · ${APP.name}`;
-  }, [workspace?.name]);
+    if (workspace) document.title = `${waiting ? "● " : ""}${workspace.name} · ${APP.name}`;
+  }, [workspace?.name, waiting]);
   const row = useRef<HTMLDivElement>(null);
   const column = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
@@ -157,6 +161,7 @@ export function ChatColumn({
     <button key="strip" className="chat-strip" type="button" aria-label="Show Chat"
       title="Show Chat" onClick={() => setChatHidden(false)} {...peek.handlers}>
       <Icon name="chat" />
+      {waiting && <span className="chat-waiting" aria-hidden="true" />}
     </button>
   );
   const shown = phone ? view === "chat" : !hidden || fullscreen || peeking;
@@ -168,7 +173,7 @@ export function ChatColumn({
       // the capture would turn the Pin button under the pointer into Hide before its own click came.
       onClick={peeking ? () => setChatHidden(false) : undefined}
       onKeyDown={(event) => { if (event.key === "Escape" && fullscreen && !event.defaultPrevented) setChatFullscreen(false); }}>
-      <Chat workspace={workspace} />
+      <Chat workspace={workspace} onWaiting={setReported} />
     </div>,
     shown && !fullscreen && !peeking && !phone && (
       <div key="edge" className="chat-column-edge" role="separator" aria-orientation="vertical" tabIndex={0}

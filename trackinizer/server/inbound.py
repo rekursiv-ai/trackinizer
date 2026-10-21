@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from uuid import UUID
 
 import asyncio
@@ -32,7 +32,11 @@ import threading
 import time
 
 from trackinizer.server.auth import Role
-from trackinizer.wire.wire_sessions import InboundKind, WorkspaceMessageContext
+from trackinizer.wire.wire_sessions import (
+    InboundKind,
+    RunState,
+    WorkspaceMessageContext,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -65,10 +69,12 @@ class Inbound:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PollerRun:
-    """Where a session's poller says its run is: shown in Chat, never a grant.
+    """What a session's poller says of its run: where it is and which CLI it runs.
 
     The run reports it on each drain, under the key that opened the session, so it is
-    the owner's own word about their own machine.
+    the owner's own word about their own run. Where it is is shown in Chat, never a
+    grant. Which CLI it runs decides whether a chat's provider counts it live, after
+    the drain's access checks, so it widens no one's access either.
     """
 
     run: str | None = None
@@ -80,6 +86,19 @@ class PollerRun:
 
     cwd: str | None = None
     """The run's working directory, ``~/...`` under its home directory."""
+
+    cli: str | None = None
+    """The CLI the run is, as ``trax run`` names it (``claude`` or ``codex``); ``None``
+    for a poller that names none: the assistant's, or a ``trax`` older than the name."""
+
+    instance: str | None = None
+    """An id the run minted for itself, the same on each of its drains, which tells one
+    run from another that drains the same session; ``None`` for a poller that has none."""
+
+    state: RunState = "idle"
+    """What the run last reported of itself (:meth:`InboundQueue.report_state`). It
+    stays through the run's later drains, and starts again at ``idle`` for a run that
+    reports nothing, or a lease that lapsed."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -151,9 +170,30 @@ class InboundQueue:
 
     poller_ttl_sec: float = 45.0
 
+    max_gone: int = 1_024
+    """Most sessions whose lease ended that wait to be taken (:meth:`take_gone`); the
+    one that ended longest ago is forgotten past it."""
+
+    max_retired: int = 4_096
+    """Most sessions that remember the run they replaced (:meth:`retire_run`)."""
+
+    max_places: int = 4_096
+    """Most sessions that remember where their run last said it ran."""
+
     _clock: Callable[[], float] = field(default=time.monotonic, repr=False)
 
     _leases: dict[UUID, _Lease] = field(default_factory=dict)
+
+    # The sessions whose lease ended, by lapsing or by being revoked, since the last
+    # ``take_gone``: their runs are offline, and whatever they asked is released.
+    _gone: dict[UUID, None] = field(default_factory=dict)
+
+    # The one run each session turned away on purpose: it is held off when it drains
+    # again, though no lease names it.
+    _retired: OrderedDict[UUID, str] = field(default_factory=OrderedDict)
+
+    # Where each session's run last said it ran, which outlives its lease.
+    _places: OrderedDict[UUID, PollerRun] = field(default_factory=OrderedDict)
 
     _queues: dict[UUID, deque[Inbound]] = field(
         default_factory=lambda: defaultdict(deque),
@@ -181,7 +221,8 @@ class InboundQueue:
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     # Each poll replaces what the last one said: a run that stops saying where it is
-    # (an older trax resumed in its place) is not shown where the last one was.
+    # (an older trax resumed in its place) is not shown where the last one was. The one
+    # thing kept is the state a run reported, while the same run polls on.
     def mark_poller(
         self,
         session_id: UUID,
@@ -189,33 +230,79 @@ class InboundQueue:
         run: str | None = None,
         machine: str | None = None,
         cwd: str | None = None,
+        cli: str | None = None,
+        instance: str | None = None,
     ) -> None:
         """Renew a session's short lease after an authorized inbound poll.
 
-        The rest is where the poller says its run is, kept while the lease holds
-        (:class:`PollerRun`).
+        The rest is what the poller says of its run, kept while the lease holds
+        (:class:`PollerRun`). A lease that had lapsed before this renewal counts as
+        gone (:meth:`take_gone`): the run was offline meanwhile.
 
         Args:
           session_id: Session whose inbound poll was authorized.
           run: The detached host's name, if the run is one.
           machine: The run's machine.
           cwd: The run's working directory.
+          cli: The CLI the run is.
+          instance: The run's own id.
 
         """
         with self._lock:
             now = self._clock()
+            held = self._live(session_id)
+            where = PollerRun(
+                run=run,
+                machine=machine,
+                cwd=cwd,
+                cli=cli,
+                instance=instance,
+                state="idle"
+                if held is None or instance is None or held.where.instance != instance
+                else held.where.state,
+            )
             self._leases[session_id] = _Lease(
                 expires=now + self.poller_ttl_sec,
-                where=PollerRun(run=run, machine=machine, cwd=cwd),
+                where=where,
             )
+            if run is not None or machine is not None or cwd is not None:
+                self._places[session_id] = where
+                self._places.move_to_end(session_id)
+                while len(self._places) > self.max_places:
+                    _ = self._places.popitem(last=False)
             if len(self._leases) > 1_024:
                 self._sweep(now)
 
+    # Caller holds ``_lock``.
+    def _live(self, session_id: UUID) -> _Lease | None:
+        """Return a session's unexpired lease; an expired one is dropped and gone."""
+        lease = self._leases.get(session_id)
+        if lease is None:
+            return None
+        if lease.expires <= self._clock():
+            del self._leases[session_id]
+            self._lapse(session_id, lease)
+            return None
+        return lease
+
+    # Only a CLI's run is noted: the assistant polls only when it is ready for input, so
+    # its lease lapses during a long tool call, while it is alive and its cards are
+    # open. It releases its own cards when it closes a chat.
+    def _lapse(self, session_id: UUID, lease: _Lease) -> None:
+        """Note that a CLI's run went offline. Caller holds ``_lock``."""
+        if lease.where.cli is None:
+            return
+        _ = self._gone.pop(session_id, None)
+        self._gone[session_id] = None
+        while len(self._gone) > self.max_gone:
+            del self._gone[next(iter(self._gone))]
+
     def _sweep(self, now: float) -> None:
-        """Drop every lease expired by ``now``. Caller holds ``_lock``."""
-        self._leases = {
-            sid: lease for sid, lease in self._leases.items() if lease.expires > now
-        }
+        """Drop every lease expired by ``now``, noting each gone. Caller holds ``_lock``."""
+        for session_id in [
+            sid for sid, lease in self._leases.items() if lease.expires <= now
+        ]:
+            self._lapse(session_id, self._leases.pop(session_id))
 
     def has_poller(self, session_id: UUID) -> bool:
         """Return whether an inbound poll renewed this session's lease recently.
@@ -241,14 +328,67 @@ class InboundQueue:
 
         """
         with self._lock:
-            lease = self._leases.get(session_id)
-            if lease is None or lease.expires <= self._clock():
-                _ = self._leases.pop(session_id, None)
-                return None
-            return lease.where
+            lease = self._live(session_id)
+            return None if lease is None else lease.where
 
-    def active_poller_ids(self) -> list[UUID]:
+    def last_run(self, session_id: UUID) -> PollerRun | None:
+        """Say where a session's run last said it ran, though its lease is gone.
+
+        Args:
+          session_id: Session to check.
+
+        Returns:
+          where: What the last poll that named a machine, a folder or a host said;
+            ``None`` when no run of the session ever did, or since a restart.
+
+        """
+        with self._lock:
+            return self._places.get(session_id)
+
+    def report_state(self, session_id: UUID, *, instance: str, state: RunState) -> bool:
+        """Keep what a run says it is doing, while it holds its session's lease.
+
+        Args:
+          session_id: The run's session.
+          instance: The run's own id, as its drains name it.
+          state: What it is doing.
+
+        Returns:
+          kept: False when the session has no unexpired lease or it is another
+            run's, whose report this is not.
+
+        """
+        with self._lock:
+            lease = self._live(session_id)
+            if lease is None or lease.where.instance != instance:
+                return False
+            self._leases[session_id] = replace(
+                lease,
+                where=replace(lease.where, state=state),
+            )
+            return True
+
+    def take_gone(self) -> list[UUID]:
+        """Take the sessions whose lease ended since the last call, oldest first.
+
+        A lease ends by lapsing, which this notices for every session, or by being
+        revoked. Whoever takes them releases what the runs had asked.
+
+        Returns:
+          session_ids: The sessions whose runs went offline.
+
+        """
+        with self._lock:
+            self._sweep(self._clock())
+            gone = list(self._gone)
+            self._gone.clear()
+            return gone
+
+    def active_poller_ids(self, *, cli: str | None = None) -> list[UUID]:
         """Snapshot unexpired poller sessions for database candidate filtering.
+
+        Args:
+          cli: Keep only the sessions whose poller named this CLI; all by default.
 
         Returns:
           session_ids: Session ids whose leases are still unexpired.
@@ -256,7 +396,47 @@ class InboundQueue:
         """
         with self._lock:
             self._sweep(self._clock())
-            return list(self._leases)
+            return [
+                session_id
+                for session_id, lease in self._leases.items()
+                if cli is None or lease.where.cli == cli
+            ]
+
+    def held_by_another(
+        self,
+        session_id: UUID,
+        *,
+        cli: str,
+        instance: str,
+    ) -> bool:
+        """Say whether another run of ``cli`` holds this session's lease.
+
+        A chat has one live run at a time, so a drain by a run other than the one
+        whose lease is unexpired must be refused. A lease that names no run, or
+        another CLI (a run the chat no longer takes lines from), holds no one off.
+        A run the server replaced (:meth:`retire_run`) is held off too, whatever
+        lease the session holds now.
+
+        Args:
+          session_id: Session being drained.
+          cli: The CLI of the run asking.
+          instance: The id of the run asking.
+
+        Returns:
+          held: Whether an unexpired lease names the same CLI and another run, or
+            the run asking was replaced.
+
+        """
+        with self._lock:
+            if self._retired.get(session_id) == instance:
+                return True
+            held = self._live(session_id)
+        return (
+            held is not None
+            and held.where.cli == cli
+            and held.where.instance is not None
+            and held.where.instance != instance
+        )
 
     # A lease is revoked as its session ends, and that session's poller is then parked
     # in a held request. Left parked, the hold keeps the exiting run -- which ends its
@@ -264,10 +444,39 @@ class InboundQueue:
     def forget_poller(self, session_id: UUID) -> None:
         """Revoke a session's lease and end every hold parked on it."""
         with self._lock:
-            _ = self._leases.pop(session_id, None)
-            for waiter in self._waiters.get(session_id, ()):
-                waiter.released = True
-            self._wake(session_id)
+            self._revoke(session_id)
+
+    def retire_run(self, session_id: UUID) -> None:
+        """Replace a session's run: revoke its lease and turn the run away for good.
+
+        The run keeps draining until it is told to stop, and a bare revocation would
+        let its next drain take the lease again before the run that replaces it
+        starts. Its id is remembered, so :meth:`held_by_another` refuses it however
+        the lease stands. A session whose lease already lapsed retires the run it last
+        said it ran (:meth:`last_run`), which may be alive behind a dropped network. A
+        session no run ever placed retires no one.
+
+        Args:
+          session_id: The session whose run is replaced.
+
+        """
+        with self._lock:
+            lease = self._leases.get(session_id)
+            where = self._places.get(session_id) if lease is None else lease.where
+            if where is not None and where.instance is not None:
+                self._retired[session_id] = where.instance
+                self._retired.move_to_end(session_id)
+                while len(self._retired) > self.max_retired:
+                    _ = self._retired.popitem(last=False)
+            self._revoke(session_id)
+
+    def _revoke(self, session_id: UUID) -> None:
+        """Drop a session's lease, note it gone and release its holds."""
+        if (lease := self._leases.pop(session_id, None)) is not None:
+            self._lapse(session_id, lease)
+        for waiter in self._waiters.get(session_id, ()):
+            waiter.released = True
+        self._wake(session_id)
 
     def send_once(
         self,

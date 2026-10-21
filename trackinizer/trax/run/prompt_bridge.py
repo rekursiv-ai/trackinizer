@@ -9,8 +9,12 @@ socket in the run's own 0700 directory (:func:`ask`) and prints what the bridge 
   its own dialog, and the first answer wins. One from Chat (:meth:`PromptBridge.answer`)
   is the hook's reply. One given in the terminal lets the tool run, and claude leaves
   the losing hook running, so the bridge itself lets it go.
-- ``PostToolUse`` lets go of its call's prompt; ``Stop`` and ``SessionEnd`` let go of
-  every prompt still open. A hook let go of prints nothing.
+- ``PostToolUse`` lets go of its call's prompt. ``PermissionDenied`` ends its call's
+  prompt as denied. ``UserPromptSubmit``, ``Stop`` and ``SessionEnd`` let go of every
+  prompt still open: a line the person submits in the terminal means no dialog is up.
+  A hook let go of prints nothing, except a ``PostToolUse`` that carries a note.
+- A message sent with an allow rides on that call's ``PostToolUse``, as context for the
+  model: claude reads a message on a denial only, and ignores it on an allow.
 
 A ``PermissionRequest`` carries no tool-use id, so it is matched to the ``PreToolUse``
 before it by its tool and input within one of claude's prompts. That call's id is what
@@ -19,7 +23,7 @@ input then holds the answers too. ``AskUserQuestion`` is a ``PermissionRequest``
 tool, whose answers go back in ``updatedInput.answers``.
 
 Each prompt, and each end of one, is a :class:`SystemMessage` handed to ``emit`` for the
-run to write: ``extra["$interaction"]`` opens a card in Chat, and
+run to write, built by :mod:`.asks`: ``extra["$interaction"]`` opens a card in Chat, and
 ``extra["$interaction_resolved"]`` closes it. ``pending`` is set while any prompt is
 open, since a line typed into the TUI then would answer its dialog.
 """
@@ -29,7 +33,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final
 
 import contextlib
 import json
@@ -40,20 +44,27 @@ import uuid
 
 from treekle import PlainTree, from_plain, json_loads
 
-from trackinizer.lib.agent.types.sessions import SystemMessage
+from trackinizer.trax.run.asks import (
+    Answer,
+    Ask,
+    AskKind,
+    Option,
+    Resolved,
+    answer_from_payload,
+    opened_record,
+    resolved_record,
+)
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from pathlib import Path
 
+    from trackinizer.lib.agent.types.sessions import SystemMessage
+    from trackinizer.trax.run.asks import Resolver
 
-__all__ = ["Answer", "PromptBridge", "ask"]
 
-
-type _PromptType = Literal["permission", "question", "plan"]
-type _Decision = Literal["allow", "deny", "answered", "released"]
-type _Resolver = Literal["chat", "terminal", "run"]
+__all__ = ["PromptBridge", "ask"]
 
 
 _HOOK_BUDGET_SEC: Final = 2.0
@@ -66,30 +77,6 @@ _EVENT_MAX_BYTES: Final = 16 << 20
 _CALLS_REMEMBERED: Final = 256
 """How many calls wait for a prompt. One that fails gets no ``PostToolUse``, so the
 oldest are dropped rather than kept for the life of the run."""
-
-_WORDS: Final[Mapping[str, str]] = {
-    "allow": "Allowed",
-    "deny": "Denied",
-    "answered": "Answered",
-    "released": "Released",
-    "chat": "from Chat",
-    "terminal": "in the terminal",
-    "run": "by the run",
-}
-"""How a card's end reads to a person, by decision and by who made it."""
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class Answer:
-    """A decision on a prompt, as an ``answer`` sent from Chat carries it."""
-
-    prompt_id: str
-    decision: Literal["allow", "deny"]
-    updated_input: dict[str, PlainTree] | None = None
-    """Fields laid over the tool's input: a question's ``answers``."""
-
-    message: str = ""
-    """Why a denial was given, which claude reads."""
 
 
 class PromptBridge:
@@ -120,6 +107,7 @@ class PromptBridge:
         self._lock = threading.Lock()
         self._calls: OrderedDict[str, _Call] = OrderedDict()
         self._prompts: dict[str, _Prompt] = {}
+        self._notes: OrderedDict[str, _Note] = OrderedDict()
         self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         # Written once by ``close`` to end the accept loop, which waits on both.
         self._wake, self._woken = socket.socketpair()
@@ -137,31 +125,32 @@ class PromptBridge:
         self._accepting.start()
 
     def answer(self, payload: Mapping[str, object]) -> bool:
-        """Answer an open prompt with Chat's decision; its hook replies with it.
+        """Answer an open prompt with Chat's choice; its hook replies with it.
 
         Args:
-          payload: An ``answer`` message's payload, read as an :class:`Answer`.
+          payload: An ``answer`` message's payload, in either form
+            :func:`~trackinizer.trax.run.asks.answer_from_payload` reads.
 
         Returns:
-          answered: Whether it named a prompt still open; a malformed payload, or one
-            answered first in the terminal, is not.
+          answered: Whether it named a prompt still open and one of its options; a
+            malformed payload, or one answered first in the terminal, is not.
 
         """
         try:
-            answer = from_plain(dict(payload), Answer)
+            answer = answer_from_payload(
+                from_plain(dict(payload), dict[str, PlainTree]),
+            )
         except ValueError:
             return False
         with self._lock:
-            prompt = self._prompts.get(answer.prompt_id)
-            if prompt is None:
+            prompt = self._prompts.get(answer.ask_id)
+            chosen = None if prompt is None else prompt.ask.chosen(answer.option)
+            if prompt is None or chosen is None:
                 return False
-            answered = prompt.type == "question" and answer.decision == "allow"
-            self._resolve(
-                prompt,
-                decision="answered" if answered else answer.decision,
-                by="chat",
-            )
-        _let_go(prompt.conn, reply=_reply(prompt, answer))
+            self._resolve(prompt, prompt.ask.resolve(chosen.id, by="chat"))
+            if answer.message and not chosen.kind.startswith("deny"):
+                self._remember(prompt, answer.message)
+        _let_go(prompt.conn, reply=_reply(prompt, chosen, answer))
         return True
 
     def close(self) -> None:
@@ -208,8 +197,10 @@ class PromptBridge:
             except (OSError, ValueError):
                 return
             if event.get("hook_event_name") != "PermissionRequest":
-                for prompt in self._note(event):
+                released, reply = self._note(event)
+                for prompt in released:
                     _let_go(prompt.conn)
+                _let_go(conn, reply=reply)
                 return
             prompt = self._open(event, conn)
             if prompt is None:
@@ -217,7 +208,7 @@ class PromptBridge:
             _wait_closed(conn)
             with self._lock:
                 if prompt.id in self._prompts:
-                    self._resolve(prompt, decision="released", by="terminal")
+                    self._resolve(prompt, _released(prompt, by="terminal"))
 
     def _open(
         self,
@@ -232,6 +223,7 @@ class PromptBridge:
             dict[str, PlainTree],
             default={},
         )
+        grants = _grants(event.get("permission_suggestions"))
         with self._lock:
             if self._closed:
                 return None
@@ -245,20 +237,27 @@ class PromptBridge:
             )
             matched = None if call is None else self._calls.pop(call)
             prompt = _Prompt(
-                id=uuid.uuid4().hex if matched is None else matched.id,
                 turn=turn,
-                tool=tool,
-                input=tool_input,
+                ask=_ask(
+                    uuid.uuid4().hex if matched is None else matched.id,
+                    tool=tool,
+                    tool_input=tool_input,
+                    tool_call_id=call or "",
+                    cwd=from_plain(event.get("cwd"), str, default=""),
+                    grants=grants,
+                ),
+                grants=grants,
                 tool_use_id=call,
                 conn=conn,
             )
             self._prompts[prompt.id] = prompt
             self._pending.set()
-            self._emit(_opened(prompt, at=self._clock()))
+            self._emit(opened_record(prompt.ask, at=self._clock()))
         return prompt
 
-    def _note(self, event: Mapping[str, PlainTree]) -> list[_Prompt]:
-        """Take an event that asks nothing; return the prompts it lets go of."""
+    # Return the prompts it lets go of, and what its hook prints.
+    def _note(self, event: Mapping[str, PlainTree]) -> tuple[list[_Prompt], bytes]:
+        """Take an event that asks nothing."""
         name = event.get("hook_event_name")
         tool_use_id = from_plain(event.get("tool_use_id"), str, default="")
         with self._lock:
@@ -275,17 +274,32 @@ class PromptBridge:
                 )
                 while len(self._calls) > _CALLS_REMEMBERED:
                     _ = self._calls.popitem(last=False)
-                return []
+                return [], b""
             if name == "PostToolUse":
                 _ = self._calls.pop(tool_use_id, None)
-                return self._release(
+                released = self._release(
                     self._finished(event, tool_use_id=tool_use_id),
                     by="terminal",
                 )
-            if name in {"Stop", "SessionEnd"}:
+                return released, self._context(event, tool_use_id=tool_use_id)
+            if name == "PermissionDenied":
+                denied = self._finished(event, tool_use_id=tool_use_id)
+                for prompt in denied:
+                    self._resolve(prompt, prompt.ask.resolve("deny", by="terminal"))
+                return denied, b""
+            if name in {"Stop", "SessionEnd", "UserPromptSubmit"}:
                 self._calls.clear()
-                return self._release(list(self._prompts.values()), by="run")
-        return []
+                self._notes.clear()
+                # A line submitted in the terminal means no dialog is up, whatever
+                # ended the prompt: claude fires nothing for a "No" there.
+                return (
+                    self._release(
+                        list(self._prompts.values()),
+                        by="terminal" if name == "UserPromptSubmit" else "run",
+                    ),
+                    b"",
+                )
+        return [], b""
 
     # A prompt matched to its call is found by the call's id. One that had no call
     # before it is found by its tool within the same turn, the first such one: its
@@ -308,34 +322,52 @@ class PromptBridge:
         return [
             p
             for p in open_prompts
-            if p.tool_use_id is None and (p.turn, p.tool) == (turn, tool)
+            if p.tool_use_id is None and (p.turn, p.ask.tool) == (turn, tool)
         ][:1]
 
-    def _release(self, prompts: list[_Prompt], *, by: _Resolver) -> list[_Prompt]:
-        """End ``prompts`` with no decision; return them, for their hooks to go."""
+    def _remember(self, prompt: _Prompt, text: str) -> None:
+        """Keep a message sent with an allow, for its call's ``PostToolUse``."""
+        self._notes[prompt.id] = _Note(
+            turn=prompt.turn,
+            tool=prompt.ask.tool,
+            tool_use_id=prompt.tool_use_id,
+            text=text,
+        )
+        while len(self._notes) > _CALLS_REMEMBERED:
+            _ = self._notes.popitem(last=False)
+
+    def _context(self, event: Mapping[str, PlainTree], *, tool_use_id: str) -> bytes:
+        """Return the hook output that adds the message sent with a finished call."""
+        turn = from_plain(event.get("prompt_id"), str, default="")
+        tool = from_plain(event.get("tool_name"), str, default="")
+        key = next(
+            (
+                key
+                for key, note in self._notes.items()
+                if (tool_use_id and note.tool_use_id == tool_use_id)
+                or (note.tool_use_id is None and (note.turn, note.tool) == (turn, tool))
+            ),
+            None,
+        )
+        if key is None:
+            return b""
+        note = self._notes.pop(key)
+        context = f"The user allowed this {note.tool} call and said: {note.text}"
+        output = {"hookEventName": "PostToolUse", "additionalContext": context}
+        return json.dumps({"hookSpecificOutput": output}).encode()
+
+    def _release(self, prompts: list[_Prompt], *, by: Resolver) -> list[_Prompt]:
+        """End ``prompts`` with no choice; return them, for their hooks to go."""
         for prompt in prompts:
-            self._resolve(prompt, decision="released", by=by)
+            self._resolve(prompt, _released(prompt, by=by))
         return prompts
 
-    def _resolve(self, prompt: _Prompt, *, decision: _Decision, by: _Resolver) -> None:
+    def _resolve(self, prompt: _Prompt, resolved: Resolved) -> None:
         """Close ``prompt`` and write its end; the caller holds the lock."""
         del self._prompts[prompt.id]
         if not self._prompts:
             self._pending.clear()
-        self._emit(
-            SystemMessage(
-                timestamp=self._clock().isoformat(),
-                subtype="interaction_resolved",
-                content=f"{_WORDS[decision]} {_WORDS[by]}",
-                extra={
-                    "$interaction_resolved": {
-                        "id": prompt.id,
-                        "decision": decision,
-                        "by": by,
-                    },
-                },
-            ),
-        )
+        self._emit(resolved_record(resolved, at=self._clock()))
 
 
 def ask(socket_path: Path, request: str) -> str:
@@ -387,80 +419,157 @@ class _Call:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class _Note:
+    """A message sent with an allow, waiting for its call to finish."""
+
+    turn: str
+    tool: str
+    tool_use_id: str | None
+    """The call it was sent for; ``None`` when no ``PreToolUse`` came before it."""
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _Prompt:
     """One open prompt, and the connection its hook waits on."""
 
-    id: str
     turn: str
-    tool: str
-    input: dict[str, PlainTree]
+    ask: Ask
+    grants: tuple[dict[str, PlainTree], ...]
+    """The ``permission_suggestions`` an allow-always or allow-session echoes back."""
+
     tool_use_id: str | None
     """The call it was matched to; ``None`` when no ``PreToolUse`` came before it."""
 
     conn: socket.socket
 
     @property
-    def type(self) -> _PromptType:
-        """What the card asks: a question, a plan to approve, or a permission."""
-        if self.tool == "AskUserQuestion":
-            return "question"
-        if self.tool == "ExitPlanMode":
-            return "plan"
-        return "permission"
+    def id(self) -> str:
+        """The id its card and its end carry."""
+        return self.ask.id
 
 
-def _opened(prompt: _Prompt, *, at: datetime) -> SystemMessage:
-    """Return the record that opens ``prompt``'s card in Chat."""
+def _ask(
+    ask_id: str,
+    *,
+    tool: str,
+    tool_input: dict[str, PlainTree],
+    tool_call_id: str,
+    cwd: str,
+    grants: tuple[dict[str, PlainTree], ...],
+) -> Ask:
+    """Return what a ``PermissionRequest`` for ``tool`` asks the person."""
+    kind: AskKind = (
+        "question"
+        if tool == "AskUserQuestion"
+        else "plan"
+        if tool == "ExitPlanMode"
+        else "permission"
+    )
     questions = (
-        from_plain(prompt.input.get("questions"), list[PlainTree], default=[])
-        if prompt.type == "question"
+        from_plain(tool_input.get("questions"), list[PlainTree], default=[])
+        if kind == "question"
         else None
     )
-    plan = (
-        from_plain(prompt.input.get("plan"), str, default="")
-        if prompt.type == "plan"
-        else None
-    )
-    asked = [
-        from_plain(
-            from_plain(each, dict[str, PlainTree], default={}).get("question"),
-            str,
-            default="",
-        )
-        for each in questions or []
-    ]
-    return SystemMessage(
-        timestamp=at.isoformat(),
-        subtype="interaction",
-        content=(
-            f"Claude asks: {' '.join(asked)}"
-            if asked
-            else "Claude asks to approve its plan"
-            if plan is not None
-            else f"Claude asks to use {prompt.tool}"
+    shell = tool == "Bash"
+    return Ask(
+        id=ask_id,
+        provider="claude",
+        kind=kind,
+        title=(
+            "Claude's plan is ready for approval"
+            if kind == "plan"
+            else f"Claude wants to use {tool}"
+            if kind == "permission"
+            else "Claude has a question"
+            if len(questions or []) == 1
+            else "Claude has questions"
         ),
-        extra={
-            "$interaction": {
-                "id": prompt.id,
-                "type": prompt.type,
-                "tool": prompt.tool,
-                "input": prompt.input,
-                "questions": questions,
-                "plan": plan,
-                "state": "pending",
-            },
-        },
+        tool=tool,
+        tool_call_id=tool_call_id,
+        command=from_plain(tool_input.get("command"), str, default="") if shell else "",
+        cwd=cwd,
+        reason=(
+            from_plain(tool_input.get("description"), str, default="") if shell else ""
+        ),
+        questions=questions,
+        plan=(
+            from_plain(tool_input.get("plan"), str, default="")
+            if kind == "plan"
+            else None
+        ),
+        input=tool_input,
+        options=_options(kind, grants),
     )
 
 
-def _reply(prompt: _Prompt, answer: Answer) -> bytes:
-    """Return the hook output that hands claude ``answer``."""
-    decision: dict[str, PlainTree] = {"behavior": answer.decision}
-    if answer.updated_input is not None:
-        # Claude takes the whole input back: a question's answers ride beside it.
-        decision["updatedInput"] = {**prompt.input, **answer.updated_input}
-    if answer.decision == "deny" and answer.message:
-        decision["message"] = answer.message
+def _options(
+    kind: AskKind,
+    grants: tuple[dict[str, PlainTree], ...],
+) -> tuple[Option, ...]:
+    """Return the choices a card offers: yes, no, and a grant when the hook gave one."""
+    yes, no = {
+        "question": ("Answer", "Skip"),
+        "plan": ("Approve", "Ask for changes"),
+    }.get(kind, ("Yes", "No"))
+    options = [Option(id="allow_once", label=yes, kind="allow_once")]
+    if kind == "permission" and grants:
+        # A grant claude keeps on disk outlasts the run; one it keeps in memory ends
+        # with the session.
+        if any(each.get("destination") != "session" for each in grants):
+            options.append(
+                Option(
+                    id="allow_always",
+                    label="Yes, and always allow",
+                    kind="allow_always",
+                ),
+            )
+        else:
+            options.append(
+                Option(
+                    id="allow_session",
+                    label="Yes, for this session",
+                    kind="allow_session",
+                ),
+            )
+    return (*options, Option(id="deny", label=no, kind="deny"))
+
+
+# A grant adds an allow rule or a folder. A ``setMode`` is left out: the person's "yes"
+# in Chat must not also change the mode claude runs in.
+def _grants(suggested: PlainTree) -> tuple[dict[str, PlainTree], ...]:
+    """Return the suggestions in ``suggested`` that are safe to echo back as a grant."""
+    try:
+        entries = from_plain(suggested, list[dict[str, PlainTree]], default=[])
+    except ValueError:
+        return ()
+    return tuple(
+        each
+        for each in entries
+        if each.get("type") == "addDirectories"
+        or (each.get("type") == "addRules" and each.get("behavior") == "allow")
+    )
+
+
+def _released(prompt: _Prompt, *, by: Resolver) -> Resolved:
+    """Return the end of ``prompt`` that took no choice of its own."""
+    return Resolved(ask_id=prompt.id, option="", by=by, decision="released")
+
+
+def _reply(prompt: _Prompt, chosen: Option, answer: Answer) -> bytes:
+    """Return the hook output that hands claude ``chosen``."""
+    denied = chosen.kind.startswith("deny")
+    decision: dict[str, PlainTree] = {"behavior": "deny" if denied else "allow"}
+    if denied:
+        if answer.message:
+            decision["message"] = answer.message
+    else:
+        if answer.updated_input is not None:
+            # Claude takes the whole input back: a question's answers ride beside it.
+            decision["updatedInput"] = {**prompt.ask.input, **answer.updated_input}
+        if chosen.kind in {"allow_session", "allow_always"}:
+            decision["updatedPermissions"] = list(prompt.grants)
     output = {"hookEventName": "PermissionRequest", "decision": decision}
     return json.dumps({"hookSpecificOutput": output}).encode()
 

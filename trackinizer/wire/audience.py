@@ -53,6 +53,12 @@ SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         ("POST", "/api/sessions/{session_id}/end"),
         ("POST", "/api/sessions/{session_id}/inbound"),
         ("GET", "/api/sessions/{session_id}/inbound"),
+        # A run's word on what it is doing, kept on its lease in memory: it reads and
+        # writes no record, and is held to the rules of the session's drain.
+        ("POST", "/api/sessions/{session_id}/run-state"),
+        # Reopening a chat's run reads and writes no record: it starts a run, which
+        # attaches to the session by the key its own machine holds, as any run does.
+        ("POST", "/api/sessions/{session_id}/reattach"),
         # Placement reads and writes a session's envelope alone (its labels and one
         # edge), never its transcript, and only for the session's own account.
         ("POST", "/api/sessions/{session_id}/place"),

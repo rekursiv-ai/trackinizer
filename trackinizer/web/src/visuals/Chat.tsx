@@ -7,25 +7,29 @@ import type { OrgMode } from "../api/me";
 import { getWorkspace } from "../api/workspaces";
 import type { WorkspacePartner, WorkspaceState } from "../api/workspaces";
 import { type Provider, providerName, stationProvider } from "../api/providers";
+import { takenOver, waitingOf } from "../api/runState";
 import { MetaContext, useProfile, useWriteMode } from "../app/boot";
 import { Composer } from "../composer/Composer";
 import { detailQueries } from "../detail/queries";
 import { useLiveDetail } from "../live";
 import { Markdown } from "../markdown/Markdown";
+import { usePreferences } from "../preferences";
 import { parseHash } from "../router/route";
 import { useHash, validHash, visited } from "../router/trail";
 import { stationForChat, type StationSummary } from "../api/stations";
 import { clearChat as clearStationChat, hideStation, STATIONS_KEY } from "../stations/actions";
 import { showStation } from "../stations/useStation";
-import { type ChatPart, type Goal, goalOf, type Line, type LineAt, linesThrough, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
+import { type ChatPart, type Goal, goalOf, type Line, type LineAt, linesThrough, openPrompts, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
 import { chatRecordsKey, OPENING, readChatParts, useLiveChat } from "./chatRecords";
 import { useChatFeed } from "./chatFeed";
 import { FOLLOW_UP_ASK, followUpSuggested } from "./chatFollowUp";
 import { useAnswerHighlights } from "./chatHighlights";
 import { useChatPartial } from "./chatPartial";
 import { useChatDraft } from "./chatDraft";
+import { ChatToolCard } from "./ChatToolCard";
 import { ChatWorkstreamHeader } from "./ChatWorkstreamHeader";
 import { RecordField } from "./RecordField";
+import { useReattach } from "./reattach";
 import { type AnswerPrompt, type PromptAnswer, PromptCard } from "./PromptCard";
 
 /** The most characters one message may have, as the server holds it. */
@@ -83,7 +87,11 @@ function chatReach(audience: string, orgMode: OrgMode | undefined): string {
  * sent starts it. A private or staff-only chat cannot be forked, since the copy
  * would not keep who may read it. The starter makes a chat private or public (`PrivacySwitch`).
  */
-export function Chat({ workspace }: { readonly workspace: WorkspaceState | null }) {
+export function Chat({ workspace, onWaiting }: {
+  readonly workspace: WorkspaceState | null;
+  /** Told whether an agent waits on the person, as the header's dot says, whenever that changes. */
+  readonly onWaiting?: (waiting: boolean) => void;
+}) {
   const queryClient = useQueryClient();
   const kinds = useContext(MetaContext)?.kinds ?? [];
   const { email: me, org_mode: orgMode, role } = useProfile();
@@ -124,7 +132,10 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   // Lines read before the chat closed to me (made staff only, or unshared) go with it.
   const parts = outsider ? undefined : records.data;
 
-  const transcript = useMemo(() => readTranscript(parts ?? []), [parts]);
+  // The Settings switch for tool calls: each shows as a card between the lines, or
+  // none does.
+  const tools = usePreferences().chat_tool_calls;
+  const transcript = useMemo(() => readTranscript(parts ?? [], { tools }), [parts, tools]);
   // What the answers cite lights up on the page as they arrive (the Settings switch turns it off).
   const answers = useMemo(() => parts === undefined ? null
     : transcript.lines.filter((line) => line.role === "assistant").map(({ key, text }) => ({ key, text, pointed: transcript.pointed.has(key) })), [parts, transcript]);
@@ -195,7 +206,9 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   // The target names where a draft goes, so a retry under one key only ever
   // repeats a send to the same place.
   const target = JSON.stringify([workspaceId, partner?.session_id ?? null, fork]);
-  const live = !!workspace && partner?.status === "live" && writing;
+  // A run taken over in a terminal takes no line from Chat until it is reattached.
+  const taken = takenOver(partner);
+  const live = !!workspace && partner?.status === "live" && writing && !taken;
   // Who reads this chat, and so whether I may read it and type in it, is known once its head has been read.
   const reading = conversationId !== null && head.isPending;
   // Only an open chat forks: a copy would not keep a hidden or staff-only chat's readers.
@@ -382,9 +395,17 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
   const answerable = live && !reading && !outsider;
   // The goal the run is working toward, which the strip above the box says until it is met or cleared.
   const goal = goalOf(transcript);
+  // Whether an agent waits on the person: the server says so, or a card in the log is still open and Chat can answer
+  // it. The log is live, so a card shows its dot at once, and one the server released shows none. A card left open
+  // in a chat with no live run, or one taken over in a terminal, is not answered from here, so it is no dot.
+  const needsYou = waitingOf(partner) === true || (answerable && openPrompts(transcript) > 0);
+  useEffect(() => onWaiting?.(needsYou), [needsYou, onWaiting]);
+  const { reattach, busy: reattaching } = useReattach(useCallback((message: string) => {
+    if (mounted.current) setNotice(message);
+  }, []));
 
   return <section className="chat-panel" aria-label="Chat">
-    <ChatWorkstreamHeader workspace={workspace} head={head.data ?? undefined}
+    <ChatWorkstreamHeader workspace={workspace} head={head.data ?? undefined} waiting={needsYou}
       onHide={hideCurrentStation} onClear={clearCurrentChat}
       onDeleted={(conversation) => chatDeleted(conversation)} />
     {screen.name === "lookup" && <ChatScreenContext id={screen.id} label={screen.id} />}
@@ -420,7 +441,8 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
             <Markdown source={reply.text} kinds={kinds} className="md chat-line-body" images={false} />
           </article>
         : statusText && <p className="chat-status" role="status">{statusText}</p>}
-      {workspace && writing && !live && !loading && <ChatOff provider={stationProvider(workspace)} />}
+      {taken && <TakenOver onReattach={writing && session ? () => void reattach(session) : undefined} busy={reattaching !== null} />}
+      {workspace && writing && !live && !loading && !taken && <ChatOff provider={stationProvider(workspace)} />}
     </div>
     {forkAt && <p className="chat-fork-banner" role="status">
       Your next message starts a fork of this chat after “{forkAt.quote}”.{" "}
@@ -437,7 +459,7 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
         .map((line) => line.text) }}
       enabled={live && !reading && !loading && !outsider} editable pending={sending.size > 0}
       placeholder={reading ? "Loading the conversation…" : outsider ? closedTo(head.data!.audience)
-        : live ? `Ask ${partner?.actor ?? "your partner"}…` : readOnly(partner?.status, writing)}
+        : taken ? TAKEN_OVER : live ? `Ask ${partner?.actor ?? "your partner"}…` : readOnly(partner?.status, writing)}
       check={checkText} retryable={resendable}
       failure={failureText} />}
   </section>;
@@ -482,6 +504,21 @@ function closedTo(audience: string): string {
   return audience === "staff" ? "This chat is staff only" : "This chat is not shared with you";
 }
 
+/** What a chat says once its run was taken over in a terminal. */
+const TAKEN_OVER = "Taken over in a terminal";
+
+/**
+ * A chat whose run someone attached to in its own terminal: the headless run stopped, so
+ * Chat takes no line until the run is reattached, which reopens it on the same session.
+ * `onReattach` is absent where the reader may not reattach.
+ */
+function TakenOver({ onReattach, busy }: { readonly onReattach?: () => void; readonly busy: boolean }) {
+  return <div className="chat-off chat-taken-over">
+    <p className="chat-note">{TAKEN_OVER}. Chat sends nothing to it until it is reattached.</p>
+    {onReattach && <button className="btn" type="button" disabled={busy} onClick={onReattach}>Reattach to Chat</button>}
+  </div>;
+}
+
 /** What Chat says when its provider is not live: the assistant, or a CLI no run holds. */
 function ChatOff({ provider }: { readonly provider: Provider }) {
   return <div className="chat-off">
@@ -518,7 +555,8 @@ const ChatLine = memo(function ChatLine({ line, me, kinds, assistant, onFork, on
   const at = line.at;
   // Hovering a line shows when it was sent, in the reader's own time zone.
   const when = line.sentAt ? sentWhen(line.sentAt) : undefined;
-  if (line.prompt) return <PromptCard prompt={line.prompt} kinds={kinds} onAnswer={onAnswer} />;
+  if (line.prompt) return <PromptCard prompt={line.prompt} kinds={kinds} onAnswer={onAnswer} assistant={assistant} attached={line.attached === true} />;
+  if (line.tool) return <ChatToolCard step={line.tool} kinds={kinds} />;
   if (line.role === "relay") {
     // What the person told agents from the Console: "you → lead-2: text", neither a message to the partner nor an answer.
     const who = line.author === null || line.author === me ? "you" : line.author.split("@")[0];

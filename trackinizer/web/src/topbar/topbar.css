@@ -119,3 +119,5 @@
 @media (prefers-reduced-motion: reduce) {
   .account-reveal, .account-button { transition: none; }
 }
+/* A chat in the workstream waits on the person: the blue dot an editor puts on a tab that needs you. */
+.workstream-waiting { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }

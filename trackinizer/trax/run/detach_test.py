@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 import contextlib
 import json
@@ -12,17 +13,21 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
+
+from treekle import from_plain, json_loads, to_plain
 
 import pytest
 
 from trackinizer.trax.daemon.protocol import socket_address
 from trackinizer.trax.run import detach
-from trackinizer.trax.run.detach import HostRecord, launch, main
+from trackinizer.trax.run.detach import HeadlessSpec, HostRecord, launch, main
+from trackinizer.trax.run.headless import Reply, Request
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Callable, Generator, Mapping
 
     from trackinizer.lib.posix.host import HostSpec
 
@@ -342,8 +347,12 @@ class TestCommands:
         root.mkdir(parents=True)
         with _listening(root / "s") as address:
             detach._write_record(root, _record(root, name="delta", address=address))
-            with pytest.raises(SystemExit, match="'delta' is running"):
+            with pytest.raises(SystemExit) as refused:
                 _ = launch("delta", command="sh", start=_never)
+            assert str(refused.value) == (
+                "trax run: host 'delta' is running; "
+                "stop it (trax run stop delta) or choose another --name"
+            )
 
     def test_launch_repeats_what_the_host_said_before_it_accepted(
         self,
@@ -356,6 +365,570 @@ class TestCommands:
         assert (
             up == "[trax run] eta is running detached; attach with: trax run attach eta"
         )
+
+
+class TestAHeadlessHostIsRecordedAndFound:
+    """A chat's run has no terminal until taken over; its record says how to reach it."""
+
+    def test_the_host_is_told_where_the_control_socket_goes(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        assert launch("theta", command="sh", start=_say_the_spec) == 0
+        said = capsys.readouterr().err.splitlines()[0]
+        control = socket_address(detach._paths("theta") / "control.sock")
+        assert said == f"[trax run] control {control} resume ''"
+
+    def test_the_record_names_the_machine_and_the_socket(self) -> None:
+        assert launch("iota", command="sh", start=_say_the_spec) == 0
+        record = detach._read_record(detach._paths("iota"))
+        assert record is not None
+        assert record.machine == socket.gethostname()
+        assert record.control == str(
+            socket_address(detach._paths("iota") / "control.sock"),
+        )
+
+    def test_a_host_listening_on_its_control_socket_alone_is_running(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        with _Control(tmp_path / "c", Reply(ok=True)) as control:
+            record = _record(tmp_path, control=control.address)
+            assert detach._state(record) == "running"
+
+    def test_a_control_socket_nothing_listens_on_does_not_make_a_host_run(
+        self,
+        tmp_path: Path,
+        live_child: subprocess.Popen[bytes],
+    ) -> None:
+        record = _record(
+            tmp_path,
+            state="running",
+            pid=live_child.pid,
+            control=tmp_path / "dead.sock",
+        )
+        assert detach._state(record) == "exiting"
+
+    def test_a_record_from_before_headless_runs_still_reads(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        written = from_plain(to_plain(_record(tmp_path)), dict[str, object])
+        old = {
+            key: value
+            for key, value in written.items()
+            if key not in {"machine", "control"}
+        }
+        (tmp_path / "host.json").write_text(json.dumps(old))
+        record = detach._read_record(tmp_path)
+        assert record is not None
+        assert (record.machine, record.control) == ("", "")
+
+
+class TestTakingAHeadlessRunOver:
+    """``trax run attach`` stops the driver, then drives the CLI's own terminal."""
+
+    def test_the_run_is_asked_to_hand_over_before_the_terminal_is_attached(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        steps: list[str] = []
+        with _headless(tmp_path, monkeypatch, steps, Reply(ok=True)) as control:
+            assert main(["attach", "kappa"]) == 0
+            assert [asked.op for asked in control.asked] == ["takeover"]
+        assert steps == ["takeover", "attach"]
+
+    def test_it_says_how_the_chat_gets_the_cli_back_once_the_terminal_exits(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with _headless(tmp_path, monkeypatch, [], Reply(ok=True), status=0):
+            assert main(["attach", "kappa"]) == 0
+        assert capsys.readouterr().err == (
+            "\n[trax run] kappa exited with status 0\n"
+            "[trax run] Chat stays taken over; use Reattach to Chat in the chat or the Console to give it back.\n"
+        )
+
+    def test_the_status_the_terminal_ended_with_is_the_commands(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with _headless(tmp_path, monkeypatch, [], Reply(ok=True), status=3):
+            assert main(["attach", "kappa"]) == 3
+
+    def test_a_terminal_left_with_ctrl_backslash_leaves_the_cli_running(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with _headless(tmp_path, monkeypatch, [], Reply(ok=True)):
+            assert main(["attach", "kappa"]) == 0
+        assert capsys.readouterr().err == (
+            "\n[trax run] detached from kappa; it is still running\n"
+            "[trax run] Chat stays taken over; use Reattach to Chat in the chat or the Console to give it back.\n"
+        )
+
+    def test_a_run_that_will_not_hand_over_is_not_attached(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        steps: list[str] = []
+        refusal = Reply(ok=False, reason="claude could not start")
+        with (
+            _headless(tmp_path, monkeypatch, steps, refusal),
+            pytest.raises(SystemExit, match="cannot be taken over: claude could"),
+        ):
+            _ = main(["attach", "kappa"])
+        assert steps == ["takeover"]
+
+    def test_a_pty_host_is_attached_as_it_always_was(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        steps: list[str] = []
+        _fake_attach(monkeypatch, steps, status=None)
+        root = detach._paths("lambda")
+        root.mkdir(parents=True)
+        with _listening(root / "s") as address:
+            detach._write_record(
+                root,
+                _record(root, name="lambda", address=address, machine=_HERE),
+            )
+            assert main(["attach", "lambda"]) == 0
+        assert steps == ["attach"]
+        said = capsys.readouterr().err
+        assert "detached from lambda; it is still running" in said
+        assert "Reattach" not in said
+
+    def test_a_host_of_another_machine_is_refused_with_its_name(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        steps: list[str] = []
+        with (
+            _headless(
+                tmp_path,
+                monkeypatch,
+                steps,
+                Reply(ok=True),
+                machine="elsewhere",
+            ),
+            pytest.raises(SystemExit) as refused,
+        ):
+            _ = main(["attach", "kappa"])
+        said = str(refused.value)
+        assert "runs on elsewhere" in said
+        assert _HERE in said
+        assert steps == []
+
+    @pytest.mark.parametrize("command", ["send", "stop"])
+    def test_stop_and_send_refuse_another_machines_host_too(
+        self,
+        command: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        argv = [command, "kappa", *(["hi"] if command == "send" else [])]
+        with (
+            _headless(
+                tmp_path,
+                monkeypatch,
+                [],
+                Reply(ok=True),
+                machine="elsewhere",
+            ),
+            pytest.raises(SystemExit, match="runs on elsewhere"),
+        ):
+            _ = main(argv)
+
+    def test_a_record_that_names_no_machine_is_attached_anywhere(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        steps: list[str] = []
+        with _headless(tmp_path, monkeypatch, steps, Reply(ok=True), machine=""):
+            assert main(["attach", "kappa"]) == 0
+        assert steps == ["takeover", "attach"]
+
+
+class TestReachingAHeadlessRun:
+    """``trax run stop|send`` and a second launch reach the run on its control socket."""
+
+    def test_stop_ends_the_run_through_its_socket_and_waits_for_the_process(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        stopped: list[Path] = []
+
+        async def stop_terminal(address: Path) -> int | None:
+            stopped.append(address)
+            return 0
+
+        monkeypatch.setattr(detach, "stop", stop_terminal)
+        with _headless(tmp_path, monkeypatch, [], Reply(ok=True)) as control:
+            assert main(["stop", "kappa"]) == 0
+            assert [asked.op for asked in control.asked] == ["stop"]
+        assert stopped == []
+        assert capsys.readouterr().err == "[trax run] kappa stopped\n"
+
+    def test_a_host_with_a_terminal_of_its_own_is_stopped_through_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        stopped: list[Path] = []
+
+        async def stop_terminal(address: Path) -> int | None:
+            stopped.append(address)
+            return 143
+
+        monkeypatch.setattr(detach, "stop", stop_terminal)
+        root = detach._paths("omicron")
+        root.mkdir(parents=True)
+        with _listening(root / "s") as address:
+            detach._write_record(
+                root,
+                _record(root, name="omicron", address=address, pid=_dead_pid()),
+            )
+            assert main(["stop", "omicron"]) == 0
+        assert stopped == [address]
+        assert capsys.readouterr().err == "[trax run] omicron stopped (status 143)\n"
+
+    def test_send_types_through_the_socket(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with _headless(tmp_path, monkeypatch, [], Reply(ok=True)) as control:
+            assert main(["send", "kappa", "two", "words"]) == 0
+            assert [(asked.op, asked.text) for asked in control.asked] == [
+                ("send", "two words"),
+            ]
+
+    @pytest.mark.parametrize(("taken", "code"), [(True, 0), (False, 1)])
+    def test_a_host_with_a_terminal_of_its_own_takes_a_line_through_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        taken: bool,
+        code: int,
+    ) -> None:
+        async def submit_line(address: Path, *, text: str) -> bool:
+            del address
+            return taken and text == "two words"
+
+        monkeypatch.setattr(detach, "submit", submit_line)
+        root = detach._paths("psi")
+        root.mkdir(parents=True)
+        detach._write_record(root, _record(root, name="psi"))
+        with _listening(root / "s") as address:
+            detach._write_record(root, _record(root, name="psi", address=address))
+            assert main(["send", "psi", "two", "words"]) == code
+        assert capsys.readouterr().err == (
+            "" if taken else "trax run: psi did not take the message; it is exiting\n"
+        )
+
+    def test_a_host_that_will_not_exit_is_said_to_be_still_closing(
+        self,
+        live_child: subprocess.Popen[bytes],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        async def stop_terminal(address: Path) -> int | None:
+            del address
+            return 0
+
+        monkeypatch.setattr(detach, "stop", stop_terminal)
+        monkeypatch.setattr(detach, "_STOP_TIMEOUT_SEC", 0.05)
+        root = detach._paths("omega")
+        root.mkdir(parents=True)
+        detach._write_record(
+            root,
+            _record(root, name="omega", pid=live_child.pid),
+        )
+        assert main(["stop", "omega"]) == 1
+        assert capsys.readouterr().err == (
+            f"trax run: omega stopped its CLI but the host (pid {live_child.pid}) "
+            "is still closing after 0s\n"
+        )
+
+    def test_a_line_the_run_refuses_is_said_and_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        refusal = Reply(ok=False, reason="taken over in a terminal")
+        with _headless(tmp_path, monkeypatch, [], refusal):
+            assert main(["send", "kappa", "hi"]) == 1
+        assert capsys.readouterr().err == (
+            "trax run: kappa did not take the message: taken over in a terminal\n"
+        )
+
+
+class TestALaunchOfATakenOverName:
+    """A taken-over run is replaced by the launch that gives the chat its CLI back."""
+
+    def test_the_run_is_ended_and_the_new_one_resumes_its_session(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        root = detach._paths("mu")
+        root.mkdir(parents=True)
+        replies = {
+            "state": Reply(ok=True, state="taken_over", cli="claude", session="sess-1"),
+            "stop": Reply(ok=True),
+        }
+        with _Control(tmp_path / "c", replies) as control:
+            detach._write_record(
+                root,
+                _record(
+                    root,
+                    name="mu",
+                    control=control.address,
+                    pid=_dead_pid(),
+                    command="claude",
+                ),
+            )
+            assert launch("mu", command="claude", start=_say_the_spec) == 0
+            assert [asked.op for asked in control.asked] == ["state", "stop"]
+        assert capsys.readouterr().err.splitlines()[0].endswith("resume 'sess-1'")
+
+    def test_a_run_that_is_not_taken_over_keeps_its_name(self, tmp_path: Path) -> None:
+        root = detach._paths("nu")
+        root.mkdir(parents=True)
+        replies = {"state": Reply(ok=True, state="running"), "stop": Reply(ok=True)}
+        with _Control(tmp_path / "c", replies) as control:
+            detach._write_record(
+                root,
+                _record(root, name="nu", control=control.address, command="claude"),
+            )
+            with pytest.raises(SystemExit) as refused:
+                _ = launch("nu", command="claude", start=_never)
+            assert [asked.op for asked in control.asked] == ["state"]
+        said = str(refused.value)
+        assert "'nu' is running (the chat is not taken over)" in said
+        assert "trax run stop nu" in said
+
+    def test_a_taken_over_run_on_its_way_out_is_waited_for(
+        self,
+        live_child: subprocess.Popen[bytes],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The server turns the old run away as it opens the new one, so both race."""
+        root = detach._paths("xi")
+        root.mkdir(parents=True)
+        detach._write_record(
+            root,
+            _record(
+                root,
+                name="xi",
+                pid=live_child.pid,
+                session="sess-2",
+                command="claude",
+            ),
+        )
+        ending = threading.Timer(0.03, _end, args=(live_child,))
+        ending.start()
+        began = time.monotonic()
+        try:
+            assert launch("xi", command="claude", start=_say_the_spec) == 0
+            assert time.monotonic() - began < 0.5
+        finally:
+            ending.join()
+        assert capsys.readouterr().err.splitlines()[0].endswith("resume 'sess-2'")
+
+    def test_a_run_that_will_not_go_keeps_its_name(
+        self,
+        live_child: subprocess.Popen[bytes],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(detach, "_STOP_TIMEOUT_SEC", 0.05)
+        root = detach._paths("pi")
+        root.mkdir(parents=True)
+        detach._write_record(
+            root,
+            _record(
+                root,
+                name="pi",
+                pid=live_child.pid,
+                session="sess-3",
+                command="claude",
+            ),
+        )
+        with pytest.raises(SystemExit, match="'pi' is still closing"):
+            _ = launch("pi", command="claude", start=_never)
+
+    @pytest.mark.parametrize(
+        ("command", "resumed"),
+        [("claude", "sess-4"), ("claude --model opus", "sess-4"), ("codex", "")],
+    )
+    def test_a_run_that_ended_taken_over_is_resumed_by_the_same_cli_alone(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        command: str,
+        resumed: str,
+    ) -> None:
+        root = detach._paths("rho")
+        root.mkdir(parents=True)
+        detach._write_record(
+            root,
+            _record(
+                root,
+                name="rho",
+                state="exited",
+                exit_code=0,
+                session="sess-4",
+                command="claude",
+                ended=_ago(30),
+            ),
+        )
+        assert launch("rho", command=command, start=_say_the_spec) == 0
+        assert capsys.readouterr().err.splitlines()[0].endswith(f"resume {resumed!r}")
+
+    def test_a_run_that_started_by_itself_and_has_not_answered_keeps_its_name(
+        self,
+        live_child: subprocess.Popen[bytes],
+    ) -> None:
+        root = detach._paths("phi")
+        root.mkdir(parents=True)
+        detach._write_record(
+            root,
+            _record(root, name="phi", state="starting", pid=live_child.pid),
+        )
+        with pytest.raises(SystemExit) as refused:
+            _ = launch("phi", command="claude", start=_never)
+        assert str(refused.value) == (
+            "trax run: host 'phi' is starting; "
+            "stop it (trax run stop phi) or choose another --name"
+        )
+
+    def test_a_run_started_with_arguments_is_still_the_same_cli(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        root = detach._paths("chi")
+        root.mkdir(parents=True)
+        detach._write_record(
+            root,
+            _record(
+                root,
+                name="chi",
+                state="exited",
+                exit_code=0,
+                session="sess-7",
+                command="claude --model opus",
+                ended=_ago(30),
+            ),
+        )
+        assert launch("chi", command="claude", start=_say_the_spec) == 0
+        assert capsys.readouterr().err.splitlines()[0].endswith("resume 'sess-7'")
+
+    def test_a_session_is_recent_until_the_window_has_passed(self) -> None:
+        ended = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
+        record = _record(Path("/h"), ended=ended.isoformat(timespec="seconds"))
+        window = timedelta(seconds=120)
+
+        assert detach._recent(record, now=ended + window - timedelta(seconds=1))
+        assert not detach._recent(record, now=ended + window)
+        assert detach._recent(_record(Path("/h")), now=ended + timedelta(days=9))
+
+    def test_a_run_that_ended_long_ago_is_not_resumed(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The chat may have been answered by another provider since."""
+        root = detach._paths("upsilon")
+        root.mkdir(parents=True)
+        detach._write_record(
+            root,
+            _record(
+                root,
+                name="upsilon",
+                state="exited",
+                exit_code=0,
+                session="sess-6",
+                command="claude",
+                ended=_ago(3_600),
+            ),
+        )
+        assert launch("upsilon", command="claude", start=_say_the_spec) == 0
+        assert capsys.readouterr().err.splitlines()[0].endswith("resume ''")
+
+    def test_a_run_that_was_never_taken_over_leaves_nothing_to_resume(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        root = detach._paths("sigma")
+        root.mkdir(parents=True)
+        detach._write_record(
+            root,
+            _record(
+                root,
+                name="sigma",
+                state="exited",
+                exit_code=0,
+                command="claude",
+            ),
+        )
+        assert launch("sigma", command="claude", start=_say_the_spec) == 0
+        assert capsys.readouterr().err.splitlines()[0].endswith("resume ''")
+
+    def test_a_takeover_is_written_into_the_hosts_record_beside_what_it_holds(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        detach._write_record(tmp_path, _record(tmp_path, state="running", pid=7))
+
+        detach._taken_over(tmp_path, "sess-8")
+
+        record = detach._read_record(tmp_path)
+        assert record is not None
+        assert (record.session, record.state, record.pid) == ("sess-8", "running", 7)
+
+    def test_a_takeover_in_a_host_with_no_record_writes_none(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        detach._taken_over(tmp_path, "sess-9")
+
+        assert not (tmp_path / "host.json").exists()
+
+    def test_the_takeover_is_kept_in_the_record_through_the_hosts_end(self) -> None:
+        assert launch("tau", command="claude", start=_take_over_then_end) == 0
+        # The launcher returns once the host is up; the host ends a moment after.
+        end = time.monotonic() + 10
+        record = detach._read_record(detach._paths("tau"))
+        while (record is None or record.state != "exited") and time.monotonic() < end:
+            time.sleep(0.01)
+            record = detach._read_record(detach._paths("tau"))
+        assert record is not None
+        assert (record.session, record.state) == ("sess-5", "exited")
+
+
+def _ago(seconds: int) -> str:
+    """Return the time ``seconds`` ago, as a host records when it ended."""
+    return (datetime.now(UTC) - timedelta(seconds=seconds)).isoformat(
+        timespec="seconds",
+    )
+
+
+def _end(child: subprocess.Popen[bytes]) -> None:
+    """End a process and reap it, as a host ends."""
+    child.kill()
+    _ = child.wait()
 
 
 @pytest.mark.cli_python_subprocess
@@ -518,17 +1091,26 @@ def _record(
     pid: int = 1,
     address: Path | None = None,
     exit_code: int | None = None,
+    machine: str = "",
+    control: Path | None = None,
+    session: str = "",
+    command: str = "sh -- true",
+    ended: str | None = None,
 ) -> HostRecord:
     """Return a host record with test defaults."""
     return HostRecord(
         name=name,
-        command="sh -- true",
+        command=command,
         cwd=str(root),
         pid=pid,
         address=str(address or root / "absent.sock"),
         started="2026-10-03T00:00:00+00:00",
         state=state,
         exit_code=exit_code,
+        machine=machine,
+        control="" if control is None else str(control),
+        session=session,
+        ended=ended,
     )
 
 
@@ -576,9 +1158,138 @@ def _say_then_accept(spec: HostSpec) -> int:
     return 0
 
 
+def _take_over_then_end(spec: HostSpec) -> int:
+    """Be taken over on a session, accept, and end."""
+    assert isinstance(spec, HeadlessSpec)
+    assert spec.on_takeover is not None
+    assert spec.on_listening is not None
+    spec.on_listening()
+    spec.on_takeover("sess-5")
+    return 0
+
+
 def _never(spec: object) -> int:
     """Fail: the refusal must stop the launch before ``start`` runs."""
     raise AssertionError(f"launched despite a running host: {spec}")
+
+
+def _say_the_spec(spec: HostSpec) -> int:
+    """Say where the host was told to listen for control requests, then accept."""
+    assert isinstance(spec, HeadlessSpec)
+    _ = os.write(
+        2,
+        f"[trax run] control {spec.control} resume {spec.resume!r}\n".encode(),
+    )
+    assert spec.on_listening is not None
+    spec.on_listening()
+    return 0
+
+
+_HERE = socket.gethostname()
+
+
+class _Control:
+    """A headless run's control socket: it answers each request with one canned reply.
+
+    Every request is noted in :attr:`asked`, and its op in ``steps`` when given, so a
+    test can say what was asked before what.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        reply: Reply | Mapping[str, Reply],
+        steps: list[str] | None = None,
+    ) -> None:
+        self.address = socket_address(path)
+        self.asked: list[Request] = []
+        self._reply = reply
+        self._steps = steps
+        self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._listener.settimeout(0.01)
+        self._over = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def __enter__(self) -> Self:
+        self._listener.bind(str(self.address))
+        self._listener.listen(4)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._over.set()
+        self._thread.join(5.0)
+        self._listener.close()
+        self.address.unlink(missing_ok=True)
+
+    def _serve(self) -> None:
+        while not self._over.is_set():
+            try:
+                connection, _ = self._listener.accept()
+            except TimeoutError:
+                continue
+            with connection, connection.makefile("rwb") as stream:
+                line = stream.readline().decode()
+                # A liveness probe connects and leaves without a word.
+                if not line:
+                    continue
+                asked = json_loads(line, Request)
+                self.asked.append(asked)
+                if self._steps is not None:
+                    self._steps.append(asked.op)
+                reply = (
+                    self._reply
+                    if isinstance(self._reply, Reply)
+                    else self._reply[asked.op]
+                )
+                stream.write(json.dumps(to_plain(reply)).encode() + b"\n")
+                stream.flush()
+
+
+def _fake_attach(
+    monkeypatch: pytest.MonkeyPatch,
+    steps: list[str],
+    *,
+    status: int | None,
+) -> None:
+    """Make the terminal attach note itself and return ``status``."""
+
+    async def attached(address: Path) -> int | None:
+        del address
+        steps.append("attach")
+        return status
+
+    monkeypatch.setattr(detach, "attach", attached)
+
+
+# Its process is already gone, so ``stop`` has nothing to wait for, and the terminal
+# attach is faked.
+@contextlib.contextmanager
+def _headless(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    steps: list[str],
+    reply: Reply,
+    *,
+    status: int | None = None,
+    machine: str = _HERE,
+) -> Generator[_Control]:
+    """Record a live headless host named ``kappa`` whose control socket gives ``reply``."""
+    _fake_attach(monkeypatch, steps, status=status)
+    root = detach._paths("kappa")
+    root.mkdir(parents=True)
+    with _Control(tmp_path / "c", reply, steps) as control:
+        detach._write_record(
+            root,
+            _record(
+                root,
+                name="kappa",
+                pid=_dead_pid(),
+                machine=machine,
+                control=control.address,
+            ),
+        )
+        yield control
 
 
 if __name__ == "__main__":

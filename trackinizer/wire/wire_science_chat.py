@@ -141,18 +141,34 @@ delivers each its own way. Only ``line`` is a person's chat line."""
 
 
 class ChatAnswer(BaseModel):
-    """The payload of an ``answer`` post: a decision on a prompt the run is showing."""
+    """The payload of an ``answer`` post: a choice on an ask the run is showing.
+
+    It names the choice by ``option``, the id of one of the ask's own options, or in
+    the older form by ``decision``, which the run reads as the option of that kind.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     prompt_id: str = Field(min_length=1, max_length=200)
-    decision: Literal["allow", "deny"]
+    option: str = Field(default="", max_length=200)
+    """The id of the option taken, or a kind such as ``allow_once``; empty when
+    ``decision`` names the choice."""
+
+    decision: Literal["allow", "deny"] | None = None
+    """The older form of ``option``: ``allow`` is ``allow_once``, ``deny`` is ``deny``."""
+
     updated_input: JsonValue = None
     """The tool input the prompt's answer replaces, such as the answers to a
     question; ``None`` leaves it as asked."""
 
     message: str = Field(default="", max_length=16_384)
     """Why, for a deny; the run passes it to the CLI."""
+
+    @model_validator(mode="after")
+    def _names_one_choice(self) -> Self:
+        if bool(self.option) == (self.decision is not None):
+            raise ValueError("an answer names exactly one of an option and a decision")
+        return self
 
 
 class ChatSettings(BaseModel):

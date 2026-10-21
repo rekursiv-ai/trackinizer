@@ -13,6 +13,7 @@ from treekle import from_plain, json_loads
 import pytest
 
 from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.server.asks_test_support import open_ask, resolve_ask
 from trackinizer.server.config import Assistant
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue, PollerRun
@@ -20,9 +21,11 @@ from trackinizer.server.store.core import Store
 from trackinizer.server.visuals.partners import (
     assistant_key_may_use,
     attach_partner,
+    chat_run_states,
     is_assistant_session,
     is_chat_session,
     live_chat_session,
+    live_run_states,
     opener_email,
     provider_availability,
     resolve_partner,
@@ -148,10 +151,10 @@ async def _session(
     return session_id
 
 
-def _polled(*session_ids: uuid.UUID) -> InboundQueue:
+def _polled(*session_ids: uuid.UUID, cli: str | None = None) -> InboundQueue:
     inbound = InboundQueue()
     for session_id in session_ids:
-        inbound.mark_poller(session_id)
+        inbound.mark_poller(session_id, cli=cli)
     return inbound
 
 
@@ -180,6 +183,7 @@ async def test_the_assistants_newest_live_session_is_the_default_partner(
         "cli": "codex",
         "status": "live",
         "provider": "assistant",
+        "state": "idle",
         "machine": None,
         "run_name": None,
         "cwd": None,
@@ -217,6 +221,7 @@ async def test_an_assistant_with_no_live_session_is_still_named_as_unavailable(
         "cli": None,
         "status": "unavailable",
         "provider": "assistant",
+        "state": "idle",
         "machine": None,
         "run_name": None,
         "cwd": None,
@@ -518,7 +523,11 @@ async def _part(conn: Conn, *, session_id: uuid.UUID, part: int, cli: str) -> No
 async def test_a_cli_partner_is_the_chats_session_a_run_of_that_cli_drains(
     pglite_engine: PGliteEngine,
 ) -> None:
-    """Live while polled and not another CLI's; offline still names the session."""
+    """Live while a run of that CLI drains it; offline still names the session.
+
+    Which CLI drains it is what the drain named, never what the newest part says: a
+    run writes no part of its own, and ``/compact`` leaves a part with no format.
+    """
     await _seed(pglite_engine)
     async with pglite_engine.acquire() as conn:
         chat = await _session(
@@ -541,11 +550,12 @@ async def test_a_cli_partner_is_the_chats_session_a_run_of_that_cli_drains(
         async def partner(
             *polled: uuid.UUID,
             provider: ChatProvider = "claude",
+            drained_by: str | None = "claude",
             conversation_id: uuid.UUID | None = _CHAT,
         ) -> tuple[uuid.UUID | None, str, str]:
             found = await resolve_partner(
                 conn,
-                inbound=_polled(*polled),
+                inbound=_polled(*polled, cli=drained_by),
                 assistant=_KB,
                 provider=provider,
                 conversation_id=conversation_id,
@@ -571,20 +581,40 @@ async def test_a_cli_partner_is_the_chats_session_a_run_of_that_cli_drains(
             "offline",
             "claude: no run",
         )
+        # The run that drains the chat is the one its drain names, whatever parts the
+        # chat holds: the codex part and the compact part (no format) are both newest.
         await _part(conn, session_id=chat, part=0, cli="sagent")
         assert await partner(chat) == (chat, "live", "claude")
         await _part(conn, session_id=chat, part=1, cli="codex")
-        assert await partner(chat) == (chat, "offline", "claude: no run")
-        assert await partner(chat, provider="codex") == (chat, "live", "codex")
-        await conn.execute(
-            "UPDATE api_keys SET revoked_at = clock_timestamp() WHERE id = $1",
-            _USER_KEY,
-        )
+        assert await partner(chat) == (chat, "live", "claude")
         assert await partner(chat, provider="codex") == (
             chat,
             "offline",
             "codex: no run",
         )
+        await _part(conn, session_id=chat, part=2, cli="")
+        assert await partner(chat) == (chat, "live", "claude")
+        assert await partner(chat, drained_by="codex") == (
+            chat,
+            "offline",
+            "claude: no run",
+        )
+        assert await partner(chat, provider="codex", drained_by="codex") == (
+            chat,
+            "live",
+            "codex",
+        )
+        # A drain that names no CLI is an older trax's, which no provider claims.
+        assert await partner(chat, drained_by=None) == (
+            chat,
+            "offline",
+            "claude: no run",
+        )
+        await conn.execute(
+            "UPDATE api_keys SET revoked_at = clock_timestamp() WHERE id = $1",
+            _USER_KEY,
+        )
+        assert await partner(chat) == (chat, "offline", "claude: no run")
 
 
 @pytest.mark.db_pglite
@@ -616,6 +646,7 @@ async def test_a_live_runs_partner_says_where_it_runs_and_how_to_attach(
                     run=where.run,
                     machine=where.machine,
                     cwd=where.cwd,
+                    cli="claude",
                 )
             found = await resolve_partner(
                 conn,
@@ -668,7 +699,13 @@ async def test_a_live_runs_partner_is_the_one_chats_info_reads(
             cli="claude",
             cli_session_id=chat_session_id(_CHAT),
         )
-        inbound.mark_poller(chat, run="chat-1a2b3c4d", machine="gx10", cwd="~/project")
+        inbound.mark_poller(
+            chat,
+            run="chat-1a2b3c4d",
+            machine="gx10",
+            cwd="~/project",
+            cli="claude",
+        )
         found = await resolve_partner(
             conn,
             inbound=inbound,
@@ -685,6 +722,242 @@ async def test_a_live_runs_partner_is_the_one_chats_info_reads(
     assert json_loads(json.dumps(shown.model_dump(mode="json"))) == json_loads(
         seam.read_text(encoding="utf-8"),
     )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_live_runs_partner_says_what_its_run_is_doing(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """The state a run reported shows while its lease holds; a run gone shows idle."""
+    await _seed(pglite_engine)
+    inbound = InboundQueue()
+    run = "a" * 32
+    async with pglite_engine.acquire() as conn:
+        chat = await _session(
+            conn,
+            key=_USER_KEY,
+            owner="chat-1",
+            seq=1,
+            cli="claude",
+            cli_session_id=chat_session_id(_CHAT),
+        )
+
+        async def state() -> str | None:
+            found = await resolve_partner(
+                conn,
+                inbound=inbound,
+                assistant=_KB,
+                provider="claude",
+                conversation_id=_CHAT,
+            )
+            assert found is not None
+            return found.state
+
+        assert await state() == "idle"
+        inbound.mark_poller(chat, cli="claude", instance=run)
+        assert await state() == "idle"
+        for reported in ("running", "requires_action", "taken_over", "idle"):
+            assert inbound.report_state(chat, instance=run, state=reported)
+            assert await state() == reported
+        inbound.forget_poller(chat)
+        assert await state() == "idle"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_ask_open_in_the_chat_requires_action_whatever_the_run_says(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """A run that reports nothing is still waiting on an open ask; a takeover is not."""
+    store = await _seed(pglite_engine)
+    inbound = InboundQueue()
+    run = "a" * 32
+    async with pglite_engine.acquire() as conn:
+        chat = await _session(
+            conn,
+            key=_USER_KEY,
+            owner="chat-1",
+            seq=1,
+            cli="claude",
+            cli_session_id=chat_session_id(_CHAT),
+        )
+    inbound.mark_poller(chat, cli="claude", instance=run)
+
+    async def state() -> str | None:
+        async with pglite_engine.acquire() as conn:
+            found = await resolve_partner(
+                conn,
+                inbound=inbound,
+                assistant=_KB,
+                provider="claude",
+                conversation_id=_CHAT,
+            )
+        assert found is not None
+        return found.state
+
+    await open_ask(store, chat, ask_id="a1")
+    assert await state() == "requires_action"
+    assert inbound.report_state(chat, instance=run, state="running")
+    assert await state() == "requires_action"
+    assert inbound.report_state(chat, instance=run, state="taken_over")
+    assert await state() == "taken_over"
+    assert inbound.report_state(chat, instance=run, state="idle")
+    await resolve_ask(store, chat, ask_id="a1")
+    assert await state() == "idle"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_ask_open_in_the_assistants_chat_requires_action(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """The assistant reports no state, so its chat's open ask is the whole of it."""
+    store = await _seed(pglite_engine)
+    async with pglite_engine.acquire() as conn:
+        chat = await _session(
+            conn,
+            key=_KB_KEY,
+            owner="chat-1",
+            seq=1,
+            cli_session_id=chat_session_id(_CHAT),
+            account="user@example.com",
+        )
+        service = await _session(conn, key=_KB_KEY, owner="scout", seq=2)
+    inbound = _polled(chat, service)
+
+    async def seen(conversation: uuid.UUID | None) -> tuple[str, str | None]:
+        async with pglite_engine.acquire() as conn:
+            found = await resolve_partner(
+                conn,
+                inbound=inbound,
+                assistant=_KB,
+                provider="assistant",
+                conversation_id=conversation,
+            )
+        assert found is not None
+        return found.status, found.state
+
+    assert await seen(_CHAT) == ("live", "idle")
+    await open_ask(store, chat, ask_id="q1")
+    assert await seen(_CHAT) == ("live", "requires_action")
+    assert await seen(_OTHER_CHAT) == ("live", "idle")
+    assert await seen(None) == ("live", "idle")
+    await resolve_ask(store, chat, ask_id="q1")
+    assert await seen(_CHAT) == ("live", "idle")
+    await open_ask(store, chat, ask_id="q2")
+    inbound.forget_poller(chat)
+    assert await seen(_CHAT) == ("live", "idle")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_states_of_some_live_runs_are_read_together(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """A session no run polls has no state; the rest say what they do, or what they wait on."""
+    store = await _seed(pglite_engine)
+    inbound = InboundQueue()
+    run = "a" * 32
+    async with pglite_engine.acquire() as conn:
+        running, taken, waiting, gone = [
+            await _session(
+                conn,
+                key=_USER_KEY,
+                owner=f"run-{seq}",
+                seq=seq,
+                cli="claude",
+            )
+            for seq in range(1, 5)
+        ]
+    for session in (running, taken, waiting):
+        inbound.mark_poller(session, cli="claude", instance=run)
+    assert inbound.report_state(running, instance=run, state="running")
+    assert inbound.report_state(taken, instance=run, state="taken_over")
+    for session in (taken, waiting, gone):
+        await open_ask(store, session, ask_id="a1")
+
+    async with pglite_engine.acquire() as conn:
+        states = await live_run_states(
+            conn,
+            inbound=inbound,
+            session_ids=[running, taken, waiting, gone],
+        )
+        nothing = await live_run_states(conn, inbound=inbound, session_ids=[])
+
+    assert states == {
+        running: "running",
+        taken: "taken_over",
+        waiting: "requires_action",
+    }
+    assert nothing == {}
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_state_of_each_chat_is_the_one_its_live_runs_agree_on(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """A chat's runs are the sessions its station owner or the assistant opened."""
+    store = await _seed(pglite_engine)
+    inbound = InboundQueue()
+    run = "a" * 32
+    mine, asked, stranger_chat, idle_chat = (uuid.uuid4() for _ in range(4))
+    async with pglite_engine.acquire() as conn:
+        cli = await _session(
+            conn,
+            key=_USER_KEY,
+            owner="chat-1",
+            seq=1,
+            cli="claude",
+            cli_session_id=chat_session_id(mine),
+        )
+        card = await _session(
+            conn,
+            key=_KB_KEY,
+            owner="chat-2",
+            seq=2,
+            cli_session_id=chat_session_id(asked),
+        )
+        squatter = await _session(
+            conn,
+            key=_OTHER_KEY,
+            owner="chat-3",
+            seq=3,
+            cli_session_id=chat_session_id(stranger_chat),
+        )
+        quiet = await _session(
+            conn,
+            key=_USER_KEY,
+            owner="chat-4",
+            seq=4,
+            cli="claude",
+            cli_session_id=chat_session_id(idle_chat),
+        )
+        silent = await _session(
+            conn,
+            key=_USER_KEY,
+            owner="chat-5",
+            seq=5,
+            cli="claude",
+            cli_session_id=chat_session_id(uuid.uuid4()),
+        )
+    for session in (cli, card, squatter, quiet):
+        inbound.mark_poller(session, cli="claude", instance=run)
+    assert inbound.report_state(cli, instance=run, state="taken_over")
+    await open_ask(store, card, ask_id="q1")
+    await open_ask(store, squatter, ask_id="q1")
+    await open_ask(store, silent, ask_id="q1")
+
+    async with pglite_engine.acquire() as conn:
+        states = await chat_run_states(
+            conn,
+            inbound=inbound,
+            openers=["USER@example.com", _KB.email],
+            conversation_ids=[mine, asked, stranger_chat, idle_chat, uuid.uuid4()],
+        )
+
+    assert states == {mine: "taken_over", asked: "requires_action", idle_chat: "idle"}
 
 
 async def _machine(

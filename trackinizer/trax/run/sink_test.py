@@ -670,7 +670,12 @@ class TestAPrivateRun:
         """The session it opened anyway is ended; no later send opens another."""
         client = _FakeClient()
         client.hides, client.audience = False, answered
-        primary = TrackinizerSink(cast(Client, client), "claude", private=True)
+        primary = TrackinizerSink(
+            cast(Client, client),
+            "claude",
+            private=True,
+            instance="b" * 32,
+        )
         sink = ResilientSink(primary, fallback_path=tmp_path / "fallback.jsonl")
 
         with pytest.raises(PrivateNotHeldError):
@@ -682,6 +687,10 @@ class TestAPrivateRun:
         assert len(client.started) == 1
         assert len(client.ended) == 1
         assert client.appended == []
+        # Named, so the end of a chat's session another run holds changes nothing.
+        [end] = client.end_bodies
+        assert end is not None
+        assert (end.cli, end.instance) == ("claude", "b" * 32)
 
 
 class TestTrackinizerSinkManifestMetadata:
@@ -1191,6 +1200,95 @@ class TestTrackinizerSinkCloseFlushOrdering:
         )
         # The buffered record still reached the fallback (REV-02 preserved).
         assert "one" in (tmp_path / "fb.jsonl").read_text()
+
+
+class TestAKeptOpenSessionIsNotEnded:
+    """A run a chat refuses leaves the session it shared with the chat's other run.
+
+    ``close`` ends the session its sink opened or re-attached. For a chat's run that
+    session is the chat's, so a refused second run that ended it would end the first
+    run's too, and take the first run's unread lines with it.
+    """
+
+    @pytest.mark.parametrize("wrapped", ["bare", "resilient", "locked"])
+    def test_close_flushes_the_records_and_does_not_end_the_session(
+        self,
+        tmp_path: Path,
+        wrapped: str,
+    ) -> None:
+        client = _FakeClient()
+        sink: Sink = TrackinizerSink(cast(Client, client), "claude")
+        if wrapped != "bare":
+            sink = ResilientSink(sink, fallback_path=tmp_path / "fb.jsonl")
+        if wrapped == "locked":
+            sink = LockedSink(sink)
+        sink.emit("claude", _event("hi"))
+
+        sink.keep_session_open()
+        sink.close()
+
+        assert [b.idx for _, _, bodies, _ in client.appended for b in bodies] == [0]
+        assert client.ended == []
+
+    def test_a_flush_failure_at_close_still_reaches_the_local_file(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client = _FlakyFlushClient()
+        sink = ResilientSink(
+            TrackinizerSink(cast(Client, client), "claude"),
+            fallback_path=tmp_path / "fb.jsonl",
+        )
+        sink.emit("claude", _event("one"))
+
+        sink.keep_session_open()
+        sink.close()
+
+        assert client.ended == []
+        assert "one" in (tmp_path / "fb.jsonl").read_text()
+
+    def test_a_sink_not_told_to_keep_the_session_open_ends_it(self) -> None:
+        client = _FakeClient()
+        sink = TrackinizerSink(cast(Client, client), "claude")
+        sink.emit("claude", _event("hi"))
+
+        sink.close()
+
+        assert client.ended == [client._id]
+
+    @pytest.mark.parametrize("cli", ["claude", "codex"])
+    def test_the_end_names_the_runs_cli(self, cli: str) -> None:
+        """The server keeps the chat open when a run of a CLI it left ends it."""
+        client = _FakeClient()
+        sink = TrackinizerSink(cast(Client, client), cli)
+        sink.emit(cli, _event("hi"))
+
+        sink.close()
+
+        [end] = client.end_bodies
+        assert end is not None
+        assert end.cli == cli
+
+    def test_the_end_names_the_run_its_drains_name(self) -> None:
+        """The server tells the end of a run a reattach replaced by its instance."""
+        client = _FakeClient()
+        sink = TrackinizerSink(cast(Client, client), "claude", instance="a" * 32)
+        sink.emit("claude", _event("hi"))
+
+        sink.close()
+
+        [end] = client.end_bodies
+        assert end is not None
+        assert (end.cli, end.instance) == ("claude", "a" * 32)
+
+    def test_a_sink_with_no_server_session_has_nothing_to_keep(self) -> None:
+        buf = io.StringIO()
+        sink = FileSink(buf)
+
+        sink.keep_session_open()
+        sink.close()
+
+        assert buf.closed
 
 
 class TestDrainPendingIsOnTheProtocol:

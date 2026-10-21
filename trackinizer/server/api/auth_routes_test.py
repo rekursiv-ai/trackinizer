@@ -558,6 +558,7 @@ class TestProfile:
             "terminal_tab_chords": False,
             "home": "graph",
             "chat_provider": "assistant",
+            "chat_tool_calls": False,
             **_EMPTY_USER_DATA,
         }
         assert body["acknowledged_at"] == _WHEN.isoformat()
@@ -642,6 +643,7 @@ class TestPreferences:
             "terminal_tab_chords": False,
             "home": "graph",
             "chat_provider": "assistant",
+            "chat_tool_calls": False,
             **_EMPTY_USER_DATA,
         }
         call = engine.conn.fetchrow.call_args

@@ -27,12 +27,50 @@ export type PromptQuestion = {
   readonly header: string;
   readonly multiSelect: boolean;
   readonly options: readonly { readonly label: string; readonly description: string }[];
+  /** The agent's id for the question, which an answer is keyed by in place of its header; empty when it gives none. */
+  readonly id?: string;
+  /** The agent asks for words nobody else should read, such as a token: the box hides them and the line names none. */
+  readonly secret?: true;
 };
 
-/** How a prompt was closed: its decision, and who closed it. */
+/**
+ * How a prompt was closed: its decision, and who closed it: a person in Chat or in the
+ * terminal, the run itself, a timeout, or a release (the run ended with the prompt open).
+ * A record in the unified form also names the option taken (empty when none was) and
+ * the person who took it.
+ */
 export type Resolution = {
   readonly decision: "allow" | "deny" | "answered" | "released";
-  readonly by: "chat" | "terminal" | "run";
+  readonly by: "chat" | "terminal" | "run" | "timeout" | "released";
+  readonly option?: string;
+  readonly who?: string;
+};
+
+/** What an option of an ask does, which is how its button looks and what its resolution says. */
+export type OptionKind = "allow_once" | "allow_session" | "allow_always" | "deny" | "deny_stop";
+
+/** One choice an agent offers on an ask, in its own words; an answer names its `id`. */
+export type PromptOption = { readonly id: string; readonly label: string; readonly kind: OptionKind };
+
+/**
+ * What an ask in the unified form says beyond the prompt's old fields: the agent that
+ * asked (`provider`: `claude`, `codex` or the assistant's own name), the `kind` of ask
+ * (permission, command, file_change, permissions, question, plan, elicitation, trust,
+ * dialog), the `title` the agent gave it, the tool call it is about (`toolCallId`,
+ * empty when the agent could not name it), the `command`, `cwd`, `reason` and `diff`
+ * it shows, the agent's own `options`, and whether Chat can answer it at all.
+ */
+export type AskCard = {
+  readonly provider: string;
+  readonly kind: string;
+  readonly title: string;
+  readonly toolCallId: string;
+  readonly command: string;
+  readonly cwd: string;
+  readonly reason: string;
+  readonly diff: string;
+  readonly options: readonly PromptOption[];
+  readonly answerable: boolean;
 };
 
 /**
@@ -40,7 +78,9 @@ export type Resolution = {
  * questions, a plan its text. A trust prompt is a CLI waiting to start in a folder it does
  * not trust yet: `cli`, `folder`, `machine` (null for the person's own machine) and
  * `remembered` (whether the CLI keeps the trust for that folder). Every other type leaves
- * the trust fields null. `resolution` is null while the prompt is open.
+ * the trust fields null. `resolution` is null while the prompt is open. `ask` is present
+ * when the record is in the unified form, with options; an older record has none, and its
+ * card offers the two answers it always did.
  */
 export type Prompt = {
   readonly id: string;
@@ -54,6 +94,7 @@ export type Prompt = {
   readonly machine: string | null;
   readonly remembered: boolean | null;
   readonly resolution: Resolution | null;
+  readonly ask?: AskCard;
 };
 
 /**
@@ -67,17 +108,24 @@ export type Goal = {
 };
 
 /**
- * One line of the transcript: a person's, an answer, a relay of what they told agents, a
- * prompt a run asked, a slash command typed into a run, a goal the run's log reports, what a
- * CLI printed for a command, a compaction of the agent's context, or one still being sent. A
- * `command` line is its sender's, and its text is what was typed, or `refused: <reason>` when
- * the run refused it.
+ * A tool call and the result answering it: the card Chat shows when the user asks to
+ * see tool calls. The result is null while the call runs.
+ */
+export type ToolExchange = { readonly call: SessionRecord; readonly result: SessionRecord | null };
+
+/**
+ * One line of the transcript: a person's, an answer, a relay of what they told agents,
+ * a prompt a run asked, a slash command typed into a run, a goal the run's log reports,
+ * what a CLI printed for a command, a compaction of the agent's context, a tool call,
+ * or one still being sent. A `command` line is its sender's, and its text is what was
+ * typed, or `refused: <reason>` when the run refused it. A `tool` line's text is the
+ * tool's name.
  */
 export type Line = {
   readonly key: string;
   /** The record the line is, which a fork starts from; null for a line not yet stored. */
   readonly at: LineAt | null;
-  readonly role: "user" | "assistant" | "relay" | "interaction" | "command" | "goal" | "reply" | "compaction";
+  readonly role: "user" | "assistant" | "relay" | "interaction" | "command" | "goal" | "reply" | "compaction" | "tool";
   /** The poster's attested email for a person's or a command's line; null for an answer. */
   readonly author: string | null;
   readonly text: string;
@@ -92,6 +140,10 @@ export type Line = {
    * each answer's own. Absent on every other line, and on an answer from a part of no known format.
    */
   readonly agent?: Provider;
+  /** The call a tool line shows; absent on every other line. */
+  readonly tool?: ToolExchange;
+  /** An interaction line that sits under the card of the tool call it asks about. */
+  readonly attached?: true;
 };
 
 /** A line sent from this browser; it shows until its record arrives. */
@@ -126,15 +178,20 @@ export type Transcript = {
  * by the agent its part's format says wrote it. A prompt a run asked is a line, which its
  * resolution record closes. A slash command a run typed is a `command` line, and the goal its
  * CLI logs is a `goal` line (see `goalStep`). A `ContextCompaction` is a `compaction` line,
- * one for the records that name one act. Other tool calls and results are not lines, but the
- * last call since the last person's line says what the agent is doing.
+ * one for the records that name one act. Other tool calls and results are not lines, unless
+ * `tools` asks for them: each call is then a `tool` line, in time order, which the first
+ * record after it with its `call_id` answers. Either way the last call since the last
+ * person's line says what the agent is doing.
  */
-export function readTranscript(parts: readonly ChatPart[]): Transcript {
+export function readTranscript(parts: readonly ChatPart[], { tools = false }: { readonly tools?: boolean } = {}): Transcript {
   const lines: Line[] = [];
   let working: string | null = null;
   const pointed = new Set<string>();
   let pointing = false;
   let goal: Goal | null = null;
+  // The tool lines still waiting for their result, by call id, and each one's place
+  // in `lines`.
+  const asked = new Map<string, number>();
   for (const { part, format, record } of inTimeOrder(parts)) {
     const key = `${part}:${record.idx}`;
     const payload = record.payload ?? {};
@@ -185,9 +242,52 @@ export function readTranscript(parts: readonly ChatPart[]): Transcript {
     } else if (record.kind === "ToolCall") {
       if (isHighlight(text(payload.name))) pointing = true;
       if (working !== null) working = text(payload.name);
+      if (tools) {
+        const id = text(payload.call_id);
+        if (id) asked.set(id, lines.length);
+        lines.push({ key, at, role: "tool", author: null, text: text(payload.name), sentAt, pending: false, tool: { call: record, result: null } });
+      }
+    } else if (tools && asked.has(text(payload.call_id))) {
+      // The first record after a call with its id is its result; a later one is not.
+      const id = text(payload.call_id);
+      const index = asked.get(id)!;
+      lines[index] = { ...lines[index]!, tool: { call: lines[index]!.tool!.call, result: record } };
+      asked.delete(id);
     }
   }
-  return { lines, working, pointed, goal };
+  return { lines: tools ? placedUnderCalls(lines) : lines, working, pointed, goal };
+}
+
+/**
+ * How many prompts no resolution has closed: what the chat waits on the person for,
+ * when the server does not say.
+ */
+export function openPrompts(transcript: Transcript): number {
+  return transcript.lines.filter((line) => line.prompt !== undefined && line.prompt.resolution === null).length;
+}
+
+/**
+ * The lines with each ask that names a tool call moved to sit right under that call's
+ * card, marked `attached`; an ask whose call has no card here stays where it happened.
+ * The cards keep their order, and so do the asks under one call. Two cards with one call
+ * id hold its asks under the first only, so no ask shows twice.
+ */
+function placedUnderCalls(lines: readonly Line[]): Line[] {
+  const calls = new Set(lines.flatMap((line) => (line.tool ? [text(line.tool.call.payload?.call_id)] : [])).filter((id) => id !== ""));
+  const under = new Map<string, Line[]>();
+  const rest: Line[] = [];
+  for (const line of lines) {
+    const id = line.prompt?.ask?.toolCallId ?? "";
+    if (id !== "" && calls.has(id)) under.set(id, [...(under.get(id) ?? []), { ...line, attached: true }]);
+    else rest.push(line);
+  }
+  return rest.flatMap((line) => {
+    if (!line.tool) return [line];
+    const id = text(line.tool.call.payload?.call_id);
+    const asks = under.get(id) ?? [];
+    under.delete(id);
+    return [line, ...asks];
+  });
 }
 
 /** The goal a run is working toward at the end of its records, or null when none is open. */
@@ -392,7 +492,8 @@ const AGENTS: ReadonlyMap<string, Provider> = new Map([["sagent", "assistant"], 
 
 const PROMPT_TYPES = ["permission", "question", "plan", "trust"] as const;
 const DECISIONS = ["allow", "deny", "answered", "released"] as const;
-const DECIDERS = ["chat", "terminal", "run"] as const;
+const DECIDERS = ["chat", "terminal", "run", "timeout", "released"] as const;
+const OPTION_KINDS = ["allow_once", "allow_session", "allow_always", "deny", "deny_stop"] as const;
 const CLIS = ["claude", "codex"] as const;
 
 /** A prompt from its record's `$interaction`, or null when it is not a well-formed one. */
@@ -403,22 +504,45 @@ function promptOf(value: unknown): Omit<Prompt, "resolution"> | null {
   const questions = questionsOf(raw.questions);
   if (type === "question" && questions.length === 0) return null;
   const base = {
-    id: raw.id, type, tool: text(raw.tool), input: raw.input ?? null,
+    id: raw.id, tool: text(raw.tool), input: raw.input ?? null,
     questions: questions.length > 0 ? questions : null,
     plan: typeof raw.plan === "string" ? raw.plan : null,
   };
-  if (type !== "trust") return { ...base, cli: null, folder: null, machine: null, remembered: null };
+  const ask = askOf(raw);
+  const plain = { ...base, cli: null, folder: null, machine: null, remembered: null, ...(ask && { ask }) };
+  if (type !== "trust") return { ...plain, type };
   const cli = CLIS.find((each) => each === raw.cli);
   const folder = text(raw.folder);
-  return cli && folder ? { ...base, cli, folder, machine: text(raw.machine) || null, remembered: raw.remembered === true } : null;
+  if (cli && folder) return { ...base, type, cli, folder, machine: text(raw.machine) || null, remembered: raw.remembered === true, ...(ask && { ask }) };
+  // A trust ask an agent made names no CLI or folder of ours: its own options are its card.
+  return ask ? { ...plain, type: "permission" } : null;
+}
+
+/** The unified form of a record's `$interaction`, or null when it names no usable option (an older record). */
+function askOf(raw: Readonly<Record<string, unknown>>): AskCard | null {
+  const options = Array.isArray(raw.options) ? raw.options.flatMap((item): PromptOption[] => {
+    const each = objectOf(item);
+    const kind = OPTION_KINDS.find((known) => known === each.kind);
+    return typeof each.id === "string" && each.id !== "" && typeof each.label === "string" && kind ? [{ id: each.id, label: each.label, kind }] : [];
+  }) : [];
+  if (options.length === 0) return null;
+  return {
+    provider: text(raw.provider), kind: text(raw.kind), title: text(raw.title), toolCallId: text(raw.tool_call_id),
+    command: text(raw.command), cwd: text(raw.cwd), reason: text(raw.reason), diff: text(raw.diff),
+    options, answerable: raw.answerable_in_chat !== false,
+  };
 }
 
 /** The prompt a resolution record closes, and how, from its `$interaction_resolved`; null when malformed. */
 function resolvedOf(value: unknown): { readonly id: string; readonly resolution: Resolution } | null {
   const raw = objectOf(value);
-  const decision = DECISIONS.find((each) => each === raw.decision);
   const by = DECIDERS.find((each) => each === raw.by);
-  return typeof raw.id === "string" && decision && by ? { id: raw.id, resolution: { decision, by } } : null;
+  // A record that names no decision is read from who ended it: a run's end or a timeout took none.
+  const decision = raw.decision === undefined && by ? (by === "chat" || by === "terminal" ? "answered" : "released") : DECISIONS.find((each) => each === raw.decision);
+  if (typeof raw.id !== "string" || !decision || !by) return null;
+  const option = text(raw.option);
+  const who = text(raw.who);
+  return { id: raw.id, resolution: { decision, by, ...(option && { option }), ...(who && { who }) } };
 }
 
 /**
@@ -442,7 +566,10 @@ function questionsOf(value: unknown): PromptQuestion[] {
       question: raw.question,
       header: text(raw.header) || raw.question,
       multiSelect: raw.multiSelect === true,
+      // Codex gives a question that wants words no options at all.
       options: optionsOf(raw.options),
+      ...(text(raw.id) && { id: text(raw.id) }),
+      ...(raw.isSecret === true && { secret: true as const }),
     });
   }
   return questions;

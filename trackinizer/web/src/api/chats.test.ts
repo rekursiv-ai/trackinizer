@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { ApiError } from "./client";
-import { conversationOf, deleteChat, getChatHead, isChatHandle, readChatPartial, sendChatLine, shareChat, unshareChat } from "./chats";
+import { conversationOf, deleteChat, getChatHead, isChatHandle, readChatPartial, reattachChat, sendChatLine, shareChat, unshareChat } from "./chats";
 import { stubFetch } from "./testing";
 
 afterEach(() => {
@@ -118,4 +118,23 @@ test("a reply being written that is none and an answer that is no partial are to
     stubFetch(() => Response.json(odd));
     await expect(readChatPartial("s1", 0)).rejects.toThrow("Invalid chat partial");
   }
+});
+
+test("an answer names the agent's own option, and the older form names a decision", async () => {
+  const sent = stubFetch(() => Response.json({ conversation_id: "c1", session_id: "s1", workspace_id: "w1" }));
+  const line = { workspaceId: "w1", text: "Allow", conversationId: "c1", kind: "answer", page: null, trail: [] } as const;
+  await sendChatLine({ ...line, payload: { prompt_id: "p1", option: "allow_session", updated_input: null, message: "" } }, "k7");
+  await sendChatLine({ ...line, payload: { prompt_id: "p1", decision: "deny", updated_input: null, message: "no" } }, "k8");
+  expect(sent[0]!.body).toMatchObject({ payload: { prompt_id: "p1", option: "allow_session" } });
+  expect(sent[0]!.body).not.toHaveProperty("payload.decision");
+  expect(sent[1]!.body).toMatchObject({ payload: { prompt_id: "p1", decision: "deny", message: "no" } });
+});
+
+test("reattaching posts to the chat's session under its key, and a refusal throws the server's reason", async () => {
+  const sent = stubFetch(() => new Response(null, { status: 204 }));
+  await reattachChat("s1", "k9");
+  expect(sent).toMatchObject([{ method: "POST", path: "/api/sessions/s1/reattach", headers: { "idempotency-key": "k9" } }]);
+
+  stubFetch(() => Response.json({ detail: "This chat's run is live.", code: "chat_run_live" }, { status: 409 }));
+  await expect(reattachChat("s1", "k10")).rejects.toMatchObject({ status: 409, detail: "This chat's run is live.", code: "chat_run_live" });
 });

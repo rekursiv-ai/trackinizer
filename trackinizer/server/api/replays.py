@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from functools import partial
 from typing import TYPE_CHECKING
@@ -10,14 +11,18 @@ from uuid import UUID
 import asyncio
 import time
 
-from fastapi import HTTPException
-
 from trackinizer.server.inbound import Inbound
 from trackinizer.wire.wire_terminals import TerminalWait
 
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Hashable
+
+    from fastapi import HTTPException
+else:
+    from wrapt import lazy_import
+
+    HTTPException = lazy_import("fastapi", "HTTPException")  # ~120 ms.
 
 
 class Replay[T]:
@@ -41,6 +46,9 @@ class Replay[T]:
         self._retention_sec = retention_sec
         self._clock = clock
         self._receipts: dict[Hashable, _Receipt[T]] = {}
+        # Each kept receipt, in the order it expires: one retention for all, stamped
+        # from a monotonic clock as each finishes, so the order it finished in.
+        self._expiring: deque[tuple[float, Hashable]] = deque()
 
     async def run(
         self,
@@ -66,12 +74,7 @@ class Replay[T]:
         """
         if key is None:
             return await operation()
-        now = self._clock()
-        self._receipts = {
-            key: receipt
-            for key, receipt in self._receipts.items()
-            if receipt.expires is None or receipt.expires > now
-        }
+        self._expire(self._clock())
         receipt = self._receipts.get(key)
         if receipt is not None and receipt.fingerprint != fingerprint:
             raise HTTPException(409, "Idempotency-Key names a different request")
@@ -87,6 +90,16 @@ class Replay[T]:
             pending.add_done_callback(partial(self._finished, key))
         return await asyncio.shield(receipt.pending)
 
+    # A poll per request: dropping only the receipts that are due keeps it from walking
+    # all 4,096 of them each time.
+    def _expire(self, now: float) -> None:
+        """Forget every kept receipt whose retention ended by ``now``."""
+        # A key is in the queue only while its kept receipt is the one held under it:
+        # the receipt leaves the two together, here.
+        while self._expiring and self._expiring[0][0] <= now:
+            _, key = self._expiring.popleft()
+            del self._receipts[key]
+
     def _finished(self, key: Hashable, pending: asyncio.Future[T]) -> None:
         receipt = self._receipts.get(key)
         if receipt is None or receipt.pending is not pending:
@@ -98,7 +111,7 @@ class Replay[T]:
         ):
             del self._receipts[key]
         else:
-            receipt.expires = self._clock() + self._retention_sec
+            self._expiring.append((self._clock() + self._retention_sec, key))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -110,8 +123,7 @@ class Replays:
     terminal_opens: Replay[UUID] = field(default_factory=Replay)
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _Receipt[T]:
     fingerprint: str
     pending: asyncio.Future[T]
-    expires: float | None = None

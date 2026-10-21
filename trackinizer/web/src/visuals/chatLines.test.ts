@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { SessionRecord } from "../api/sessions";
-import { type ChatPart, goalOf, linesThrough, PENDING, readTranscript, RELAY_MARK, sentBefore, withPending } from "./chatLines";
+import { type ChatPart, goalOf, linesThrough, openPrompts, PENDING, readTranscript, RELAY_MARK, sentBefore, withPending } from "./chatLines";
 
 function record(idx: number, kind: string, payload: { [field: string]: unknown }): SessionRecord {
   return { idx, kind, payload, text: "", context_id: null, timestamp: null, model: null, ciphertext: null } as unknown as SessionRecord;
@@ -352,4 +352,158 @@ test("one compaction is one line, however many records name it, and a compaction
   expect(twice.lines.map(({ role, text }) => [role, text])).toEqual([["assistant", "a"], ["compaction", "Context compacted"], ["assistant", "b"]]);
   const again = readTranscript(parts(record(0, "ContextCompaction", {}), answer(1, "a"), record(2, "ContextCompaction", {})));
   expect(again.lines.map(({ role }) => role)).toEqual(["compaction", "assistant", "compaction"]);
+});
+
+// Tool calls as lines: a claude part writes the call and its result with the CLI's own
+// ids, a sagent part with sagent's.
+const toolCall = (idx: number, id: string, name: string, args: { [field: string]: unknown } = {}) => record(idx, "ToolCall", { call_id: id, name, arguments: args });
+const toolResult = (idx: number, id: string, stdout: string) => record(idx, "ShellCommandResult", { call_id: id, command: ["ls"], stdout, stderr: "", exit_code: 0 });
+const withTools = { tools: true };
+
+test("with tool calls on, each call is a line of its own in time order, its result the one answering its call id", () => {
+  const records = [said(0, ME, "list home"), toolCall(1, "a", "Bash", { command: "ls" }), toolCall(2, "b", "Read", { file_path: "/x" }),
+    toolResult(3, "b", "text"), toolResult(4, "a", "ada\n"), answer(5, "done")];
+  const { lines } = readTranscript(parts(...records), withTools);
+  expect(lines.map((line) => [line.key, line.role])).toEqual([["0:0", "user"], ["0:1", "tool"], ["0:2", "tool"], ["0:5", "assistant"]]);
+  expect(lines[1]!.tool).toEqual({ call: records[1], result: records[4] });
+  expect(lines[2]!.tool).toEqual({ call: records[2], result: records[3] });
+  expect(lines[1]).toMatchObject({ at: { part: 0, idx: 1 }, author: null, text: "Bash", pending: false });
+});
+
+test("a call still running has no result, and the result that arrives is attached to it", () => {
+  const running = readTranscript(parts(said(0, ME, "q"), toolCall(1, "a", "Bash")), withTools);
+  expect(running.lines[1]!.tool).toEqual({ call: expect.anything(), result: null });
+  const answered = readTranscript(parts(said(0, ME, "q"), toolCall(1, "a", "Bash"), toolResult(2, "a", "x")), withTools);
+  expect(answered.lines).toHaveLength(2);
+  expect(answered.lines[1]!.tool!.result).not.toBeNull();
+});
+
+test("a result of no call here, or of a call whose id is empty, is no line and is attached to nothing", () => {
+  const { lines } = readTranscript(parts(toolResult(0, "ghost", "x"), toolCall(1, "", "Bash"), toolResult(2, "", "y")), withTools);
+  expect(lines.map((line) => [line.role, line.tool?.result ?? null])).toEqual([["tool", null]]);
+});
+
+test("a call and its result in different parts, or out of stamp order, still meet; cards sit between the lines by time", () => {
+  const main = [stamped(said(0, ME, "q"), "2026-10-20T10:00:00Z"), stamped(answer(1, "a"), "2026-10-20T10:03:00Z")];
+  const run = [stamped(toolCall(0, "a", "Bash"), "2026-10-20T10:01:00Z"), stamped(toolResult(1, "a", "x"), "2026-10-20T10:02:00Z")];
+  const { lines } = readTranscript([{ part: 0, format: "claude", records: main }, { part: 1, format: "claude", records: run }], withTools);
+  expect(lines.map((line) => [line.key, line.role, line.tool?.result?.idx ?? null])).toEqual([["0:0", "user", null], ["1:0", "tool", 1], ["0:1", "assistant", null]]);
+});
+
+test("with tool calls off, the lines are exactly what they were, and the other fields do not change with the setting", () => {
+  const records = [said(0, ME, "list home"), toolCall(1, "a", "Highlight"), toolResult(2, "a", "x"), toolCall(3, "b", "Bash"), answer(4, "done")];
+  const off = readTranscript(parts(...records));
+  expect(readTranscript(parts(...records), { tools: false })).toEqual(off);
+  expect(off.lines.map((line) => line.role)).toEqual(["user", "assistant"]);
+  const on = readTranscript(parts(...records), withTools);
+  expect([on.working, [...on.pointed], on.goal]).toEqual([off.working, [...off.pointed], off.goal]);
+  expect(on.lines.filter((line) => line.role !== "tool")).toEqual(off.lines);
+});
+
+test("a tool line is no message of a person: it does not count toward what a sender has sent", () => {
+  const stored = readTranscript(parts(said(0, ME, "q"), toolCall(1, "a", "Bash")), withTools);
+  expect(sentBefore(stored.lines, { me: ME })).toBe(1);
+  expect(withPending(stored, [], { me: ME }).map((line) => line.role)).toEqual(["user", "tool"]);
+});
+
+// The unified ask path: every agent writes the same card, with its provider, kind and the agent's own options.
+const OPTIONS = [{ id: "allow_once", label: "Allow", kind: "allow_once" }, { id: "allow_session", label: "Allow for the session", kind: "allow_session" },
+  { id: "deny", label: "Deny", kind: "deny" }];
+const asked = (idx: number, body: { [field: string]: unknown } = {}) => interaction(idx, { id: "a1", type: "permission", tool: "Bash", input: { command: "ls" },
+  questions: null, plan: null, state: "pending", provider: "codex", kind: "command", title: "Run a command", tool_call_id: "", command: "ls", cwd: "/work",
+  reason: "to list", diff: "", options: OPTIONS, answerable_in_chat: true, ...body });
+
+test("an ask with options keeps its provider, kind, words and the agent's own options for the card", () => {
+  const { lines } = readTranscript(parts(asked(0)));
+  expect(lines[0]!.prompt!.ask).toEqual({ provider: "codex", kind: "command", title: "Run a command", toolCallId: "", command: "ls", cwd: "/work",
+    reason: "to list", diff: "", options: OPTIONS, answerable: true });
+  expect(lines[0]!.prompt).toMatchObject({ id: "a1", type: "permission", tool: "Bash", resolution: null });
+});
+
+test("a record from before the options has no ask, and one whose options are all malformed is read as before", () => {
+  const old = readTranscript(parts(interaction(0, { id: "p1", type: "permission", tool: "Bash", input: {} })));
+  expect(old.lines[0]!.prompt!.ask).toBeUndefined();
+  const broken = readTranscript(parts(asked(0, { options: [{ id: "x", label: "X", kind: "launch" }, { label: "no id", kind: "deny" }, 7] })));
+  expect(broken.lines[0]!.prompt!.ask).toBeUndefined();
+  // A malformed option is dropped from a card that has others.
+  const some = readTranscript(parts(asked(0, { options: [...OPTIONS, { id: "x", label: "X", kind: "launch" }] })));
+  expect(some.lines[0]!.prompt!.ask!.options).toEqual(OPTIONS);
+});
+
+test("an ask only the terminal can answer says so, and a missing flag reads as answerable", () => {
+  expect(readTranscript(parts(asked(0, { answerable_in_chat: false }))).lines[0]!.prompt!.ask!.answerable).toBe(false);
+  expect(readTranscript(parts(asked(0, { answerable_in_chat: undefined }))).lines[0]!.prompt!.ask!.answerable).toBe(true);
+});
+
+test("a trust ask with no folder is a permission card of its own options, and a trust prompt without options is still no line", () => {
+  const ask = readTranscript(parts(asked(0, { type: "trust", kind: "trust", title: "Trust this folder?" })));
+  expect(ask.lines[0]!.prompt).toMatchObject({ type: "permission", ask: { kind: "trust", title: "Trust this folder?" } });
+  const bare = readTranscript(parts(interaction(0, { id: "t9", type: "trust", tool: "claude", input: {} })));
+  expect(bare.lines).toHaveLength(0);
+});
+
+test("a resolution by timeout or release closes its card, with the option taken and who took it when they are named", () => {
+  const { lines } = readTranscript(parts(asked(0), asked(1, { id: "a2" }), asked(2, { id: "a3" }),
+    resolved(3, { id: "a1", option: "", by: "released", who: "", decision: "released" }),
+    resolved(4, { id: "a2", option: "allow_session", by: "chat", who: ME, decision: "allow" }),
+    resolved(5, { id: "a3", option: "", by: "timeout", who: "" })));
+  expect(lines.map((line) => line.prompt!.resolution)).toEqual([
+    { decision: "released", by: "released" },
+    { decision: "allow", by: "chat", option: "allow_session", who: ME },
+    { decision: "released", by: "timeout" },
+  ]);
+});
+
+test("a resolution that names no decision reads one from who ended it: released for the run, answered for a person", () => {
+  const { lines } = readTranscript(parts(asked(0), asked(1, { id: "a2" }),
+    resolved(2, { id: "a1", option: "1", by: "chat", who: ME }), resolved(3, { id: "a2", option: "", by: "run" })));
+  expect(lines.map((line) => line.prompt!.resolution?.decision)).toEqual(["answered", "released"]);
+});
+
+test("open prompts are the cards no resolution has closed", () => {
+  expect(openPrompts(readTranscript(parts(asked(0), asked(1, { id: "a2" }), resolved(2, { id: "a1", by: "chat", decision: "allow" }))))).toBe(1);
+  expect(openPrompts(readTranscript(parts(asked(0), resolved(1, { id: "a1", by: "released", decision: "released" }))))).toBe(0);
+  expect(openPrompts(readTranscript(parts(said(0, ME, "hi"))))).toBe(0);
+});
+
+test("an ask that names its tool call shows right under that call's card, whenever it was written", () => {
+  const records = [said(0, ME, "list"), toolCall(1, "toolu_1", "Bash", { command: "ls" }), toolCall(2, "toolu_2", "Read"), asked(3, { tool_call_id: "toolu_1" }),
+    toolResult(4, "toolu_2", "x")];
+  const { lines } = readTranscript(parts(...records), withTools);
+  expect(lines.map((line) => [line.key, line.role, line.attached ?? false])).toEqual([
+    ["0:0", "user", false], ["0:1", "tool", false], ["0:3", "interaction", true], ["0:2", "tool", false],
+  ]);
+  // The result still finds its call across the moved card.
+  expect(lines[3]!.tool!.result).toBe(records[4]);
+  // The call may come after the ask, as a log written by another process can.
+  const late = readTranscript(parts(asked(0, { tool_call_id: "toolu_1" }), toolCall(1, "toolu_1", "Bash")), withTools);
+  expect(late.lines.map((line) => [line.role, line.attached ?? false])).toEqual([["tool", false], ["interaction", true]]);
+});
+
+test("an ask shows once, under the first card, when two cards carry its call's id", () => {
+  const { lines } = readTranscript(parts(toolCall(0, "toolu_1", "Bash"), toolCall(1, "toolu_1", "Bash"), asked(2, { tool_call_id: "toolu_1" })), withTools);
+  expect(lines.map((line) => [line.key, line.role, line.attached ?? false])).toEqual([["0:0", "tool", false], ["0:2", "interaction", true], ["0:1", "tool", false]]);
+});
+
+test("an ask stays where it happened when tool calls are off, when it names no call, or when no card has that call", () => {
+  const records = [said(0, ME, "list"), asked(1, { tool_call_id: "toolu_1" }), toolCall(2, "toolu_1", "Bash"), asked(3, { id: "a2", tool_call_id: "" }),
+    asked(4, { id: "a3", tool_call_id: "toolu_9" })];
+  expect(readTranscript(parts(...records)).lines.map((line) => [line.role, line.attached ?? false])).toEqual([
+    ["user", false], ["interaction", false], ["interaction", false], ["interaction", false]]);
+  expect(readTranscript(parts(...records), withTools).lines.map((line) => [line.role, line.attached ?? false])).toEqual([
+    ["user", false], ["tool", false], ["interaction", true], ["interaction", false], ["interaction", false]]);
+});
+
+test("a question that wants words has no options, and keeps the id its agent gave it", () => {
+  const { lines } = readTranscript(parts(interaction(0, { id: "q2", type: "question", tool: "request_user_input", input: {}, questions: [
+    { id: "dir", header: "", question: "Which folder?", options: null, isOther: true },
+  ] })));
+  expect(lines[0]!.prompt!.questions).toEqual([{ id: "dir", question: "Which folder?", header: "Which folder?", multiSelect: false, options: [] }]);
+});
+
+test("a question its agent marks secret is read as secret", () => {
+  const { lines } = readTranscript(parts(interaction(0, { id: "q3", type: "question", tool: "request_user_input", input: {}, questions: [
+    { id: "tok", header: "Token", question: "API token?", options: null, isSecret: true },
+  ] })));
+  expect(lines[0]!.prompt!.questions).toEqual([{ id: "tok", question: "API token?", header: "Token", multiSelect: false, options: [], secret: true }]);
 });

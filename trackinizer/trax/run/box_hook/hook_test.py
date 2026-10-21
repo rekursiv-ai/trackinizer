@@ -390,7 +390,7 @@ class TestSessionStart:
 class TestBridge:
     """The bridged events go to the run's prompt bridge, whose reply claude reads."""
 
-    def test_the_settings_hand_five_events_to_the_socket(self, tmp_path: Path) -> None:
+    def test_the_settings_hand_seven_events_to_the_socket(self, tmp_path: Path) -> None:
         socket = tmp_path / "bridge.sock"
 
         text = hook.settings_json(
@@ -407,7 +407,9 @@ class TestBridge:
         events = [
             "PreToolUse",
             "PermissionRequest",
+            "PermissionDenied",
             "PostToolUse",
+            "UserPromptSubmit",
             "Stop",
             "SessionEnd",
         ]
@@ -418,10 +420,33 @@ class TestBridge:
         assert {event: hooks[event][-1]["hooks"][0]["timeout"] for event in events} == {
             "PreToolUse": 4,
             "PermissionRequest": 600,
+            "PermissionDenied": 4,
             "PostToolUse": 4,
+            "UserPromptSubmit": 4,
             "Stop": 4,
             "SessionEnd": 4,
         }
+
+    def test_a_placed_run_keeps_the_box_hook_beside_the_bridged_one(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        socket = tmp_path / "bridge.sock"
+
+        text = hook.settings_json(
+            seen=tmp_path / "seen",
+            profile="prod",
+            socket=socket,
+        )
+
+        hooks = from_plain(
+            json_loads(text),
+            dict[str, dict[str, list[dict[str, list[dict[str, str | int]]]]]],
+        )["hooks"]
+        commands = [entry["hooks"][0]["command"] for entry in hooks["UserPromptSubmit"]]
+        assert len(commands) == 2
+        assert str(commands[0]).endswith("--profile prod")
+        assert str(commands[1]).endswith(f"--event bridge --socket {socket}")
 
     def test_a_run_without_a_bridge_hands_over_no_event(self, tmp_path: Path) -> None:
         hooks = json_loads(

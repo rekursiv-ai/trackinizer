@@ -54,6 +54,7 @@ _DEFAULTS = {
     "terminal_tab_chords": False,
     "home": "graph",
     "chat_provider": "assistant",
+    "chat_tool_calls": False,
 }
 
 

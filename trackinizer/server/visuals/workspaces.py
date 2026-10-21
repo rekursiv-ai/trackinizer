@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from trackinizer.wire.wire_science_chat import ChatProvider
+from trackinizer.wire.wire_sessions import RunState
 
 
 if TYPE_CHECKING:
@@ -450,6 +451,11 @@ class WorkspacePartner(BaseModel):
     provider: ChatProvider = "assistant"
     """Which provider it answers for: the station's."""
 
+    state: RunState = "idle"
+    """What the chat's run is doing, while the partner is live: ``requires_action``
+    while an ask is open in the chat, ``taken_over`` after the run's CLI was opened in
+    a terminal, else what the run last reported. ``idle`` when nothing runs."""
+
     machine: str | None = None
     """The machine a CLI's run is on, while live, when the run names it."""
 
@@ -572,6 +578,11 @@ class WorkspaceSummary(BaseModel):
     tab: str | None = None
     """The id of the station's open canvas tab, once its layout names one."""
 
+    state: RunState = "idle"
+    """What the station's chat needs of its person, for a badge on its tab:
+    ``requires_action`` while an ask is open, ``taken_over`` after its CLI was opened
+    in a terminal. Computed on each read, never stored; ``idle`` when no run is live."""
+
     @classmethod
     def of(
         cls,
@@ -580,6 +591,7 @@ class WorkspaceSummary(BaseModel):
         workspace_id: uuid.UUID,
         created_at: datetime,
         modified_at: datetime,
+        state: RunState = "idle",
     ) -> Self:
         """Summarize station ``data``, its layout's tabs by id and name.
 
@@ -588,6 +600,7 @@ class WorkspaceSummary(BaseModel):
           workspace_id: The station's id.
           created_at: When the station was made.
           modified_at: When the station was last changed.
+          state: What the station's chat needs of its person.
 
         Returns:
           summary: The station as the list shows it; a layout with no tabs lists
@@ -608,6 +621,7 @@ class WorkspaceSummary(BaseModel):
             suggestion=data.suggestion,
             tabs=[TabName(id=tab.id, name=tab.name) for tab in layout.tabs or []],
             tab=layout.tab,
+            state=state,
         )
 
 

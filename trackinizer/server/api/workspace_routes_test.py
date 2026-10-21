@@ -23,6 +23,7 @@ import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, make_conn
 from trackinizer.server.api import workspace_routes
+from trackinizer.server.api._deps import terminal_hub
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,
@@ -32,6 +33,7 @@ from trackinizer.server.api.canvas_test_support import (
     KB_KEY_ID,
     OTHER_EMAIL,
     OTHER_USER_ID,
+    USER_AGENT,
     Agent,
     act_as_assistant,
     act_as_other_agent,
@@ -55,6 +57,8 @@ from trackinizer.server.api.conftest import (
 )
 from trackinizer.server.api.session_access import Asker
 from trackinizer.server.api.workspace_routes import _current_state
+from trackinizer.server.asks import open_ask_ids, release_gone_runs
+from trackinizer.server.asks_test_support import open_ask
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.chat_hub import (
     ChatHub,
@@ -67,6 +71,7 @@ from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.primitives import insert_inquiry
 from trackinizer.server.store.core import Store
+from trackinizer.server.terminals import Opening
 from trackinizer.server.visuals.catalog import (
     StaticVisual,
     Workspace,
@@ -102,8 +107,10 @@ if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn, DatabaseEngine, PGliteEngine
     from trackinizer.server.auth import AuthIdentity
     from trackinizer.server.chat_hub import Frame, Subscription
+    from trackinizer.server.terminals import Terminal
     from trackinizer.server.visuals.catalog import VisualCatalogBody
     from trackinizer.wire.wire_science_chat import ChatProvider
+    from trackinizer.wire.wire_terminals import TerminalCommand
 
 
 async def _clear_chat_fake(
@@ -755,6 +762,7 @@ async def test_browser_chat_reaches_the_assistant_with_the_page_and_no_pinned_re
         "cli": "codex",
         "status": "live",
         "provider": "assistant",
+        "state": "idle",
         "machine": None,
         "run_name": None,
         "cwd": None,
@@ -1336,6 +1344,7 @@ async def test_a_canvas_talks_to_the_assistant_however_its_session_is_named(
         "cli": "codex",
         "status": "live",
         "provider": "assistant",
+        "state": "idle",
         "machine": None,
         "run_name": None,
         "cwd": None,
@@ -2982,6 +2991,159 @@ async def test_choosing_a_cli_drops_the_assistants_hold_on_the_chat(
     assert (partner["status"], partner["session_id"]) == ("offline", str(held))
     inbound = cast("InboundQueue", app.state.inbound)
     assert not inbound.has_poller(held)
+
+
+async def _choose_provider(
+    client: httpx2.AsyncClient,
+    *,
+    workspace_id: uuid.UUID,
+    provider: str,
+) -> httpx2.Response:
+    """Choose ``provider`` for the station as the installed browser."""
+    return await client.post(
+        f"/api/workspaces/{workspace_id}/operations",
+        json={
+            "revision": await revision_of(client, workspace_id=workspace_id),
+            "operation": {"kind": "provider", "provider": provider},
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_choosing_another_provider_ends_the_chats_run_of_the_one_left(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """One run of a chat is live at a time: a switch stops the old run first."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    workspace_id = await open_workspace(client)
+    conversation = uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE visual_workspaces SET station = station || "
+            "jsonb_build_object('conversation_id', $2::text) WHERE id = $1",
+            workspace_id,
+            str(conversation),
+        )
+        await conn.execute(
+            "INSERT INTO machines (name, updated_by, owner, confirmed_at, "
+            "host_instance, last_heartbeat, facts) VALUES ('laptop', $1, $1, now(), "
+            'gen_random_uuid(), now(), \'{"clis": ["claude", "codex"]}\')',
+            TEST_USER_EMAIL,
+        )
+    chat = await seed_session(
+        store,
+        USER_AGENT,
+        actor="chat-1",
+        cli="claude",
+        cli_session_id=chat_session_id(conversation),
+        polled=False,
+    )
+    inbound = cast("InboundQueue", app.state.inbound)
+    hub = terminal_hub(app)
+
+    def start(command: TerminalCommand, *, user: str = TEST_USER_EMAIL) -> Terminal:
+        return hub.open(
+            Opening(
+                user=user,
+                machine_id=uuid.uuid4(),
+                machine="laptop",
+                rows=24,
+                cols=80,
+                workspace=workspace_id,
+                command=command,
+                attach=chat,
+            ),
+        )
+
+    async def choose(provider: str) -> httpx2.Response:
+        return await _choose_provider(
+            client,
+            workspace_id=workspace_id,
+            provider=provider,
+        )
+
+    assert (await choose("claude")).status_code == 200
+    claude = start("claude")
+    # Another person's terminal on the session is not the owner's run to stop.
+    foreign = start("claude", user=OTHER_EMAIL)
+    inbound.mark_poller(chat, cli="claude", instance="a" * 32)
+
+    assert (await choose("claude")).status_code == 200
+    assert (claude.stopping, inbound.has_poller(chat)) == (False, True)
+
+    switched = await choose("codex")
+    assert switched.status_code == 200, switched.text
+    assert (claude.stopping, claude.ended) == (True, True)
+    assert (foreign.stopping, foreign.ended) == (False, False)
+    assert not inbound.has_poller(chat)
+    assert (await _partner(client, workspace_id=str(workspace_id)))["status"] == (
+        "offline"
+    )
+
+    codex = start("codex")
+    inbound.mark_poller(chat, cli="codex", instance="b" * 32)
+    live = await _partner(client, workspace_id=str(workspace_id))
+    assert (live["status"], live["label"]) == ("live", "codex")
+    assert hub.attached_to(chat) == [foreign, codex]
+
+    back = await choose("assistant")
+    assert back.status_code == 200, back.text
+    assert (codex.stopping, inbound.has_poller(chat)) == (True, False)
+    assert hub.attached_to(chat) == [foreign]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_choosing_another_provider_releases_the_asks_of_the_run_left(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The old run is told to stop, so a card it left open can never be answered."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    workspace_id = await open_workspace(client)
+    conversation = uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE visual_workspaces SET station = station || "
+            "jsonb_build_object('conversation_id', $2::text) WHERE id = $1",
+            workspace_id,
+            str(conversation),
+        )
+        await conn.execute(
+            "INSERT INTO machines (name, updated_by, owner, confirmed_at, "
+            "host_instance, last_heartbeat, facts) VALUES ('laptop', $1, $1, now(), "
+            'gen_random_uuid(), now(), \'{"clis": ["codex"]}\')',
+            TEST_USER_EMAIL,
+        )
+    chat = await seed_session(
+        store,
+        USER_AGENT,
+        actor="chat-1",
+        cli="claude",
+        cli_session_id=chat_session_id(conversation),
+        polled=False,
+    )
+    inbound = cast("InboundQueue", app.state.inbound)
+    inbound.mark_poller(chat, cli="claude", instance="a" * 32)
+    await open_ask(store, chat, ask_id="a1")
+    assert inbound.take_gone() == []
+
+    switched = await _choose_provider(
+        client,
+        workspace_id=workspace_id,
+        provider="codex",
+    )
+    released = await release_gone_runs(store, inbound=inbound, at=datetime.now(UTC))
+
+    assert switched.status_code == 200, switched.text
+    assert released == 1
+    async with store.engine.acquire() as conn:
+        assert await open_ask_ids(conn, session_id=chat) == []
 
 
 if __name__ == "__main__":

@@ -849,7 +849,16 @@ def test_a_summary_names_each_tab_and_the_open_one_and_a_station_without_none() 
         },
         "tabs": [{"id": "a", "name": "Graph"}, {"id": "b", "name": "Issue#7"}],
         "tab": "b",
+        "state": "idle",
     }
+    waiting = WorkspaceSummary.of(
+        StationData(name="alpha"),
+        workspace_id=station,
+        created_at=made,
+        modified_at=modified,
+        state="requires_action",
+    )
+    assert (plain.state, waiting.state) == ("idle", "requires_action")
     assert (plain.tabs, plain.tab, plain.name, plain.page) == ([], None, "alpha", None)
     assert (plain.hidden, plain.pinned, plain.modified_at) == (False, False, modified)
 

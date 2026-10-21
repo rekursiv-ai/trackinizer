@@ -65,6 +65,7 @@ from trackinizer.server.api import (
 from trackinizer.server.api._deps import terminal_hub
 from trackinizer.server.api.addons_routes import deployment_of
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
+from trackinizer.server.asks import ask_release_loop
 from trackinizer.server.auth import seed_no_auth_user
 from trackinizer.server.authority_sweep import authority_sweep_loop
 from trackinizer.server.config import (
@@ -228,6 +229,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             tasks.append(
                 asyncio.create_task(
                     session_reaper_loop(app.state.store, inbound=app.state.inbound),
+                ),
+            )
+            # Ask release: a run that went offline can answer no card, so the asks it
+            # held are ended and none stays open for good.
+            tasks.append(
+                asyncio.create_task(
+                    ask_release_loop(app.state.store, inbound=app.state.inbound),
                 ),
             )
             tasks.append(asyncio.create_task(sweep_loop(terminal_hub(app))))

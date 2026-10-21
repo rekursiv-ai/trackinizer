@@ -389,6 +389,32 @@ the same.
   computer with `--sandbox`, and agents there stop asking before they act
   ([Connect a computer](#connect-a-computer)).
 
+In Chat the brain shows with no screen of its own. A claude or codex run that a
+chat starts on your computer (`--detach --attach CHAT`) draws no terminal: your
+lines go to the CLI through its programmatic protocol, and its answers come back
+to the chat. Your own `trax run claude` in a terminal is unchanged.
+
+- **Ask cards.** What the agent asks you comes to Chat as a card: a command to
+  allow (with its folder), a file change (with its diff), a question, or a plan
+  to approve. The buttons are the agent's own choices: allow once, allow for
+  the session, refuse, or refuse and stop the turn. The first answer wins, and
+  the card closes with who answered. A card the run can no longer answer, because it ended or
+  went offline, closes as Released within about a minute. While a card waits,
+  the chat header and its workstream tab show a blue dot. A card for a run on
+  your machine is yours alone to answer; one the assistant asks is answered by
+  the person it asked. A computer connected with `--sandbox` shows no cards:
+  its agents do not ask.
+- **Take a run over.** To use the CLI's own screen, run
+  `trax run attach NAME` on the run's computer (`trax run ls` lists the
+  names). The run stops its headless CLI and opens the CLI's terminal on the
+  same session, here; Ctrl-\ detaches and leaves it running. The session keeps
+  logging, so Chat shows each turn you type. Chat shows "Taken over in a
+  terminal" and refuses lines until you reattach.
+- **Reattach to Chat.** The button on the taken-over chat, or on the run's row
+  in the Console, gives the chat its CLI back. The terminal ends, and the run
+  starts again where it ran, on the same CLI session, with every turn you typed
+  in the terminal.
+
 ### Where a session lands
 
 The server files each session in one of your workstreams and a chat, by the

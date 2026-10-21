@@ -58,6 +58,8 @@ from trackinizer.server.api.science_chat_routes_test import (
     seed_helper_chat,
     start_unpolled,
 )
+from trackinizer.server.asks import open_ask_ids
+from trackinizer.server.asks_test_support import open_ask
 from trackinizer.server.auth import current_user
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.config import Config
@@ -1313,6 +1315,15 @@ def _code(response: httpx2.Response) -> str:
     return from_plain(detail["code"], str)
 
 
+def _message(response: httpx2.Response) -> str:
+    """Return the ``message`` of a refusal's detail."""
+    detail = from_plain(
+        json_loads(response.content, dict[str, object])["detail"],
+        dict[str, object],
+    )
+    return from_plain(detail["message"], str)
+
+
 async def _station_on(
     store: Store,
     *,
@@ -1353,9 +1364,241 @@ async def test_a_chat_on_a_cli_is_drained_by_its_starters_run_and_never_the_assi
     refused = await drain(client, session_id=chat)
     assert (refused.status_code, _code(refused)) == (409, "provider_is_cli")
     act_as_user_agent("writer")
-    assert (await drain(client, session_id=chat)).status_code == 200
+    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
     act_as_other_agent("writer")
-    assert (await drain(client, session_id=chat)).status_code == 403
+    assert (await drain(client, session_id=chat, cli="claude")).status_code == 403
+
+
+async def _station_with_chat(
+    store: Store,
+    *,
+    provider: str,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Seed the test user's station on ``provider`` and its chat's unpolled session."""
+    conversation = uuid.uuid4()
+    chat = await seed_session(
+        store,
+        USER_AGENT,
+        actor="chat-1",
+        cli=provider,
+        cli_session_id=chat_session_id(conversation),
+        polled=False,
+    )
+    await _station_on(store, provider=provider, conversation_id=conversation)
+    return conversation, chat
+
+
+async def _switch_station_to(
+    store: Store,
+    *,
+    conversation_id: uuid.UUID,
+    provider: str,
+) -> None:
+    """Store ``provider`` as the choice of the station that holds the chat."""
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE visual_workspaces SET state = state || "
+            "jsonb_build_object('provider', $2::text) "
+            "WHERE station ->> 'conversation_id' = $1",
+            str(conversation_id),
+            provider,
+        )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_after_a_switch_to_codex_only_codex_drains_the_chat(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A claude run left polling is told so, and a line queued for codex stays queued."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    conversation, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
+    await _switch_station_to(store, conversation_id=conversation, provider="codex")
+    inbound = cast("InboundQueue", app.state.inbound)
+    _ = inbound.enqueue(chat, Inbound(text="pineapple"))
+
+    stale = await drain(client, session_id=chat, cli="claude")
+    assert (stale.status_code, _code(stale)) == (409, "provider_is_other_cli")
+    assert inbound.pending(chat) == 1
+    fresh = await drain(client, session_id=chat, cli="codex")
+    assert fresh.status_code == 200
+    assert [
+        from_plain(each, dict[str, object])["text"]
+        for each in from_plain(
+            json_loads(fresh.content, dict[str, object])["messages"],
+            list[object],
+        )
+    ] == ["pineapple"]
+    assert inbound.poller_run(chat) == PollerRun(cli="codex")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_chat_drain_that_names_no_cli_is_told_to_update_trax(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A `trax` from before the drain named its CLI cannot be told apart, so it waits."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+
+    refused = await drain(client, session_id=chat)
+
+    assert (refused.status_code, _code(refused)) == (426, "cli_required")
+    assert "Update trax" in _message(refused)
+    assert not cast("InboundQueue", app.state.inbound).has_poller(chat)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_second_run_on_a_chat_with_a_live_run_is_refused(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """One run drains a chat at a time; the next may take it once the first is gone."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    first, second = "a" * 32, "b" * 32
+
+    async def drains(instance: str) -> tuple[int, str | None]:
+        answered = await drain(client, session_id=chat, cli="claude", instance=instance)
+        return answered.status_code, (
+            None if answered.status_code == 200 else _code(answered)
+        )
+
+    assert await drains(first) == (200, None)
+    assert await drains(second) == (409, "chat_run_live")
+    assert await drains(first) == (200, None)
+    cast("InboundQueue", app.state.inbound).forget_poller(chat)
+    assert await drains(second) == (200, None)
+    assert await drains(first) == (409, "chat_run_live")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_refused_second_run_leaves_the_first_runs_lease_and_lines(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The refusal takes no lease; only the refused run's own end could cost the first."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    inbound = cast("InboundQueue", app.state.inbound)
+    first, second = "a" * 32, "b" * 32
+    assert (
+        await drain(client, session_id=chat, cli="claude", instance=first)
+    ).status_code == 200
+    _ = inbound.enqueue(chat, Inbound(text="pineapple"))
+
+    refused = await drain(client, session_id=chat, cli="claude", instance=second)
+
+    assert (refused.status_code, _code(refused)) == (409, "chat_run_live")
+    held = inbound.poller_run(chat)
+    assert held is not None
+    assert (held.cli, held.instance) == ("claude", first)
+    assert inbound.pending(chat) == 1
+    kept = await drain(client, session_id=chat, cli="claude", instance=first)
+    assert kept.status_code == 200
+    assert [
+        from_plain(each, dict[str, object])["text"]
+        for each in from_plain(
+            json_loads(kept.content, dict[str, object])["messages"],
+            list[object],
+        )
+    ] == ["pineapple"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("chosen", ["codex", "assistant"])
+async def test_the_exit_of_a_run_a_switch_left_does_not_end_the_chat(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    chosen: str,
+) -> None:
+    """A switch stops the old run, whose exit must not end the session the chat uses."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    conversation, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
+    await _switch_station_to(store, conversation_id=conversation, provider=chosen)
+    inbound = cast("InboundQueue", app.state.inbound)
+    _ = inbound.enqueue(chat, Inbound(text="pineapple"))
+
+    left = await client.post(f"/api/sessions/{chat}/end", json={"cli": "claude"})
+
+    assert left.status_code == 200, left.text
+    assert (await _session(store, session_id=chat)).ended is None
+    assert inbound.pending(chat) == 1
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_exit_of_the_chats_own_run_ends_it(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Only a run of a CLI the chat left keeps it open; the chosen one's exit ends it."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="codex")
+    act_as_user_agent("writer")
+    assert (await drain(client, session_id=chat, cli="codex")).status_code == 200
+
+    ended = await client.post(f"/api/sessions/{chat}/end", json={"cli": "codex"})
+
+    assert ended.status_code == 200, ended.text
+    assert (await _session(store, session_id=chat)).ended is not None
+    assert not cast("InboundQueue", app.state.inbound).has_poller(chat)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_run_that_names_its_cli_ends_a_session_that_is_no_chat(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Every run's end names its CLI; only a chat has a provider it can differ from."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    session_id = await seed_session(store, USER_AGENT, actor="run-1", cli="codex")
+    act_as_user_agent("writer")
+
+    ended = await client.post(f"/api/sessions/{session_id}/end", json={"cli": "claude"})
+
+    assert ended.status_code == 200, ended.text
+    assert (await _session(store, session_id=session_id)).ended is not None
+
+
+@pytest.mark.parametrize("instance", ["", "A" * 32, "a" * 31, "g" * 32, "a" * 33])
+def test_a_run_instance_is_32_lowercase_hex_digits(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+    instance: str,
+) -> None:
+    """The id a run names itself by is bounded, as it is kept in memory per lease."""
+    client, store, _engine = route_client
+    app.state.inbound = InboundQueue()
+    monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=_live_session()))
+    monkeypatch.setattr(store, "record_session_seen", AsyncMock())
+
+    r = client.get(
+        f"/api/sessions/{uuid.uuid4()}/inbound",
+        params={"cli": "claude", "instance": instance},
+    )
+
+    assert r.status_code == 422, r.text
 
 
 @pytest.mark.db_pglite
@@ -2051,6 +2294,312 @@ async def test_a_stranger_attaches_to_no_chat_and_an_unknown_id_is_404(
     assert refused.status_code == 403, refused.text
     assert (await _session(store, session_id=chat)).ended is not None
     assert unknown.status_code == 404, unknown.text
+
+
+async def _report(
+    client: httpx2.AsyncClient,
+    *,
+    session_id: uuid.UUID,
+    state: str,
+    instance: str,
+) -> httpx2.Response:
+    """Report a run's state as the installed identity."""
+    return await client.post(
+        f"/api/sessions/{session_id}/run-state",
+        json={"state": state, "instance": instance},
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_only_a_state_that_changed_nudges_the_streams(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    assistant_served: ChatHub,
+) -> None:
+    """A run says its state again while it holds; open canvases recheck only a change."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    run = "a" * 32
+    assert (
+        await drain(client, session_id=chat, cli="claude", instance=run)
+    ).status_code == 200
+    with assistant_served.subscribe(uuid.uuid4()) as stream:
+        _ = await _report(client, session_id=chat, state="taken_over", instance=run)
+        changed = stream.nudged.is_set()
+        stream.nudged.clear()
+        _ = await _report(client, session_id=chat, state="taken_over", instance=run)
+        repeated = stream.nudged.is_set()
+
+    assert (changed, repeated) == (True, False)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_run_reports_its_state_and_its_next_drains_keep_it(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The state is the run's word; a drain renews the lease and leaves it be."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    run = "a" * 32
+    inbound = cast("InboundQueue", app.state.inbound)
+    assert (
+        await drain(client, session_id=chat, cli="claude", instance=run)
+    ).status_code == 200
+
+    reported = await _report(
+        client,
+        session_id=chat,
+        state="requires_action",
+        instance=run,
+    )
+    assert (
+        await drain(client, session_id=chat, cli="claude", instance=run)
+    ).status_code == 200
+
+    assert reported.status_code == 204, reported.text
+    held = inbound.poller_run(chat)
+    assert held is not None
+    assert held.state == "requires_action"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_report_from_another_run_or_one_with_no_lease_changes_nothing(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Both are answered 204: the run is told nothing it could act on."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    inbound = cast("InboundQueue", app.state.inbound)
+    first, second = "a" * 32, "b" * 32
+
+    unleased = await _report(client, session_id=chat, state="running", instance=first)
+    assert (
+        await drain(client, session_id=chat, cli="claude", instance=first)
+    ).status_code == 200
+    other = await _report(client, session_id=chat, state="taken_over", instance=second)
+
+    assert (unleased.status_code, other.status_code) == (204, 204)
+    held = inbound.poller_run(chat)
+    assert held is not None
+    assert held.state == "idle"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_only_the_chats_own_run_reports_its_state(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The report is held to the drain's rules: its starter's key, never the assistant's."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    run = "a" * 32
+
+    browser()
+    from_a_browser = await _report(
+        client,
+        session_id=chat,
+        state="running",
+        instance=run,
+    )
+    act_as_other_agent("writer")
+    from_a_stranger = await _report(
+        client,
+        session_id=chat,
+        state="running",
+        instance=run,
+    )
+    act_as_assistant("writer")
+    from_the_assistant = await _report(
+        client,
+        session_id=chat,
+        state="running",
+        instance=run,
+    )
+    act_as_user_agent("writer")
+    unknown = await _report(
+        client,
+        session_id=uuid.uuid4(),
+        state="running",
+        instance=run,
+    )
+
+    assert from_a_browser.status_code == 403
+    assert from_a_stranger.status_code == 403
+    assert (from_the_assistant.status_code, _code(from_the_assistant)) == (
+        409,
+        "provider_is_cli",
+    )
+    assert unknown.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"state": "napping", "instance": "a" * 32},
+        {"state": "running", "instance": "A" * 32},
+        {"state": "running"},
+        {"state": "running", "instance": "a" * 32, "extra": 1},
+    ],
+)
+def test_a_run_state_report_must_be_well_formed(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    body: dict[str, object],
+) -> None:
+    client, _store, _engine = route_client
+
+    refused = client.post(f"/api/sessions/{uuid.uuid4()}/run-state", json=body)
+
+    assert refused.status_code == 422, refused.text
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_replaced_run_is_turned_away_and_its_successor_is_not(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The run the server replaced cannot take the lease back from the run replacing it."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    old, new = "a" * 32, "b" * 32
+    inbound = cast("InboundQueue", app.state.inbound)
+    assert (
+        await drain(client, session_id=chat, cli="claude", instance=old)
+    ).status_code == 200
+
+    inbound.retire_run(chat)
+    turned_away = await drain(client, session_id=chat, cli="claude", instance=old)
+    taken = await drain(client, session_id=chat, cli="claude", instance=new)
+
+    assert (turned_away.status_code, _code(turned_away)) == (409, "chat_run_live")
+    assert taken.status_code == 200
+    held = inbound.poller_run(chat)
+    assert held is not None
+    assert held.instance == new
+
+
+async def _open_asks(store: Store, session_id: uuid.UUID) -> list[str]:
+    """Return the asks open in a session."""
+    async with store.engine.acquire() as conn:
+        return await open_ask_ids(conn, session_id=session_id)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_end_of_a_run_releases_the_asks_it_left_open(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A card with no run behind it is ended before the session closes to records."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
+    await open_ask(store, chat, ask_id="a1")
+
+    ended = await client.post(f"/api/sessions/{chat}/end", json={"cli": "claude"})
+
+    assert ended.status_code == 200, ended.text
+    assert (await _session(store, session_id=chat)).ended is not None
+    assert await _open_asks(store, chat) == []
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_exit_of_a_run_a_switch_left_keeps_the_asks_for_the_loop(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """That exit changes nothing, so it releases nothing: the chat goes on."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    conversation, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
+    await _switch_station_to(store, conversation_id=conversation, provider="codex")
+    await open_ask(store, chat, ask_id="a1")
+
+    left = await client.post(f"/api/sessions/{chat}/end", json={"cli": "claude"})
+
+    assert left.status_code == 200, left.text
+    assert await _open_asks(store, chat) == ["a1"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_exit_of_a_run_a_reattach_replaced_leaves_the_new_run_alone(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The replaced run may quit before it learns so; its end must not end the chat."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    old, new = "a" * 32, "b" * 32
+    inbound = cast("InboundQueue", app.state.inbound)
+    assert (
+        await drain(client, session_id=chat, cli="claude", instance=old)
+    ).status_code == 200
+    inbound.retire_run(chat)
+    assert (
+        await drain(client, session_id=chat, cli="claude", instance=new)
+    ).status_code == 200
+    await open_ask(store, chat, ask_id="a1")
+
+    left = await client.post(
+        f"/api/sessions/{chat}/end",
+        json={"cli": "claude", "instance": old},
+    )
+
+    assert left.status_code == 200, left.text
+    assert (await _session(store, session_id=chat)).ended is None
+    held = inbound.poller_run(chat)
+    assert held is not None
+    assert held.instance == new
+    assert await _open_asks(store, chat) == ["a1"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_exit_of_the_run_that_holds_the_chat_ends_it(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A run that names its own instance still ends its chat."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    own = "a" * 32
+    assert (
+        await drain(client, session_id=chat, cli="claude", instance=own)
+    ).status_code == 200
+    await open_ask(store, chat, ask_id="a1")
+
+    ended = await client.post(
+        f"/api/sessions/{chat}/end",
+        json={"cli": "claude", "instance": own},
+    )
+
+    assert ended.status_code == 200, ended.text
+    assert (await _session(store, session_id=chat)).ended is not None
+    assert await _open_asks(store, chat) == []
 
 
 if __name__ == "__main__":

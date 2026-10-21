@@ -18,6 +18,7 @@ from trackinizer.server.api.canvas_test_support import (
     KB_ACTOR,
     OTHER_EMAIL,
     OTHER_USER_ID,
+    USER_AGENT,
     act_as_user_agent,
     browser,
     open_workspace,
@@ -26,10 +27,12 @@ from trackinizer.server.api.canvas_test_support import (
     seed_session,
     send_chat,
 )
+from trackinizer.server.asks_test_support import open_ask
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.visuals.workspace_store import next_station_name
 from trackinizer.server.visuals.workspaces import UpdateWorkspace
+from trackinizer.wire.wire_science_chat import chat_session_id
 
 
 if TYPE_CHECKING:
@@ -168,6 +171,7 @@ async def test_a_list_holds_only_the_callers_stations_with_their_fields(
         "suggestion",
         "tabs",
         "tab",
+        "state",
     }
     assert (only["id"], only["conversation_id"], only["page"]) == (
         made["id"],
@@ -526,6 +530,54 @@ async def test_station_routes_refuse_an_api_key(
     ]
 
     assert [a.status_code for a in answers] == [403] * 7
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_station_list_says_which_chat_waits_on_its_person(
+    pglite_route_client: _Client,
+) -> None:
+    """A tab's badge: an ask open, or the run taken over; idle where nothing runs."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    waiting = await open_workspace(client)
+    quiet = await open_workspace(client, new=True)
+    conversation = uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE visual_workspaces SET state = state || "
+            "jsonb_build_object('provider', 'claude'), station = station || "
+            "jsonb_build_object('conversation_id', $2::text) WHERE id = $1",
+            waiting,
+            str(conversation),
+        )
+    chat = await seed_session(
+        store,
+        USER_AGENT,
+        actor="chat-1",
+        cli="claude",
+        cli_session_id=chat_session_id(conversation),
+        polled=False,
+    )
+    inbound = app.state.inbound
+    assert isinstance(inbound, InboundQueue)
+    run = "a" * 32
+    inbound.mark_poller(chat, cli="claude", instance=run)
+    browser()
+
+    async def states() -> dict[str, object]:
+        return {
+            from_plain(each["id"], str): each["state"] for each in await _listed(client)
+        }
+
+    assert await states() == {str(waiting): "idle", str(quiet): "idle"}
+    await open_ask(store, chat, ask_id="a1")
+    assert await states() == {str(waiting): "requires_action", str(quiet): "idle"}
+    assert inbound.report_state(chat, instance=run, state="taken_over")
+    assert await states() == {str(waiting): "taken_over", str(quiet): "idle"}
+    inbound.forget_poller(chat)
+    assert await states() == {str(waiting): "idle", str(quiet): "idle"}
 
 
 def test_a_new_station_takes_the_lowest_free_number() -> None:

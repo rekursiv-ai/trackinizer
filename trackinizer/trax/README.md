@@ -185,6 +185,15 @@ State lives under `state_dir()/rekursiv-ai/trax/run/hosts/<name>/`:
 `host.json`, `scrollback.log`, and `host.log` (the runner's own
 messages, the first place to look when a host fails to start).
 
+A chat's run (`--detach --attach CHAT`, claude or codex) has no terminal: it
+drives the CLI through `claude -p` stream-json or `codex app-server`
+([`run/headless.py`](run/headless.py)). `trax run attach` takes it over, which
+stops the driver and opens the CLI's own terminal on the same session; the
+host keeps filing the session meanwhile. `host.json` then names the session,
+and a launch of the same name (the chat's reattach) ends the old host and
+resumes it. It listens on `control.sock` beside `host.sock`, for attach, send
+and stop.
+
 Adapters live in [`run/adapters/`](run/adapters/); each one knows where
 its CLI writes session JSONL and how to map a line to an `Event`. See
 [`docs/cli-scraping-investigation.md`](../docs/cli-scraping-investigation.md)

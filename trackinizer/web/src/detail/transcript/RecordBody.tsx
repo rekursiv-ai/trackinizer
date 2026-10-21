@@ -51,6 +51,8 @@ export function RecordBody({ view, kinds }: { view: RecordView; kinds: readonly 
  * edit its first three diff lines; a failure starts open. Open, it shows the
  * call's arguments, its command or code in its language, and the result in full.
  * `aside` ends its line (a time, a model); `foot` ends what it shows open.
+ * `compact` leaves out the preview of the result a closed step shows, for a place
+ * with little room.
  */
 export function ToolStep({
   id = "",
@@ -59,6 +61,7 @@ export function ToolStep({
   kinds,
   aside = null,
   foot = null,
+  compact = false,
 }: {
   id?: string;
   call: RecordView | null;
@@ -66,6 +69,7 @@ export function ToolStep({
   kinds: readonly string[];
   aside?: ReactNode;
   foot?: ReactNode;
+  compact?: boolean;
 }) {
   const summary = toolSummary(call, result);
   const attachments = result?.attachments || call?.attachments;
@@ -78,7 +82,7 @@ export function ToolStep({
       failed={summary.failed}
       aside={aside}
       startOpen={summary.failed}
-      preview={result ? preview(result, summary) : null}
+      preview={result && !compact ? preview(result, summary) : null}
     >
       {() => (
         <>

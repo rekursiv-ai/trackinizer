@@ -32,17 +32,19 @@ export type ChatFork = {
 };
 
 /**
- * A decision on a prompt a claude run asked, which the run takes from the chat's
- * `answer` line. `updated_input` carries a question's answers under their headers,
- * and is null for a permission or a plan. The wire types a post's `payload` as any
- * object, so its shape for an `answer` (`docs/api.md`) is spelled here.
+ * An answer to an ask an agent made, which the run takes from the chat's `answer` line.
+ * It names the agent's own `option` by id; a card from before the options names a
+ * `decision` instead, which the server reads as the option of that kind. `updated_input`
+ * carries a question's answers under their headers (or the agent's ids for them), and is
+ * null for a permission or a plan; `message` is the person's words with the choice. The
+ * wire types a post's `payload` as any object, so its shape for an `answer`
+ * (`docs/api.md`) is spelled here.
  */
 export type AnswerPayload = {
   readonly prompt_id: string;
-  readonly decision: "allow" | "deny";
   readonly updated_input: { readonly answers: { readonly [header: string]: string } } | null;
   readonly message: string;
-};
+} & ({ readonly option: string } | { readonly decision: "allow" | "deny" });
 
 /** What one posted line carries besides its key. */
 export type ChatLine = {
@@ -182,5 +184,18 @@ export async function unshareChat(id: string, email: string): Promise<void> {
 export async function deleteChat(id: string): Promise<void> {
   await send(TIMEOUT_MS.write, undefined, (signal) => client.DELETE("/api/chats/{conversation_id}", {
     params: { path: { conversation_id: id } }, signal,
+  }));
+}
+
+/**
+ * Take a chat's run back from the terminal that took it over: the server reopens the run
+ * headless, on the same machine and in the same folder, resuming the CLI's own session, so
+ * Chat can answer it again. The owner only. A run that is live and not taken over is a 409
+ * (`chat_run_live`), a person who is not the owner a 403. A retry under the same `key`
+ * reopens it once.
+ */
+export async function reattachChat(sessionId: string, key: string): Promise<void> {
+  await send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/sessions/{session_id}/reattach", {
+    params: { path: { session_id: sessionId }, header: { "Idempotency-Key": key } }, signal,
   }));
 }

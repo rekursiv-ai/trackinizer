@@ -264,6 +264,22 @@ class TerminalHub:
             if term.user == user and term.workspace == workspace and not term.stopping
         ]
 
+    def attached_to(self, session_id: UUID) -> list[Terminal]:
+        """Return the live runs that re-attach this session, oldest first.
+
+        Args:
+          session_id: The AgentSession a detached run re-opens.
+
+        Returns:
+          terminals: Those opened with it as their ``attach`` and not told to stop.
+
+        """
+        return [
+            term
+            for term in self._terminals.values()
+            if term.attach == session_id and not term.stopping
+        ]
+
     def check(self, *, user: str) -> None:
         """Refuse an open past the open rate.
 

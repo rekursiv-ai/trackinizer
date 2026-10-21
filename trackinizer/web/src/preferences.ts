@@ -24,6 +24,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   terminal_tab_chords: false,
   home: "graph",
   chat_provider: "assistant",
+  chat_tool_calls: false,
   stars: [],
   views: [],
   console_views: [],
