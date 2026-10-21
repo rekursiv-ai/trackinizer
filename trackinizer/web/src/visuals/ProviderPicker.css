@@ -4,6 +4,8 @@
 .provider-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 2px 8px; }
 .provider-row.grayed .provider-choice, .provider-row.grayed .provider-name { color: var(--muted); }
 .provider-reason { grid-column: 1 / -1; margin: 0; font-size: 11px; }
+.provider-credit, .provider-low { grid-column: 1 / -1; margin: 0; font-size: 11px; }
+.provider-low { color: var(--amber); }
 .provider-choice { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .provider-choice input { flex: none; margin: 0; }
 .provider-choice input:disabled { cursor: not-allowed; }

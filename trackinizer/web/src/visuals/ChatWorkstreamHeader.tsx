@@ -223,7 +223,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
           {newChatOrder.map((each) => <div key={each} className="provider-new">
             <button type="button" className="station-option" disabled={!statuses[each].ok} onClick={() => void createChat(each)}>
               + New chat · {providerName(each, workspace)}{each === defaults.provider && <span className="provider-mark"> ★ default</span>}</button>
-            {!statuses[each].ok && <p className="muted provider-reason">{reasonText(each, statuses[each].reason)}</p>}
+            {!statuses[each].ok && <p className="muted provider-reason">{reasonText(statuses[each])}</p>}
           </div>)}
           <div className="chat-name-search">
             <input className="chat-name-search" aria-label="Search chats" placeholder="Search all chats…" value={search}

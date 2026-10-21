@@ -22,10 +22,10 @@ function server(parts: { [part: number]: number }) {
   });
 }
 
-test("every part the session lists is read in part order, and the legacy backfill is left alone", async () => {
+test("every part the session lists is read in part order, with its format, and the legacy backfill is left alone", async () => {
   const sent = server({ [-1]: 3, 0: 2, 1: 1 });
   const read = await readChatParts("s1", undefined);
-  expect(read.map(({ part, records }) => [part, records.map((each) => each.idx)])).toEqual([[0, [0, 1]], [1, [0]]]);
+  expect(read.map(({ part, format, records }) => [part, format, records.map((each) => each.idx)])).toEqual([[0, "sagent", [0, 1]], [1, "sagent", [0]]]);
   expect(sent.filter((each) => each.path.endsWith("/records")).map((each) => each.query)).toEqual([
     "?part=0&after_idx=-1&limit=1000&plaintext_only=true", "?part=1&after_idx=-1&limit=1000&plaintext_only=true",
   ]);
@@ -33,7 +33,7 @@ test("every part the session lists is read in part order, and the legacy backfil
 
 test("a later read asks only for the records after those held, and none for a part that gained nothing", async () => {
   const sent = server({ 0: 3, 1: 2 });
-  const held = [{ part: 0, records: [record(0), record(1)] }, { part: 1, records: [record(0), record(1)] }];
+  const held = [{ part: 0, format: "sagent", records: [record(0), record(1)] }, { part: 1, format: "sagent", records: [record(0), record(1)] }];
   const read = await readChatParts("s1", held);
   expect(read[0]!.records.map((each) => each.idx)).toEqual([0, 1, 2]);
   expect(read[1]!.records).toEqual(held[1]!.records);

@@ -60,6 +60,7 @@ _LEFT_OUT: Final = frozenset(
         "code_blobs",
         "code_snapshots",
         "credit_entries",
+        "credit_grace",
         "inquiry_embeddings",
         "inquiry_lock_log",
         "machine_credentials",

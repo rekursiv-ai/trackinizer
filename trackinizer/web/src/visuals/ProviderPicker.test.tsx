@@ -27,7 +27,9 @@ const LAPTOP: TerminalMachine = { name: "laptop", status: "online", terminal_rea
 const BOX: TerminalMachine = { name: "box", status: "online", terminal_ready: false, confirmed: true, clis: ["claude"] };
 const CODEX_REASON = "Connect a machine with `trax machine connect` and install codex on it";
 const CLAUDE_REASON = "Connect a machine with `trax machine connect` and install claude on it";
-const BALANCE: BalanceBody = { usd: 3.5, granted_usd: 10, purchased_usd: 0, spent_usd: 6.5, topup_usd: [10, 25] };
+const BALANCE: BalanceBody = { usd: 498.2, granted_usd: 500, purchased_usd: 0, spent_usd: 1.8, topup_usd: [10, 25], enforced: true, grace_until: null, own_login: false,
+  can_run: true, reason: "You have credit left." };
+const SPENT: BalanceBody = { ...BALANCE, usd: 0, spent_usd: 500, can_run: false, reason: "You are out of credit." };
 
 type Options = {
   readonly machines?: readonly TerminalMachine[];
@@ -200,11 +202,53 @@ test("a provider out of reach is grayed, cannot be chosen or starred, and says w
   expect((screen.getByRole("radio", { name: "codex" }) as HTMLInputElement).disabled).toBe(false);
 });
 
-test("the assistant with a spent ledger is grayed, and its reason links to Settings", async () => {
-  picker(station({ provider: "claude", partner: LIVE_CLAUDE }), { balance: { ...BALANCE, usd: 0 } });
+test("the assistant the server says may not run is grayed, and its reason links to Settings", async () => {
+  picker(station({ provider: "claude", partner: LIVE_CLAUDE }), { balance: SPENT });
   await waitFor(() => expect((screen.getByRole("radio", { name: "scout" }) as HTMLInputElement).disabled).toBe(true));
   expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("#/settings");
-  expect(document.querySelector(".provider-row:nth-child(1) .provider-reason")?.textContent).toBe("Out of credit: top up in Settings");
+  expect(document.querySelector(".provider-row:nth-child(1) .provider-reason")?.textContent).toBe("You are out of credit. Top up in Settings.");
+});
+
+test("the card shows what is left and what was spent, and no Out of credit", async () => {
+  picker(station({ provider: "claude", partner: LIVE_CLAUDE }), { balance: BALANCE });
+  expect(await screen.findByText("$498.20 left · spent $1.80")).toBeTruthy();
+  expect((screen.getByRole("radio", { name: "scout" }) as HTMLInputElement).disabled).toBe(false);
+  expect(screen.queryByText(/out of credit/i)).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+test("a user in grace past zero is not grayed: the server's verdict lets them run", async () => {
+  picker(station({ provider: "claude", partner: LIVE_CLAUDE }), {
+    balance: { ...BALANCE, usd: -20, spent_usd: 520, grace_until: "2026-12-31", reason: "No limit until 2026-12-31." } });
+  expect(await screen.findByText("-$20.00 left · spent $520.00")).toBeTruthy();
+  expect((screen.getByRole("radio", { name: "scout" }) as HTMLInputElement).disabled).toBe(false);
+  expect(screen.queryByText(/out of credit/i)).toBeNull();
+});
+
+test("a user on their own login sees -- for the balance and what they spent", async () => {
+  picker(station({ provider: "claude", partner: LIVE_CLAUDE }), { balance: { ...BALANCE, usd: 0, spent_usd: 0, own_login: true, reason: "Chat runs on your own ChatGPT login." } });
+  expect(await screen.findByText("-- · spent $0.00")).toBeTruthy();
+  expect((screen.getByRole("radio", { name: "scout" }) as HTMLInputElement).disabled).toBe(false);
+});
+
+test("under $5 left, a user whose credit decides is told before the hard stop", async () => {
+  picker(station({ provider: "claude", partner: LIVE_CLAUDE }), { balance: { ...BALANCE, usd: 4.2, spent_usd: 495.8 } });
+  const notice = await screen.findByRole("status");
+  expect(notice.textContent).toBe("Low credit: $4.20 left. Top up in Settings.");
+  expect(notice.querySelector("a")?.getAttribute("href")).toBe("#/settings");
+  expect((screen.getByRole("radio", { name: "scout" }) as HTMLInputElement).disabled).toBe(false);
+});
+
+test("a user in grace gets no low-balance notice, however little is left", async () => {
+  picker(station({ provider: "claude", partner: LIVE_CLAUDE }), { balance: { ...BALANCE, usd: 1, grace_until: "2026-12-31" } });
+  await screen.findByText("$1.00 left · spent $1.80");
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+test("the server's refusal stands even with credit left: the card keeps no balance rule of its own", async () => {
+  picker(station({ provider: "claude", partner: LIVE_CLAUDE }), { balance: { ...BALANCE, can_run: false, reason: "Chat is paused for this site." } });
+  await waitFor(() => expect((screen.getByRole("radio", { name: "scout" }) as HTMLInputElement).disabled).toBe(true));
+  expect(document.querySelector(".provider-row:nth-child(1) .provider-reason")?.textContent).toBe("Chat is paused for this site. Top up in Settings.");
 });
 
 test("a choice the server refuses as unavailable shows the server's reason, and changes nothing", async () => {

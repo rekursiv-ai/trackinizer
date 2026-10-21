@@ -4,7 +4,8 @@ import { chatRefusalMessage } from "../api/chatRefusals";
 import { type ChatHead, deleteChat, shareChat, unshareChat } from "../api/chats";
 import { newUuid } from "../api/idempotency";
 import { setSessionAudience } from "../api/sessions";
-import { useToast } from "../ui/toast";
+import { formatRoute } from "../router/route";
+import { useCopy, useToast } from "../ui/toast";
 import "../stations/stations.css";
 
 /**
@@ -23,12 +24,34 @@ function useCloseOutside(open: boolean, root: RefObject<HTMLElement | null>, set
 }
 
 /**
+ * The link to a chat: the app's page for its session, `#/lookup/<session>`, whose
+ * Continue in Chat opens the chat. It grants nothing: whoever opens it reads the
+ * chat only if the server lets them (`audience.py`). This page's query is left
+ * off, so `?debug=1` does not travel.
+ */
+export function chatLink(head: ChatHead, page: Pick<Location, "href"> = location): string {
+  const url = new URL(page.href);
+  url.search = "";
+  url.hash = formatRoute({ name: "lookup", id: head.session_id });
+  return url.href;
+}
+
+/** Who a chat's link opens it for, by the head's `audience`, in the words of the Public/Private switch. */
+function linkReaders(audience: string): string {
+  if (audience === "private") return "The link opens this chat for you and the people you share it with.";
+  if (audience === "staff") return "The link opens this chat for you and the people you share it with who hold staff.";
+  return "The link opens this chat for you, the people you share it with, and whoever this server lets in.";
+}
+
+/**
  * Chat's Share control: a panel with the people the chat is shared with, each
- * with Remove, and a field to add an address. Only the head's `may_share` shows it.
+ * with Remove, a field to add an address, and Copy link, with who the link opens
+ * for. Only the head's `may_share` shows it.
  */
 export function ShareChat({ head, disabled = "" }: { readonly head: ChatHead; readonly disabled?: string }) {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const copy = useCopy();
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
@@ -73,6 +96,11 @@ export function ShareChat({ head, disabled = "" }: { readonly head: ChatHead; re
             onChange={(event) => setEmail(event.target.value)} />
           <button className="btn" type="submit" disabled={busy || !email.trim()}>Add</button>
         </form>
+        <p className="chat-note">{linkReaders(head.audience)}</p>
+        <div className="station-actions">
+          <button className="btn ghost" type="button" aria-label="Copy link to this chat"
+            onClick={() => void copy(chatLink(head), "Copied the link to this chat")}>Copy link</button>
+        </div>
       </div>}
     </div>
   );

@@ -497,7 +497,10 @@ with one response shape, so the fixtures take one per verb.
   `src/visuals/ChatSharing.tsx`) opens a panel listing `shared_with`, each with
   Remove, and a field to add an address; each change is `PUT`/`DELETE
   /api/chats/<id>/shares/<email>`, after which the head is read again, since it
-  is the list. Delete chat forever (`DeleteChat`) asks "Delete this chat? Its
+  is the list. The panel's Copy link copies `https://<host>/app/#/lookup/<session>`
+  (`chatLink`), the session's page, whose Continue in Chat opens the chat; it
+  grants nothing, and the panel says who it opens for by the head's `audience`.
+  Delete chat forever (`DeleteChat`) asks "Delete this chat? Its
   forks keep their copies." first; once the server has deleted it the station
   holds no conversation (its cached `conversation_id` is null), and Chat hides the
   now-empty station (`hideStation`, `PATCH /api/workspaces/<id>`) and opens the
@@ -533,7 +536,11 @@ with one response shape, so the fixtures take one per verb.
   parts and records are read incrementally, part by part, and
   `readTranscript` (`chatLines.ts`) turns them into lines. A person's line
   (`AgentToAgentMessage`) shows its sender when it is not the signed-in user's;
-  an `AssistantMessage` with content is an answer. `useLiveChat` registers on the
+  an `AssistantMessage` with content is an answer, named by the agent its part's
+  `format` says wrote it (`sagent`, the server's assistant by its name; `claude`;
+  `codex`), so each answer of a chat that switched provider keeps its own. A
+  `ContextCompaction` is a "Context compacted" line, one for the records that name
+  one act. `useLiveChat` registers on the
   live hub and reads what the session gained when the canvas stream's `changed`
   ids include the session (or on a gap), so every viewer of a chat sees a
   teammate's line. The reads use the app's read retry.
@@ -547,7 +554,8 @@ with one response shape, so the fixtures take one per verb.
   record is a tool call or a line with no answer after it. Should the partner go
   away (`workspace.partner.status` not live), the working line gives way to
   "<actor> has ended." or "is unavailable.", and the box is disabled. A viewer
-  reads a chat but the box is disabled for them.
+  reads a chat but cannot post (`POST /api/chats` needs a writer): in place of the
+  box Chat says "Viewers can read this chat but not post."
   The partner's lines are left-aligned Markdown, without images. The box stays
   open to typing while a line sends, and what is typed meanwhile stays. It
   refuses a blank message and one over 16,384 characters. A send the server

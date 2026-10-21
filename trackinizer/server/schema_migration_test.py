@@ -1251,6 +1251,37 @@ async def test_migration_045_matches_the_baseline_credit_entries_table(
     assert migrated == baseline
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_053_matches_the_baseline_credit_grace_table(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """The grace table 053 builds equals the fresh-install one.
+
+    Bootstrap builds the baseline shape. This drops the table (as a pre-053 database
+    lacks it), replays ``schema.053`` alone, and compares every column, constraint and
+    index against what the baseline produced.
+    """
+    await reset_schema(pglite_engine)
+    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
+    async with pglite_engine.acquire() as conn:
+        baseline = await _table_shape(conn, "credit_grace")
+        assert baseline[0], "the baseline lacks the table"
+
+        await conn.execute("DROP TABLE credit_grace")
+        await conn.execute(load_sql("schema.053"))
+        migrated = await _table_shape(conn, "credit_grace")
+        # Replaying it over the existing table is a no-op, not an error.
+        await conn.execute(load_sql("schema.053"))
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute(
+                "INSERT INTO credit_grace (email, until, set_by) "
+                "VALUES ('Jan@Example.com', '2026-12-31', 'admin@example.com')",
+            )
+
+    assert migrated == baseline
+
+
 async def _catalog_names_aside(conn: Conn) -> list[tuple[str, str, str]]:
     """Return ``_CATALOG``, each constraint keyed by its table rather than its name."""
     rows = [
