@@ -12,7 +12,7 @@ import uuid
 
 import pytest
 
-from trackinizer.server.inbound import Inbound, InboundQueue
+from trackinizer.server.inbound import Inbound, InboundQueue, PollerRun
 from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
 
@@ -300,6 +300,56 @@ class TestRevokingTheLeaseEndsTheHold:
 
         assert asyncio.run(run()) == []
         assert queue.pending(session) == 1
+
+
+class TestWhereAPollerRuns:
+    """A lease keeps where its run says it runs, and forgets it with the lease."""
+
+    def test_a_lease_answers_where_its_run_is_until_it_expires(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+
+        assert queue.poller_run(session) is None
+        _mark_at(queue, session)
+        assert queue.poller_run(session) == _AT
+        now[0] = 145.0
+        assert queue.poller_run(session) is None
+        # Renewed saying nothing, the lease says nothing of where it ran before.
+        queue.mark_poller(session)
+        assert queue.poller_run(session) == PollerRun()
+
+    def test_a_revoked_lease_forgets_where_its_run_was(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        _mark_at(queue, session)
+
+        queue.forget_poller(session)
+
+        assert queue.poller_run(session) is None
+        assert not queue.has_poller(session)
+
+    def test_the_sweep_of_expired_leases_takes_their_runs_with_them(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        expired, live = uuid.uuid4(), uuid.uuid4()
+        _mark_at(queue, expired)
+        now[0] = 120.0
+        _mark_at(queue, live)
+        now[0] = 150.0
+
+        assert queue.active_poller_ids() == [live]
+        assert queue.poller_run(live) == _AT
+        assert expired not in queue._leases
+
+
+_AT = PollerRun(run="chat-1a2b3c4d", machine="gx10", cwd="~/work")
+"""Where a detached run on gx10, working in ``~/work``, says it is."""
+
+
+def _mark_at(queue: InboundQueue, session_id: uuid.UUID) -> None:
+    """Renew ``session_id``'s lease as a poll from the run at :data:`_AT` does."""
+    queue.mark_poller(session_id, run=_AT.run, machine=_AT.machine, cwd=_AT.cwd)
 
 
 class TestSendIdempotency:

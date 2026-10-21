@@ -73,7 +73,7 @@ class TestPurge:
         # Cascade re-walks the graph for the parent; that walk uses the
         # aliased ``parent_id``/``parent_kind`` shape. The mock returns
         # rows that satisfy both consumers.
-        conn.fetch.side_effect = [[purge_row], []]
+        conn.fetch.side_effect = [[purge_row], list[dict[str, object]]()]
         store, engine = make_store(conn)
         await store.purge(target_id, actor="alice")
         sqls = executed_sql(conn)

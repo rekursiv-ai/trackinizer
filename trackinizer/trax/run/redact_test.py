@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import base64
@@ -19,6 +20,10 @@ from trackinizer.trax.run.redact import (
 )
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import RecordBody
+
+
+if TYPE_CHECKING:
+    from treekle import PlainTree
 
 
 def test_a_value_is_replaced_by_its_names_placeholder() -> None:
@@ -145,7 +150,7 @@ def test_every_string_in_a_json_structure_is_redacted() -> None:
 
 def test_a_json_structure_without_a_value_is_equal_to_the_input() -> None:
     redactor = Redactor({"TOKEN": "tok-abcdefgh"})
-    value = {"a": [1, "two", {"three": None}]}
+    value: PlainTree = {"a": [1, "two", {"three": None}]}
     assert redactor.redact_json(value) == value
 
 

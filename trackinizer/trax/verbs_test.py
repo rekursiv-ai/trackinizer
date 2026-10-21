@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast, get_args, override
+from typing import TYPE_CHECKING, ClassVar, cast, get_args, override
 
 import argparse
 import io
@@ -12,6 +12,13 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.agent.types.sessions import (
+    AgentToAgentMessage,
+    AssistantMessage,
+    ToolCall,
+    UncategorizedToolResult,
+    UserMessage,
+)
 from trackinizer.trax import cli, verbs
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.grammar import (
@@ -31,6 +38,7 @@ from trackinizer.trax.verbs import (
     resolve_actor,
 )
 from trackinizer.types.edges import Edge
+from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.routes import MAX_LIST_LIMIT
@@ -39,6 +47,7 @@ from trackinizer.wire.wire_metrics_query import (
     MetricMaskClause,
     MetricRankRow,
 )
+from trackinizer.wire.wire_session_ir import PartBody, RecordBody
 
 
 if TYPE_CHECKING:
@@ -53,7 +62,7 @@ def _batch_items(client: FakeClient) -> list[tuple[str, dict[str, object]]]:
     calls = [c for c in client.calls if c[0] == "submit_batch"]
     assert len(calls) == 1, f"expected one submit_batch, got {len(calls)}"
     items = cast(list[tuple[str, dict[str, object]]], calls[0][1][0])
-    return [(str(kind), dict(body)) for kind, body in items]
+    return [(kind, dict(body)) for kind, body in items]
 
 
 def _batch_edges(client: FakeClient) -> list[dict[str, object]]:
@@ -4074,7 +4083,12 @@ def test_resume_preserves_runner_tail(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    written = Materialized(path=tmp_path / "session.jsonl", cli_session_id=uuid.uuid4())
+    written = Materialized(
+        path=tmp_path / "session.jsonl",
+        cli_session_id=uuid.uuid4(),
+        attach=uuid.uuid4(),
+        prefix_bytes=0,
+    )
 
     def prepare(*args: object, **kwargs: object) -> Materialized:
         del args, kwargs
@@ -4090,6 +4104,144 @@ def test_resume_preserves_runner_tail(
     monkeypatch.setattr("trackinizer.trax.run.session.main", enter)
     run(["agentsession", "1", "run", *tail], client)
     assert seen == [tail]
+
+
+def test_resume_writes_into_the_session_after_its_loaded_history(
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The run attaches to the resumed session and skips what it was loaded with."""
+    written = Materialized(
+        path=tmp_path / "session.jsonl",
+        cli_session_id=uuid.uuid4(),
+        attach=uuid.uuid4(),
+        prefix_bytes=4_096,
+    )
+
+    def prepare(*args: object, **kwargs: object) -> Materialized:
+        del args, kwargs
+        return written
+
+    entered: list[dict[str, object]] = []
+
+    def enter(argv: list[str], **kwargs: object) -> None:
+        del argv
+        entered.append(kwargs)
+
+    monkeypatch.setattr(verbs, "prepare_resume", prepare)
+    monkeypatch.setattr("trackinizer.trax.run.session.main", enter)
+    run(["agentsession", "1", "run", "claude"], client)
+
+    [kwargs] = entered
+    assert kwargs["attach"] == written.attach
+    assert kwargs["prefix_bytes"] == 4_096
+    assert kwargs["resume_path"] == written.path
+    assert kwargs["cli_session_id"] == str(written.cli_session_id)
+
+
+class _StoredClient(FakeClient):
+    """Serves a session of three parts: the bot's, claude's and codex's."""
+
+    _PARTS: ClassVar = (
+        (
+            "sagent",
+            [AgentToAgentMessage(sender="ada", content=f"q{n}") for n in range(5)],
+        ),
+        (
+            "claude",
+            [
+                UserMessage(content="typed"),
+                ToolCall(call_id="t1", name="Grep"),
+                UncategorizedToolResult(call_id="t1", content="r" * 300),
+                AssistantMessage(content="a\nb"),
+                AssistantMessage(content="after the cut"),
+            ],
+        ),
+        ("codex", [AssistantMessage(content="never printed")]),
+    )
+
+    @override
+    def read_session_parts(self, session_id: uuid.UUID) -> list[PartBody]:
+        self.calls.append(("read_session_parts", (session_id,), {}))
+        return [
+            PartBody(part=number, name=f"{number}.jsonl", format=fmt, records=len(held))
+            for number, (fmt, held) in enumerate(self._PARTS)
+        ]
+
+    @override
+    def read_session_records(
+        self,
+        session_id: uuid.UUID,
+        *,
+        part: int = 0,
+        after_idx: int = -1,
+        limit: int = MAX_LIST_LIMIT,
+        plaintext_only: bool = False,
+    ) -> list[RecordBody]:
+        self.calls.append(("read_session_records", (session_id,), {"part": part}))
+        return [
+            RecordBody.of(
+                SessionRecordRow.of(
+                    session_id=session_id,
+                    part=part,
+                    idx=idx,
+                    record=record,
+                ),
+            )
+            for idx, record in enumerate(self._PARTS[part][1])
+        ]
+
+
+def test_records_prints_the_parts_up_to_the_record_named(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--to 1:3`` is the last record a window left out; nothing after it prints."""
+    client = _StoredClient()
+
+    run(["agentsession", "7", "records", "--to", "1:3"], client)
+
+    printed = capsys.readouterr().out.splitlines()
+    assert [line.split(" ", 1)[0] for line in printed] == [
+        *(f"p0#{n}" for n in range(5)),
+        "p1#0",
+        "p1#1",
+        "p1#2",
+        "p1#3",
+    ]
+    assert printed[0].endswith("user ada: q0")
+    assert printed[5].endswith("user terminal: typed")
+    assert printed[6].endswith("call claude: Grep")
+    assert printed[7].endswith("result claude: " + "r" * 200)
+    assert printed[8].endswith("assistant claude: a b")
+    assert {call[0] for call in client.calls} == {
+        "resolve_id",
+        "read_session_parts",
+        "read_session_records",
+    }
+
+
+def test_records_of_one_part_print_as_the_stored_json(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(
+        ["agentsession", "7", "records", "--part", "2", "--format", "json"],
+        _StoredClient(),
+    )
+
+    [line] = capsys.readouterr().out.splitlines()
+    stored = json_loads(line, dict[str, object])
+    assert (stored["part"], stored["idx"], stored["kind"]) == (2, 0, "AssistantMessage")
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [["--to", "one"], ["--format", "yaml"], ["--lossy"]],
+    ids=["bad-place", "bad-format", "stray-flag"],
+)
+def test_records_refuses_a_flag_it_does_not_read(tail: list[str]) -> None:
+    with pytest.raises(ClientError, match=r"records|--to"):
+        run(["agentsession", "7", "records", *tail], _StoredClient())
 
 
 def test_noop_metadata_link_echoes_exists(

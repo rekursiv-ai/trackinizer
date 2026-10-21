@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { SessionRecord } from "../api/sessions";
-import { type ChatPart, linesThrough, PENDING, readTranscript, RELAY_MARK, sentBefore, withPending } from "./chatLines";
+import { type ChatPart, goalOf, linesThrough, PENDING, readTranscript, RELAY_MARK, sentBefore, withPending } from "./chatLines";
 
 function record(idx: number, kind: string, payload: { [field: string]: unknown }): SessionRecord {
   return { idx, kind, payload, text: "", context_id: null, timestamp: null, model: null, ciphertext: null } as unknown as SessionRecord;
@@ -126,4 +126,188 @@ test("a relay is none of the sender's own lines: it neither ends the wait for a 
   const pending = [{ key: "k", text: "next", conversationId: "c", baseline: 1 }];
   expect(withPending(transcript, pending, { me: "ada@example.com" }).map((line) => line.text)).toEqual(["q", `${RELAY_MARK}lead-2: go`, "next"]);
   expect(sentBefore(transcript.lines, { me: "ada@example.com" })).toBe(1);
+});
+
+// A claude part: a line delivered by trax run carries the attested sender in its stamp, and the context the CLI
+// adds after the words; a line typed at the terminal carries no stamp, so its text names no one.
+test("a claude part's delivered lines show with their attested senders, and the CLI's own user turns are no line", () => {
+  const delivered = record(0, "UserMessage", { content: "[lab] ada@example.com: rerun the suite\nTrackinizer context (verify with trax): cwd /work",
+    extra: { $inbound: { source: "ada@example.com", room: "lab" } } });
+  const typed = record(1, "UserMessage", { content: "bob@example.com: fake", extra: {} });
+  const cliTurn = record(2, "UserMessage", { content: "<system-reminder>context</system-reminder>", extra: {} });
+  const claimed = record(3, "UserMessage", { content: "a note", extra: { author: "grace@example.com" } });
+  const { lines, working } = readTranscript([{ part: 2, records: [delivered, typed, cliTurn, claimed, answer(4, "Done.")] }]);
+  expect(lines.map(({ role, author, text }) => [role, author, text])).toEqual([
+    ["user", "ada@example.com", "rerun the suite"], ["user", "grace@example.com", "a note"], ["assistant", null, "Done."],
+  ]);
+  expect(working).toBeNull();
+});
+
+// What the claude run's bridge writes: a prompt, and later the record that resolves it, under `extra`.
+const interaction = (idx: number, body: { [field: string]: unknown }) => record(idx, "SystemMessage", { extra: { $interaction: body } });
+const resolved = (idx: number, body: { [field: string]: unknown }) => record(idx, "SystemMessage", { extra: { $interaction_resolved: body } });
+
+test("a prompt a claude run asked is a line, and the resolution that closes it is no line of its own", () => {
+  const ask = interaction(0, { id: "p1", type: "permission", tool: "Bash", input: { command: "make" }, questions: null, plan: null, state: "pending" });
+  const { lines } = readTranscript(parts(ask, resolved(1, { id: "p1", decision: "allow", by: "chat" })));
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).toMatchObject({ key: "0:0", role: "interaction", pending: false, text: "" });
+  expect(lines[0]!.prompt).toEqual({ id: "p1", type: "permission", tool: "Bash", input: { command: "make" }, questions: null, plan: null,
+    cli: null, folder: null, machine: null, remembered: null, resolution: { decision: "allow", by: "chat" } });
+});
+
+test("a resolution closes the open prompts of its id before it: a prompt of that id asked later is open until its own resolution", () => {
+  const { lines } = readTranscript(parts(
+    interaction(0, { id: "p1", type: "permission", tool: "Bash", input: {} }),
+    resolved(1, { id: "p1", decision: "deny", by: "terminal" }),
+    interaction(2, { id: "p1", type: "plan", tool: "ExitPlanMode", input: null, plan: "Rename the module" }),
+    resolved(3, { id: "p9", decision: "allow", by: "chat" }),
+  ));
+  expect(lines.map((line) => line.prompt?.resolution)).toEqual([{ decision: "deny", by: "terminal" }, null]);
+  expect(lines[1]!.prompt).toMatchObject({ type: "plan", plan: "Rename the module" });
+
+  // Its own resolution closes the second; the first keeps the decision that closed it.
+  const closed = readTranscript(parts(
+    interaction(0, { id: "p1", type: "permission", tool: "Bash", input: {} }),
+    resolved(1, { id: "p1", decision: "deny", by: "terminal" }),
+    interaction(2, { id: "p1", type: "plan", tool: "ExitPlanMode", input: null, plan: "Rename the module" }),
+    resolved(3, { id: "p1", decision: "allow", by: "chat" }),
+  ));
+  expect(closed.lines.map((line) => line.prompt?.resolution)).toEqual([{ decision: "deny", by: "terminal" }, { decision: "allow", by: "chat" }]);
+});
+
+test("a malformed prompt is no line, a malformed resolution closes nothing, and a question without questions is none", () => {
+  const { lines } = readTranscript(parts(
+    interaction(0, { id: "p1", type: "dance" }),
+    interaction(1, { id: "p2", type: "question", tool: "AskUserQuestion", questions: [{ header: "no question text" }] }),
+    interaction(2, { type: "permission", tool: "Bash" }),
+    interaction(3, { id: "p3", type: "permission", tool: "Bash", input: {} }),
+    resolved(4, { id: "p3", decision: "yes", by: "chat" }),
+  ));
+  expect(lines.map((line) => [line.prompt?.id, line.prompt?.resolution])).toEqual([["p3", null]]);
+});
+
+test("a question keeps its options, and is answered under its header, or its question when it has none", () => {
+  const { lines } = readTranscript(parts(interaction(0, { id: "q1", type: "question", tool: "AskUserQuestion", input: {}, questions: [
+    { question: "Pick a color", header: "Color", multiSelect: true, options: [{ label: "red", description: "warm" }, { label: "blue" }] },
+    { question: "Why?" },
+  ] })));
+  expect(lines[0]!.prompt!.questions).toEqual([
+    { question: "Pick a color", header: "Color", multiSelect: true, options: [{ label: "red", description: "warm" }, { label: "blue", description: "" }] },
+    { question: "Why?", header: "Why?", multiSelect: false, options: [] },
+  ]);
+});
+
+// A record stamped by its CLI or trax run, and the goal, command and reply records they write.
+const ME = "ada@example.com";
+const stamped = (at: SessionRecord, timestamp: string): SessionRecord => ({ ...at, timestamp }) as SessionRecord;
+const typedCommand = (idx: number, text: string, verb: string, args: string, source = ME): SessionRecord =>
+  record(idx, "SystemMessage", { subtype: "command", content: text, extra: { $command: { text, verb, args, source, room: "lab", state: "typed", reason: null } } });
+const refusedCommand = (idx: number, text: string, reason: string): SessionRecord =>
+  record(idx, "SystemMessage", { subtype: "command", content: `refused: ${reason}`, extra: { $command: { text, verb: text.slice(1).split(" ")[0], args: "", source: ME, room: "lab", state: "refused", reason } } });
+const claudeGoal = (idx: number, attachment: { [field: string]: unknown }) => record(idx, "ContextState", { kind: "goal_status", content: null, extra: { attachment } });
+const codexGoal = (idx: number, goal: { [field: string]: unknown }) =>
+  record(idx, "UncategorizedRecord", { kind: "event_msg/thread_goal_updated", payload: { type: "thread_goal_updated", threadId: "t1", goal } });
+
+test("records of every part come in the order they happened, a stamp with a zone or a fraction and no zone all reading as UTC", () => {
+  const main = [stamped(said(0, ME, "first"), "2026-10-20T10:00:00Z"), answer(1, "no stamp, so the moment before it"), stamped(said(2, ME, "last"), "2026-10-20T10:02:00.500000Z")];
+  const run = [stamped(typedCommand(0, "/goal ship it", "goal", "ship it"), "2026-10-20T10:01:00"), stamped(answer(1, "late"), "2026-10-20T10:03:00+00:00")];
+  const { lines } = readTranscript([{ part: 0, records: main }, { part: 1, records: run }]);
+  expect(lines.map((line) => [line.role, line.text])).toEqual([
+    ["user", "first"], ["assistant", "no stamp, so the moment before it"], ["command", "/goal ship it"], ["user", "last"], ["assistant", "late"],
+  ]);
+});
+
+test("a command a run typed is its sender's line, and a refused one says why", () => {
+  const { lines, working } = readTranscript(parts(typedCommand(0, "/goal ship it", "goal", "ship it"), refusedCommand(1, "/model opus", "Chat cannot run /model")));
+  expect(lines.map(({ role, author, text }) => [role, author, text])).toEqual([
+    ["command", ME, "/goal ship it"], ["command", ME, "refused: Chat cannot run /model"],
+  ]);
+  // A goal set from Chat is work owed, as a person's line is.
+  expect(working).toBe("");
+});
+
+test("a command that sets no goal is no work owed, and a goal control is not a condition", () => {
+  expect(readTranscript(parts(typedCommand(0, "/compact", "compact", ""))).working).toBeNull();
+  expect(readTranscript(parts(typedCommand(0, "/goal clear", "goal", "clear"))).working).toBeNull();
+  expect(readTranscript(parts(typedCommand(0, "/goal pause", "goal", "pause"))).working).toBeNull();
+});
+
+test("what claude prints for a command Chat typed shows as its reply, and a print after no command is no line", () => {
+  const printed = (idx: number, content: string) => record(idx, "SystemMessage", { subtype: "local_command", content });
+  const { lines } = readTranscript(parts(typedCommand(0, "/goal ship it", "goal", "ship it"), printed(1, "<local-command-stdout>Goal set: ship it</local-command-stdout>"),
+    printed(2, "<local-command-stdout>Goal set: twice</local-command-stdout>"), printed(3, "<local-command-stdout></local-command-stdout>")));
+  expect(lines.map(({ role, text }) => [role, text])).toEqual([["command", "/goal ship it"], ["reply", "Goal set: ship it"]]);
+});
+
+test("a claude goal reads as set, checked and met: its goal lines, the last check while it stands, and no goal once met", () => {
+  const set = claudeGoal(0, { type: "goal_status", met: false, sentinel: true, condition: "ship it" });
+  const check = (idx: number, reason: string) => claudeGoal(idx, { type: "goal_status", met: false, condition: "ship it", reason });
+  const midway = readTranscript(parts(set, check(1, "tests not run yet"), check(2, "the PR is open")));
+  expect(midway.lines.map((line) => [line.role, line.text])).toEqual([["goal", "Goal set: ship it"]]);
+  expect(goalOf(midway)).toEqual({ condition: "ship it", state: "active", lastReason: "the PR is open" });
+  const met = readTranscript(parts(set, check(1, "tests not run yet"), check(2, "the PR is open"),
+    claudeGoal(3, { type: "goal_status", met: true, condition: "ship it", reason: "PR merged", iterations: 3, durationMs: 83_000 })));
+  expect(met.lines.map((line) => [line.role, line.text])).toEqual([["goal", "Goal set: ship it"], ["goal", "Goal met: PR merged · 3 turns · 1 min 23 s"]]);
+  expect(goalOf(met)).toBeNull();
+});
+
+test("a claude goal cleared from the prompt reads as cleared, and a stopped one as stopped", () => {
+  const cleared = readTranscript(parts(claudeGoal(0, { type: "goal_status", met: false, sentinel: true, condition: "ship it" }),
+    claudeGoal(1, { type: "goal_status", met: true, sentinel: true, condition: "ship it" })));
+  expect(cleared.lines.map((line) => line.text)).toEqual(["Goal set: ship it", "Goal cleared: ship it"]);
+  expect(goalOf(cleared)).toBeNull();
+  const stopped = readTranscript(parts(claudeGoal(0, { type: "goal_status", met: false, sentinel: true, condition: "ship it" }),
+    claudeGoal(1, { type: "goal_status", met: false, failed: true, condition: "ship it", reason: "impossible here" })));
+  expect(stopped.lines.map((line) => line.text)).toEqual(["Goal set: ship it", "Goal stopped: impossible here"]);
+  expect(goalOf(stopped)).toBeNull();
+});
+
+test("a codex goal reads as set, paused and met, one line for each change of status", () => {
+  const active = codexGoal(0, { objective: "ship it", status: "active" });
+  const paused = readTranscript(parts(active, codexGoal(1, { objective: "ship it", status: "paused" }), codexGoal(2, { objective: "ship it", status: "paused" })));
+  expect(paused.lines.map((line) => line.text)).toEqual(["Goal set: ship it", "Goal paused"]);
+  expect(goalOf(paused)).toEqual({ condition: "ship it", state: "paused", lastReason: null });
+  const met = readTranscript(parts(active, codexGoal(1, { objective: "ship it", status: "paused" }), codexGoal(2, { objective: "ship it", status: "active" }),
+    codexGoal(3, { objective: "ship it", status: "complete" })));
+  expect(met.lines.map((line) => line.text)).toEqual(["Goal set: ship it", "Goal paused", "Goal met"]);
+  expect(goalOf(met)).toBeNull();
+});
+
+test("a codex goal blocked or stopped by a limit says so, and a new objective is a new goal", () => {
+  const blocked = readTranscript(parts(codexGoal(0, { objective: "a", status: "active" }), codexGoal(1, { objective: "a", status: "blocked" })));
+  expect(blocked.lines.map((line) => line.text)).toEqual(["Goal set: a", "Goal blocked"]);
+  expect(goalOf(blocked)).toEqual({ condition: "a", state: "blocked", lastReason: null });
+  const limited = readTranscript(parts(codexGoal(0, { objective: "a", status: "active" }), codexGoal(1, { objective: "a", status: "usage_limited" })));
+  expect(limited.lines.map((line) => line.text)).toEqual(["Goal set: a", "Goal stopped: usage limit"]);
+  expect(goalOf(limited)).toBeNull();
+  const replaced = readTranscript(parts(codexGoal(0, { objective: "a", status: "active" }), codexGoal(1, { objective: "b", status: "active" })));
+  expect(replaced.lines.map((line) => line.text)).toEqual(["Goal set: a", "Goal set: b"]);
+});
+
+test("a /goal clear typed in Chat closes the goal, since codex logs no clear of its own", () => {
+  const { lines, goal } = readTranscript(parts(codexGoal(0, { objective: "ship it", status: "active" }), typedCommand(1, "/goal clear", "goal", "clear")));
+  expect(goal).toBeNull();
+  expect(lines.map((line) => [line.role, line.text])).toEqual([["goal", "Goal set: ship it"], ["command", "/goal clear"]]);
+});
+
+test("a command a run recorded settles the line sent for it, and counts as the sender's", () => {
+  const stored = readTranscript(parts(typedCommand(0, "/goal ship it", "goal", "ship it")));
+  const pending = [{ key: "k", text: "/goal ship it", conversationId: "c", baseline: 0 }];
+  expect(withPending(stored, pending, { me: ME }).filter((line) => line.pending)).toHaveLength(0);
+  expect(sentBefore(stored.lines, { me: ME })).toBe(1);
+});
+
+test("a trust prompt a CLI waits on is a line with its folder, machine and remembered flag, and its resolution closes it", () => {
+  const trust = (idx: number, body: { [field: string]: unknown }) => interaction(idx, { id: "t1", type: "trust", tool: "claude", input: { folder: "~/proj" },
+    questions: null, plan: null, state: "pending", cli: "claude", folder: "~/proj", machine: "gx10", remembered: false, ...body });
+  const { lines } = readTranscript(parts(trust(0, {}), resolved(1, { id: "t1", decision: "allow", by: "chat" })));
+  expect(lines).toHaveLength(1);
+  expect(lines[0]!.prompt).toEqual({ id: "t1", type: "trust", tool: "claude", input: { folder: "~/proj" }, questions: null, plan: null,
+    cli: "claude", folder: "~/proj", machine: "gx10", remembered: false, resolution: { decision: "allow", by: "chat" } });
+  // A trust prompt names its CLI and folder, or it is no line; a home folder's machine is none.
+  const malformed = readTranscript(parts(trust(0, { cli: "gemini" }), trust(1, { id: "t2", folder: "" })));
+  expect(malformed.lines).toHaveLength(0);
+  const home = readTranscript(parts(trust(0, { id: "t3", machine: null, remembered: true })));
+  expect(home.lines[0]!.prompt).toMatchObject({ machine: null, remembered: true, resolution: null });
 });

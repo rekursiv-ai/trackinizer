@@ -536,7 +536,8 @@ class Field:
           result: The object.
 
         """
-        return _COERCE.get(self.cli_name, lambda value: value)(value)
+        coerce = _COERCE.get(self.cli_name)
+        return value if coerce is None else coerce(value)
 
 
 def _coerce_priority(value: str) -> int:

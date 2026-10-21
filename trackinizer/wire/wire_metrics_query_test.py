@@ -143,13 +143,13 @@ class TestMetricQueryRequest:
 
     def test_rejects_zero_limit(self) -> None:
         with pytest.raises(ValidationError):
-            MetricQueryRequest(masks=[], limit=0)
+            MetricQueryRequest(masks=[], limit=0)  # pyrefly: ignore[bad-argument-type] -- The negative test passes the out-of-range value under test.
 
     def test_rejects_limit_over_max(self) -> None:
         """An over-cap limit is refused, never silently clamped to the cap."""
         assert MetricQueryRequest(limit=MAX_LIST_LIMIT).limit == MAX_LIST_LIMIT
         with pytest.raises(ValidationError):
-            MetricQueryRequest(limit=MAX_LIST_LIMIT + 1)
+            MetricQueryRequest(limit=MAX_LIST_LIMIT + 1)  # pyrefly: ignore[bad-argument-type] -- The negative test passes the out-of-range value under test.
 
     @pytest.mark.parametrize(
         "read_control",

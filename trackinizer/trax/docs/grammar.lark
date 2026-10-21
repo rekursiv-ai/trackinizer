@@ -245,7 +245,7 @@ VERB_ARG: /\S+/
 //   profile [NAME] [ url|actor|token [to V] | current NAME | del ]
 //   recent [--limit V] [--format text|json]
 //   run attach NAME
-//   run claude|gemini|codex|sh [--out V] [--verbose] [--dry-run] [--no-sync] [--as V] [--room V] [--private] [--diff] [--detach] [--name V]
+//   run claude|gemini|codex|sh [--out V] [--verbose] [--dry-run] [--no-sync] [--as V] [--room V] [--private] [--diff] [--detach] [--name V] [--attach V]
 //   run log NAME [-f/--follow]
 //   run ls [-a/--all]
 //   run send NAME TEXT...

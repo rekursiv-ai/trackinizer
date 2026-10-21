@@ -1354,6 +1354,16 @@
         "title": "ChatHead",
         "type": "object"
       },
+      "ChatLineKind": {
+        "enum": [
+          "line",
+          "command",
+          "answer",
+          "settings",
+          "interrupt"
+        ],
+        "type": "string"
+      },
       "ChatPartial": {
         "additionalProperties": false,
         "description": "The answer a chat's assistant is writing, as far as it has written it.",
@@ -1409,6 +1419,14 @@
         "title": "ChatPartialState",
         "type": "object"
       },
+      "ChatProvider": {
+        "enum": [
+          "assistant",
+          "claude",
+          "codex"
+        ],
+        "type": "string"
+      },
       "ChatSend": {
         "additionalProperties": false,
         "description": "One line a signed-in writer posts to a science chat from their canvas.",
@@ -1436,10 +1454,8 @@
             ]
           },
           "kind": {
-            "const": "science",
-            "default": "science",
-            "title": "Kind",
-            "type": "string"
+            "$ref": "#/components/schemas/ChatLineKind",
+            "default": "line"
           },
           "page": {
             "anyOf": [
@@ -1453,6 +1469,18 @@
               }
             ],
             "title": "Page"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload"
           },
           "text": {
             "maxLength": 16384,
@@ -1538,24 +1566,24 @@
         "title": "ChatWindow",
         "type": "object"
       },
-      "ChoosePartner": {
+      "ChooseProvider": {
         "additionalProperties": false,
-        "description": "Choose whose session the canvas's Chat talks to.",
+        "description": "Choose who answers the station's Chat; only its owner's browser does.\n\nThe switch is the next revision, and takes hold at once: from then on the chat's\nqueue is drained only by the new provider, and its lines go there. An assistant\nturn already running is not interrupted: its answer still lands, and since every\nrecord is read in the order of its time, it sorts where it was written. Choosing\n``claude`` or ``codex`` gives the chat a session a run can attach to when it has\nnone, before any line, so the picker always has one to name.",
         "properties": {
-          "choice": {
-            "$ref": "#/components/schemas/PartnerChoice"
-          },
           "kind": {
-            "const": "partner",
+            "const": "provider",
             "title": "Kind",
             "type": "string"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/ChatProvider"
           }
         },
         "required": [
           "kind",
-          "choice"
+          "provider"
         ],
-        "title": "ChoosePartner",
+        "title": "ChooseProvider",
         "type": "object"
       },
       "Citation": {
@@ -4538,6 +4566,22 @@
               }
             ]
           },
+          "kind": {
+            "$ref": "#/components/schemas/InboundKind",
+            "default": "line"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload"
+          },
           "room": {
             "anyOf": [
               {
@@ -4600,6 +4644,22 @@
             ],
             "title": "Asker"
           },
+          "kind": {
+            "$ref": "#/components/schemas/InboundKind",
+            "default": "line"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload"
+          },
           "text": {
             "maxLength": 16384,
             "minLength": 1,
@@ -4626,6 +4686,16 @@
         ],
         "title": "InboundEnqueueResponse",
         "type": "object"
+      },
+      "InboundKind": {
+        "enum": [
+          "line",
+          "command",
+          "answer",
+          "settings",
+          "interrupt"
+        ],
+        "type": "string"
       },
       "InquiryKind": {
         "enum": [
@@ -5812,10 +5882,20 @@
         "title": "NewMark",
         "type": "object"
       },
-      "NewWorkspace": {
+      "NewStation": {
         "additionalProperties": false,
-        "description": "Optional workstream for a newly opened station.",
+        "description": "What a new station starts with: its workstream and its provider, either unset.\n\nAn unset workstream is the owner's Scratch, and an unset provider their\n``chat_provider`` preference. A provider with no machine to run on is taken all\nthe same: nothing runs until a machine is picked.",
         "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatProvider"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "workstream_id": {
             "anyOf": [
               {
@@ -5829,18 +5909,50 @@
             "title": "Workstream Id"
           }
         },
-        "title": "NewWorkspace",
+        "title": "NewStation",
         "type": "object"
       },
       "OpenTerminal": {
         "additionalProperties": false,
         "description": "Open a terminal on one of the caller's machines.",
         "properties": {
+          "attach": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attach"
+          },
           "cols": {
             "maximum": 1000.0,
             "minimum": 1.0,
             "title": "Cols",
             "type": "integer"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TerminalCommand"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunFolder"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "machine": {
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
@@ -5865,6 +5977,18 @@
             "minimum": 1.0,
             "title": "Rows",
             "type": "integer"
+          },
+          "run_name": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Name"
           },
           "surface": {
             "anyOf": [
@@ -5909,9 +6033,9 @@
             "highlight": "#/components/schemas/Highlight",
             "mark": "#/components/schemas/AddMark",
             "navigate": "#/components/schemas/Navigate",
-            "partner": "#/components/schemas/ChoosePartner",
             "place": "#/components/schemas/PlaceVisual",
             "preferences": "#/components/schemas/SetPreferences",
+            "provider": "#/components/schemas/ChooseProvider",
             "remove_mark": "#/components/schemas/RemoveMark",
             "show": "#/components/schemas/ShowVisual"
           },
@@ -5943,7 +6067,7 @@
             "$ref": "#/components/schemas/SetPreferences"
           },
           {
-            "$ref": "#/components/schemas/ChoosePartner"
+            "$ref": "#/components/schemas/ChooseProvider"
           },
           {
             "$ref": "#/components/schemas/AddMark"
@@ -6071,13 +6195,6 @@
         "title": "PartBody",
         "type": "object"
       },
-      "PartnerChoice": {
-        "enum": [
-          "shared",
-          "local"
-        ],
-        "type": "string"
-      },
       "Person": {
         "additionalProperties": false,
         "description": "A person or an agent added by hand, under the name the pickers show.",
@@ -6182,6 +6299,12 @@
             "maxItems": 50,
             "title": "Aliases",
             "type": "array"
+          },
+          "chat_provider": {
+            "$ref": "#/components/schemas/ChatProvider",
+            "default": "assistant",
+            "description": "The provider a new chat starts on: the assistant, or claude or codex run on a machine of yours.",
+            "x-setting": true
           },
           "chat_side": {
             "default": "left",
@@ -6376,6 +6499,50 @@
       },
       "Priority-Output": {
         "type": "integer"
+      },
+      "ProviderFlags": {
+        "description": "Which providers the station's owner may choose now.",
+        "properties": {
+          "assistant": {
+            "default": true,
+            "title": "Assistant",
+            "type": "boolean"
+          },
+          "claude": {
+            "default": false,
+            "title": "Claude",
+            "type": "boolean"
+          },
+          "codex": {
+            "default": false,
+            "title": "Codex",
+            "type": "boolean"
+          }
+        },
+        "title": "ProviderFlags",
+        "type": "object"
+      },
+      "ProviderReasons": {
+        "description": "Why each unavailable provider is: empty for an available one.",
+        "properties": {
+          "assistant": {
+            "default": "",
+            "title": "Assistant",
+            "type": "string"
+          },
+          "claude": {
+            "default": "Connect a machine with `trax machine connect` and install claude on it",
+            "title": "Claude",
+            "type": "string"
+          },
+          "codex": {
+            "default": "Connect a machine with `trax machine connect` and install codex on it",
+            "title": "Codex",
+            "type": "string"
+          }
+        },
+        "title": "ProviderReasons",
+        "type": "object"
       },
       "PublicationType": {
         "enum": [
@@ -6870,6 +7037,11 @@
         ],
         "title": "RoleChangeBody",
         "type": "object"
+      },
+      "RunFolder": {
+        "maxLength": 1024,
+        "pattern": "^[/~][^\\x00-\\x1f\\x7f]*$",
+        "type": "string"
       },
       "SavedView": {
         "additionalProperties": false,
@@ -7442,6 +7614,18 @@
               }
             ],
             "title": "Actor"
+          },
+          "attach": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attach"
           },
           "cli": {
             "minLength": 1,
@@ -10160,13 +10344,37 @@
         "title": "TabVisual",
         "type": "object"
       },
+      "TerminalCommand": {
+        "enum": [
+          "claude",
+          "codex"
+        ],
+        "type": "string"
+      },
       "TerminalMachine": {
         "additionalProperties": false,
         "description": "One machine the caller owns, and whether it can take a terminal now.",
         "properties": {
+          "clis": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Clis",
+            "type": "array"
+          },
           "confirmed": {
             "title": "Confirmed",
             "type": "boolean"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunFolder"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "name": {
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
@@ -10261,9 +10469,41 @@
         "additionalProperties": false,
         "description": "An open request, as the host receives it.",
         "properties": {
+          "attach": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attach"
+          },
           "cols": {
             "title": "Cols",
             "type": "integer"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TerminalCommand"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunFolder"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "ice_servers": {
             "$ref": "#/components/schemas/IceServers"
@@ -10286,6 +10526,18 @@
           "rows": {
             "title": "Rows",
             "type": "integer"
+          },
+          "run_name": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Name"
           },
           "terminal_id": {
             "format": "uuid",
@@ -11258,7 +11510,7 @@
         "type": "object"
       },
       "WorkspacePartner": {
-        "description": "Who a canvas's Chat talks to now, computed on every read and never stored.\n\nWith the shared choice, the partner is the assistant's newest live session; an\nassistant with no live session is still named, as unavailable. With the local\nchoice, it is the owner's newest live `trax helper` session, or unavailable.",
+        "description": "Who a canvas's Chat talks to now, computed on every read and never stored.\n\nFor ``assistant`` the partner is the assistant's newest live session; an assistant\nwith no live session is still named, as unavailable. For ``claude`` or ``codex``\nit is the chat's session while a run of that CLI drains it, else ``offline``,\nstill naming the chat's session, so a run can be started attached to it.",
         "properties": {
           "actor": {
             "anyOf": [
@@ -11282,9 +11534,47 @@
             ],
             "title": "Cli"
           },
-          "kind": {
-            "$ref": "#/components/schemas/PartnerChoice",
-            "default": "shared"
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cwd"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "machine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Machine"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/ChatProvider",
+            "default": "assistant"
+          },
+          "run_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Name"
           },
           "session_id": {
             "anyOf": [
@@ -11301,7 +11591,8 @@
           "status": {
             "enum": [
               "live",
-              "unavailable"
+              "unavailable",
+              "offline"
             ],
             "title": "Status",
             "type": "string"
@@ -11386,6 +11677,18 @@
             ],
             "title": "Session Id"
           },
+          "station_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Station Id"
+          },
           "suggestion": {
             "anyOf": [
               {
@@ -11437,6 +11740,9 @@
               }
             ],
             "title": "Assistant"
+          },
+          "available": {
+            "$ref": "#/components/schemas/ProviderFlags"
           },
           "continuation_record_id": {
             "anyOf": [
@@ -11538,10 +11844,6 @@
               }
             ]
           },
-          "partner_choice": {
-            "$ref": "#/components/schemas/PartnerChoice",
-            "default": "shared"
-          },
           "pinned": {
             "default": false,
             "title": "Pinned",
@@ -11560,6 +11862,13 @@
               }
             ],
             "title": "Preferences"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/ChatProvider",
+            "default": "assistant"
+          },
+          "reasons": {
+            "$ref": "#/components/schemas/ProviderReasons"
           },
           "record_labels": {
             "additionalProperties": {
@@ -13837,7 +14146,7 @@
     },
     "/api/chats": {
       "post": {
-        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nWhoever reads a chat posts into it: its starter, each person it is shared with\nand anyone the server's ``TRACKINIZER_CHAT_ORGS`` lets in, holding its audience;\na viewer may not, and any other writer is refused with 403 ``chat_not_shared``,\nwhether the chat is named by ``conversation_id`` or by the ``Idempotency-Key`` of\na post that names none. A reader forks a chat from one of its lines (``fork``\nnames it); a fork from a line of a chat the poster does not read is 422, since it\nwould copy lines they may not read, a fork of a ``private`` or ``staff`` chat is\n409 ``chat_fork_closed``, since its copies would not keep the audience, a fork\nthat the poster's organisation would read and the chat's readers do not\ninclude is 409 ``chat_fork_wider``, and a fork whose key names a conversation\nsomeone else began is refused with 409. A\nline under the id of a\ndeleted chat, named or as a fork's key, or a fork from a line of one, is refused\nwith 410 ``chat_deleted``: no chat starts under that id again. A station holds one\nchat: its first line binds the station to the line's conversation, and a line\nnaming another conversation is refused with 409, as is one for a conversation\nanother station of the poster holds. A fork goes to a new station, copied from\nthe one it was sent from and named in the answer's ``workspace_id``. The line's\nposter is the attested identity, never anything in the body. The answer is the\nconversation id at once: the conversation's session appears when the assistant\nopens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key\nqueues nothing again.\n\nArgs:\n  body: The line, the poster's station, and the conversation to post into or the\n    line to fork; neither continues the station's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the station it went to, and its session when the\n    assistant has it open.",
+        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nWhoever reads a chat posts into it: its starter, each person it is shared with\nand anyone the server's ``TRACKINIZER_CHAT_ORGS`` lets in, holding its audience;\na viewer may not, and any other writer is refused with 403 ``chat_not_shared``,\nwhether the chat is named by ``conversation_id`` or by the ``Idempotency-Key`` of\na post that names none. A reader forks a chat from one of its lines (``fork``\nnames it); a fork from a line of a chat the poster does not read is 422, since it\nwould copy lines they may not read, a fork of a ``private`` or ``staff`` chat is\n409 ``chat_fork_closed``, since its copies would not keep the audience, a fork\nthat the poster's organisation would read and the chat's readers do not\ninclude is 409 ``chat_fork_wider``, and a fork whose key names a conversation\nsomeone else began is refused with 409. A\nline under the id of a\ndeleted chat, named or as a fork's key, or a fork from a line of one, is refused\nwith 410 ``chat_deleted``: no chat starts under that id again. A station holds one\nchat: its first line binds the station to the line's conversation, and a line\nnaming another conversation is refused with 409, as is one for a conversation\nanother station of the poster holds. A fork goes to a new station, copied from\nthe one it was sent from and named in the answer's ``workspace_id``. The line's\nposter is the attested identity, never anything in the body. The answer is the\nconversation id at once: the conversation's session appears when the assistant\nopens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key\nqueues nothing again.\n\nThe poster's station's provider answers, or in a chat someone else started, the\nprovider of its starter's station. ``assistant`` takes a ``line`` alone (422 for\nany other ``kind``). For ``claude`` or ``codex`` the post, with its ``kind`` and\n``payload``, joins the queue of the chat's session that the CLI's run drains;\nwith no such run live it is 409 ``provider_offline``. A fork from a ``claude`` or\n``codex`` station is one too: its new session is opened at once and its line\nwaits there for the run the person starts.\n\nA ``line`` that starts with a known slash command of claude or codex is judged\nby the chat's provider, not the poster's station. One the provider runs from\nChat (``/goal``, and claude's ``/compact``) is queued as a ``command``, typed\nbare, with no page, trail or marks; any other is 422 ``command_refused`` with\nthe reason in ``message``, and nothing is queued. Every other ``/`` line stays a\nline. An ``answer`` to a ``claude`` or ``codex`` chat is its starter's alone,\nthe run's owner, since it runs a tool or grants trust on their machine: anyone\nelse is 403 ``answer_not_owner``, and nothing is queued.\n\nArgs:\n  body: The line, the poster's station, and the conversation to post into or the\n    line to fork; neither continues the station's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the station it went to, and its session when the line\n    was queued on it.",
         "operationId": "post_chat_line_route_api_chats_post",
         "parameters": [
           {
@@ -19939,7 +20248,7 @@
     },
     "/api/sessions/start": {
       "post": {
-        "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so ``trax run``\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``, or ``private`` when ``private`` asks; a pin the caller no longer holds\nis 403 ``audience_not_held``, and so is ``private`` under a pin to ``staff``. A\nresume asked to be ``private`` hides the ``open`` session it re-attaches, as the\nkey that opened it may, and is 409, leaving it as it was, for a ``staff`` one. A\nsession under the id of a science chat that is not ``open`` takes the chat's\naudience instead, so a chat stays ``private`` or ``staff`` whichever key opens\nits next session. A ``cli_session_id`` of a deleted science chat\n(``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is titled\n``Science chat`` whatever ``title`` says, since every key reads the row and only\nthe chat's members read its lines.\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, started, rooms,\n    account, idempotency_key, private).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, granted actor name and\n    audience.",
+        "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so ``trax run``\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``, or ``private`` when ``private`` asks; a pin the caller no longer holds\nis 403 ``audience_not_held``, and so is ``private`` under a pin to ``staff``. A\nresume asked to be ``private`` hides the ``open`` session it re-attaches, as the\nkey that opened it may, and is 409, leaving it as it was, for a ``staff`` one. A\nsession under the id of a science chat that is not ``open`` takes the chat's\naudience instead, so a chat stays ``private`` or ``staff`` whichever key opens\nits next session. A ``cli_session_id`` of a deleted science chat\n(``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is titled\n``Science chat`` whatever ``title`` says, since every key reads the row and only\nthe chat's members read its lines.\n\n``attach`` re-opens that session by its id instead: it is live again if it had\nended, its ``cli_session_id`` stays, and the run's file becomes its next part. The\nresponse names it as a fresh start's would. A caller who may not write the\nsession is 403, and so is one a science chat takes no run from: only its opening\nkey, the assistant's or its starter's attach to a chat. An unknown id is 404.\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, attach, started, rooms,\n    account, idempotency_key, private).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, granted actor name and\n    audience.",
         "operationId": "session_start_route_api_sessions_start_post",
         "requestBody": {
           "content": {
@@ -20029,7 +20338,7 @@
     },
     "/api/sessions/{session_id}/end": {
       "post": {
-        "description": "Close a session atomically and release its inbound queue.\n\n``end_session`` stamps ``ended`` + ``status`` (and backfills\n``cli_session_id`` when given) in one transaction, so a partial\nfailure can never leave a zombie session -- ``ended`` set yet\n``status`` non-terminal -- and the inbound queue is drained only after\nthe close commits, so a failed end never silently discards undelivered\nsteering messages. A second end on an already-closed session is a 409. A\nsession whose audience the caller neither reads nor opened is 403\n``session_audience``.\n\nArgs:\n  session_id: UUID of the session to close.\n  body: Session status and optional cli_session_id backfill.\n  request: Starlette request object.\n  identity: Authenticated user (audit actor for the change).\n\nReturns:\n  response: SessionEndResponse with session id and committed ended\n    timestamp (original value on idempotent replay).",
+        "description": "Close a session atomically and release its inbound queue.\n\n``end_session`` stamps ``ended`` + ``status`` (and backfills\n``cli_session_id`` when given) in one transaction, so a partial\nfailure can never leave a zombie session -- ``ended`` set yet\n``status`` non-terminal -- and the inbound queue is drained only after\nthe close commits, so a failed end never silently discards undelivered\nsteering messages. A second end on an already-closed session is a 409. A\nsession whose audience the caller neither reads nor opened is 403\n``session_audience``. A science chat is closed by a key that may run on it: its\nopening key, the assistant's or its starter's (403 otherwise).\n\nArgs:\n  session_id: UUID of the session to close.\n  body: Session status and optional cli_session_id backfill.\n  request: Starlette request object.\n  identity: Authenticated user (audit actor for the change).\n\nReturns:\n  response: SessionEndResponse with session id and committed ended\n    timestamp (original value on idempotent replay).",
         "operationId": "session_end_route_api_sessions__session_id__end_post",
         "parameters": [
           {
@@ -20080,7 +20389,7 @@
     },
     "/api/sessions/{session_id}/inbound": {
       "get": {
-        "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's ``trax run`` to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nThe drain is 403 ``session_audience`` unless the caller opened the session or reads\nits audience.\n\nWriters retain shared access to the drains of ordinary sessions, but a science\nchat and the assistant's or a helper's service session are drained by their\nopening key alone (403 otherwise). Viewer access is scoped to the opening API\nkey so reading chat does not grant graph-write permission.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text,\n    source, room), oldest first, or empty list if none are queued.",
+        "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's ``trax run`` to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nThe drain is 403 ``session_audience`` unless the caller opened the session or reads\nits audience.\n\nWriters retain shared access to the drains of ordinary sessions, but a science\nchat and the assistant's service session are drained by their opening key alone\n(403 otherwise). Viewer access is scoped to the opening API key so reading chat\ndoes not grant graph-write permission.\n\nA science chat's queue has one drainer, the provider its starter's station names.\nFor ``claude`` or ``codex`` a drain by the configured assistant's key is 409\n``provider_is_cli``, and the run that drains it may be under any key a chat takes\na run from (its opening key or its starter's; 403 otherwise). For ``assistant`` a\ndrain by its opening key that is not the assistant's is 409\n``provider_is_assistant``. Either holds from the moment the station switches.\n\n``run``, ``machine`` and ``cwd`` say where the draining run is, and the lease the\ndrain takes keeps them for Chat to show (a malformed one is 422). They are the\ncaller's own word about its own run, shown and never trusted; a run that names\nnone is shown as it was before runs named themselves.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n  run: The ``trax run --detach`` host the run is, which ``trax run attach``\n    takes; absent for a run in a terminal of its own.\n  machine: The run's machine, as ``trax machine connect`` names it.\n  cwd: The run's working directory, ``~/...`` under its home: at most 1,024\n    characters, none of them a control character.\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text, kind,\n    payload, source, room), oldest first, or empty list if none are queued.",
         "operationId": "session_inbound_drain_route_api_sessions__session_id__inbound_get",
         "parameters": [
           {
@@ -20101,6 +20410,58 @@
               "default": 0.0,
               "title": "Wait Sec",
               "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._@#+=:-]{0,127}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Run"
+            }
+          },
+          {
+            "in": "query",
+            "name": "machine",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Machine"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cwd",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 1024,
+                  "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cwd"
             }
           }
         ],
@@ -20400,7 +20761,7 @@
     },
     "/api/sessions/{session_id}/place": {
       "post": {
-        "description": "Place a session in the caller's workstream and a station; the server decides.\n\nThe first rule that matches wins: the station the run started from, when it is the\ncaller's; the placement the session already has; the workstream of the caller's\nnewest earlier session on the same git branch, in a new station; else the caller's\nScratch, in a new station. Placing a placed session returns its placement. A\nservice account's session, a science chat and a ``trax helper`` are not placed:\nboth ids are null.\n\nArgs:\n  session_id: The session, which the caller's own key opened.\n  body: The station the run started from, and its git checkout.\n  request: Request carrying the database engine and store.\n  identity: The session's own account and key.\n\nReturns:\n  placement: The workstream and station of the session.",
+        "description": "Place a session in the caller's workstream and a station; the server decides.\n\nThe first rule that matches wins: the station the run started from, when it is the\ncaller's; the placement the session already has; the workstream of the caller's\nnewest earlier session on the same git branch, in a new station; else the caller's\nScratch, in a new station. Placing a placed session returns its placement. A\nservice account's session and a science chat are not placed: both ids are null.\n\nArgs:\n  session_id: The session, which the caller's own key opened.\n  body: The station the run started from, and its git checkout.\n  request: Request carrying the database engine and store.\n  identity: The session's own account and key.\n\nReturns:\n  placement: The workstream and station of the session.",
         "operationId": "place_session_route_api_sessions__session_id__place_post",
         "parameters": [
           {
@@ -20563,7 +20924,7 @@
         "summary": "Read Session Records Route"
       },
       "post": {
-        "description": "Append one file's records, resolving its part server-side.\n\nThe manifest is upserted BEFORE the records, deliberately: it is what\nassigns the part number the records are keyed by, and it bounds every\nreader (``idx < records``). Writing records first would briefly expose\nrows no manifest accounts for.\n\nA body naming no file carries only slash commands -- a command is typed\ninto the SESSION, and one submitted before the CLI has written a\ntranscript has no part to belong to.\n\nArgs:\n  session_id: AgentSession ID to append to.\n  request: FastAPI request (carries auth and store).\n  body: Records, manifest, and slash commands to append.\n  identity: Authenticated writer or viewer who opened this session.\n\nReturns:\n  result: AppendRecordsResponse with row counts.",
+        "description": "Append one file's records, resolving its part server-side.\n\nThe manifest is upserted BEFORE the records, deliberately: it is what\nassigns the part number the records are keyed by, and it bounds every\nreader (``idx < records``). Writing records first would briefly expose\nrows no manifest accounts for.\n\nA body naming no file carries only slash commands -- a command is typed\ninto the SESSION, and one submitted before the CLI has written a\ntranscript has no part to belong to.\n\nA science chat holds one part per run that answered in it, and the key whose\nfirst write opened a part alone writes it after: another key's write is 403,\nso one run never rewrites another's lines.\n\nArgs:\n  session_id: AgentSession ID to append to.\n  request: FastAPI request (carries auth and store).\n  body: Records, manifest, and slash commands to append.\n  identity: Authenticated writer or viewer who opened this session.\n\nReturns:\n  result: AppendRecordsResponse with row counts.",
         "operationId": "append_session_records_route_api_sessions__session_id__records_post",
         "parameters": [
           {
@@ -20742,8 +21103,26 @@
     },
     "/api/terminals": {
       "post": {
-        "description": "Open a terminal on one of the caller's machines.\n\nOnly a browser session opens one: an API key, a service account, a request without\nthis server's ``Origin``, and anyone but the machine's owner are refused. The\nmachine must be online and its host must have asked for terminals within 45 seconds\n(``TRAX_MACHINE_TERMINAL=1``). Attach with the returned ticket within 30 seconds.\n\nArgs:\n  body: The machine, the terminal's size, and the station it opens from.\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n\nReturns:\n  opened: The terminal id and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for a key, a service account or a foreign origin; 404 for no\n    such machine of the caller's, or station; 409 ``terminal_unconfirmed`` until the\n    owner confirms a machine a key enrolled, ``terminal_not_enabled`` when the host\n    is not asking; 429 ``terminal_limit`` past 10 opens a minute. Every terminal\n    route answers 403 on a server with authentication off.",
+        "description": "Open a terminal on one of the caller's machines.\n\nA browser session opens the owner's terminal. The configured assistant may open\nonly a detached campaign run for an attested writer or admin named as ``asker``;\nevery other key, service account or foreign origin is refused. The machine must\nbe online and its host must have asked for terminals within 45 seconds\n(``TRAX_MACHINE_TERMINAL=1``). Attach with the ticket within 30 seconds.\n\nArgs:\n  body: The machine, the terminal's size, and the station it opens from.\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n  asker: The person the configured assistant starts a campaign for.\n\nReturns:\n  opened: The terminal id and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for an untrusted key, a service account or a foreign origin;\n    404 for no such machine of the asker, or station; 409 ``terminal_unconfirmed`` until the\n    owner confirms a machine a key enrolled, ``cli_not_installed`` when the machine's\n    facts do not list the CLI asked for, ``terminal_not_enabled`` when the host is\n    not asking; 429 ``terminal_limit`` past 10 opens a minute. Every terminal route\n    answers 403 on a server with authentication off.",
         "operationId": "open_terminal_route_api_terminals_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "asker",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asker"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -23065,7 +23444,7 @@
     },
     "/api/workspaces/new": {
       "post": {
-        "description": "Make a station named with the lowest free ``unnamed-workstream#N``.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n  body: Optional workstream selection; omission selects Scratch.\n\nReturns:\n  state: The new station.",
+        "description": "Make a station named with the lowest free ``unnamed-workstream#N``.\n\nIt starts on the ``provider`` the body names, else on the caller's\n``chat_provider`` preference. A provider with no machine to run on is taken all\nthe same: nothing runs until a machine is picked. A ``claude`` or ``codex``\nstation is given its chat and the chat's session at once, which its partner\nnames, so a run can be started attached to it before any line.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n  body: Optional workstream and provider; an unset workstream selects Scratch.\n\nReturns:\n  state: The new station.",
         "operationId": "new_workspace_route_api_workspaces_new_post",
         "requestBody": {
           "content": {
@@ -23073,7 +23452,7 @@
               "schema": {
                 "anyOf": [
                   {
-                    "$ref": "#/components/schemas/NewWorkspace"
+                    "$ref": "#/components/schemas/NewStation"
                   },
                   {
                     "type": "null"
@@ -23444,7 +23823,7 @@
     },
     "/api/workspaces/{workspace_id}/operations": {
       "post": {
-        "description": "Apply one revisioned operation and return the updated canvas.\n\nA ``navigate``, ``highlight``, ``chat`` or ``preferences`` operation, which only an\nagent key may send, changes neither a visual nor the revision: it pushes a\n``navigate``, ``highlight`` or ``chat`` frame to this station, or, for\n``preferences``, which changes the owner's preferences, a ``preferences`` frame\nto every station of the owner. A ``mark``, ``remove_mark`` or\n``clear_marks`` operation (red boxes) commutes with every other write, so it\ntakes the next revision whatever revision it expects; ``remove_mark`` takes any\none box, ``clear_marks`` every box or one page's, and one already gone is no\nchange. A replay of an applied key returns the original state and publishes\nnothing.\n\nArgs:\n  workspace_id: Canvas to change.\n  body: Expected revision and visual operation.\n  request: Request carrying the database engine.\n  identity: Authenticated workspace owner.\n  key: Retry-safe idempotency key.\n\nReturns:\n  state: Updated canvas, or a conflict with the current revision.",
+        "description": "Apply one revisioned operation and return the updated canvas.\n\nA ``navigate``, ``highlight``, ``chat`` or ``preferences`` operation, which only an\nagent key may send, changes neither a visual nor the revision: it pushes a\n``navigate``, ``highlight`` or ``chat`` frame to this station, or, for\n``preferences``, which changes the owner's preferences, a ``preferences`` frame\nto every station of the owner. A ``mark``, ``remove_mark`` or\n``clear_marks`` operation (red boxes) commutes with every other write, so it\ntakes the next revision whatever revision it expects; ``remove_mark`` takes any\none box, ``clear_marks`` every box or one page's, and one already gone is no\nchange. A replay of an applied key returns the original state and publishes\nnothing.\n\nA ``provider`` operation, which only the owner's browser sends, chooses who\nanswers the station's Chat: ``assistant``, ``claude`` or ``codex``. A provider\nthe owner cannot run now (no confirmed online machine of theirs lists the CLI) is\n409 ``provider_unavailable`` with the reason. Choosing ``claude`` or ``codex``\ngives the station a chat, and the chat a session, when it has none, so the\npartner names a session for a run to attach to.\n\nArgs:\n  workspace_id: Canvas to change.\n  body: Expected revision and visual operation.\n  request: Request carrying the database engine.\n  identity: Authenticated workspace owner.\n  key: Retry-safe idempotency key.\n\nReturns:\n  state: Updated canvas, or a conflict with the current revision.",
         "operationId": "workspace_operation_route_api_workspaces__workspace_id__operations_post",
         "parameters": [
           {

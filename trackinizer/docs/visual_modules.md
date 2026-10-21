@@ -88,11 +88,23 @@ the workspace response. A `show` can also include `record_id` and bounded
 ## Chat with the assistant
 
 Chat talks to the canvas's partner, which `WorkspaceState.partner` names on
-every read and the events stream pushes when it changes. By default it is the
-server's shared assistant; `WorkspaceState.partner_choice` can instead be
-`local`, the owner's own `trax helper` session, which the `partner`
-operation sets. A partner that is not `live` disables the composer. A server with
-no assistant of its own can run `trax helper claude --as ACTOR` as one.
+every read and the events stream pushes when it changes. It follows the station's
+`provider`: the server's shared assistant (`assistant`), or the owner's own
+`trax run claude|codex` attached to the chat's session on one of their machines. The
+header's provider card chooses it (`{"kind": "provider"}`), stars the default for
+new chats (the `chat_provider` preference), allows a newly connected machine, and
+starts a run on a machine that lists the CLI, in a folder the person names. A CLI's
+partner is `offline` while no such run drains the chat, and still names the session
+to attach a run to; a live one carries its `machine`, `run_name` (for `trax run
+attach`) and `cwd`. A partner that is not `live` disables the composer.
+
+A claude run's prompts reach Chat as cards: the run records a prompt with
+`extra.$interaction` (`permission`, `question`, `plan`, or `trust` for a folder the
+CLI does not trust yet) and its end with `extra.$interaction_resolved`. The chat's
+starter answers a card with a post of kind `answer` and its `payload`; anyone else
+is refused. A slash command the run types (`/goal`, claude's `/compact`) is a
+`$command` record, shown as its sender's line, and the goal the CLI logs shows
+above the composer.
 
 Chat is a column beside the canvas, on the left by default; the browser keeps
 its side and width, and a key hides it. It is no visual, so a canvas has no Chat
@@ -100,10 +112,10 @@ instance and a line pins no record. To send, the browser calls `POST /api/chats`
 with a fresh `Idempotency-Key`:
 
 ```json
-{"kind":"science","workspace_id":"<workspace-id>","text":"What led to this experiment?"}
+{"workspace_id":"<workspace-id>","text":"What led to this experiment?"}
 ```
 
-The server checks the signed-in writer and a live assistant. It adds the
+The server checks the signed-in writer and a live partner. It adds the
 workspace UUID and the visible visual identities to a typed inbound context.
 The browser also sends
 `page`, the `#/...` address it is on, and `trail`, the addresses before it,

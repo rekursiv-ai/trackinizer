@@ -19,6 +19,7 @@ from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
     AgentToAgentMessage,
     AssistantMessage,
+    ContextClear,
     ContextCompaction,
     FileEditResult,
     FileReadResult,
@@ -211,6 +212,79 @@ def test_a_context_override_is_a_compaction() -> None:
 
     [compaction] = _only(records, ContextCompaction)
     assert dict(compaction.extra) == {"tokens": 12}
+
+
+def _splice(strategy: str, *payload: dict[str, object]) -> dict[str, object]:
+    """Return a compaction as ``session_io`` writes a ``ContextSplice``."""
+    return {
+        "kind": "context_splice",
+        "ref": {"session_id": "agent", "ordinal": 4},
+        "mask": [],
+        "insert_after": None,
+        "payload": list(payload),
+        "strategy": strategy,
+        "token_before": 9_000,
+        "token_after": 300,
+        "fallback_reason": "",
+        "preserved_tail_count": max(len(payload) - 1, 0),
+        "paired_externally": [],
+    }
+
+
+def _entry(kind: str, **fields: object) -> dict[str, object]:
+    """Return one payload entry as ``session_io`` writes it: a history body, no ref."""
+    body: dict[str, object] = {
+        "type": kind,
+        "attachments": [],
+        "id": 0,
+        "parent_id": -1,
+        "timestamp": 1_760_954_400.0,
+        "hidden": False,
+    }
+    return body | fields
+
+
+def test_a_summary_compaction_opens_a_window_with_its_summary_and_kept_turns() -> None:
+    """The IR's grammar: the event, then the clear the next context begins with."""
+    records = _read(
+        _history("agent_send", source="ada", text="F1 is apples"),
+        _splice(
+            "summary",
+            _entry("user", text="Summary: ada said F1 is apples."),
+            _entry("agent_send", source="ada", text="and F2?"),
+            _entry("assistant", text="F2 is pears.", tool_calls=[]),
+        ),
+    )
+
+    kinds = [type(record).__name__ for record in records]
+    assert kinds[-2:] == ["ContextCompaction", "ContextClear"]
+    clear = records[-1]
+    assert isinstance(clear, ContextClear)
+    assert clear.summary == "Summary: ada said F1 is apples."
+    assert [type(record).__name__ for record in clear.history] == [
+        "AgentToAgentMessage",
+        "AssistantMessage",
+    ]
+
+
+@pytest.mark.parametrize(
+    "splice",
+    [
+        _splice(
+            "summary_fallback",
+            _entry("user", text="Compaction failed. Earlier context was dropped."),
+        ),
+        _splice("summary"),
+        _splice("summary", _entry("assistant", text="kept", tool_calls=[])),
+    ],
+    ids=["fallback", "empty", "no-continuation"],
+)
+def test_a_compaction_with_no_summary_is_the_event_alone(
+    splice: dict[str, object],
+) -> None:
+    records = _read(splice)
+
+    assert [type(record).__name__ for record in records] == ["ContextCompaction"]
 
 
 def test_unknown_message_families_are_kept_uncategorized() -> None:
@@ -654,6 +728,11 @@ def test_a_mistyped_field_aborts_no_read() -> None:
             "is_error": True,
         },
         {"kind": "context_override", "tokens": 12, "payload": {}},
+        _splice(
+            "summary",
+            _entry("user", text="summary"),
+            _entry("agent_send", source="kid", text="kept"),
+        ),
     ]
     failed: list[str] = []
     for index, record in enumerate(session):

@@ -16,6 +16,7 @@ from trackinizer.server.store.deleted_chats import chat_was_deleted, lock_chat_i
 from trackinizer.server.visuals.science_chats import may_post
 from trackinizer.server.visuals.workspace_store import (
     WorkspaceSessionUnavailableError,
+    chat_answerer,
     chat_line_target,
     read_workspace,
 )
@@ -48,9 +49,11 @@ async def relay_console_line(
     """Queue one Console relay for the partner of the owner's station.
 
     It joins the queue a Chat line of that station joins, as :func:`chat_line_target`
-    says: the chat's own session when the assistant has it open, else the partner's
-    service session, which opens the conversation's session before it records the
-    relay; and it is refused where that line would be. A retry under the same key
+    says, for the provider that answers the chat (:func:`chat_answerer`): the chat's
+    own session when the assistant has it open, else the partner's service session,
+    which opens the conversation's session before it records the relay; for
+    ``claude`` or ``codex``, the chat's session its run drains. It is refused where
+    that line would be. A retry under the same key
     queues nothing again. The partner answers a relay with nothing; it records the
     line and reads it with its next prompt. A relay is a line of its sender's in the
     station's chat, so only a sender who may post into that chat relays into it: any
@@ -109,12 +112,19 @@ async def relay_console_line(
             inbound=inbound,
         ):
             return False
+        provider = await chat_answerer(
+            conn,
+            state=state,
+            conversation_id=state.conversation_id,
+            poster=source,
+            assistant=assistant,
+        )
         try:
             chat = await chat_line_target(
                 conn,
                 inbound=inbound,
                 assistant=assistant,
-                choice=state.partner_choice,
+                provider=provider,
                 conversation_id=state.conversation_id,
             )
         except WorkspaceSessionUnavailableError:

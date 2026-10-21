@@ -348,7 +348,7 @@ async def test_model_override_unknown_is_400(store: Store) -> None:
             model="qwen3-embeddings-4b",  # Typo'd slug -- no such model.
         )
     assert caught.value.status_code == 400
-    assert "did you mean" in str(caught.value.detail)
+    assert "did you mean" in caught.value.detail
 
 
 @pytest.mark.db_pglite
@@ -366,7 +366,7 @@ async def test_model_override_unsupported_dim_is_400(store: Store) -> None:
             dim=99_999,  # Above the 2560 Matryoshka ceiling.
         )
     assert caught.value.status_code == 400
-    assert "2560" in str(caught.value.detail)
+    assert "2560" in caught.value.detail
 
 
 @pytest.mark.db_pglite

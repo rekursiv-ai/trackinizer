@@ -121,14 +121,6 @@ class SetStationWorkstream(BaseModel):
     workstream_id: uuid.UUID
 
 
-class NewWorkspace(BaseModel):
-    """Optional workstream for a newly opened station."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    workstream_id: uuid.UUID | None = None
-
-
 class ScratchWorkstreamError(Exception):
     """Scratch is not a workstream a user may hide."""
 
@@ -472,7 +464,7 @@ async def workstream_info(
             station = StationData.model_validate(
                 from_plain(row["station"], dict[str, object]),
             )
-            session_ids = []
+            session_ids: list[uuid.UUID] = []
             if station.conversation_id is not None:
                 session_ids = await read_chat_sessions(
                     conn,

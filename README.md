@@ -103,19 +103,8 @@ children, a graph of what lies within two hops, and its activity.
 
 ### Chat
 
-A canvas's Chat talks to a partner, which is either the server's shared
-assistant or your own helper:
-
-1. An admin sets the shared assistant: `trackinizer --assistant ACTOR=EMAIL`.
-2. Or you pick "My local helper" in Settings, for your canvases only.
-3. Run your helper in a terminal, with your Claude or Codex CLI:
-
-```bash
-uv tool install git+https://github.com/rekursiv-ai/trackinizer && trax profile url to <server URL> && trax profile token to <TOKEN>
-trax helper claude
-```
-
-With "My local helper" chosen and no helper running, Chat says so and sends
+A canvas's Chat talks to the server's shared assistant. An admin sets it with
+`trackinizer --assistant ACTOR=EMAIL`; with none live, Chat says so and sends
 nothing. [`docs/api.md`](trackinizer/docs/api.md) has the rules.
 
 ## The model

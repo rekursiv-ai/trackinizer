@@ -77,7 +77,7 @@ UNCATEGORIZED = {
         "permission-mode",
         "queue-operation",
     ],
-    "claude_sidechain": [],
+    "claude_sidechain": list[str](),
     "codex_main": [
         "event_msg/item_completed/AgentMessage",
         "event_msg/item_completed/Reasoning",

@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, cast
 
 import base64
-import binascii
 import functools
 import hashlib
 import logging
@@ -276,7 +275,7 @@ def verify_secret(secret: str, encoded: str) -> bool:
         p = int(parts[3])
         salt = _b64decode(parts[4])
         expected = _b64decode(parts[5])
-    except (ValueError, binascii.Error):
+    except ValueError:
         return False
     if n < 2 or n > 2**20 or n & (n - 1) != 0 or r < 1 or r > 128 or p < 1 or p > 128:
         return False

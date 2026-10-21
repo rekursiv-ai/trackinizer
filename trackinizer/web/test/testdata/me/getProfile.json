@@ -20,6 +20,7 @@
       "pinned_audience": null,
       "preferences": {
         "aliases": [],
+        "chat_provider": "assistant",
         "chat_side": "left",
         "collapsed": [],
         "console_views": [],

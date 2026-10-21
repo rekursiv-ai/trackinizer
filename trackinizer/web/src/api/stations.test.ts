@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { clearChat, hideStation, openPersonalSettings, pinStation } from "./stations";
+import { clearChat, createStation, hideStation, openPersonalSettings, pinStation } from "./stations";
 import { stubFetch } from "./testing";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -29,4 +29,14 @@ test("clear chat posts with its idempotency key and returns the new workspace", 
   expect(sent).toMatchObject([{
     method: "POST", path: "/api/workspaces/w1/clear-chat", headers: { "idempotency-key": "key-1" },
   }]);
+});
+
+test("a station made with a provider names it, and one made without a provider sends no body", async () => {
+  const sent = stubFetch(() => Response.json(state));
+  await createStation({ provider: "codex" });
+  await createStation();
+  expect(sent.map(({ method, path, body }) => [method, path, body])).toEqual([
+    ["POST", "/api/workspaces/new", { provider: "codex" }],
+    ["POST", "/api/workspaces/new", undefined],
+  ]);
 });

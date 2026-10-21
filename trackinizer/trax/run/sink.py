@@ -24,7 +24,9 @@ counter per FILE, reset when that file restarts.
 
 A slash command is the exception with no position at all -- it is typed
 into the TUI and never written to the log -- so it travels its own way
-(:meth:`Sink.emit_slash_command`) and the server numbers it.
+(:meth:`Sink.emit_slash_command`) and the server numbers it. A record the run
+writes itself -- a prompt the CLI asks, for Chat to answer -- has no log either,
+so it goes on a part of the run's own (:meth:`Sink.emit_run_record`).
 """
 
 from __future__ import annotations
@@ -179,6 +181,34 @@ class Sink(Protocol):
         """
         ...
 
+    def emit_run_record(self, event: Event) -> None:
+        """Record one record ``trax run`` writes itself, such as a prompt the CLI asks.
+
+        Not the CLI's: it is held on the run's own part, which ``event.path`` names,
+        one per run. A sink that tells parts apart by format stores that part with
+        none, as it does the worktree diff's, so a resume never replays it into a
+        CLI; one that does not records it as any other record.
+
+        Args:
+          event: The record, and the run's part it goes on.
+
+        """
+        self.emit("", event)
+
+    def pass_over(self, path: Path) -> None:
+        """Take the next position of ``path`` without recording a record there.
+
+        For a record the run read but must not upload: the history a resume wrote
+        before the CLI started, which the session already holds in earlier parts.
+        Its position is still taken, so the first record recorded after it keeps
+        its position in the file. A sink that numbers nothing ignores it.
+
+        Args:
+          path: The source file the passed-over record came from.
+
+        """
+        del path
+
     def feed(
         self,
         adapter: Adapter,
@@ -187,6 +217,8 @@ class Sink(Protocol):
         *,
         restart: bool = False,
         on_record: Callable[[TraxRecord], None] | None = None,
+        upload: bool = True,
+        annotate: Callable[[TraxRecord], TraxRecord] | None = None,
     ) -> list[str]:
         """Normalize one captured chunk into records and record each.
 
@@ -211,9 +243,15 @@ class Sink(Protocol):
             for an observer that needs the records the chunk produced (the
             worktree-diff capture reads edited paths this way). Runs on the
             caller's thread, inside any ``feed`` lock.
+          upload: Whether to record what the chunk produces. A chunk of a
+            resume's loaded history is still read, so the reader's state and
+            each part's positions run on from it, but every record it produces
+            is passed over (:meth:`pass_over`) rather than recorded.
+          annotate: Returns each recorded record as it should be stored, before
+            ``on_record`` sees it; the run stamps the lines it typed this way.
 
         Returns:
-          kinds: The record kind names this chunk produced, for the run's
+          kinds: The record kind names this chunk recorded, for the run's
             end-of-run tally.
 
         """
@@ -229,10 +267,14 @@ class Sink(Protocol):
             self.readers[path] = reader
         kinds: list[str] = []
         for record in reader.feed(raw.decode(errors="replace")):
+            if not upload:
+                self.pass_over(path)
+                continue
+            kept = record if annotate is None else annotate(record)
             if on_record is not None:
-                on_record(record)
-            self.emit(adapter.name, Event(record=record, path=path, restart=restart))
-            kinds.append(type(record).__name__)
+                on_record(kept)
+            self.emit(adapter.name, Event(record=kept, path=path, restart=restart))
+            kinds.append(type(kept).__name__)
         return kinds
 
     @property
@@ -342,6 +384,10 @@ class FileSink(Sink):
     @override
     def restart(self, path: Path) -> None:
         self._next_idx[path] = 0
+
+    @override
+    def pass_over(self, path: Path) -> None:
+        self._next_idx[path] = self._next_idx.get(path, 0) + 1
 
     @override
     def emit(self, adapter_name: str, event: Event) -> None:
@@ -495,6 +541,10 @@ class TrackinizerSink(Sink):
     resumes. One the server opens into any other audience is ended at once and
     refused with :class:`PrivateNotHeldError`, and so is every later attempt, so not
     a record reaches it.
+
+    ``attach`` names an existing AgentSession this run re-opens, writing its files
+    as new parts of it. Such a session keeps the CLI session id it has, a chat's
+    ``chat:<id>`` above all, so this sink never sends one, at the start or at close.
     """
 
     def __init__(
@@ -505,6 +555,7 @@ class TrackinizerSink(Sink):
         actor: str | None = None,
         rooms: tuple[str, ...] = (),
         private: bool = False,
+        attach: UUID | None = None,
         redactor: Redactor | None = None,
         batch_size: int = 50,
         batch_bytes: int = 4 << 20,
@@ -517,6 +568,7 @@ class TrackinizerSink(Sink):
         self._actor = actor
         self._rooms = rooms
         self._private = private
+        self._attach = attach
         # Why the server would not hold a session asked to be private as private;
         # set, no session is opened again.
         self._refusal = ""
@@ -550,6 +602,8 @@ class TrackinizerSink(Sink):
         # The synthetic diff part's IR id, minted once and reused so each
         # refresh redeclares the same part rather than minting a new one.
         self._diff_ir_id: UUID | None = None
+        # The run's own parts (``emit_run_record``), declared with no format.
+        self._run_parts: set[Path] = set()
         # Set whenever the buffer fills from empty, so this value is never read.
         self._oldest_buffered_at: float | None = None  # pragma: no mutate
         self._closed = False  # pragma: no mutate -- read only for truthiness.
@@ -585,6 +639,18 @@ class TrackinizerSink(Sink):
             or sum(size for _, _, size in self._buffer) >= self._batch_bytes
         ):
             self._flush()
+
+    # Sent at once rather than when the batch ages: a prompt is a person's to answer,
+    # and the CLI waits on it.
+    @override
+    def emit_run_record(self, event: Event) -> None:
+        self._run_parts.add(event.path)
+        self.emit(self._cli, event)
+        self._flush()
+
+    @override
+    def pass_over(self, path: Path) -> None:
+        self._next_idx[path] = self._next_idx.get(path, 0) + 1
 
     @override
     def restart(self, path: Path) -> None:
@@ -669,9 +735,9 @@ class TrackinizerSink(Sink):
         Backfilled to the server at :meth:`close` so the session becomes
         correlatable on a later ``--resume``. The first non-empty id wins -- a
         CLI session id is stable for the run, so later files of the same run
-        carry the same id.
+        carry the same id. An attached run keeps none: its session's id stays.
         """
-        if cli_session_id and self._cli_session_id is None:
+        if cli_session_id and self._cli_session_id is None and self._attach is None:
             self._cli_session_id = cli_session_id
 
     def _ensure_session(self) -> None:
@@ -691,6 +757,7 @@ class TrackinizerSink(Sink):
                 # (the CLI has not written its file), so this is null there
                 # and the id is backfilled at close instead.
                 cli_session_id=self._cli_session_id,
+                attach=self._attach,
                 private=self._private,
             ),
         )
@@ -793,7 +860,7 @@ class TrackinizerSink(Sink):
                 name=path.name,
                 metadata=self._metadata_for(path),
                 ir_id=self._ir_ids.setdefault(path, uuid4()),
-                format=self._cli,
+                format="" if path in self._run_parts else self._cli,
                 records=self._next_idx.get(path, 0),
             ),
             records=records,
@@ -996,6 +1063,23 @@ class ResilientSink(Sink):
         )
 
     @override
+    def pass_over(self, path: Path) -> None:
+        self._forward(
+            _Held(apply=lambda sink: sink.pass_over(path), taken_before_sending=True),
+            mirror=lambda fallback: fallback.pass_over(path),
+        )
+
+    @override
+    def emit_run_record(self, event: Event) -> None:
+        self._forward(
+            _Held(
+                apply=lambda sink: sink.emit_run_record(event),
+                taken_before_sending=True,
+            ),
+            mirror=lambda fallback: fallback.emit_run_record(event),
+        )
+
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
         self._adapter_for_fallback = adapter_name
         self._forward(
@@ -1181,6 +1265,11 @@ class LockedSink(Sink):
             self._inner.restart(path)
 
     @override
+    def pass_over(self, path: Path) -> None:
+        with self._lock:
+            self._inner.pass_over(path)
+
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
         with self._lock:
             self._inner.emit(adapter_name, event)
@@ -1189,6 +1278,11 @@ class LockedSink(Sink):
     def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
         with self._lock:
             self._inner.emit_slash_command(command, at)
+
+    @override
+    def emit_run_record(self, event: Event) -> None:
+        with self._lock:
+            self._inner.emit_run_record(event)
 
     @override
     def emit_worktree_diff(self, records: Sequence[FileEditResult]) -> None:
@@ -1204,6 +1298,8 @@ class LockedSink(Sink):
         *,
         restart: bool = False,
         on_record: Callable[[TraxRecord], None] | None = None,
+        upload: bool = True,
+        annotate: Callable[[TraxRecord], TraxRecord] | None = None,
     ) -> list[str]:
         # Held across the WHOLE chunk, not per record: the inner sink's
         # per-file position advances once per record, so another thread
@@ -1215,6 +1311,8 @@ class LockedSink(Sink):
                 raw,
                 restart=restart,
                 on_record=on_record,
+                upload=upload,
+                annotate=annotate,
             )
 
     @override

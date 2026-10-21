@@ -326,7 +326,7 @@ class TestSubmit:
 
             def record(fd: int, data: bytes) -> int:
                 if fd == 7:
-                    writes.append(bytes(data))
+                    writes.append(data)
                     return len(data)
                 return real_write(fd, data)
 

@@ -129,6 +129,7 @@ class _World:
         name: str = "gx10",
         *,
         confirm: bool = True,
+        facts: dict[str, object] | None = None,
     ) -> None:
         """Self-enroll ``name`` with ``cookie``'s user, join it, and confirm it."""
         enrolled = await self.call(
@@ -147,6 +148,7 @@ class _World:
                 "token": from_plain(enrolled.json(), dict[str, str])["token"],
                 "instance": str(_INSTANCE),
                 "host_version": "t",
+                "facts": facts or {},
             },
         )
         assert joined.status_code == 201
@@ -190,12 +192,24 @@ class _World:
         origin: str | None = _ORIGIN,
         requested_by: str | None = None,
         surface: str | None = None,
+        command: str | None = None,
+        attach: uuid.UUID | None = None,
+        run_name: str | None = None,
+        cwd: str | None = None,
     ) -> httpx2.Response:
         body: dict[str, object] = {"machine": machine, "rows": 24, "cols": 80}
         if surface is not None:
             body["surface"] = surface
         if requested_by is not None:
             body["requested_by"] = requested_by
+        if command is not None:
+            body["command"] = command
+        if attach is not None:
+            body["attach"] = str(attach)
+        if run_name is not None:
+            body["run_name"] = run_name
+        if cwd is not None:
+            body["cwd"] = cwd
         if workspace is not None:
             body["workspace"] = str(workspace)
         return await self.call(
@@ -545,6 +559,7 @@ async def test_the_listing_names_every_live_terminal_of_the_station_with_its_sur
             "status": "online",
             "terminal_ready": False,
             "confirmed": True,
+            "clis": [],
         },
     ]
     not_asked = await world.open(cookie, workspace=workspace)
@@ -629,12 +644,14 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
                 "status": "online",
                 "terminal_ready": True,
                 "confirmed": True,
+                "clis": [],
             },
             {
                 "name": "laptop",
                 "status": "online",
                 "terminal_ready": False,
                 "confirmed": True,
+                "clis": [],
             },
         ],
         "terminals": [],
@@ -643,6 +660,207 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
     refused = (for_viewer, as_itself, ada_names_herself, bob_names_ada)
     assert [each.status_code for each in refused] == [403] * 4
     assert {_code(each) for each in refused} == {"terminal_forbidden"}
+
+
+async def test_the_assistant_opens_only_a_detached_run_on_its_askers_machine(
+    world: _World,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        app.state,
+        "config",
+        Config(
+            session_secret=_SESSION_KEY,
+            session_max_age_seconds=600,
+            assistant=Assistant(actor="kb", email="kb@x.y"),
+        ),
+        raising=False,
+    )
+    ada = await world.person("ada@x.y")
+    assistant = await world.person("kb@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.wait()
+    station, _ = await world.station(ada)
+    session = uuid.uuid4()
+    body = {
+        "machine": "gx10",
+        "rows": 40,
+        "cols": 120,
+        "workspace": str(station),
+        "command": "claude",
+        "attach": str(session),
+        "run_name": "campaign-issue-7",
+        "cwd": "~/work",
+    }
+    headers = {"Authorization": f"Bearer {await world.key(assistant)}"}
+
+    opened = await world.call(
+        "POST",
+        f"{wire_terminals.TERMINALS_PATH}?asker=ada@x.y",
+        headers=headers,
+        body=body,
+    )
+
+    _opened(opened)
+    waiting = from_plain((await world.wait()).json(), dict[str, object])
+    assert (
+        waiting["command"],
+        waiting["attach"],
+        waiting["run_name"],
+        waiting["cwd"],
+    ) == (
+        "claude",
+        str(session),
+        "campaign-issue-7",
+        "~/work",
+    )
+
+
+async def test_campaign_brief_waits_for_the_askers_run_and_places_in_its_station(
+    world: _World,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        app.state,
+        "config",
+        Config(
+            session_secret=_SESSION_KEY,
+            session_max_age_seconds=600,
+            assistant=Assistant(actor="kb", email="kb@x.y"),
+        ),
+        raising=False,
+    )
+    ada = await world.person("ada@x.y")
+    assistant = await world.person("kb@x.y")
+    station, _ = await world.station(ada)
+    assistant_key = {"Authorization": f"Bearer {await world.key(assistant)}"}
+    owner_key = {"Authorization": f"Bearer {await world.key(ada)}"}
+    started = await world.call(
+        "POST",
+        "/api/sessions/start",
+        headers=assistant_key,
+        body={
+            "cli": "claude",
+            "cli_session_id": "campaign:issue-7",
+            "account": "ada@x.y",
+            "title": "Probe",
+        },
+    )
+    assert started.status_code == 201, started.text
+    session = uuid.UUID(
+        from_plain(from_plain(started.json(), dict[str, object])["id"], str),
+    )
+    async with world.store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET labels = ARRAY['campaign'] WHERE id = $1",
+            session,
+        )
+
+    queued = await world.call(
+        "POST",
+        f"/api/sessions/{session}/inbound",
+        headers=assistant_key,
+        body={"text": "Probe\n\nReport in this chat when done", "asker": "ada@x.y"},
+    )
+    attached = await world.call(
+        "POST",
+        "/api/sessions/start",
+        headers=owner_key,
+        body={"cli": "claude", "attach": str(session)},
+    )
+    placed = await world.call(
+        "POST",
+        f"/api/sessions/{session}/place",
+        headers=owner_key,
+        body={"workspace": str(station)},
+    )
+    drained = await world.call(
+        "GET",
+        f"/api/sessions/{session}/inbound",
+        headers=owner_key,
+    )
+
+    assert (queued.status_code, attached.status_code, placed.status_code) == (
+        200,
+        201,
+        200,
+    )
+    assert from_plain(queued.json(), dict[str, object])["queued"] == 1
+    assert from_plain(placed.json(), dict[str, object])["workspace_id"] == str(station)
+    assert "Probe" in drained.text
+
+
+async def test_the_assistant_cannot_open_a_shell_or_another_askers_machine(
+    world: _World,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        app.state,
+        "config",
+        Config(
+            session_secret=_SESSION_KEY,
+            session_max_age_seconds=600,
+            assistant=Assistant(actor="kb", email="kb@x.y"),
+        ),
+        raising=False,
+    )
+    ada = await world.person("ada@x.y")
+    bob = await world.person("bob@x.y")
+    _ = await world.person("vic@x.y", role="viewer")
+    assistant = await world.person("kb@x.y")
+    await world.join(world.cookie(bob), facts={"clis": ["claude"]})
+    await world.wait()
+    station, _ = await world.station(ada)
+    body = {
+        "machine": "gx10",
+        "rows": 40,
+        "cols": 120,
+        "workspace": str(station),
+        "command": "claude",
+        "attach": str(uuid.uuid4()),
+        "run_name": "campaign-issue-7",
+        "cwd": "~/work",
+    }
+    headers = {"Authorization": f"Bearer {await world.key(assistant)}"}
+
+    foreign = await world.call(
+        "POST",
+        f"{wire_terminals.TERMINALS_PATH}?asker=ada@x.y",
+        headers=headers,
+        body=body,
+    )
+    viewer = await world.call(
+        "POST",
+        f"{wire_terminals.TERMINALS_PATH}?asker=vic@x.y",
+        headers=headers,
+        body=body,
+    )
+    shell = await world.call(
+        "POST",
+        f"{wire_terminals.TERMINALS_PATH}?asker=bob@x.y",
+        headers=headers,
+        body={"machine": "gx10", "rows": 24, "cols": 80},
+    )
+    no_asker = await world.call(
+        "POST",
+        wire_terminals.TERMINALS_PATH,
+        headers=headers,
+        body=body,
+    )
+    bad_run = await world.call(
+        "POST",
+        f"{wire_terminals.TERMINALS_PATH}?asker=bob@x.y",
+        headers=headers,
+        body=body | {"run_name": None},
+    )
+
+    assert foreign.status_code == 404
+    assert [
+        (each.status_code, _code(each)) for each in (viewer, shell, no_asker, bad_run)
+    ] == [
+        (403, "terminal_forbidden"),
+    ] * 4
 
 
 async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_machine(
@@ -1105,6 +1323,114 @@ async def test_a_token_joins_while_its_owner_is_active_and_not_after(
     )
 
     assert refused.status_code == 401
+
+
+async def test_a_run_opens_only_where_the_machine_facts_list_its_cli(
+    world: _World,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.wait()
+
+    missing = await world.open(cookie, command="codex")
+    assert (missing.status_code, _code(missing)) == (409, "cli_not_installed")
+    _opened(await world.open(cookie, command="claude"))
+    _opened(await world.open(cookie))
+
+
+async def test_the_host_is_handed_each_run_with_its_session_and_its_name(
+    world: _World,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude", "codex"]})
+    await world.wait()
+    session_id = uuid.UUID("9f1c2e3a-0000-4000-8000-000000000001")
+
+    _opened(await world.open(cookie, command="claude", attach=session_id))
+    chat = from_plain((await world.wait()).json(), dict[str, object])
+    _opened(await world.open(cookie, command="codex"))
+    codex = from_plain((await world.wait()).json(), dict[str, object])
+    _opened(await world.open(cookie, command="claude", run_name="nightly"))
+    named = from_plain((await world.wait()).json(), dict[str, object])
+    _opened(await world.open(cookie))
+    shell = from_plain((await world.wait()).json(), dict[str, object])
+
+    assert (chat["command"], chat["attach"], chat["run_name"]) == (
+        "claude",
+        str(session_id),
+        "chat-9f1c2e3a",
+    )
+    assert (codex["command"], codex.get("attach")) == ("codex", None)
+    assert from_plain(codex["run_name"], str).startswith("run-")
+    assert len(from_plain(codex["run_name"], str)) == len("run-") + 8
+    assert (named["command"], named["run_name"]) == ("claude", "nightly")
+    # A shell's wait names none of a run's fields, so a host on an older wire, which
+    # refuses a key it does not know, opens it.
+    assert not {"command", "attach", "run_name", "cwd"} & set(shell)
+
+
+async def test_the_host_is_handed_the_folder_each_run_starts_in_as_named(
+    world: _World,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.wait()
+
+    refused = await world.open(cookie, cwd="~/project")
+    assert refused.status_code == 422
+    _opened(await world.open(cookie, command="claude", cwd="~/project"))
+    run = from_plain((await world.wait()).json(), dict[str, object])
+    _opened(await world.open(cookie, command="claude"))
+    plain = from_plain((await world.wait()).json(), dict[str, object])
+
+    assert (run["cwd"], plain.get("cwd")) == ("~/project", None)
+
+
+async def test_a_machine_listing_keeps_the_folder_its_owner_named(
+    world: _World,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.wait()
+
+    _opened(await world.open(cookie, command="claude", cwd="~/work"))
+    listed = await world.call(
+        "GET",
+        wire_terminals.TERMINAL_MACHINES_PATH,
+        headers=world.browser(cookie),
+    )
+
+    machines = from_plain(
+        from_plain(listed.json(), dict[str, object])["machines"],
+        list[dict[str, object]],
+    )
+    assert machines[0]["cwd"] == "~/work"
+
+
+async def test_the_machine_list_names_the_clis_its_facts_list(
+    world: _World,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude", "git"]})
+
+    listed = from_plain(
+        (
+            await world.call(
+                "GET",
+                wire_terminals.TERMINAL_MACHINES_PATH,
+                headers=world.browser(cookie),
+            )
+        ).json(),
+        dict[str, object],
+    )
+
+    machines = from_plain(listed["machines"], list[dict[str, object]])
+    assert machines[0]["clis"] == ["claude", "git"]
 
 
 async def test_the_servers_stun_list_reaches_the_open_the_attach_and_the_host_wait(

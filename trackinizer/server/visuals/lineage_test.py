@@ -114,7 +114,7 @@ async def test_an_empty_section_does_not_query_edges_and_a_missing_record_is_non
 ):
     conn = AsyncMock()
     conn.fetchrow.return_value = _row(0)
-    conn.fetch.return_value = []
+    conn.fetch.return_value = list[dict[str, object]]()
     page = await load_lineage_page(
         cast("Conn", conn),
         target_id=UUID(int=1),

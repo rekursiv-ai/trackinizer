@@ -16,10 +16,11 @@ from trackinizer.server.auth import AuthIdentity
 from trackinizer.server.config import Assistant
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.visuals.science_chats import (
+    _HEAD,
     chat_openers,
     conversation_of_session,
-    helper_began_chat,
     may_post,
+    read_fork_prefixes,
     read_head,
     read_line_starter,
     read_shares,
@@ -109,24 +110,53 @@ def test_a_conversation_nobody_carries_has_no_starter_and_no_assistant_prefers_n
     assert conn.fetchval.await_args.args[1:] == (chat_session_id(_CONVERSATION), None)
 
 
-@pytest.mark.parametrize("helper", [True, False])
-def test_a_chat_a_helper_began_is_asked_for_by_its_first_session(helper: bool) -> None:
-    conn: AsyncMock = make_conn()
-    conn.fetchval.return_value = helper
+def test_a_user_turn_that_names_its_sender_is_a_persons_line() -> None:
+    """A CLI user turn counts as a line only when its stamp or an author names a sender.
 
-    began = asyncio.run(
-        helper_began_chat(
+    The predicate is read from the SQL, which the database runs; the stamp is what
+    ``trax run`` writes into ``extra`` for a line it delivered.
+    """
+    conn: AsyncMock = make_conn()
+    conn.fetchval.return_value = True
+    reader = SessionReader(
+        audiences=frozenset({"open"}),
+        email="a@example.com",
+        org="example.com",
+        assistant="kb@example.com",
+    )
+
+    asyncio.run(
+        science_chat_exists_at(
             cast("Conn", conn),
             assistant=_ASSISTANT,
-            conversation_id=_CONVERSATION,
+            email="a@example.com",
+            fork=ChatForkAt(session_id=_SESSION, part=2, idx=5),
+            reader=reader,
         ),
     )
 
-    assert began is helper
-    conn.fetchval.assert_awaited_once_with(
-        "SELECT began_by.email <> $2 " + _FIRST_SESSION,
-        chat_session_id(_CONVERSATION),
-        "kb@example.com",
+    assert conn.fetchval.await_args is not None
+    sql = cast(str, conn.fetchval.await_args.args[0])
+    assert (
+        "'UserMessage' AND (line.payload -> 'extra' -> '$inbound' IS NOT NULL "
+        "OR line.payload -> 'extra' ->> 'author' IS NOT NULL)" in sql
+    )
+    assert "line.kind = 'AssistantMessage' AND COALESCE(" in sql
+
+
+def test_a_stamped_turn_from_another_sender_counts_as_another_poster() -> None:
+    """A stamped user turn from another sender blocks a delete, as a line does.
+
+    The rule is read from the head's SQL, which counts the posters of the session.
+    """
+    assert (
+        "line.kind = 'UserMessage' AND (line.payload -> 'extra' -> '$inbound' IS NOT "
+        "NULL OR line.payload -> 'extra' ->> 'author' IS NOT NULL)" in _HEAD
+    )
+    assert (
+        "COALESCE(line.payload ->> 'sender', "
+        "line.payload -> 'extra' -> '$inbound' ->> 'source', "
+        "line.payload -> 'extra' ->> 'author', '')" in _HEAD
     )
 
 
@@ -211,6 +241,72 @@ def test_a_line_is_looked_for_in_the_session_part_and_position_the_fork_names() 
             reader=NOBODY,
         ),
     )
+
+
+def _at(minute: int) -> datetime:
+    return datetime(2026, 10, 20, 9, minute, tzinfo=UTC)
+
+
+def _prefixes(
+    rows: list[tuple[int, int, datetime | None]],
+    *,
+    part: int,
+    idx: int,
+) -> list[tuple[int, int]]:
+    """Return the parts and record counts a fork at ``part``/``idx`` of ``rows`` copies."""
+    conn: AsyncMock = make_conn()
+    conn.fetch.return_value = [
+        {"part": each, "idx": at, "timestamp": stamp} for each, at, stamp in rows
+    ]
+    fork = ChatForkAt(session_id=_SESSION, part=part, idx=idx)
+
+    found = asyncio.run(read_fork_prefixes(cast("Conn", conn), fork=fork))
+
+    assert conn.fetch.await_args is not None
+    _, *params = conn.fetch.await_args.args
+    assert params == [_SESSION, part]
+    return [(prefix.part, prefix.records) for prefix in found]
+
+
+def test_a_fork_copies_each_part_as_far_as_the_reader_puts_it_before_the_fork() -> None:
+    """Two parts written at once interleave by time; a part begun after copies nothing."""
+    rows: list[tuple[int, int, datetime | None]] = [
+        (0, 0, _at(1)),
+        (0, 1, _at(2)),
+        (0, 2, _at(5)),
+        (1, 0, _at(3)),
+        (1, 1, _at(4)),
+        (1, 2, _at(6)),
+        (2, 0, _at(7)),
+    ]
+
+    assert _prefixes(rows, part=1, idx=1) == [(0, 2), (1, 2)]
+    assert _prefixes(rows, part=0, idx=2) == [(0, 3), (1, 2)]
+    assert _prefixes(rows, part=0, idx=0) == [(0, 1)]
+
+
+def test_a_tie_with_the_fork_point_goes_to_the_lower_part_and_unstamped_take_the_last() -> (
+    None
+):
+    """As the reader orders them: the stable sort keeps part order on equal moments."""
+    rows: list[tuple[int, int, datetime | None]] = [
+        (0, 0, None),
+        (0, 1, _at(5)),
+        (0, 2, None),
+        (1, 0, _at(5)),
+        (2, 0, None),
+        (2, 1, _at(5)),
+        (2, 2, _at(6)),
+    ]
+
+    # Part 0's first record takes its part's first stamp and its last the one before
+    # it, so both tie with the fork point and come first; part 2's tie comes after.
+    assert _prefixes(rows, part=1, idx=0) == [(0, 3), (1, 1)]
+
+
+def test_a_fork_point_the_session_does_not_hold_copies_nothing() -> None:
+    assert _prefixes([(0, 0, _at(1))], part=0, idx=4) == []
+    assert _prefixes([], part=0, idx=0) == []
 
 
 # The head session's own account is someone else's, as a session a rotated assistant key

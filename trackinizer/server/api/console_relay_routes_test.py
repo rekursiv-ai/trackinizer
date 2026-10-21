@@ -29,7 +29,6 @@ from trackinizer.server.api.canvas_test_support import (
     browser,
     drain,
     open_workspace,
-    revision_of,
     seed_accounts,
     seed_converse,
     seed_session,
@@ -37,11 +36,6 @@ from trackinizer.server.api.canvas_test_support import (
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.config import Config
 from trackinizer.server.inbound import InboundQueue
-from trackinizer.wire.wire_science_chat import (
-    CHAT_HELPER_CLI,
-    SCIENCE_CHAT_LABEL,
-    chat_session_id,
-)
 
 
 if TYPE_CHECKING:
@@ -370,75 +364,6 @@ async def test_a_relay_is_a_line_so_only_one_who_may_post_into_the_chat_relays(
         {"delivered": False},
     ]
     assert [each["source"] for each in await _drained(client, chat)] == [OTHER_EMAIL]
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_relay_into_a_helpers_chat_is_not_sent_to_the_assistant(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Only Ada's helper reads her chat: Bob's relay there would open a second one."""
-    monkeypatch.setattr(
-        app.state,
-        "config",
-        replace(ASSISTANT_CONFIG, chat_orgs="individual"),
-        raising=False,
-    )
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    service = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
-    conversation = uuid.uuid4()
-    _ = await seed_session(
-        store,
-        USER_AGENT,
-        actor="ada-helper-chat",
-        cli_session_id=chat_session_id(conversation),
-        labels=[SCIENCE_CHAT_LABEL],
-    )
-    browser()
-    shared = await client.put(f"/api/chats/{conversation}/shares/{OTHER_EMAIL}")
-    browser(OTHER_USER_ID, email=OTHER_EMAIL)
-    bound = await client.post(f"/api/workspaces/for-chat/{conversation}")
-    bobs = uuid.UUID(
-        from_plain(json_loads(bound.content, dict[str, object])["id"], str),
-    )
-
-    relayed = await _relay_as_other(client, workspace_id=bobs)
-
-    assert (shared.status_code, bound.status_code) == (200, 200)
-    assert relayed.json() == {"delivered": False}
-    assert await _drained(client, service) == []
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_local_helpers_relay_into_the_assistants_chat_is_not_delivered(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """The helper drains only its service session, and the chat is the assistant's."""
-    client, store = pglite_route_client
-    station, _chat = await _talk(client, store)
-    helper = await seed_session(store, USER_AGENT, actor="helper", cli=CHAT_HELPER_CLI)
-    browser()
-    chosen = await client.post(
-        f"/api/workspaces/{station}/operations",
-        json={
-            "revision": await revision_of(client, workspace_id=station),
-            "operation": {"kind": "partner", "choice": "local"},
-        },
-        headers={"Idempotency-Key": str(uuid.uuid4())},
-    )
-
-    relayed = await _relay(client, workspace_id=station)
-
-    assert chosen.status_code == 200
-    assert relayed.json() == {"delivered": False}
-    act_as_user_agent()
-    drained = await drain(client, session_id=helper)
-    assert json_loads(drained.content, dict[str, object])["messages"] == []
 
 
 async def _relay_as_other(

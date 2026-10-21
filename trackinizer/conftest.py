@@ -81,7 +81,7 @@ def make_conn() -> AsyncMock:
                 "old_resource": old_resource,
                 "new_agent": old_agent + agent,
                 "new_resource": old_resource + resource,
-                "current_subscribers": [],
+                "current_subscribers": list[str](),
             }
         if field_queue:
             return field_queue.pop(0)

@@ -5,14 +5,14 @@ import { createStation as createStationInWorkstream, createWorkstream, listWorks
 import { hideStation as setStationHidden, listStations, pinStation, type StationSummary } from "../api/stations";
 import type { ChatHead } from "../api/chats";
 import { getInquiry } from "../api/inquiries";
-import type { WorkspaceState } from "../api/workspaces";
+import type { WorkspacePartner, WorkspaceState } from "../api/workspaces";
+import { hasAssistant, PROVIDERS, partnerLabel, type Provider, providerName, stationProvider } from "../api/providers";
+import { Command } from "../settings/ChatPartner";
 import { hideStation, nameStation, openStation, STATIONS_KEY } from "../stations/actions";
 import { showStation } from "../stations/useStation";
 import { setChatHidden, setChatSide, useChatColumn } from "./chatColumnState";
-import { Icon } from "../ui/icons";
-import { useBarDismissed } from "./terminalFlip";
 import { DeleteChat, PrivacySwitch, ShareChat } from "./ChatSharing";
-import type { TerminalHead } from "./ChatTerminalSide";
+import { ProviderPicker, reasonText, useChatDefault, useProviderStatuses } from "./ProviderPicker";
 
 type Props = {
   readonly workspace: WorkspaceState | null;
@@ -20,24 +20,16 @@ type Props = {
   readonly onHide: () => Promise<void>;
   readonly onClear: () => Promise<void>;
   readonly onDeleted: (conversation: string) => void;
-  /** Flip the column to the station's terminal, or back from it. */
-  readonly onFlip?: () => void;
-  /** The column shows the terminal: the header names it and its flip button returns to chat. */
-  readonly flipped?: boolean;
-  /** What the terminal side shows, for the flipped header's terminals menu. */
-  readonly terminal?: TerminalHead;
 };
 
-/** Why a chat-only item is grayed while the terminal shows. */
-const ON_CHAT = "Applies to the chat; flip back to use it";
+type HeaderMenu = "name" | "workstream" | "more" | "info" | "provider";
 
-type HeaderMenu = "name" | "workstream" | "more" | "info" | "terminals";
-
-/** Chat naming, switching, workstream placement, and its compact header controls. */
-export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDeleted, onFlip, flipped = false, terminal }: Props) {
+/** Chat naming, switching, workstream placement, the provider, and its compact header controls. */
+export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDeleted }: Props) {
   const queryClient = useQueryClient();
   const { side, hidden } = useChatColumn();
-  const [, , reopenTerminalHelp] = useBarDismissed();
+  const defaults = useChatDefault();
+  const statuses = useProviderStatuses(workspace);
   const [menu, setMenu] = useState<HeaderMenu | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [nameProblem, setNameProblem] = useState<string | null>(null);
@@ -48,7 +40,14 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
   const workstreamOpen = menu === "workstream";
   const moreOpen = menu === "more";
   const infoOpen = menu === "info";
-  const terminalsOpen = menu === "terminals";
+  const providerOpen = menu === "provider";
+  const provider = stationProvider(workspace);
+  const partner = workspace?.partner ?? null;
+  const run = runInfo(provider, partner);
+  // New chats are offered the default first, then the others, in the order the card lists them. A server with no
+  // assistant offers none.
+  const newChatOrder = [defaults.provider, ...PROVIDERS.filter((each) => each !== defaults.provider)]
+    .filter((each) => each !== "assistant" || hasAssistant(workspace));
   const root = useRef<HTMLDivElement>(null);
   const renameInput = useRef<HTMLInputElement>(null);
   const workstreamInput = useRef<HTMLInputElement>(null);
@@ -81,7 +80,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
     if (workstreamOpen) workstreamInput.current?.focus();
   }, [workstreamOpen]);
   useEffect(() => {
-    if (!nameOpen && !workstreamOpen && !moreOpen && !infoOpen && !terminalsOpen) return;
+    if (!nameOpen && !workstreamOpen && !moreOpen && !infoOpen && !providerOpen) return;
     const outside = (event: PointerEvent) => {
       if (event.target instanceof Node && root.current?.contains(event.target)) return;
       if (nameOpen) void saveName();
@@ -133,9 +132,9 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
     void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
   }
 
-  async function createChat(): Promise<void> {
+  async function createChat(chosen: Provider): Promise<void> {
     if (!workspace) return;
-    const state = await createStationInWorkstream(currentGroupId);
+    const state = await createStationInWorkstream(currentGroupId, chosen);
     showStation(queryClient, state);
     void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
     closeMenu("name");
@@ -184,16 +183,22 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
   return <header className="chat-head" ref={root}>
     <div className="chat-partner" role="group" aria-label="Chat partner">
       <span className="chat-partner-context" aria-hidden="true">
-        {workspace && <><strong>Chat</strong><span className="chat-partner-note">{workspace.partner?.kind === "shared"
-          ? workspace.partner.actor ?? "assistant"
-          : workspace.partner?.actor ? `your local helper (${workspace.partner.actor})` : "your local helper"}</span></>}
+        {workspace && <strong>Chat</strong>}
         {head?.audience === "staff" && <span>Staff only</span>}
         {head?.audience === "private" && <span>Private</span>}
       </span>
+      {workspace && <div className="chat-provider-pick">
+        <button type="button" className="chat-provider-button" aria-label={`Chat provider: ${providerName(provider, workspace)}`} aria-expanded={providerOpen}
+          title="Choose what this chat talks to" onClick={() => setMenu(providerOpen ? null : "provider")}>
+          <span className={`provider-dot${partner?.status === "live" ? " live" : ""}`} aria-hidden="true" />
+          <span className="chat-provider-label">{partnerLabel(partner, providerName(provider, workspace))}</span><span className="chat-name-caret">▾</span>
+        </button>
+        {providerOpen && <div className="station-menu chat-name-menu chat-provider-menu" role="dialog" aria-label="Chat provider card">
+          <ProviderPicker station={workspace} />
+        </div>}
+      </div>}
       <div className="chat-name-pick">
-        {flipped ? <button type="button" className="chat-name-button" title="Switch terminals or start a new one" aria-label={terminal?.label ?? "Terminal"}
-          aria-expanded={terminalsOpen} onClick={() => setMenu(terminalsOpen ? null : "terminals")}>{terminal?.label ?? "Terminal"}<span className="chat-name-caret">▾</span></button>
-          : nameOpen ? <input ref={renameInput} className="chat-name-input" aria-label="Chat name" value={nameDraft}
+        {nameOpen ? <input ref={renameInput} className="chat-name-input" aria-label="Chat name" value={nameDraft}
           onChange={(event) => { setNameDraft(event.target.value); setNameProblem(null); }}
           onKeyDown={(event) => {
             if (event.key === "Enter") { event.preventDefault(); void saveName(); }
@@ -202,19 +207,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
           }} />
           : <button type="button" className="chat-name-button" title="Rename, switch chats or search" aria-label={shownName}
             onClick={() => { setNameDraft(workspace?.name ?? ""); setNameProblem(null); setMenu("name"); }}>{shownName}<span className="chat-name-caret hover-only">▾</span></button>}
-        {terminalsOpen && flipped && terminal && <div className="station-menu chat-name-menu" role="dialog" aria-label="Terminals">
-          <p className="chat-menu-label">Terminals in this chat</p>
-          <ul className="station-list" aria-label="Terminals in this chat">
-            {terminal.terminals.map((each) => <li key={each.id} className="chat-name-row">
-              <button type="button" className="station-option" aria-current={each.id === terminal.selected} onClick={() => { terminal.select(each.id); setMenu(null); }}>{each.label}</button>
-            </li>)}
-            {terminal.terminals.length === 0 && <li className="muted">No terminals yet.</li>}
-          </ul>
-          {terminal.machines.map((name) => <button key={name} type="button" className="station-option"
-            onClick={() => { terminal.create(name); setMenu(null); }}>{terminal.machines.length > 1 ? `+ New terminal on ${name}` : "+ New terminal"}</button>)}
-          {terminal.machines.length === 0 && <p className="muted">No machine is ready: run <code>trax machine connect</code> on one.</p>}
-        </div>}
-        {nameOpen && !flipped && <div className="station-menu chat-name-menu" role="dialog" aria-label="Chats">
+        {nameOpen && <div className="station-menu chat-name-menu" role="dialog" aria-label="Chats">
           {nameProblem && <p className="station-problem" role="status">{nameProblem}</p>}
           <p className="chat-menu-label">Chats in {currentGroup?.title ?? "Scratch"}</p>
           <ul className="station-list" aria-label="Chats in this workstream">
@@ -227,7 +220,11 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
             </li>)}
             {chatRows.length === 0 && <li className="muted">No chats yet.</li>}
           </ul>
-          <button type="button" className="station-option" onClick={() => void createChat()}>+ New chat</button>
+          {newChatOrder.map((each) => <div key={each} className="provider-new">
+            <button type="button" className="station-option" disabled={!statuses[each].ok} onClick={() => void createChat(each)}>
+              + New chat · {providerName(each, workspace)}{each === defaults.provider && <span className="provider-mark"> ★ default</span>}</button>
+            {!statuses[each].ok && <p className="muted provider-reason">{reasonText(each, statuses[each].reason)}</p>}
+          </div>)}
           <div className="chat-name-search">
             <input className="chat-name-search" aria-label="Search chats" placeholder="Search all chats…" value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -261,24 +258,18 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
       </span>}
     </div>
     <div className="chat-head-actions" role="toolbar" aria-label="Chat controls">
-      {onFlip && (flipped
-        ? <button className="btn ghost" type="button" aria-label="Back to chat" title="Flip back to chat" onClick={onFlip}><Icon name="chat" /></button>
-        : <button className="btn ghost hover-only" type="button" aria-label="Open terminal" title="Flip to a terminal on your machine"
-          onClick={onFlip}><Icon name="terminal" /></button>)}
       <button className="btn ghost hover-only" type="button" aria-label={`Move Chat to the ${side === "left" ? "right" : "left"}`}
         title="Dock on the other side" onClick={() => setChatSide(side === "left" ? "right" : "left")}>{side === "left" ? "▷" : "◁"}</button>
       <button className="btn ghost hover-only" type="button" aria-label="More chat actions" aria-expanded={moreOpen} onClick={() => setMenu(moreOpen ? null : "more")}>⋯</button>
       {moreOpen && <div className="chat-more-menu" aria-label="Chat actions">
-        <button className="chat-menu-item" type="button" title={flipped ? ON_CHAT : "New chat, same canvas"} disabled={flipped} onClick={() => { setMenu(null); void onClear(); }}>Clear chat</button>
+        <button className="chat-menu-item" type="button" title="New chat, same canvas" onClick={() => { setMenu(null); void onClear(); }}>Clear chat</button>
         {hidden
           ? <button className="chat-menu-item" type="button" aria-label="Pin Chat beside the page" title="Pin Chat beside the page" onClick={() => { setMenu(null); setChatHidden(false); }}>Pin panel</button>
           : <button className="chat-menu-item" type="button" aria-label="Hide Chat" title="Hide the chat panel" onClick={() => { setMenu(null); setChatHidden(true); }}>Hide panel</button>}
-        {flipped && terminal?.close && <button className="chat-menu-item" type="button" title="Stop the shell in view" onClick={() => { setMenu(null); terminal.close?.(); }}>Close terminal</button>}
-        {head?.may_delete && <DeleteChat head={head} onDeleted={onDelete} disabled={flipped ? ON_CHAT : ""} />}
-        {flipped && <button className="chat-menu-item" type="button" title="Show how to connect, use ssh and detach agents" onClick={() => { setMenu(null); reopenTerminalHelp(); }}>Terminal help</button>}
+        {head?.may_delete && <DeleteChat head={head} onDeleted={onDelete} />}
         <button className="chat-menu-item" type="button" onClick={() => setMenu("info")}>Info</button>
         {head?.may_hide && <PrivacySwitch head={head} />}
-        {head?.may_share && <ShareChat head={head} disabled={flipped ? ON_CHAT : ""} />}
+        {head?.may_share && <ShareChat head={head} />}
       </div>}
       {infoOpen && <div className="chat-info-menu" role="dialog" aria-label="Chat info">
         <button type="button" className="btn ghost" onClick={() => setMenu(null)}>Close</button>
@@ -286,9 +277,27 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
         <span>Chat ID: {workspace?.id ?? "—"}</span>
         <span>Conversation: {head?.conversation_id ?? "—"}</span>
         <span>Session: {head?.session_id ?? "—"}</span>
+        {run && <div className="chat-info-run">
+          <span>{run.text}</span>
+          {run.command && <Command command={run.command} />}
+        </div>}
         {madeFor !== null && <span>Made for: <a href={`#/lookup/${madeFor}`}>{`${madeCli}${madeActor}`}</a>
           {made ? (made.ended ? " · ended" : " · live") : ""}</span>}
       </div>}
     </div>
   </header>;
+}
+
+/**
+ * What the Info dialog says of a CLI chat's run: the command that attaches to a trax run, where it is one, else where
+ * it runs. None for the assistant, which runs on the server.
+ */
+function runInfo(provider: Provider, partner: WorkspacePartner | null): { readonly text: string; readonly command?: string } | null {
+  if (provider === "assistant") return null;
+  if (partner?.status !== "live") return { text: "No run: pick a machine in the provider card" };
+  const machine = partner.machine ?? "your machine";
+  if (partner.run_name) {
+    return { text: `Attach on ${machine}${partner.cwd ? ` (in ${partner.cwd})` : ""}:`, command: `trax run attach ${partner.run_name}` };
+  }
+  return { text: `Runs in a terminal on ${machine}` };
 }

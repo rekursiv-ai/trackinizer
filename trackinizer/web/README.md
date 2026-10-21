@@ -455,9 +455,8 @@ with one response shape, so the fixtures take one per verb.
   `main.tsx` on, so pages visited before Chat opened count. Chat shows
   `On screen: Kind#seq title` for the record a `#/lookup/<id>` or
   `#/ref/<Kind>/<seq>` page shows, and follows the page; a line pins no record.
-- The partner is the shared assistant, or the owner's own `trax helper` when the
-  canvas chooses `local`; with none live, Chat says how to start one
-  (`ChatOff`, `HelperCommands`) and the box is off.
+- The partner is the shared assistant; with none live, Chat says it is off
+  (`ChatOff`) and the box is off.
 - Who reads a chat is the server's call, and its head says it: `audience` is
   `open` (whom the server's org mode lets in: everyone signed in under `single`,
   the starter's email domain under `domain`, nobody else under `individual`;

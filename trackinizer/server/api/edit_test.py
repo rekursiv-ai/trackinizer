@@ -256,9 +256,9 @@ class TestRoutes:
         # ``edges`` -- side_effect lets the validator return the kind
         # row first, then the cascade walk returns no edges.
         engine.conn.fetch.side_effect = [
-            [],
+            list[dict[str, object]](),
             [{"id": codechange, "kind": "CodeChange"}],
-            [],
+            list[dict[str, object]](),
         ]
         r = client.patch(
             f"/api/experiment/{target}/codechanges",

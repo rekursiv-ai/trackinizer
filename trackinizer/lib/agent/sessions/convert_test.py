@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
-from typing import Final, Never, Self, cast
+from typing import Final, Never, Self
 
 import functools
 import json
@@ -631,10 +631,7 @@ def test_killing_the_run_takes_its_workers_with_it(tmp_path: Path) -> None:
     children: list[psutil.Process] = []
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline and started.poll() is None:
-        children = cast(  # pyright: ignore[reportUnnecessaryCast] -- ty needs it; pyright resolves the stub.
-            "list[psutil.Process]",
-            psutil.Process(started.pid).children(recursive=True),
-        )
+        children = psutil.Process(started.pid).children(recursive=True)
         # Output on disk, not just live pids: a worker whose INITIALIZER raised
         # leaves nothing behind either, so a pid check alone passes on a pool
         # that never converted anything -- which is how a missing import in

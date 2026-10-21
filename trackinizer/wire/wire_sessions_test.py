@@ -38,7 +38,7 @@ class TestSessionStart:
     def test_requires_cli(self) -> None:
         with pytest.raises(ValidationError):
             # Intentionally omit the required ``cli`` to assert the validator.
-            SessionStart()  # ty: ignore[missing-argument] -- The test omits the required field to verify validation.  # pyright: ignore[reportCallIssue] -- The test omits the required field to verify validation.
+            SessionStart()  # ty: ignore[missing-argument] -- The test omits the required field to verify validation.  # pyright: ignore[reportCallIssue] -- The test omits the required field to verify validation.  # pyrefly: ignore[missing-argument] -- The test omits the required field to verify validation.
 
     def test_minimal_start(self) -> None:
         body = SessionStart(cli="codex")
@@ -76,6 +76,23 @@ class TestSessionStart:
             with pytest.raises(ValidationError):
                 SessionStart(cli="codex", actor=bad)
         assert SessionStart(cli="codex", actor=None).actor is None
+
+    def test_attach_defaults_to_a_new_session(self) -> None:
+        assert SessionStart(cli="claude").attach is None
+
+    def test_attach_re_opens_a_session_without_a_cli_session_id(self) -> None:
+        session_id = uuid.UUID(int=21_056)
+        assert SessionStart(cli="claude", attach=session_id).attach == session_id
+
+    def test_attach_and_cli_session_id_are_exclusive(self) -> None:
+        # A resumed run keeps the cli_session_id the session already holds; naming
+        # a new one alongside the session to re-open would fork the identity.
+        with pytest.raises(ValidationError):
+            SessionStart(
+                cli="claude",
+                attach=uuid.UUID(int=1),
+                cli_session_id="chat:21056",
+            )
 
 
 class TestSessionEnd:
@@ -175,7 +192,7 @@ class TestFeedCursor:
 
     def test_seq_must_not_be_negative(self) -> None:
         with pytest.raises(ValidationError):
-            FeedCursor(created=_NOW, session_id=uuid.uuid4(), seq=-1)
+            FeedCursor(created=_NOW, session_id=uuid.uuid4(), seq=-1)  # pyrefly: ignore[bad-argument-type] -- The negative test passes the out-of-range value under test.
 
 
 class TestRoomValidation:
@@ -198,7 +215,7 @@ class TestRoomValidation:
         # client-sent ``room`` is a 422 (extra="forbid"), not an accepted-then-
         # dropped field -- the request shape carries only what the server uses.
         with pytest.raises(ValidationError):
-            InboundEnqueueRequest(text="hi", room="lab")  # ty: ignore[unknown-argument] -- The test passes an extra field to verify rejection.  # pyright: ignore[reportCallIssue] -- The test passes an extra field to verify rejection.
+            InboundEnqueueRequest(text="hi", room="lab")  # ty: ignore[unknown-argument] -- The test passes an extra field to verify rejection.  # pyright: ignore[reportCallIssue] -- The test passes an extra field to verify rejection.  # pyrefly: ignore[unexpected-keyword] -- The test passes an extra field to verify rejection.
         # The bare request still constructs.
         assert InboundEnqueueRequest(text="hi").text == "hi"
 
@@ -237,6 +254,59 @@ class TestRoomValidation:
             with pytest.raises(ValidationError):
                 SendMessage(actor=bad, text="hi")
         assert SendMessage(actor="scientist", text="hi").actor == "scientist"
+
+
+class TestInboundKind:
+    def test_each_of_the_five_kinds_is_accepted(self) -> None:
+        for kind in ("line", "command", "answer", "settings", "interrupt"):
+            request = InboundEnqueueRequest.model_validate({"text": "hi", "kind": kind})
+            assert request.kind == kind
+
+    def test_enqueue_kind_defaults_to_a_line_with_no_payload(self) -> None:
+        request = InboundEnqueueRequest(text="hi")
+        assert (request.kind, request.payload) == ("line", None)
+
+    def test_drain_kind_defaults_to_a_line_with_no_payload(self) -> None:
+        item = InboundDrainItem(text="hi")
+        assert (item.kind, item.payload) == ("line", None)
+
+    def test_a_kind_outside_the_five_is_refused(self) -> None:
+        good = {"text": "/compact", "kind": "command"}
+        assert InboundEnqueueRequest.model_validate(good).kind == "command"
+        assert InboundDrainItem.model_validate(good).kind == "command"
+        bad = {**good, "kind": "keys"}
+        with pytest.raises(ValidationError):
+            InboundEnqueueRequest.model_validate(bad)
+        with pytest.raises(ValidationError):
+            InboundDrainItem.model_validate(bad)
+
+    def test_a_command_travels_verbatim_with_no_payload(self) -> None:
+        request = InboundEnqueueRequest(text="/compact", kind="command")
+        assert (request.text, request.kind, request.payload) == (
+            "/compact",
+            "command",
+            None,
+        )
+
+    def test_an_answer_carries_its_prompt_and_decision_in_the_payload(self) -> None:
+        payload: dict[str, object] = {
+            "prompt_id": "p-1",
+            "decision": "deny",
+            "updated_input": None,
+            "message": "use the other file",
+        }
+        request = InboundEnqueueRequest(
+            text="No: use the other file",
+            kind="answer",
+            payload=payload,
+        )
+        drained = InboundDrainItem.model_validate(
+            {"text": request.text, "kind": request.kind, "payload": request.payload},
+        )
+        assert drained.payload == payload
+        assert (
+            InboundDrainItem.model_validate_json(drained.model_dump_json()) == drained
+        )
 
 
 class TestPaths:

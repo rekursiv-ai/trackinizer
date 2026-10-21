@@ -566,6 +566,38 @@ class TestThreadedRelay:
         relay.submit("nobody is listening")
         assert relay.submitted == 0
 
+    def test_write_sends_raw_bytes_to_the_terminal(self) -> None:
+        """Escape reaches the child as one raw byte: no paste bracket, no Enter."""
+        relay = ThreadedRelay(["cat"])
+        written: list[bytes] = []
+
+        async def write(data: bytes) -> bool:
+            written.append(data)
+            return True
+
+        loop = asyncio.new_event_loop()
+        serving = threading.Thread(target=loop.run_forever, daemon=True)
+        serving.start()
+        try:
+            with mock.patch.object(relay._terminal, "write", write):
+                relay._loop = loop
+                relay._running.set()
+                relay.write(b"\x1b")
+        finally:
+            _ = loop.call_soon_threadsafe(loop.stop)
+            serving.join(timeout=5.0)
+            loop.close()
+
+        assert written == [b"\x1b"]
+        assert relay.submitted == 0
+
+    def test_write_before_the_child_is_up_is_dropped(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        ThreadedRelay(["cat"]).write(b"\x1b")
+        assert "write dropped: child not running" in caplog.text
+
     def test_terminate_before_run_is_a_noop(self) -> None:
         ThreadedRelay(["cat"]).terminate()
 

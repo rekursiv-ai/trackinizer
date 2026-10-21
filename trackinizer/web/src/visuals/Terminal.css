@@ -10,11 +10,6 @@
 .terminal a { color: #2a7bde; }
 /* The canvas tile: the terminal takes the tile's height, so the shell gets the rows it can show. */
 .terminal-tile { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; min-width: 0; }
-.chat-terminal-side { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
-.chat-terminal-side[hidden] { display: none; }
-.chat-terminal-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
-.chat-terminal-bar code { padding: 0 4px; background: var(--chip, rgba(127, 127, 127, .2)); }
-.chat-terminal-bar .chat-terminal-dismiss { margin-left: auto; }
 /* Hover-revealed, like the Chat header's buttons; always shown where there is no hover. */
 .terminal .terminal-maximize { flex: 0 0 auto; align-self: flex-end; margin: 0 6px; color: inherit; opacity: 0; transition: opacity .12s; }
 .terminal:hover .terminal-maximize, .terminal:focus-within .terminal-maximize { opacity: 1; }
@@ -30,8 +25,3 @@
 .terminal-tab[data-active="true"] { background: rgba(0, 255, 0, .18); }
 .terminal-pane { display: flex; flex: 1 1 0; flex-direction: column; min-height: 0; min-width: 0; }
 .terminal-pane[hidden] { display: none; }
-.chat-terminal-help { max-height: 40%; overflow-y: auto; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
-.chat-terminal-help summary { cursor: pointer; }
-.chat-terminal-help h4 { margin: 8px 0 4px; font-size: 12px; }
-.chat-terminal-help p { margin: 4px 0; }
-.chat-terminal-help .helper-command { margin: 4px 0; }

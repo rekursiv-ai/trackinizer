@@ -52,7 +52,7 @@ class ParameterDescription(BaseModel):
             if self.minimum is not None or self.maximum is not None:
                 raise ValueError("String parameters cannot have integer bounds.")
         elif self.type == "integer":
-            if type(self.default) is not int:
+            if isinstance(self.default, (str, bool)):
                 raise ValueError("Integer parameters need an integer default.")
             if self.minimum is None or self.maximum is None:
                 raise ValueError("Integer parameters need minimum and maximum.")
@@ -63,7 +63,7 @@ class ParameterDescription(BaseModel):
             if self.max_length is not None:
                 raise ValueError("Integer parameters cannot have a maximum length.")
         else:
-            if type(self.default) is not bool:
+            if not isinstance(self.default, bool):
                 raise ValueError("Boolean parameters need a boolean default.")
             if (
                 self.minimum is not None

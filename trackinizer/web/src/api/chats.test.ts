@@ -36,7 +36,7 @@ test("a line goes to /api/chats under its key, with its canvas, and the answer i
     "k1",
   )).resolves.toEqual({ conversation_id: "k1", session_id: null, workspace_id: "w1" });
   expect(sent).toMatchObject([{ method: "POST", path: "/api/chats", headers: { "idempotency-key": "k1" },
-    body: { kind: "science", workspace_id: "w1", text: "hi", conversation_id: null,
+    body: { workspace_id: "w1", text: "hi", conversation_id: null,
       page: "#/ref/Issue/9", trail: ["#/graph", "#/lookup/x"] } }]);
 });
 
@@ -53,6 +53,17 @@ test("a line sent from no page carries a null page and an empty trail", async ()
   const sent = stubFetch(() => Response.json({ conversation_id: "k2", session_id: null, workspace_id: "w1" }));
   await sendChatLine({ workspaceId: "w", text: "hi", conversationId: null, page: null, trail: [] }, "k2");
   expect(sent).toMatchObject([{ body: { page: null, trail: [] } }]);
+});
+
+test("an answer to a prompt goes as the chat's answer line, with its decision and its answers, and a person's line carries neither", async () => {
+  const sent = stubFetch(() => Response.json({ conversation_id: "c1", session_id: "s1", workspace_id: "w1" }));
+  const payload = { prompt_id: "p1", decision: "allow", updated_input: { answers: { Color: "red, blue" } }, message: "" } as const;
+  await sendChatLine({ workspaceId: "w1", text: "Color: red, blue", conversationId: "c1", kind: "answer", payload, page: null, trail: [] }, "k5");
+  await sendChatLine({ workspaceId: "w1", text: "hi", conversationId: "c1", page: null, trail: [] }, "k6");
+  expect(sent[0]!.body).toMatchObject({ kind: "answer", conversation_id: "c1", text: "Color: red, blue", payload });
+  // The server reads a post that names no kind as a person's line.
+  expect(sent[1]!.body).not.toHaveProperty("kind");
+  expect(sent[1]!.body).not.toHaveProperty("payload");
 });
 
 test("a science chat's session names its conversation, and no other session does", () => {

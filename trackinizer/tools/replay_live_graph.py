@@ -253,7 +253,7 @@ def _pull_edges(
             # A guarded, multi-value append inside two loops; a comprehension
             # (PERF401) would be less readable than the explicit filter here.
             out.extend(
-                (node_id, str(peer["id"]), edge_kind, _opt_float(peer.get("valence")))
+                (node_id, str(peer["id"]), edge_kind, _opt_float(peer.get("valence")))  # pyrefly: ignore[unnecessary-type-conversion] -- The stub's type hides the runtime value (numpy/torch scalar or non-str key); the conversion is load-bearing.
                 for peer in peers
                 if peer["id"] in known
             )

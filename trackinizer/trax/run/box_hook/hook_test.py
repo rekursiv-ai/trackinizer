@@ -1,4 +1,4 @@
-"""Tests for the hook that tells a ``trax run`` agent about boxes drawn on its canvas."""
+"""Tests for the hooks ``trax run`` gives claude: readiness, boxes, the prompt bridge."""
 
 from __future__ import annotations
 
@@ -6,24 +6,28 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, ClassVar, override
 
+import io
 import json
+import sys
 import threading
 import time
 import uuid
 
-from treekle import from_plain, json_loads
+from treekle import PlainTree, from_plain, json_loads
 
 import pytest
 
 from trackinizer.trax.cli import connect
+from trackinizer.trax.daemon.protocol import socket_address
 from trackinizer.trax.run.box_hook import hook
+from trackinizer.trax.run.prompt_bridge import PromptBridge
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-    from treekle import PlainTree
+    from trackinizer.lib.agent.types.sessions import SystemMessage
 
 STATION = "c5286865-67b6-4bd8-ab51-e06e10c326c5"
 TILE = "2de97e19-2624-4e89-804e-f19e7248eec3"
@@ -246,13 +250,13 @@ class TestMain:
         assert [thread.daemon for thread in reads] == [True]
 
 
-def _command(text: str) -> str:
-    """Return the one command the settings run before a prompt."""
+def _command(text: str, event: str = "UserPromptSubmit") -> str:
+    """Return the one command of ours the settings run on ``event``."""
     settings = from_plain(
         json_loads(text),
         dict[str, dict[str, list[dict[str, list[dict[str, str | int]]]]]],
     )
-    [entry] = settings["hooks"]["UserPromptSubmit"]
+    entry = settings["hooks"][event][-1]
     [each] = entry["hooks"]
     assert each["type"] == "command"
     command = each["command"]
@@ -279,12 +283,225 @@ class TestSettings:
 
         assert command.endswith("--profile prod")
 
+    def test_session_start_runs_the_hook_for_its_event(self, tmp_path: Path) -> None:
+        text = hook.settings_json(seen=tmp_path / "seen", profile="prod", boxes=False)
+
+        command = _command(text, "SessionStart")
+        assert command.endswith(f"--seen {tmp_path / 'seen'} --event session-start")
+        hooks = json_loads(text, dict[str, dict[str, object]])["hooks"]
+        assert "UserPromptSubmit" not in hooks
+
+    def test_the_persons_own_settings_keep_their_hooks_and_gain_ours(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        theirs: dict[str, PlainTree] = {"type": "command", "command": "notify"}
+        user: dict[str, PlainTree] = {
+            "model": "opus",
+            "hooks": {
+                "SessionStart": [{"hooks": [theirs]}],
+                "Stop": [{"hooks": [theirs]}],
+            },
+        }
+
+        merged = json_loads(
+            hook.settings_json(seen=tmp_path / "seen", profile=None, user=user),
+            dict[str, PlainTree],
+        )
+
+        hooks = from_plain(merged["hooks"], dict[str, list[PlainTree]])
+        assert merged["model"] == "opus"
+        assert hooks["Stop"] == [{"hooks": [theirs]}]
+        assert hooks["SessionStart"][0] == {"hooks": [theirs]}
+        assert len(hooks["SessionStart"]) == 2
+        assert len(hooks["UserPromptSubmit"]) == 1
+
     def test_a_run_gets_a_private_dir_with_the_file(self) -> None:
         prepared = hook.prepare(profile=None)
 
-        assert prepared.name == "settings.json"
-        assert prepared.parent.stat().st_mode & 0o777 == 0o700
-        assert "UserPromptSubmit" in prepared.read_text()
+        assert prepared.settings.name == "settings.json"
+        assert prepared.settings.parent.stat().st_mode & 0o777 == 0o700
+        assert prepared.ready.parent == prepared.settings.parent
+        assert not prepared.ready.exists()
+        assert "UserPromptSubmit" in prepared.settings.read_text()
+
+
+class TestReadSettings:
+    """What a person passed to ``--settings``: a file or JSON text."""
+
+    def test_a_file_is_read(self, tmp_path: Path) -> None:
+        path = tmp_path / "mine.json"
+        _ = path.write_text('{"model": "opus"}')
+
+        assert hook.read_settings(str(path)) == {"model": "opus"}
+
+    def test_json_text_is_read(self) -> None:
+        assert hook.read_settings('{"hooks": {}}') == {"hooks": {}}
+
+    def test_json_text_too_long_for_a_file_name_is_read(self) -> None:
+        long = "x" * 5_000
+
+        assert hook.read_settings(f'{{"model": "{long}"}}') == {"model": long}
+
+    @pytest.mark.parametrize(
+        "value",
+        ["/no/such/settings.json", "not json", "[1]", '{"hooks": {"Stop": 1}}'],
+    )
+    def test_what_cannot_be_merged_reads_as_none(self, value: str) -> None:
+        assert hook.read_settings(value) is None
+
+
+class TestSessionStart:
+    """The readiness marker, written once claude is past its dialogs."""
+
+    def test_the_event_writes_the_marker_and_reads_no_station(
+        self,
+        station: type[_Station],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        seen = tmp_path / "seen"
+
+        status = hook.main(
+            ["--seen", str(seen), "--event", "session-start"],
+            connect=connect,
+        )
+
+        assert status == 0
+        assert hook.ready_marker(seen).exists()
+        assert capsys.readouterr().out == ""
+        assert station.requests == []
+
+    def test_a_marker_that_cannot_be_written_still_exits_0(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        seen = tmp_path / "gone" / "seen"
+
+        status = hook.main(
+            ["--seen", str(seen), "--event", "session-start"],
+            connect=connect,
+        )
+
+        assert status == 0
+        assert not hook.ready_marker(seen).exists()
+
+
+class TestBridge:
+    """The bridged events go to the run's prompt bridge, whose reply claude reads."""
+
+    def test_the_settings_hand_five_events_to_the_socket(self, tmp_path: Path) -> None:
+        socket = tmp_path / "bridge.sock"
+
+        text = hook.settings_json(
+            seen=tmp_path / "seen",
+            profile=None,
+            boxes=False,
+            socket=socket,
+        )
+
+        hooks = from_plain(
+            json_loads(text),
+            dict[str, dict[str, list[dict[str, list[dict[str, str | int]]]]]],
+        )["hooks"]
+        events = [
+            "PreToolUse",
+            "PermissionRequest",
+            "PostToolUse",
+            "Stop",
+            "SessionEnd",
+        ]
+        for event in events:
+            assert _command(text, event).endswith(
+                f"--seen {tmp_path / 'seen'} --event bridge --socket {socket}",
+            )
+        assert {event: hooks[event][-1]["hooks"][0]["timeout"] for event in events} == {
+            "PreToolUse": 4,
+            "PermissionRequest": 600,
+            "PostToolUse": 4,
+            "Stop": 4,
+            "SessionEnd": 4,
+        }
+
+    def test_a_run_without_a_bridge_hands_over_no_event(self, tmp_path: Path) -> None:
+        hooks = json_loads(
+            hook.settings_json(seen=tmp_path / "seen", profile=None),
+            dict[str, dict[str, object]],
+        )["hooks"]
+
+        assert set(hooks) == {"SessionStart", "UserPromptSubmit"}
+
+    def test_a_bridged_run_gets_its_socket_in_its_private_dir(self) -> None:
+        prepared = hook.prepare(profile=None, boxes=False, bridge=True)
+
+        assert prepared.socket is not None
+        assert prepared.socket.name == "bridge.sock"
+        assert prepared.socket.parent.resolve() == prepared.settings.parent.resolve()
+        assert str(prepared.socket) in prepared.settings.read_text()
+        assert hook.prepare(profile=None).socket is None
+
+    def test_the_hook_prints_what_the_bridge_answers(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        socket = socket_address(tmp_path / "bridge.sock")
+        opened = threading.Event()
+        records: list[SystemMessage] = []
+
+        def emit(record: SystemMessage) -> None:
+            records.append(record)
+            opened.set()
+
+        bridge = PromptBridge(
+            socket,
+            emit=emit,
+            pending=threading.Event(),
+        )
+        bridge.start()
+        event = {
+            "hook_event_name": "PermissionRequest",
+            "prompt_id": "p1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+        }
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
+        argv = ["--seen", str(tmp_path / "seen"), "--event", "bridge"]
+        status: list[int] = []
+        held = threading.Thread(
+            target=lambda: status.append(
+                hook.main([*argv, "--socket", str(socket)], connect=connect),
+            ),
+            daemon=True,
+        )
+        held.start()
+        try:
+            assert opened.wait(2.0)
+            card = from_plain(records[0].extra["$interaction"], dict[str, PlainTree])
+            prompt_id = from_plain(card["id"], str)
+            assert bridge.answer({"prompt_id": prompt_id, "decision": "allow"})
+            held.join(2.0)
+        finally:
+            bridge.close()
+
+        assert status == [0]
+        assert json_loads(capsys.readouterr().out) == {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": {"behavior": "allow"},
+            },
+        }
+
+    def test_no_socket_prints_nothing(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        argv = ["--seen", str(tmp_path / "seen"), "--event", "bridge"]
+
+        assert hook.main(argv, connect=connect) == 0
+        assert capsys.readouterr().out == ""
 
 
 if __name__ == "__main__":

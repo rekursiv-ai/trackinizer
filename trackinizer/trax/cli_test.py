@@ -79,7 +79,7 @@ def test_profile_flag_overrides_trackinizer_url(
     monkeypatch.setenv("TRACKINIZER_URL", "http://env:8766")
     client = cli.connect(argparse.Namespace(profile="prod", host=None, port=None))
     try:
-        assert str(client.base_url) == "http://prod:9000"
+        assert client.base_url == "http://prod:9000"
         assert client.author == "alice"
     finally:
         close_clients()
@@ -690,38 +690,10 @@ def test_run_shim_resolves_client_from_active_profile(
     resolved = captured["client"]
     assert isinstance(resolved, Client)
     try:
-        assert str(resolved.base_url) == "http://rhost:9100"
+        assert resolved.base_url == "http://rhost:9100"
         assert resolved.author == "bob"
     finally:
         resolved.close()
-
-
-def test_helper_verb_hands_the_rest_of_the_line_to_the_helper(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``trax helper claude --as guide -- ARGS`` runs the helper; a failure exits."""
-    heard: list[list[str]] = []
-    codes = iter([0, 3])
-
-    def fake_helper_main(
-        argv: Sequence[str],
-        *,
-        client_factory: Callable[[], Client],
-    ) -> int:
-        del client_factory
-        heard.append(list(argv))
-        return next(codes)
-
-    monkeypatch.setattr("trackinizer.trax.run.helper.main", fake_helper_main)
-    assert (
-        cli.parse_and_run(["helper", "claude", "--as", "guide", "--", "-m", "x"])
-        is None
-    )
-    with pytest.raises(SystemExit) as stopped:
-        cli.parse_and_run(["helper", "codex"])
-
-    assert heard == [["claude", "--as", "guide", "--", "-m", "x"], ["codex"]]
-    assert stopped.value.code == 3
 
 
 if __name__ == "__main__":

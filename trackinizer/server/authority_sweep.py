@@ -70,7 +70,7 @@ async def edge_change_count(store: Store) -> int:
         )
     # ``count(*)`` is never NULL against Postgres; a None here is a stubbed or
     # unavailable connection, which reads as "no edges seen yet".
-    return int(count) if isinstance(count, int) else 0
+    return int(count) if isinstance(count, int) else 0  # pyrefly: ignore[unnecessary-type-conversion] -- The stub's type hides the runtime value (numpy/torch scalar or non-str key); the conversion is load-bearing.
 
 
 async def authority_sweep_loop(

@@ -1,5 +1,6 @@
 import { type CallOptions, client, send, TIMEOUT_MS } from "./client";
 import type { components } from "./generated/schema";
+import type { Provider } from "./providers";
 import { valid, type WorkspaceState } from "./workspaces";
 
 export type Workstream = components["schemas"]["WorkstreamSummary"];
@@ -52,9 +53,13 @@ export async function moveStation(workspaceId: string, workstreamId: string): Pr
   })));
 }
 
-/** Create a station in a workstream, or in Scratch when no id is supplied. */
-export async function createStation(workstreamId?: string): Promise<WorkspaceState> {
+/**
+ * Create a station in a workstream, or in Scratch when no id is supplied. Its chat starts on `provider`, or on the
+ * user's default when none is named.
+ */
+export async function createStation(workstreamId?: string, provider?: Provider): Promise<WorkspaceState> {
+  const body = { ...(workstreamId ? { workstream_id: workstreamId } : {}), ...(provider ? { provider } : {}) };
   return valid(await send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/workspaces/new", {
-    ...(workstreamId ? { body: { workstream_id: workstreamId } } : {}), signal,
+    ...(Object.keys(body).length > 0 ? { body } : {}), signal,
   })));
 }

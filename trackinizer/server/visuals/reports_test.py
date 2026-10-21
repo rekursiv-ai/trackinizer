@@ -295,7 +295,7 @@ async def test_first_revision_creates_report_artifact_and_issue_edge() -> None:
         "seq": 3,
         "title": "Source",
     }
-    content = {
+    content: dict[str, object] = {
         "title": "Atlas é",
         "summary": "One direction.",
         "format": "html",

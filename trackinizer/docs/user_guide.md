@@ -165,14 +165,8 @@ every box on the page.
 
 ### When Chat is off
 
-Chat needs a partner, by default the server's shared assistant. When the server
-has none, or it is not running, Chat says so and the message box stays off.
-You can run your own:
-
-1. **Your settings** → Chat partner → **My local helper**.
-2. On your computer, install `trax` and point it at the server (steps 1 to 3
-   of [Connect a computer](#connect-a-computer)).
-3. Run `trax helper claude` (or `trax helper codex`) and leave it running.
+Chat needs a partner, the server's shared assistant. When the server has none, or
+it is not running, Chat says so and the message box stays off.
 
 ## 3. A terminal on your own machine
 
@@ -394,9 +388,23 @@ still filed in that chat, and outlives the tab and the terminal's limits.
 
 A `trax run claude` or `trax run codex` session filed in a chat is told, when
 it starts, that "the canvas" means that chat's, and how to read and change it
-with `trax workspace`. Claude hears it through `--append-system-prompt`, codex
+with `trax workspace`. It is also told that the conversation is already logged to
+trax as the chat's AgentSession, and to file each result as a row with the `trax`
+CLI, `--as` set to `$TRAX_ACTOR`. Claude hears it through `--append-system-prompt`, codex
 through `-c developer_instructions`; one you pass yourself wins, and then the
 session is not told. Reattaching to a detached session keeps its canvas.
+
+### What a switch loads
+
+When a chat switches between the assistant, claude and codex, the next one
+loads what the last one was looking at: everything from the last compaction or
+`/clear` on, in any of the chat's sessions, opened by that compaction's summary.
+A codex summary is sealed, so only codex reads it; any other gets codex's kept
+turns. Past each one's budget the oldest whole turns are left out, and a result
+over 16 KB keeps its head and tail. The first line it loads counts what was
+left out and names the command that prints it, such as
+`trax agentsession 7 records --to 0:41` (`--part P` for one part,
+`--format json` for the stored records).
 
 ### Red boxes reach claude
 

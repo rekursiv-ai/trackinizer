@@ -2,7 +2,8 @@
 
 A machine host that opted in (``TRAX_MACHINE_TERMINAL=1``) holds a request on the
 server for the next terminal to open. Each open runs one bridge: a login shell on a
-pty, and a WebSocket the host dials out to the server, which relays it to the owner's
+pty (or, when the open names a CLI, a detached ``trax run`` of it, which outlives the
+pty), and a WebSocket the host dials out to the server, which relays it to the owner's
 browser. The host listens on nothing, except that a browser may offer it a direct link
 (``trax/terminal_direct.py``) when a WebRTC library is installed.
 
@@ -20,6 +21,8 @@ import asyncio
 import contextlib
 import os
 import pwd
+import shutil
+import sys
 import threading
 import uuid
 
@@ -28,7 +31,7 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.posix.host import Frame, decode_frame
+from trackinizer.lib.posix.host import Frame, decode_frame, encode_frame
 from trackinizer.lib.posix.terminal import Terminal
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.render import echo
@@ -231,10 +234,18 @@ class TerminalHost:
             ping_interval=20,
         ) as socket:
             self._log("open", opened)
+            folder = await asyncio.to_thread(_start_folder, opened.cwd)
+            if folder is None:
+                await _end_with_line(
+                    socket,
+                    f"trax: {opened.cwd} is not a folder on this machine",
+                )
+                self._log("close", opened, status=1)
+                return
             status: int | None = None
             async with Terminal(
-                self._argv(),
-                cwd=Path(pwd.getpwuid(os.getuid()).pw_dir),
+                self._argv(opened),
+                cwd=folder,
                 env=self._env(opened),
                 clean_env=True,
                 terminate_grace_sec=2.0,
@@ -257,6 +268,10 @@ class TerminalHost:
                         factory=self.direct,
                         ice_servers=tuple(opened.ice_servers),
                     )
+                    # Before the relay pumps, so this line precedes the run's output: the
+                    # pty holds that output until then.
+                    if opened.command is not None:
+                        await router.output(f"trax: started in {folder}\r\n".encode())
                     status = await self._relay(terminal, socket, ended, router)
                 finally:
                     with self._lock:
@@ -293,9 +308,36 @@ class TerminalHost:
         await router.close()
         return status
 
-    def _argv(self) -> list[str]:
-        """Return the command: the user's login shell unless one was given."""
-        return self._shell or [pwd.getpwuid(os.getuid()).pw_shell, "-l"]
+    def _argv(self, opened: TerminalWait) -> list[str]:
+        """Return a detached ``trax run`` of the CLI asked for, else a shell."""
+        login = self._shell or [pwd.getpwuid(os.getuid()).pw_shell, "-l"]
+        if opened.command is None:
+            return login
+        # The trax this host runs as is preferred: a PATH lookup could find another
+        # install, and the run must come from the same code as the host.
+        argv0 = Path(sys.argv[0])
+        trax = (
+            str(argv0.absolute())
+            if argv0.is_file() and os.access(argv0, os.X_OK)
+            else shutil.which("trax")
+        )
+        if trax is None:
+            echo(
+                "trax: no trax executable found; the terminal opens a login shell",
+                err=True,
+            )
+            return login
+        assert isinstance(opened.run_name, str)
+        attach = [] if opened.attach is None else ["--attach", str(opened.attach)]
+        return [
+            trax,
+            "run",
+            "--detach",
+            "--name",
+            opened.run_name,
+            *attach,
+            opened.command,
+        ]
 
     def _env(self, opened: TerminalWait) -> dict[str, str]:
         """Return the shell's environment beyond the essentials; no secret in it."""
@@ -377,6 +419,35 @@ def _decode(message: str | bytes) -> tuple[Frame, bytes] | None:
         return decode_frame(message)
     except ValueError:
         return None
+
+
+def _start_folder(cwd: str | None) -> Path | None:
+    """Return the folder a terminal starts in, or ``None`` when ``cwd`` is not one."""
+    if cwd is None:
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    try:
+        folder = Path(cwd).expanduser()
+    except RuntimeError:
+        # ``~name`` names a user this machine does not have: no home to resolve against.
+        return None
+    return folder if folder.is_dir() else None
+
+
+class _Leg(Protocol):
+    """The one send a refusal makes on the host's socket."""
+
+    async def send(self, message: bytes) -> None:
+        """Send one binary message."""
+        ...
+
+
+# The shell never starts, so the browser is told the same way as after a shell that
+# exits: output, then ``EXIT``.
+async def _end_with_line(leg: _Leg, line: str) -> None:
+    """Show ``line`` in the terminal, then end it with a failed status."""
+    with contextlib.suppress(ConnectionClosed):
+        await leg.send(encode_frame(Frame.OUTPUT, f"{line}\r\n".encode()))
+        await leg.send(encode_frame(Frame.EXIT, (1).to_bytes(4)))
 
 
 class _LogLine(BaseModel):

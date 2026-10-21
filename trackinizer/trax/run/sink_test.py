@@ -1680,6 +1680,123 @@ class TestSinkFeed:
         sink.feed(_Recording(), _PART, b"x\n")
         assert built == ["sh"], "the sink did not ask the adapter for its reader"
 
+    def test_annotate_rewrites_each_record_before_it_is_seen_and_kept(self) -> None:
+        buf = io.StringIO()
+        sink = FileSink(buf)
+        seen: list[TraxRecord] = []
+
+        def shout(record: TraxRecord) -> TraxRecord:
+            return Stdout(text="HI\n") if isinstance(record, Stdout) else record
+
+        _ = sink.feed(
+            IOStreamAdapter(),
+            _PART,
+            b"hi\n",
+            on_record=seen.append,
+            annotate=shout,
+        )
+
+        assert seen[-1] == Stdout(text="HI\n")
+        rows = [
+            json_loads(line, dict[str, object]) for line in buf.getvalue().splitlines()
+        ]
+        assert rows[-1]["text"] == "HI\n"
+
+
+class TestLoadedHistoryIsNotUploaded:
+    """A resume's loaded history is read, so positions run on, but never uploaded."""
+
+    def test_the_first_record_uploaded_sits_where_the_history_ends(self) -> None:
+        client = _FakeClient()
+        sink = LockedSink(
+            ResilientSink(
+                TrackinizerSink(cast(Client, client), "sh"),
+                fallback_path=Path("/nonexistent/fallback.jsonl"),
+            ),
+        )
+        adapter = IOStreamAdapter()
+        seen: list[TraxRecord] = []
+
+        held = sink.feed(
+            adapter,
+            _PART,
+            b"loaded\n",
+            upload=False,
+            on_record=seen.append,
+        )
+        kinds = sink.feed(adapter, _PART, b"new\n")
+        sink.close()
+
+        assert held == []
+        assert seen == []
+        assert kinds == ["Stdout"]
+        [(_, _, bodies, _)] = client.appended
+        assert [(body.idx, body.kind) for body in bodies] == [(3, "Stdout")]
+        assert client.manifests[0].records == 4
+
+    def test_a_local_file_numbers_on_from_the_history_too(self) -> None:
+        buf = io.StringIO()
+        sink = FileSink(buf)
+        adapter = IOStreamAdapter()
+
+        _ = sink.feed(adapter, _PART, b"loaded\n", upload=False)
+        _ = sink.feed(adapter, _PART, b"new\n")
+
+        rows = [
+            json_loads(line, dict[str, object]) for line in buf.getvalue().splitlines()
+        ]
+        assert [(r["idx"], r["text"]) for r in rows] == [(3, "new\n")]
+
+    def test_a_degraded_run_numbers_its_local_copy_from_the_history(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        fallback = tmp_path / "fallback.jsonl"
+        sink = ResilientSink(_ExplodingSink(), fallback_path=fallback)
+
+        sink.emit("sh", _event("trips the degrade"))
+        sink.pass_over(_OTHER)
+        sink.emit("sh", _event("after", path=_OTHER))
+        sink.close()
+
+        rows = [
+            json_loads(line, dict[str, object])
+            for line in fallback.read_text().splitlines()
+        ]
+        assert [(r["part_name"], r["idx"]) for r in rows] == [
+            ("a.jsonl", 0),
+            ("b.jsonl", 1),
+        ]
+
+
+class TestAttachedRun:
+    """A run attached to a session writes into it and never renames it."""
+
+    def test_the_start_names_the_session_and_no_cli_session_id(self) -> None:
+        client = _FakeClient()
+        attach = uuid4()
+        sink = TrackinizerSink(cast(Client, client), "claude", attach=attach)
+
+        sink.set_cli_session_id("claude-abc-123")
+        _ = sink.open()
+        sink.set_cli_session_id("claude-abc-123")
+        sink.close()
+
+        [start] = client.started
+        assert start.attach == attach
+        assert start.cli_session_id is None
+        [end] = client.end_bodies
+        assert end is not None
+        assert end.cli_session_id is None
+
+    def test_a_run_not_attached_sends_no_attach(self) -> None:
+        client = _FakeClient()
+        sink = TrackinizerSink(cast(Client, client), "claude")
+
+        _ = sink.open()
+
+        assert client.started[0].attach is None
+
 
 class _BlockingSink(Sink):
     """A sink whose ``flush`` blocks until released, logging call spans.
@@ -2612,6 +2729,88 @@ class TestARefusedRecord:
 
         assert not fallback.exists()
         assert sorted(_stored_kinds(client)) == [0, 1, 2, 3]
+
+
+_RUN_PART = Path("prompts-1")
+
+
+class TestRunRecords:
+    """``emit_run_record`` stores what the run writes itself on a formatless part."""
+
+    def test_a_run_record_is_sent_at_once_on_a_formatless_part(self) -> None:
+        client = _FakeClient()
+        sink = TrackinizerSink(cast(Client, client), cli="claude")
+        sink.emit("claude", _event("turn"))
+
+        sink.emit_run_record(
+            Event(record=SystemMessage(content="asks"), path=_RUN_PART),
+        )
+        sink.emit_run_record(
+            Event(record=SystemMessage(content="answered"), path=_RUN_PART),
+        )
+
+        sent = [
+            (name, body.idx)
+            for _, name, bodies, _ in client.appended
+            for body in bodies
+        ]
+        assert sent == [(_PART.name, 0), (_RUN_PART.name, 0), (_RUN_PART.name, 1)]
+        formats = {manifest.name: manifest.format for manifest in client.manifests}
+        assert formats == {_PART.name: "claude", _RUN_PART.name: ""}
+
+    def test_a_file_sink_writes_it_under_the_runs_part(self) -> None:
+        buf = io.StringIO()
+
+        FileSink(buf).emit_run_record(
+            Event(record=SystemMessage(content="asks"), path=_RUN_PART),
+        )
+
+        row = json_loads(buf.getvalue(), dict[str, object])
+        assert (row["part_name"], row["kind"], row["idx"]) == (
+            _RUN_PART.name,
+            "SystemMessage",
+            0,
+        )
+
+    def test_the_wrapping_sinks_hand_it_on_as_a_run_record(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client = _FakeClient()
+        sink = LockedSink(
+            ResilientSink(
+                TrackinizerSink(cast(Client, client), cli="claude"),
+                fallback_path=tmp_path / "fallback.jsonl",
+            ),
+        )
+
+        sink.emit_run_record(
+            Event(record=SystemMessage(content="asks"), path=_RUN_PART),
+        )
+
+        assert [manifest.format for manifest in client.manifests] == [""]
+
+    def test_an_outage_keeps_it_locally_and_sends_it_on_return(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client, now = _OutageClient(), [0.0]
+        fallback_path = tmp_path / "fallback.jsonl"
+        sink = _catching_up(client, now=now, fallback_path=fallback_path)
+        sink.emit("claude", _event("before"))
+        sink.flush()
+        client.down = True
+
+        sink.emit_run_record(
+            Event(record=SystemMessage(content="asks"), path=_RUN_PART),
+        )
+        local = fallback_path.read_text()
+        client.down = False
+        now[0] = 60.0
+        sink.flush()
+
+        assert _RUN_PART.name in local
+        assert _RUN_PART.name in [name for _, name, _, _ in client.appended]
 
 
 if __name__ == "__main__":

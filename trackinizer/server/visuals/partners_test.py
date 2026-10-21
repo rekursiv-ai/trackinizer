@@ -1,39 +1,45 @@
-"""A canvas's partner: the assistant's session by account and name, else the pairing."""
+"""A canvas's partner: the assistant's session by account and name, or the CLI's run."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+import json
 import uuid
+
+from treekle import from_plain, json_loads
 
 import pytest
 
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.config import Assistant
 from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.inbound import InboundQueue, PollerRun
 from trackinizer.server.store.core import Store
 from trackinizer.server.visuals.partners import (
-    assistant_holds_chat,
     assistant_key_may_use,
     attach_partner,
     is_assistant_session,
     is_chat_session,
     live_chat_session,
     opener_email,
+    provider_availability,
     resolve_partner,
 )
-from trackinizer.server.visuals.workspaces import WorkspaceState
+from trackinizer.server.visuals.workspaces import NO_MACHINE_REASON, WorkspaceState
 from trackinizer.wire.wire_science_chat import (
-    CHAT_HELPER_CLI,
     SCIENCE_CHAT_LABEL,
     chat_session_id,
     poster_label,
 )
 
 
+_CWD: Final = Path(__file__).resolve().parent
+
 if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn, PGliteEngine
+    from trackinizer.wire.wire_science_chat import ChatProvider
 
 
 _KB: Final = Assistant(actor="scout", email="kb@example.com")
@@ -46,7 +52,6 @@ _KB_KEY: Final = uuid.UUID("44444444-4444-4444-4444-444444444443")
 _WORKSPACE: Final = uuid.UUID("55555555-5555-5555-5555-555555555555")
 _CHAT: Final = uuid.UUID("66666666-6666-6666-6666-666666666666")
 _OTHER_CHAT: Final = uuid.UUID("66666666-6666-6666-6666-666666666667")
-_HELPER: Final = CHAT_HELPER_CLI
 
 
 @pytest.mark.parametrize(
@@ -165,8 +170,8 @@ async def test_the_assistants_newest_live_session_is_the_default_partner(
             conn,
             inbound=_polled(older, newest, squatter),
             assistant=_KB,
-            choice="shared",
-            owner_id=_USER,
+            provider="assistant",
+            conversation_id=None,
         )
     assert partner is not None
     assert partner.model_dump() == {
@@ -174,7 +179,11 @@ async def test_the_assistants_newest_live_session_is_the_default_partner(
         "actor": "scout",
         "cli": "codex",
         "status": "live",
-        "kind": "shared",
+        "provider": "assistant",
+        "machine": None,
+        "run_name": None,
+        "cwd": None,
+        "label": "scout",
     }
 
 
@@ -191,15 +200,15 @@ async def test_an_assistant_with_no_live_session_is_still_named_as_unavailable(
             conn,
             inbound=_polled(),
             assistant=_KB,
-            choice="shared",
-            owner_id=_USER,
+            provider="assistant",
+            conversation_id=None,
         )
         none = await resolve_partner(
             conn,
             inbound=_polled(silent),
             assistant=None,
-            choice="shared",
-            owner_id=_USER,
+            provider="assistant",
+            conversation_id=None,
         )
     assert partner is not None
     assert partner.model_dump() == {
@@ -207,9 +216,37 @@ async def test_an_assistant_with_no_live_session_is_still_named_as_unavailable(
         "actor": "scout",
         "cli": None,
         "status": "unavailable",
-        "kind": "shared",
+        "provider": "assistant",
+        "machine": None,
+        "run_name": None,
+        "cwd": None,
+        "label": "scout",
     }
     assert none is None
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_revoking_the_assistants_key_takes_its_session_out_of_chat(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """A session a revoked key opened answers no Chat, polled or not."""
+    await _seed(pglite_engine)
+    async with pglite_engine.acquire() as conn:
+        service = await _session(conn, key=_KB_KEY, owner="scout", seq=1)
+        await conn.execute(
+            "UPDATE api_keys SET revoked_at = clock_timestamp() WHERE id = $1",
+            _KB_KEY,
+        )
+        partner = await resolve_partner(
+            conn,
+            inbound=_polled(service),
+            assistant=_KB,
+            provider="assistant",
+            conversation_id=None,
+        )
+    assert partner is not None
+    assert partner.status == "unavailable"
 
 
 @pytest.mark.db_pglite
@@ -250,156 +287,6 @@ async def test_attach_names_the_assistant_and_the_partner(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_the_local_partner_is_the_owners_newest_live_polled_helper(
-    pglite_engine: PGliteEngine,
-) -> None:
-    """Only a helper the owner's own live key opened and is polling can answer."""
-    await _seed(pglite_engine)
-    async with pglite_engine.acquire() as conn:
-        older = await _session(conn, key=_USER_KEY, owner="mine", seq=1, cli=_HELPER)
-        newest = await _session(conn, key=_USER_KEY, owner="mine#2", seq=2, cli=_HELPER)
-        not_a_helper = await _session(conn, key=_USER_KEY, owner="run", seq=3)
-        foreign = await _session(
-            conn,
-            key=_OTHER_KEY,
-            owner="theirs",
-            seq=4,
-            cli=_HELPER,
-        )
-        ended = await _session(
-            conn,
-            key=_USER_KEY,
-            owner="gone",
-            seq=5,
-            cli=_HELPER,
-            ended=True,
-        )
-        await _session(conn, key=_USER_KEY, owner="mute", seq=6, cli=_HELPER)
-        inbound = _polled(older, newest, not_a_helper, foreign, ended)
-        partner = await resolve_partner(
-            conn,
-            inbound=inbound,
-            assistant=None,
-            choice="local",
-            owner_id=_USER,
-        )
-        elsewhere = await resolve_partner(
-            conn,
-            inbound=_polled(foreign, not_a_helper, ended),
-            assistant=_KB,
-            choice="local",
-            owner_id=_USER,
-        )
-        state = WorkspaceState(
-            id=_WORKSPACE,
-            revision=0,
-            name="unnamed-workstream#1",
-            conversation_id=None,
-            page=None,
-            visuals=[],
-            partner_choice="local",
-        )
-        attached = await attach_partner(
-            conn,
-            state=state,
-            inbound=inbound,
-            assistant=None,
-            owner_id=_USER,
-        )
-    assert partner is not None
-    assert partner.model_dump() == {
-        "session_id": newest,
-        "actor": "mine#2",
-        "cli": _HELPER,
-        "status": "live",
-        "kind": "local",
-    }
-    assert elsewhere is not None
-    assert elsewhere.model_dump() == {
-        "session_id": None,
-        "actor": None,
-        "cli": None,
-        "status": "unavailable",
-        "kind": "local",
-    }
-    assert attached.partner == partner
-    assert attached.assistant is None
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_revoking_the_owners_key_takes_its_helper_out_of_chat(
-    pglite_engine: PGliteEngine,
-) -> None:
-    """Revoking the owner's key takes its helper out of Chat."""
-    await _seed(pglite_engine)
-    async with pglite_engine.acquire() as conn:
-        helper = await _session(conn, key=_USER_KEY, owner="mine", seq=1, cli=_HELPER)
-        await conn.execute(
-            "UPDATE api_keys SET revoked_at = clock_timestamp() WHERE id = $1",
-            _USER_KEY,
-        )
-        partner = await resolve_partner(
-            conn,
-            inbound=_polled(helper),
-            assistant=None,
-            choice="local",
-            owner_id=_USER,
-        )
-    assert partner is not None
-    assert partner.status == "unavailable"
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_the_owners_own_key_may_use_a_canvas_with_its_local_helper(
-    pglite_engine: PGliteEngine,
-) -> None:
-    """With a local partner the owner's key passes the rule once they have talked."""
-    await _seed(pglite_engine)
-    async with pglite_engine.acquire() as conn:
-        helper = await _session(conn, key=_USER_KEY, owner="mine", seq=1, cli=_HELPER)
-        partner = await resolve_partner(
-            conn,
-            inbound=_polled(helper),
-            assistant=None,
-            choice="local",
-            owner_id=_USER,
-        )
-        assert not await assistant_key_may_use(
-            conn,
-            owner_id=_USER,
-            partner=partner,
-            conversation_id=_CHAT,
-            api_key_id=_USER_KEY,
-        )
-        _ = await _session(
-            conn,
-            key=_USER_KEY,
-            owner="chat-1",
-            seq=2,
-            cli=_HELPER,
-            cli_session_id=chat_session_id(_CHAT),
-            labels=[SCIENCE_CHAT_LABEL],
-        )
-        assert await assistant_key_may_use(
-            conn,
-            owner_id=_USER,
-            partner=partner,
-            conversation_id=_CHAT,
-            api_key_id=_USER_KEY,
-        )
-        assert not await assistant_key_may_use(
-            conn,
-            owner_id=_USER,
-            partner=partner,
-            conversation_id=_CHAT,
-            api_key_id=_OTHER_KEY,
-        )
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
 async def test_an_assistant_key_needs_a_live_science_chat_the_owner_is_in(
     pglite_engine: PGliteEngine,
 ) -> None:
@@ -411,8 +298,8 @@ async def test_an_assistant_key_needs_a_live_science_chat_the_owner_is_in(
             conn,
             inbound=_polled(service),
             assistant=_KB,
-            choice="shared",
-            owner_id=_USER,
+            provider="assistant",
+            conversation_id=None,
         )
 
         async def may(owner: uuid.UUID, *, key: uuid.UUID = _KB_KEY) -> bool:
@@ -480,8 +367,8 @@ async def test_a_station_takes_the_key_only_of_the_chat_it_holds(
             conn,
             inbound=_polled(service),
             assistant=_KB,
-            choice="shared",
-            owner_id=_USER,
+            provider="assistant",
+            conversation_id=None,
         )
 
         async def may(conversation_id: uuid.UUID | None) -> bool:
@@ -518,8 +405,8 @@ async def test_a_chat_that_is_not_science_gives_the_assistant_no_canvas(
             conn,
             inbound=_polled(service),
             assistant=_KB,
-            choice="shared",
-            owner_id=_USER,
+            provider="assistant",
+            conversation_id=None,
         )
         assert not await assistant_key_may_use(
             conn,
@@ -594,49 +481,6 @@ async def test_a_conversations_live_session_is_the_assistants_polled_one(
         )
 
 
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_the_assistant_holds_a_conversation_it_opened_live_or_closed(
-    pglite_engine: PGliteEngine,
-) -> None:
-    await _seed(pglite_engine)
-    held, elsewhere = uuid.uuid4(), uuid.uuid4()
-    async with pglite_engine.acquire() as conn:
-        _ = await _session(
-            conn,
-            key=_KB_KEY,
-            owner="chat-1",
-            seq=1,
-            cli_session_id=chat_session_id(held),
-            ended=True,
-        )
-        _ = await _session(
-            conn,
-            key=_USER_KEY,
-            owner="chat-2",
-            seq=2,
-            cli_session_id=chat_session_id(elsewhere),
-        )
-
-        assert await assistant_holds_chat(conn, assistant=_KB, conversation_id=held)
-        # A helper's own session under the id is not the assistant's.
-        assert not await assistant_holds_chat(
-            conn,
-            assistant=_KB,
-            conversation_id=elsewhere,
-        )
-        assert not await assistant_holds_chat(
-            conn,
-            assistant=_KB,
-            conversation_id=uuid.uuid4(),
-        )
-        assert not await assistant_holds_chat(
-            conn,
-            assistant=None,
-            conversation_id=held,
-        )
-
-
 @pytest.mark.parametrize(
     ("cli_session_id", "email", "expected"),
     [
@@ -653,6 +497,313 @@ def test_a_chat_session_is_a_chat_id_opened_by_the_assistants_account(
 ) -> None:
     assert is_chat_session(_KB, cli_session_id=cli_session_id, email=email) is expected
     assert not is_chat_session(None, cli_session_id="chat:3d0e", email=email)
+
+
+async def _part(conn: Conn, *, session_id: uuid.UUID, part: int, cli: str) -> None:
+    """Record that a run of ``cli`` wrote part ``part`` of a session."""
+    await conn.execute(
+        "INSERT INTO session_manifests "
+        "(session_id, part, name, metadata, ir_id, format, records) "
+        "VALUES ($1, $2, $3, '{}', $4, $5, 0)",
+        session_id,
+        part,
+        f"{cli}-{part}.jsonl",
+        uuid.uuid4(),
+        cli,
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_cli_partner_is_the_chats_session_a_run_of_that_cli_drains(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """Live while polled and not another CLI's; offline still names the session."""
+    await _seed(pglite_engine)
+    async with pglite_engine.acquire() as conn:
+        chat = await _session(
+            conn,
+            key=_USER_KEY,
+            owner="chat-1",
+            seq=1,
+            cli="claude",
+            cli_session_id=chat_session_id(_CHAT),
+        )
+        squatter = await _session(
+            conn,
+            key=_OTHER_KEY,
+            owner="chat-2",
+            seq=2,
+            cli_session_id=chat_session_id(_CHAT),
+            account="other@example.com",
+        )
+
+        async def partner(
+            *polled: uuid.UUID,
+            provider: ChatProvider = "claude",
+            conversation_id: uuid.UUID | None = _CHAT,
+        ) -> tuple[uuid.UUID | None, str, str]:
+            found = await resolve_partner(
+                conn,
+                inbound=_polled(*polled),
+                assistant=_KB,
+                provider=provider,
+                conversation_id=conversation_id,
+            )
+            assert found is not None
+            assert (found.provider, found.cli, found.machine) == (
+                provider,
+                provider,
+                None,
+            )
+            return found.session_id, found.status, found.label
+
+        assert await partner() == (chat, "offline", "claude: no run")
+        assert await partner(chat) == (chat, "live", "claude")
+        assert await partner(squatter) == (chat, "offline", "claude: no run")
+        assert await partner(chat, conversation_id=None) == (
+            None,
+            "offline",
+            "claude: no run",
+        )
+        assert await partner(chat, conversation_id=_OTHER_CHAT) == (
+            None,
+            "offline",
+            "claude: no run",
+        )
+        await _part(conn, session_id=chat, part=0, cli="sagent")
+        assert await partner(chat) == (chat, "live", "claude")
+        await _part(conn, session_id=chat, part=1, cli="codex")
+        assert await partner(chat) == (chat, "offline", "claude: no run")
+        assert await partner(chat, provider="codex") == (chat, "live", "codex")
+        await conn.execute(
+            "UPDATE api_keys SET revoked_at = clock_timestamp() WHERE id = $1",
+            _USER_KEY,
+        )
+        assert await partner(chat, provider="codex") == (
+            chat,
+            "offline",
+            "codex: no run",
+        )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_live_runs_partner_says_where_it_runs_and_how_to_attach(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """What the run's drain said of itself shows while its lease holds, and no longer."""
+    await _seed(pglite_engine)
+    inbound = InboundQueue()
+    async with pglite_engine.acquire() as conn:
+        chat = await _session(
+            conn,
+            key=_USER_KEY,
+            owner="chat-1",
+            seq=1,
+            cli="claude",
+            cli_session_id=chat_session_id(_CHAT),
+        )
+
+        async def partner(
+            where: PollerRun | None,
+        ) -> tuple[str, str | None, str | None, str | None, str]:
+            if where is None:
+                inbound.forget_poller(chat)
+            else:
+                inbound.mark_poller(
+                    chat,
+                    run=where.run,
+                    machine=where.machine,
+                    cwd=where.cwd,
+                )
+            found = await resolve_partner(
+                conn,
+                inbound=inbound,
+                assistant=_KB,
+                provider="claude",
+                conversation_id=_CHAT,
+            )
+            assert found is not None
+            return (found.status, found.machine, found.run_name, found.cwd, found.label)
+
+        detached = PollerRun(run="chat-1a2b3c4d", machine="gx10", cwd="~/work")
+        assert await partner(detached) == (
+            "live",
+            "gx10",
+            "chat-1a2b3c4d",
+            "~/work",
+            "claude · gx10",
+        )
+        assert await partner(PollerRun(machine="gx10", cwd="/srv")) == (
+            "live",
+            "gx10",
+            None,
+            "/srv",
+            "claude · gx10",
+        )
+        # A run from a trax that names nothing is shown as runs always were.
+        assert await partner(PollerRun()) == ("live", None, None, None, "claude")
+        assert await partner(None) == ("offline", None, None, None, "claude: no run")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_live_runs_partner_is_the_one_chats_info_reads(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """The partner of a detached run, as ``web/test/seams/livePartner.json`` holds it.
+
+    Chat's Info dialog renders that file into the command that attaches to the run, so a
+    change of shape on either side fails both.
+    """
+    await _seed(pglite_engine)
+    inbound = InboundQueue()
+    async with pglite_engine.acquire() as conn:
+        chat = await _session(
+            conn,
+            key=_USER_KEY,
+            owner="chat-1",
+            seq=1,
+            cli="claude",
+            cli_session_id=chat_session_id(_CHAT),
+        )
+        inbound.mark_poller(chat, run="chat-1a2b3c4d", machine="gx10", cwd="~/project")
+        found = await resolve_partner(
+            conn,
+            inbound=inbound,
+            assistant=_KB,
+            provider="claude",
+            conversation_id=_CHAT,
+        )
+
+    assert found is not None
+    shown = found.model_copy(
+        update={"session_id": uuid.UUID("00000000-0000-4000-8000-000000000001")},
+    )
+    seam = _CWD.parents[1] / "web" / "test" / "seams" / "livePartner.json"
+    assert json_loads(json.dumps(shown.model_dump(mode="json"))) == json_loads(
+        seam.read_text(encoding="utf-8"),
+    )
+
+
+async def _machine(
+    conn: Conn,
+    *,
+    name: str,
+    owner: str = "user@example.com",
+    clis: list[str] | str = "",
+    confirmed: bool = True,
+    online: bool = True,
+) -> uuid.UUID:
+    """Register a machine as ``trax machine connect`` leaves it."""
+    return from_plain(
+        await conn.fetchval(
+            "INSERT INTO machines (name, updated_by, owner, confirmed_at, "
+            "host_instance, last_heartbeat, facts) VALUES ($1, $2, $2, "
+            "CASE WHEN $3 THEN now() END, gen_random_uuid(), "
+            "now() - make_interval(secs => CASE WHEN $4 THEN 0 ELSE 3600 END), "
+            "jsonb_build_object('clis', $5::jsonb)) RETURNING id",
+            name,
+            owner,
+            confirmed,
+            online,
+            clis,
+        ),
+        uuid.UUID,
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_cli_is_available_on_a_confirmed_online_machine_that_lists_it(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """The machines the terminal picker offers; the assistant is always available."""
+    await _seed(pglite_engine)
+    async with pglite_engine.acquire() as conn:
+
+        async def available() -> tuple[bool, bool, bool, str, str, str]:
+            flags, reasons = await provider_availability(conn, owner_id=_USER)
+            return (
+                flags.assistant,
+                flags.claude,
+                flags.codex,
+                reasons.assistant,
+                reasons.claude,
+                reasons.codex,
+            )
+
+        none = (
+            True,
+            False,
+            False,
+            "",
+            NO_MACHINE_REASON.format(cli="claude"),
+            NO_MACHINE_REASON.format(cli="codex"),
+        )
+        assert await available() == none
+        _ = await _machine(conn, name="cold", clis=["claude"], online=False)
+        _ = await _machine(conn, name="new", clis=["claude"], confirmed=False)
+        _ = await _machine(conn, name="theirs", clis=["claude"], owner="other@x.com")
+        _ = await _machine(conn, name="odd", clis="claude")
+        assert await available() == none
+        laptop = await _machine(conn, name="laptop", clis=["claude", "git"])
+        assert await available() == (
+            True,
+            True,
+            False,
+            "",
+            "",
+            NO_MACHINE_REASON.format(cli="codex"),
+        )
+        await conn.execute(
+            "INSERT INTO machine_credentials (machine_id, secret_sha256, revoked_at) "
+            "VALUES ($1, sha256('x'::bytea), now())",
+            laptop,
+        )
+        assert await available() == none
+        await conn.execute(
+            "INSERT INTO machine_credentials (machine_id, secret_sha256) "
+            "VALUES ($1, sha256('y'::bytea))",
+            laptop,
+        )
+        assert (await available())[1]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_attach_names_the_stations_cli_partner_and_what_its_owner_may_choose(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """A claude station without a run is offline, whatever the assistant is doing."""
+    await _seed(pglite_engine)
+    state = WorkspaceState(
+        id=_WORKSPACE,
+        revision=0,
+        name="unnamed-workstream#1",
+        conversation_id=_CHAT,
+        page=None,
+        visuals=[],
+        provider="claude",
+    )
+    async with pglite_engine.acquire() as conn:
+        service = await _session(conn, key=_KB_KEY, owner="scout", seq=1)
+        _ = await _machine(conn, name="laptop", clis=["codex"])
+        attached = await attach_partner(
+            conn,
+            state=state,
+            inbound=_polled(service),
+            assistant=_KB,
+            owner_id=_USER,
+        )
+    assert attached.partner is not None
+    assert (attached.partner.status, attached.partner.label) == (
+        "offline",
+        "claude: no run",
+    )
+    assert (attached.available.claude, attached.available.codex) == (False, True)
+    assert attached.reasons.claude == NO_MACHINE_REASON.format(cli="claude")
 
 
 @pytest.mark.db_pglite

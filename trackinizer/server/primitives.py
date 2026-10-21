@@ -288,6 +288,13 @@ async def validate_list_references(
             )
 
 
+async def _validate_reference_hook(conn: Conn, value: object, *, column: str) -> None:
+    """Adapt :func:`validate_list_references` to the hook's ``object`` value."""
+    # ``normalize`` already made the column's value a tuple of references.
+    refs = cast("Sequence[UUID | tuple[UUID, str]]", value)
+    await validate_list_references(conn, refs, column=column)
+
+
 # Lives here because the validator shares ``lookup_kinds`` with the edge-insert path;
 # binding it in ``setter_dispatch`` would pull ``Conn`` into that module. Each closure
 # captures its own ``column`` name.
@@ -297,7 +304,7 @@ def _bind_reference_validators() -> None:
         if spec.references:
             RUNTIME_HOOKS[col] = replace(
                 RUNTIME_HOOKS.get(col, NO_HOOKS),
-                validate=partial(validate_list_references, column=col),
+                validate=partial(_validate_reference_hook, column=col),
             )
 
 

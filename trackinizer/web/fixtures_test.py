@@ -246,7 +246,7 @@ class _Normaliser:
                 else self.value(member)
                 for key, member in sorted(raw.items())
             }
-        if isinstance(raw, list | tuple):
+        if isinstance(raw, (list, tuple)):
             return [self.value(item) for item in _ordered(raw, rows=self.rows)]
         return raw
 
@@ -496,7 +496,12 @@ def _write_fields(rec: _Recorder, graph: Mapping[str, str]) -> None:
             f"/api/issue/{child}/priority",
             {"value": "high"},
         ),
-        ("inquiries/clearField", "DELETE", f"/api/inquiries/{child}/description", {}),
+        (
+            "inquiries/clearField",
+            "DELETE",
+            f"/api/inquiries/{child}/description",
+            dict[str, PlainTree](),
+        ),
         (
             "inquiries/patchField",
             "PATCH",
@@ -518,14 +523,14 @@ def _write_edges(rec: _Recorder, graph: Mapping[str, str]) -> None:
     """Add an edge, annotate it, and remove another."""
     edge = f"/api/edges/{graph['child']}/requires/{graph['question']}"
     for name, method, path, body in (
-        ("edges/addEdge", "POST", edge, {}),
+        ("edges/addEdge", "POST", edge, dict[str, PlainTree]()),
         (
             "edges/setEdgeAnnotation",
             "PUT",
             f"{edge}/note",
             {"value": "Blocks the sort."},
         ),
-        ("edges/clearEdgeAnnotation", "DELETE", f"{edge}/note", {}),
+        ("edges/clearEdgeAnnotation", "DELETE", f"{edge}/note", dict[str, PlainTree]()),
         (
             "edges/patchEdgeLabels",
             "PATCH",
@@ -660,7 +665,7 @@ def _read_lists(rec: _Recorder) -> None:
         ),
         ("graph/getGraph", "/api/web/graph", [("limit", "1000")]),
         # The whole feed: the fixture session's three turns, two of them said.
-        ("sessions/readFeedFacets", "/api/web/feed/facets", []),
+        ("sessions/readFeedFacets", "/api/web/feed/facets", list[tuple[str, str]]()),
         (
             # Four quarter hours, all empty; times written as the app writes them.
             "histogram/readHistogram",

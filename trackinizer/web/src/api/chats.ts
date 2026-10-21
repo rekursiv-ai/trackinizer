@@ -31,6 +31,19 @@ export type ChatFork = {
   readonly idx: number;
 };
 
+/**
+ * A decision on a prompt a claude run asked, which the run takes from the chat's
+ * `answer` line. `updated_input` carries a question's answers under their headers,
+ * and is null for a permission or a plan. The wire types a post's `payload` as any
+ * object, so its shape for an `answer` (`docs/api.md`) is spelled here.
+ */
+export type AnswerPayload = {
+  readonly prompt_id: string;
+  readonly decision: "allow" | "deny";
+  readonly updated_input: { readonly answers: { readonly [header: string]: string } } | null;
+  readonly message: string;
+};
+
 /** What one posted line carries besides its key. */
 export type ChatLine = {
   readonly workspaceId: string;
@@ -43,7 +56,12 @@ export type ChatLine = {
   readonly page: string | null;
   /** The hashes the sender came through before `page`, oldest first. */
   readonly trail: readonly string[];
+  /** `answer` posts a decision on a prompt, with its `payload`; absent for a line a person typed. */
+  readonly kind?: "answer";
+  readonly payload?: AnswerPayload;
 };
+
+type ChatSend = components["schemas"]["ChatSend"];
 
 /** The `cli_session_id` prefix and label of a science chat's session, as the server names them. */
 export const CHAT_SESSION_PREFIX = "chat:";
@@ -128,14 +146,17 @@ export async function readChatPartial(sessionId: string, after: number, { signal
  * when the assistant opens it (`getChatHead`). A new conversation, and a fork, is named by the key.
  */
 export async function sendChatLine(line: ChatLine, key: string): Promise<ChatSent> {
+  const body: ChatSend = {
+    workspace_id: line.workspaceId, text: line.text,
+    conversation_id: line.conversationId,
+    ...(line.kind && { kind: line.kind }),
+    ...(line.payload && { payload: line.payload }),
+    ...(line.fork && { fork: { session_id: line.fork.sessionId, part: line.fork.part, idx: line.fork.idx } }),
+    page: line.page, trail: [...line.trail],
+  };
   return send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/chats", {
     params: { header: { "Idempotency-Key": key } },
-    body: {
-      kind: "science", workspace_id: line.workspaceId, text: line.text,
-      conversation_id: line.conversationId,
-      ...(line.fork && { fork: { session_id: line.fork.sessionId, part: line.fork.part, idx: line.fork.idx } }),
-      page: line.page, trail: [...line.trail],
-    },
+    body,
     signal,
   }));
 }

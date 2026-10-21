@@ -22,6 +22,8 @@ import httpx2
 import pytest
 
 from trackinizer.lib.agent.types.sessions import (
+    AgentToAgentMessage,
+    AssistantMessage,
     SessionRecord,
     Thinking,
     UncategorizedRecord,
@@ -38,6 +40,7 @@ from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.store.session_ir import RecentSessionTurn, SessionManifest
 from trackinizer.types.inquiries import AgentSession, Issue
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.wire_session_ir import RecordBody
 
 
 if TYPE_CHECKING:
@@ -597,6 +600,29 @@ async def test_a_legacy_transcript_reads_every_listed_part(integ_store: Store) -
         for body in (from_plain(page.json(), _Page) for page in pages)
         for record in body["records"]
     ] == [(-1, 0), (-1, 1), (0, 0)]
+
+
+def test_a_persons_line_is_any_the_loader_reads_as_one() -> None:
+    """The assistant's line, a stamped CLI line and an authored one name their poster.
+
+    A CLI's own user turn and an answer name none.
+    """
+    records: list[SessionRecord] = [
+        AgentToAgentMessage(sender="ada@x.y", content="kb"),
+        UserMessage(
+            content="bob@x.y: hi",
+            extra=immutable({"$inbound": {"source": "bob@x.y", "room": None}}),
+        ),
+        UserMessage(content="hi", extra=immutable({"author": "cy@x.y"})),
+        UserMessage(content="typed at the terminal"),
+        AssistantMessage(content="answer"),
+    ]
+
+    posters = session_ir_routes._posters(
+        [RecordBody.of(_row(idx, record)) for idx, record in enumerate(records)],
+    )
+
+    assert posters == ["ada@x.y", "bob@x.y", "cy@x.y"]
 
 
 def _listed_parts(response: httpx2.Response) -> list[int]:

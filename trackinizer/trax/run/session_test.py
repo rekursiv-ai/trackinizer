@@ -14,6 +14,7 @@ from collections.abc import (
     Callable,
     Iterable,
     Iterator,
+    Mapping,
     Sequence,
 )
 from contextlib import asynccontextmanager
@@ -24,8 +25,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, TextIO, cast, override
 
 import asyncio
+import io
 import json
 import os
+import pwd
+import shlex
 import shutil
 import sys
 import threading
@@ -39,12 +43,15 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.agent.sessions import claude, codex
 from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
     FileEditResult,
     IncompleteRecord,
     SessionRecord,
+    SystemMessage,
+    UncategorizedRecord,
     UserMessage,
 )
 from trackinizer.lib.posix import follow
@@ -52,16 +59,20 @@ from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.lib.posix.host import HostSpec
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.posix.testing import poll_fsevents
+from trackinizer.trax.daemon.protocol import socket_address
 from trackinizer.trax.profile import LOCALHOST_FALLBACK_URL
-from trackinizer.trax.run import detach, session
+from trackinizer.trax.run import detach, prompt_bridge, session
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter
+from trackinizer.trax.run.commands import command_record
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.inbound import render_inbound
+from trackinizer.trax.run.prompt_bridge import PromptBridge
 from trackinizer.trax.run.session import (
     _CANVAS_NOTE,
+    InboundState,
     RunConfig,
     _cli_argv,
     _drain_filesystem_loop,
@@ -86,13 +97,18 @@ from trackinizer.trax.run.sink import (
     TrackinizerSink,
 )
 from trackinizer.trax.run.slash import SlashCommand
+from trackinizer.trax.run.trust import TrustGate
 from trackinizer.trax.run.worktree_diff import Output, WorktreeDiff, run_git
+from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.chat_commands import Command, classify
 from trackinizer.wire.wire_session_ir import (
     AppendRecordsResponse,
+    PartBody,
     RecordBody,
     SlashCommandBody,
 )
 from trackinizer.wire.wire_sessions import (
+    InboundDrainItem,
     SessionEnd,
     SessionEndResponse,
     SessionPlacement,
@@ -102,7 +118,11 @@ from trackinizer.wire.wire_sessions import (
 )
 
 
+_CWD: Final = Path(__file__).resolve().parent
+
 if TYPE_CHECKING:
+    from treekle import PlainTree
+
     from trackinizer.trax.run.adapters.custom_types import Adapter
     from trackinizer.types.streams import TraxRecord
 
@@ -120,6 +140,15 @@ def short_queue_drain_interval(monkeypatch: pytest.MonkeyPatch) -> None:
 def prompt_fsevents(monkeypatch: pytest.MonkeyPatch) -> None:
     """Watch on a poll rather than on ``fseventsd``'s schedule; see ``poll_fsevents``."""
     poll_fsevents(monkeypatch, writes=True)
+
+
+# A synced claude run reads claude's trust config before it starts. Sandboxed, claude
+# trusts every folder without reading one, so no test reads the person's own config and
+# no trust card opens; a test of the card says otherwise.
+@pytest.fixture(autouse=True)
+def trusted_claude(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every claude run trusted in its folder, as claude decides it."""
+    monkeypatch.setenv("CLAUDE_CODE_SANDBOXED", "1")
 
 
 class _RecordingSink(Sink):
@@ -159,6 +188,10 @@ class _RecordingSink(Sink):
     @override
     def restart(self, path: Path) -> None:
         self._next_idx[path] = 0
+
+    @override
+    def pass_over(self, path: Path) -> None:
+        self._next_idx[path] = self._next_idx.get(path, 0) + 1
 
     @override
     def emit(self, adapter_name: str, event: Event) -> None:
@@ -607,7 +640,6 @@ class TestSessionScoping:
                 AssertionError,
                 OSError,
                 RuntimeError,
-                threading.BrokenBarrierError,
             ) as error:
                 errors.append(error)
 
@@ -696,7 +728,6 @@ class TestSessionScoping:
                 AssertionError,
                 OSError,
                 RuntimeError,
-                threading.BrokenBarrierError,
             ) as error:
                 errors.append(error)
 
@@ -1032,18 +1063,22 @@ class TestAResumeTypedAfterTheDashes:
         assert config.cli_args == ("--resume", _OLD, "--fork-session")
 
     @pytest.mark.usefixtures("claude_scope")
-    def test_a_detached_run_warns_before_it_detaches(
+    def test_a_detached_run_warns_in_its_host(
         self,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A detached host writes to its log, which nobody reads."""
+        """The host warns before it accepts, so its launcher repeats the line."""
+        ran: list[RunConfig] = []
         hosted: list[Callable[[HostSpec | None], int]] = []
+        monkeypatch.setattr(session, "run", partial(_keep_run, ran))
         monkeypatch.setattr(detach, "launch", partial(_keep_host, hosted))
 
         assert session.main(["claude", "--detach", "--", "-c"]) == 0
+        assert capsys.readouterr().err == ""
 
-        assert len(hosted) == 1
+        [start] = hosted
+        assert start(None) == 0
         assert "trax agentsession <seq> run claude" in capsys.readouterr().err
 
     @pytest.mark.usefixtures("claude_scope")
@@ -1074,6 +1109,168 @@ class TestMainDispatch:
     def test_contradictory_flags_are_refused(self, argv: list[str]) -> None:
         with pytest.raises(SystemExit):
             _ = session.main(argv)
+
+
+class TestARunSaysWhereItIs:
+    """Each drain names the run's detached host, machine and folder, for Chat."""
+
+    @pytest.mark.parametrize(
+        ("argv", "run_name"),
+        [
+            (["claude", "--detach", "--name", "chat-1a2b3c4d"], "chat-1a2b3c4d"),
+            (["claude", "--detach", "--as", "scout"], "scout"),
+            (["codex", "--detach"], "codex"),
+            (["claude", "--as", "scout"], None),
+        ],
+    )
+    def test_a_run_is_named_by_the_host_trax_run_attach_takes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        argv: list[str],
+        run_name: str | None,
+    ) -> None:
+        ran: list[RunConfig] = []
+        hosts: list[str] = []
+        monkeypatch.setattr(session, "run", partial(_keep_run, ran))
+        monkeypatch.setattr(detach, "launch", partial(_start_host, hosts))
+
+        assert session.main(argv) == 0
+
+        [config] = ran
+        assert config.run_name == run_name
+        assert hosts == ([] if run_name is None else [run_name])
+
+    def test_a_detached_runs_poller_is_handed_its_host(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, _ = _wire(
+            monkeypatch,
+            tmp_path,
+            RunConfig(
+                cli_name="claude",
+                client=cast(Client, object()),
+                run_name="chat-1a2b3c4d",
+            ),
+            ClaudeAdapter(),
+        )
+
+        *_, options = wiring.inbound
+        assert cast(dict[str, object], options)["run_name"] == "chat-1a2b3c4d"
+
+    def test_each_drain_says_where_the_run_is(self) -> None:
+        stop = threading.Event()
+        client = _WhereClient(stop)
+
+        _inbound_poll_loop(
+            cast(Client, client),
+            cast(Sink, _SessionSink()),
+            cast(ThreadedRelay, _RecordingRelay()),
+            stop,
+            run_name="chat-1a2b3c4d",
+            machine="gx10",
+            cwd="~/work",
+        )
+
+        assert client.said == [
+            {"run": "chat-1a2b3c4d", "machine": "gx10", "cwd": "~/work"},
+        ]
+
+    @pytest.mark.parametrize(
+        ("hostname", "machine"),
+        [("GX10.lan", "gx10"), ("init", None), ("...", None)],
+    )
+    def test_a_hostname_names_the_machine_only_as_connect_would(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        hostname: str,
+        machine: str | None,
+    ) -> None:
+        monkeypatch.setattr("socket.gethostname", lambda: hostname)
+
+        assert session._machine_name() == machine
+
+    @pytest.mark.parametrize(
+        ("cwd", "shown"),
+        [
+            ("/home/ada", "~"),
+            ("/home/ada/work/web", "~/work/web"),
+            ("/home/adam", "/home/adam"),
+            ("/srv/work", "/srv/work"),
+            ("/home/ada/new\nline", None),
+            ("/home/ada/\x9bcsi", None),
+            # A name in no UTF-8, as the filesystem hands it (``os.fsdecode``).
+            ("/home/ada/\udce9t\udce9", None),
+            ("/srv/" + "d" * 1_019, "/srv/" + "d" * 1_019),
+            ("/srv/" + "d" * 1_020, None),
+        ],
+    )
+    def test_a_folder_is_shown_from_home_and_left_unsaid_when_refused(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cwd: str,
+        shown: str | None,
+    ) -> None:
+        _at_home(monkeypatch, Path("/home/ada"))
+
+        assert session._shown_cwd(Path(cwd)) == shown
+
+    def test_an_account_with_no_home_shows_its_folder_whole(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(pwd, "getpwuid", _no_account)
+
+        assert session._shown_cwd(Path("/home/ada/loop")) == "/home/ada/loop"
+
+
+class _WhereClient:
+    """Records what each drain says of the run, and stops the loop after one."""
+
+    def __init__(self, stop: threading.Event) -> None:
+        self._stop = stop
+        self.said: list[dict[str, str | None]] = []
+
+    def drain_inbound(
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
+        **where: str | None,
+    ) -> list[InboundDrainItem]:
+        del session_id, wait_sec
+        self.said.append(where)
+        self._stop.set()
+        return []
+
+
+def _start_host(
+    hosts: list[str],
+    name: str,
+    *,
+    command: str,
+    start: Callable[[HostSpec | None], int],
+) -> int:
+    """Start what a detached host named ``name`` would run, in this process."""
+    del command
+    hosts.append(name)
+    return start(None)
+
+
+def _at_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
+    """Make ``home`` the account's home directory, as the password database says."""
+    monkeypatch.setattr(pwd, "getpwuid", partial(_account_at, home))
+
+
+def _account_at(home: Path, uid: int) -> pwd.struct_passwd:
+    """Return an account entry for ``uid`` whose home directory is ``home``."""
+    return pwd.struct_passwd(("ada", "x", uid, uid, "", str(home), "/bin/sh"))
+
+
+def _no_account(uid: int) -> pwd.struct_passwd:
+    """Stand in for a uid the password database has no entry for."""
+    raise KeyError(f"getpwuid(): uid not found: {uid}")
 
 
 class TestAResumedTranscriptIsCaptured:
@@ -1115,8 +1312,13 @@ class TestAResumedTranscriptIsCaptured:
             _Stats(),
         )
         assert rc == 0
-        (argv,) = argv_seen
-        return sink, list(argv)
+        (seen,) = argv_seen
+        argv = list(seen)
+        if argv[0] == "claude":
+            # Every claude run is handed its hooks; the rest is what is asserted.
+            assert argv[1] == "--settings"
+            del argv[1:3]
+        return sink, argv
 
     def test_a_claude_resume_captures_the_file_it_appends_to(
         self,
@@ -1264,7 +1466,14 @@ class TestAResumedTranscriptIsCaptured:
         )
 
         assert _texts(sink) == ["before", "after"]
-        assert argv == ["codex", "--no-daemon", "resume", _ROLLOUT_ID]
+        assert argv == [
+            "codex",
+            "--no-daemon",
+            "--enable",
+            "goals",
+            "resume",
+            _ROLLOUT_ID,
+        ]
 
 
 class TestWorktreeDiffWiring:
@@ -2945,33 +3154,77 @@ class TestSessionOwnerAndArgv:
         assert _cli_argv(ClaudeAdapter(), config, owner) == ["claude"]
 
     def test_a_claude_run_placed_on_a_station_is_handed_the_box_hook(self) -> None:
-        argv, settings = _with_box_hook(
+        argv, files = _with_box_hook(
             ["claude", "--model", "haiku"],
             adapter=ClaudeAdapter(),
             placed={"TRAX_WORKSPACE": "c5286865-67b6-4bd8-ab51-e06e10c326c5"},
             profile="prod",
         )
 
-        assert settings is not None
-        assert argv == ["claude", "--settings", str(settings), "--model", "haiku"]
-        assert "--profile prod" in settings.read_text()
+        assert files is not None
+        assert argv == ["claude", "--settings", str(files.settings), "--model", "haiku"]
+        text = files.settings.read_text()
+        assert "--profile prod" in text
+        assert "UserPromptSubmit" in text
+        assert "SessionStart" in text
+
+    def test_an_unplaced_claude_run_gets_only_the_readiness_hook(self) -> None:
+        argv, files = _with_box_hook(
+            ["claude"],
+            adapter=ClaudeAdapter(),
+            placed={},
+            profile=None,
+        )
+
+        assert files is not None
+        assert argv == ["claude", "--settings", str(files.settings)]
+        text = files.settings.read_text()
+        assert "SessionStart" in text
+        assert "UserPromptSubmit" not in text
+
+    @pytest.mark.parametrize("spelled", ["split", "equals"])
+    def test_the_persons_own_settings_are_merged_into_ours(
+        self,
+        tmp_path: Path,
+        spelled: str,
+    ) -> None:
+        mine = tmp_path / "mine.json"
+        stop: dict[str, object] = {"hooks": [{"type": "command", "command": "ding"}]}
+        _ = mine.write_text(json.dumps({"model": "opus", "hooks": {"Stop": [stop]}}))
+        given = (
+            ["--settings", str(mine)] if spelled == "split" else [f"--settings={mine}"]
+        )
+
+        argv, files = _with_box_hook(
+            ["claude", *given, "--model", "haiku"],
+            adapter=ClaudeAdapter(),
+            placed={"TRAX_WORKSPACE": "w"},
+            profile=None,
+        )
+
+        assert files is not None
+        assert argv == ["claude", "--settings", str(files.settings), "--model", "haiku"]
+        merged = json_loads(files.settings.read_text(), dict[str, object])
+        hooks = from_plain(merged["hooks"], dict[str, list[object]])
+        assert merged["model"] == "opus"
+        assert hooks["Stop"] == [stop]
+        assert {"SessionStart", "UserPromptSubmit"} <= set(hooks)
 
     @pytest.mark.parametrize(
-        ("adapter", "placed", "args"),
+        ("adapter", "args"),
         [
-            (ClaudeAdapter(), {}, []),
-            (CodexAdapter(), {"TRAX_WORKSPACE": "w"}, []),
-            (ClaudeAdapter(), {"TRAX_WORKSPACE": "w"}, ["--settings", "mine.json"]),
-            (ClaudeAdapter(), {"TRAX_WORKSPACE": "w"}, ["--settings=mine.json"]),
+            (CodexAdapter(), []),
+            (ClaudeAdapter(), ["--settings", "/no/such/mine.json"]),
+            (ClaudeAdapter(), ["--settings=/no/such/mine.json"]),
         ],
     )
-    def test_no_hook_without_a_station_a_claude_or_with_the_users_own_settings(
+    def test_no_hook_for_another_cli_or_settings_that_cannot_be_merged(
         self,
         adapter: Adapter,
-        placed: dict[str, str],
         args: list[str],
     ) -> None:
         argv = [adapter.cli_binary, *args]
+        placed = {"TRAX_WORKSPACE": "w"}
 
         assert _with_box_hook(argv, adapter=adapter, placed=placed, profile=None) == (
             argv,
@@ -3005,6 +3258,14 @@ class TestSessionOwnerAndArgv:
         assert codex[3:] == codex_args
         assert tomllib.loads(codex[2]) == {"developer_instructions": _CANVAS_NOTE}
         assert "$TRAX_WORKSPACE" in _CANVAS_NOTE
+
+    def test_a_placed_cli_is_told_it_is_logged_and_how_to_log_results(self) -> None:
+        """The note is a TOML string as it stands, so it holds no quote or backslash."""
+        assert "already logged to trax as the chat's AgentSession" in _CANVAS_NOTE
+        assert "`--as` set to $TRAX_ACTOR" in _CANVAS_NOTE
+        assert "`trax help` lists the grammar" in _CANVAS_NOTE
+        assert '"' not in _CANVAS_NOTE
+        assert "\\" not in _CANVAS_NOTE
 
     @pytest.mark.parametrize(
         ("adapter", "placed", "args"),
@@ -3062,10 +3323,49 @@ class TestSessionOwnerAndArgv:
         assert _cli_argv(CodexAdapter(), plain, None) == [
             "codex",
             "--no-daemon",
+            "--enable",
+            "goals",
             "exec",
             "hi",
         ]
-        assert _cli_argv(CodexAdapter(), explicit, None) == ["codex", "--no-daemon"]
+        assert _cli_argv(CodexAdapter(), explicit, None) == [
+            "codex",
+            "--enable",
+            "goals",
+            "--no-daemon",
+        ]
+
+    @pytest.mark.parametrize(
+        "given",
+        [
+            ("--disable", "goals"),
+            ("--enable=goals",),
+            ("-c", "features.goals=false"),
+            ("--config", "features.goals=true"),
+            ("--config=features.goals=false",),
+        ],
+        ids=["disable", "enable-equals", "c", "config", "config-equals"],
+    )
+    def test_codex_goals_are_left_as_the_person_set_them(
+        self,
+        given: tuple[str, ...],
+    ) -> None:
+        """Codex drops ``/goal`` silently with goals off, so a run turns them on."""
+        config = RunConfig(cli_name="codex", cli_args=(*given, "--no-daemon"))
+
+        assert _cli_argv(CodexAdapter(), config, None) == [
+            "codex",
+            *given,
+            "--no-daemon",
+        ]
+
+    def test_another_feature_or_a_dangling_flag_still_gets_goals(self) -> None:
+        config = RunConfig(
+            cli_name="codex",
+            cli_args=("--no-daemon", "--enable", "web_search", "--disable"),
+        )
+
+        assert _cli_argv(CodexAdapter(), config, None)[1:3] == ["--enable", "goals"]
 
     def test_another_cli_claims_nothing_and_gets_its_args_verbatim(self) -> None:
         config = RunConfig(cli_name="gemini", cli_args=("-p", "x"))
@@ -3219,15 +3519,17 @@ def _wire(
     stats: _Stats | None = None,
     rc: int = 0,
     output: bytes = b"",
+    relay: type[_WiringRelay] = _WiringRelay,
+    wiring: _Wiring | None = None,
 ) -> tuple[_Wiring, int]:
     """Run ``_spawn_and_drain`` against recording collaborators."""
-    wiring = _Wiring()
+    wiring = wiring or _Wiring()
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
     monkeypatch.setattr(
         session,
         "ThreadedRelay",
-        partial(_WiringRelay, wiring=wiring, rc=rc, output=output),
+        partial(relay, wiring=wiring, rc=rc, output=output),
     )
     monkeypatch.setattr(
         session,
@@ -3703,6 +4005,9 @@ class TestSpawnWiring:
     ) -> None:
         client = cast(Client, object())
         sink = _RecordingSink()
+        monkeypatch.setattr("socket.gethostname", lambda: "gx10.lan")
+        _at_home(monkeypatch, tmp_path.parent)
+        monkeypatch.chdir(tmp_path)
         wiring, _ = _wire(
             monkeypatch,
             tmp_path,
@@ -3716,7 +4021,28 @@ class TestSpawnWiring:
         assert relay is wiring.relay_instance
         assert isinstance(stop, threading.Event)
         assert stop.is_set()
-        assert options == {"stream": stream}
+        named = dict(cast(dict[str, object], options))
+        inbound = named.pop("inbound")
+        bridge = named.pop("bridge")
+        assert callable(named.pop("record"))
+        # A run in this terminal names its machine and folder, and no host; a trusted
+        # CLI opens no trust card, and one that loaded nothing compacts nothing.
+        assert named == {
+            "stream": stream,
+            "run_name": None,
+            "machine": "gx10",
+            "cwd": f"~/{tmp_path.name}",
+            "cli": cli,
+            "gate": None,
+            "compact": None,
+        }
+        # A synced claude run bridges its prompts; a stream child asks none.
+        assert isinstance(bridge, PromptBridge) is not stream
+        assert isinstance(wiring.drain["run_records"], deque)
+        # One readiness for both threads: the drain sees records, the poller waits.
+        assert isinstance(inbound, InboundState)
+        assert inbound is wiring.drain["inbound"]
+        assert inbound.marker is None if stream else inbound.marker is not None
         assert sorted(wiring.daemons) == [True, True]
 
     def test_a_local_capture_never_waits_on_the_server(
@@ -3953,6 +4279,8 @@ class TestExitDoesNotWaitOutTheInboundHold:
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
         monkeypatch.setattr(session, "ThreadedRelay", partial(_ExitsOnceParked, server))
         monkeypatch.setattr(session, "_drain_filesystem_loop", _drain_until_stop)
+        # No claude starts, so no hook says it is ready: wait out no fallback.
+        monkeypatch.setattr(session, "_HOOK_READY_SEC", 0.0)
         monkeypatch.setattr(shutil, "which", _always_found)
 
         status = session._spawn_and_drain(
@@ -3997,7 +4325,9 @@ class _HoldingServer:
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
+        **where: str | None,
+    ) -> list[InboundDrainItem]:
+        del where
         del session_id
         self.parked.set()
         self.holds.append("ended" if self.ended.wait(wait_sec) else "timed out")
@@ -4187,10 +4517,7 @@ class TestDeliverOne:
         envelope = '{"agent_message": "go"}'
         session._deliver_one(
             cast(ThreadedRelay, relay),
-            envelope,
-            "trackinizer",
-            "lab",
-            context=None,
+            InboundDrainItem(text=envelope, source="trackinizer", room="lab"),
             stream=True,
         )
         assert relay.submitted == [f"[lab] trackinizer: {envelope}"]
@@ -4200,16 +4527,48 @@ class TestDeliverOne:
         context = WorkspaceMessageContext(workspace_id=uuid.uuid4(), visible_visuals=[])
         session._deliver_one(
             cast(ThreadedRelay, relay),
-            "look",
-            "alice@x",
-            None,
-            context=context,
+            InboundDrainItem(text="look", source="alice@x", context=context),
             stream=False,
         )
         assert relay.submitted == [
             render_inbound("look", "alice@x", None, context=context),
         ]
         assert "Trackinizer context" in relay.submitted[0]
+
+    def test_each_kind_is_delivered_the_way_the_cli_acts_on_it(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        relay = _RecordingRelay()
+        items = [
+            InboundDrainItem(text="/compact", kind="command", source="ann@x"),
+            InboundDrainItem(
+                text="Yes",
+                kind="answer",
+                payload={"prompt_id": "p9"},
+                source="ann@x",
+            ),
+            InboundDrainItem(text="interrupt", kind="interrupt", source="ann@x"),
+            InboundDrainItem(
+                text="model",
+                kind="settings",
+                payload={"model": "opus"},
+                source="ann@x",
+            ),
+        ]
+
+        with caplog.at_level("INFO", logger=session.__name__):
+            for item in items:
+                session._deliver_one(cast(ThreadedRelay, relay), item, stream=False)
+
+        assert relay.submitted == ["/compact"]
+        assert relay.written == [b"\x1b"]
+        assert [
+            r.getMessage() for r in caplog.records if r.name == session.__name__
+        ] == [
+            "trax run: an answer names no open prompt: {'prompt_id': 'p9'}",
+            "trax run: a settings message is not typed: {'model': 'opus'}",
+        ]
 
     def test_an_undeliverable_message_is_logged_with_its_cause(
         self,
@@ -4219,10 +4578,7 @@ class TestDeliverOne:
         with caplog.at_level("WARNING", logger=session.__name__):
             session._deliver_one(
                 cast(ThreadedRelay, _PickyRelay(reject="poison")),
-                "poison",
-                None,
-                None,
-                context=None,
+                InboundDrainItem(text="poison"),
                 stream=False,
             )
         (record,) = [r for r in caplog.records if r.name == session.__name__]
@@ -4230,7 +4586,7 @@ class TestDeliverOne:
             "trax run: could not deliver an inbound message; "
             "continuing with the rest of the batch"
         )
-        assert record.exc_info is not None
+        assert isinstance(record.exc_info, tuple)
         assert isinstance(record.exc_info[1], RuntimeError)
 
 
@@ -4344,13 +4700,15 @@ class _BatchClient:
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
+        **where: str | None,
+    ) -> list[InboundDrainItem]:
+        del where
         del session_id, wait_sec
         self.drains += 1
         if self.drains > 1:
             _real_pause(0.02)
             return []
-        return [(text, None, None, None) for text in self._texts]
+        return [InboundDrainItem(text=text) for text in self._texts]
 
 
 class _UploadOutageClient(_BatchClient):
@@ -4378,7 +4736,9 @@ class _UploadOutageClient(_BatchClient):
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
+        **where: str | None,
+    ) -> list[InboundDrainItem]:
+        del where
         self.drained_for.add(session_id)
         return super().drain_inbound(session_id, wait_sec=wait_sec)
 
@@ -4419,9 +4779,31 @@ class _RecordingRelay:
 
     def __init__(self) -> None:
         self.submitted: list[str] = []
+        self.written: list[bytes] = []
+        self.terminated = 0
 
     def submit(self, text: str) -> None:
         self.submitted.append(text)
+
+    def write(self, data: bytes) -> None:
+        self.written.append(data)
+
+    def terminate(self) -> None:
+        self.terminated += 1
+
+
+class _PromptWatchingRelay(_RecordingRelay):
+    """Notes, for each line typed, whether a prompt was open to swallow it."""
+
+    def __init__(self, pending: threading.Event) -> None:
+        super().__init__()
+        self._pending = pending
+        self.typed_into_a_prompt: list[bool] = []
+
+    @override
+    def submit(self, text: str) -> None:
+        self.typed_into_a_prompt.append(self._pending.is_set())
+        super().submit(text)
 
 
 class _PickyRelay(_RecordingRelay):
@@ -4455,7 +4837,9 @@ class _WaitingClient:
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
+        **where: str | None,
+    ) -> list[InboundDrainItem]:
+        del where
         del session_id
         self.waits.append(wait_sec)
         # A real hold blocks in the transport, not in ``time.sleep``: a fake
@@ -4476,7 +4860,9 @@ class _FailingClient:
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
+        **where: str | None,
+    ) -> list[InboundDrainItem]:
+        del where
         del session_id, wait_sec
         self.attempts += 1
         raise RuntimeError("back-channel down")
@@ -4612,6 +4998,1462 @@ class TestOpenSinkRedactsDeliveredSecrets:
         for reader in sink.readers.values():
             reader.close()
         sink.close()
+
+
+_CHAT: Final = uuid.UUID("0a1b2c3d-0000-4000-8000-0000000000aa")
+
+
+class TestAttach:
+    """``--attach`` writes the run into an existing session, such as a chat's."""
+
+    def test_the_flag_reaches_the_run_and_a_detached_host(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ran: list[RunConfig] = []
+        hosted: list[Callable[[HostSpec | None], int]] = []
+        monkeypatch.setattr(session, "run", partial(_keep_run, ran))
+        monkeypatch.setattr(detach, "launch", partial(_keep_host, hosted))
+
+        assert session.main(["--attach", str(_CHAT), "claude"]) == 0
+        assert session.main(["--detach", "--attach", str(_CHAT), "codex"]) == 0
+        for start in hosted:
+            assert start(None) == 0
+
+        assert [(config.cli_name, config.attach) for config in ran] == [
+            ("claude", _CHAT),
+            ("codex", _CHAT),
+        ]
+
+    def test_a_resume_hands_the_run_its_session_and_loaded_history(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        ran: list[RunConfig] = []
+        monkeypatch.setattr(session, "run", partial(_keep_run, ran))
+        resumed = tmp_path / f"{_RESUMED}.jsonl"
+
+        status = session.main(
+            ["claude"],
+            resume_path=resumed,
+            cli_session_id=_RESUMED,
+            attach=_CHAT,
+            prefix_bytes=12,
+        )
+
+        assert status == 0
+        [config] = ran
+        assert (config.attach, config.prefix_bytes, config.resume_path) == (
+            _CHAT,
+            12,
+            resumed,
+        )
+
+    @pytest.mark.parametrize("local", ["--no-sync", "--out=capture.jsonl"])
+    def test_an_attached_run_must_sync(
+        self,
+        local: str,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with pytest.raises(SystemExit):
+            _ = session.main(["--attach", str(_CHAT), local, "claude"])
+
+        assert "--attach writes into a server session" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("local", ["--no-sync", "--out=capture.jsonl"])
+    def test_a_resume_may_still_run_without_syncing(
+        self,
+        local: str,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """``agentsession N run claude --no-sync`` names no ``--attach`` of its own."""
+        ran: list[RunConfig] = []
+        monkeypatch.setattr(session, "run", partial(_keep_run, ran))
+
+        status = session.main(
+            [local, "claude"],
+            resume_path=tmp_path / f"{_RESUMED}.jsonl",
+            cli_session_id=_RESUMED,
+            attach=_CHAT,
+            prefix_bytes=12,
+        )
+
+        assert status == 0
+        [config] = ran
+        assert (config.syncing, config.prefix_bytes) == (False, 12)
+
+
+class TestLoadedHistoryIsNotUploaded:
+    """A resume's loaded history is read but never uploaded; positions run on."""
+
+    def test_no_record_of_the_history_is_uploaded_and_the_first_sits_at_k(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        resumed = tmp_path / "resumed.jsonl"
+        history = [b"one", b"two", b"", b"three"]
+        prefix = session._Prefix(
+            path=resumed,
+            size=sum(len(line) + 1 for line in history),
+        )
+        sink = _RecordingSink()
+        adapter = _FakeAdapter(tmp_path)
+
+        for raw in [*history, b"mine"]:
+            session._emit_line(
+                adapter,
+                sink,
+                _Stats(),
+                RunConfig(cli_name="fake"),
+                session._Captured(path=resumed, raw=raw),
+                prefix=prefix,
+            )
+        session._emit_line(
+            adapter,
+            sink,
+            _Stats(),
+            RunConfig(cli_name="fake"),
+            session._Captured(path=tmp_path / "other.jsonl", raw=b"elsewhere"),
+            prefix=prefix,
+        )
+
+        assert [(idx, event.path.name) for idx, _, event in sink.events] == [
+            (3, "resumed.jsonl"),
+            (0, "other.jsonl"),
+        ]
+        assert _texts(sink) == ["mine", "elsewhere"]
+
+    def test_a_rewrite_reads_the_history_again_from_its_start(self) -> None:
+        path = Path("/sessions/s.jsonl")
+        prefix = session._Prefix(path=path, size=4)
+
+        covered = [
+            prefix.covers(session._Captured(path=path, raw=b"abc")),
+            prefix.covers(session._Captured(path=path, raw=b"new")),
+            prefix.covers(session._Captured(path=path, raw=b"abc", restart=True)),
+        ]
+
+        assert covered == [True, False, True]
+
+    def test_the_drain_skips_the_history_a_resume_config_names(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        resumed = tmp_path / "resumed.jsonl"
+        history = "loaded one\nloaded two\n"
+        _ = resumed.write_text(history)
+        config = RunConfig(
+            cli_name="fake",
+            resume_path=resumed,
+            prefix_bytes=len(history.encode()),
+        )
+        sink = _RecordingSink()
+        stop = threading.Event()
+        armed = threading.Event()
+        worker = threading.Thread(
+            target=lambda: _drain_filesystem_loop(
+                _FakeAdapter(tmp_path),
+                sink,
+                _Stats(),
+                config,
+                stop,
+                baseline=frozenset(),
+                slash_queue=deque(),
+                armed=armed,
+            ),
+            daemon=True,
+        )
+        worker.start()
+        try:
+            assert armed.wait(5.0), "session-log watch did not arm"
+            with resumed.open("a") as log:
+                _ = log.write("the cli wrote this\n")
+            _wait_for_events(sink, 1)
+        finally:
+            stop.set()
+            worker.join(timeout=5.0)
+
+        assert [idx for idx, _, _ in sink.events] == [2]
+        assert _texts(sink) == ["the cli wrote this"]
+
+
+class TestInboundReadiness:
+    """Nothing is drained until the CLI can take a typed line."""
+
+    def test_claude_is_ready_once_its_hook_writes_the_marker(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        marker = tmp_path / "ready"
+        state = InboundState(marker=marker, fallback_sec=20.0, clock=lambda: 0.0)
+
+        before = state.ready()
+        state.record_seen()
+        after_a_record = state.ready()
+        marker.touch()
+
+        assert (before, after_a_record, state.ready()) == (False, False, True)
+
+    def test_a_cli_without_a_hook_is_ready_on_its_first_record(self) -> None:
+        state = InboundState(by_record=True, fallback_sec=15.0, clock=lambda: 0.0)
+
+        before = state.ready()
+        state.record_seen()
+
+        assert (before, state.ready()) == (False, True)
+
+    def test_a_cli_that_never_says_is_ready_after_the_fallback(self) -> None:
+        now = [0.0]
+        state = InboundState(fallback_sec=20.0, clock=lambda: now[0])
+
+        early = state.ready()
+        now[0] = 20.0
+
+        assert (early, state.ready()) == (False, True)
+
+    def test_a_pending_prompt_leaves_the_drain_open(self) -> None:
+        """Its answer comes through the drain; the poller holds the lines instead."""
+        state = InboundState(fallback_sec=0.0)
+        state.prompt_pending.set()
+
+        assert state.wait_open(_RecordingStop(), poll_sec=0.5)
+
+    def test_the_drain_waits_for_the_marker(self, tmp_path: Path) -> None:
+        marker = tmp_path / "ready"
+        state = InboundState(marker=marker, fallback_sec=20.0, clock=lambda: 0.0)
+        stop = _StopThatReadies(marker)
+        client = _MarkerCheckingClient(marker, stop)
+
+        _inbound_poll_loop(
+            cast(Client, client),
+            cast(Sink, _SessionSink()),
+            cast(ThreadedRelay, _RecordingRelay()),
+            stop,
+            poll_interval=0.5,
+            inbound=state,
+        )
+
+        assert stop.waits == 1
+        assert client.marked == [True]
+
+    def test_the_drain_starts_after_the_fallback(self, tmp_path: Path) -> None:
+        now = [0.0]
+        state = InboundState(
+            marker=tmp_path / "never",
+            fallback_sec=20.0,
+            clock=lambda: now[0],
+        )
+        stop = _StopThatAdvances(now, to=20.0)
+        client = _MarkerCheckingClient(tmp_path / "never", stop)
+
+        _inbound_poll_loop(
+            cast(Client, client),
+            cast(Sink, _SessionSink()),
+            cast(ThreadedRelay, _RecordingRelay()),
+            stop,
+            poll_interval=0.5,
+            inbound=state,
+        )
+
+        assert stop.waits == 1
+        assert client.marked == [False]
+
+    @pytest.mark.parametrize(
+        ("adapter", "by_record", "fallback_sec"),
+        [
+            (ClaudeAdapter(), False, 20.0),
+            (CodexAdapter(), True, 15.0),
+            (IOStreamAdapter(), False, 0.0),
+        ],
+    )
+    def test_each_cli_says_it_is_ready_its_own_way(
+        self,
+        adapter: Adapter,
+        *,
+        by_record: bool,
+        fallback_sec: float,
+    ) -> None:
+        state = session._inbound_state(adapter)
+
+        assert (state.by_record, state.fallback_sec) == (by_record, fallback_sec)
+
+
+class TestDeliveredLinesAreStamped:
+    """The record of a line the run typed names who sent it; a look-alike does not."""
+
+    def test_a_delivered_line_is_stamped_and_a_look_alike_is_not(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        state = InboundState(fallback_sec=0.0)
+        relay = _RecordingRelay()
+        session._deliver_one(
+            cast(ThreadedRelay, relay),
+            InboundDrainItem(text="hello\n  there", source="alice@x", room="lab"),
+            stream=False,
+            inbound=state,
+        )
+        sink = _RecordingSink()
+        # The CLI's record of the paste, its whitespace changed; a look-alike typed
+        # at the terminal; and the same text typed again by the person.
+        recorded = [
+            "[lab] alice@x: hello there",
+            "bob@x: fake",
+            "[lab] alice@x: hello there",
+        ]
+
+        for text in recorded:
+            session._process_chunk(
+                session._Captured(path=tmp_path / "s.jsonl", raw=text.encode()),
+                _FakeAdapter(tmp_path),
+                sink,
+                _Stats(),
+                RunConfig(cli_name="fake"),
+                inbound=state,
+            )
+
+        assert relay.submitted == ["[lab] alice@x: hello\n  there"]
+        assert _stamps(sink) == [
+            {"source": "alice@x", "room": "lab", "kind": "line"},
+            None,
+            None,
+        ]
+
+    def test_a_line_that_was_not_typed_is_forgotten(self) -> None:
+        state = InboundState(fallback_sec=0.0)
+        session._deliver_one(
+            cast(ThreadedRelay, _PickyRelay(reject="alice@x: poison")),
+            InboundDrainItem(text="poison", source="alice@x"),
+            stream=False,
+            inbound=state,
+        )
+
+        record = UserMessage(content="alice@x: poison")
+
+        assert state.stamp(record) is record
+
+    def test_a_record_that_is_not_a_users_line_is_left_alone(self) -> None:
+        state = InboundState(fallback_sec=0.0)
+        state.typed("hi", source="a@x", room=None, kind="line")
+        record = AssistantMessage(content="hi")
+
+        assert state.stamp(record) is record
+
+
+def _stamps(sink: _RecordingSink) -> list[PlainTree]:
+    """Return each captured user line's ``$inbound`` stamp, ``None`` when unstamped."""
+    return [
+        event.record.extra.get("$inbound")
+        for _, _, event in sink.events
+        if isinstance(event.record, UserMessage)
+    ]
+
+
+class _StopThatReadies(threading.Event):
+    """A stop whose first wait is when claude's hook writes its marker."""
+
+    def __init__(self, marker: Path) -> None:
+        super().__init__()
+        self._marker = marker
+        self.waits = 0
+
+    @override
+    def wait(self, timeout: float | None = None) -> bool:
+        del timeout
+        self.waits += 1
+        self._marker.touch()
+        return self.is_set()
+
+
+class _StopThatAdvances(threading.Event):
+    """A stop whose first wait outlasts the readiness fallback."""
+
+    def __init__(self, now: list[float], *, to: float) -> None:
+        super().__init__()
+        self._now = now
+        self._to = to
+        self.waits = 0
+
+    @override
+    def wait(self, timeout: float | None = None) -> bool:
+        del timeout
+        self.waits += 1
+        self._now[0] = self._to
+        return self.is_set()
+
+
+class _MarkerCheckingClient:
+    """Says, at each drain, whether the marker existed; the first drain ends the run."""
+
+    def __init__(self, marker: Path, stop: threading.Event) -> None:
+        self._marker = marker
+        self._stop = stop
+        self.marked: list[bool] = []
+
+    def drain_inbound(
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
+        **where: str | None,
+    ) -> list[InboundDrainItem]:
+        del where
+        del session_id, wait_sec
+        self.marked.append(self._marker.exists())
+        self._stop.set()
+        return []
+
+
+class TestPromptBridge:
+    """Claude's prompts reach Chat through the bridge; Chat's answers never get typed."""
+
+    def test_a_synced_claude_run_hands_its_prompts_to_a_socket(self) -> None:
+        argv, files = _with_box_hook(
+            ["claude"],
+            adapter=ClaudeAdapter(),
+            placed={},
+            profile=None,
+            bridge=True,
+        )
+
+        assert files is not None
+        assert files.socket is not None
+        assert argv == ["claude", "--settings", str(files.settings)]
+        hooks = json_loads(files.settings.read_text(), dict[str, dict[str, object]])
+        assert {"PreToolUse", "PermissionRequest", "PostToolUse"} <= set(hooks["hooks"])
+        assert str(files.socket) in files.settings.read_text()
+
+    def test_an_answer_goes_to_the_waiting_hook_and_is_never_typed(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        opened = _OpenPrompt(tmp_path)
+        relay = _RecordingRelay()
+        try:
+            caplog.set_level("INFO", logger=session.__name__)
+            session._deliver_one(
+                cast(ThreadedRelay, relay),
+                InboundDrainItem(
+                    text="Yes",
+                    kind="answer",
+                    payload={"prompt_id": opened.prompt_id, "decision": "allow"},
+                ),
+                stream=False,
+                inbound=opened.inbound,
+                bridge=opened.bridge,
+            )
+            reply = opened.reply()
+        finally:
+            opened.bridge.close()
+
+        assert json_loads(reply, dict[str, dict[str, object]])["hookSpecificOutput"][
+            "decision"
+        ] == {"behavior": "allow"}
+        assert (relay.submitted, relay.written) == ([], [])
+        assert not opened.inbound.prompt_pending.is_set()
+        assert [r for r in caplog.records if r.name == session.__name__] == []
+
+    def test_lines_wait_out_an_open_prompt_while_its_answer_goes_through(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        opened = _OpenPrompt(tmp_path)
+        relay = _PromptWatchingRelay(opened.inbound.prompt_pending)
+        stop = threading.Event()
+        answer = InboundDrainItem(
+            text="Yes",
+            kind="answer",
+            payload={"prompt_id": opened.prompt_id, "decision": "allow"},
+        )
+        client = _ScriptedClient(
+            [
+                [
+                    InboundDrainItem(text="first", source="ann@x"),
+                    InboundDrainItem(text="interrupt", kind="interrupt"),
+                ],
+                [InboundDrainItem(text="/compact", kind="command"), answer],
+            ],
+            stop=stop,
+        )
+        try:
+            _inbound_poll_loop(
+                cast(Client, client),
+                cast(Sink, _SessionSink()),
+                cast(ThreadedRelay, relay),
+                stop,
+                poll_interval=0.01,
+                wait_sec=25.0,
+                inbound=opened.inbound,
+                bridge=opened.bridge,
+            )
+            reply = opened.reply()
+        finally:
+            opened.bridge.close()
+
+        assert "allow" in reply
+        assert relay.written == [b"\x1b"]
+        assert relay.submitted == ["ann@x: first", "/compact"]
+        assert relay.typed_into_a_prompt == [False, False]
+        assert client.waits == [25.0, 0.01, 25.0]
+
+    def test_the_bridges_records_go_to_the_sink_on_the_runs_part(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        records: deque[Event] = deque()
+        pending = threading.Event()
+        bridge = session._start_bridge(
+            socket_address(tmp_path / "bridge.sock"),
+            emit=partial(session._queue_run_record, records, Path("prompts-1")),
+            pending=pending,
+        )
+        assert bridge is not None
+        hook_reply = _held_hook(bridge_path=tmp_path / "bridge.sock")
+        assert pending.wait(2.0)
+        bridge.close()
+        assert hook_reply() == ""
+        sink, stats = _RecordingSink(), _Stats()
+
+        asyncio.run(
+            session._drain_queues(
+                ClaudeAdapter(),
+                sink,
+                stats,
+                RunConfig(cli_name="claude"),
+                slash_queue=deque(),
+                stream_queue=None,
+                run_records=records,
+            ),
+        )
+
+        kinds = [
+            next(iter(event.record.extra))
+            for _, _, event in sink.events
+            if isinstance(event.record, SystemMessage)
+        ]
+        assert kinds == ["$interaction", "$interaction_resolved"]
+        [part] = {event.path for _, _, event in sink.events}
+        assert part.name.startswith("prompts-")
+        assert [idx for idx, _, _ in sink.events] == [0, 1]
+        assert stats.counts == {"SystemMessage": 2}
+        assert not records
+
+    def test_no_socket_or_one_that_cannot_listen_starts_no_bridge(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        pending = threading.Event()
+        records: list[SystemMessage] = []
+
+        assert session._start_bridge(None, emit=records.append, pending=pending) is None
+        assert (
+            session._start_bridge(
+                tmp_path / "gone" / "b.sock",
+                emit=records.append,
+                pending=pending,
+            )
+            is None
+        )
+
+    def test_a_synced_claude_runs_prompt_reaches_its_records_and_holds_its_lines(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        drained: dict[str, object] = {}
+        hook = _PermissionHook()
+
+        class _Claude:
+            """Asks one permission, as claude does through its settings' hook."""
+
+            def __init__(self, argv: Sequence[str], **kwargs: object) -> None:
+                del kwargs
+                self._settings = Path(argv[argv.index("--settings") + 1])
+
+            def run(self) -> int:
+                hook.ask(self._settings, drained)
+                return 0
+
+        def watch(*args: object, **kwargs: object) -> None:
+            del args
+            drained.update(kwargs)
+            armed = kwargs["armed"]
+            assert isinstance(armed, threading.Event)
+            armed.set()
+
+        polled: dict[str, object] = {}
+
+        def poll(*args: object, **kwargs: object) -> None:
+            del args
+            polled.update(kwargs)
+
+        def open_sink(config: RunConfig, adapter: Adapter) -> Sink:
+            del config, adapter
+            return _RecordingSink()
+
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(session, "_open_sink", open_sink)
+        monkeypatch.setattr(session, "_drain_filesystem_loop", watch)
+        monkeypatch.setattr(session, "_inbound_poll_loop", poll)
+        monkeypatch.setattr(session, "ThreadedRelay", _Claude)
+        monkeypatch.setattr(shutil, "which", _always_found)
+
+        config = RunConfig(
+            cli_name="claude",
+            client=Client(base_url=LOCALHOST_FALLBACK_URL),
+            quiesce_seconds=0.0,
+        )
+        assert run(config) == 0
+
+        # Open while the hook waited, which held the run's lines; the run's end let
+        # it go with no decision.
+        assert hook.held == [True]
+        assert hook.reply() == ""
+        records = cast(deque[Event], drained["run_records"])
+        assert [
+            next(iter(event.record.extra))
+            for event in records
+            if isinstance(event.record, SystemMessage)
+        ] == ["$interaction", "$interaction_resolved"]
+        inbound = drained["inbound"]
+        assert isinstance(inbound, InboundState)
+        assert not inbound.prompt_pending.is_set()
+        # The commands the poller types go on the bridge's part: one part per run.
+        record = cast(Callable[[SystemMessage], None], polled["record"])
+        record(command_record("/goal x", source="ann@x", room=None, state="typed"))
+        [part] = {event.path for event in records}
+        assert part.name.startswith("prompts-")
+        assert len(records) == 3
+
+
+class _OpenPrompt:
+    """A started bridge with one prompt open, its hook waiting on a thread."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        self.inbound = InboundState(fallback_sec=0.0)
+        records: list[SystemMessage] = []
+        self.bridge = PromptBridge(
+            socket_address(tmp_path / "bridge.sock"),
+            emit=records.append,
+            pending=self.inbound.prompt_pending,
+        )
+        self.bridge.start()
+        self.reply = _held_hook(bridge_path=tmp_path / "bridge.sock")
+        assert self.inbound.prompt_pending.wait(2.0)
+        card = from_plain(records[0].extra["$interaction"], dict[str, object])
+        self.prompt_id = from_plain(card["id"], str)
+
+
+def _held_hook(*, bridge_path: Path) -> Callable[[], str]:
+    """Start a ``PermissionRequest`` hook on a thread; return what waits for its reply."""
+    event = {
+        "hook_event_name": "PermissionRequest",
+        "prompt_id": "p1",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+    }
+    replies: list[str] = []
+    thread = threading.Thread(
+        target=lambda: replies.append(
+            prompt_bridge.ask(socket_address(bridge_path), json.dumps(event)),
+        ),
+        daemon=True,
+    )
+    thread.start()
+
+    def reply() -> str:
+        thread.join(2.0)
+        return replies[0]
+
+    return reply
+
+
+class _PermissionHook:
+    """A ``PermissionRequest`` hook claude runs, waiting on the run's bridge."""
+
+    def __init__(self) -> None:
+        self.held: list[bool] = []
+        self._replies: list[str] = []
+        self._thread: threading.Thread | None = None
+
+    def ask(self, settings: Path, drained: Mapping[str, object]) -> None:
+        """Start the hook the settings name; note whether the run saw it open."""
+        hooks = json_loads(settings.read_text(), dict[str, dict[str, object]])["hooks"]
+        entries = from_plain(
+            hooks["PermissionRequest"],
+            list[dict[str, list[dict[str, str | int]]]],
+        )
+        command = shlex.split(str(entries[-1]["hooks"][0]["command"]))
+        socket_path = Path(command[command.index("--socket") + 1])
+        event = {"hook_event_name": "PermissionRequest", "tool_name": "Bash"}
+        self._thread = threading.Thread(
+            target=lambda: self._replies.append(
+                prompt_bridge.ask(socket_path, json.dumps(event)),
+            ),
+            daemon=True,
+        )
+        self._thread.start()
+        inbound = drained["inbound"]
+        assert isinstance(inbound, InboundState)
+        records = cast(deque[Event], drained["run_records"])
+        self.held.append(inbound.prompt_pending.wait(2.0) and len(records) == 1)
+
+    def reply(self) -> str:
+        """Return what the hook printed once let go."""
+        assert self._thread is not None
+        self._thread.join(2.0)
+        return self._replies[0]
+
+
+class _ScriptedClient:
+    """Returns one scripted batch per drain, then stops the run.
+
+    ``on_drain`` names what happens on the CLI's side during the drain of each number,
+    counted from 1, before its batch returns.
+    """
+
+    def __init__(
+        self,
+        batches: list[list[InboundDrainItem]],
+        *,
+        stop: threading.Event,
+        on_drain: Mapping[int, Callable[[], object]] | None = None,
+    ) -> None:
+        self._batches = batches
+        self._stop = stop
+        self._on_drain = on_drain or {}
+        self.waits: list[float] = []
+
+    def drain_inbound(
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
+        **where: str | None,
+    ) -> list[InboundDrainItem]:
+        del where
+        del session_id
+        self.waits.append(wait_sec)
+        if (happens := self._on_drain.get(len(self.waits))) is not None:
+            _ = happens()
+        if self._batches:
+            return self._batches.pop(0)
+        self._stop.set()
+        return []
+
+
+class TestATrustCardHoldsTheRun:
+    """A CLI asking to trust its folder gets a card in Chat, and no line meanwhile."""
+
+    def test_a_card_opens_the_drain_before_the_cli_is_ready(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """The run drains, so its lease makes it live and the card can be answered."""
+        state = InboundState(marker=tmp_path / "ready", fallback_sec=20.0)
+        state.trust_pending.set()
+
+        assert state.wait_open(_RecordingStop(), poll_sec=0.5)
+        assert not state.ready()
+
+    def test_the_fallback_waits_out_a_card_and_restarts_once_trusted(self) -> None:
+        now = [0.0]
+        state = InboundState(fallback_sec=20.0, clock=lambda: now[0])
+        state.trust_pending.set()
+        now[0] = 30.0
+        while_open = state.ready()
+        state.trust_pending.clear()
+        state.rearm()
+        just_trusted = state.ready()
+        now[0] = 50.0
+
+        assert (while_open, just_trusted, state.ready()) == (False, False, True)
+
+    def test_a_line_waits_for_the_card_and_goes_once_the_terminal_trusted(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        marker = tmp_path / "ready"
+        state = InboundState(marker=marker, fallback_sec=20.0, clock=lambda: 0.0)
+        relay = _RecordingRelay()
+        records: list[SystemMessage] = []
+        gate = TrustGate(
+            emit=records.append,
+            pending=state.trust_pending,
+            ready=state.ready,
+            rearm=state.rearm,
+            relay=relay,
+        )
+        gate.open("claude", "~/proj", machine=None, remembered=True)
+        stop = threading.Event()
+        client = _ScriptedClient(
+            [[InboundDrainItem(text="hi", source="ann@x")], []],
+            stop=stop,
+            on_drain={2: marker.touch},
+        )
+
+        _inbound_poll_loop(
+            cast(Client, client),
+            cast(Sink, _SessionSink()),
+            cast(ThreadedRelay, relay),
+            stop,
+            poll_interval=0.01,
+            wait_sec=25.0,
+            inbound=state,
+            gate=gate,
+        )
+
+        assert relay.submitted == ["ann@x: hi"]
+        assert client.waits == [0.01, 0.01, 25.0]
+        assert records[-1].extra["$interaction_resolved"] == {
+            "id": from_plain(records[0].extra["$interaction"], dict[str, object])["id"],
+            "decision": "allow",
+            "by": "terminal",
+        }
+
+    def test_an_answer_naming_the_card_goes_to_the_gate_and_others_to_the_bridge(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        opened = _OpenPrompt(tmp_path)
+        relay = _RecordingRelay()
+        records: list[SystemMessage] = []
+        gate = TrustGate(
+            emit=records.append,
+            pending=opened.inbound.trust_pending,
+            ready=opened.inbound.ready,
+            rearm=opened.inbound.rearm,
+            relay=relay,
+        )
+        gate.open("codex", "~/proj", machine="gx10", remembered=True)
+        card = from_plain(records[0].extra["$interaction"], dict[str, object])
+        deliver = partial(
+            session._deliver_one,
+            cast(ThreadedRelay, relay),
+            stream=False,
+            inbound=opened.inbound,
+            bridge=opened.bridge,
+            gate=gate,
+        )
+        try:
+            deliver(
+                InboundDrainItem(
+                    text="Trust ~/proj",
+                    kind="answer",
+                    payload={"prompt_id": card["id"], "decision": "allow"},
+                ),
+            )
+            deliver(
+                InboundDrainItem(
+                    text="Yes",
+                    kind="answer",
+                    payload={"prompt_id": opened.prompt_id, "decision": "allow"},
+                ),
+            )
+            reply = opened.reply()
+        finally:
+            opened.bridge.close()
+
+        assert relay.written == [b"\r"]
+        assert relay.submitted == []
+        assert not opened.inbound.trust_pending.is_set()
+        assert "allow" in reply
+
+    def test_an_untrusted_claude_run_opens_its_card_before_the_cli_starts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.delenv("CLAUDE_CODE_SANDBOXED")
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setattr("socket.gethostname", lambda: "gx10.lan")
+        wiring, _ = _wire(
+            monkeypatch,
+            tmp_path,
+            RunConfig(cli_name="claude", client=cast(Client, object())),
+            ClaudeAdapter(),
+            relay=_CardCheckingRelay,
+        )
+
+        relay = wiring.relay_instance
+        assert isinstance(relay, _CardCheckingRelay)
+        assert relay.at_start == (True, ["$interaction"])
+        *_, options = wiring.inbound
+        gate = cast(dict[str, object], options)["gate"]
+        assert isinstance(gate, TrustGate)
+        assert gate.relay is relay
+        first, *_, last = _run_records(wiring)
+        card = from_plain(first.extra["$interaction"], dict[str, object])
+        assert (card["cli"], card["machine"]) == ("claude", "gx10")
+        # The CLI exited with the card open: it quit at the dialog.
+        assert last.extra["$interaction_resolved"] == {
+            "id": card["id"],
+            "decision": "deny",
+            "by": "terminal",
+        }
+        assert "[trax run] claude is not trusted in " in capsys.readouterr().err
+
+    def test_a_card_open_when_the_relay_fails_is_released(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """The CLI never ran, so nobody refused it."""
+        monkeypatch.delenv("CLAUDE_CODE_SANDBOXED")
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        wiring = _Wiring()
+        with pytest.raises(RuntimeError, match="pty allocation"):
+            _ = _wire(
+                monkeypatch,
+                tmp_path,
+                RunConfig(cli_name="claude", client=cast(Client, object())),
+                ClaudeAdapter(),
+                relay=_FailingWiringRelay,
+                wiring=wiring,
+            )
+
+        [_, last] = _run_records(wiring)
+        assert (
+            from_plain(last.extra["$interaction_resolved"], dict[str, object])[
+                "decision"
+            ]
+            == "released"
+        )
+
+    @pytest.mark.parametrize(
+        ("output", "kinds"),
+        [
+            (
+                b"\x1b[5;3H\x1b[22mTrust\x1b[5;9Hthis\x1b[5;14Hfolder?",
+                ["$interaction", "$interaction_resolved"],
+            ),
+            (b"ready when you are", []),
+        ],
+        ids=["asks", "trusted-after-all"],
+    )
+    def test_an_untrusted_codex_run_opens_its_card_when_its_screen_asks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        output: bytes,
+        kinds: list[str],
+    ) -> None:
+        wiring, _ = _wire(
+            monkeypatch,
+            tmp_path,
+            RunConfig(cli_name="codex", client=cast(Client, object())),
+            CodexAdapter(),
+            output=output,
+        )
+
+        assert [next(iter(record.extra)) for record in _run_records(wiring)] == kinds
+        owner = wiring.drain["owner"]
+        assert isinstance(owner, session._SessionOwner)
+        assert wiring.relay["on_output"] != owner.output
+
+    def test_a_local_run_reads_no_trust(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A run that syncs nothing has no Chat to ask in."""
+        monkeypatch.delenv("CLAUDE_CODE_SANDBOXED")
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        wiring, _ = _wire(
+            monkeypatch,
+            tmp_path,
+            RunConfig(cli_name="claude", sync=False),
+            ClaudeAdapter(),
+        )
+
+        assert _run_records(wiring) == []
+
+
+def _run_records(wiring: _Wiring) -> list[SystemMessage]:
+    """Return the records the run queued on its own part, each a system message."""
+    found = [
+        event.record
+        for event in cast(deque[Event], wiring.drain["run_records"])
+        if isinstance(event.record, SystemMessage)
+    ]
+    assert len(found) == len(cast(deque[Event], wiring.drain["run_records"]))
+    return found
+
+
+class _FailingWiringRelay(_WiringRelay):
+    """A relay whose terminal cannot be made, so its CLI never starts."""
+
+    @override
+    def run(self) -> int:
+        raise RuntimeError("pty allocation failed")
+
+
+class _CardCheckingRelay(_WiringRelay):
+    """Notes, as the CLI is about to start, whether its trust card is already open."""
+
+    def __init__(
+        self,
+        argv: list[str],
+        *,
+        wiring: _Wiring,
+        rc: int,
+        output: bytes,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(argv, wiring=wiring, rc=rc, output=output, **kwargs)
+        inbound = wiring.drain["inbound"]
+        assert isinstance(inbound, InboundState)
+        self.at_start = (
+            inbound.trust_pending.is_set(),
+            [next(iter(record.extra)) for record in _run_records(wiring)],
+        )
+
+
+class TestChatCommands:
+    """A command from Chat is typed bare and recorded; codex keeps its goal modal shut."""
+
+    def test_the_servers_goal_is_typed_verbatim_and_recorded_as_chat_reads_it(
+        self,
+    ) -> None:
+        """The server's command for ``/Goal ship it``, typed and recorded as the web reads it.
+
+        The record is compared with ``web/test/seams/goalCommand.json``, which the web's
+        tests render, so a change of shape on either side fails both.
+        """
+        command = classify("/Goal ship it", "claude")
+        assert isinstance(command, Command)
+        relay = _RecordingRelay()
+        records: list[SystemMessage] = []
+
+        session._deliver_one(
+            cast(ThreadedRelay, relay),
+            InboundDrainItem(
+                text=command.text,
+                kind="command",
+                source="ada@example.com",
+            ),
+            stream=False,
+            inbound=InboundState(fallback_sec=0.0),
+            cli="claude",
+            record=records.append,
+        )
+
+        assert relay.submitted == ["/goal ship it"]
+        [record] = records
+        stored = RecordBody.of(
+            SessionRecordRow.of(
+                session_id=uuid.UUID(int=0),
+                part=1,
+                idx=2,
+                record=replace(record, timestamp="2026-10-20T00:00:01+00:00"),
+            ),
+        ).model_dump(mode="json")
+        seam = _CWD.parents[1] / "web" / "test" / "seams" / "goalCommand.json"
+        assert json_loads(json.dumps(stored)) == json_loads(
+            seam.read_text(encoding="utf-8"),
+        )
+
+    def test_a_command_is_typed_bare_and_recorded_but_never_stamped(self) -> None:
+        relay = _RecordingRelay()
+        state = InboundState(fallback_sec=0.0)
+        records: list[SystemMessage] = []
+
+        session._deliver_one(
+            cast(ThreadedRelay, relay),
+            InboundDrainItem(
+                text="/goal ship it",
+                kind="command",
+                source="ann@x",
+                room="lab",
+            ),
+            stream=False,
+            inbound=state,
+            cli="claude",
+            record=records.append,
+        )
+        later = UserMessage(content="/goal ship it")
+
+        assert relay.submitted == ["/goal ship it"]
+        [record] = records
+        assert record.extra["$command"] == {
+            "text": "/goal ship it",
+            "verb": "goal",
+            "args": "ship it",
+            "source": "ann@x",
+            "room": "lab",
+            "state": "typed",
+            "reason": None,
+        }
+        assert state.stamp(later) is later
+
+    def test_codex_refuses_a_new_goal_over_an_open_one_until_it_is_cleared(
+        self,
+    ) -> None:
+        relay = _RecordingRelay()
+        state = InboundState(fallback_sec=0.0)
+        state.goal.observe(
+            UncategorizedRecord(
+                kind="event_msg/thread_goal_updated",
+                payload={"goal": {"objective": "a", "status": "active"}},
+            ),
+        )
+        records: list[SystemMessage] = []
+        deliver = partial(
+            session._deliver_one,
+            cast(ThreadedRelay, relay),
+            stream=False,
+            inbound=state,
+            cli="codex",
+            record=records.append,
+        )
+
+        # A pause is codex's own word: the goal stays open through it.
+        for text in ("/goal pause", "/goal b", "/goal clear", "/goal b"):
+            deliver(InboundDrainItem(text=text, kind="command", source="ann@x"))
+
+        assert relay.submitted == ["/goal pause", "/goal clear", "/goal b"]
+        assert [
+            from_plain(record.extra["$command"], dict[str, object])["state"]
+            for record in records
+        ] == ["typed", "refused", "typed", "typed"]
+        refused = from_plain(records[1].extra["$command"], dict[str, object])
+        assert refused["reason"] == (
+            "codex is following a goal: send /goal clear, then the new goal"
+        )
+        assert state.goal.open is False
+
+    def test_claude_takes_a_new_goal_over_an_open_one(self) -> None:
+        """Claude replaces its goal without asking."""
+        relay = _RecordingRelay()
+        state = InboundState(fallback_sec=0.0)
+        state.goal.observe(
+            UncategorizedRecord(
+                kind="event_msg/thread_goal_updated",
+                payload={"goal": {"status": "active"}},
+            ),
+        )
+
+        session._deliver_one(
+            cast(ThreadedRelay, relay),
+            InboundDrainItem(text="/goal b", kind="command"),
+            stream=False,
+            inbound=state,
+            cli="claude",
+        )
+
+        assert relay.submitted == ["/goal b"]
+
+    def test_a_command_that_cannot_be_typed_is_logged_not_recorded(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        records: list[SystemMessage] = []
+        with caplog.at_level("WARNING", logger=session.__name__):
+            session._deliver_one(
+                cast(ThreadedRelay, _PickyRelay(reject="/goal x")),
+                InboundDrainItem(text="/goal x", kind="command"),
+                stream=False,
+                cli="claude",
+                record=records.append,
+            )
+
+        assert records == []
+        (logged,) = caplog.records
+        assert logged.getMessage() == (
+            "trax run: could not type a command; continuing with the rest"
+        )
+        assert isinstance(logged.exc_info, tuple)
+        assert isinstance(logged.exc_info[1], RuntimeError)
+
+    def test_a_loaded_history_past_the_fit_is_compacted_before_any_line(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Held while the CLI starts, a line still goes after ``/compact``."""
+        marker = tmp_path / "ready"
+        state = InboundState(marker=marker, fallback_sec=20.0, clock=lambda: 0.0)
+        state.trust_pending.set()
+        relay = _RecordingRelay()
+        records: list[SystemMessage] = []
+        stop = threading.Event()
+        client = _ScriptedClient(
+            [[InboundDrainItem(text="hi", source="ann@x")], []],
+            stop=stop,
+            on_drain={2: partial(_trusted_and_ready, state, marker)},
+        )
+
+        _inbound_poll_loop(
+            cast(Client, client),
+            cast(Sink, _SessionSink()),
+            cast(ThreadedRelay, relay),
+            stop,
+            poll_interval=0.01,
+            inbound=state,
+            cli="codex",
+            record=records.append,
+            compact="the loaded conversation is past what codex holds comfortably",
+        )
+
+        assert relay.submitted == ["/compact", "ann@x: hi"]
+        [record] = records
+        assert record.extra["$command"] == {
+            "text": "/compact",
+            "verb": "compact",
+            "args": "",
+            "source": "trax run",
+            "room": None,
+            "state": "typed",
+            "reason": "the loaded conversation is past what codex holds comfortably",
+        }
+
+    def test_the_spawn_asks_for_compaction_only_past_the_fit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, _ = _wire(
+            monkeypatch,
+            tmp_path,
+            RunConfig(
+                cli_name="claude",
+                client=cast(Client, object()),
+                compact_after_load=True,
+            ),
+            ClaudeAdapter(),
+        )
+
+        *_, options = wiring.inbound
+        assert cast(dict[str, object], options)["compact"] == (
+            "the loaded conversation is past what claude holds comfortably"
+        )
+
+
+def _trusted_and_ready(state: InboundState, marker: Path) -> None:
+    """Answer the trust dialog in the terminal: the card closes and the CLI is up."""
+    state.trust_pending.clear()
+    marker.touch()
+
+
+class _ChatClient:
+    """Serves a chat whose one part claude wrote, or a chat with no part at all."""
+
+    def __init__(self, *, lines: Sequence[str] = ()) -> None:
+        self._records = list(claude.normalize(io.StringIO("".join(lines))))
+        self.asked = 0
+
+    def get_inquiry(self, ref: object) -> tuple[str, uuid.UUID, dict[str, object]]:
+        """Name the chat's session by its seq, which a window's note asks for."""
+        del ref
+        return "AgentSession", _CHAT, {"self": {"seq": 7}}
+
+    def read_session_parts(self, session_id: uuid.UUID) -> list[PartBody]:
+        del session_id
+        self.asked += 1
+        if not self._records:
+            return []
+        return [
+            PartBody(
+                part=0,
+                name="s.jsonl",
+                format="claude",
+                records=len(self._records),
+            ),
+        ]
+
+    def read_session_records(
+        self,
+        session_id: uuid.UUID,
+        *,
+        part: int = 0,
+        **_: object,
+    ) -> list[RecordBody]:
+        return [
+            RecordBody.of(
+                SessionRecordRow.of(
+                    session_id=session_id,
+                    part=part,
+                    idx=idx,
+                    record=record,
+                ),
+            )
+            for idx, record in enumerate(self._records)
+        ]
+
+
+class TestAnAttachedRunLoadsTheChat:
+    """``--attach`` starts the CLI from the chat's conversation, as a switch does."""
+
+    def test_a_detached_run_loads_the_chat_in_its_host(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """The launcher reads nothing before it forks.
+
+        On macOS the TLS trust check loads system frameworks a forked child may not
+        use, so a read before the fork crashed the host at its first file watch.
+        """
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        client = _ChatClient(lines=[_claude_line("hello")])
+        ran: list[RunConfig] = []
+        hosted: list[Callable[[HostSpec | None], int]] = []
+        monkeypatch.setattr(session, "run", partial(_keep_run, ran))
+        monkeypatch.setattr(detach, "launch", partial(_keep_host, hosted))
+
+        argv = ["--detach", "--attach", str(_CHAT), "claude"]
+        assert session.main(argv, client_factory=lambda: cast(Client, client)) == 0
+        assert client.asked == 0
+
+        [start] = hosted
+        assert start(None) == 0
+        [config] = ran
+        assert client.asked == 1
+        assert config.cli_args == ("--resume", config.cli_session_id)
+
+    def test_the_cli_resumes_the_chats_conversation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        client = _ChatClient(lines=[_claude_line("hello"), _claude_line("again")])
+
+        config = _keep_attached(monkeypatch, client, ["--attach", str(_CHAT), "claude"])
+
+        assert config.resume_path is not None
+        assert config.cli_session_id is not None
+        assert config.cli_args == ("--resume", config.cli_session_id)
+        assert config.prefix_bytes == config.resume_path.stat().st_size > 0
+        assert config.attach == _CHAT
+        assert "hello" in config.resume_path.read_text()
+        assert not config.compact_after_load
+        assert capsys.readouterr().err == (
+            "[trax run] loaded 2 records (~2 tokens) into claude; 0 earlier not loaded\n"
+        )
+
+    def test_a_chat_that_compacted_loads_from_its_summary(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A switch to codex loads claude's window: the summary, then what follows.
+
+        Claude resumes its own file whole, and honours its own boundary; another CLI is
+        handed the window the one cut every switch makes.
+        """
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+        boundary = {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "content": "Conversation compacted",
+            "uuid": "boundary",
+            "compactMetadata": {"trigger": "manual", "preTokens": 967_000},
+        }
+        summary = {
+            "type": "user",
+            "uuid": "summary",
+            "isCompactSummary": True,
+            "isVisibleInTranscriptOnly": True,
+            "message": {"role": "user", "content": "Summary: F1 is apples."},
+        }
+        client = _ChatClient(
+            lines=[
+                _claude_line("F1 is apples"),
+                json.dumps(boundary) + "\n",
+                json.dumps(summary) + "\n",
+                _claude_line("F2 is pears"),
+            ],
+        )
+
+        config = _keep_attached(monkeypatch, client, ["--attach", str(_CHAT), "codex"])
+
+        assert config.resume_path is not None
+        with config.resume_path.open(encoding="utf-8") as handle:
+            told = [
+                record.content
+                for record in codex.normalize(handle)
+                if isinstance(record, UserMessage)
+            ]
+        assert "F1 is apples" not in told
+        assert any("Summary: F1 is apples." in (each or "") for each in told)
+        assert told[-1] == "the terminal user: F2 is pears"
+        assert "earlier not loaded" in capsys.readouterr().err
+
+    def test_a_load_past_the_fit_asks_the_cli_to_compact_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Codex holds 480 kB comfortably: 40 lines of 15 kB are past it."""
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+        lines = [_claude_line(f"{n:02} " + "x" * 15_000) for n in range(40)]
+
+        config = _keep_attached(
+            monkeypatch,
+            _ChatClient(lines=lines),
+            ["--attach", str(_CHAT), "codex"],
+        )
+
+        assert config.resume_path is not None
+        assert config.compact_after_load
+
+    @pytest.mark.parametrize("cli", ["claude", "sh"])
+    def test_a_chat_with_nothing_to_load_starts_fresh(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        cli: str,
+    ) -> None:
+        config = _keep_attached(
+            monkeypatch,
+            _ChatClient(),
+            ["--attach", str(_CHAT), cli],
+        )
+
+        assert (config.resume_path, config.cli_session_id, config.prefix_bytes) == (
+            None,
+            None,
+            0,
+        )
+        assert config.cli_args == ()
+        assert f"[trax run] {cli} starts without the chat's history: " in (
+            capsys.readouterr().err
+        )
+
+    @pytest.mark.usefixtures("claude_scope")
+    def test_a_resume_named_after_the_dashes_is_not_loaded_over(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client = _ChatClient(lines=[_claude_line("hello")])
+
+        config = _keep_attached(
+            monkeypatch,
+            client,
+            ["--attach", str(_CHAT), "claude", "--", "--resume", _OLD],
+        )
+
+        assert client.asked == 0
+        assert config.cli_args == ("--resume", _OLD)
+
+
+def _keep_attached(
+    monkeypatch: pytest.MonkeyPatch,
+    client: _ChatClient,
+    argv: Sequence[str],
+) -> RunConfig:
+    """Return the config ``trax run argv`` would run against ``client``."""
+    ran: list[RunConfig] = []
+    monkeypatch.setattr(session, "run", partial(_keep_run, ran))
+    assert session.main(argv, client_factory=lambda: cast(Client, client)) == 0
+    (config,) = ran
+    return config
 
 
 if __name__ == "__main__":

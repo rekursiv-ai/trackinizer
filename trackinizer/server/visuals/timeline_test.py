@@ -107,7 +107,7 @@ class _Graph:
         self.narrows_lookups = 0
         self.conn = AsyncMock()
         self.conn.fetchrow.side_effect = self._fetchrow
-        self.conn.fetch.return_value = []
+        self.conn.fetch.return_value = list[dict[str, object]]()
 
     def add(self, kind: str, *, title: str) -> UUID:
         record_id = uuid4()

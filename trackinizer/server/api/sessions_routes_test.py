@@ -17,13 +17,14 @@ from unittest.mock import AsyncMock
 import asyncio
 import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from treekle import from_plain, json_loads
 
 import httpx2
 import pytest
 
 from trackinizer.conftest import set_field_row
+from trackinizer.lib.agent.types.sessions import UserMessage
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api import sessions_routes
 from trackinizer.server.api.app import app
@@ -31,6 +32,7 @@ from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,
     ASSISTANT_CONFIG,
     KB_ACTOR,
+    KB_EMAIL,
     USER_AGENT,
     act_as_assistant,
     act_as_other_agent,
@@ -39,8 +41,8 @@ from trackinizer.server.api.canvas_test_support import (
     conversation_of,
     drain,
     open_workspace,
-    revision_of,
     seed_accounts,
+    seed_science_chat,
     seed_session,
     send_chat,
     start_session,
@@ -60,14 +62,17 @@ from trackinizer.server.auth import current_user
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.config import Config
 from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.inbound import Inbound, InboundQueue
+from trackinizer.server.inbound import Inbound, InboundQueue, PollerRun
 from trackinizer.server.session_reaper import (
     STALE_AFTER,
     reap_silent_sessions,
 )
 from trackinizer.server.store.core import Store
+from trackinizer.trax.run import detach
 from trackinizer.types.inquiries import AgentSession
-from trackinizer.wire.wire_science_chat import CHAT_HELPER_CLI, chat_session_id
+from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.wire_science_chat import chat_session_id
+from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
 from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
 
@@ -77,6 +82,7 @@ if TYPE_CHECKING:
     from trackinizer.conftest import FakeEngine
     from trackinizer.lib.postgres import PGliteEngine
     from trackinizer.server.auth import AuthIdentity, Role
+    from trackinizer.wire.wire_science_chat import ChatProvider
 
 
 # A real instance, not a renamed stand-in: ``_require_session`` gates with
@@ -563,6 +569,104 @@ class TestTheKeyThatDrainsAChatLineHoldsItsTurn:
 
         assert r.status_code == 200, r.text
         assert inbound.took_line(TEST_API_KEY_ID, poster="ada@example.com")
+
+
+class TestTheDrainSaysWhereItsRunIs:
+    """A run names its detached host, machine and folder on each drain, for Chat."""
+
+    @pytest.fixture
+    def drain_at(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[TestClient, InboundQueue]:
+        client, store, _engine = route_client
+        inbound = InboundQueue()
+        app.state.inbound = inbound
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
+        )
+        monkeypatch.setattr(store, "record_session_seen", AsyncMock())
+        return client, inbound
+
+    def test_the_lease_keeps_what_the_drain_said(
+        self,
+        drain_at: tuple[TestClient, InboundQueue],
+    ) -> None:
+        client, inbound = drain_at
+        detached, foreground, older = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+        said = [
+            client.get(f"/api/sessions/{session_id}/inbound", params=params)
+            for session_id, params in (
+                (
+                    detached,
+                    {"run": "chat-1a2b3c4d", "machine": "gx10", "cwd": "~/work"},
+                ),
+                (foreground, {"machine": "gx10", "cwd": "/srv/work"}),
+                (older, dict[str, str]()),
+            )
+        ]
+
+        assert [r.status_code for r in said] == [200, 200, 200], [r.text for r in said]
+        assert inbound.poller_run(detached) == PollerRun(
+            run="chat-1a2b3c4d",
+            machine="gx10",
+            cwd="~/work",
+        )
+        assert inbound.poller_run(foreground) == PollerRun(
+            machine="gx10",
+            cwd="/srv/work",
+        )
+        assert inbound.poller_run(older) == PollerRun()
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"run": "-leading-dash"},
+            {"run": "has/slash"},
+            {"run": "a" * 129},
+            {"run": "claude\n"},
+            {"machine": "GX10"},
+            {"machine": "gx10.local"},
+            {"machine": "x" * 64},
+            {"machine": "gx10\n"},
+            {"cwd": "~/work\n"},
+            {"cwd": "~/\x1b[31mred"},
+            {"cwd": "~/" + "d" * 1_023},
+        ],
+    )
+    def test_a_malformed_value_is_422_and_takes_no_lease(
+        self,
+        drain_at: tuple[TestClient, InboundQueue],
+        params: dict[str, str],
+    ) -> None:
+        client, inbound = drain_at
+        session_id = uuid.uuid4()
+
+        r = client.get(f"/api/sessions/{session_id}/inbound", params=params)
+
+        assert r.status_code == 422, r.text
+        assert not inbound.has_poller(session_id)
+
+    # The route cannot import the run's own rule, so the two are held together here:
+    # a name ``trax run --detach`` takes must never break its own drain.
+    @pytest.mark.parametrize(
+        "name",
+        ["claude", "scientist#2", "ada@gx10", "a.b+c=d:e-f_g", "a" * 128, "a" * 129],
+    )
+    def test_a_run_name_is_taken_exactly_when_detach_takes_it(
+        self,
+        drain_at: tuple[TestClient, InboundQueue],
+        name: str,
+    ) -> None:
+        client, _inbound = drain_at
+
+        r = client.get(f"/api/sessions/{uuid.uuid4()}/inbound", params={"run": name})
+
+        assert (r.status_code == 200) is (detach._NAME.fullmatch(name) is not None)
 
 
 async def _seen_as_the_session_ends(
@@ -1159,52 +1263,14 @@ async def test_without_an_assistant_a_writer_still_drains_any_session(
 @pytest.mark.db_pglite
 @pytest.mark.usefixtures("assistant_served")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_chat_helper_takes_messages_only_through_chat(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """A Console send by name, or a direct one, to a `trax helper` session is refused.
-
-    An assistant that runs as anything else keeps its `trax send` surface: only
-    the helper, which answers nothing outside Chat, is closed.
-    """
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    act_as_user_agent()
-    helper = await start_session(client, actor="helper", cli=CHAT_HELPER_CLI)
-    act_as_assistant()
-    kb = await start_session(client, actor=KB_ACTOR)
-
-    act_as_other_agent("writer")
-    direct = await client.post(f"/api/sessions/{helper}/inbound", json={"text": "hi"})
-    routed = await client.post("/api/messages", json={"actor": "helper", "text": "hi"})
-    for refused in (direct, routed):
-        assert refused.status_code == 403, refused.text
-        assert "only through Chat" in refused.text
-    # Nothing reached its queue.
-    act_as_user_agent()
-    drained = json_loads(
-        (await drain(client, session_id=helper)).content,
-        dict[str, object],
-    )
-    assert drained["messages"] == []
-
-    # Any other session, the assistant included, still takes both.
-    act_as_other_agent("writer")
-    direct = await client.post(f"/api/sessions/{kb}/inbound", json={"text": "hi"})
-    routed = await client.post("/api/messages", json={"actor": KB_ACTOR, "text": "hi"})
-    assert (direct.status_code, routed.status_code) == (200, 200), routed.text
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
 async def test_only_the_opening_key_drains_a_science_chats_queue(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     """Its queue holds its posters' lines, so a writer who did not open it is refused.
 
     The id alone decides: a session that only carries a `chat:` id under another
-    account's key is refused to every other key too, and its own key drains it.
+    account's key is refused to every other key too, and its own key, which is not
+    the assistant's, is told the chat is the assistant's.
     """
     client, store = pglite_route_client
     await seed_accounts(store)
@@ -1216,7 +1282,7 @@ async def test_only_the_opening_key_drains_a_science_chats_queue(
         cli_session_id=chat_session_id(conversation),
     )
     act_as_user_agent()
-    squatter = await start_session(
+    squatter = await start_unpolled(
         client,
         actor="chat-2",
         cli_session_id=chat_session_id(uuid.uuid4()),
@@ -1234,36 +1300,162 @@ async def test_only_the_opening_key_drains_a_science_chats_queue(
     act_as_other_agent("writer")
     assert (await drain(client, session_id=squatter)).status_code == 403
     act_as_user_agent()
-    assert (await drain(client, session_id=squatter)).status_code == 200
+    refused = await drain(client, session_id=squatter)
+    assert (refused.status_code, _code(refused)) == (409, "provider_is_assistant")
+
+
+def _code(response: httpx2.Response) -> str:
+    """Return the ``code`` of a refusal's detail."""
+    detail = from_plain(
+        json_loads(response.content, dict[str, object])["detail"],
+        dict[str, object],
+    )
+    return from_plain(detail["code"], str)
+
+
+async def _station_on(
+    store: Store,
+    *,
+    provider: str,
+    conversation_id: uuid.UUID,
+) -> None:
+    """Give the test user a station that holds ``conversation_id`` on ``provider``."""
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO visual_workspaces (id, user_id, station, state) "
+            "VALUES (gen_random_uuid(), $1, $2, $3)",
+            TEST_USER_ID,
+            {"name": f"on-{provider}", "conversation_id": str(conversation_id)},
+            {"visuals": [], "provider": provider},
+        )
 
 
 @pytest.mark.db_pglite
 @pytest.mark.usefixtures("assistant_served")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_only_the_opening_key_drains_a_users_own_helper_sessions(
+async def test_a_chat_on_a_cli_is_drained_by_its_starters_run_and_never_the_assistant(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """A helper's service session and its chats are its owner's, assistant or not.
-
-    A drain by another writer would take the owner's lines, canvas context
-    included, and its poll would make the chat a destination the helper never reads.
-    """
+    """The station's choice holds at the drain: two drainers never share one queue."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    service = await seed_session(
+    conversation = uuid.uuid4()
+    chat = await seed_session(
+        store,
+        ASSISTANT,
+        actor="chat-1",
+        cli_session_id=chat_session_id(conversation),
+        account=TEST_USER_EMAIL,
+    )
+    await _station_on(store, provider="claude", conversation_id=conversation)
+
+    act_as_assistant()
+    refused = await drain(client, session_id=chat)
+    assert (refused.status_code, _code(refused)) == (409, "provider_is_cli")
+    act_as_user_agent("writer")
+    assert (await drain(client, session_id=chat)).status_code == 200
+    act_as_other_agent("writer")
+    assert (await drain(client, session_id=chat)).status_code == 403
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_chat_back_on_the_assistant_refuses_its_starters_run(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A run left attached after a switch back takes none of the assistant's lines."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    conversation = uuid.uuid4()
+    run = await seed_session(
         store,
         USER_AGENT,
-        actor="helper",
-        cli=CHAT_HELPER_CLI,
+        actor="chat-1",
+        cli="claude",
+        cli_session_id=chat_session_id(conversation),
     )
-    chat = await seed_helper_chat(store, conversation_id=uuid.uuid4())
+    await _station_on(store, provider="assistant", conversation_id=conversation)
 
-    act_as_other_agent("writer")
-    for session in (service, chat):
-        assert (await drain(client, session_id=session)).status_code == 403
     act_as_user_agent("writer")
-    for session in (service, chat):
-        assert (await drain(client, session_id=session)).status_code == 200
+    refused = await drain(client, session_id=run)
+    assert (refused.status_code, _code(refused)) == (409, "provider_is_assistant")
+
+
+def _served(config: Config) -> Request:
+    """Return a request to an app configured with ``config``."""
+    served = FastAPI()
+    served.state.config = config
+    return Request({"type": "http", "app": served})
+
+
+@pytest.mark.parametrize(
+    ("provider", "email", "refusal"),
+    [
+        (None, KB_EMAIL, None),
+        (None, TEST_USER_EMAIL, None),
+        ("claude", TEST_USER_EMAIL, None),
+        ("assistant", KB_EMAIL, None),
+        ("assistant", KB_EMAIL.upper(), None),
+        (
+            "claude",
+            KB_EMAIL,
+            {
+                "code": "provider_is_cli",
+                "message": "This chat's station answers it with claude",
+            },
+        ),
+        (
+            "codex",
+            KB_EMAIL.upper(),
+            {
+                "code": "provider_is_cli",
+                "message": "This chat's station answers it with codex",
+            },
+        ),
+        (
+            "assistant",
+            TEST_USER_EMAIL,
+            {
+                "code": "provider_is_assistant",
+                "message": "This chat's station answers it with the assistant",
+            },
+        ),
+    ],
+)
+def test_a_chats_drain_is_refused_to_a_key_its_provider_is_not(
+    provider: ChatProvider | None,
+    email: str,
+    refusal: dict[str, str] | None,
+) -> None:
+    """The assistant's account is one drainer, everyone else's run the other."""
+    identity = make_test_identity(email=email)
+    if refusal is None:
+        sessions_routes._refuse_the_other_provider(
+            _served(ASSISTANT_CONFIG),
+            identity,
+            provider=provider,
+        )
+        return
+    with pytest.raises(HTTPException) as refused:
+        sessions_routes._refuse_the_other_provider(
+            _served(ASSISTANT_CONFIG),
+            identity,
+            provider=provider,
+        )
+    assert (refused.value.status_code, refused.value.detail) == (409, refusal)
+
+
+@pytest.mark.parametrize("provider", ["assistant", "claude"])
+def test_without_an_assistant_no_key_is_refused_for_a_provider(
+    provider: ChatProvider,
+) -> None:
+    """With no assistant configured there is no second drainer to keep out."""
+    sessions_routes._refuse_the_other_provider(
+        _served(Config()),
+        make_test_identity(email=KB_EMAIL),
+        provider=provider,
+    )
 
 
 async def _post_to_the_assistant(
@@ -1337,58 +1529,6 @@ async def test_a_line_dropped_with_a_service_session_that_cannot_resume_is_logge
 
     assert TEST_USER_EMAIL in caplog.text
     assert "dropped 1 chat line(s)" in caplog.text
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_helper_service_session_keeps_its_unread_lines_when_it_resumes(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """A `trax helper` that restarts hears the line posted while it was down."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    helper = await seed_session(
-        store,
-        USER_AGENT,
-        actor="helper",
-        cli=CHAT_HELPER_CLI,
-        cli_session_id="trax-helper:helper",
-    )
-    workspace_id = await open_workspace(client)
-    chosen = await client.post(
-        f"/api/workspaces/{workspace_id}/operations",
-        json={
-            "revision": await revision_of(client, workspace_id=workspace_id),
-            "operation": {"kind": "partner", "choice": "local"},
-        },
-        headers={"Idempotency-Key": str(uuid.uuid4())},
-    )
-    assert chosen.status_code == 200, chosen.text
-    sent = await send_chat(
-        client,
-        workspace_id=workspace_id,
-        text="before the restart",
-    )
-    assert sent.status_code == 200, sent.text
-    act_as_user_agent()
-    ended = await client.post(f"/api/sessions/{helper}/end", json={})
-    assert ended.status_code == 200
-
-    resumed = await start_unpolled(
-        client,
-        actor="helper",
-        cli=CHAT_HELPER_CLI,
-        cli_session_id="trax-helper:helper",
-    )
-
-    assert resumed == helper
-    drained = json_loads(
-        (await drain(client, session_id=resumed)).content,
-        dict[str, object],
-    )
-    [heard] = from_plain(drained["messages"], list[dict[str, object]])
-    assert heard["text"] == "before the restart"
 
 
 @pytest.mark.db_pglite
@@ -1700,6 +1840,217 @@ async def test_a_session_starts_on_an_app_built_by_hand_with_no_hub_or_config(
             json={"status": "completed"},
         )
         assert ended.status_code == 200
+
+
+class TestInboundKinds:
+    def test_a_kind_and_its_payload_reach_the_drain(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An answer is drained as one, and a bare line as a ``line`` with no payload."""
+        client, store, _engine = route_client
+        inbound = InboundQueue()
+        app.state.inbound = inbound
+        session_id = uuid.uuid4()
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
+        )
+        monkeypatch.setattr(store, "record_session_seen", AsyncMock())
+        inbound.mark_poller(session_id)
+        answer: dict[str, object] = {
+            "prompt_id": "p1",
+            "decision": "deny",
+            "updated_input": None,
+            "message": "not now",
+        }
+
+        sent = client.post(
+            f"/api/sessions/{session_id}/inbound",
+            json={"text": "No: not now", "kind": "answer", "payload": answer},
+        )
+        plain = client.post(f"/api/sessions/{session_id}/inbound", json={"text": "hi"})
+        drained = client.get(f"/api/sessions/{session_id}/inbound")
+
+        assert (sent.status_code, plain.status_code) == (200, 200), sent.text
+        messages = from_plain(
+            from_plain(drained.json(), dict[str, object])["messages"],
+            list[dict[str, object]],
+        )
+        assert [(m["text"], m["kind"], m["payload"]) for m in messages] == [
+            ("No: not now", "answer", answer),
+            ("hi", "line", None),
+        ]
+
+    def test_a_kind_the_server_does_not_know_is_422(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        inbound = InboundQueue()
+        app.state.inbound = inbound
+        session_id = uuid.uuid4()
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
+        )
+        inbound.mark_poller(session_id)
+
+        refused = client.post(
+            f"/api/sessions/{session_id}/inbound",
+            json={"text": "x", "kind": "keys"},
+        )
+
+        assert refused.status_code == 422, refused.text
+        assert inbound.pending(session_id) == 0
+
+
+def test_a_session_the_old_chat_helper_opened_takes_messages_like_any_other(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session an old helper opened is refused neither a send nor another writer's drain.
+
+    The helper is gone, and with it the refusals keyed on its CLI name.
+    """
+    client, store, engine = route_client
+    inbound = InboundQueue()
+    app.state.inbound = inbound
+    # The database answers the transcript test: the sender reads the session.
+    engine.conn.fetchval.return_value = True
+    session_id = uuid.uuid4()
+    monkeypatch.setattr(
+        store,
+        "get_inquiry",
+        AsyncMock(
+            return_value=replace(
+                _live_session(uuid.uuid4()),
+                cli="trax-helper",
+                audience="open",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        store,
+        "resolve_live_sessions",
+        AsyncMock(return_value=[(session_id, ())]),
+    )
+    monkeypatch.setattr(store, "record_session_seen", AsyncMock())
+    inbound.mark_poller(session_id)
+
+    direct = client.post(f"/api/sessions/{session_id}/inbound", json={"text": "a"})
+    routed = client.post("/api/messages", json={"actor": "helper", "text": "b"})
+    drained = client.get(f"/api/sessions/{session_id}/inbound")
+
+    assert [r.status_code for r in (direct, routed, drained)] == [200] * 3, direct.text
+    messages = from_plain(
+        from_plain(drained.json(), dict[str, object])["messages"],
+        list[dict[str, object]],
+    )
+    assert [m["text"] for m in messages] == ["a", "b"]
+
+
+def _opens_a_part(name: str) -> dict[str, object]:
+    """Return the body that opens the part ``name`` with one line."""
+    record = RecordBody.of(
+        SessionRecordRow.of(
+            session_id=uuid.UUID(int=0),
+            part=0,
+            idx=0,
+            record=UserMessage(content="hi"),
+        ),
+    )
+    manifest = ManifestBody(name=name, ir_id=uuid.uuid4(), format="claude", records=1)
+    return {
+        "name": name,
+        "manifest": manifest.model_dump(mode="json"),
+        "records": [record.model_dump(mode="json")],
+    }
+
+
+async def _ended_chat(
+    client: httpx2.AsyncClient,
+    store: Store,
+    *,
+    conversation_id: uuid.UUID,
+) -> uuid.UUID:
+    """Open a chat as the assistant, write its first part, and end it."""
+    await seed_accounts(store)
+    chat = await seed_science_chat(store, conversation_id=conversation_id)
+    act_as_assistant("writer")
+    written = await client.post(
+        f"/api/sessions/{chat}/records",
+        json=_opens_a_part("assistant.jsonl"),
+    )
+    assert written.status_code == 200, written.text
+    ended = await client.post(f"/api/sessions/{chat}/end", json={})
+    assert ended.status_code == 200, ended.text
+    return chat
+
+
+async def _attach(
+    client: httpx2.AsyncClient,
+    *,
+    session_id: uuid.UUID,
+) -> httpx2.Response:
+    """Start a claude run that re-opens ``session_id``."""
+    return await client.post(
+        "/api/sessions/start",
+        json={"cli": "claude", "attach": str(session_id)},
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_starters_run_attaches_to_its_chat_and_adds_the_next_part(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The chat keeps ``chat:<id>``, is live again, and the run's file is part 1."""
+    client, store = pglite_route_client
+    conversation = uuid.uuid4()
+    chat = await _ended_chat(client, store, conversation_id=conversation)
+
+    act_as_user_agent("writer")
+    attached = await _attach(client, session_id=chat)
+    appended = await client.post(
+        f"/api/sessions/{chat}/records",
+        json=_opens_a_part("claude.jsonl"),
+    )
+
+    assert attached.status_code == 201, attached.text
+    body = json_loads(attached.content, dict[str, object])
+    assert (body["id"], body["cli_session_id"]) == (
+        str(chat),
+        chat_session_id(conversation),
+    )
+    row = await _session(store, session_id=chat)
+    assert (row.ended, row.cli_session_id) == (None, chat_session_id(conversation))
+    assert appended.status_code == 200, appended.text
+    assert json_loads(appended.content, dict[str, object])["part"] == 1
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_stranger_attaches_to_no_chat_and_an_unknown_id_is_404(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A refused attach leaves the chat as it was: ended."""
+    client, store = pglite_route_client
+    chat = await _ended_chat(client, store, conversation_id=uuid.uuid4())
+
+    act_as_other_agent("writer")
+    refused = await _attach(client, session_id=chat)
+    unknown = await _attach(client, session_id=uuid.uuid4())
+
+    assert refused.status_code == 403, refused.text
+    assert (await _session(store, session_id=chat)).ended is not None
+    assert unknown.status_code == 404, unknown.text
 
 
 if __name__ == "__main__":

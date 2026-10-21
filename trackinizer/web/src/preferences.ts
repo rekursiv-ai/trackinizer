@@ -23,6 +23,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   terminal_font_size: "13px",
   terminal_tab_chords: false,
   home: "graph",
+  chat_provider: "assistant",
   stars: [],
   views: [],
   console_views: [],

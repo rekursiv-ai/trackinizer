@@ -59,15 +59,14 @@ from trackinizer.trax.verbs import (
 
 
 if TYPE_CHECKING:
-    from trackinizer.trax.run import helper, session
+    from trackinizer.trax.run import session
 else:
     from wrapt import lazy_import
 
-    # ``trax run`` and ``trax helper`` are the only verbs that need the
-    # PTY/tail/adapter machinery (importing ``trax.run.session`` costs ~324ms),
-    # so bind them lazily: each proxy resolves on first call, inside its branch.
+    # ``trax run`` is the only verb that needs the PTY/tail/adapter machinery
+    # (importing ``trax.run.session`` costs ~324ms), so bind it lazily: the proxy
+    # resolves on first call, inside its branch.
     session = lazy_import("trackinizer.trax.run.session")
-    helper = lazy_import("trackinizer.trax.run.helper")
 
 
 def connect_flags(parser: argparse.ArgumentParser) -> None:
@@ -244,12 +243,6 @@ def parse_and_run(
             client_factory=lambda: connect(top),
             profile=cast(_TopFlags, top).profile,
         )
-        if rc != 0:
-            sys.exit(rc)
-        return None
-    if verb == "helper":
-        # ``trax helper``: the Chat assistant's loop, lazily imported as ``run`` is.
-        rc = helper.main(rest, client_factory=client_factory)
         if rc != 0:
             sys.exit(rc)
         return None

@@ -33,6 +33,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "terminal_font_size": "13px",
     "terminal_tab_chords": False,
     "home": "graph",
+    "chat_provider": "assistant",
     "stars": [],
     "views": [],
     "console_views": [],
@@ -132,6 +133,40 @@ def test_the_assistants_keys_are_exactly_the_settings_the_document_shows() -> No
         if field.json_schema_extra == SETTING
     }
     assert marked == ASSISTANT_KEYS
+
+
+def test_a_new_chat_starts_on_the_assistant_unless_the_user_picked_a_cli() -> None:
+    assert stored_preferences(None).chat_provider == "assistant"
+    assert stored_preferences({"chat_provider": "codex"}).chat_provider == "codex"
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"chat_provider": "gemini"})
+
+
+@pytest.mark.asyncio
+async def test_a_write_sets_the_chat_provider_a_new_chat_starts_on() -> None:
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value={"preferences": {"chat_provider": "claude"}})
+    written = await write_preferences(
+        cast("Conn", conn),
+        user_id=_USER,
+        change={"chat_provider": "claude"},
+    )
+    assert written is not None
+    assert written.chat_provider == "claude"
+    conn.fetchrow.assert_awaited_once_with(
+        "UPDATE users SET preferences = "
+        "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
+        "WHERE id = $3 RETURNING preferences",
+        {"chat_provider": "claude"},
+        ["chat_style"],
+        _USER,
+    )
+    with pytest.raises(ValueError, match="chat_provider: "):
+        await write_preferences(
+            cast("Conn", conn),
+            user_id=_USER,
+            change={"chat_provider": "gemini"},
+        )
 
 
 @pytest.mark.parametrize("size", ["13px", "16pt", "9.5px", "99pt"])

@@ -8,14 +8,15 @@ the wire bodies, and the Store's setter dispatch must all agree on.
 
 from __future__ import annotations
 
-from collections import UserDict
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from functools import cache
-from typing import TYPE_CHECKING, Protocol, cast, get_type_hints, overload
+from typing import TYPE_CHECKING, Protocol, cast, get_type_hints, overload, override
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from _typeshed import (
         DataclassInstance,  # noqa: TC004 -- ``_typeshed`` has no runtime module; ``ColumnSpec.flatten`` is never resolved through ``get_type_hints``.
     )
@@ -44,13 +45,13 @@ class Row(Protocol):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ColumnSpec(UserDict[str, "ColumnSpec"]):
+class ColumnSpec(Mapping[str, "ColumnSpec"]):
     """Everything one editable column needs to declare about itself.
 
     You attach it to a field with ``field(metadata=ColumnSpec(...))``: the
     field keeps its real annotation while the spec rides along in
     ``metadata``. The trick is that ``ColumnSpec`` is itself a
-    :class:`~collections.UserDict` holding ``{"colspec": self}``, so it
+    :class:`~collections.abc.Mapping` holding ``{"colspec": self}``, so it
     satisfies the mapping that ``field(metadata=)`` expects without a
     wrapper dict at each call site. Setter dispatch, SQL codegen, and the
     route table all read it back through :func:`column_specs`.
@@ -129,17 +130,21 @@ class ColumnSpec(UserDict[str, "ColumnSpec"]):
     standalone ``PUT .../ended`` would desync the lifecycle CHECK. The column
     is still stored and read; it just has no field route."""
 
-    # The UserDict payload, filled in __post_init__ with {"colspec": self}
-    # so the spec doubles as its own field(metadata=). init=False hides it
-    # from the constructor; column_specs finds it by scanning metadata
-    # values, so the key name never appears at call sites.
-    data: dict[str, ColumnSpec] = field(default_factory=dict, init=False, repr=False)
+    # ``field(metadata=)`` takes this spec as its mapping; column_specs finds
+    # it by scanning metadata values, so the key never appears at call sites.
+    @override
+    def __getitem__(self, key: str, /) -> ColumnSpec:
+        if key != "colspec":
+            raise KeyError(key)
+        return self
 
-    def __post_init__(self) -> None:
-        """Initialize the data dictionary after dataclass construction."""
-        # A default_factory cannot reference self, so set the payload here
-        # via the frozen-dataclass escape hatch.
-        object.__setattr__(self, "data", {"colspec": self})
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(("colspec",))
+
+    @override
+    def __len__(self) -> int:
+        return 1
 
 
 def column_specs(cls: type[DataclassInstance]) -> dict[str, ColumnSpec]:

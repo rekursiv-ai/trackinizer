@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { stubFetch } from "./testing";
 import { FakeEventSource } from "../live/testing";
-import { answerCapture, clearMarks, drawMark, type NewMark, openWorkspaceEvents, removeMark, setSessionSettings, type WorkspaceEventListener } from "./workspaces";
+import { answerCapture, chooseProvider, clearMarks, drawMark, type NewMark, openWorkspaceEvents, removeMark, setSessionSettings, type WorkspaceEventListener } from "./workspaces";
 
 beforeEach(() => FakeEventSource.reset());
 afterEach(() => vi.unstubAllGlobals());
@@ -134,4 +134,22 @@ test("an answer to a request for a picture is put under its request id", async (
   expect(sent.map((each) => [each.method, each.path, each.body])).toEqual([
     ["PUT", "/api/workspaces/w/captures/req-1", { error: "No canvas is on screen." }],
   ]);
+});
+
+test("choosing a provider posts its operation at the station's revision, under its key", async () => {
+  const sent = stubFetch(() => Response.json({ ...state, provider: "claude" }));
+  const next = await chooseProvider("w", 4, "claude", "key-1");
+  expect(next.provider).toBe("claude");
+  expect(sent).toMatchObject([{
+    method: "POST",
+    path: "/api/workspaces/w/operations",
+    headers: { "idempotency-key": "key-1" },
+    body: { revision: 4, operation: { kind: "provider", provider: "claude" } },
+  }]);
+});
+
+test("a choice the server refuses as unavailable carries the server's reason", async () => {
+  const reason = "Connect a machine with `trax machine connect` and install claude on it";
+  stubFetch(() => Response.json({ detail: reason, code: "provider_unavailable" }, { status: 409 }));
+  await expect(chooseProvider("w", 4, "claude", "key-2")).rejects.toMatchObject({ status: 409, detail: reason, code: "provider_unavailable" });
 });

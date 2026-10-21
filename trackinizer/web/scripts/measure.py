@@ -684,6 +684,7 @@ def _message(body: bytes) -> str:
         value = json_loads(body)
     except ValueError:
         return body[:200].decode(errors="replace")
+    fields: dict[str, object]
     try:
         fields = from_plain(value, dict[str, object])
     except ReadError:

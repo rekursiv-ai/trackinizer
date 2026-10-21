@@ -1,17 +1,18 @@
 """Reading science chats: the sessions of a partner that carry a conversation.
 
-A science chat is an AgentSession the assistant account opened, or the reader's own
-``trax helper`` when their canvas chose it, whose ``cli_session_id`` is
-``chat:<conversation id>`` and whose labels hold ``science-chat``, and
-``poster:<email>`` for each person who posted. Nothing here writes: the partner
-records lines, and these reads find a chat for a conversation id (a link, or a line
-just posted), who it is shared with, and what the reader may do to it. A session
-carrying the same id under another account's key is not a chat.
+A science chat is an AgentSession the assistant account opened, whose
+``cli_session_id`` is ``chat:<conversation id>`` and whose labels hold
+``science-chat``, and ``poster:<email>`` for each person who posted. Nothing here
+writes: the partner records lines, and these reads find a chat for a conversation id
+(a link, or a line just posted), who it is shared with, what the reader may do to it,
+and which of its records a fork of it copies. A session carrying the same id under
+another account's key is not a chat.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
+from itertools import groupby
 from typing import TYPE_CHECKING, Final
 
 import uuid
@@ -28,6 +29,7 @@ from trackinizer.server.audience import (
     visible_sql,
 )
 from trackinizer.server.store.deleted_chats import chat_was_deleted
+from trackinizer.server.store.session_ir import PartPrefix
 from trackinizer.server.values import vetted_sql
 from trackinizer.server.visuals.chat_forks import delete_refusal, may_share
 from trackinizer.types.errors import ChatDeletedError
@@ -43,6 +45,8 @@ from trackinizer.wire.wire_science_chat import (
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from trackinizer.lib.postgres import Conn, DatabaseEngine
     from trackinizer.server.audience import SessionReader
     from trackinizer.server.auth import AuthIdentity
@@ -56,11 +60,11 @@ __all__ = [
     "chat_readers",
     "conversation_of_session",
     "counts_in_chat",
-    "helper_began_chat",
     "may_post",
     "read_chat_sessions",
     "read_conversation",
     "read_first_session",
+    "read_fork_prefixes",
     "read_head",
     "read_line_starter",
     "read_shares",
@@ -92,7 +96,7 @@ _CHAT: Final = (
 )
 
 # The conversation is the sessions the assistant ($5) opened under its id, whenever it
-# has any; without one, its starter's ($6) own helper's, which only they find. Any
+# has any; without one, those its starter's ($6) own key opened. Any
 # writer's key may open a session under a ``chat:`` id, and one that did gains nothing
 # from it. Beside the head, of every session under the id, which a delete takes: their
 # ids; whether the caller's key ($4) opened each; and whether a person's line in one
@@ -125,8 +129,12 @@ _HEAD: Final = (
     "OR EXISTS (SELECT 1 FROM taken AS held "
     "JOIN session_records AS line ON line.session_id = held.id "
     "WHERE held.counted AND held.audience = ANY($7::text[]) "
-    "AND line.kind = 'AgentToAgentMessage' "
-    "AND lower(COALESCE(line.payload ->> 'sender', '')) <> lower($6::text))) "
+    "AND (line.kind = 'AgentToAgentMessage' OR (line.kind = 'UserMessage' "
+    "AND (line.payload -> 'extra' -> '$inbound' IS NOT NULL "
+    "OR line.payload -> 'extra' ->> 'author' IS NOT NULL))) "
+    "AND lower(COALESCE(line.payload ->> 'sender', "
+    "line.payload -> 'extra' -> '$inbound' ->> 'source', "
+    "line.payload -> 'extra' ->> 'author', '')) <> lower($6::text))) "
     "AS others_posted "
     "FROM conversation AS head "
     "ORDER BY head.live DESC, head.created DESC, head.session_id DESC LIMIT 1"
@@ -144,13 +152,13 @@ _FIRST_SESSION: Final = vetted_sql(
 )
 
 # A fork edge counts when the one who opened the fork's session is who added it, as
-# the audit of its creation records: the assistant links the forks it serves, a helper
-# the forks it serves. Any writer may add an edge between any two sessions, or change
+# the audit of its creation records: the assistant links the forks it serves. Any writer
+# may add an edge between any two sessions, or change
 # an edge's labels, so the edge as it stands proves nothing; the audit names the key
 # that added it and the labels it was added with. Both ends must be science chats an
 # allowed key opened. A fork is counted once however many of its conversation's
 # sessions hold the edge. A viewer sees the forks served by the sessions they may find:
-# the assistant's and their own helper's.
+# the assistant's and their own.
 _FORK_EDGES: Final = (
     ", fork_edge AS (SELECT link.from_id, link.to_id, MIN(audit.created) AS added "
     "FROM edges AS link "
@@ -219,8 +227,8 @@ async def read_head(
     Args:
       engine: Database connection source.
       assistant: The configured assistant, if any.
-      caller: The person asking; the chat of their own helper is found too, and what
-        they may do to the chat is said for them.
+      caller: The person asking; their own chats are found too, and what they may do
+        to the chat is said for them.
       conversation_id: The conversation.
       reader: The caller, as the transcript test reads them, which says whether they
         read the chat.
@@ -306,7 +314,7 @@ async def read_conversation(
     Args:
       conn: A database connection.
       assistant: The configured assistant, if any.
-      caller: The person asking; the chat of their own helper is found too.
+      caller: The person asking; their own chats are found too.
       conversation_id: The conversation.
 
     Returns:
@@ -392,7 +400,7 @@ async def read_starter(
     """Find who started a conversation, by the oldest session that began it.
 
     That is the oldest session under its ``chat:<id>`` id that the assistant opened, or
-    that its own account's key opened, as a person's helper does. This is the one rule
+    that its own account's key opened. This is the one rule
     for a chat's starter: a post, the head, a share and a delete all ask it, so a
     session a writer's own key opened under the id later, or one the assistant opened
     later for a poster it was shared with, never makes anyone else the starter.
@@ -534,36 +542,6 @@ async def read_chat_sessions(
     return [from_plain(row["id"], uuid.UUID) for row in rows]
 
 
-async def helper_began_chat(
-    conn: Conn,
-    *,
-    assistant: Assistant | None,
-    conversation_id: uuid.UUID,
-) -> bool:
-    """Say whether a person's own helper, not the assistant, began a conversation.
-
-    Only that helper reads its lines, so a line sent to the assistant for it would
-    open a second conversation under its id that the chat's starter never sees.
-
-    Args:
-      conn: A database connection.
-      assistant: The configured assistant, if any.
-      conversation_id: The conversation.
-
-    Returns:
-      helper: True when the session that began it, as :func:`read_starter` finds it,
-        was opened by a key other than the assistant's.
-
-    """
-    return bool(
-        await conn.fetchval(
-            "SELECT began_by.email <> $2 " + _FIRST_SESSION,
-            chat_session_id(conversation_id),
-            None if assistant is None else assistant.email,
-        ),
-    )
-
-
 # The head's rule for whose lines count: a stranger's key that writes a person's line
 # into a session of its own under the id neither posts it nor clears one on its way in.
 async def counts_in_chat(
@@ -689,15 +667,17 @@ async def science_chat_exists_at(
     """Say whether ``fork`` names a line of a science chat's session.
 
     A line is a person's, or an answer with words: the records the Chat panel shows.
-    The assistant copies the lines up to a fork point into the fork, so the point
-    must be in a transcript the person reads. For any other the answer is the no that
-    a position past the end gets, and a caller cannot tell a hidden line from a
+    A person's line is an agent-to-agent message, or a user turn that carries its
+    sender: the ``$inbound`` stamp ``trax run`` puts on a line it delivered, or an
+    ``author``. The assistant copies the lines up to a fork point into the fork, so the
+    point must be in a transcript the person reads. For any other the answer is the no
+    that a position past the end gets, and a caller cannot tell a hidden line from a
     missing one.
 
     Args:
       conn: A database connection.
       assistant: The configured assistant, if any.
-      email: The person asking; the chat of their own helper is found too.
+      email: The person asking; their own chats are found too.
       fork: The session, part and position.
       reader: The person, as the transcript test reads them.
 
@@ -722,8 +702,11 @@ async def science_chat_exists_at(
                 "SELECT EXISTS (SELECT 1 FROM session_records AS line "
                 "WHERE line.session_id = $3 AND line.part = $4 AND line.idx = $5 "
                 "AND (line.kind = 'AgentToAgentMessage' OR (line.kind = "
-                "'AssistantMessage' AND COALESCE(line.payload ->> 'content', '') "
-                "<> ''))) AND EXISTS (SELECT 1 FROM chat WHERE session_id = $3) "
+                "'UserMessage' AND (line.payload -> 'extra' -> '$inbound' IS NOT NULL "
+                "OR line.payload -> 'extra' ->> 'author' IS NOT NULL)) "
+                "OR (line.kind = 'AssistantMessage' AND COALESCE("
+                "line.payload ->> 'content', '') <> ''))) "
+                "AND EXISTS (SELECT 1 FROM chat WHERE session_id = $3) "
                 "AND EXISTS (SELECT 1 FROM inquiries AS target WHERE target.id = $3 "
                 "AND ",
                 readable,
@@ -731,6 +714,49 @@ async def science_chat_exists_at(
             ),
             *params,
         ),
+    )
+
+
+# Audience: gated -- a fork's route checks its forker reads the session
+# (``science_chat_exists_at``) before it asks which records the fork copies.
+async def read_fork_prefixes(conn: Conn, *, fork: ChatForkAt) -> list[PartPrefix]:
+    """Say how much of each part of a chat's session a fork from one of its lines copies.
+
+    A fork holds what the conversation held up to and including the fork point, in
+    the order :func:`~trackinizer.client.conversation.placed` orders a
+    session's parts: by when each record happened, ties going to the lower part. The
+    fork point's part is copied through the fork point; each other part is copied up
+    to its first record that comes after it, so every part copied is a prefix that
+    keeps its records' positions. A part with no format is skipped, as the reader
+    skips it: it is a terminal scrape, not a conversation.
+
+    Args:
+      conn: A database connection.
+      fork: The session, part and position of the last line copied.
+
+    Returns:
+      prefixes: The parts copied, in part order, each with how many of its first
+        records; empty when the fork point is no record of the session.
+
+    """
+    rows = await conn.fetch(
+        "SELECT r.part, r.idx, r.timestamp FROM session_records AS r "
+        "JOIN session_manifests AS m ON m.session_id = r.session_id "
+        "AND m.part = r.part WHERE r.session_id = $1 AND r.idx < m.records "
+        "AND (m.format <> '' OR m.part = $2) ORDER BY r.part, r.idx",
+        fork.session_id,
+        fork.part,
+    )
+    return _fork_prefixes(
+        [
+            (
+                from_plain(row["part"], int),
+                from_plain(row["idx"], int),
+                from_plain(row["timestamp"], datetime, default=None),
+            )
+            for row in rows
+        ],
+        fork=fork,
     )
 
 
@@ -746,3 +772,52 @@ def chat_openers(assistant: Assistant | None, *, email: str) -> list[str]:
 
     """
     return [email] if assistant is None else [assistant.email, email]
+
+
+def _fork_prefixes(
+    rows: Sequence[tuple[int, int, datetime | None]],
+    *,
+    fork: ChatForkAt,
+) -> list[PartPrefix]:
+    """Return each part's prefix that the reader orders at or before the fork point."""
+    parts = {
+        part: _moments([(idx, stamp) for _, idx, stamp in held])
+        for part, held in groupby(rows, key=lambda row: row[0])
+    }
+    point = next(
+        (moment for idx, moment in parts.get(fork.part, []) if idx == fork.idx),
+        None,
+    )
+    if point is None:
+        return []
+    prefixes: list[PartPrefix] = []
+    for part, held in parts.items():
+        after = (
+            fork.idx + 1
+            if part == fork.part
+            else next(
+                (idx for idx, moment in held if (moment, part) > (point, fork.part)),
+                held[-1][0] + 1,
+            )
+        )
+        if after:
+            prefixes.append(PartPrefix(part=part, records=after))
+    return prefixes
+
+
+# The reader's rule (``client/conversation.py::_moments``): a record with no stamp takes
+# the one before it in its part, and a leading one the part's first stamp, so a part's
+# own order holds whatever the other parts did.
+def _moments(
+    stamps: Sequence[tuple[int, datetime | None]],
+) -> list[tuple[int, datetime]]:
+    """Return each record of one part with when the reader takes it to have happened."""
+    last = next(
+        (stamp for _, stamp in stamps if stamp is not None),
+        datetime.min.replace(tzinfo=UTC),
+    )
+    out: list[tuple[int, datetime]] = []
+    for idx, stamp in stamps:
+        last = last if stamp is None else stamp
+        out.append((idx, last))
+    return out

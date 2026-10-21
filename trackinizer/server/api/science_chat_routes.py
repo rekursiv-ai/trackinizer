@@ -1,8 +1,8 @@
 """Science chat routes: post a line, find a conversation's session, share it, delete it.
 
-A canvas Chat conversation is an AgentSession the assistant opens (see
+A canvas Chat conversation is an AgentSession its provider answers in (see
 :mod:`trackinizer.wire.wire_science_chat`). A line posted here is queued for the
-assistant, not stored: the assistant records it as a record of the conversation's
+provider, not stored: the provider records it as a record of the conversation's
 session, and every viewer of that session sees it arrive as a change to the session.
 """
 
@@ -38,7 +38,10 @@ from trackinizer.server.visuals.chat_forks import (
 from trackinizer.server.visuals.chat_shares import delete_chat, set_share
 from trackinizer.server.visuals.science_chats import read_conversation, read_head
 from trackinizer.server.visuals.workspace_store import (
+    AnswerNotOwnerError,
+    CommandRefusedError,
     PartnerBusyError,
+    ProviderOfflineError,
     StationChatError,
     WorkspaceSessionUnavailableError,
     read_workspace,
@@ -97,6 +100,23 @@ async def post_chat_line_route(
     opens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key
     queues nothing again.
 
+    The poster's station's provider answers, or in a chat someone else started, the
+    provider of its starter's station. ``assistant`` takes a ``line`` alone (422 for
+    any other ``kind``). For ``claude`` or ``codex`` the post, with its ``kind`` and
+    ``payload``, joins the queue of the chat's session that the CLI's run drains;
+    with no such run live it is 409 ``provider_offline``. A fork from a ``claude`` or
+    ``codex`` station is one too: its new session is opened at once and its line
+    waits there for the run the person starts.
+
+    A ``line`` that starts with a known slash command of claude or codex is judged
+    by the chat's provider, not the poster's station. One the provider runs from
+    Chat (``/goal``, and claude's ``/compact``) is queued as a ``command``, typed
+    bare, with no page, trail or marks; any other is 422 ``command_refused`` with
+    the reason in ``message``, and nothing is queued. Every other ``/`` line stays a
+    line. An ``answer`` to a ``claude`` or ``codex`` chat is its starter's alone,
+    the run's owner, since it runs a tool or grants trust on their machine: anyone
+    else is 403 ``answer_not_owner``, and nothing is queued.
+
     Args:
       body: The line, the poster's station, and the conversation to post into or the
         line to fork; neither continues the station's chat, else starts one, named by
@@ -106,15 +126,15 @@ async def post_chat_line_route(
       key: Required retry-safe idempotency key.
 
     Returns:
-      sent: The conversation, the station it went to, and its session when the
-        assistant has it open.
+      sent: The conversation, the station it went to, and its session when the line
+        was queued on it.
 
     """
     require_browser(identity)
     assistant = get_assistant(request)
     try:
         sent = await send_chat_line(
-            engine_of(request),
+            get_store(request),
             user_id=identity.user_id,
             body=body,
             key=key,
@@ -134,8 +154,23 @@ async def post_chat_line_route(
             status_code=403,
             detail={"code": "chat_not_shared", "message": str(error)},
         ) from error
+    except AnswerNotOwnerError as error:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "answer_not_owner", "message": str(error)},
+        ) from error
+    except CommandRefusedError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "command_refused", "message": str(error)},
+        ) from error
     except ChatClosedError as error:
         raise HTTPException(status_code=409, detail={"code": error.code}) from error
+    except ProviderOfflineError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "provider_offline", "message": str(error)},
+        ) from error
     except (
         WorkspaceSessionUnavailableError,
         PartnerBusyError,

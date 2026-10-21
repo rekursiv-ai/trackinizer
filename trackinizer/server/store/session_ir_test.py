@@ -680,6 +680,95 @@ async def test_a_resumed_run_resolves_to_the_existing_part(store: Store) -> None
     assert manifests[0].records == 4, "the manifest did not grow with the file"
 
 
+async def _upsert(
+    store: Store,
+    session_id: UUID,
+    *,
+    name: str,
+    key: UUID | None,
+    records: int = 1,
+    exclusive: bool = False,
+) -> int:
+    """Upsert one part's manifest as ``key`` writes it."""
+    return await store.upsert_session_manifest(
+        session_id,
+        name=name,
+        metadata=immutable({}),
+        ir_id=uuid4(),
+        format="claude",
+        records=records,
+        api_key_id=key,
+        exclusive=exclusive,
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_part_keeps_the_key_whose_first_write_opened_it(store: Store) -> None:
+    """A later batch, by any key, grows the part and leaves its opener as it was."""
+    session_id = await _session(store)
+    opener, later = uuid4(), uuid4()
+    _ = await _upsert(store, session_id, name="a.jsonl", key=opener)
+    _ = await _upsert(store, session_id, name="a.jsonl", key=later, records=3)
+    _ = await _upsert(store, session_id, name="b.jsonl", key=None)
+
+    first = await store.read_session_manifest(session_id, name="a.jsonl")
+    listed = await store.read_session_manifests(session_id)
+
+    assert first is not None
+    assert (first.part, first.records, first.opened_by_api_key_id) == (0, 3, opener)
+    assert [(m.name, m.opened_by_api_key_id) for m in listed] == [
+        ("a.jsonl", opener),
+        ("b.jsonl", None),
+    ]
+    assert await store.read_session_manifest(session_id, name="c.jsonl") is None
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_exclusive_write_refuses_another_keys_part(store: Store) -> None:
+    """A science chat's part is its opener's: another key's batch changes nothing.
+
+    A part with no recorded opener is left to the route's rule, so it is written.
+    """
+    session_id = await _session(store)
+    opener, stranger = uuid4(), uuid4()
+    _ = await _upsert(store, session_id, name="a.jsonl", key=opener)
+    _ = await _upsert(store, session_id, name="old.jsonl", key=None)
+
+    with pytest.raises(ConflictError, match="opened by another key"):
+        _ = await _upsert(
+            store,
+            session_id,
+            name="a.jsonl",
+            key=stranger,
+            records=9,
+            exclusive=True,
+        )
+    own = await _upsert(
+        store,
+        session_id,
+        name="a.jsonl",
+        key=opener,
+        records=2,
+        exclusive=True,
+    )
+    old = await _upsert(
+        store,
+        session_id,
+        name="old.jsonl",
+        key=stranger,
+        records=5,
+        exclusive=True,
+    )
+
+    assert (own, old) == (0, 1)
+    assert [
+        (m.records, m.opened_by_api_key_id)
+        for m in await store.read_session_manifests(session_id)
+    ] == [(2, opener), (5, None)]
+
+
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_slash_commands_commit_with_their_records(store: Store) -> None:
@@ -789,6 +878,93 @@ async def test_a_captured_nul_is_stored_as_a_replacement_character(
     assert read[0].text == "a\ufffdb"
     assert [turn.content for turn in turns] == ["a\ufffdb"]
     assert [command.args for command in stored] == ["o\ufffd"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_copy_takes_each_parts_prefix_into_the_next_part_of_a_new_session(
+    store: Store,
+) -> None:
+    """Positions, stamps, ciphertext and bodies come along; the rest of a part stays."""
+    source, target, key = await _session(store), await _session(store), uuid4()
+    at = datetime(2026, 10, 20, 9, tzinfo=UTC).isoformat()
+    parts: list[list[SessionRecord]] = [
+        [
+            UserMessage(content="a0", timestamp=at),
+            Thinking(content="why", encrypted=_CIPHERTEXT, timestamp=at),
+            UserMessage(content="a2", timestamp=at),
+        ],
+        [UserMessage(content="b0")],
+        [UserMessage(content="c0"), UserMessage(content="c1")],
+    ]
+    for part, (name, records) in enumerate(zip("abc", parts, strict=True)):
+        _ = await store.upsert_session_manifest(
+            source,
+            name=f"{name}.jsonl",
+            metadata=immutable({"newline_terminated": part == 2}),
+            ir_id=uuid4(),
+            format="sagent" if part == 2 else "claude",
+            records=len(records),
+        )
+        _ = await store.append_session_records(
+            source,
+            _rows(source, records, part=part),
+        )
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO session_bodies (session_id, part, idx, payload_zst, text_zst) "
+            "SELECT $1, 0, idx, '\\x00', '\\x01' FROM unnest(ARRAY[0, 2]) AS idx",
+            source,
+        )
+        await store.copy_session_parts(
+            conn,
+            source=source,
+            target=target,
+            prefixes=[
+                session_ir.PartPrefix(part=0, records=2),
+                session_ir.PartPrefix(part=2, records=1),
+            ],
+            api_key_id=key,
+        )
+        sealed = await conn.fetch(
+            "SELECT part, idx FROM session_ciphertext WHERE session_id = $1",
+            target,
+        )
+        bodies = await conn.fetch(
+            "SELECT part, idx FROM session_bodies WHERE session_id = $1",
+            target,
+        )
+        created = await conn.fetch(
+            "SELECT created FROM session_records WHERE part = 0 AND idx < 2 "
+            "AND session_id = ANY(ARRAY[$1, $2]::uuid[]) ORDER BY idx, session_id = $2",
+            source,
+            target,
+        )
+
+    copied = await store.read_session_manifests(target)
+    sources = await store.read_session_manifests(source)
+    assert [
+        (m.part, m.name, m.format, m.records, m.opened_by_api_key_id, m.ir_id)
+        for m in copied
+    ] == [
+        (0, "a.jsonl", "claude", 2, key, sources[0].ir_id),
+        (1, "c.jsonl", "sagent", 1, key, sources[2].ir_id),
+    ]
+    assert copied[1].metadata == {"newline_terminated": True}
+    assert [
+        row.record()
+        for part in (0, 1)
+        for row in await store.read_session_records(
+            target,
+            part=part,
+            plaintext_only=True,
+        )
+    ] == [parts[0][0], Thinking(content="why", encrypted="", timestamp=at), parts[2][0]]
+    assert [(row["part"], row["idx"]) for row in sealed] == [(0, 1)]
+    assert [(row["part"], row["idx"]) for row in bodies] == [(0, 0)]
+    # Each copy keeps the moment its original was recorded at.
+    moments = [row["created"] for row in created]
+    assert moments[::2] == moments[1::2]
 
 
 def test_a_payload_nul_is_replaced_in_keys_and_nested_strings() -> None:

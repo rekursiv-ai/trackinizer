@@ -1,11 +1,13 @@
-"""A fork of a science chat, as the assistant and the helper that serve it start one.
+"""A fork of a science chat, read as a client reads one.
 
 A fork is a science chat of its own that opens with the original's lines, up to and
 including the one it forks from (see :mod:`trackinizer.wire.wire_science_chat`).
-Whoever serves it reads those lines from the original's session, with its own key,
-puts them first in the fork's session, and links the fork to the original. The lines
-come from the original's records, never from the message that started the fork, so
-the server's word for where the fork starts is checked against what the session holds.
+The server makes it whole when the fork is posted, whoever serves it: it opens the
+fork's session holding copies of the original's records up to the fork point, and
+links the fork to the original. Nothing that serves a fork seeds it. These helpers read
+an original's lines up to a fork point as a client reads them, from the original's
+records under the reader's own key, say whether a session holds any record yet, and
+add a fork's edge as the server adds it.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 
 from treekle import from_plain
 
+from trackinizer.client.conversation import delivered_text, delivery_of
 from trackinizer.wire.wire_science_chat import FORK_EDGE_LABEL, fork_point_label
 
 
@@ -168,6 +171,10 @@ def _part_number(part: PartBody) -> int:
     return part.part
 
 
+# A person's line is the bot's own AgentToAgentMessage, or a UserMessage a CLI part
+# holds that bot delivered or that names its author, the rule the server's poster
+# and Chat read too. A typed line with neither names no one, so it is not a line
+# of the fork.
 def _line_of(record: RecordBody) -> ForkLine | None:
     """Read a record as a line: a person's, an answer with words, or neither."""
     content = from_plain(record.payload.get("content"), str, default="")
@@ -177,6 +184,25 @@ def _line_of(record: RecordBody) -> ForkLine | None:
             role="user",
             author=sender,
             text=content,
+            created=record.timestamp,
+        )
+    if record.kind == "UserMessage":
+        extra = from_plain(record.payload.get("extra"), dict[str, object], default={})
+        delivery = delivery_of(extra)
+        if delivery is None:
+            author = from_plain(extra.get("author"), str, default="")
+            if not author or not content:
+                return None
+            return ForkLine(
+                role="user",
+                author=author,
+                text=content,
+                created=record.timestamp,
+            )
+        return ForkLine(
+            role="user",
+            author=delivery.source,
+            text=delivered_text(content, delivery),
             created=record.timestamp,
         )
     if record.kind == "AssistantMessage" and content:

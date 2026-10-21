@@ -9,7 +9,12 @@ export type TerminalMachine = {
   readonly terminal_ready: boolean;
   /** Its owner allowed terminals on it; a machine enrolled with a key is not until they do. */
   readonly confirmed: boolean;
+  /** The CLIs its facts list as installed (`claude`, `codex`, ...); absent from a server older than them. */
+  readonly clis?: readonly string[];
 };
+
+/** A CLI a machine can start a chat's run in, the chat session the run re-opens, and the folder it starts in (`OpenTerminal.command`, `attach`, `cwd`). */
+export type RunLaunch = { readonly command: "claude" | "codex"; readonly attach: string; readonly cwd?: string };
 
 /** A terminal that is open now, the machine it runs on, and the view that opened it. */
 export type LiveTerminal = { readonly terminal_id: string; readonly machine: string; readonly surface?: string | null };
@@ -27,10 +32,15 @@ export async function listTerminalMachines(workspace?: string, { signal }: CallO
   }));
 }
 
-/** Open a terminal on `machine`, from `workspace`'s station, for the view named `surface`. Only a click calls it. */
-export async function openTerminal(machine: string, workspace: string | null, rows: number, cols: number, surface: string | null): Promise<OpenedTerminal> {
+/**
+ * Open a terminal on `machine`, from `workspace`'s station, for the view named `surface`. Only a click calls it.
+ * With `launch`, the machine starts that CLI's run in place of a login shell, re-opening the chat session it names,
+ * in `launch.cwd` when given (else the home directory); the server derives the run's name.
+ */
+export async function openTerminal(machine: string, workspace: string | null, rows: number, cols: number, surface: string | null,
+  launch?: RunLaunch): Promise<OpenedTerminal> {
   return send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/terminals", {
-    body: { machine, workspace, rows, cols, surface }, signal,
+    body: { machine, workspace, rows, cols, surface, ...launch }, signal,
   }));
 }
 

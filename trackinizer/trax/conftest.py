@@ -43,12 +43,14 @@ from trackinizer.wire.wire_session_ir import (
     SlashCommandBody,
 )
 from trackinizer.wire.wire_sessions import (
+    InboundDrainItem,
+    InboundKind,
     SessionEnd,
     SessionEndResponse,
     SessionStart,
     SessionStartResponse,
-    WorkspaceMessageContext,
 )
+from trackinizer.wire.wire_terminals import TerminalMachines, TerminalOpened
 
 
 if TYPE_CHECKING:
@@ -61,6 +63,7 @@ if TYPE_CHECKING:
         MetricMaskClause,
         MetricRankRow,
     )
+    from trackinizer.wire.wire_terminals import OpenTerminal
 
 
 _ABSENT = Absent()
@@ -488,7 +491,7 @@ class FakeClient:
         if status is not None:
             rows = [row for row in rows if row.get("status") == status]
         for filt in filters:
-            rows = [row for row in rows if bool(match_filter(_storage_view(row), filt))]
+            rows = [row for row in rows if bool(match_filter(_storage_view(row), filt))]  # pyrefly: ignore[unnecessary-type-conversion] -- The stub's type hides the runtime value (numpy/torch scalar or non-str key); the conversion is load-bearing.
         if fields is not None:
             rows = [{k: v for k, v in row.items() if k in fields} for row in rows]
         return cast(
@@ -1017,9 +1020,18 @@ class FakeClient:
         self.calls.append(("session_end", (session_id, body), {}))
         return SessionEndResponse(id=session_id)
 
-    def enqueue_inbound(self, session_id: uuid.UUID, text: str) -> int:
+    def enqueue_inbound(
+        self,
+        session_id: uuid.UUID,
+        text: str,
+        *,
+        kind: InboundKind = "line",
+        payload: dict[str, object] | None = None,
+    ) -> int:
         """Enqueue inbound."""
-        self.calls.append(("enqueue_inbound", (session_id, text), {}))
+        self.calls.append(
+            ("enqueue_inbound", (session_id, text), {"kind": kind, "payload": payload}),
+        )
         return 1
 
     def drain_inbound(
@@ -1027,10 +1039,33 @@ class FakeClient:
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
+        run: str | None = None,
+        machine: str | None = None,
+        cwd: str | None = None,
+    ) -> list[InboundDrainItem]:
         """Drain inbound."""
-        self.calls.append(("drain_inbound", (session_id,), {"wait_sec": wait_sec}))
+        self.calls.append(
+            (
+                "drain_inbound",
+                (session_id,),
+                {"wait_sec": wait_sec, "run": run, "machine": machine, "cwd": cwd},
+            ),
+        )
         return []
+
+    def terminal_machines(
+        self,
+        *,
+        workspace: uuid.UUID | None = None,
+    ) -> TerminalMachines:
+        """Terminal machines."""
+        self.calls.append(("terminal_machines", (), {"workspace": workspace}))
+        return TerminalMachines(machines=[])
+
+    def open_terminal(self, body: OpenTerminal) -> TerminalOpened:
+        """Open terminal."""
+        self.calls.append(("open_terminal", (body,), {}))
+        return TerminalOpened(terminal_id=uuid.uuid4(), ticket="fake-ticket")
 
     def send_message(
         self,

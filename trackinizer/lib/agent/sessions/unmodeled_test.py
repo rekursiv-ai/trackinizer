@@ -119,7 +119,7 @@ class TestLosslessFields:
                 "version": 1,
                 "order": ["x"],
                 "states": {"x": "value"},
-                "residual": {},
+                "residual": dict[str, object](),
             },
             "x": "provider",
         }
@@ -150,18 +150,18 @@ class TestLosslessFields:
                 "order": ["value"],
                 "states": {"value": "garbage"},
                 "raw": {"value": 1},
-                "residual": {},
+                "residual": dict[str, object](),
             },
         }
         assert restore_unmodeled_fields(stored, {"value": 2}) == stored
 
     def test_plain_residual_rejects_runtime_non_string_keys(self) -> None:
         with pytest.raises(TypeError, match="key"):
-            extract_unmodeled_fields({1: "value"})  # ty: ignore[invalid-argument-type] -- These negative tests deliberately pass invalid field types to verify rejection.  # pyright: ignore[reportArgumentType] -- The test deliberately passes a non-string key to verify rejection.
+            extract_unmodeled_fields({1: "value"})  # ty: ignore[invalid-argument-type] -- These negative tests deliberately pass invalid field types to verify rejection.  # pyright: ignore[reportArgumentType] -- The test deliberately passes a non-string key to verify rejection.  # pyrefly: ignore[bad-assignment] -- These negative tests deliberately pass invalid field types to verify rejection.
 
     def test_stateful_residual_rejects_runtime_non_string_keys(self) -> None:
         with pytest.raises(TypeError, match="key"):
-            extract_unmodeled_fields({1: "value"}, fields={})  # ty: ignore[invalid-argument-type] -- These negative tests deliberately pass invalid field types to verify rejection.  # pyright: ignore[reportArgumentType] -- The test deliberately passes a non-string key to verify rejection.
+            extract_unmodeled_fields({1: "value"}, fields={})  # ty: ignore[invalid-argument-type] -- These negative tests deliberately pass invalid field types to verify rejection.  # pyright: ignore[reportArgumentType] -- The test deliberately passes a non-string key to verify rejection.  # pyrefly: ignore[bad-assignment] -- These negative tests deliberately pass invalid field types to verify rejection.
 
     def test_plain_residual_escape_preserves_numeric_spelling(self) -> None:
         source = {
@@ -169,7 +169,7 @@ class TestLosslessFields:
                 "version": 1,
                 "order": ["x"],
                 "states": {"x": "value"},
-                "residual": {},
+                "residual": dict[str, object](),
             },
             "x": 1.0,
         }
@@ -189,7 +189,7 @@ class TestLosslessFields:
                 "order": ["x"],
                 "states": {"x": "value"},
                 "raw": "garbage",
-                "residual": {},
+                "residual": dict[str, object](),
             },
         }
 

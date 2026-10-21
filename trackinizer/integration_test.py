@@ -1395,7 +1395,7 @@ class TestIntegrationEndToEnd:
                     from_plain(hit.json(), dict[str, object])["delivered"],
                     list[str],
                 ) == [
-                    str(sid),
+                    sid,
                 ]
 
                 # Wrong room matches nothing (undelivered).
@@ -4268,7 +4268,7 @@ class TestIntegrationEndToEnd:
             # the normalize-to-empty path against the min_items CHECK.
             await integ_store.set_issue_kind(
                 rid,
-                ["", "  "],  # ty: ignore[invalid-argument-type] -- The integration fixture passes a dynamically-shaped request payload.  # pyright: ignore[reportArgumentType] -- The integration fixture passes a dynamically-shaped request payload.
+                ["", "  "],  # ty: ignore[invalid-argument-type] -- The integration fixture passes a dynamically-shaped request payload.  # pyright: ignore[reportArgumentType] -- The integration fixture passes a dynamically-shaped request payload.  # pyrefly: ignore[bad-argument-type] -- The integration fixture passes a dynamically-shaped request payload.
                 actor="u",
             )
 

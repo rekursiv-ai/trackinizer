@@ -1,5 +1,6 @@
 import { type CallOptions, client, send, TIMEOUT_MS } from "./client";
 import type { components } from "./generated/schema";
+import type { Provider } from "./providers";
 import { valid, type WorkspaceState } from "./workspaces";
 
 /** One station in the user's list: its name, its chat's conversation and the page it last showed. */
@@ -14,9 +15,14 @@ export async function listStations({ signal }: CallOptions = {}): Promise<Statio
   return stations;
 }
 
-/** Make a station, named `unnamed-workstream#N`, and open it. */
-export async function createStation({ signal }: CallOptions = {}): Promise<WorkspaceState> {
-  return valid(await send(TIMEOUT_MS.write, signal, (signal) => client.POST("/api/workspaces/new", { signal })));
+/**
+ * Make a station, named `unnamed-workstream#N`, and open it. Its chat starts on `provider`, or on the user's
+ * default when none is named.
+ */
+export async function createStation({ signal, provider }: CallOptions & { readonly provider?: Provider } = {}): Promise<WorkspaceState> {
+  return valid(await send(TIMEOUT_MS.write, signal, (signal) => client.POST("/api/workspaces/new", {
+    ...(provider ? { body: { provider } } : {}), signal,
+  })));
 }
 
 /** Rename a station; a name the user already has is a 409. */

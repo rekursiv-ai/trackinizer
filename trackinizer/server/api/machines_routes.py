@@ -294,7 +294,7 @@ async def fetch_machines(
     """
     return await conn.fetch(
         "SELECT id, name, role, how, labels, updated_by, updated, last_heartbeat, owner, "
-        "created, confirmed_at, "
+        "created, confirmed_at, last_run_cwd, "
         "host_version, facts, CASE "
         "WHEN EXISTS (SELECT 1 FROM machine_credentials c "
         "WHERE c.machine_id = machines.id) "

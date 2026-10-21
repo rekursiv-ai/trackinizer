@@ -75,7 +75,7 @@ class TestMetricPointKey:
 class TestMetricPointStep:
     def test_rejects_negative_step(self) -> None:
         with pytest.raises(ValidationError):
-            MetricPoint(key="loss", step=-1, value=1.0)
+            MetricPoint(key="loss", step=-1, value=1.0)  # pyrefly: ignore[bad-argument-type] -- The negative test passes the out-of-range value under test.
 
     def test_rejects_step_over_bigint_max(self) -> None:
         # Python int is unbounded; without an upper bound a step past 2**63-1

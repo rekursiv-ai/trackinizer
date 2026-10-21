@@ -338,12 +338,11 @@ async def test_the_git_label_drops_credentials_from_the_origin(
 @pytest.mark.parametrize(
     ("cli", "cli_session_id", "account"),
     [
-        ("trax-helper", None, None),
         ("claude", "chat:00000000-0000-0000-0000-000000000001", None),
         ("claude", None, "bot@service.invalid"),
     ],
 )
-async def test_helpers_chats_and_service_accounts_are_not_placed(
+async def test_chats_and_service_accounts_are_not_placed(
     pglite_route_client: _Client,
     cli: str,
     cli_session_id: str | None,

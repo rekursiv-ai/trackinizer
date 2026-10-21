@@ -641,6 +641,21 @@ def test_a_hostname_that_is_not_a_machine_name_is_refused(
     assert "reserved" in str(err)
 
 
+@pytest.mark.parametrize(
+    ("hostname", "name"),
+    [("gx10", "gx10"), ("Dev_Box.local", "dev-box"), ("-Lab_PC-.corp", "lab-pc")],
+)
+def test_host_name_is_the_short_hostname_as_a_machine_name(
+    monkeypatch: pytest.MonkeyPatch,
+    hostname: str,
+    name: str,
+) -> None:
+    """The rule a run reuses to say which machine it is on, as connect names it."""
+    monkeypatch.setattr("socket.gethostname", lambda: hostname)
+
+    assert machines.host_name() == name
+
+
 def test_a_malformed_connect_is_refused_before_any_request() -> None:
     client = _StubClient()
     err = _refusal(["cloud-ab12cd34", "connect", "now"], client=client)

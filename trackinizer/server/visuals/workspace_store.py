@@ -34,18 +34,21 @@ from trackinizer.server.visuals.chat_forks import (
     ForeignChatError,
 )
 from trackinizer.server.visuals.partners import (
-    assistant_holds_chat,
     assistant_key_may_use,
     attach_partner,
+    cli_partner,
     live_chat_session,
-    resolve_partner,
+    provider_availability,
+    shared_partner,
     station_session_key_may_use,
 )
 from trackinizer.server.visuals.science_chats import (
     conversation_of_session,
-    helper_began_chat,
     may_post,
+    read_first_session,
+    read_fork_prefixes,
     read_line_starter,
+    read_starter,
     science_chat_exists_at,
 )
 from trackinizer.server.visuals.screens import (
@@ -58,7 +61,7 @@ from trackinizer.server.visuals.workspaces import (
     AddMark,
     ApplyWorkspaceOperation,
     ChatWindow,
-    ChoosePartner,
+    ChooseProvider,
     ClearMarks,
     Highlight,
     NameChat,
@@ -82,8 +85,19 @@ from trackinizer.server.visuals.workspaces import (
 from trackinizer.server.visuals.workstreams import check_workstream, open_scratch
 from trackinizer.types.errors import ChatDeletedError, ConflictError
 from trackinizer.wire.audience import OPEN
-from trackinizer.wire.bodies import SubmitArtifact
-from trackinizer.wire.wire_science_chat import ChatSend, ChatSent
+from trackinizer.wire.bodies import SubmitAgentSession, SubmitArtifact
+from trackinizer.wire.chat_commands import Command, Line, Refused, classify
+from trackinizer.wire.wire_science_chat import (
+    CHAT_TITLE,
+    FORK_EDGE_LABEL,
+    SCIENCE_CHAT_LABEL,
+    ChatProvider,
+    ChatSend,
+    ChatSent,
+    chat_actor,
+    chat_session_id,
+    fork_point_label,
+)
 from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
 
@@ -99,7 +113,7 @@ if TYPE_CHECKING:
     from trackinizer.server.config import Assistant
     from trackinizer.server.store.core import Store
     from trackinizer.server.visuals.catalog import VisualCatalogBody
-    from trackinizer.server.visuals.workspaces import PartnerChoice
+    from trackinizer.wire.wire_science_chat import ChatForkAt
 
 
 UNNAMED_PREFIX: Final = "unnamed-workstream#"
@@ -150,6 +164,22 @@ class WorkspaceSessionUnavailableError(Exception):
     """The canvas's partner has no session that can take this browser message."""
 
 
+class ProviderOfflineError(WorkspaceSessionUnavailableError):
+    """The station's provider is a CLI, and no run of it holds the chat."""
+
+
+class ProviderUnavailableError(Exception):
+    """The provider chosen cannot run for the station's owner; the message says why."""
+
+
+class CommandRefusedError(ValueError):
+    """A line is a slash command the chat's provider does not run from Chat."""
+
+
+class AnswerNotOwnerError(Exception):
+    """An answer to a run's prompt came from someone other than the run's owner."""
+
+
 class PartnerBusyError(Exception):
     """The partner's inbound queue is full, so a message would evict an unread one."""
 
@@ -183,7 +213,7 @@ class AppliedOperation:
 
 
 async def send_chat_line(
-    engine: DatabaseEngine,
+    store: Store,
     *,
     user_id: uuid.UUID,
     body: ChatSend,
@@ -195,23 +225,42 @@ async def send_chat_line(
     reader: SessionReader,
     members: SessionReader | None,
 ) -> ChatSent | None:
-    """Queue a browser line for a science chat's assistant, with its page and trail.
+    """Queue a browser post for a science chat's provider, a line with its page and trail.
 
     The line's conversation is the one it names, else the one its station already
     holds, else a new one named by ``key``, so a retry under the same key queues
     nothing again and answers with the same conversation. A station without a chat
     takes the line's conversation as its own, in the transaction that queues the
     line; a station holds one chat only. A fork starts a new station instead: a copy
-    of the station it was sent from, bound to the fork's conversation.
+    of the station it was sent from, provider and all, bound to the fork's
+    conversation. Its session is opened in the same transaction, holding copies of
+    the original's records up to and including the fork point and linked to the
+    original, so whichever provider answers the fork finds the conversation it
+    continues there. Its line is queued only once that transaction commits, so the
+    session is there to resume when the line is heard.
 
-    Nothing of the line is stored here: the assistant records it in the
-    conversation's session. A conversation whose session the assistant has open takes
-    the line on that session's own queue; any other, and a new one, goes to the
-    assistant's service session, which opens or resumes the conversation's session
-    before it answers.
+    Nothing of the line is stored here: its provider records it in the
+    conversation's session. That is the poster's station's provider, except in a chat
+    someone else started, whose own provider (:func:`read_chat_provider`) drains it
+    whatever the poster's station names. For ``assistant``, a conversation whose session the
+    assistant has open takes the line on that session's own queue; any other, and a
+    new one, goes to the assistant's service session, which opens or resumes the
+    conversation's session before it answers. For ``claude`` or ``codex``, the post
+    goes on the queue of the chat's session that the CLI's run drains, with its kind
+    and payload; only a ``line`` carries the page, trail and marks. A fork's
+    conversation is new, so no run holds it: its line waits on its session's queue
+    for the run the person starts.
+
+    A ``line`` that is a known slash command (by
+    :func:`~trackinizer.wire.chat_commands.classify`, for the chat's provider)
+    is queued as a ``command`` of its normalized text, with no
+    page, trail or marks, so the run types it bare; one the provider does not run
+    from Chat is refused before anything is queued or bound. An ``answer`` to a
+    ``claude`` or ``codex`` run's prompt comes from the chat's starter alone, the
+    run's owner: it runs a tool, or grants trust, on their machine.
 
     Args:
-      engine: Database connection source.
+      store: The store, which opens and fills a fork's session.
       user_id: Authenticated browser account.
       body: The line, its station, and optional conversation, fork, page and trail.
       key: Required idempotency key.
@@ -227,13 +276,13 @@ async def send_chat_line(
         is theirs to read, so they must read what it copies. ``None`` for no one.
 
     Returns:
-      sent: The conversation, the station it went to, and its session when the
-        assistant has it open; None for a foreign station.
+      sent: The conversation, the station it went to, and its session when the line
+        was queued on it; None for a foreign station.
 
     Raises:
-      WorkspaceSessionUnavailableError: The station has no live partner, its local
-        helper was asked into a conversation the shared assistant holds, or the
-        assistant into one a person's own helper began.
+      WorkspaceSessionUnavailableError: The station has no live partner.
+      ProviderOfflineError: The station's provider is a CLI and no run of it holds
+        the chat, or the forker has no key to open a fork's session for it with.
       PartnerBusyError: The queue the line would join is full.
       StationChatError: The station's chat is another conversation, or another
         station of the poster holds the one named.
@@ -245,10 +294,15 @@ async def send_chat_line(
       ConversationTakenError: The fork's key names a conversation someone else began.
       ChatDeletedError: The line's conversation, or the fork's key, names a chat that
         was deleted, or the fork point is a line of one.
-      ValueError: The fork names no line of a science chat.
+      CommandRefusedError: The line is a slash command its provider does not run
+        from Chat; the message says why. It is a ``ValueError``.
+      AnswerNotOwnerError: An ``answer`` to a ``claude`` or ``codex`` chat came from
+        someone other than its starter.
+      ValueError: The fork names no line of a science chat, or an ``assistant``
+        station is sent a post that is not a line.
 
     """
-    async with engine.acquire() as conn, tx(conn):
+    async with store.engine.acquire() as conn, tx(conn):
         row = await conn.fetchrow(
             vetted_sql(
                 _SELECT_STATION,
@@ -275,41 +329,32 @@ async def send_chat_line(
             reader=reader,
             members=members,
         )
-        partner = await resolve_partner(
+        provider = await chat_answerer(
             conn,
-            inbound=inbound,
-            assistant=assistant,
-            choice=state.partner_choice,
-            owner_id=user_id,
-        )
-        if partner is None or partner.session_id is None or partner.status != "live":
-            raise WorkspaceSessionUnavailableError(
-                "Your local helper is not running; start it with `trax helper claude`"
-                if state.partner_choice == "local"
-                else "The assistant is not running",
-            )
-        chat = await chat_line_target(
-            conn,
-            inbound=inbound,
-            assistant=assistant,
-            choice=state.partner_choice,
+            state=state,
             conversation_id=conversation_id,
+            poster=source,
+            assistant=assistant,
         )
-        target = chat or partner.session_id
-        if inbound.is_full(target):
-            raise PartnerBusyError("Partner busy: too many unread messages; try again.")
-        screen = await read_screen(
+        if body.kind == "line":
+            match classify(body.text, provider):
+                case Command(text=text):
+                    body = body.model_copy(update={"kind": "command", "text": text})
+                case Refused(reason=reason):
+                    raise CommandRefusedError(reason)
+                case Line():
+                    pass
+        queue, chat = await _post_target(
             conn,
-            page=body.page,
-            trail=body.trail,
-            visuals=state.visuals,
+            body=body,
+            provider=provider,
+            conversation_id=conversation_id,
+            poster=source,
+            inbound=inbound,
+            assistant=assistant,
         )
-        unsent = [m for m in state.marks if m.seq > state.marks_sent][-_MARKS_PER_LINE:]
-        marks = wire_marks(
-            unsent,
-            records=await read_covered_records(conn, marks=unsent, reader=reader),
-            visuals=screen.visuals,
-        )
+        if queue is not None and inbound.is_full(queue):
+            raise PartnerBusyError("Partner busy: too many unread messages; try again.")
         # Last, so a refused line leaves the station as it was.
         station_id = (
             await _fork_station(
@@ -326,41 +371,67 @@ async def send_chat_line(
                 conversation_id=conversation_id,
             )
         )
+        if body.fork is not None:
+            forked = await _seed_fork(
+                conn,
+                store=store,
+                user_id=user_id,
+                forker=source,
+                conversation_id=conversation_id,
+                fork=body.fork,
+                provider=provider,
+                service=queue,
+                assistant=assistant,
+            )
+            if queue is None:
+                queue = chat = forked
+        if queue is None:
+            raise ProviderOfflineError(
+                f"The fork has no session for a {provider} run to attach to",
+            )
+        context = (
+            await _line_context(
+                conn,
+                body=body,
+                state=state,
+                station_id=station_id,
+                conversation_id=conversation_id,
+                reader=reader,
+            )
+            if body.kind == "line"
+            else None
+        )
+        line = (
+            queue,
+            Inbound(
+                text=body.text,
+                kind=body.kind,
+                payload=body.payload,
+                source=source,
+                source_role=source_role,
+                context=context,
+            ),
+        )
+        fingerprint = hashlib.sha256(
+            "\0".join(
+                (
+                    str(conversation_id),
+                    str(body.workspace_id),
+                    body.text,
+                    str(body.fork),
+                    body.kind,
+                    json.dumps(body.payload, sort_keys=True),
+                ),
+            ).encode(),
+        ).hexdigest()
+        # A fork's line is queued once its session is committed (below); sending none
+        # here still refuses a reused key before the fork is written, and records nothing.
         _ = inbound.send_once(
             key,
-            [
-                (
-                    target,
-                    Inbound(
-                        text=body.text,
-                        source=source,
-                        source_role=source_role,
-                        context=WorkspaceMessageContext(
-                            workspace_id=station_id,
-                            visible_visuals=screen.visuals,
-                            agent_instructions=state.agent_instructions,
-                            continuation_record_id=state.continuation_record_id,
-                            conversation_id=conversation_id,
-                            fork=body.fork,
-                            page=screen.page,
-                            trail=screen.trail,
-                            marks=marks,
-                        ),
-                    ),
-                ),
-            ],
-            fingerprint=hashlib.sha256(
-                "\0".join(
-                    (
-                        str(conversation_id),
-                        str(body.workspace_id),
-                        body.text,
-                        str(body.fork),
-                    ),
-                ).encode(),
-            ).hexdigest(),
+            [line] if body.fork is None else [],
+            fingerprint=fingerprint,
         )
-        if state.marks_seq > state.marks_sent:
+        if context is not None and state.marks_seq > state.marks_sent:
             # Not a canvas change: no revision, as a page or layout write has none.
             await conn.execute(
                 "UPDATE visual_workspaces SET state = jsonb_set(state, "
@@ -368,6 +439,10 @@ async def send_chat_line(
                 body.workspace_id,
                 state.marks_seq,
             )
+    if body.fork is not None:
+        # Whoever hears the line resumes the fork's session at once: before the commit
+        # it would find none and open a second one, holding none of the copies.
+        _ = inbound.send_once(key, [line], fingerprint=fingerprint)
     return ChatSent(
         conversation_id=conversation_id,
         session_id=chat,
@@ -380,59 +455,144 @@ async def chat_line_target(
     *,
     inbound: InboundQueue,
     assistant: Assistant | None,
-    choice: PartnerChoice,
+    provider: ChatProvider,
     conversation_id: uuid.UUID,
 ) -> uuid.UUID | None:
-    """Say where a station's line for a chat goes, refusing one nobody would read.
+    """Say which session a station's line for a chat goes to.
 
-    A Chat post and a Console relay both ask this. Only the assistant drains a
-    chat's own session. A local helper opens its chats but drains its service session
-    alone, so it is sent no line of a chat the shared assistant holds; and only that
-    helper reads a chat a person's own helper began, so the assistant is sent none
-    of those.
+    A Chat post and a Console relay both ask this. For ``assistant`` only the
+    assistant drains a chat's own session, so a line goes there when the assistant
+    has it open. For a CLI it goes to the chat's session its run drains.
 
     Args:
       conn: A database connection.
       inbound: Session message queue, which knows who polls each session.
       assistant: The configured assistant, if any.
-      choice: The station's partner: the shared assistant or the owner's helper.
+      provider: The station's provider.
       conversation_id: The chat.
 
     Returns:
-      session: The chat's own session the assistant has open; None sends the line to
-        the partner's service session.
+      session: The chat's own session its provider has open; None, for
+        ``assistant`` alone, sends the line to the partner's service session.
 
     Raises:
-      WorkspaceSessionUnavailableError: The line would go where no one reads it.
+      ProviderOfflineError: The provider is a CLI and no run of it holds the chat.
 
     """
-    if choice == "local":
-        if await assistant_holds_chat(
+    if provider != "assistant":
+        partner = await cli_partner(
             conn,
+            inbound=inbound,
             assistant=assistant,
+            provider=provider,
             conversation_id=conversation_id,
-        ):
-            raise WorkspaceSessionUnavailableError(
-                "The shared assistant holds this conversation; start a new one "
-                "to use your local helper",
+        )
+        if partner.status != "live" or partner.session_id is None:
+            raise ProviderOfflineError(
+                f"No {provider} run holds this chat; pick a machine to start one",
             )
-        return None
+        return partner.session_id
     if assistant is None:
         return None
-    if await helper_began_chat(
-        conn,
-        assistant=assistant,
-        conversation_id=conversation_id,
-    ):
-        raise WorkspaceSessionUnavailableError(
-            "A local helper holds this conversation; only it can answer here",
-        )
     return await live_chat_session(
         conn,
         inbound=inbound,
         opener=assistant.email,
         conversation_id=conversation_id,
     )
+
+
+async def open_chat_session(
+    store: Store,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+    assistant: Assistant | None,
+) -> uuid.UUID | None:
+    """Give a CLI station's chat a session a run can attach to, before any line.
+
+    A station without a chat is bound to a new conversation first. A chat that has a
+    session keeps it: the run attaches to that one. An ``assistant`` station is left
+    as it is, since the assistant opens its chat's session when it hears the chat.
+
+    Args:
+      store: The store.
+      user_id: The station's owner.
+      workspace_id: The station.
+      assistant: The configured assistant, whose session of the chat is one too.
+
+    Returns:
+      session_id: The chat's session; None for a station that is not the owner's,
+        an ``assistant`` one, or an owner with no API key to open it with.
+
+    """
+    async with store.engine.acquire() as conn, tx(conn):
+        row = await conn.fetchrow(
+            vetted_sql(_SELECT_STATION, "WHERE id = $1 AND user_id = $2 FOR UPDATE"),
+            workspace_id,
+            user_id,
+        )
+        if row is None:
+            return None
+        state = state_from_row(cast("Mapping[str, object]", row))
+        if state.provider == "assistant":
+            return None
+        conversation_id = state.conversation_id or uuid.uuid4()
+        _ = await _bind_chat(
+            conn,
+            user_id=user_id,
+            state=state,
+            conversation_id=conversation_id,
+        )
+        return await _open_chat_session(
+            conn,
+            store=store,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            provider=state.provider,
+            assistant=assistant,
+        )
+
+
+async def read_chat_provider(
+    conn: Conn,
+    *,
+    assistant: Assistant | None,
+    conversation_id: uuid.UUID,
+) -> ChatProvider:
+    """Say who answers a chat: the provider of the station its starter holds it in.
+
+    Each person's station names its own provider, and the chat's queue has one
+    drainer, so the starter's station decides; a chat no station of its starter
+    holds is the assistant's.
+
+    Args:
+      conn: A database connection.
+      assistant: The configured assistant, if any.
+      conversation_id: The chat.
+
+    Returns:
+      provider: The starter's station's, else ``assistant``.
+
+    """
+    starter = await read_starter(
+        conn,
+        assistant=assistant,
+        conversation_id=conversation_id,
+    )
+    if starter is None:
+        return "assistant"
+    stored = await conn.fetchval(
+        "SELECT station.state FROM visual_workspaces AS station "
+        "JOIN users AS member ON member.id = station.user_id "
+        "WHERE station.station ->> 'conversation_id' = $1 "
+        "AND lower(member.email) = lower($2)",
+        str(conversation_id),
+        starter,
+    )
+    if stored is None:
+        return "assistant"
+    return WorkspaceData.model_validate(stored).provider
 
 
 async def open_latest_workspace(
@@ -484,7 +644,10 @@ async def open_latest_workspace(
                     conn,
                     user_id=user_id,
                     name=next_station_name(from_plain(r["name"], str) for r in names),
-                    data=initial_data(catalog),
+                    data=initial_data(
+                        catalog,
+                        provider=await _preferred_provider(conn, user_id=user_id),
+                    ),
                     workstream_id=workstream_id,
                 )
                 row = await conn.fetchrow(latest, user_id)
@@ -507,6 +670,7 @@ async def new_workspace(
     inbound: InboundQueue,
     assistant: Assistant | None,
     workstream_id: uuid.UUID | None = None,
+    provider: ChatProvider | None = None,
 ) -> WorkspaceState:
     """Create a station named with the lowest free ``unnamed-workstream#N``.
 
@@ -517,6 +681,7 @@ async def new_workspace(
       inbound: In-process poller leases.
       assistant: The configured assistant, if any.
       workstream_id: Workstream assigned to the new station, if set.
+      provider: Who answers its Chat; None for the owner's ``chat_provider``.
 
     Returns:
       state: The new station, with its partner.
@@ -526,7 +691,10 @@ async def new_workspace(
         row = await _new_station(
             conn,
             user_id=user_id,
-            data=initial_data(catalog),
+            data=initial_data(
+                catalog,
+                provider=provider or await _preferred_provider(conn, user_id=user_id),
+            ),
             workstream_id=workstream_id,
         )
         if row is None:
@@ -575,7 +743,10 @@ async def new_session_station(
                 name,
                 names=(from_plain(each["name"], str) for each in names),
             ),
-            data=initial_data(catalog),
+            data=initial_data(
+                catalog,
+                provider=await _preferred_provider(conn, user_id=user_id),
+            ),
             workstream_id=workstream_id,
             session_id=session_id,
         )
@@ -694,10 +865,19 @@ async def workspace_for_chat(
             conversation_id=conversation_id,
         )
         if row is None:
+            # The chat's, not the opener's preference: its queue has one drainer, and
+            # only its starter's run may attach to it.
             row = await _new_station(
                 conn,
                 user_id=user_id,
-                data=initial_data(catalog),
+                data=initial_data(
+                    catalog,
+                    provider=await read_chat_provider(
+                        conn,
+                        assistant=assistant,
+                        conversation_id=conversation_id,
+                    ),
+                ),
                 conversation_id=conversation_id,
                 workstream_id=workstream_id,
             )
@@ -1311,6 +1491,7 @@ async def settings_refs_for_chat(
             email=email,
         )
     return WorkspaceSettingsRefs(
+        station_id=station_id,
         workstream_issue_id=workstream_id,
         session_id=session_id,
         personal_artifact_id=await open_personal_settings(store, email=email),
@@ -1520,6 +1701,10 @@ async def apply_workspace_operation(
       applied: The updated or replayed state with its partner, or None when the
         principal may not see the canvas.
 
+    Raises:
+      ProviderUnavailableError: A ``provider`` operation chose a provider the owner
+        cannot run now; the message says why.
+
     """
     canonical = json.dumps(
         body.model_dump(mode="json", exclude_unset=True),
@@ -1556,8 +1741,8 @@ async def apply_workspace_operation(
         if receipt is not None:
             if receipt["request_hash"] != request_hash:
                 raise ReplayConflictError(await with_partner(state=current))
-            # The receipt keeps the choice it was applied under; the partner is
-            # computed from the choice now.
+            # The receipt keeps the provider it was applied under; the partner is
+            # computed from the provider now.
             replay = (
                 current
                 if isinstance(
@@ -1576,7 +1761,7 @@ async def apply_workspace_operation(
                         "workstream_id": current.workstream_id,
                         "session_id": current.session_id,
                     },
-                ).model_copy(update={"partner_choice": current.partner_choice})
+                ).model_copy(update={"provider": current.provider})
             )
             return AppliedOperation(
                 state=await with_partner(state=replay),
@@ -1630,8 +1815,12 @@ async def apply_workspace_operation(
                 preferences=preferences,
                 restored_page=shown is not current,
             )
-        if isinstance(body.operation, ChoosePartner) and agent_api_key_id is not None:
-            raise ValueError("Only the canvas's owner chooses its Chat partner.")
+        if isinstance(body.operation, ChooseProvider):
+            if agent_api_key_id is not None:
+                raise ValueError("Only the canvas's owner chooses its Chat provider.")
+            _, reasons = await provider_availability(conn, owner_id=owner_id)
+            if reason := reasons.of(body.operation.provider):
+                raise ProviderUnavailableError(reason)
         drawing = isinstance(body.operation, AddMark | RemoveMark | ClearMarks)
         if body.revision != current.revision and not drawing:
             raise RevisionConflictError(await with_partner(state=current))
@@ -1717,10 +1906,703 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
         focused_instance=data.focused_instance,
         agent_instructions=data.agent_instructions,
         continuation_record_id=data.continuation_record_id,
-        partner_choice=data.partner_choice,
+        provider=data.provider,
         marks=data.marks,
         marks_seq=data.marks_seq,
         marks_sent=data.marks_sent,
+    )
+
+
+# The chat's queue has one drainer, its starter's station's provider, as the drain route
+# enforces: a sharer's post by their own station's provider would queue where that
+# provider does not drain. A new chat, and the starter's own post, go by the station.
+async def chat_answerer(
+    conn: Conn,
+    *,
+    state: WorkspaceState,
+    conversation_id: uuid.UUID,
+    poster: str,
+    assistant: Assistant | None,
+) -> ChatProvider:
+    """Say which provider answers a post into a chat from a station.
+
+    The poster's own station decides in a chat they started; in one someone else
+    started, the starter's station does (:func:`read_chat_provider`), since the
+    chat's queue has one drainer.
+
+    Args:
+      conn: A database connection.
+      state: The station the post comes from.
+      conversation_id: The chat.
+      poster: The poster's attested email.
+      assistant: The configured assistant, if any.
+
+    Returns:
+      provider: The provider whose queue the post joins.
+
+    """
+    starter = await read_starter(
+        conn,
+        assistant=assistant,
+        conversation_id=conversation_id,
+    )
+    if starter is None or starter.lower() == poster.lower():
+        return state.provider
+    return await read_chat_provider(
+        conn,
+        assistant=assistant,
+        conversation_id=conversation_id,
+    )
+
+
+# Both are None for a fork of a CLI station: its conversation is new, so its session is
+# opened only once its station is made.
+async def _post_target(
+    conn: Conn,
+    *,
+    body: ChatSend,
+    provider: ChatProvider,
+    conversation_id: uuid.UUID,
+    poster: str,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    """Return the queue a post joins and the chat's session it names, if either is known."""
+    if provider != "assistant":
+        # A permission answer runs a tool on the run's machine, and a trust answer
+        # trusts a folder there for good, so only the run's owner gives either; a
+        # sharer reads and posts but never answers. A chat no session carries has no
+        # run and no prompt: ``chat_line_target`` refuses it as offline.
+        starter = (
+            await read_starter(
+                conn,
+                assistant=assistant,
+                conversation_id=conversation_id,
+            )
+            if body.kind == "answer"
+            else None
+        )
+        if starter is not None and starter.lower() != poster.lower():
+            raise AnswerNotOwnerError(
+                f"Only {starter} can answer prompts from their machine.",
+            )
+        if body.fork is not None:
+            return None, None
+        chat = await chat_line_target(
+            conn,
+            inbound=inbound,
+            assistant=assistant,
+            provider=provider,
+            conversation_id=conversation_id,
+        )
+        return chat, chat
+    if body.kind != "line":
+        raise ValueError(f"The assistant takes a person's line, not a {body.kind}")
+    partner = await shared_partner(conn, inbound=inbound, assistant=assistant)
+    if partner is None or partner.session_id is None or partner.status != "live":
+        raise WorkspaceSessionUnavailableError("The assistant is not running")
+    chat = await chat_line_target(
+        conn,
+        inbound=inbound,
+        assistant=assistant,
+        provider=provider,
+        conversation_id=conversation_id,
+    )
+    return chat or partner.session_id, chat
+
+
+async def _line_context(
+    conn: Conn,
+    *,
+    body: ChatSend,
+    state: WorkspaceState,
+    station_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    reader: SessionReader,
+) -> WorkspaceMessageContext:
+    """Describe what the poster saw as they sent a line: page, trail and new marks."""
+    screen = await read_screen(
+        conn,
+        page=body.page,
+        trail=body.trail,
+        visuals=state.visuals,
+    )
+    unsent = [m for m in state.marks if m.seq > state.marks_sent][-_MARKS_PER_LINE:]
+    return WorkspaceMessageContext(
+        workspace_id=station_id,
+        visible_visuals=screen.visuals,
+        agent_instructions=state.agent_instructions,
+        continuation_record_id=state.continuation_record_id,
+        conversation_id=conversation_id,
+        fork=body.fork,
+        page=screen.page,
+        trail=screen.trail,
+        marks=wire_marks(
+            unsent,
+            records=await read_covered_records(conn, marks=unsent, reader=reader),
+            visuals=screen.visuals,
+        ),
+    )
+
+
+# The session is opened under a key of the owner's because a science chat's starter is
+# the account whose key opened its first session (``chat_beginnings_sql``): a session
+# with no key would leave the chat without a starter, so no run of theirs could attach.
+# A browser has no key, so the owner's newest live one stands in.
+async def _open_chat_session(
+    conn: Conn,
+    *,
+    store: Store,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    provider: ChatProvider,
+    assistant: Assistant | None,
+) -> uuid.UUID | None:
+    """Return the chat's first session, opening one for its owner when it has none."""
+    began = await read_first_session(
+        conn,
+        assistant=assistant,
+        conversation_id=conversation_id,
+    )
+    if began is not None:
+        return began
+    opener = await _owner_key(conn, user_id=user_id)
+    if opener is None:
+        return None
+    email = from_plain(opener["email"], str)
+    return await store.submit_agentsession(
+        SubmitAgentSession(
+            title=CHAT_TITLE,
+            owner=chat_actor(conversation_id),
+            account=email,
+            cli=provider,
+            cli_session_id=chat_session_id(conversation_id),
+            labels=[SCIENCE_CHAT_LABEL],
+        ),
+        audience=OPEN,
+        api_key_id=from_plain(opener["key"], uuid.UUID),
+        actor=email,
+        conn=conn,
+    )
+
+
+async def _owner_key(conn: Conn, *, user_id: uuid.UUID) -> Record | None:
+    """Return the email and newest live key (``key``) of ``user_id``, if they have one."""
+    return await conn.fetchrow(
+        "SELECT member.email, credential.id AS key FROM users AS member "
+        "JOIN api_keys AS credential ON credential.user_id = member.id "
+        "WHERE member.id = $1 AND credential.revoked_at IS NULL "
+        "ORDER BY credential.created_at DESC, credential.id DESC LIMIT 1",
+        user_id,
+    )
+
+
+async def _preferred_provider(conn: Conn, *, user_id: uuid.UUID) -> ChatProvider:
+    """Return the provider ``user_id`` starts a new chat on."""
+    return stored_preferences(
+        await conn.fetchval("SELECT preferences FROM users WHERE id = $1", user_id),
+    ).chat_provider
+
+
+async def _bind_chat(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    state: WorkspaceState,
+    conversation_id: uuid.UUID,
+) -> uuid.UUID:
+    """Give a station without a chat the conversation of its first line."""
+    if state.conversation_id == conversation_id:
+        return state.id
+    if state.conversation_id is not None:
+        raise StationChatError("This station's chat is another conversation")
+    if await _station_of_chat(conn, user_id=user_id, conversation_id=conversation_id):
+        raise StationChatError("Another station of yours holds this chat")
+    await conn.execute(
+        "UPDATE visual_workspaces SET station = coalesce(station, '{}') || "
+        "jsonb_build_object('conversation_id', $2::text), "
+        "modified_at = clock_timestamp() WHERE id = $1",
+        state.id,
+        str(conversation_id),
+    )
+    return state.id
+
+
+# The new station copies the source's state and page; a retry of the fork finds the
+# station the first try made.
+async def _fork_station(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    source: Record,
+    conversation_id: uuid.UUID,
+) -> uuid.UUID:
+    """Return the station of a fork's conversation, making it from its source once."""
+    made = await _station_of_chat(
+        conn,
+        user_id=user_id,
+        conversation_id=conversation_id,
+    )
+    if made is None:
+        source_state = state_from_row(cast("Mapping[str, object]", source))
+        row = await _new_station(
+            conn,
+            user_id=user_id,
+            data=WorkspaceData.model_validate(source["state"]),
+            conversation_id=conversation_id,
+            page=source_state.page,
+            layout=source_state.layout,
+            workstream_id=source_state.workstream_id,
+        )
+        made = (
+            await _station_of_chat(
+                conn,
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
+            if row is None
+            else cast(uuid.UUID, row["id"])
+        )
+    if made is None:
+        raise RuntimeError("fork station insert was not visible")
+    return made
+
+
+# The session is opened under the key that writes the fork's next part, which must find
+# it. A CLI run of the forker's attaches to it by its id. The assistant resumes a chat's
+# session by its ``chat:`` id, which matches only a session its own key opened: under
+# the forker's key it would open a second session, which would then be the chat's head
+# and hold none of the copies. The edge is added under the same key, since only an edge
+# its session's opener added counts as a fork (``science_chats._FORK_EDGES``). The
+# copied parts are the forker's, whichever key opened the session.
+async def _seed_fork(
+    conn: Conn,
+    *,
+    store: Store,
+    user_id: uuid.UUID,
+    forker: str,
+    conversation_id: uuid.UUID,
+    fork: ChatForkAt,
+    provider: ChatProvider,
+    service: uuid.UUID | None,
+    assistant: Assistant | None,
+) -> uuid.UUID | None:
+    """Return a fork's session, opening it once with the original's records copied."""
+    began = await read_first_session(
+        conn,
+        assistant=assistant,
+        conversation_id=conversation_id,
+    )
+    if began is not None:
+        return began
+    own = await _owner_key(conn, user_id=user_id)
+    own_key = None if own is None else from_plain(own["key"], uuid.UUID)
+    if provider == "assistant":
+        opener = from_plain(
+            await conn.fetchval(
+                "SELECT agentsession_opened_by_api_key_id FROM inquiries WHERE id = $1",
+                service,
+            ),
+            uuid.UUID,
+            default=None,
+        )
+    elif own_key is None:
+        return None
+    else:
+        opener = own_key
+    session = await store.submit_agentsession(
+        SubmitAgentSession(
+            title=CHAT_TITLE,
+            owner=chat_actor(conversation_id),
+            account=forker,
+            cli="sagent" if provider == "assistant" else provider,
+            cli_session_id=chat_session_id(conversation_id),
+            labels=[SCIENCE_CHAT_LABEL],
+        ),
+        audience=OPEN,
+        api_key_id=opener,
+        actor=forker,
+        conn=conn,
+    )
+    await store.copy_session_parts(
+        conn,
+        source=fork.session_id,
+        target=session,
+        prefixes=await read_fork_prefixes(conn, fork=fork),
+        api_key_id=own_key,
+    )
+    _ = await store.add_edge(
+        from_id=session,
+        to_id=fork.session_id,
+        edge_kind="produced_by",
+        note=f"Forked after record {fork.idx} of part {fork.part}",
+        labels=[FORK_EDGE_LABEL, fork_point_label(part=fork.part, idx=fork.idx)],
+        api_key_id=opener,
+        actor=forker,
+        conn=conn,
+    )
+    return session
+
+
+async def _station_of_chat(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """Return the user's station that holds a conversation, if they have one."""
+    return cast(
+        uuid.UUID | None,
+        await conn.fetchval(
+            "SELECT id FROM visual_workspaces "
+            "WHERE user_id = $1 AND station->>'conversation_id' = $2",
+            user_id,
+            str(conversation_id),
+        ),
+    )
+
+
+async def _chat_station_row(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+) -> Record | None:
+    """Return the row of the user's station that holds a conversation, if any."""
+    return await conn.fetchrow(
+        vetted_sql(
+            _SELECT_STATION,
+            "WHERE user_id = $1 AND station->>'conversation_id' = $2",
+        ),
+        user_id,
+        str(conversation_id),
+    )
+
+
+async def _remember(
+    conn: Conn,
+    *,
+    workspace_id: uuid.UUID,
+    key: uuid.UUID,
+    request_hash: str,
+    response: Mapping[str, object],
+) -> None:
+    """Record an applied operation's result, so a retry replays it."""
+    await conn.execute(
+        "INSERT INTO visual_workspace_operations "
+        "(workspace_id, key, request_hash, response) VALUES ($1, $2, $3, $4)",
+        workspace_id,
+        key,
+        request_hash,
+        response,
+    )
+
+
+async def _check_record(
+    conn: Conn,
+    *,
+    operation: ShowVisual,
+    catalog: VisualCatalogBody,
+) -> None:
+    """Refuse a show whose record its visual cannot draw, or has no content."""
+    descriptor = next(
+        (v for v in catalog.visuals if v.type == operation.visual_type),
+        None,
+    )
+    if descriptor is None or operation.record_id is None:
+        return
+    kind = None
+    if descriptor.record_kinds is not None:
+        kind = from_plain(
+            await conn.fetchval(
+                "SELECT kind FROM inquiries WHERE id = $1",
+                operation.record_id,
+            ),
+            str,
+            default=None,
+        )
+    if reason := refuse_record(operation, descriptor=descriptor, kind=kind) or "":
+        raise ValueError(reason)
+    if operation.visual_type == "trax.artifact" and (
+        await conn.fetchval(
+            "SELECT 1 FROM visual_report_revisions WHERE artifact_id = $1",
+            operation.record_id,
+        )
+        is None
+    ):
+        raise ValueError("Artifact content not found.")
+
+
+# A browser sees only its own stations. An agent key may use a station only as its Chat
+# partner: the key opened the partner's live session and the live science chat the
+# station holds, in which the station's owner is the account or a poster. A station
+# without a chat has no partner to be, so it refuses every agent key. That partner is
+# the shared assistant whatever the station's provider: a claude or codex run on the
+# chat is reached through Chat, not given the canvas. The owner's own key is refused by
+# name, so a terminal `trax workspace` learns why. Any other is told nothing.
+async def _workspace_for_principal(
+    conn: Conn,
+    *,
+    workspace_id: uuid.UUID,
+    user_id: uuid.UUID,
+    agent_api_key_id: uuid.UUID | None,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+    for_update: bool = False,
+) -> tuple[WorkspaceState, uuid.UUID] | None:
+    """Find a canvas the principal may read and operate, with its owner."""
+    row = await conn.fetchrow(
+        vetted_sql(
+            "SELECT user_id, ",
+            _STATION,
+            " FROM visual_workspaces WHERE id = $1 AND ($3::boolean OR user_id = $2)",
+            " FOR UPDATE" if for_update else "",
+        ),
+        workspace_id,
+        user_id,
+        agent_api_key_id is not None,
+    )
+    if row is None:
+        return None
+    owner_id = cast(uuid.UUID, row["user_id"])
+    state = state_from_row(cast("Mapping[str, object]", row))
+    if agent_api_key_id is None:
+        return state, owner_id
+    partner = await shared_partner(conn, inbound=inbound, assistant=assistant)
+    if await assistant_key_may_use(
+        conn,
+        owner_id=owner_id,
+        partner=partner,
+        conversation_id=state.conversation_id,
+        api_key_id=agent_api_key_id,
+    ) or await station_session_key_may_use(
+        conn,
+        owner_id=owner_id,
+        workspace_id=workspace_id,
+        api_key_id=agent_api_key_id,
+    ):
+        return state, owner_id
+    if owner_id == user_id:
+        raise WorkspaceKeyRefusedError(
+            "Only the canvas's Chat partner may use it with an API key",
+        )
+    return None
+
+
+# The starter asked about is the conversation the line will be queued for, which the
+# idempotency key can name as well as the body can.
+async def _check_fork_or_membership(
+    conn: Conn,
+    *,
+    body: ChatSend,
+    conversation_id: uuid.UUID,
+    email: str,
+    assistant: Assistant | None,
+    inbound: InboundQueue,
+    reader: SessionReader,
+    members: SessionReader | None,
+) -> None:
+    """Refuse a deleted chat, a fork of no line or a closed chat, a post unread."""
+    await refuse_a_deleted_chat(
+        conn,
+        conversation_id=conversation_id,
+        forked_from=None
+        if body.fork is None
+        else await conversation_of_session(conn, session_id=body.fork.session_id),
+    )
+    if body.fork is not None and not await science_chat_exists_at(
+        conn,
+        assistant=assistant,
+        email=email,
+        fork=body.fork,
+        reader=reader,
+    ):
+        if await session_was_purged(conn, session_id=body.fork.session_id):
+            raise ChatDeletedError("The chat this line was in was deleted")
+        raise ValueError("The fork point is not a line of a science chat")
+    if body.fork is not None and await conn.fetchval(
+        "SELECT agentsession_audience <> $2 FROM inquiries WHERE id = $1",
+        body.fork.session_id,
+        OPEN,
+    ):
+        raise ChatClosedError("chat_fork_closed")
+    if (
+        body.fork is not None
+        and members is not None
+        and not await reads_session(
+            conn,
+            reader=members,
+            session_id=body.fork.session_id,
+        )
+    ):
+        raise ChatClosedError("chat_fork_wider")
+    if body.fork is None:
+        if not await may_post(
+            conn,
+            poster=email,
+            reader=reader,
+            conversation_id=conversation_id,
+            assistant=assistant,
+            inbound=inbound,
+        ):
+            raise ForeignChatError(
+                "This chat is not shared with you; fork it to continue",
+            )
+        return
+    starter = await read_line_starter(
+        conn,
+        assistant=assistant,
+        conversation_id=conversation_id,
+        inbound=inbound,
+    )
+    if starter is not None and starter.lower() != email.lower():
+        raise ConversationTakenError(
+            "This conversation already exists; fork under a new key",
+        )
+
+
+def _data_of(state: WorkspaceState) -> WorkspaceData:
+    """Return the stored part of a canvas's state."""
+    return WorkspaceData(
+        visuals=state.visuals,
+        focused_instance=state.focused_instance,
+        agent_instructions=state.agent_instructions,
+        continuation_record_id=state.continuation_record_id,
+        provider=state.provider,
+        marks=state.marks,
+        marks_seq=state.marks_seq,
+        marks_sent=state.marks_sent,
+    )
+
+
+async def _with_labels(
+    conn: Conn,
+    *,
+    state: WorkspaceState,
+    reader: SessionReader,
+) -> WorkspaceState:
+    """Return ``state`` naming the records its marks cover that ``reader`` may see."""
+    records = await read_covered_records(conn, marks=state.marks, reader=reader)
+    return state.model_copy(
+        update={
+            "record_labels": {
+                id_: f"{record.kind}#{record.seq} {record.title}"
+                for id_, record in records.items()
+            },
+        },
+    )
+
+
+async def _write_data(
+    conn: Conn,
+    *,
+    current: WorkspaceState,
+    data: WorkspaceData,
+) -> WorkspaceState:
+    """Store ``data`` as the canvas's next revision and return the new state."""
+    updated = WorkspaceState(
+        id=current.id,
+        revision=current.revision + 1,
+        name=current.name,
+        conversation_id=current.conversation_id,
+        page=current.page,
+        layout=current.layout,
+        hidden=current.hidden,
+        pinned=current.pinned,
+        workstream_id=current.workstream_id,
+        suggestion=current.suggestion,
+        session_id=current.session_id,
+        visuals=data.visuals,
+        focused_instance=data.focused_instance,
+        agent_instructions=data.agent_instructions,
+        continuation_record_id=data.continuation_record_id,
+        provider=data.provider,
+        marks=data.marks,
+        marks_seq=data.marks_seq,
+        marks_sent=data.marks_sent,
+    )
+    await conn.execute(
+        "UPDATE visual_workspaces SET revision = $2, state = $3, "
+        "modified_at = clock_timestamp() WHERE id = $1",
+        current.id,
+        updated.revision,
+        data.model_dump(mode="json"),
+    )
+    return updated
+
+
+def _unique_station_name(name: str, *, names: Iterable[str]) -> str:
+    """Append the first free numeric suffix when ``name`` is already used."""
+    taken = set(names)
+    if name not in taken:
+        return name
+    suffix = 2
+    candidate = name
+    while candidate in taken:
+        suffix_text = f" ({suffix})"
+        candidate = f"{name[: 120 - len(suffix_text)].rstrip()}{suffix_text}"
+        suffix += 1
+    return candidate
+
+
+async def _seed_legacy_campaign(
+    store: Store,
+    *,
+    session_id: uuid.UUID,
+    email: str,
+    campaign: dict[str, object],
+) -> bool:
+    """Move a legacy station campaign to the session if it has no value yet."""
+    for _ in range(4):
+        async with store.engine.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT app FROM inquiries WHERE id = $1 AND kind = 'AgentSession'",
+                session_id,
+            )
+        if row is None:
+            return False
+        current = from_plain(row["app"], dict[str, object], default=None)
+        updated = {} if current is None else dict(current)
+        settings = from_plain(updated.get("settings"), dict[str, object], default={})
+        if "campaign" in settings:
+            return True
+        settings["campaign"] = campaign
+        updated["settings"] = settings
+        try:
+            await store.transition_app(
+                session_id,
+                expected_from=current,
+                to=updated,
+                actor=email,
+                reason="Move legacy station campaign to its chat session.",
+            )
+        except ConflictError:
+            continue
+        return True
+    return False
+
+
+async def _make_settings_artifact(
+    store: Store,
+    *,
+    conn: Conn,
+    owner: str,
+    title: str,
+    description: str,
+    app: dict[str, object] | None,
+) -> uuid.UUID:
+    """Create an owner-pinned settings Artifact inside ``conn``."""
+    return await store.submit_artifact(
+        SubmitArtifact(
+            title=title,
+            description=description,
+            owner=owner,
+            account=owner,
+            labels=[PERSONAL_SETTINGS_LABEL],
+            app=app,
+        ),
+        actor=owner,
+        conn=conn,
     )
 
 
@@ -1821,436 +2703,4 @@ async def _with_partner(
         owner_id=user_id,
         inbound=inbound,
         assistant=assistant,
-    )
-
-
-async def _bind_chat(
-    conn: Conn,
-    *,
-    user_id: uuid.UUID,
-    state: WorkspaceState,
-    conversation_id: uuid.UUID,
-) -> uuid.UUID:
-    """Give a station without a chat the conversation of its first line."""
-    if state.conversation_id == conversation_id:
-        return state.id
-    if state.conversation_id is not None:
-        raise StationChatError("This station's chat is another conversation")
-    if await _station_of_chat(conn, user_id=user_id, conversation_id=conversation_id):
-        raise StationChatError("Another station of yours holds this chat")
-    await conn.execute(
-        "UPDATE visual_workspaces SET station = coalesce(station, '{}') || "
-        "jsonb_build_object('conversation_id', $2::text), "
-        "modified_at = clock_timestamp() WHERE id = $1",
-        state.id,
-        str(conversation_id),
-    )
-    return state.id
-
-
-# The new station copies the source's state and page; a retry of the fork finds the
-# station the first try made.
-async def _fork_station(
-    conn: Conn,
-    *,
-    user_id: uuid.UUID,
-    source: Record,
-    conversation_id: uuid.UUID,
-) -> uuid.UUID:
-    """Return the station of a fork's conversation, making it from its source once."""
-    made = await _station_of_chat(
-        conn,
-        user_id=user_id,
-        conversation_id=conversation_id,
-    )
-    if made is None:
-        source_state = state_from_row(cast("Mapping[str, object]", source))
-        row = await _new_station(
-            conn,
-            user_id=user_id,
-            data=WorkspaceData.model_validate(source["state"]),
-            conversation_id=conversation_id,
-            page=source_state.page,
-            layout=source_state.layout,
-            workstream_id=source_state.workstream_id,
-        )
-        made = (
-            await _station_of_chat(
-                conn,
-                user_id=user_id,
-                conversation_id=conversation_id,
-            )
-            if row is None
-            else cast(uuid.UUID, row["id"])
-        )
-    if made is None:
-        raise RuntimeError("fork station insert was not visible")
-    return made
-
-
-async def _station_of_chat(
-    conn: Conn,
-    *,
-    user_id: uuid.UUID,
-    conversation_id: uuid.UUID,
-) -> uuid.UUID | None:
-    """Return the user's station that holds a conversation, if they have one."""
-    return cast(
-        uuid.UUID | None,
-        await conn.fetchval(
-            "SELECT id FROM visual_workspaces "
-            "WHERE user_id = $1 AND station->>'conversation_id' = $2",
-            user_id,
-            str(conversation_id),
-        ),
-    )
-
-
-async def _chat_station_row(
-    conn: Conn,
-    *,
-    user_id: uuid.UUID,
-    conversation_id: uuid.UUID,
-) -> Record | None:
-    """Return the row of the user's station that holds a conversation, if any."""
-    return await conn.fetchrow(
-        vetted_sql(
-            _SELECT_STATION,
-            "WHERE user_id = $1 AND station->>'conversation_id' = $2",
-        ),
-        user_id,
-        str(conversation_id),
-    )
-
-
-async def _remember(
-    conn: Conn,
-    *,
-    workspace_id: uuid.UUID,
-    key: uuid.UUID,
-    request_hash: str,
-    response: Mapping[str, object],
-) -> None:
-    """Record an applied operation's result, so a retry replays it."""
-    await conn.execute(
-        "INSERT INTO visual_workspace_operations "
-        "(workspace_id, key, request_hash, response) VALUES ($1, $2, $3, $4)",
-        workspace_id,
-        key,
-        request_hash,
-        response,
-    )
-
-
-async def _check_record(
-    conn: Conn,
-    *,
-    operation: ShowVisual,
-    catalog: VisualCatalogBody,
-) -> None:
-    """Refuse a show whose record its visual cannot draw, or has no content."""
-    descriptor = next(
-        (v for v in catalog.visuals if v.type == operation.visual_type),
-        None,
-    )
-    if descriptor is None or operation.record_id is None:
-        return
-    kind = None
-    if descriptor.record_kinds is not None:
-        kind = from_plain(
-            await conn.fetchval(
-                "SELECT kind FROM inquiries WHERE id = $1",
-                operation.record_id,
-            ),
-            str,
-            default=None,
-        )
-    if reason := refuse_record(operation, descriptor=descriptor, kind=kind) or "":
-        raise ValueError(reason)
-    if operation.visual_type == "trax.artifact" and (
-        await conn.fetchval(
-            "SELECT 1 FROM visual_report_revisions WHERE artifact_id = $1",
-            operation.record_id,
-        )
-        is None
-    ):
-        raise ValueError("Artifact content not found.")
-
-
-# A browser sees only its own stations. An agent key may use a station only as its Chat
-# partner: the key opened the partner's live session and the live science chat the
-# station holds, in which the station's owner is the account or a poster. A station
-# without a chat has no partner to be, so it refuses every agent key. With a local
-# partner that is the owner's own key; with the shared assistant, the owner's own key
-# is refused by name, so a terminal `trax workspace` learns why. Any other is told
-# nothing.
-async def _workspace_for_principal(
-    conn: Conn,
-    *,
-    workspace_id: uuid.UUID,
-    user_id: uuid.UUID,
-    agent_api_key_id: uuid.UUID | None,
-    inbound: InboundQueue,
-    assistant: Assistant | None,
-    for_update: bool = False,
-) -> tuple[WorkspaceState, uuid.UUID] | None:
-    """Find a canvas the principal may read and operate, with its owner."""
-    row = await conn.fetchrow(
-        vetted_sql(
-            "SELECT user_id, ",
-            _STATION,
-            " FROM visual_workspaces WHERE id = $1 AND ($3::boolean OR user_id = $2)",
-            " FOR UPDATE" if for_update else "",
-        ),
-        workspace_id,
-        user_id,
-        agent_api_key_id is not None,
-    )
-    if row is None:
-        return None
-    owner_id = cast(uuid.UUID, row["user_id"])
-    state = state_from_row(cast("Mapping[str, object]", row))
-    if agent_api_key_id is None:
-        return state, owner_id
-    partner = await resolve_partner(
-        conn,
-        inbound=inbound,
-        assistant=assistant,
-        choice=state.partner_choice,
-        owner_id=owner_id,
-    )
-    if await assistant_key_may_use(
-        conn,
-        owner_id=owner_id,
-        partner=partner,
-        conversation_id=state.conversation_id,
-        api_key_id=agent_api_key_id,
-    ) or await station_session_key_may_use(
-        conn,
-        owner_id=owner_id,
-        workspace_id=workspace_id,
-        api_key_id=agent_api_key_id,
-    ):
-        return state, owner_id
-    if owner_id == user_id:
-        raise WorkspaceKeyRefusedError(
-            "Only the canvas's Chat partner may use it with an API key",
-        )
-    return None
-
-
-# The starter asked about is the conversation the line will be queued for, which the
-# idempotency key can name as well as the body can.
-async def _check_fork_or_membership(
-    conn: Conn,
-    *,
-    body: ChatSend,
-    conversation_id: uuid.UUID,
-    email: str,
-    assistant: Assistant | None,
-    inbound: InboundQueue,
-    reader: SessionReader,
-    members: SessionReader | None,
-) -> None:
-    """Refuse a deleted chat, a fork of no line or a closed chat, a post unread."""
-    await refuse_a_deleted_chat(
-        conn,
-        conversation_id=conversation_id,
-        forked_from=None
-        if body.fork is None
-        else await conversation_of_session(conn, session_id=body.fork.session_id),
-    )
-    if body.fork is not None and not await science_chat_exists_at(
-        conn,
-        assistant=assistant,
-        email=email,
-        fork=body.fork,
-        reader=reader,
-    ):
-        if await session_was_purged(conn, session_id=body.fork.session_id):
-            raise ChatDeletedError("The chat this line was in was deleted")
-        raise ValueError("The fork point is not a line of a science chat")
-    if body.fork is not None and await conn.fetchval(
-        "SELECT agentsession_audience <> $2 FROM inquiries WHERE id = $1",
-        body.fork.session_id,
-        OPEN,
-    ):
-        raise ChatClosedError("chat_fork_closed")
-    if (
-        body.fork is not None
-        and members is not None
-        and not await reads_session(
-            conn,
-            reader=members,
-            session_id=body.fork.session_id,
-        )
-    ):
-        raise ChatClosedError("chat_fork_wider")
-    if body.fork is None:
-        if not await may_post(
-            conn,
-            poster=email,
-            reader=reader,
-            conversation_id=conversation_id,
-            assistant=assistant,
-            inbound=inbound,
-        ):
-            raise ForeignChatError(
-                "This chat is not shared with you; fork it to continue",
-            )
-        return
-    starter = await read_line_starter(
-        conn,
-        assistant=assistant,
-        conversation_id=conversation_id,
-        inbound=inbound,
-    )
-    if starter is not None and starter.lower() != email.lower():
-        raise ConversationTakenError(
-            "This conversation already exists; fork under a new key",
-        )
-
-
-def _data_of(state: WorkspaceState) -> WorkspaceData:
-    """Return the stored part of a canvas's state."""
-    return WorkspaceData(
-        visuals=state.visuals,
-        focused_instance=state.focused_instance,
-        agent_instructions=state.agent_instructions,
-        continuation_record_id=state.continuation_record_id,
-        partner_choice=state.partner_choice,
-        marks=state.marks,
-        marks_seq=state.marks_seq,
-        marks_sent=state.marks_sent,
-    )
-
-
-async def _with_labels(
-    conn: Conn,
-    *,
-    state: WorkspaceState,
-    reader: SessionReader,
-) -> WorkspaceState:
-    """Return ``state`` naming the records its marks cover that ``reader`` may see."""
-    records = await read_covered_records(conn, marks=state.marks, reader=reader)
-    return state.model_copy(
-        update={
-            "record_labels": {
-                id_: f"{record.kind}#{record.seq} {record.title}"
-                for id_, record in records.items()
-            },
-        },
-    )
-
-
-async def _write_data(
-    conn: Conn,
-    *,
-    current: WorkspaceState,
-    data: WorkspaceData,
-) -> WorkspaceState:
-    """Store ``data`` as the canvas's next revision and return the new state."""
-    updated = WorkspaceState(
-        id=current.id,
-        revision=current.revision + 1,
-        name=current.name,
-        conversation_id=current.conversation_id,
-        page=current.page,
-        layout=current.layout,
-        hidden=current.hidden,
-        pinned=current.pinned,
-        workstream_id=current.workstream_id,
-        suggestion=current.suggestion,
-        session_id=current.session_id,
-        visuals=data.visuals,
-        focused_instance=data.focused_instance,
-        agent_instructions=data.agent_instructions,
-        continuation_record_id=data.continuation_record_id,
-        partner_choice=data.partner_choice,
-        marks=data.marks,
-        marks_seq=data.marks_seq,
-        marks_sent=data.marks_sent,
-    )
-    await conn.execute(
-        "UPDATE visual_workspaces SET revision = $2, state = $3, "
-        "modified_at = clock_timestamp() WHERE id = $1",
-        current.id,
-        updated.revision,
-        data.model_dump(mode="json"),
-    )
-    return updated
-
-
-def _unique_station_name(name: str, *, names: Iterable[str]) -> str:
-    """Append the first free numeric suffix when ``name`` is already used."""
-    taken = set(names)
-    if name not in taken:
-        return name
-    suffix = 2
-    candidate = name
-    while candidate in taken:
-        suffix_text = f" ({suffix})"
-        candidate = f"{name[: 120 - len(suffix_text)].rstrip()}{suffix_text}"
-        suffix += 1
-    return candidate
-
-
-async def _seed_legacy_campaign(
-    store: Store,
-    *,
-    session_id: uuid.UUID,
-    email: str,
-    campaign: dict[str, object],
-) -> bool:
-    """Move a legacy station campaign to the session if it has no value yet."""
-    for _ in range(4):
-        async with store.engine.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT app FROM inquiries WHERE id = $1 AND kind = 'AgentSession'",
-                session_id,
-            )
-        if row is None:
-            return False
-        current = from_plain(row["app"], dict[str, object], default=None)
-        updated = {} if current is None else dict(current)
-        settings = from_plain(updated.get("settings"), dict[str, object], default={})
-        if "campaign" in settings:
-            return True
-        settings["campaign"] = campaign
-        updated["settings"] = settings
-        try:
-            await store.transition_app(
-                session_id,
-                expected_from=current,
-                to=updated,
-                actor=email,
-                reason="Move legacy station campaign to its chat session.",
-            )
-        except ConflictError:
-            continue
-        return True
-    return False
-
-
-async def _make_settings_artifact(
-    store: Store,
-    *,
-    conn: Conn,
-    owner: str,
-    title: str,
-    description: str,
-    app: dict[str, object] | None,
-) -> uuid.UUID:
-    """Create an owner-pinned settings Artifact inside ``conn``."""
-    return await store.submit_artifact(
-        SubmitArtifact(
-            title=title,
-            description=description,
-            owner=owner,
-            account=owner,
-            labels=[PERSONAL_SETTINGS_LABEL],
-            app=app,
-        ),
-        actor=owner,
-        conn=conn,
     )

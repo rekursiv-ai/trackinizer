@@ -1,23 +1,32 @@
-"""Who a canvas's Chat talks to: the shared assistant, or its owner's own helper.
+"""Who a canvas's Chat talks to: the shared assistant, or the owner's claude or codex.
 
-The assistant is configured by actor and account, and a session is its own only
-when both match: an actor handle is first come, first served, so a name alone
-proves nothing. A local helper is the owner's own: a session that a key of the
-canvas's owner opened. Every function here runs on the caller's connection, and takes a
-share lock on the session it names, so a canvas transaction holds the partner
-stable until it commits.
+The station's provider says which. The assistant is configured by actor and account,
+and a session is its own only when both match: an actor handle is first come, first
+served, so a name alone proves nothing. A CLI's partner is the chat's own session,
+while a run drains it. Every function here runs on the caller's connection, and the
+assistant's reads take a share lock on the session they name, so a canvas transaction
+holds the partner stable until it commits.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import uuid
 
+from treekle import from_plain
+
+from trackinizer.server.inbound import PollerRun
 from trackinizer.server.preferences import ASSISTANT_KEYS, stored_preferences
-from trackinizer.server.visuals.workspaces import WorkspacePartner
+from trackinizer.server.visuals.science_chats import read_starter
+from trackinizer.server.visuals.workspaces import (
+    NO_MACHINE_REASON,
+    ProviderFlags,
+    ProviderReasons,
+    WorkspacePartner,
+)
+from trackinizer.wire.wire_machine_host import OFFLINE_AFTER_SEC
 from trackinizer.wire.wire_science_chat import (
-    CHAT_HELPER_CLI,
     CHAT_SESSION_PREFIX,
     POSTER_LABEL_PREFIX,
     SCIENCE_CHAT_LABEL,
@@ -32,10 +41,12 @@ if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn
     from trackinizer.server.config import Assistant
     from trackinizer.server.inbound import InboundQueue
-    from trackinizer.server.visuals.workspaces import (
-        PartnerChoice,
-        WorkspaceState,
-    )
+    from trackinizer.server.visuals.workspaces import WorkspaceState
+    from trackinizer.wire.wire_science_chat import ChatProvider
+
+
+_CLI_PROVIDERS: Final = ("claude", "codex")
+"""The providers that are a person's own CLI run, each a ``session_manifests.format``."""
 
 
 def is_assistant_session(
@@ -71,44 +82,170 @@ async def resolve_partner(
     *,
     inbound: InboundQueue,
     assistant: Assistant | None,
-    choice: PartnerChoice,
-    owner_id: uuid.UUID,
+    provider: ChatProvider,
+    conversation_id: uuid.UUID | None,
 ) -> WorkspacePartner | None:
-    """Name a canvas's partner: the chosen session, or say it has none.
-
-    The shared choice is the assistant's newest live session. The local choice is
-    the newest live ``trax helper`` session a key of the canvas's owner opened, so
-    another user's helper never answers this owner's Chat.
+    """Name a canvas's partner: the provider's live session, or say it has none.
 
     Args:
       conn: Connection the answer must be consistent with.
-      inbound: In-process poller leases; a session nobody polls is unavailable.
+      inbound: In-process poller leases; a session nobody polls is not live.
       assistant: The configured assistant, if any.
-      choice: The canvas's chosen partner.
-      owner_id: The canvas's owner.
+      provider: The station's provider.
+      conversation_id: The chat the station holds, if any.
 
     Returns:
-      partner: The partner, live or unavailable, or None for the shared choice
-        with no assistant configured.
+      partner: For ``assistant``, the assistant, live or unavailable, or None with
+        no assistant; for a CLI, its run on the chat, live or offline.
 
     """
-    if choice == "local":
-        rows = await _live_sessions(
-            conn,
-            inbound=inbound,
-            email=None,
-            owner_id=owner_id,
-            cli=CHAT_HELPER_CLI,
+    if provider == "assistant":
+        return await shared_partner(conn, inbound=inbound, assistant=assistant)
+    return await cli_partner(
+        conn,
+        inbound=inbound,
+        assistant=assistant,
+        provider=provider,
+        conversation_id=conversation_id,
+    )
+
+
+# Audience: gated -- only the newest part's format is read, and the session's id and
+# liveness go to a station that holds the chat, which its owner bound as a reader.
+async def cli_partner(
+    conn: Conn,
+    *,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+    provider: ChatProvider,
+    conversation_id: uuid.UUID | None,
+) -> WorkspacePartner:
+    """Name a chat's run of ``provider``: its session while a run drains it.
+
+    The chat's sessions are those under its ``chat:`` id that the assistant's key or
+    its starter's opened (:func:`~.science_chats.read_starter`); one a stranger's key
+    opened under the id is not the chat's. One is live when it is open, its opening
+    key is not revoked, a poller drains it, and its newest part is not the other
+    CLI's: a run just attached has written no part yet, and only a run the station's
+    provider allows drains it (``sessions_routes``), so the poller is that run.
+
+    Args:
+      conn: Connection the answer must be consistent with.
+      inbound: In-process poller leases; a session nobody polls is not live.
+      assistant: The configured assistant, if any.
+      provider: ``claude`` or ``codex``.
+      conversation_id: The chat the station holds; None for none yet.
+
+    Returns:
+      partner: The live session, with the machine, detached host and folder its
+        run's last drain named (:meth:`~.inbound.InboundQueue.poller_run`), or
+        ``offline`` naming the session that began the chat (None for no session
+        yet), which a run attaches to.
+
+    """
+    offline = WorkspacePartner(
+        session_id=None,
+        actor=provider,
+        cli=provider,
+        status="offline",
+        provider=provider,
+        label=f"{provider}: no run",
+    )
+    if conversation_id is None:
+        return offline
+    starter = await read_starter(
+        conn,
+        assistant=assistant,
+        conversation_id=conversation_id,
+    )
+    rows = await conn.fetch(
+        "SELECT sess.id, (sess.status = 'active' AND sess.agentsession_ended IS NULL "
+        "AND credential.revoked_at IS NULL AND sess.id = ANY($4::uuid[]) "
+        "AND (SELECT part.format FROM session_manifests AS part "
+        "WHERE part.session_id = sess.id ORDER BY part.part DESC LIMIT 1) "
+        "IS DISTINCT FROM $5) AS live "
+        "FROM inquiries AS sess JOIN api_keys AS credential "
+        "ON credential.id = sess.agentsession_opened_by_api_key_id "
+        "JOIN users AS member ON member.id = credential.user_id "
+        "WHERE sess.kind = 'AgentSession' AND sess.agentsession_cli_session_id = $1 "
+        "AND (member.email = $2 OR lower(member.email) = lower($3)) "
+        "ORDER BY sess.created, sess.id",
+        chat_session_id(conversation_id),
+        None if assistant is None else assistant.email,
+        starter or "",
+        inbound.active_poller_ids(),
+        next(other for other in _CLI_PROVIDERS if other != provider),
+    )
+    live = next((row for row in rows if from_plain(row["live"], bool)), None)
+    if live is not None:
+        session_id = from_plain(live["id"], uuid.UUID)
+        # A lease that lapsed since the query above leaves the run unnamed, not gone.
+        where = inbound.poller_run(session_id) or PollerRun()
+        return offline.model_copy(
+            update={
+                "session_id": session_id,
+                "status": "live",
+                "machine": where.machine,
+                "run_name": where.run,
+                "cwd": where.cwd,
+                "label": provider
+                if where.machine is None
+                else f"{provider} · {where.machine}",
+            },
         )
-        row = next(iter(rows), None)
-        return WorkspacePartner(
-            session_id=None if row is None else cast(uuid.UUID, row["id"]),
-            actor=None if row is None else cast(str, row["actor"]),
-            cli=None if row is None else cast(str | None, row["cli"]),
-            status="unavailable" if row is None else "live",
-            kind="local",
-        )
-    return await shared_partner(conn, inbound=inbound, assistant=assistant)
+    return offline.model_copy(
+        update={
+            "session_id": from_plain(rows[0]["id"], uuid.UUID) if rows else None,
+        },
+    )
+
+
+async def provider_availability(
+    conn: Conn,
+    *,
+    owner_id: uuid.UUID,
+) -> tuple[ProviderFlags, ProviderReasons]:
+    """Say which providers a station's owner may choose, and why not the others.
+
+    ``claude`` or ``codex`` is available when the owner has a confirmed machine that
+    is online, holds a credential that is not revoked, and lists the CLI in its
+    facts: what ``GET /api/terminals/machines`` offers to start a run on.
+    ``assistant`` is always available here: the credit ledger that may stop it is the
+    site's billing addon, which the browser reads.
+
+    Args:
+      conn: A database connection.
+      owner_id: The station's owner.
+
+    Returns:
+      available: Which providers they may choose.
+      reasons: Why each one they may not is unavailable.
+
+    """
+    rows = await conn.fetch(
+        "SELECT DISTINCT jsonb_array_elements_text(m.facts -> 'clis') AS cli "
+        "FROM machines AS m JOIN users AS member ON member.email = m.owner "
+        "WHERE member.id = $1 AND m.confirmed_at IS NOT NULL "
+        "AND m.host_instance IS NOT NULL "
+        "AND m.last_heartbeat > now() - make_interval(secs => $2) "
+        "AND jsonb_typeof(m.facts -> 'clis') = 'array' "
+        "AND NOT (EXISTS (SELECT 1 FROM machine_credentials AS c "
+        "WHERE c.machine_id = m.id) AND NOT EXISTS (SELECT 1 "
+        "FROM machine_credentials AS c WHERE c.machine_id = m.id "
+        "AND c.revoked_at IS NULL))",
+        owner_id,
+        OFFLINE_AFTER_SEC,
+    )
+    clis = {from_plain(row["cli"], str) for row in rows}
+    claude = "claude" in clis
+    codex = "codex" in clis
+    return (
+        ProviderFlags(claude=claude, codex=codex),
+        ProviderReasons(
+            claude="" if claude else NO_MACHINE_REASON.format(cli="claude"),
+            codex="" if codex else NO_MACHINE_REASON.format(cli="codex"),
+        ),
+    )
 
 
 async def shared_partner(
@@ -130,13 +267,7 @@ async def shared_partner(
     """
     if assistant is None:
         return None
-    rows = await _live_sessions(
-        conn,
-        inbound=inbound,
-        email=assistant.email,
-        owner_id=None,
-        cli=None,
-    )
+    rows = await _live_sessions(conn, inbound=inbound, email=assistant.email)
     row = next(
         (
             row
@@ -154,6 +285,7 @@ async def shared_partner(
         actor=assistant.actor,
         cli=None if row is None else cast(str | None, row["cli"]),
         status="unavailable" if row is None else "live",
+        label=assistant.actor,
     )
 
 
@@ -165,10 +297,10 @@ async def attach_partner(
     inbound: InboundQueue,
     assistant: Assistant | None,
 ) -> WorkspaceState:
-    """Return ``state`` with its assistant, partner and owner's preferences.
+    """Return ``state`` with its assistant, partner, providers and owner's preferences.
 
     All are computed, never stored: the canvas JSONB and its replay receipts
-    carry none. Only the choice between the partners, ``state.partner_choice``, is.
+    carry none. Only the choice of provider, ``state.provider``, is.
 
     Args:
       conn: Connection the answer must be consistent with.
@@ -178,16 +310,18 @@ async def attach_partner(
       assistant: The configured assistant, if any.
 
     Returns:
-      state: A copy carrying the assistant's name and the partner.
+      state: A copy carrying the assistant's name, the partner, and which providers
+        the owner may choose.
 
     """
     partner = await resolve_partner(
         conn,
         inbound=inbound,
         assistant=assistant,
-        choice=state.partner_choice,
-        owner_id=owner_id,
+        provider=state.provider,
+        conversation_id=state.conversation_id,
     )
+    available, reasons = await provider_availability(conn, owner_id=owner_id)
     preferences = await conn.fetchval(
         "SELECT preferences FROM users WHERE id = $1",
         owner_id,
@@ -195,6 +329,8 @@ async def attach_partner(
     return state.model_copy(
         update={
             "partner": partner,
+            "available": available,
+            "reasons": reasons,
             "assistant": None if assistant is None else assistant.actor,
             "preferences": stored_preferences(preferences).model_dump(
                 mode="json",
@@ -220,8 +356,7 @@ async def live_chat_session(
     Args:
       conn: Database connection.
       inbound: In-process poller leases; a session nobody drains is not open.
-      opener: The email of the partner's account: the assistant's. A local helper
-        drains only its service session, so none of its chats is ever open here.
+      opener: The email of the assistant's account.
       conversation_id: The conversation.
 
     Returns:
@@ -242,43 +377,6 @@ async def live_chat_session(
         inbound.active_poller_ids(),
     )
     return None if found is None else cast(uuid.UUID, found)
-
-
-async def assistant_holds_chat(
-    conn: Conn,
-    *,
-    assistant: Assistant | None,
-    conversation_id: uuid.UUID,
-) -> bool:
-    """Say whether the assistant has a session, live or closed, for a conversation.
-
-    A local helper that joined such a conversation would open a second session under
-    the same id, and the reads that name a conversation by its live session would
-    show that private one in place of the shared history.
-
-    Args:
-      conn: Database connection.
-      assistant: The configured assistant, if any.
-      conversation_id: The conversation.
-
-    Returns:
-      held: Whether the assistant's account opened a session under its id.
-
-    """
-    if assistant is None:
-        return False
-    return bool(
-        await conn.fetchval(
-            "SELECT 1 FROM inquiries AS sess JOIN api_keys AS credential "
-            "ON credential.id = sess.agentsession_opened_by_api_key_id "
-            "JOIN users AS member ON member.id = credential.user_id "
-            "WHERE sess.kind = 'AgentSession' "
-            "AND sess.agentsession_cli_session_id = $1 AND member.email = $2 "
-            "LIMIT 1",
-            chat_session_id(conversation_id),
-            assistant.email,
-        ),
-    )
 
 
 def is_chat_session(
@@ -319,8 +417,7 @@ async def assistant_key_may_use(
     The key must have opened the station's live partner session, and also the live
     science chat the station holds, in which the station's owner is the account or a
     poster. A station without a chat takes no key, and a chat the key did not open, or
-    one of another conversation, gives it nothing. With a local partner the key is the
-    owner's own, so it passes by the same rule.
+    one of another conversation, gives it nothing.
 
     Args:
       conn: Connection the answer must be consistent with.
@@ -427,15 +524,12 @@ async def opener_email(conn: Conn, *, api_key_id: uuid.UUID | None) -> str | Non
     )
 
 
-# A ``None`` filter matches every session: ``email`` is the account that owns the
-# opening key, ``owner_id`` the same account by id, ``cli`` the session's CLI.
+# ``email`` is the account that owns the opening key.
 async def _live_sessions(
     conn: Conn,
     *,
     inbound: InboundQueue,
-    email: str | None,
-    owner_id: uuid.UUID | None,
-    cli: str | None,
+    email: str,
 ) -> list[Record]:
     """Return polled, unrevoked live sessions, newest first, and share-lock them."""
     return await conn.fetch(
@@ -445,14 +539,10 @@ async def _live_sessions(
         "JOIN users AS member ON member.id = credential.user_id "
         "WHERE sess.kind = 'AgentSession' AND sess.status = 'active' "
         "AND sess.agentsession_ended IS NULL AND credential.revoked_at IS NULL "
-        "AND sess.owner IS NOT NULL AND ($1::text IS NULL OR member.email = $1) "
-        "AND ($2::uuid IS NULL OR member.id = $2) "
-        "AND ($3::text IS NULL OR sess.agentsession_cli = $3) "
-        "AND sess.id = ANY($4::uuid[]) "
+        "AND sess.owner IS NOT NULL AND member.email = $1 "
+        "AND sess.id = ANY($2::uuid[]) "
         "ORDER BY sess.created DESC, sess.id DESC "
         "FOR SHARE OF sess, credential",
         email,
-        owner_id,
-        cli,
         inbound.active_poller_ids(),
     )

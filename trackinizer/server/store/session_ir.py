@@ -22,7 +22,14 @@ from uuid import UUID
 
 import json
 
-from treekle import MutablePlainTree, PlainTree, immutable, json_loads, mutable
+from treekle import (
+    MutablePlainTree,
+    PlainTree,
+    from_plain,
+    immutable,
+    json_loads,
+    mutable,
+)
 
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.cascade import _CascadeAuditMixin
@@ -44,7 +51,24 @@ else:
     asyncpg = lazy_import("asyncpg")
 
 
-__all__ = ["RecentSessionTurn", "SessionManifest", "SlashCommandRow", "_SessionIRMixin"]
+__all__ = [
+    "PartPrefix",
+    "RecentSessionTurn",
+    "SessionManifest",
+    "SlashCommandRow",
+    "_SessionIRMixin",
+]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PartPrefix:
+    """The first records of one part of a session, which a copy of them takes."""
+
+    part: int
+    """The part's number in the session it is copied from."""
+
+    records: int
+    """How many of its first records are copied: those with ``idx`` below it."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -107,6 +131,11 @@ class SessionManifest:
     records: int
     """Live prefix bound: readers take ``idx < records``, so a file that shrank
     leaves its tail rows inert rather than deleted."""
+
+    opened_by_api_key_id: UUID | None = None
+    """The key whose first write opened this part, which alone writes a science
+    chat's part; ``None`` for a part opened before parts named their key, or
+    without auth."""
 
 
 class _SessionIRMixin(_CascadeAuditMixin):
@@ -548,6 +577,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
         ir_id: UUID,
         format: str,
         records: int,
+        api_key_id: UUID | None = None,
+        exclusive: bool = False,
     ) -> int:
         """Record what one part's file is; return its server-assigned ``part``.
 
@@ -560,7 +591,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
         Re-upserted per batch rather than written once: ``metadata`` is only
         correct for the prefix consumed -- claude's ascii-escaping majority is
         not decided until the stream ends -- and ``records`` grows with the
-        file.
+        file. The key of the first write is kept as the part's opener; a later
+        batch never changes it.
 
         Args:
           session_id: The owning AgentSession.
@@ -569,15 +601,31 @@ class _SessionIRMixin(_CascadeAuditMixin):
           ir_id: The id the capturing client minted for this file.
           format: The ``convert`` adapter that reads it, or ``""``.
           records: How many records the part currently holds.
+          api_key_id: The key writing this batch, kept as the opener of a new part.
+          exclusive: Refuse the write when another key opened the part, as a
+            science chat's part is written by its opener alone. A part with no
+            recorded opener is left to the caller's check.
 
         Returns:
           part: The part number this file resolved to.
+
+        Raises:
+          ConflictError: ``exclusive`` and another key opened the part.
 
         """
         # Serialized here, not handed over as a mapping: the column is
         # ``json`` to keep the provider's key order (see the schema), and the
         # driver's own codec would round-trip it through a dict.
         encoded = _encoded_payload(metadata)
+        # The route refuses another key's part before this runs; the guard holds the
+        # rule for a write that raced the route's read, where the update would
+        # otherwise rewrite the other key's manifest.
+        guard = (
+            " WHERE session_manifests.opened_by_api_key_id IS NULL "
+            "OR session_manifests.opened_by_api_key_id = EXCLUDED.opened_by_api_key_id"
+            if exclusive
+            else ""
+        )
         async with self.engine.acquire() as conn, tx(conn):
             found: object = await conn.fetchval(
                 "SELECT part FROM session_manifests "
@@ -597,13 +645,17 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 assert isinstance(next_part, int)
                 part = next_part
             try:
-                await conn.execute(
-                    "INSERT INTO session_manifests (session_id, part, name, "
-                    "metadata, ir_id, format, records) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7) "
-                    "ON CONFLICT (session_id, part) DO UPDATE SET "
-                    "metadata = EXCLUDED.metadata, ir_id = EXCLUDED.ir_id, "
-                    "format = EXCLUDED.format, records = EXCLUDED.records",
+                written: object = await conn.fetchval(
+                    vetted_sql(
+                        "INSERT INTO session_manifests (session_id, part, name, "
+                        "metadata, ir_id, format, records, opened_by_api_key_id) "
+                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+                        "ON CONFLICT (session_id, part) DO UPDATE SET "
+                        "metadata = EXCLUDED.metadata, ir_id = EXCLUDED.ir_id, "
+                        "format = EXCLUDED.format, records = EXCLUDED.records",
+                        guard,
+                        " RETURNING part",
+                    ),
                     session_id,
                     part,
                     name,
@@ -611,7 +663,13 @@ class _SessionIRMixin(_CascadeAuditMixin):
                     ir_id,
                     format,
                     records,
+                    api_key_id,
                 )
+                if written is None:
+                    raise ConflictError(
+                        f"part {part} of session {session_id} was opened by another "
+                        "key",
+                    )
             except asyncpg.UniqueViolationError:
                 # A concurrent append claimed this part for a different file.
                 # Its manifest is now the truth for that number, so re-read
@@ -644,35 +702,147 @@ class _SessionIRMixin(_CascadeAuditMixin):
         """
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT part, name, metadata, ir_id, format, records "
-                "FROM session_manifests WHERE session_id = $1 ORDER BY part",
+                "SELECT part, name, metadata, ir_id, format, records, "
+                "opened_by_api_key_id FROM session_manifests WHERE session_id = $1 "
+                "ORDER BY part",
                 session_id,
             )
-        result: list[SessionManifest] = []
-        for row in rows:
-            part: object = row["part"]
-            name: object = row["name"]
-            metadata: object = row["metadata"]
-            ir_id: object = row["ir_id"]
-            format_value: object = row["format"]
-            records: object = row["records"]
-            assert isinstance(part, int)
-            assert isinstance(name, str)
-            assert isinstance(metadata, str)
-            assert isinstance(ir_id, UUID)
-            assert isinstance(format_value, str)
-            assert isinstance(records, int)
-            result.append(
-                SessionManifest(
-                    part=part,
-                    name=name,
-                    metadata=_decoded_payload(metadata),
-                    ir_id=ir_id,
-                    format=format_value,
-                    records=records,
-                ),
+        return [_manifest(row) for row in rows]
+
+    # Audience: gated -- the append route calls require_session_access first, and the
+    # answer it reads is whose part a file is, before it writes one.
+    async def read_session_manifest(
+        self,
+        session_id: UUID,
+        *,
+        name: str,
+    ) -> SessionManifest | None:
+        """Read the part one file resolved to, if it has one yet.
+
+        Args:
+          session_id: The owning AgentSession.
+          name: The file's basename.
+
+        Returns:
+          manifest: That part's manifest; ``None`` for a file the session holds no
+            part for.
+
+        """
+        async with self.engine.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT part, name, metadata, ir_id, format, records, "
+                "opened_by_api_key_id FROM session_manifests "
+                "WHERE session_id = $1 AND name = $2",
+                session_id,
+                name,
             )
-        return result
+        return None if row is None else _manifest(row)
+
+    # Audience: gated -- a fork's route checks that its forker reads the source before
+    # this copies it, into a session the same transaction opened for the forker.
+    #
+    # On the caller's connection: the target was inserted in the caller's transaction,
+    # so no other connection sees it yet, and a refused line rolls the copy back with it.
+    @classmethod
+    async def copy_session_parts(
+        cls,
+        conn: Conn,
+        *,
+        source: UUID,
+        target: UUID,
+        prefixes: Sequence[PartPrefix],
+        api_key_id: UUID | None,
+    ) -> None:
+        """Copy the first records of some parts of a session into a new session.
+
+        Each prefix becomes the target's next part, numbered from 0 in the order given,
+        under the source part's file name, metadata, id and format, so a reader takes
+        the copy as it took the original. Its records keep their positions, stamps,
+        payloads, ciphertext and offloaded bodies. The target must hold no part yet:
+        one it holds collides with the copy, and the caller's transaction fails.
+
+        Args:
+          conn: The caller's connection, inside its transaction.
+          source: The session copied from.
+          target: The session copied into.
+          prefixes: The parts copied and how much of each, in the target's part order.
+          api_key_id: The key each copied part is recorded as opened by.
+
+        """
+        copied = "unnest($3::int[], $4::int[], $5::int[]) AS copied(part, records, into_part)"
+        arguments = (
+            source,
+            target,
+            [prefix.part for prefix in prefixes],
+            [prefix.records for prefix in prefixes],
+            list(range(len(prefixes))),
+        )
+        await conn.execute(
+            vetted_sql(
+                "INSERT INTO session_manifests (session_id, part, name, metadata, ",
+                "ir_id, format, records, opened_by_api_key_id) ",
+                "SELECT $2, copied.into_part, m.name, m.metadata, m.ir_id, m.format, ",
+                "copied.records, $6 FROM session_manifests AS m JOIN ",
+                copied,
+                " ON copied.part = m.part WHERE m.session_id = $1",
+            ),
+            *arguments,
+            api_key_id,
+        )
+        await conn.execute(
+            vetted_sql(
+                "INSERT INTO session_records (session_id, part, idx, kind, context_id, ",
+                "timestamp, created, model, payload, text) ",
+                "SELECT $2, copied.into_part, r.idx, r.kind, r.context_id, ",
+                "r.timestamp, r.created, r.model, r.payload, r.text ",
+                "FROM session_records AS r JOIN ",
+                copied,
+                " ON copied.part = r.part WHERE r.session_id = $1 ",
+                "AND r.idx < copied.records",
+            ),
+            *arguments,
+        )
+        await conn.execute(
+            vetted_sql(
+                "INSERT INTO session_ciphertext (session_id, part, idx, bytes) ",
+                "SELECT $2, copied.into_part, c.idx, c.bytes ",
+                "FROM session_ciphertext AS c JOIN ",
+                copied,
+                " ON copied.part = c.part WHERE c.session_id = $1 ",
+                "AND c.idx < copied.records",
+            ),
+            *arguments,
+        )
+        await conn.execute(
+            vetted_sql(
+                "INSERT INTO session_bodies (session_id, part, idx, payload_zst, ",
+                "text_zst) SELECT $2, copied.into_part, b.idx, b.payload_zst, ",
+                "b.text_zst FROM session_bodies AS b JOIN ",
+                copied,
+                " ON copied.part = b.part WHERE b.session_id = $1 ",
+                "AND b.idx < copied.records",
+            ),
+            *arguments,
+        )
+
+
+def _manifest(row: asyncpg.Record) -> SessionManifest:
+    """Build one manifest from a ``session_manifests`` row."""
+    metadata = row["metadata"]
+    assert isinstance(metadata, str)
+    return SessionManifest(
+        part=from_plain(row["part"], int),
+        name=from_plain(row["name"], str),
+        metadata=_decoded_payload(metadata),
+        ir_id=from_plain(row["ir_id"], UUID),
+        format=from_plain(row["format"], str),
+        records=from_plain(row["records"], int),
+        opened_by_api_key_id=from_plain(
+            row["opened_by_api_key_id"],
+            UUID,
+            default=None,
+        ),
+    )
 
 
 # Serialized HERE rather than handed to asyncpg as a mapping: the column is ``json``

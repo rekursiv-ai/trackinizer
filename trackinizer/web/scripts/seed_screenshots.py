@@ -44,7 +44,6 @@ from treekle import from_plain
 from trackinizer.client.client import Client
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
-    SessionRecord,
     ShellCommandResult,
     ToolCall,
     UserMessage,
@@ -250,6 +249,9 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", default="http://127.0.0.1:8812")
 
 
+type _Turn = UserMessage | AssistantMessage | ToolCall | ShellCommandResult
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Session:
     """One agent's session: who, where, the Issue it works on, and its turns."""
@@ -258,7 +260,7 @@ class _Session:
     room: str
     title: str
     produced_by: str
-    turns: tuple[SessionRecord, ...]
+    turns: tuple[_Turn, ...]
 
 
 # The console orders turns by when the server stored them, so turns appended session by
@@ -404,10 +406,10 @@ def _start(session: _Session) -> SessionStart:
     )
 
 
-def _stamp(turn: SessionRecord) -> datetime:
-    stamp = getattr(turn, "timestamp", None)
-    assert isinstance(stamp, str), f"every seeded turn is stamped: {turn}"
-    return datetime.fromisoformat(stamp)
+def _stamp(turn: _Turn) -> datetime:
+    if turn.timestamp is None:
+        raise ValueError(f"every seeded turn is stamped: {turn}")
+    return datetime.fromisoformat(turn.timestamp)
 
 
 def _nodes() -> list[_Node]:

@@ -112,7 +112,10 @@ class TestViewerHitsWriterRoute403:
         install_identity(make_test_identity(role="viewer"))
         # list_kind hits two fetches: main select + bulk edges. Empty
         # rows are enough -- the assertion is the 200, not the payload.
-        engine.conn.fetch.side_effect = [[], []]
+        engine.conn.fetch.side_effect = [
+            list[dict[str, object]](),
+            list[dict[str, object]](),
+        ]
         r = client.get("/api/inquiries?kind=Issue")
         assert r.status_code == 200
 

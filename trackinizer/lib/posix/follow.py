@@ -593,7 +593,7 @@ async def _drain_queue(queue: asyncio.Queue[Path]) -> AsyncIterator[set[Path]]:
 def _inotify_fd(*directories: Path) -> tuple[int, dict[int, Path]]:
     """Open one inotify fd watching every directory's subtree."""
     libc = _libc()
-    fd = int(cast(Callable[[int], int], libc.inotify_init1)(os.O_NONBLOCK))
+    fd = int(cast(Callable[[int], int], libc.inotify_init1)(os.O_NONBLOCK))  # pyrefly: ignore[unnecessary-type-conversion] -- The stub's type hides the runtime value (numpy/torch scalar or non-str key); the conversion is load-bearing.
     if fd < 0:
         raise OSError(ctypes.get_errno(), "inotify_init1 failed")
     watches: dict[int, Path] = {}
@@ -646,7 +646,7 @@ def _add_watch(
     watches: dict[int, Path],
 ) -> None:
     """Register one directory; record which watch descriptor names it."""
-    descriptor = int(
+    descriptor = int(  # pyrefly: ignore[unnecessary-type-conversion] -- The stub's type hides the runtime value (numpy/torch scalar or non-str key); the conversion is load-bearing.
         cast(Callable[[int, bytes, int], int], libc.inotify_add_watch)(
             fd,
             str(directory).encode(),

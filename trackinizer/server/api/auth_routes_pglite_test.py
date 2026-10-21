@@ -114,7 +114,7 @@ async def test_agreeing_records_the_current_rules_version(
     profile = await _profile(client)
 
     assert agreed.status_code == 200, agreed.text
-    assert profile["rules_issue_id"] == str(rules)
+    assert profile["rules_issue_id"] == rules
     assert profile["acknowledged_rules_version"] == profile["rules_version"]
     assert profile["acknowledged_rules_version"] != "none"
     assert isinstance(profile["acknowledged_at"], str)
@@ -265,6 +265,7 @@ _DEFAULTS: dict[str, object] = {
     "terminal_font_size": "13px",
     "terminal_tab_chords": False,
     "home": "graph",
+    "chat_provider": "assistant",
     "stars": [],
     "views": [],
     "console_views": [],
@@ -374,7 +375,7 @@ async def test_the_users_own_data_is_kept_whole_per_key_and_follows_them(
     client, store = pglite_route_client
     await seed_accounts(store)
     draft = {"text": "Words", "base": None}
-    created = {
+    created: dict[str, object] = {
         "kind": "Issue",
         "title": "Half",
         "description": "",

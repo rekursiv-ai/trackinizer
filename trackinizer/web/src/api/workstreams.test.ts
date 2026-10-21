@@ -37,3 +37,13 @@ test("move and create station use their workspace routes, omitting Scratch selec
     ["POST", "/api/workspaces/new", undefined],
   ]);
 });
+
+test("a station made in a workstream names the provider its chat starts on, and Scratch names it alone", async () => {
+  const sent = stubFetch(() => Response.json({ id: "station", name: "Chat", revision: 1, visuals: [] }));
+  await createStation("ws", "claude");
+  await createStation(undefined, "codex");
+  expect(sent.map(({ method, path, body }) => [method, path, body])).toEqual([
+    ["POST", "/api/workspaces/new", { workstream_id: "ws", provider: "claude" }],
+    ["POST", "/api/workspaces/new", { provider: "codex" }],
+  ]);
+});

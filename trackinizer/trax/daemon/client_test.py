@@ -106,10 +106,6 @@ class TestShouldDelegate:
         """``trax run`` owns a PTY and the terminal; it cannot run remotely."""
         assert not should_delegate(["run", "claude"])
 
-    def test_refuses_trax_helper(self) -> None:
-        """``trax helper`` serves until stopped, spawning a CLI per turn, in this process."""
-        assert not should_delegate(["helper", "claude"])
-
     def test_refuses_export_which_outgrows_a_frame(self) -> None:
         """Keep ``export`` here: the whole graph outgrew the daemon's 64 MB frame."""
         assert not should_delegate(["export"])

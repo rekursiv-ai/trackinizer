@@ -42,13 +42,6 @@ class _VnodesLike(Protocol):
 
 
 @runtime_checkable
-class _FseventsModule(Protocol):
-    _fsevents: object
-
-    def _fsevents_observer(self) -> object: ...
-
-
-@runtime_checkable
 class _DarwinFollow(Protocol):
     _Vnodes: type[_VnodesLike]
     _watch_lines: Callable[..., AbstractAsyncContextManager[AsyncIterator[set[Path]]]]
@@ -2175,7 +2168,7 @@ def mac_watch_state(
     monkeypatch.setattr(sys, "platform", "darwin")
     module_for_reload: ModuleType = follow
     darwin = importlib.reload(module_for_reload)
-    assert isinstance(darwin, _DarwinFollow)
+    assert isinstance(darwin, _DarwinFollow)  # pyrefly: ignore[unsafe-overlap] -- pyrefly reads a module's attributes as read-only and a protocol's members as read-write.
     kernel = _MacKernel()
     loop = asyncio.new_event_loop()
     opened: list[tuple[Path, int]] = []
@@ -2359,7 +2352,6 @@ def test_fsevents_backend_validates_directories_and_imports_observer(
             raise AttributeError(name)
 
     module_for_reload: ModuleType = follow
-    assert isinstance(follow, _FseventsModule)
     monkeypatch.setattr(follow, "_fsevents", Missing())
     with pytest.raises(NotImplementedError, match="unavailable"):
         follow._fsevents_observer()
@@ -2367,7 +2359,7 @@ def test_fsevents_backend_validates_directories_and_imports_observer(
     original_platform = sys.platform
     monkeypatch.setattr(sys, "platform", "darwin")
     darwin = importlib.reload(module_for_reload)
-    assert isinstance(darwin, _DarwinFollow)
+    assert isinstance(darwin, _DarwinFollow)  # pyrefly: ignore[unsafe-overlap] -- pyrefly reads a module's attributes as read-only and a protocol's members as read-write.
     try:
 
         async def no_directories() -> None:

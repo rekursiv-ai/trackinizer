@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Final
 
 import uuid
 
-from treekle import from_plain, json_loads
+from treekle import from_plain, immutable, json_loads
 
 import pytest
 
@@ -17,6 +17,7 @@ from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
     ToolCall,
     UncategorizedToolResult,
+    UserMessage,
 )
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
@@ -144,6 +145,44 @@ async def test_a_colleagues_line_is_refused_until_the_chat_is_shared_with_them(
     assert posted.status_code == 200
     heard = await _heard(client, chat.session)
     assert [(each["text"], each["source"]) for each in heard] == [("thanks", BOB)]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_sharers_post_goes_by_the_chats_provider_not_their_stations(
+    pglite_route_client: _Client,
+) -> None:
+    """Bob's station is on claude, but Ada's chat is the assistant's: it drains it."""
+    client, store = pglite_route_client
+    chat = await _ada_chat(client, store)
+    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE visual_workspaces SET state = state || "
+            "jsonb_build_object('provider', 'claude') WHERE id = $1",
+            bob_station,
+        )
+    browser()
+    _ = await client.put(_share_path(chat, BOB))
+
+    browser(OTHER_USER_ID, email=BOB)
+    command = await client.post(
+        "/api/chats",
+        json={
+            "workspace_id": str(bob_station),
+            "conversation_id": str(chat.conversation),
+            "text": "/compact",
+            "kind": "command",
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    posted = await _bob_says(client, chat, station=bob_station, text="thanks")
+
+    assert command.status_code == 422, command.text
+    assert "The assistant takes a person's line, not a command" in command.text
+    assert posted.status_code == 200
+    heard = await _heard(client, chat.session)
+    assert [(each["text"], each["kind"]) for each in heard] == [("thanks", "line")]
 
 
 @pytest.mark.db_pglite
@@ -304,6 +343,38 @@ async def test_once_someone_else_posted_only_an_admin_or_its_key_deletes_the_cha
     ]
     assert (admin.status_code, again.status_code) == (204, 404)
     assert await _remains(store, chat) == (0, 0, 0, 0)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("extra", "may_delete"),
+    [
+        ({"$inbound": {"source": BOB, "room": None}}, False),
+        ({"author": BOB}, False),
+        ({"$inbound": {"source": ADA, "room": None}}, True),
+        ({}, True),
+    ],
+    ids=["stamped-bob", "authored-bob", "stamped-ada", "typed"],
+)
+async def test_a_cli_user_turn_naming_another_sender_is_their_post(
+    pglite_route_client: _Client,
+    extra: dict[str, object],
+    may_delete: bool,
+) -> None:
+    """A CLI part's user turn names its sender by ``trax run``'s stamp or an author."""
+    client, store = pglite_route_client
+    chat = await _ada_chat(client, store)
+    turn = UserMessage(
+        content="q",
+        extra=immutable(extra),
+        timestamp=datetime.now(UTC).isoformat(),
+    )
+    await _append(store, chat.session, [turn])
+
+    head = await _head(client, chat.conversation)
+
+    assert head["may_delete"] is may_delete
 
 
 @pytest.mark.db_pglite
@@ -935,10 +1006,10 @@ async def test_a_strangers_session_under_a_helper_chats_id_neither_finds_nor_kee
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_helper_chats_starter_stays_its_starter_whoever_the_assistant_serves(
+async def test_a_chat_its_starters_key_began_stays_theirs_whoever_the_assistant_serves(
     pglite_route_client: _Client,
 ) -> None:
-    """Its helper's session began it; one the assistant opens later for Bob does not."""
+    """Ada's own key's session began it; one the assistant opens later for Bob does not."""
     client, store = pglite_route_client
     await seed_accounts(store)
     _ = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
@@ -946,14 +1017,6 @@ async def test_a_helper_chats_starter_stays_its_starter_whoever_the_assistant_se
     _ = await _helper_chat(store, conversation)
     browser()
     shared = await client.put(f"/api/chats/{conversation}/shares/{BOB}")
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
-    browser(OTHER_USER_ID, email=BOB)
-    unread = await send_chat(
-        client,
-        workspace_id=bob_station,
-        text="only the assistant would hear this",
-        conversation_id=conversation,
-    )
     served = await seed_session(
         store,
         ASSISTANT,
@@ -969,7 +1032,6 @@ async def test_a_helper_chats_starter_stays_its_starter_whoever_the_assistant_se
     delete = await client.delete(f"/api/chats/{conversation}")
 
     assert shared.status_code == 200
-    assert unread.status_code == 409, unread.text
     assert (bobs["account"], bobs["may_share"], bobs["may_delete"]) == (
         ADA,
         False,

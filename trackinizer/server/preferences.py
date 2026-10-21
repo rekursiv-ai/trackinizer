@@ -28,6 +28,8 @@ from pydantic import (
 from pydantic_core import to_json
 from treekle import from_plain
 
+from trackinizer.wire.wire_science_chat import ChatProvider
+
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -48,6 +50,7 @@ ASSISTANT_KEYS: Final = frozenset(
         "terminal_font_size",
         "terminal_tab_chords",
         "home",
+        "chat_provider",
     },
 )
 """The preferences a station's assistant may read and change for its owner: the
@@ -278,24 +281,32 @@ class Preferences(_Strict):
         ),
         json_schema_extra=SETTING,
     )
+    chat_provider: ChatProvider = Field(
+        default="assistant",
+        description=(
+            "The provider a new chat starts on: the assistant, or claude or codex run on "
+            "a machine of yours."
+        ),
+        json_schema_extra=SETTING,
+    )
     stars: Annotated[list[_Id], Field(max_length=2_000)] = Field(
-        default=[],
+        default=list[_Id](),
         description="The inquiries you starred, by id: your bookmarks, never a label.",
     )
     views: Annotated[list[SavedView], Field(max_length=200)] = Field(
-        default=[],
+        default=list[SavedView](),
         description="Your saved views: a name and the list query each one shows.",
     )
     console_views: Annotated[list[ConsoleView], Field(max_length=200)] = Field(
-        default=[],
+        default=list[ConsoleView](),
         description="Your Console views: a name, what each picks, its level and its range.",
     )
     aliases: Annotated[list[_Name], Field(max_length=50)] = Field(
-        default=[],
+        default=list[_Name](),
         description="The names besides your email that mean you in owner and subscriber filters.",
     )
     people: Annotated[dict[_Name, Person], Field(max_length=1_000)] = Field(
-        default={},
+        default=dict[_Name, Person](),
         description="Names for people and agents you added by hand, by owner or subscriber value.",
     )
     read: ReadState = Field(
@@ -303,7 +314,7 @@ class Preferences(_Strict):
         description="The notifications you have read: a boundary time, and changes marked one by one after it.",
     )
     collapsed: Annotated[list[_Id], Field(max_length=500)] = Field(
-        default=[],
+        default=list[_Id](),
         description="The sections you folded, by key.",
     )
     lens: _Id | None = Field(
@@ -311,7 +322,7 @@ class Preferences(_Strict):
         description="The detail lens you used last; none until you pick one.",
     )
     drafts: Annotated[dict[_Id, FieldDraft], Field(max_length=200)] = Field(
-        default={},
+        default=dict[_Id, FieldDraft](),
         description="Unsent edits of a field, by inquiry id and field name, until you send or discard them.",
     )
     create_draft: CreateDraft | None = Field(

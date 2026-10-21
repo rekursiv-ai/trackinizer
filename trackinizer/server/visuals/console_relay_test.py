@@ -19,9 +19,7 @@ from trackinizer.server.config import Assistant
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.visuals import console_relay
 from trackinizer.server.visuals.console_relay import relay_console_line
-from trackinizer.server.visuals.workspace_store import (
-    WorkspaceSessionUnavailableError,
-)
+from trackinizer.server.visuals.workspace_store import ProviderOfflineError
 from trackinizer.server.visuals.workspaces import (
     WorkspacePartner,
     WorkspaceState,
@@ -31,7 +29,7 @@ from trackinizer.wire.wire_sessions import ConsoleRelay, ConsoleTarget
 
 if TYPE_CHECKING:
     from trackinizer.lib.postgres import DatabaseEngine
-    from trackinizer.server.visuals.workspaces import PartnerChoice
+    from trackinizer.wire.wire_science_chat import ChatProvider
 
 
 _USER = uuid.UUID(int=1)
@@ -61,7 +59,6 @@ def _state(
     *,
     conversation: uuid.UUID | None = _CONVERSATION,
     partner: WorkspacePartner | None = _LIVE,
-    choice: PartnerChoice = "shared",
 ) -> WorkspaceState:
     """Return a station holding ``conversation`` whose partner is ``partner``."""
     return WorkspaceState(
@@ -71,7 +68,6 @@ def _state(
         conversation_id=conversation,
         page=None,
         visuals=[],
-        partner_choice=choice,
         partner=partner,
     )
 
@@ -87,10 +83,12 @@ class _Station:
         chat: uuid.UUID | None = None,
         may_post: bool = True,
         deleted: bool = False,
-        unread: bool = False,
+        provider: ChatProvider = "assistant",
+        offline: bool = False,
     ) -> None:
         self.engine = FakeEngine()
-        self.routed: list[tuple[PartnerChoice, uuid.UUID]] = []
+        self.routed: list[tuple[uuid.UUID, ChatProvider]] = []
+        self.answerers_asked: list[tuple[str, uuid.UUID]] = []
         self.asked_to_post: list[tuple[str, uuid.UUID]] = []
         self.locked: list[uuid.UUID] = []
         self.inbound = InboundQueue()
@@ -109,19 +107,32 @@ class _Station:
             assert assistant == _SCOUT
             return state or _state()
 
+        async def chat_answerer(
+            conn: object,
+            *,
+            state: WorkspaceState,
+            conversation_id: uuid.UUID,
+            poster: str,
+            assistant: Assistant | None,
+        ) -> ChatProvider:
+            assert conn is self.engine.conn
+            assert (state.id, assistant) == (_STATION, _SCOUT)
+            self.answerers_asked.append((poster, conversation_id))
+            return provider
+
         async def chat_line_target(
             conn: object,
             *,
             inbound: InboundQueue,
             assistant: Assistant | None,
-            choice: PartnerChoice,
+            provider: ChatProvider,
             conversation_id: uuid.UUID,
         ) -> uuid.UUID | None:
             assert conn is self.engine.conn
             assert (inbound, assistant) == (self.inbound, _SCOUT)
-            self.routed.append((choice, conversation_id))
-            if unread:
-                raise WorkspaceSessionUnavailableError("no one reads it there")
+            self.routed.append((conversation_id, provider))
+            if offline:
+                raise ProviderOfflineError(f"No {provider} run holds this chat")
             return chat
 
         async def lock_chat_id(conn: object, *, conversation_id: uuid.UUID) -> None:
@@ -148,6 +159,7 @@ class _Station:
             return may_post
 
         monkeypatch.setattr(console_relay, "read_workspace", read_workspace)
+        monkeypatch.setattr(console_relay, "chat_answerer", chat_answerer)
         monkeypatch.setattr(console_relay, "chat_line_target", chat_line_target)
         monkeypatch.setattr(console_relay, "may_post", may_post_as_told)
         monkeypatch.setattr(console_relay, "lock_chat_id", lock_chat_id)
@@ -178,7 +190,8 @@ async def test_a_relay_goes_to_the_chat_session_the_assistant_has_open(
     assert await station.relay() is True
 
     assert station.locked == [_CONVERSATION]
-    assert station.routed == [("shared", _CONVERSATION)]
+    assert station.routed == [(_CONVERSATION, "assistant")]
+    assert station.answerers_asked == [("alice@example.com", _CONVERSATION)]
     assert station.asked_to_post == [("alice@example.com", _CONVERSATION)]
     assert station.inbound.pending(_SERVICE) == 0
     (message,) = station.inbound.drain(_CHAT)
@@ -209,19 +222,6 @@ async def test_a_chat_the_assistant_has_not_open_hears_it_on_the_service_session
 
 
 @pytest.mark.asyncio
-async def test_a_local_helper_is_sent_the_relay_on_its_service_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    station = _Station(monkeypatch, state=_state(choice="local"))
-
-    assert await station.relay() is True
-
-    assert station.routed == [("local", _CONVERSATION)]
-    assert station.inbound.pending(_SERVICE) == 1
-    assert station.inbound.pending(_CHAT) == 0
-
-
-@pytest.mark.asyncio
 async def test_a_relay_is_queued_once_however_often_it_is_retried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -231,6 +231,31 @@ async def test_a_relay_is_queued_once_however_often_it_is_retried(
     assert station.inbound.pending(_CHAT) == 1
     assert await station.relay(key=uuid.UUID(int=7)) is True
     assert station.inbound.pending(_CHAT) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_relay_into_a_cli_chat_joins_the_queue_its_run_drains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    station = _Station(monkeypatch, chat=_CHAT, provider="claude")
+
+    assert await station.relay() is True
+
+    assert station.routed == [(_CONVERSATION, "claude")]
+    assert station.inbound.pending(_SERVICE) == 0
+    (message,) = station.inbound.drain(_CHAT)
+    assert message.text == "rerun the suite"
+
+
+@pytest.mark.asyncio
+async def test_a_relay_into_a_cli_chat_no_run_holds_is_not_delivered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    station = _Station(monkeypatch, chat=_CHAT, provider="codex", offline=True)
+
+    assert await station.relay() is False
+    assert station.routed == [(_CONVERSATION, "codex")]
+    assert station.inbound.pending(_CHAT) == station.inbound.pending(_SERVICE) == 0
 
 
 @pytest.mark.asyncio
@@ -290,17 +315,6 @@ async def test_a_deleted_chat_hears_no_relay(
     assert await station.relay() is False
     assert station.locked == [_CONVERSATION]
     assert station.asked_to_post == station.routed == []
-    assert station.inbound.pending(_CHAT) == station.inbound.pending(_SERVICE) == 0
-
-
-@pytest.mark.asyncio
-async def test_a_relay_that_would_go_where_no_one_reads_it_is_not_delivered(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    station = _Station(monkeypatch, chat=_CHAT, unread=True)
-
-    assert await station.relay() is False
-    assert station.routed == [("shared", _CONVERSATION)]
     assert station.inbound.pending(_CHAT) == station.inbound.pending(_SERVICE) == 0
 
 

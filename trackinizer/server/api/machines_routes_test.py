@@ -112,7 +112,7 @@ def test_an_empty_registry_lists_no_machines(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
-    engine.conn.fetch.return_value = []
+    engine.conn.fetch.return_value = list[dict[str, object]]()
 
     assert client.get(MACHINES_PATH).json() == {"machines": []}
 
@@ -137,7 +137,7 @@ def test_getting_an_absent_machine_is_not_found(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
-    engine.conn.fetch.return_value = []
+    engine.conn.fetch.return_value = list[dict[str, object]]()
 
     response = client.get(_path("nope"))
 

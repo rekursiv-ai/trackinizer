@@ -259,8 +259,14 @@ def _joined(lines: Sequence[str]) -> str | None:
 
 def _unterminate(splice: Splice) -> Splice:
     """Drop the trailing newline from a splice's last populated field."""
-    for name in ("trail", "after", "before", "lead"):
-        value: object = getattr(splice, name)  # pyright: ignore[reportAny] -- splice fields are string-or-None by fixed names.
-        if isinstance(value, str) and value:
-            return replace(splice, **{name: value.removesuffix("\n")})
-    return splice
+    match splice:
+        case Splice(trail=str(text)) if text:
+            return replace(splice, trail=text.removesuffix("\n"))
+        case Splice(after=str(text)) if text:
+            return replace(splice, after=text.removesuffix("\n"))
+        case Splice(before=str(text)) if text:
+            return replace(splice, before=text.removesuffix("\n"))
+        case Splice(lead=str(text)) if text:
+            return replace(splice, lead=text.removesuffix("\n"))
+        case _:
+            return splice

@@ -128,7 +128,7 @@ export function user(id: string, email: string, fields: Partial<User> = {}): Use
  * holds the next write until released; reads of a path in `failing` answer
  * 503; `rows` are what the owner-names list request returns. `workspace` is
  * the user's default canvas, which an operation of a stale revision is refused
- * for (409) and a `partner` operation changes.
+ * for (409) and a `provider` operation changes.
  */
 export function serveAccount(
   caller: Profile,
@@ -137,7 +137,7 @@ export function serveAccount(
   // A tab starts without a station, so a test never opens the one an earlier test left.
   setStation(null);
   const server = {
-    workspace: { id: "w-ada", name: "unnamed-workstream#1", conversation_id: null, page: null, revision: 4, visuals: [], partner: null, assistant: "scout", partner_choice: "shared", ...seed.workspace } as WorkspaceState,
+    workspace: { id: "w-ada", name: "unnamed-workstream#1", conversation_id: null, page: null, revision: 4, visuals: [], partner: null, assistant: "scout", provider: "assistant", ...seed.workspace } as WorkspaceState,
     tokens: seed.tokens ?? [],
     users: seed.users ?? [],
     allowlist: seed.allowlist ?? [],
@@ -245,11 +245,8 @@ function answer(server: Server, caller: Profile, call: string, body: AccountBody
 
 function operate(server: Server, { revision, operation }: AccountBody): Response {
   if (revision !== server.workspace.revision) return refuse(409, "revision conflict");
-  if (operation?.kind !== "partner") return refuse(422, "unsupported operation");
-  const partner = operation.choice === "local"
-    ? { kind: "local", session_id: null, actor: null, cli: null, status: "unavailable" } as const
-    : null;
-  server.workspace = { ...server.workspace, revision: revision + 1, partner_choice: operation.choice, partner };
+  if (operation?.kind !== "provider") return refuse(422, "unsupported operation");
+  server.workspace = { ...server.workspace, revision: revision + 1, provider: operation.provider, partner: null };
   return Response.json(server.workspace);
 }
 

@@ -183,7 +183,7 @@ async def test_a_peer_that_cannot_answer_is_closed_logged_and_never_heard_again(
     assert world.relay[-2:] == [(Frame.OUTPUT, b"x"), (Frame.EXIT, (0).to_bytes(4))]
     (record,) = caplog.records
     assert record.getMessage() == "direct link: could not answer an offer"
-    assert record.exc_info
+    assert isinstance(record.exc_info, tuple)
 
 
 async def test_an_offer_that_is_not_newer_or_not_an_offer_is_ignored() -> None:

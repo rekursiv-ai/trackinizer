@@ -756,8 +756,8 @@ def test_non_user_message_images_survive_normalization(
 
     message = list(codex.normalize(StringIO(native)))[-1]
 
-    assert isinstance(message, expected)
     assert isinstance(message, AssistantMessage | SystemMessage)
+    assert type(message) is expected
     assert message.attachments == (Attachment(mime_descriptor="image/png", data=b"hi"),)
 
 

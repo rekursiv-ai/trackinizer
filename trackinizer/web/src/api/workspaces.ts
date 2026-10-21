@@ -1,13 +1,17 @@
 import { type CallOptions, client, send, TIMEOUT_MS } from "./client";
 import { newUuid } from "./idempotency";
 import type { components } from "./generated/schema";
+import type { Provider } from "./providers";
 import { type EventSourceLike, openEvents } from "./stream";
 
 /** The user's preferences as a frame carries them: every key, defaults filled (`src/preferences.ts`). */
 type Preferences = Required<components["schemas"]["Preferences"]>;
 
 export type WorkspaceState = components["schemas"]["WorkspaceState"];
-/** Who a canvas talks to: the assistant's newest live session. */
+/**
+ * Who a station's Chat talks to: the provider's live run, or the assistant. `status` is `offline` for a CLI whose
+ * chat has no live run; `label` reads as `claude · gx10`.
+ */
 export type WorkspacePartner = NonNullable<WorkspaceState["partner"]>;
 export type WorkspaceOperation = components["schemas"]["Operation"];
 export type CampaignSetup = components["schemas"]["CampaignSetup"];
@@ -35,6 +39,19 @@ export async function applyWorkspaceOperation(
   return valid(await send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/workspaces/{workspace_id}/operations", {
     params: { path: { workspace_id: id }, header: { "Idempotency-Key": key } },
     body: { revision, operation }, signal,
+  })));
+}
+
+/**
+ * Choose the provider the station's Chat talks to, at `revision`. The choice starts no run: a CLI's run is
+ * started on a machine after it. Browser-only (an API key is refused). Choosing an unavailable provider is a 409
+ * `provider_unavailable`, with its reason as the detail. A choice does not interrupt an assistant turn already in
+ * flight; that turn's answer still lands.
+ */
+export async function chooseProvider(id: string, revision: number, provider: Provider, key: string): Promise<WorkspaceState> {
+  return valid(await send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/workspaces/{workspace_id}/operations", {
+    params: { path: { workspace_id: id }, header: { "Idempotency-Key": key } },
+    body: { revision, operation: { kind: "provider", provider } }, signal,
   })));
 }
 
