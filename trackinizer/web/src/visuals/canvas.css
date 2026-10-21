@@ -85,6 +85,7 @@
 .chat-line-relay, .chat-line-note { align-self: stretch; max-width: none; padding: 0 2px; border: 0; background: transparent; color: var(--muted); font-size: 12px; }
 .chat-line-author { display: block; margin-bottom: 3px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .chat-notice { margin: 0; padding: 6px 12px 0; color: var(--muted); font-size: 11px; }
+.chat-read-only { margin: 0; padding: 8px 12px 12px; }
 .chat-line-body { margin: 0; }
 /* A recap's "keep going": shown at once, not on hover, since it is the message's call to action. */
 .chat-line-followup { display: inline-flex; margin-top: 8px; padding: 3px 10px; border: 1px solid var(--accent); border-radius: 7px; color: var(--accent-hover); background: transparent; font-size: 12px; }

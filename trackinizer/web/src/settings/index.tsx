@@ -11,6 +11,7 @@ import { choosePreferences, usePreferences } from "../preferences";
 import { chooseSkin, chooseTheme, type Skin, SKINS, type ThemePreference, useTheme } from "../theme";
 import { KeyValue, ReadError, Section } from "./account";
 import { AliasesSection } from "./Aliases";
+import { BillingSection } from "./Billing";
 import { CloseSheet } from "./CloseSheet";
 import { ChatPartnerSection } from "./ChatPartner";
 import { PreferencesDocument } from "./PreferencesDocument";
@@ -54,6 +55,7 @@ export function SettingsView({ assign = (url: string) => location.assign(url) }:
           <PreferencesDocument />
           <VisualWorkspaceSection />
           <ChatPartnerSection />
+          <BillingSection assign={assign} />
           <TokensSection />
           {profile.email === NO_AUTH_EMAIL ? null : <SessionSection assign={assign} />}
         </div>

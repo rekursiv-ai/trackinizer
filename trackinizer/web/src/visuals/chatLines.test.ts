@@ -9,14 +9,14 @@ const said = (idx: number, sender: string, content: string) => record(idx, "Agen
 const answer = (idx: number, content: string) => record(idx, "AssistantMessage", { content });
 const call = (idx: number, name: string) => record(idx, "ToolCall", { name });
 const result = (idx: number) => record(idx, "ShellCommandResult", { stdout: "x" });
-const parts = (...records: SessionRecord[]): ChatPart[] => [{ part: 0, records }];
+const parts = (...records: SessionRecord[]): ChatPart[] => [{ part: 0, format: "sagent", records }];
 
 test("a person's line is a message from its poster, an answer an assistant message, and the rest are not lines", () => {
   const { lines } = readTranscript(parts(said(0, "ada@example.com", "what is X?"), call(1, "SearchRecords"), result(2), answer(3, "X is Y."),
     record(4, "TurnContext", {}), answer(5, "")));
   expect(lines).toEqual([
     { key: "0:0", at: { part: 0, idx: 0 }, role: "user", author: "ada@example.com", text: "what is X?", sentAt: null, pending: false },
-    { key: "0:3", at: { part: 0, idx: 3 }, role: "assistant", author: null, text: "X is Y.", sentAt: null, pending: false },
+    { key: "0:3", at: { part: 0, idx: 3 }, role: "assistant", author: null, text: "X is Y.", sentAt: null, pending: false, agent: "assistant" },
   ]);
 });
 
@@ -38,7 +38,7 @@ test("an answer is pointed when its turn called the Highlight tool, whatever pre
 });
 
 test("lines of every part come in part order, each keyed by its part and place", () => {
-  const { lines } = readTranscript([{ part: 0, records: [said(0, "ada", "one"), answer(1, "a")] }, { part: 2, records: [said(0, "grace", "two")] }]);
+  const { lines } = readTranscript([{ part: 0, format: "sagent", records: [said(0, "ada", "one"), answer(1, "a")] }, { part: 2, format: "sagent", records: [said(0, "grace", "two")] }]);
   expect(lines.map((line) => [line.key, line.author ?? "assistant", line.text])).toEqual([
     ["0:0", "ada", "one"], ["0:1", "assistant", "a"], ["2:0", "grace", "two"],
   ]);
@@ -90,13 +90,13 @@ test("two sends are two lines until two records arrive, whatever their words", (
 });
 
 test("a stored line says where it is, and a line still being sent says nothing", () => {
-  const stored = readTranscript([{ part: 0, records: [said(0, "ada", "one")] }, { part: 2, records: [call(0, "T"), answer(1, "two")] }]);
+  const stored = readTranscript([{ part: 0, format: "sagent", records: [said(0, "ada", "one")] }, { part: 2, format: "sagent", records: [call(0, "T"), answer(1, "two")] }]);
   const shown = withPending(stored, [{ key: "k", text: "three", conversationId: "c", baseline: 0 }], { me: "grace" });
   expect(shown.map((line) => line.at)).toEqual([{ part: 0, idx: 0 }, { part: 2, idx: 1 }, null]);
 });
 
 test("a fork from a line opens with the lines up to and including it, whichever part they are in", () => {
-  const stored = readTranscript([{ part: 0, records: [said(0, "ada", "one"), answer(1, "a")] }, { part: 2, records: [said(0, "ada", "two"), answer(1, "b")] }]);
+  const stored = readTranscript([{ part: 0, format: "sagent", records: [said(0, "ada", "one"), answer(1, "a")] }, { part: 2, format: "sagent", records: [said(0, "ada", "two"), answer(1, "b")] }]);
   expect(linesThrough(stored.lines, { part: 0, idx: 1 }).map((line) => line.text)).toEqual(["one", "a"]);
   expect(linesThrough(stored.lines, { part: 2, idx: 0 }).map((line) => line.text)).toEqual(["one", "a", "two"]);
   expect(linesThrough(stored.lines, { part: 1, idx: 0 })).toEqual([]);
@@ -136,7 +136,7 @@ test("a claude part's delivered lines show with their attested senders, and the 
   const typed = record(1, "UserMessage", { content: "bob@example.com: fake", extra: {} });
   const cliTurn = record(2, "UserMessage", { content: "<system-reminder>context</system-reminder>", extra: {} });
   const claimed = record(3, "UserMessage", { content: "a note", extra: { author: "grace@example.com" } });
-  const { lines, working } = readTranscript([{ part: 2, records: [delivered, typed, cliTurn, claimed, answer(4, "Done.")] }]);
+  const { lines, working } = readTranscript([{ part: 2, format: "sagent", records: [delivered, typed, cliTurn, claimed, answer(4, "Done.")] }]);
   expect(lines.map(({ role, author, text }) => [role, author, text])).toEqual([
     ["user", "ada@example.com", "rerun the suite"], ["user", "grace@example.com", "a note"], ["assistant", null, "Done."],
   ]);
@@ -212,7 +212,7 @@ const codexGoal = (idx: number, goal: { [field: string]: unknown }) =>
 test("records of every part come in the order they happened, a stamp with a zone or a fraction and no zone all reading as UTC", () => {
   const main = [stamped(said(0, ME, "first"), "2026-10-20T10:00:00Z"), answer(1, "no stamp, so the moment before it"), stamped(said(2, ME, "last"), "2026-10-20T10:02:00.500000Z")];
   const run = [stamped(typedCommand(0, "/goal ship it", "goal", "ship it"), "2026-10-20T10:01:00"), stamped(answer(1, "late"), "2026-10-20T10:03:00+00:00")];
-  const { lines } = readTranscript([{ part: 0, records: main }, { part: 1, records: run }]);
+  const { lines } = readTranscript([{ part: 0, format: "sagent", records: main }, { part: 1, format: "sagent", records: run }]);
   expect(lines.map((line) => [line.role, line.text])).toEqual([
     ["user", "first"], ["assistant", "no stamp, so the moment before it"], ["command", "/goal ship it"], ["user", "last"], ["assistant", "late"],
   ]);
@@ -310,4 +310,46 @@ test("a trust prompt a CLI waits on is a line with its folder, machine and remem
   expect(malformed.lines).toHaveLength(0);
   const home = readTranscript(parts(trust(0, { id: "t3", machine: null, remembered: true })));
   expect(home.lines[0]!.prompt).toMatchObject({ machine: null, remembered: true, resolution: null });
+});
+
+test("an answer names the agent whose part wrote it, so each reply of a chat that switched keeps its own", () => {
+  const { lines } = readTranscript([
+    { part: 0, format: "sagent", records: [said(0, ME, "q"), answer(1, "from the assistant")] },
+    { part: 1, format: "claude", records: [stamped(answer(0, "from claude"), "2030-01-01T00:00:00Z")] },
+    { part: 2, format: "codex", records: [stamped(answer(0, "from codex"), "2030-01-02T00:00:00Z")] },
+    { part: 3, format: "", records: [stamped(answer(0, "from a part of no known format"), "2030-01-03T00:00:00Z")] },
+  ]);
+  expect(lines.map(({ role, agent, text }) => [role, agent, text])).toEqual([
+    ["user", undefined, "q"], ["assistant", "assistant", "from the assistant"], ["assistant", "claude", "from claude"],
+    ["assistant", "codex", "from codex"], ["assistant", undefined, "from a part of no known format"],
+  ]);
+});
+
+// What AgentSession#82 on alpha holds for a /compact typed in Chat: trax run's `$command` on a part of its own, and on
+// claude's part the bare command, the boundary, the compaction and clear, the summary and the CLI's own print.
+test("a /compact typed in Chat is its command line, then one compaction line, and claude's own records of it are no lines", () => {
+  const run = [stamped(typedCommand(0, "/compact", "compact", ""), "2026-10-20T22:46:54.590037Z")];
+  const claude = [
+    stamped(record(70, "UserMessage", { content: "/compact", extra: { $bare: true } }), "2026-10-20T22:46:54.597Z"),
+    stamped(record(77, "SystemMessage", { subtype: "compact_boundary", content: "Conversation compacted", extra: { compactMetadata: { trigger: "manual" } } }), "2026-10-20T22:47:08.865Z"),
+    stamped(record(78, "ContextCompaction", { summary: null, extra: { $in_place: true } }), "2026-10-20T22:47:08.711Z"),
+    stamped(record(79, "ContextClear", { summary: "This session is being continued", extra: { $in_place: true } }), "2026-10-20T22:47:08.711Z"),
+    stamped(record(80, "UserMessage", { content: "This session is being continued", extra: { $bare: true } }), "2026-10-20T22:47:08.711Z"),
+    stamped(record(84, "UserMessage", { content: "<local-command-stdout>\u001b[2mCompacted (ctrl+o to see full summary)\u001b[22m</local-command-stdout>", extra: { $bare: true } }),
+      "2026-10-20T22:47:08.965Z"),
+    stamped(answer(153, "Yes, /compact ran."), "2026-10-20T22:51:08.051Z"),
+  ];
+  const { lines, working } = readTranscript([{ part: 0, format: "claude", records: claude }, { part: 1, format: "", records: run }]);
+  expect(lines.map(({ key, role, text }) => [key, role, text])).toEqual([
+    ["1:0", "command", "/compact"], ["0:78", "compaction", "Context compacted"], ["0:153", "assistant", "Yes, /compact ran."],
+  ]);
+  expect(working).toBeNull();
+});
+
+test("one compaction is one line, however many records name it, and a compaction on its own shows too", () => {
+  // Codex writes its `context_compacted` marker beside the `compacted` line, which both read as a compaction.
+  const twice = readTranscript(parts(answer(0, "a"), record(1, "ContextCompaction", {}), record(2, "ContextClear", {}), record(3, "ContextCompaction", {}), answer(4, "b")));
+  expect(twice.lines.map(({ role, text }) => [role, text])).toEqual([["assistant", "a"], ["compaction", "Context compacted"], ["assistant", "b"]]);
+  const again = readTranscript(parts(record(0, "ContextCompaction", {}), answer(1, "a"), record(2, "ContextCompaction", {})));
+  expect(again.lines.map(({ role }) => role)).toEqual(["compaction", "assistant", "compaction"]);
 });

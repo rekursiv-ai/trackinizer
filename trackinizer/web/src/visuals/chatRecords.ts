@@ -30,7 +30,7 @@ export async function readChatParts(
 ): Promise<ChatPart[]> {
   const listed = (await listSessionParts(sessionId, { signal })).filter(({ part }) => part >= 0);
   const parts: ChatPart[] = [];
-  for (const { part, records } of listed) {
+  for (const { part, format, records } of listed) {
     const before = held?.find((each) => each.part === part)?.records ?? [];
     const read = [...before];
     // The listing counts records the server may not have written yet, so a short page ends the read.
@@ -39,7 +39,7 @@ export async function readChatParts(
       read.push(...page);
       if (page.length < PAGE) break;
     }
-    parts.push({ part, records: read });
+    parts.push({ part, format, records: read });
   }
   return parts;
 }

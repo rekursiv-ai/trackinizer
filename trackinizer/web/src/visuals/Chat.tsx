@@ -86,7 +86,7 @@ function chatReach(audience: string, orgMode: OrgMode | undefined): string {
 export function Chat({ workspace }: { readonly workspace: WorkspaceState | null }) {
   const queryClient = useQueryClient();
   const kinds = useContext(MetaContext)?.kinds ?? [];
-  const { email: me, org_mode: orgMode } = useProfile();
+  const { email: me, org_mode: orgMode, role } = useProfile();
   const writing = useWriteMode() === "enabled";
   const { feed, state } = useChatFeed();
   const workspaceId = workspace?.id ?? null;
@@ -409,7 +409,7 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
         <button className="btn ghost" type="button" onClick={() => void openConversation(head.data!.forked_from!)}>another chat</button>.</p>}
       {head.data && head.data.forks > 0 && <p className="chat-note">{forkedTimes(head.data.forks)}</p>}
       {outsider && <p className="chat-note" role="status">{outsiderNote(head.data!.audience)}</p>}
-      {lines.map((line) => <ChatLine key={line.key} line={line} me={me} kinds={kinds}
+      {lines.map((line) => <ChatLine key={line.key} line={line} me={me} kinds={kinds} assistant={providerName("assistant", workspace)}
         onFork={forkable ? pickFork : undefined} onFollowUp={line.key === followUpKey ? launchFollowUp : undefined}
         onAnswer={answerable ? answerStable : undefined} />)}
       {/* One working line, the last tool call's name, in place of a status the partner no longer sends.
@@ -430,7 +430,8 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
     <p className="chat-notice">{chatNotice(head.data?.audience ?? "open", orgMode)}</p>
     {draft.problem && <p role="status" className="chat-note">{draft.problem}</p>}
     {goal && <p className="chat-note chat-goal">{goalStrip(goal)}</p>}
-    <Composer send={send} target={target} draft={draft} field={(props, edit) => <RecordField field={props} edit={edit} />}
+    {role === "viewer" ? <p className="chat-note chat-read-only" role="note">Viewers can read this chat but not post.</p>
+      : <Composer send={send} target={target} draft={draft} field={(props, edit) => <RecordField field={props} edit={edit} />}
       history={{ key: JSON.stringify([me, workspaceId, conversationId]), entries: lines
         .filter((line) => line.role === "user" && line.author === me && (!line.pending || !sending.has(line.key.slice(PENDING.length))))
         .map((line) => line.text) }}
@@ -438,7 +439,7 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
       placeholder={reading ? "Loading the conversation…" : outsider ? closedTo(head.data!.audience)
         : live ? `Ask ${partner?.actor ?? "your partner"}…` : readOnly(partner?.status, writing)}
       check={checkText} retryable={resendable}
-      failure={failureText} />
+      failure={failureText} />}
   </section>;
 }
 
@@ -497,12 +498,14 @@ export function offCopy(provider: Provider): string {
 /**
  * One line, by value: the transcript builds its lines afresh on every render,
  * so the panel's renders (a status, the canvas around it) leave each line's
- * Markdown alone unless its text changed. A line by someone else says who.
+ * Markdown alone unless its text changed. A line by someone else says who, and an answer
+ * names the agent that wrote it: a CLI by its name, the server's assistant by `assistant`.
  */
-const ChatLine = memo(function ChatLine({ line, me, kinds, onFork, onFollowUp, onAnswer }: {
+const ChatLine = memo(function ChatLine({ line, me, kinds, assistant, onFork, onFollowUp, onAnswer }: {
   readonly line: Line;
   readonly me: string;
   readonly kinds: readonly string[];
+  readonly assistant: string;
   /** Pick this stored answer as where a fork starts; absent where a fork cannot be started. */
   readonly onFork?: (at: LineAt, quote: string) => void;
   /** Launch the follow-up a recap proposes; absent where none is offered on this line. */
@@ -521,12 +524,13 @@ const ChatLine = memo(function ChatLine({ line, me, kinds, onFork, onFollowUp, o
     const who = line.author === null || line.author === me ? "you" : line.author.split("@")[0];
     return <article className="chat-line chat-line-relay" title={when}><p className="chat-line-body">{who} {line.text}</p></article>;
   }
-  // A goal and what a CLI printed for a command are notes in the log, not anyone's words.
-  if (line.role === "goal" || line.role === "reply") return <article className="chat-line chat-line-note" title={when}><p className="chat-line-body">{line.text}</p></article>;
+  // A goal, what a CLI printed for a command, and a compaction are notes in the log, not anyone's words.
+  if (line.role === "goal" || line.role === "reply" || line.role === "compaction") return <article className="chat-line chat-line-note" title={when}><p className="chat-line-body">{line.text}</p></article>;
   // A command is its sender's line, set on the sender's side in monospace.
   const side = line.role === "command" ? "user chat-line-command" : line.role;
   return <article className={`chat-line chat-line-${side}${other ? " chat-line-other" : ""}${line.pending ? " chat-line-pending" : ""}`} title={when}>
     {other && <span className="chat-line-author">{line.author}</span>}
+    {line.agent && <span className="chat-line-author chat-line-agent">{line.agent === "assistant" ? assistant : line.agent}</span>}
     {line.role === "assistant"
       ? <Markdown source={line.text} kinds={kinds} className="md chat-line-body" images={false} />
       : <p className="chat-line-body">{line.text}</p>}

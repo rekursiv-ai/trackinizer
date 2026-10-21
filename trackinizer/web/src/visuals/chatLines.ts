@@ -1,10 +1,15 @@
+import type { Provider } from "../api/providers";
 import type { SessionRecord } from "../api/sessions";
 
 /** What the key of a line not yet a record starts with, before the key of its send. */
 export const PENDING = "pending:";
 
-/** One part of a science chat's session: its file's number and the records read from it. */
-export type ChatPart = { readonly part: number; readonly records: readonly SessionRecord[] };
+/**
+ * One part of a science chat's session: its file's number, the format its writer logs in
+ * (`sagent` for the assistant, `claude` or `codex` for a CLI run, `""` for trax run's own part),
+ * and the records read from it.
+ */
+export type ChatPart = { readonly part: number; readonly format: string; readonly records: readonly SessionRecord[] };
 
 /** Where a stored line is in its session: its part and its position in it. */
 export type LineAt = { readonly part: number; readonly idx: number };
@@ -64,14 +69,15 @@ export type Goal = {
 /**
  * One line of the transcript: a person's, an answer, a relay of what they told agents, a
  * prompt a run asked, a slash command typed into a run, a goal the run's log reports, what a
- * CLI printed for a command, or one still being sent. A `command` line is its sender's, and
- * its text is what was typed, or `refused: <reason>` when the run refused it.
+ * CLI printed for a command, a compaction of the agent's context, or one still being sent. A
+ * `command` line is its sender's, and its text is what was typed, or `refused: <reason>` when
+ * the run refused it.
  */
 export type Line = {
   readonly key: string;
   /** The record the line is, which a fork starts from; null for a line not yet stored. */
   readonly at: LineAt | null;
-  readonly role: "user" | "assistant" | "relay" | "interaction" | "command" | "goal" | "reply";
+  readonly role: "user" | "assistant" | "relay" | "interaction" | "command" | "goal" | "reply" | "compaction";
   /** The poster's attested email for a person's or a command's line; null for an answer. */
   readonly author: string | null;
   readonly text: string;
@@ -81,6 +87,11 @@ export type Line = {
   readonly pending: boolean;
   /** The prompt an interaction line shows, which Chat answers; absent on every other line. */
   readonly prompt?: Prompt;
+  /**
+   * The agent that wrote an answer, by its part's format: a chat that switched provider keeps
+   * each answer's own. Absent on every other line, and on an answer from a part of no known format.
+   */
+  readonly agent?: Provider;
 };
 
 /** A line sent from this browser; it shows until its record arrives. */
@@ -111,11 +122,12 @@ export type Transcript = {
 /**
  * The lines of a science chat, read from its session's records in the order they happened:
  * a person's line is an `AgentToAgentMessage` from its poster, or a `UserMessage` a CLI run
- * recorded for a person (see `personOf`); an answer is an `AssistantMessage` with words. A
- * prompt a run asked is a line, which its resolution record closes. A slash command a run
- * typed is a `command` line, and the goal its CLI logs is a `goal` line (see `goalStep`).
- * Other tool calls and results are not lines, but the last call since the last person's line
- * says what the agent is doing.
+ * recorded for a person (see `personOf`); an answer is an `AssistantMessage` with words, named
+ * by the agent its part's format says wrote it. A prompt a run asked is a line, which its
+ * resolution record closes. A slash command a run typed is a `command` line, and the goal its
+ * CLI logs is a `goal` line (see `goalStep`). A `ContextCompaction` is a `compaction` line,
+ * one for the records that name one act. Other tool calls and results are not lines, but the
+ * last call since the last person's line says what the agent is doing.
  */
 export function readTranscript(parts: readonly ChatPart[]): Transcript {
   const lines: Line[] = [];
@@ -123,7 +135,7 @@ export function readTranscript(parts: readonly ChatPart[]): Transcript {
   const pointed = new Set<string>();
   let pointing = false;
   let goal: Goal | null = null;
-  for (const { part, record } of inTimeOrder(parts)) {
+  for (const { part, format, record } of inTimeOrder(parts)) {
     const key = `${part}:${record.idx}`;
     const payload = record.payload ?? {};
     const at = { part, idx: record.idx };
@@ -164,8 +176,12 @@ export function readTranscript(parts: readonly ChatPart[]): Transcript {
       pointing = false;
     } else if (record.kind === "AssistantMessage" && text(payload.content)) {
       if (pointing) pointed.add(key);
-      lines.push({ key, at, role: "assistant", author: null, text: text(payload.content), sentAt, pending: false });
+      const agent = AGENTS.get(format);
+      lines.push({ key, at, role: "assistant", author: null, text: text(payload.content), sentAt, pending: false, ...(agent && { agent }) });
       working = null;
+    } else if (record.kind === "ContextCompaction") {
+      // Claude's in-place compaction and codex's marker beside its `compacted` line each name the act once more.
+      if (lines.at(-1)?.role !== "compaction") lines.push({ key, at, role: "compaction", author: null, text: "Context compacted", sentAt, pending: false });
     } else if (record.kind === "ToolCall") {
       if (isHighlight(text(payload.name))) pointing = true;
       if (working !== null) working = text(payload.name);
@@ -371,6 +387,9 @@ function printedOf(payload: Readonly<Record<string, unknown>>, previous: Line | 
   return printed?.[1] ? printed[1] : null;
 }
 
+/** The agent a part's format says wrote it: the assistant's own log, or a CLI's. */
+const AGENTS: ReadonlyMap<string, Provider> = new Map([["sagent", "assistant"], ["claude", "claude"], ["codex", "codex"]]);
+
 const PROMPT_TYPES = ["permission", "question", "plan", "trust"] as const;
 const DECISIONS = ["allow", "deny", "answered", "released"] as const;
 const DECIDERS = ["chat", "terminal", "run"] as const;
@@ -446,11 +465,11 @@ const NEVER = Number.NEGATIVE_INFINITY;
  * order holds whatever the other parts did. Equal moments keep their order, the parts' in
  * sequence. Mirrors `client/conversation.py::_in_time_order`.
  */
-function inTimeOrder(parts: readonly ChatPart[]): { readonly part: number; readonly record: SessionRecord }[] {
-  const dated: { readonly at: number; readonly part: number; readonly record: SessionRecord }[] = [];
-  for (const { part, records } of parts) {
+function inTimeOrder(parts: readonly ChatPart[]): { readonly part: number; readonly format: string; readonly record: SessionRecord }[] {
+  const dated: { readonly at: number; readonly part: number; readonly format: string; readonly record: SessionRecord }[] = [];
+  for (const { part, format, records } of parts) {
     const moments = momentsOf(records);
-    for (const [index, record] of records.entries()) dated.push({ at: moments[index] ?? NEVER, part, record });
+    for (const [index, record] of records.entries()) dated.push({ at: moments[index] ?? NEVER, part, format, record });
   }
   return dated.toSorted((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 }

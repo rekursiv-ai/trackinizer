@@ -1,9 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { getBalance } from "../api/billing";
+import { type BalanceBody, balanceQuery, creditLine, lowCredit } from "../api/billing";
 import { ApiError } from "../api/client";
 import { newUuid } from "../api/idempotency";
-import { OUT_OF_CREDIT, PROVIDERS, type Provider, type ProviderStatus, partnerLabel, profileChatProvider, providerName, providerStatuses, setChatProviderPreference, stationProvider } from "../api/providers";
+import { PROVIDERS, type Provider, type ProviderStatus, partnerLabel, profileChatProvider, providerName, providerStatuses, setChatProviderPreference, stationProvider } from "../api/providers";
 import { confirmTerminalMachine, listTerminalMachines, openTerminal, type RunLaunch, type TerminalMachine } from "../api/terminals";
 import { chooseProvider, getWorkspace, type WorkspaceState } from "../api/workspaces";
 import { useProfile } from "../app/boot";
@@ -13,8 +13,6 @@ import "./ProviderPicker.css";
 
 /** The default for new chats, as the query cache holds it for this page. */
 const DEFAULT_KEY = ["chat-provider", "default"] as const;
-/** The credit balance, read once a minute at most. */
-const BALANCE_KEY = ["billing", "balance"] as const;
 /** How often a started run is asked whether it is live yet. */
 const START_POLL_MS = 2_000;
 /** How long a started run may take before Chat says it did not start. */
@@ -64,13 +62,17 @@ export function useChatDefault(): { readonly provider: Provider; readonly set: (
   };
 }
 
+/** The caller's credit and the server's verdict on it, read once a minute at most; null on a site with no ledger. */
+export function useBalance(): BalanceBody | null {
+  return useQuery(balanceQuery).data ?? null;
+}
+
 /**
- * Whether each provider can take a chat now. The assistant's availability is the caller's own credit, which the site's
- * billing addon answers (a 404 when it has none), so it is read here; a CLI's is the station read's.
+ * Whether each provider can take a chat now. The assistant's availability is the server's verdict on the caller, which
+ * the site's billing addon answers (a 404 when it has none), so it is read here; a CLI's is the station read's.
  */
 export function useProviderStatuses(station: WorkspaceState | null): Record<Provider, ProviderStatus> {
-  const balance = useQuery({ queryKey: BALANCE_KEY, queryFn: ({ signal }) => getBalance({ signal }), staleTime: 60_000, retry: false });
-  return providerStatuses(station, balance.data ?? null);
+  return providerStatuses(station, useBalance());
 }
 
 type Props = {
@@ -85,7 +87,8 @@ type Props = {
  */
 export function ProviderPicker({ station }: Props) {
   const queryClient = useQueryClient();
-  const statuses = useProviderStatuses(station);
+  const balance = useBalance();
+  const statuses = providerStatuses(station, balance);
   const chatDefault = useChatDefault();
   const [busy, setBusy] = useState<Provider | null>(null);
   const [starting, setStarting] = useState<Provider | null>(null);
@@ -206,7 +209,8 @@ export function ProviderPicker({ station }: Props) {
           </span>
           <button type="button" className="provider-star" aria-pressed={chatDefault.provider === provider} aria-label={`New chats start on ${providerName(provider, station)}`}
             disabled={!status.ok} onClick={() => void star(provider)}>{chatDefault.provider === provider ? "★" : "☆"}</button>
-          {!status.ok && <p className="provider-reason muted">{reasonText(provider, status.reason)}</p>}
+          {provider === "assistant" && balance !== null && <CreditLine balance={balance} />}
+          {!status.ok && <p className="provider-reason muted">{reasonText(status)}</p>}
         </div>;
       })}
     </div>
@@ -238,8 +242,18 @@ export function ProviderPicker({ station }: Props) {
   </div>;
 }
 
-/** Why a provider is out, with the link to Settings for the assistant's credit. */
-export function reasonText(provider: Provider, reason: string) {
-  if (provider === "assistant" && reason === OUT_OF_CREDIT) return <>Out of credit: top up in <a href="#/settings">Settings</a></>;
-  return reason;
+/** What is left and what was spent, under the assistant's name, and the notice before the credit runs out. */
+function CreditLine({ balance }: { readonly balance: BalanceBody }) {
+  const { left, spent } = creditLine(balance);
+  const low = lowCredit(balance);
+  return <>
+    <p className="provider-credit muted">{left} · {spent}</p>
+    {low !== null && <p className="provider-low" role="status">{low} Top up in <a href="#/settings">Settings</a>.</p>}
+  </>;
+}
+
+/** Why a provider is out, with the link to Settings where the reason is about the caller's credit. */
+export function reasonText(status: ProviderStatus) {
+  if (status.credit) return <>{status.reason} Top up in <a href="#/settings">Settings</a>.</>;
+  return status.reason;
 }

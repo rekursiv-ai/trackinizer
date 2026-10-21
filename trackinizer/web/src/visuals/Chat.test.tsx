@@ -217,8 +217,9 @@ async function type(text: string) {
 
 /** The station's chat is conversation `id` when the next `shell` renders. */
 const open = (id: string) => { opened = id; };
-/** The words of each line, without its "Fork from here" button. */
-const articles = () => screen.getAllByRole("article").map((line) => [...line.children].filter((child) => child.tagName !== "BUTTON")
+/** The words of each line, without its "Fork from here" button or the name of the agent that wrote an answer. */
+const articles = () => screen.getAllByRole("article").map((line) => [...line.children]
+  .filter((child) => child.tagName !== "BUTTON" && !child.classList.contains("chat-line-agent"))
   .map((child) => child.textContent).join(""));
 const openMore = () => fireEvent.click(screen.getByRole("button", { name: "More chat actions" }));
 
@@ -1200,14 +1201,16 @@ test("a stored conversation with no session on this server says so, and reads no
   expect(listSessionParts).not.toHaveBeenCalled();
 });
 
-test("a viewer reads a chat but cannot post in it", async () => {
+test.each([
+  ["a live partner", workspace],
+  ["a CLI chat with no run", { ...workspace, provider: "claude" as const, partner: { ...SCOUT, status: "offline" as const, provider: "claude" as const, label: "claude: no run" } }],
+])("a viewer reads a chat with %s, and where the box would be is told they read it but do not post", async (_, state) => {
   open("c1");
   hold("c1", said(0, GRACE, "a teammate's line"), answered(1, "an answer"));
-  shell(workspace, { profile: { role: "viewer" } });
+  shell(state, { profile: { role: "viewer" } });
   expect(await screen.findByText("an answer")).toBeTruthy();
-  const box = screen.getByRole("textbox", { name: "Message" });
-  expect(box).toHaveProperty("disabled", true);
-  expect(box.getAttribute("placeholder")).toContain("read this chat but not post");
+  expect(screen.getByText("Viewers can read this chat but not post.")).toBeTruthy();
+  expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
   expect(sendChatLine).not.toHaveBeenCalled();
 });
 
@@ -1381,6 +1384,20 @@ test("every part of the session is read, in order", async () => {
   shell();
   await screen.findByText("after the restart");
   expect(articles()).toEqual(["before the restart", "after the restart"]);
+});
+
+test("each answer shows the agent whose part wrote it, not the provider the station has now", async () => {
+  open("c1");
+  hold("c1");
+  vi.mocked(listSessionParts).mockResolvedValue([
+    { part: 0, name: "a.jsonl", format: "sagent", records: 2, metadata: {}, ir_id: "i" },
+    { part: 1, name: "b.jsonl", format: "claude", records: 1, metadata: {}, ir_id: "j" },
+  ]);
+  vi.mocked(readSessionRecords).mockImplementation(async (_id, { part }) => (part === 0 ? [said(0, ME, "a question"), answered(1, "from the assistant")] : [answered(0, "from claude")]));
+  shell({ ...workspace, provider: "codex" });
+  await screen.findByText("from claude");
+  const agentOf = (text: string) => screen.getByText(text).closest("article")!.querySelector(".chat-line-agent")?.textContent ?? null;
+  expect([agentOf("a question"), agentOf("from the assistant"), agentOf("from claude")]).toEqual([null, "scout", "claude"]);
 });
 
 const OFF_LINE = "Chat is off: the assistant is not connected.";

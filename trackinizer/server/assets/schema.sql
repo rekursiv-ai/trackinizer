@@ -1112,6 +1112,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS credit_entries_one_purchase_per_payment
 CREATE INDEX IF NOT EXISTS credit_entries_user_created
     ON credit_entries (email, created_at);
 
+-- A period in which a person is not held to their credit: the last day, a note, who set
+-- it and when. It ends by itself after its last day. No FK to ``users``, as in
+-- ``credit_entries``. Added in 053.
+CREATE TABLE IF NOT EXISTS credit_grace (
+    email  TEXT PRIMARY KEY CHECK (email = lower(email)),
+    until  DATE NOT NULL,
+    note   TEXT NOT NULL DEFAULT '',
+    set_by TEXT NOT NULL,
+    set_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
 -- One text file of code, stored once per owner by the sha256 of its UTF-8 bytes and
 -- kept zstd-compressed. Dedupe never crosses owners: a store shared between owners
 -- would let anyone learn whether a file exists. Added in 048.

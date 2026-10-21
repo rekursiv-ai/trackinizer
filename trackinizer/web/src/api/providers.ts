@@ -38,8 +38,8 @@ export function hasAssistant(station: StationAssistant | null | undefined): bool
   return station?.assistant !== null;
 }
 
-/** Why the assistant is out: the caller's credit is spent, on a site that enforces it. */
-export const OUT_OF_CREDIT = "Out of credit: top up in Settings";
+/** Why the assistant is out when the station says it is, and gives no reason: the caller's credit is spent. */
+export const OUT_OF_CREDIT = "You are out of credit.";
 
 /** Why the assistant is out: the server has none configured. */
 export const NO_ASSISTANT = "No assistant on this server";
@@ -49,24 +49,28 @@ export function noMachineReason(provider: Provider): string {
   return `Connect a machine with \`trax machine connect\` and install ${provider} on it`;
 }
 
-/** Whether one provider can take a chat now, and the reason it cannot (empty when it can). */
-export type ProviderStatus = { readonly ok: boolean; readonly reason: string };
+/**
+ * Whether one provider can take a chat now, and the reason it cannot (empty when it can). `credit` marks a reason that
+ * is about the caller's credit, which Settings is where to answer.
+ */
+export type ProviderStatus = { readonly ok: boolean; readonly reason: string; readonly credit?: true };
 
 /**
- * Each provider's status: the assistant is out when the server has none, or when the site's credit ledger answers
- * and its balance is spent; otherwise a provider is out when the station read says so. A station read without the
- * fields leaves every provider available.
+ * Each provider's status: the assistant is out when the server has none, or when the site's billing addon answers
+ * that the caller may not run (`can_run`, with its `reason`); otherwise a provider is out when the station read says
+ * so. A station read without the fields leaves every provider available.
  */
 export function providerStatuses(station: (StationProviders & StationAssistant) | null | undefined, balance: BalanceBody | null): Record<Provider, ProviderStatus> {
-  const exhausted = balance !== null && balance.usd <= 0;
-  return Object.fromEntries(PROVIDERS.map((provider) => [provider, statusOf(provider, station, exhausted)])) as Record<Provider, ProviderStatus>;
+  return Object.fromEntries(PROVIDERS.map((provider) => [provider, statusOf(provider, station, balance)])) as Record<Provider, ProviderStatus>;
 }
 
-function statusOf(provider: Provider, station: (StationProviders & StationAssistant) | null | undefined, exhausted: boolean): ProviderStatus {
+function statusOf(provider: Provider, station: (StationProviders & StationAssistant) | null | undefined, balance: BalanceBody | null): ProviderStatus {
   if (provider === "assistant" && !hasAssistant(station)) return { ok: false, reason: NO_ASSISTANT };
-  if (provider === "assistant" && exhausted) return { ok: false, reason: OUT_OF_CREDIT };
+  if (provider === "assistant" && balance !== null && !balance.can_run) return { ok: false, reason: balance.reason, credit: true };
   if (station?.available?.[provider] !== false) return { ok: true, reason: "" };
-  return { ok: false, reason: station.reasons?.[provider] || (provider === "assistant" ? OUT_OF_CREDIT : noMachineReason(provider)) };
+  const reason = station.reasons?.[provider];
+  if (reason) return { ok: false, reason };
+  return provider === "assistant" ? { ok: false, reason: OUT_OF_CREDIT, credit: true } : { ok: false, reason: noMachineReason(provider) };
 }
 
 /** The label a provider's chat shows: the server's (provider and machine), else the partner's name, else `fallback`. */
