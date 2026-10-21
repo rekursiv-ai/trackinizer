@@ -125,7 +125,7 @@ class Machines(Command):
                 "--sandbox declares this computer a disposable sandbox where agents "
                 "may act freely. Every connect records its answer for this user, so "
                 "a connect without the flag withdraws it. While it holds, 'trax run' "
-                "starts codex without approvals and claude in auto mode, unless you "
+                "starts codex without approvals and claude in bypass mode, unless you "
                 "pass the agent's own permission flags. Never declare a computer "
                 "that holds work or keys you would mind losing."
             ),

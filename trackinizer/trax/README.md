@@ -117,8 +117,14 @@ name it). `TRAX_MACHINE_TERMINAL_DIRECT=0` turns the link off.
 where agents may act freely. Each connect records the answer for this user,
 beside the machine credential: on with the flag, off without it. While it is on,
 `trax run codex` starts codex with `--dangerously-bypass-approvals-and-sandbox`
-and `trax run claude` starts claude with `--permission-mode auto`, unless you pass
-the agent's own permission flags. `trax run` has no such flag: codex's `--sandbox`
+and `trax run claude` starts claude with `--permission-mode bypassPermissions` and
+`--settings '{"skipDangerousModePermissionPrompt":true}'`, unless you pass the
+agent's own permission flags. That setting, which reaches claude inside the one
+settings file `trax run` hands it, skips claude's bypass-mode startup dialog for that
+launch only: on claude 2.1.306 the inline flag opened straight to the prompt and
+left `~/.claude/settings.json` and `~/.claude.json` unchanged. Your own `--settings`
+as inline JSON gets the key added; as a file it leaves claude in
+`--permission-mode auto` for that run. `trax run` has no such flag: codex's `--sandbox`
 stays codex's. Do not declare a computer that holds work or keys you would mind
 losing.
 
