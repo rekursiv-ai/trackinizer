@@ -190,14 +190,15 @@ wheels = [
 
 [[package]]
 name = "configgle"
-version = "1.4.2"
+version = "1.4.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "treekle" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7b/05/d95ece9025936d662ec59e00e361764271e49a5d96875461db22ba6215d2/configgle-1.4.2.tar.gz", hash = "sha256:0ae8eccf49a00399b2faaae6876f7b11fefffb0f496b71bf80850de4077256bb", size = 279315, upload-time = "2026-10-08T01:40:07.661Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/e6/ed4cc3ac6eff432950257b9ce08d2708e10efa3d6636baf86eba5c963577/configgle-1.4.3.tar.gz", hash = "sha256:0199dfb1bf3a876da64c8fb85b02a1966d6bfdbe5eb5a750e5180ab08270a9c2", size = 294537, upload-time = "2026-10-21T02:52:35.642Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/74/31ccd0e440cd5c572b303bafd00a06d1851140b20434276fa4d1d84c1c52/configgle-1.4.2-py3-none-any.whl", hash = "sha256:3f62a762797dc916da7f45cbe8a921fdfa213dc8fe9d4e893247ea632f609654", size = 92883, upload-time = "2026-10-08T01:40:06.012Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/d1/75f9b68f3ece727f959cfbd365e2d3bec900a31aa4be74be789e9110fda6/configgle-1.4.3-py3-none-any.whl", hash = "sha256:64e858714044518f60765e79e00cf9b35d77908d3c0ed90d9790feacd37eaa34", size = 90019, upload-time = "2026-10-21T02:52:34.01Z" },
 ]
 
 [[package]]
@@ -1274,8 +1275,8 @@ wheels = [
 
 [[package]]
 name = "rekursiv-ai-typeshed"
-version = "0.1.5"
-source = { git = "https://github.com/rekursiv-ai/typings?subdirectory=typeshed&branch=main#c30f30545f2727b9c3596924121c420ebceb51a5" }
+version = "0.1.6"
+source = { git = "https://github.com/rekursiv-ai/typings?subdirectory=typeshed&branch=main#2220e48b5d65e0bb8adf8e4e602fe8b4faefa758" }
 dependencies = [
     { name = "basedpyright" },
     { name = "ty" },
@@ -1283,8 +1284,8 @@ dependencies = [
 
 [[package]]
 name = "rekursiv-ai-typings"
-version = "0.1.5"
-source = { git = "https://github.com/rekursiv-ai/typings?branch=main#c30f30545f2727b9c3596924121c420ebceb51a5" }
+version = "0.1.6"
+source = { git = "https://github.com/rekursiv-ai/typings?branch=main#2220e48b5d65e0bb8adf8e4e602fe8b4faefa758" }
 
 [[package]]
 name = "rich"
@@ -1716,8 +1717,8 @@ wheels = [
 
 [[package]]
 name = "treekle"
-version = "0.2.0"
-source = { git = "https://github.com/rekursiv-ai/treekle?branch=main#906a0c66e1e0a502dd8b9ceb14118ce0c0d40681" }
+version = "0.3.0"
+source = { git = "https://github.com/rekursiv-ai/treekle?branch=main#38180a81d020ac1082953a39426fc72a49d3d51f" }
 
 [[package]]
 name = "truststore"
