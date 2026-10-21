@@ -131,8 +131,8 @@ class Terminal:
     stopping: bool = False
     """Whether the shell was told to stop; the station no longer lists it."""
 
-    replaying: list[tuple[Frame, bytes]] | None = None
-    """Frames that arrived while a browser is being caught up; sent right after."""
+    replaying: asyncio.Event | None = None
+    """Set when the current replay finishes; the host waits rather than buffering."""
 
     pre_input: bytearray = field(default_factory=bytearray)
     """Keystrokes typed before the host dialled in, up to one frame's worth."""
@@ -431,10 +431,8 @@ class TerminalHub:
           offset: The stream offset the browser has reached.
 
         """
-        # The ring is read and the socket published with no await between, and output
-        # that arrives while the replay goes out is queued behind it. A send yields, so
-        # otherwise a chunk could reach the new socket before its ACK and again in the
-        # replay.
+        # Publish the replay gate before yielding: the host must not append to the
+        # ring or send live frames until this snapshot has reached the browser.
         previous, term.browser = term.browser, socket
         term.detached_at = None
         data, resume, lost = term.ring.since(offset)
@@ -442,8 +440,8 @@ class TerminalHub:
         # is behind it. It resumes on the relay from where the ring ends.
         relay_from = term.ring.end if self._clock() < term.direct_until else None
         term.direct_until = 0.0
-        backlog: list[tuple[Frame, bytes]] = []
-        term.replaying = backlog
+        replayed = asyncio.Event()
+        term.replaying = replayed
         try:
             if previous is not None:
                 await self._close(previous, wire_terminals.CLOSE_TAKEN_OVER)
@@ -457,9 +455,6 @@ class TerminalHub:
             await self._to_browser(term, socket, Frame.ACK, resume.to_bytes(8))
             if data:
                 await self._to_browser(term, socket, Frame.OUTPUT, data)
-            while backlog:
-                kind, payload = backlog.pop(0)
-                await self._to_browser(term, socket, kind, payload)
             if relay_from is not None:
                 await self._to_host(
                     term,
@@ -467,8 +462,9 @@ class TerminalHub:
                     wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, relay_from),
                 )
         finally:
-            if term.replaying is backlog:
+            if term.replaying is replayed:
                 term.replaying = None
+            replayed.set()
 
     def detach_browser(self, term: Terminal, socket: Socket) -> None:
         """Note that ``socket`` left; a taken-over browser's departure changes nothing."""
@@ -519,12 +515,20 @@ class TerminalHub:
           payload: Its bytes.
 
         """
-        if term.ended:
+        if term.id not in self._terminals:
+            return
+        if kind is Frame.KEEPALIVE:
+            self._keepalive(term, payload)
             return
         if kind is Frame.OUTPUT:
             delay = term.output_rate.delay(len(payload), now=self._clock())
             if delay:
                 await self._sleep(delay)
+        while term.replaying is not None and not term.ended:
+            await term.replaying.wait()
+        if term.ended:
+            return
+        if kind is Frame.OUTPUT:
             term.ring.append(payload)
             await self._live(term, Frame.OUTPUT, payload)
         elif kind is Frame.EXIT:
@@ -532,8 +536,6 @@ class TerminalHub:
             await self.end(term, code=wire_terminals.CLOSE_ENDED)
         elif kind is Frame.SIGNAL:
             await self._live(term, Frame.SIGNAL, payload)
-        elif kind is Frame.KEEPALIVE:
-            self._keepalive(term, payload)
         elif kind is Frame.ACK and len(payload) == 8:
             # The host resumes on the relay at an offset the ring never saw: output went
             # direct meanwhile. Later offsets stay contiguous from here.
@@ -610,6 +612,8 @@ class TerminalHub:
         if term.ended:
             return
         term.ended = True
+        if term.replaying is not None:
+            term.replaying.set()
         self._terminals.pop(term.id, None)
         # A peer that vanished makes its close raise, which `_close` absorbs, so the
         # other leg is still closed.
@@ -682,10 +686,8 @@ class TerminalHub:
             _logger.debug("close of a vanished peer", exc_info=True)
 
     async def _live(self, term: Terminal, kind: Frame, payload: bytes) -> None:
-        """Send a frame to the attached browser, or queue it while it is caught up."""
-        if term.replaying is not None:
-            term.replaying.append((kind, payload))
-        elif term.browser is not None:
+        """Send a live frame once the host has waited for any replay."""
+        if term.browser is not None:
             await self._to_browser(term, term.browser, kind, payload)
 
     def _expired(self, term: Terminal, *, now: float) -> int | None:

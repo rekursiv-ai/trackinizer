@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
@@ -26,9 +27,13 @@ from treekle import ReadError, from_plain
 
 from trackinizer.lib.posix.host import Frame, decode_frame
 from trackinizer.server import auth
-from trackinizer.server.api._deps import auth_is_disabled, get_terminal_hub
+from trackinizer.server.api._deps import (
+    auth_is_disabled,
+    get_replays,
+    get_terminal_hub,
+)
 from trackinizer.server.api._origin import is_strictly_same_origin
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._routes_shared import engine_of, idempotency_key
 from trackinizer.server.api.machines_routes import MachineName, fetch_machines
 from trackinizer.server.api.session_access import resolve_asker
 from trackinizer.server.auth import AuthIdentity, require_role
@@ -37,6 +42,7 @@ from trackinizer.server.terminals import (
     Opening,
     SocketClosedError,
     Terminal,
+    TerminalHub,
     TerminalLimitError,
     decode_attach,
 )
@@ -149,21 +155,28 @@ async def open_terminal_route(
                 owner,
             )
     try:
-        term = hub.open(
-            Opening(
-                user=owner,
-                machine_id=machine_id,
-                machine=body.machine,
-                rows=body.rows,
-                cols=body.cols,
-                workspace=body.workspace,
-                workstream=workstream,
-                requested_by=body.requested_by,
-                surface=body.surface,
-                command=body.command,
-                attach=body.attach,
-                run_name=body.run_name,
-                cwd=body.cwd,
+        key = idempotency_key(request)
+        terminal_id = await get_replays(request).terminal_opens.run(
+            None if key is None else (identity.user_id, identity.api_key_id, key),
+            fingerprint=f"{owner}:{body.model_dump_json()}",
+            operation=partial(
+                _open_terminal,
+                hub,
+                opening=Opening(
+                    user=owner,
+                    machine_id=machine_id,
+                    machine=body.machine,
+                    rows=body.rows,
+                    cols=body.cols,
+                    workspace=body.workspace,
+                    workstream=workstream,
+                    requested_by=body.requested_by,
+                    surface=body.surface,
+                    command=body.command,
+                    attach=body.attach,
+                    run_name=body.run_name,
+                    cwd=body.cwd,
+                ),
             ),
         )
     except TerminalLimitError as error:
@@ -172,6 +185,9 @@ async def open_terminal_route(
             code="terminal_limit",
             message="too many terminals opened just now; wait a minute",
         ) from error
+    term = hub.terminal(terminal_id)
+    if term is None:
+        raise HTTPException(410, "The terminal opened by this request has ended")
     return TerminalOpened(
         terminal_id=term.id,
         ticket=hub.mint_ticket(term),
@@ -357,25 +373,16 @@ async def terminal_wait_route(
     await current_machine(request, machine_id)
     await _require_instance(request, machine_id, instance=instance)
     hub = get_terminal_hub(request)
-    term = await hub.wait(
-        machine_id,
-        wait_sec=min(wait_sec, wire_terminals.WAIT_MAX_SEC),
-    )
-    if term is None:
-        return None
-    return TerminalWait(
-        terminal_id=term.id,
-        opener=term.user,
-        rows=term.rows,
-        cols=term.cols,
-        workspace=term.workspace,
-        workstream=term.workstream,
-        requested_by=term.requested_by,
-        command=term.command,
-        attach=term.attach,
-        run_name=term.run_name,
-        cwd=term.cwd,
-        ice_servers=list(hub.ice_servers),
+    key = idempotency_key(request)
+    return await get_replays(request).terminal_waits.run(
+        None if key is None else (machine_id, instance, key),
+        fingerprint=str(machine_id),
+        operation=partial(
+            _next_terminal,
+            hub,
+            machine_id=machine_id,
+            wait_sec=min(wait_sec, wire_terminals.WAIT_MAX_SEC),
+        ),
     )
 
 
@@ -720,3 +727,37 @@ async def _require_instance(
         )
     if current is not True:
         raise HTTPException(status_code=403, detail="stale host instance")
+
+
+async def _open_terminal(hub: TerminalHub, *, opening: Opening) -> UUID:
+    """Queue one terminal, retaining only its id after it ends."""
+    return hub.open(opening).id
+
+
+async def _next_terminal(
+    hub: TerminalHub,
+    *,
+    machine_id: UUID,
+    wait_sec: float,
+) -> TerminalWait | None:
+    """Take one open and freeze the offer before its response can be lost."""
+    term = await hub.wait(
+        machine_id,
+        wait_sec=wait_sec,
+    )
+    if term is None:
+        return None
+    return TerminalWait(
+        terminal_id=term.id,
+        opener=term.user,
+        rows=term.rows,
+        cols=term.cols,
+        workspace=term.workspace,
+        workstream=term.workstream,
+        requested_by=term.requested_by,
+        command=term.command,
+        attach=term.attach,
+        run_name=term.run_name,
+        cwd=term.cwd,
+        ice_servers=list(hub.ice_servers),
+    )

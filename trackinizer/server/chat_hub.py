@@ -220,8 +220,9 @@ async def iter_workspace_events(
     response headers until the first body byte, then the canvas as it stands, read
     after subscribing so no change falls between the read and the first frame. The
     canvas is read again, and sent when its partner differs, whenever the broker
-    is nudged and after each ``keepalive_sec`` without a frame, which also gets a
-    comment. Inquiry ids from ``changes`` pass through as ``changed`` frames. The
+    is nudged and every ``keepalive_sec``, even while frames arrive. An idle
+    interval also gets a comment. Inquiry ids from ``changes`` pass through as
+    ``changed`` frames. The
     stream ends when the subscriber falls too far behind, or when its owner is no
     longer active; it reconnects only in the first case.
 
@@ -230,7 +231,7 @@ async def iter_workspace_events(
       workspace_id: Canvas to follow.
       read_state: Reads the canvas, with its partner.
       is_active: Whether the canvas's owner may still use the app; asked on each
-        keepalive, and the stream ends when it says no.
+        interval, even while frames arrive, and the stream ends when it says no.
       changes: Ids of changed inquiries, or None to relay none.
       keepalive_sec: Longest silence before a comment; must stay well under the
         edge's 125 s idle cutoff.
@@ -247,19 +248,31 @@ async def iter_workspace_events(
         frame_wait = asyncio.ensure_future(stream.queue.get())
         nudge_wait = asyncio.ensure_future(stream.nudged.wait())
         change_wait = None if changes is None else asyncio.ensure_future(anext(changes))
+        deadline = time.monotonic() + keepalive_sec
         try:
             while True:
                 waits = {w for w in (frame_wait, nudge_wait, change_wait) if w}
                 done, _ = await asyncio.wait(
                     waits,
-                    timeout=keepalive_sec,
+                    timeout=max(0.0, deadline - time.monotonic()),
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if not done:
                     yield b": keepalive\n\n"
+                recheck = not done or time.monotonic() >= deadline
+                if recheck:
                     if not await is_active():
                         return
-                recheck = not done
+                    deadline = time.monotonic() + keepalive_sec
+                if nudge_wait in done:
+                    stream.nudged.clear()
+                    nudge_wait = asyncio.ensure_future(stream.nudged.wait())
+                    recheck = True
+                if recheck:
+                    state = await read_state()
+                    if state.partner != partner:
+                        partner = state.partner
+                        yield _sse(WorkspaceFrame(state=state))
                 if frame_wait in done:
                     frame = frame_wait.result()
                     frame_wait = asyncio.ensure_future(stream.queue.get())
@@ -276,15 +289,6 @@ async def iter_workspace_events(
                     else:
                         change_wait = asyncio.ensure_future(anext(changes))
                         yield _sse(ChangedFrame(id=changed))
-                if nudge_wait in done:
-                    stream.nudged.clear()
-                    nudge_wait = asyncio.ensure_future(stream.nudged.wait())
-                    recheck = True
-                if recheck:
-                    state = await read_state()
-                    if state.partner != partner:
-                        partner = state.partner
-                        yield _sse(WorkspaceFrame(state=state))
         finally:
             pending = {w for w in (frame_wait, nudge_wait, change_wait) if w}
             for wait in pending:

@@ -1276,7 +1276,7 @@ wheels = [
 [[package]]
 name = "rekursiv-ai-typeshed"
 version = "0.1.6"
-source = { git = "https://github.com/rekursiv-ai/typings?subdirectory=typeshed&branch=main#e94b000a24aec1ceabba588ccc3f2f316fa4a7e4" }
+source = { git = "https://github.com/rekursiv-ai/typings?subdirectory=typeshed&branch=main#4445cc887efa8a45b70430d7bcb2caf745b6784e" }
 dependencies = [
     { name = "basedpyright" },
     { name = "ty" },
@@ -1285,7 +1285,7 @@ dependencies = [
 [[package]]
 name = "rekursiv-ai-typings"
 version = "0.1.6"
-source = { git = "https://github.com/rekursiv-ai/typings?branch=main#e94b000a24aec1ceabba588ccc3f2f316fa4a7e4" }
+source = { git = "https://github.com/rekursiv-ai/typings?branch=main#4445cc887efa8a45b70430d7bcb2caf745b6784e" }
 
 [[package]]
 name = "rich"

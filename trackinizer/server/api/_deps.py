@@ -9,6 +9,7 @@ import datetime
 import functools
 import uuid
 
+from trackinizer.server.api.replays import Replays
 from trackinizer.server.capture_relay import CaptureRelay
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.chat_partials import ChatPartials
@@ -60,6 +61,23 @@ def get_inbound(request: Request) -> InboundQueue:
     """
     app = cast(_App, request.app)
     return app.state.inbound
+
+
+def get_replays(request: Request) -> Replays:
+    """Return the app's consuming-request receipts, made on first use.
+
+    Args:
+      request: The authorized consuming request.
+
+    Returns:
+      replays: Receipts kept by this application process.
+
+    """
+    app = cast("FastAPI", request.app)
+    replays: object = getattr(app.state, "replays", None)
+    if not isinstance(replays, Replays):
+        replays = app.state.replays = Replays()
+    return replays
 
 
 def get_hub(request: Request) -> ChatHub:

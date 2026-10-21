@@ -583,10 +583,9 @@ class _SessionIRMixin(_CascadeAuditMixin):
         """Record what one part's file is; return its server-assigned ``part``.
 
         The client names the FILE and the server resolves the part, so a
-        restarted or resumed client cannot invent a conflicting number. Racing
-        appends on an unseen file both compute ``max(part)+1``; the unique
-        constraint on ``(session_id, name)`` rejects the loser, which then
-        re-reads the winner's.
+        restarted or resumed client cannot invent a conflicting number. The session
+        row serializes allocation before any filename or next-part read: competing
+        files then receive distinct parts, and a resumed file keeps its own part.
 
         Re-upserted per batch rather than written once: ``metadata`` is only
         correct for the prefix consumed -- claude's ascii-escaping majority is
@@ -627,6 +626,12 @@ class _SessionIRMixin(_CascadeAuditMixin):
             else ""
         )
         async with self.engine.acquire() as conn, tx(conn):
+            session = await conn.fetchval(
+                "SELECT id FROM inquiries WHERE id = $1 FOR UPDATE",
+                session_id,
+            )
+            if session is None:
+                raise NotFoundError(f"session {session_id} not found")
             found: object = await conn.fetchval(
                 "SELECT part FROM session_manifests "
                 "WHERE session_id = $1 AND name = $2",
@@ -650,7 +655,7 @@ class _SessionIRMixin(_CascadeAuditMixin):
                         "INSERT INTO session_manifests (session_id, part, name, "
                         "metadata, ir_id, format, records, opened_by_api_key_id) "
                         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
-                        "ON CONFLICT (session_id, part) DO UPDATE SET "
+                        "ON CONFLICT (session_id, name) DO UPDATE SET "
                         "metadata = EXCLUDED.metadata, ir_id = EXCLUDED.ir_id, "
                         "format = EXCLUDED.format, records = EXCLUDED.records",
                         guard,
@@ -670,20 +675,6 @@ class _SessionIRMixin(_CascadeAuditMixin):
                         f"part {part} of session {session_id} was opened by another "
                         "key",
                     )
-            except asyncpg.UniqueViolationError:
-                # A concurrent append claimed this part for a different file.
-                # Its manifest is now the truth for that number, so re-read
-                # rather than overwrite: ours belongs at a later part.
-                retry: object = await conn.fetchval(
-                    "SELECT part FROM session_manifests "
-                    "WHERE session_id = $1 AND name = $2",
-                    session_id,
-                    name,
-                )
-                if retry is None:
-                    raise
-                assert isinstance(retry, int)
-                part = retry
             except asyncpg.ForeignKeyViolationError as exc:
                 raise NotFoundError(f"session {session_id} not found") from exc
         return part

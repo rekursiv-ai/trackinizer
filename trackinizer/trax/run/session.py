@@ -200,13 +200,6 @@ _CANVAS_NOTE: Final = (
 )
 
 
-# The part name a PTY scrape is stored under. A stream adapter follows no
-# file, but every record still belongs to a part and the server resolves one
-# from a basename -- so the stream names itself. A constant rather than a
-# per-run name: a resumed scrape must append to the part it already has.
-_STREAM_PART: Final = Path("stream")
-
-
 # Adapter *factories*, not singletons: each run builds a fresh adapter so
 # per-run parse state (e.g. codex's last ``turn_context.model``) never leaks
 # into a second run in the same process (tests, a future supervisor).
@@ -319,10 +312,37 @@ class _SessionOwner:
 
 
 def _path_held_by_child(pid: int, path: Path) -> bool:
-    """Return whether the wrapped child currently has ``path`` open."""
-    if Path("/proc/self/fd").is_dir():
-        return _path_held_in_proc(pid, path)
-    return _path_held_by_lsof(pid, path)
+    """Return whether the wrapped process or one of its descendants holds ``path``."""
+    held = _path_held_in_proc if Path("/proc/self/fd").is_dir() else _path_held_by_lsof
+    return held(pid, path) or any(held(child, path) for child in _descendant_pids(pid))
+
+
+def _descendant_pids(pid: int) -> list[int]:
+    """Read the process tree, including wrappers whose worker owns the rollout."""
+    try:
+        result = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    children: dict[int, list[int]] = {}
+    for line in result.stdout.splitlines():
+        child, parent = map(int, line.split())
+        children.setdefault(parent, []).append(child)
+    pending = list(children.get(pid, ()))
+    found: list[int] = []
+    seen = {pid}
+    while pending:
+        child = pending.pop()
+        if child not in seen:
+            seen.add(child)
+            found.append(child)
+            pending.extend(children.get(child, ()))
+    return found
 
 
 def _path_held_in_proc(pid: int, path: Path) -> bool:
@@ -1944,9 +1964,9 @@ def _deliver_one(
     item: InboundDrainItem,
     *,
     stream: bool,
+    cli: str,
     inbound: InboundState | None = None,
     bridge: PromptBridge | None = None,
-    cli: str = "",
     record: Callable[[SystemMessage], None] | None = None,
     gate: TrustGate | None = None,
 ) -> None:
@@ -2173,6 +2193,7 @@ async def _drain_until_stopped(
         inbound=inbound,
     )
     watched = tuple(d for d in adapter.session_dirs() if d.is_dir())
+    stream_part = Path(f"stream-{uuid.uuid4().hex}")
     lines: asyncio.Queue[_Captured] = asyncio.Queue(maxsize=_FILE_QUEUE_MAX)
     finish = asyncio.Event()
     follower = (
@@ -2210,6 +2231,7 @@ async def _drain_until_stopped(
                 config,
                 slash_queue=slash_queue,
                 stream_queue=stream_queue,
+                stream_part=stream_part,
                 run_records=run_records,
             )
             await _drain_lines(lines, emit=emit)
@@ -2252,6 +2274,7 @@ async def _drain_until_stopped(
             config,
             slash_queue=slash_queue,
             stream_queue=stream_queue,
+            stream_part=stream_part,
             run_records=run_records,
         )
         await _drain_lines(lines, emit=emit)
@@ -2516,12 +2539,13 @@ async def _drain_queues(
     *,
     slash_queue: deque[tuple[SlashCommand, datetime]],
     stream_queue: deque[bytes] | None,
+    stream_part: Path,
     run_records: deque[Event] | None = None,
 ) -> None:
     """Emit whatever the relay's and the prompt bridge's threads have queued."""
     try:
         _emit_slash_commands(adapter, sink, stats, config, slash_queue)
-        _emit_stream_lines(adapter, sink, stats, stream_queue)
+        _emit_stream_lines(adapter, sink, stats, stream_queue, part=stream_part)
         _emit_run_records(sink, stats, run_records)
     except Exception:
         _logger.warning("trax run: queue drain failed; continuing", exc_info=True)
@@ -2608,14 +2632,15 @@ def _emit_slash_commands(
 # Runs on the drain thread. The relay's IO path only appends to the deque (atomic), so
 # framing never blocks on a slow ``sink.feed``.
 #
-# Every line goes to ONE part: a scrape follows no file, but a record still needs one,
-# so the stream names itself (:data:`_STREAM_PART`) and the positions run from zero
-# across the whole run.
+# Every line goes to one part per run. A resumed scrape starts its own positions
+# at zero, so reusing a basename would overwrite or hide the preceding run's lines.
 def _emit_stream_lines(
     adapter: Adapter,
     sink: Sink,
     stats: _Stats,
     stream_queue: deque[bytes] | None,
+    *,
+    part: Path,
 ) -> None:
     """Drain stream-captured lines into the sink (single sink writer)."""
     if stream_queue is None:
@@ -2625,7 +2650,7 @@ def _emit_stream_lines(
             raw = stream_queue.popleft()
         except IndexError:
             break
-        for kind in sink.feed(adapter, _STREAM_PART, raw):
+        for kind in sink.feed(adapter, part, raw):
             stats.record(kind)
 
 
