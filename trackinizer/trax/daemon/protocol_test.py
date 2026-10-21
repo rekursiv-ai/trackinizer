@@ -422,6 +422,7 @@ class TestSourceVersionCoverage:
         result = subprocess.run(  # noqa: S603 -- fixed interpreter, literal probe.
             [sys.executable, "-c", probe],
             cwd=_import_probe_cwd(_CWD, module=__name__),
+            env=_import_probe_env(),
             check=True,
             capture_output=True,
             text=True,
@@ -614,6 +615,7 @@ class TestImportPurity:
         result = subprocess.run(  # noqa: S603 -- fixed interpreter, literal probe.
             [sys.executable, "-c", probe],
             cwd=_import_probe_cwd(_CWD, module=__name__),
+            env=_import_probe_env(),
             check=True,
             capture_output=True,
             text=True,
@@ -645,6 +647,7 @@ class TestImportPurity:
         result = subprocess.run(  # noqa: S603 -- fixed interpreter, literal probe.
             [sys.executable, "-c", probe],
             cwd=_import_probe_cwd(_CWD, module=__name__),
+            env=_import_probe_env(),
             check=True,
             capture_output=True,
             text=True,
@@ -662,6 +665,16 @@ def _import_probe_cwd(test_directory: Path, *, module: str) -> Path:
     """Return the directory ``module`` imports from, outside mutmut's ``mutants/``."""
     import_root = test_directory.resolve().parents[module.count(".") - 1]
     return import_root.parent if import_root.name == "mutants" else import_root
+
+
+# The sagent conftest exports PYTHONSAFEPATH=1 to every worker that collects it. A
+# probe would then skip its cwd and import whatever checkout the venv installed, so
+# in a worktree it would test that checkout instead of this one.
+def _import_probe_env() -> dict[str, str]:
+    """Return this process's environment without ``PYTHONSAFEPATH``."""
+    return {
+        name: value for name, value in os.environ.items() if name != "PYTHONSAFEPATH"
+    }
 
 
 def _recorded_stat(
