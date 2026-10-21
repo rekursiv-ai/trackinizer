@@ -3377,6 +3377,9 @@ class TestSessionOwnerAndArgv:
 _CHAT_RUN: Final = uuid.UUID("44444444-4444-4444-8444-444444444444")
 """The AgentSession a Chat run writes into, as ``--attach`` names it."""
 
+_SKIP_DIALOG: Final = '{"skipDangerousModePermissionPrompt":true}'
+"""The inline settings that open claude's bypass mode with no startup dialog."""
+
 
 def _spawned(
     cli: str,
@@ -3471,6 +3474,17 @@ class TestChatRunApprovals:
     ) -> None:
         assert _spawned("claude", cli_args=args, attach=_CHAT_RUN) == ["claude", *args]
 
+    def test_a_chat_run_allowing_bypass_still_starts_in_auto_mode(self) -> None:
+        # The flag only adds bypass to the modes the person can switch to and picks
+        # none, so off a sandbox the run keeps the interim auto review.
+        args = ("--allow-dangerously-skip-permissions",)
+        assert _spawned("claude", cli_args=args, attach=_CHAT_RUN) == [
+            "claude",
+            "--permission-mode",
+            "auto",
+            *args,
+        ]
+
     @pytest.mark.parametrize("declared", [False, True], ids=["chat", "sandbox"])
     @pytest.mark.parametrize(
         "args",
@@ -3535,27 +3549,101 @@ class TestChatRunApprovals:
             *args,
         ]
 
+    @pytest.mark.parametrize("attach", [None, _CHAT_RUN], ids=["plain", "chat"])
     @pytest.mark.parametrize(
-        ("attach", "expected"),
-        [
-            (None, ["claude", "--permission-mode", "auto", "--model", "haiku"]),
-            (_CHAT_RUN, ["claude", "--permission-mode", "auto", "--model", "haiku"]),
-        ],
-        ids=["plain", "chat"],
+        "args",
+        [("--model", "haiku"), ("-p", "hi")],
+        ids=["tui", "headless"],
     )
-    def test_claude_on_a_sandbox_runs_in_auto_mode_never_in_bypass_mode(
+    def test_claude_on_a_sandbox_bypasses_permissions_without_the_dialog(
         self,
         attach: uuid.UUID | None,
-        expected: list[str],
+        args: tuple[str, ...],
     ) -> None:
-        # Bypass mode opens a startup dialog whose default is "No, exit" on a computer
-        # that never accepted it, and nobody is watching a run that could answer it.
+        # Bypass mode opens a startup dialog whose default is "No, exit"; the inline
+        # setting skips it for this launch only and writes nothing to the person's
+        # settings (measured on claude 2.1.306).
         machine_host.set_sandbox(on=True)
-        argv = _spawned("claude", cli_args=("--model", "haiku"), attach=attach)
 
-        assert argv == expected
-        assert "--dangerously-skip-permissions" not in argv
-        assert "bypassPermissions" not in argv
+        assert _spawned("claude", cli_args=args, attach=attach) == [
+            "claude",
+            "--permission-mode",
+            "bypassPermissions",
+            "--settings",
+            _SKIP_DIALOG,
+            *args,
+        ]
+
+    @pytest.mark.parametrize("spelled", ["split", "equals"])
+    def test_claude_on_a_sandbox_adds_the_skip_to_the_persons_inline_settings(
+        self,
+        spelled: str,
+    ) -> None:
+        machine_host.set_sandbox(on=True)
+        given = '{"model":"opus","skipDangerousModePermissionPrompt":false}'
+        flag = ("--settings", given) if spelled == "split" else (f"--settings={given}",)
+
+        argv = _spawned("claude", cli_args=(*flag, "--model", "haiku"), attach=None)
+
+        assert argv == [
+            "claude",
+            "--permission-mode",
+            "bypassPermissions",
+            "--settings",
+            '{"model":"opus","skipDangerousModePermissionPrompt":true}',
+            "--model",
+            "haiku",
+        ]
+
+    @pytest.mark.parametrize(
+        "flag",
+        [
+            ("--settings", "/home/me/mine.json"),
+            ("--settings=/home/me/mine.json",),
+            ("--settings", "[1]"),
+            ("--settings", "{not json"),
+        ],
+        ids=["file", "file-equals", "not-an-object", "malformed"],
+    )
+    def test_claude_on_a_sandbox_stays_in_auto_mode_for_settings_it_cannot_merge(
+        self,
+        flag: tuple[str, ...],
+    ) -> None:
+        # Claude's help does not say what two ``--settings`` do, so the run keeps the
+        # person's one flag untouched and takes the mode that opens no dialog.
+        machine_host.set_sandbox(on=True)
+
+        assert _spawned("claude", cli_args=flag, attach=None) == [
+            "claude",
+            "--permission-mode",
+            "auto",
+            *flag,
+        ]
+
+    def test_the_skip_survives_the_box_hook_merge_into_one_settings_file(self) -> None:
+        machine_host.set_sandbox(on=True)
+        argv = _spawned("claude", cli_args=("-p", "hi"), attach=None)
+
+        argv, files = _with_box_hook(
+            argv,
+            adapter=ClaudeAdapter(),
+            placed={},
+            profile=None,
+        )
+
+        assert files is not None
+        assert argv == [
+            "claude",
+            "--settings",
+            str(files.settings),
+            "--permission-mode",
+            "bypassPermissions",
+            "-p",
+            "hi",
+        ]
+        merged = json_loads(files.settings.read_text(), dict[str, object])
+        assert merged["skipDangerousModePermissionPrompt"] is True
+        assert "SessionStart" in from_plain(merged["hooks"], dict[str, object])
 
     @pytest.mark.parametrize("attach", [None, _CHAT_RUN], ids=["plain", "chat"])
     def test_codex_on_a_sandbox_skips_approvals(
@@ -3596,15 +3684,23 @@ class TestChatRunApprovals:
             ("--permission-mode", "plan"),
             ("--permission-mode=acceptEdits",),
             ("--dangerously-skip-permissions",),
+            ("--allow-dangerously-skip-permissions",),
             ("--permission-prompt-tool", "stdio"),
         ],
-        ids=["mode", "mode-equals", "skip", "prompt-tool"],
+        ids=["mode", "mode-equals", "skip", "allow-skip", "prompt-tool"],
     )
     def test_claude_on_a_sandbox_keeps_the_permission_flags_the_person_passed(
         self,
         args: tuple[str, ...],
     ) -> None:
         machine_host.set_sandbox(on=True)
+        assert _spawned("claude", cli_args=args, attach=None) == ["claude", *args]
+
+    def test_claude_on_a_sandbox_keeps_the_settings_beside_the_persons_own_mode(
+        self,
+    ) -> None:
+        machine_host.set_sandbox(on=True)
+        args = ("--permission-mode", "plan", "--settings", '{"model":"opus"}')
         assert _spawned("claude", cli_args=args, attach=None) == ["claude", *args]
 
     def test_withdrawing_the_declaration_returns_to_the_default(self) -> None:

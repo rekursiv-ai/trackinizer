@@ -234,10 +234,13 @@ trax machine connect --sandbox
 agent without the usual questions:
 
 - codex skips its approvals and its own sandbox;
-- claude runs in its auto permission mode.
+- claude runs in its bypassPermissions mode, with its startup warning skipped
+  for that launch only (claude 2.1.306 saves nothing to your settings).
 
 Flags you give the agent yourself, such as `--permission-mode plan` for claude
-or `-s read-only` for codex, are never replaced. The declaration describes
+or `-s read-only` for codex, are never replaced. A claude `--settings` you
+pass as inline JSON is kept, with the skip added; one you pass as a file
+leaves claude in its auto permission mode for that run. The declaration describes
 the computer, not one machine name, and each connect sets it: a `trax machine
 connect` without `--sandbox` turns it off again.
 

@@ -53,7 +53,7 @@ import threading
 import time
 import uuid
 
-from treekle import PlainTree
+from treekle import PlainTree, json_dumps, json_loads
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
@@ -1537,12 +1537,16 @@ def _cli_argv(
             *(() if "--no-daemon" in config.cli_args else ("--no-daemon",)),
             *(() if _sets_codex_goals(config.cli_args) else ("--enable", "goals")),
         ]
-    argv[1:1] = _approval_args(
+    approval = _approval_args(
         adapter.name,
         cli_args=config.cli_args,
         attached=config.attach is not None,
         sandbox=machine_host.is_sandbox(),
     )
+    if "--settings" in approval:
+        # Ours carries the person's, merged, so theirs leaves the argv.
+        argv = [argv[0], *_without_flag(argv[1:], "--settings")]
+    argv[1:1] = approval
     return argv
 
 
@@ -1550,12 +1554,9 @@ def _cli_argv(
 # nobody watching, so an attached run gets the interim auto review until one ask path
 # ships (JP, 2026-10-21). A computer the person declared a sandbox, with
 # ``trax machine connect --sandbox``, is one where agents may act freely, so every run
-# there gets liberal permissions: codex skips its approvals and its own sandbox. Claude
-# gets its auto mode and never its bypass mode: bypass opens a startup dialog whose
-# default is "No, exit" on a computer that never accepted it, and a run nobody watches
-# cannot answer it. A headless claude run (``-p``) opens no such dialog and may use
-# bypassPermissions. The person's own permission flags win over all of it: a flag they
-# set is never replaced. ``--yolo`` is codex's hidden alias of its bypass flag, and
+# there gets no restriction: codex skips its approvals and its own sandbox, and claude
+# gets bypassPermissions. The person's own permission flags win over all of it: a flag
+# they set is never replaced. ``--yolo`` is codex's hidden alias of its bypass flag, and
 # codex refuses the two together (exit 2, 0.163.0).
 def _approval_args(
     cli_name: str,
@@ -1573,7 +1574,11 @@ def _approval_args(
             "--permission-prompt-tool",
         }:
             return []
-        return ["--permission-mode", "auto"] if attached or sandbox else []
+        # Allowing bypass picks no mode, so off a sandbox a Chat run still takes auto.
+        if sandbox:
+            allowed = "--allow-dangerously-skip-permissions" in given
+            return [] if allowed else _claude_bypass_args(cli_args)
+        return ["--permission-mode", "auto"] if attached else []
     if cli_name == "codex":
         keys = {
             value.partition("=")[0].strip() for value in _codex_config_values(cli_args)
@@ -1593,6 +1598,32 @@ def _approval_args(
             return ["--dangerously-bypass-approvals-and-sandbox"]
         return ["-c", 'approvals_reviewer="auto_review"'] if attached else []
     return []
+
+
+# Bypass mode opens a startup dialog, "WARNING: Claude Code running in Bypass
+# Permissions mode", whose default is "No, exit" on a computer that never accepted it,
+# and a run nobody watches cannot answer it. The inline setting skips the dialog for
+# this launch only: measured on claude 2.1.306, a launch with it opened straight to the
+# prompt and left ~/.claude/settings.json and ~/.claude.json untouched. Claude's help
+# does not say what two ``--settings`` do, so the person's own inline JSON is merged
+# into ours and theirs leaves the argv. Their ``--settings`` as a file, or as JSON that
+# is no object, cannot be merged here, and the run takes the auto mode, which opens no
+# dialog, rather than risk a bypass that exits at once. Our key wins over theirs: with
+# it false the dialog returns and the run exits.
+def _claude_bypass_args(cli_args: tuple[str, ...]) -> list[str]:
+    """Return the flags that start claude in bypass mode with no startup dialog."""
+    given = _cli_arg_value(cli_args, "--settings")
+    try:
+        settings = {} if given is None else json_loads(given, dict[str, PlainTree])
+    except ValueError:
+        return ["--permission-mode", "auto"]
+    settings["skipDangerousModePermissionPrompt"] = True
+    return [
+        "--permission-mode",
+        "bypassPermissions",
+        "--settings",
+        json_dumps(settings, separators=(",", ":")),
+    ]
 
 
 # Codex drops ``/goal`` without a word when its goals feature is off, so a run turns it
