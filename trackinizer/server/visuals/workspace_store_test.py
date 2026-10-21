@@ -1142,6 +1142,47 @@ def test_settings_refs_carry_the_stored_workstream_suggestion(
     ]
 
 
+def test_settings_refs_drop_a_suggestion_of_the_workstream_the_chat_is_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A chat already in the suggested workstream reads back with no suggestion."""
+    conversation_id, workstream_id = uuid.uuid4(), uuid.uuid4()
+    conn: AsyncMock = make_conn()
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "id": _WORKSPACE,
+            "station": {
+                "name": "Charm",
+                "conversation_id": str(conversation_id),
+                "workstream_id": str(workstream_id),
+                "suggestion": {
+                    "title": "Charm ARC1/2",
+                    "workstream_id": str(workstream_id),
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        workspace_store,
+        "open_personal_settings",
+        AsyncMock(return_value=uuid.uuid4()),
+    )
+    store = Store(cast("DatabaseEngine", FakeEngine(conn)), embed=StubEmbedder())
+
+    refs = asyncio.run(
+        settings_refs_for_chat(
+            store,
+            user_id=_USER,
+            email="user@example.com",
+            conversation_id=conversation_id,
+            session_id=None,
+        ),
+    )
+
+    assert refs.workstream_issue_id == workstream_id
+    assert refs.suggestion is None
+
+
 def test_a_settings_artifact_is_submitted_as_its_owners_pinned_row() -> None:
     """The settings row is submitted owned by its user and labelled as settings."""
     conn = cast("Conn", object())
@@ -1955,6 +1996,64 @@ async def test_suggestion_updates_chat_station_without_creating_an_issue(
         title="A possible stream",
     )
     assert issues_after == issues_before
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_suggestion_of_the_chats_own_workstream_reads_back_as_none(
+    empty_workspace_schema: PGliteEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The chat sits in W: W is no suggestion; another workstream still is."""
+    monkeypatch.setattr(
+        workspace_store,
+        "_with_partner",
+        _station_state_without_partner,
+    )
+    monkeypatch.setattr(
+        workspace_store,
+        "check_workstream",
+        AsyncMock(return_value=True),
+    )
+    conversation_id, workstream_id, other = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with empty_workspace_schema.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, 'user@example.com', 'Test', 'writer', 'active')",
+            _USER,
+        )
+        await conn.execute(
+            "INSERT INTO visual_workspaces (id, user_id, state, station) "
+            "VALUES ($1, $2, $3, $4)",
+            _WORKSPACE,
+            _USER,
+            {"visuals": []},
+            {
+                "name": "Research",
+                "conversation_id": str(conversation_id),
+                "workstream_id": str(workstream_id),
+            },
+        )
+
+    async def suggest(target: uuid.UUID) -> WorkspaceState | None:
+        return await suggest_workstream_for_chat(
+            empty_workspace_schema,
+            user_id=_USER,
+            email="user@example.com",
+            conversation_id=conversation_id,
+            suggestion=WorkstreamSuggestion(workstream_id=target, title="Charm"),
+            inbound=InboundQueue(),
+            assistant=None,
+        )
+
+    own = await suggest(workstream_id)
+    assert own is not None
+    assert own.suggestion is None
+    elsewhere = await suggest(other)
+    assert elsewhere is not None
+    assert elsewhere.suggestion == WorkstreamSuggestion(
+        workstream_id=other,
+        title="Charm",
+    )
 
 
 @pytest.mark.db_pglite

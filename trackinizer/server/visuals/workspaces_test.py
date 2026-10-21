@@ -869,6 +869,47 @@ def test_a_workstream_suggestion_has_a_bounded_title_and_optional_target() -> No
         WorkstreamSuggestion(title="x" * 121)
 
 
+def test_a_station_in_a_workstream_reads_without_a_suggestion_of_that_workstream() -> (
+    None
+):
+    workstream_id = uuid.uuid4()
+    station = StationData.model_validate(
+        {
+            "name": "alpha",
+            "workstream_id": str(workstream_id),
+            "suggestion": {"workstream_id": str(workstream_id), "title": "Charm"},
+        },
+    )
+    assert station.suggestion is None
+    assert station.workstream_id == workstream_id
+
+
+@pytest.mark.parametrize("in_workstream", [True, False])
+def test_a_station_outside_the_suggested_workstream_keeps_the_suggestion(
+    *,
+    in_workstream: bool,
+) -> None:
+    suggested = uuid.uuid4()
+    station = StationData(
+        name="alpha",
+        workstream_id=uuid.uuid4() if in_workstream else None,
+        suggestion=WorkstreamSuggestion(workstream_id=suggested, title="Charm"),
+    )
+    assert station.suggestion == WorkstreamSuggestion(
+        workstream_id=suggested,
+        title="Charm",
+    )
+
+
+def test_a_title_only_suggestion_is_kept_in_a_workstream() -> None:
+    station = StationData(
+        name="alpha",
+        workstream_id=uuid.uuid4(),
+        suggestion=WorkstreamSuggestion(title="A new stream"),
+    )
+    assert station.suggestion == WorkstreamSuggestion(title="A new stream")
+
+
 def test_a_chat_name_is_trimmed_and_bounded() -> None:
     assert NameChat(name="  Project title  ").name == "Project title"
     with pytest.raises(ValidationError):

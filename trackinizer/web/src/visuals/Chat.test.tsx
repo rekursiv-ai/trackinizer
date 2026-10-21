@@ -571,6 +571,22 @@ test("clicking a workstream suggestion moves the chat there", async () => {
   view.unmount();
 });
 
+test("a chat in Scratch is not offered Scratch as a workstream suggestion", async () => {
+  const scratch = { id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 };
+  vi.mocked(listWorkstreams).mockResolvedValue([scratch]);
+  const { client } = shell({ ...workspace, suggestion: { title: scratch.title, workstream_id: scratch.id } });
+  await act(async () => client.setQueryData(["workstreams"], [scratch]));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Move to suggested workstream Scratch" })).toBeNull());
+});
+
+test("a chat in a workstream is not offered that workstream by title alone", async () => {
+  const charm = { id: "workstream-charm", title: "Charm ARC1/2", hidden: false, pinned: false, scratch: false, seq: 2 };
+  vi.mocked(listWorkstreams).mockResolvedValue([charm]);
+  const { client } = shell({ ...workspace, workstream_id: charm.id, suggestion: { title: "charm arc1/2", workstream_id: null } });
+  await act(async () => client.setQueryData(["workstreams"], [charm]));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Move to suggested workstream charm arc1/2" })).toBeNull());
+});
+
 test("a workstream suggestion can be dismissed for this view", () => {
   const suggested = { ...workspace, suggestion: { title: "Craftax", workstream_id: "workstream-craftax" } };
   shell(suggested);

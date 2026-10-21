@@ -65,7 +65,13 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
   const currentGroup = groups.find((each) => each.id === workspace?.workstream_id)
     ?? groups.find((each) => each.scratch);
   const currentGroupId = currentGroup?.id;
-  const suggestion = workspace?.suggestion && !dismissedSuggestion ? workspace.suggestion : null;
+  // Never offer the workstream the chat is already in. The server drops a suggestion naming the station's own id, but a
+  // station with none sits in Scratch, and a title-only suggestion can repeat the current title.
+  const offered = workspace?.suggestion;
+  const here = offered?.workstream_id != null
+    ? offered.workstream_id === currentGroupId
+    : offered?.title.toLocaleLowerCase() === currentGroup?.title.toLocaleLowerCase();
+  const suggestion = offered && !dismissedSuggestion && !here ? offered : null;
   const shownName = workspace?.name && /^unnamed-workstream#\d+$/.test(workspace.name) ? "Scratch chat" : workspace?.name ?? "Chat";
   const inGroup = rows.filter((each) => (workspace?.workstream_id ? each.workstream_id === workspace.workstream_id : !each.workstream_id) && !each.hidden);
   const recent = inGroup.toSorted((a, b) => (b.modified_at ?? "").localeCompare(a.modified_at ?? ""));
