@@ -16,6 +16,7 @@ from trackinizer.server.api._deps import (
     get_hub,
     get_inbound,
     get_store,
+    get_terminal_hub,
 )
 from trackinizer.server.api._routes_shared import engine_of, require_browser
 from trackinizer.server.api.session_access import resolve_asker, session_reader
@@ -84,6 +85,7 @@ from trackinizer.server.visuals.workstreams import (
     check_workstream,
     open_scratch,
 )
+from trackinizer.wire.wire_science_chat import chat_session_id
 
 
 router = APIRouter()
@@ -189,11 +191,18 @@ async def list_workspaces_route(
       identity: Authenticated browser account.
 
     Returns:
-      stations: Their ids, names, chats, pages and times.
+      stations: Their ids, names, chats, pages and times, and in ``state`` what each
+        chat needs of them: ``requires_action`` while an ask is open, ``taken_over``
+        after its CLI was opened in a terminal.
 
     """
     require_browser(identity)
-    return await list_workspaces(engine_of(request), user_id=identity.user_id)
+    return await list_workspaces(
+        engine_of(request),
+        user_id=identity.user_id,
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+    )
 
 
 @router.post("/api/workspaces/new", response_model=WorkspaceState)
@@ -864,6 +873,7 @@ async def _with_chat_session(
     state: WorkspaceState,
 ) -> WorkspaceState:
     """Give a CLI station's chat its session, and return the station as it is then."""
+    await _end_other_runs(request, identity, state=state)
     if state.provider == "assistant":
         return state
     assistant = get_assistant(request)
@@ -894,6 +904,41 @@ async def _with_chat_session(
         workspace_id=state.id,
         reader=session_reader(request, identity),
     )
+
+
+# A chat has one live run at a time, and a switch is where a second would begin: the new
+# provider's run may start the moment the station answers. The old run's lease is
+# revoked, which ends the poll it is parked in, and a run the server opened for the
+# owner is told to stop; one the owner started by hand is stopped by the refusal its
+# next drain gets (``provider_is_other_cli``), since the server cannot reach its process.
+async def _end_other_runs(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    state: WorkspaceState,
+) -> None:
+    """Stop the chat's runs of any CLI its station no longer chooses."""
+    if state.conversation_id is None:
+        return
+    inbound = get_inbound(request)
+    hub = get_terminal_hub(request)
+    async with engine_of(request).acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id FROM inquiries WHERE kind = 'AgentSession' "
+            "AND agentsession_cli_session_id = $1",
+            chat_session_id(state.conversation_id),
+        )
+    for row in rows:
+        session_id = from_plain(row["id"], uuid.UUID)
+        held = inbound.poller_run(session_id)
+        if held is not None and held.cli is not None and held.cli != state.provider:
+            inbound.forget_poller(session_id)
+        for term in hub.attached_to(session_id):
+            if (
+                term.user.lower() == identity.email.lower()
+                and term.command != state.provider
+            ):
+                await hub.stop(term)
 
 
 async def _current_state(

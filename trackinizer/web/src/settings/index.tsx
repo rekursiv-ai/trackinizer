@@ -76,6 +76,7 @@ function VisualWorkspaceSection() {
   });
   const enabled = change.data?.enabled ?? profile.visual_workspace_enabled;
   const [mentions, chooseMentions] = useHighlightMentions();
+  const toolCalls = usePreferences().chat_tool_calls;
   return (
     <Section title="Agent workspace">
       <div className="st-row">
@@ -93,6 +94,16 @@ function VisualWorkspaceSection() {
           <input type="checkbox" checked={mentions} onChange={(event) => chooseMentions(event.target.checked)} />
           Highlight rows the assistant mentions
         </label>
+      </div>
+      {/* The user's preference: Chat draws each tool call as a card between lines. */}
+      <div className="st-row">
+        <label className="st-workspace-choice">
+          <input type="checkbox" checked={toolCalls} onChange={(event) => {
+            void choosePreferences({ chat_tool_calls: event.target.checked });
+          }} />
+          Show tool calls in Chat
+        </label>
+        <span className="muted">Each call an agent makes shows as a card that opens to what it ran and what came back.</span>
       </div>
     </Section>
   );

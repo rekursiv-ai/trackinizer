@@ -584,6 +584,8 @@ POST   /api/sessions/<uuid>/end
 POST   /api/sessions/<uuid>/audience
 POST   /api/sessions/<uuid>/inbound
 GET    /api/sessions/<uuid>/inbound
+POST   /api/sessions/<uuid>/run-state
+POST   /api/sessions/<uuid>/reattach
 POST   /api/messages
 ```
 
@@ -597,11 +599,13 @@ the default, delivered with its sender), `command` (a slash command typed verbat
 `answer` (a decision on a pending prompt), `settings` (a model or effort change) or
 `interrupt` (stops the running turn); any other value is 422. `payload` carries the
 structured data of a kind and is `null` for the kinds that carry none. An `answer`
-is `{"prompt_id": "<text>", "decision": "allow" | "deny", "updated_input": <object>
-| null, "message": "<text>"}`, and `settings` is `{"model": "<text>" | null,
-"effort": "<text>" | null}`. `text` stays required: for an `answer` it is the
-one-line form, "Yes" or "No: <reason>". A drained message carries `kind` and
-`payload` beside its `text`, `source` and `room`.
+is `{"prompt_id": "<text>", "option": "<id>", "updated_input": <object> | null,
+"message": "<text>"}`, where `option` is the id of one of the ask's own options (or a
+kind such as `allow_once`); the older `"decision": "allow" | "deny"` stands in for
+`option`, and an answer names exactly one of the two (422 otherwise). `settings` is
+`{"model": "<text>" | null, "effort": "<text>" | null}`. `text` stays required: for
+an `answer` it is the one-line form, "Yes" or "No: <reason>". A drained message
+carries `kind` and `payload` beside its `text`, `source` and `room`.
 
 `GET .../inbound` (the drain) takes `run`, `machine` and `cwd`, where the draining
 run is: the `trax run --detach` host `trax run attach` reaches (absent for a run in
@@ -609,6 +613,64 @@ a terminal of its own), the machine as `trax machine connect` names it, and the
 working directory, `~/...` under its home, at most 1,024 characters with no control
 character. A malformed one is 422. The poller lease keeps them while it holds, for
 Chat to show; they are the run's own word, shown and never a grant.
+
+The drain also takes `cli`, the CLI the run is (`claude` or `codex`), and `instance`,
+an id the run minted for itself (32 lowercase hexadecimal digits, the same on each of
+its drains). The lease keeps both. A chat answered by a CLI is live for that provider
+only while a poller that named it holds the lease, whatever the chat's newest part
+says; the run's own part after `/compact` has no format. On such a chat a drain that
+names no `cli`, as a `trax` older than the name sends, is 426 `cli_required` with a
+plain "Update trax" message and takes no lease; a drain by the other CLI is 409
+`provider_is_other_cli`; and a drain whose `instance` differs from that of the
+unexpired lease of the same CLI is 409 `chat_run_live`. `trax run` ends its run on
+`provider_is_assistant`, `provider_is_other_cli` and `chat_run_live` instead of
+retrying, and leaves the chat's session open as it exits. `POST .../end` takes the
+ending run's `cli` too: on a chat whose station chose another provider it is a 200
+that changes nothing, so the exit of the run a switch stopped does not end the
+session the chosen provider drains. It takes the run's `instance` too: an end that
+names a `cli` and an `instance` is the same 200 that changes nothing when that run was
+replaced (a reattach) or another run of the CLI holds the lease, so the exit of the
+run a reattach took over does not end the chat, take the new run's lease or release
+its asks.
+
+An ask is a pair of records in the chat's session: `extra["$interaction"]` opens it
+and `extra["$interaction_resolved"]`, naming the same `id`, ends it. `POST .../end`
+writes an end with `by: released` for each ask the run left open, before it closes
+the session, which takes records no more; so does the server for a run whose lease
+lapsed or was revoked, within a few seconds, for the run a provider switch
+stopped, and, once, a lease's span (45 seconds) after the server starts, for each
+live `claude` or `codex` chat that no run holds a lease on: a run that died while the
+server was down. Those ends go in a part of the server's own, `trackinizer-asks`, with no
+format, and no run's file is edited.
+
+`POST .../run-state` takes `{"state": "idle" | "running" | "requires_action" |
+"taken_over", "instance": "<run id>"}` and answers 204. The run reports between its
+drains, and the state stays on the session's lease, through the run's later drains,
+until the lease lapses; a run says a state other than `idle` again every 15 s while it
+holds, so after a lapse or a server restart the state is back within 15 s of its next
+drain. A report from a run other than the one holding the lease, or
+while none does, changes nothing and is answered the same. It is held to the rules of
+the drain: the opening key, or for a chat the starter's own run, never the
+assistant's. A station's `partner.state`, an entry of `GET /api/workspaces` and an
+agent of `GET /api/web/feed/facets` carry `state`: `taken_over` after a report of it,
+else `requires_action` while an ask is open in the chat (whatever the run reports,
+and for the assistant's chats, which report nothing), else what the run last
+reported, `idle` where no run polls. While a CLI chat's run is `taken_over`, a post to
+it (`POST /api/chats`, of any kind) is 409 `chat_taken_over` with the message "taken
+over in a terminal; reattach from Chat or Console", and nothing is queued.
+
+`POST .../reattach` reopens a chat's run headless, where it ran, after a terminal took
+it over or it went away. Browser only, with the `Idempotency-Key` header; the chat's
+starter alone (403 `reattach_not_owner`). The run's lease is revoked and the run is
+turned away when it drains again, which ends its terminal; terminals this server
+opened for it are stopped; then the machine's host is offered a new detached run of
+the chat's CLI attached to the session, in the folder the last run named, under that
+run's host name (`chat-<8 hex of the session>` when it named none). A launch of that
+name ends the old host and resumes the CLI session its terminal continued. A run that is live and not taken over is 409
+`chat_run_live`; a session that is no chat 409 `not_a_chat`; a chat the assistant
+answers 409 `provider_is_assistant`; a chat whose machine and folder the server no
+longer knows (it restarts with the leases) 409 `reattach_place_unknown`; the machine
+and CLI are held to the rules of `POST /api/terminals`. It answers 204.
 
 `POST /api/sessions/start` takes `attach`, the AgentSession a run re-opens: it is
 live again if it had ended, keeps its `cli_session_id`, and the run's file becomes its
@@ -989,7 +1051,11 @@ except that a chat on `claude` or `codex` is drained by its starter's run under 
 of their keys. A science chat's queue has one drainer, the provider its starter's
 station names: for a CLI, the assistant's key is 409 `provider_is_cli`; for
 `assistant`, an opening key that is not the assistant's is 409
-`provider_is_assistant`. Either holds from the moment the station switches.
+`provider_is_assistant`. Either holds from the moment the station switches. A chat
+has one live run at a time: a `provider` operation revokes the lease of the chat's
+run of any CLI it leaves and stops that station owner's terminals attached to the
+chat's session, and `POST /api/terminals` with `attach` is 409 `chat_run_live` while
+another terminal or lease holds the session.
 
 An operation body has `revision` and one `operation`: `show`, `hide`, `focus`,
 `place`, `provider`, `navigate`, `highlight`, or `chat`. The caller supplies a UUID `Idempotency-Key`
@@ -1060,9 +1126,14 @@ payload}`; `text` holds a non-space
 character and at most 16,384 characters, and `workspace_id` is the poster's own
 station. `kind` is `line` by default, or `command`, `answer`, `settings` or
 `interrupt`, with `payload` as `POST /api/sessions/<uuid>/inbound` takes it (a stale
-browser's `science` reads as `line`). An `assistant` station takes a `line` alone
-(422 otherwise); a `claude` or `codex` station queues the post on the chat's session
-its run drains, with only a `line` carrying the canvas context. A station holds one chat: with none, the line's conversation becomes its
+browser's `science` reads as `line`). An `assistant` station takes a `line` or an
+`answer` (422 otherwise), an `answer` being a choice on a card the assistant asked,
+queued for the chat's own session and given by the chat's starter alone, as on a
+`claude` or `codex` station (403 `answer_not_owner`); it is 409
+`provider_offline` while the assistant does not have the chat open. A `claude` or
+`codex` station queues the post on the chat's session its run drains, with only a
+`line` carrying the canvas context, and while that run is taken over in a terminal
+refuses every post with 409 `chat_taken_over`. A station holds one chat: with none, the line's conversation becomes its
 chat in the transaction that queues the line; with one, a line that names another
 conversation is 409, as is one for a conversation another station of the poster
 holds, and a line that names none continues the station's chat. `page` is the `#/...` address the sender is on and `trail` the addresses
@@ -1104,7 +1175,12 @@ Answers. An `answer` to a `claude` or `codex` chat comes from the chat's starter
 alone, the owner of the run showing the prompt, since it runs a tool or grants
 trust on their machine: anyone else, a person it is shared with included, is 403
 `{"detail": {"code": "answer_not_owner", "message": "Only <starter> can answer
-prompts from their machine."}}`, and nothing is queued.
+prompts from their machine."}}`, and nothing is queued. An `answer` to a card the
+`assistant` asked comes from the person the card asked (its `$interaction` record's
+`input.asker`; the starter when it names nobody), since the card lists that
+person's own choices: anyone else is the same 403, "Only <asker> can answer this
+question.". It is queued for the chat's own session with the canvas context a
+line carries, and the assistant hears the pick as that person's line.
 
 `GET /api/chats/<uuid>` returns `{conversation_id, session_id, title, account, live,
 forks, forked_from, forks_on_typing, audience, may_hide, shared_with, may_share,
@@ -1405,7 +1481,7 @@ terminals within 45 seconds (`TRAX_MACHINE_TERMINAL=1`), else 409
 `terminal_not_enabled`. A station may hold any number of terminals; a user's 11th
 open within a minute answers 429. Every terminal refusal answers
 `detail: {code, message}`: `terminal_forbidden`, `terminal_not_enabled`,
-`terminal_unconfirmed`, `terminal_limit` and `cli_not_installed`.
+`terminal_unconfirmed`, `terminal_limit`, `cli_not_installed` and `chat_run_live`.
 
 `POST /api/terminals` takes `{machine, rows, cols, workspace?, surface?, command?,
 attach?, run_name?, cwd?}` and returns `{terminal_id, ticket}`. `command` is `claude` or
@@ -1413,7 +1489,9 @@ attach?, run_name?, cwd?}` and returns `{terminal_id, ticket}`. `command` is `cl
 any other value is 422. `attach` (the AgentSession the run re-opens), `run_name`
 (the detached run's name, which `trax run attach NAME` reaches) and `cwd` need a
 `command`, else 422. A `command` the machine's facts do not list is 409
-`cli_not_installed`. With no `run_name` the server names the run `chat-<first 8 hex
+`cli_not_installed`; one whose `attach` session already has a live terminal, or a
+run that holds its poller lease, is 409 `chat_run_live`. With no `run_name` the server
+names the run `chat-<first 8 hex
 of attach>`, or `run-<8 hex of the terminal id>` without one. `cwd` is the folder the run starts in, on the machine: absolute or
 `~`-relative, up to 1,024 characters with no control character. The host resolves `~`,
 and a folder that is not there ends the terminal with one line saying so. The host's

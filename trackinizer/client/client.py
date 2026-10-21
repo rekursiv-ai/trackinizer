@@ -1796,13 +1796,17 @@ class Client:
         run: str | None = None,
         machine: str | None = None,
         cwd: str | None = None,
+        cli: str | None = None,
+        instance: str | None = None,
     ) -> list[InboundDrainItem]:
         """Drain pending inbound messages for a session, oldest first.
 
         Each item carries its kind and payload beside the text, attested sender,
         room and canvas context, so ``trax run`` delivers each the way its CLI
         expects. ``run``, ``machine`` and ``cwd`` tell the server where the draining
-        run is, for Chat to show; each is sent only when given.
+        run is, for Chat to show; ``cli`` and ``instance`` tell it which CLI polls and
+        which run it is, by which it routes a chat's lines and refuses a second run.
+        Each is sent only when given.
 
         Args:
           session_id: Session whose queue to drain.
@@ -1816,6 +1820,8 @@ class Client:
             takes; None for a run in a terminal of its own.
           machine: This computer's machine name, as ``trax machine connect`` names it.
           cwd: The run's working directory, ``~/...`` under its home.
+          cli: The CLI this run is, ``claude`` or ``codex``.
+          instance: An id the run minted for itself, the same on each of its drains.
 
         Returns:
           messages: The drained messages, as the server sent them.
@@ -1832,6 +1838,8 @@ class Client:
                 "run": run,
                 "machine": machine,
                 "cwd": cwd,
+                "cli": cli,
+                "instance": instance,
             },
             timeout=wire_sessions.inbound_read_timeout(wait_sec),
             decode=partial(

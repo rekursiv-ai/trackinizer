@@ -1,7 +1,8 @@
 """How a server-delivered message reads to the agent that receives it.
 
-Used by ``trax run``, which types it into the CLI's terminal. Kept apart from the
-PTY machinery so a reader of messages does not import it.
+Used by ``trax run``, which types it into the CLI's terminal, or hands it to the
+driver of a headless Chat run. Kept apart from the PTY machinery so a reader of messages
+does not import it.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from treekle import from_plain, json_loads
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from trackinizer.wire.wire_sessions import (
         InboundKind,
@@ -149,6 +150,24 @@ def render_inbound(
     return rendered
 
 
+def settings_from_payload(payload: Mapping[str, object] | None) -> tuple[str, str]:
+    """Read a ``settings`` message's payload.
+
+    Args:
+      payload: ``{"model": str | None, "effort": str | None}``, or ``None`` for none.
+
+    Returns:
+      settings: The model and the effort to change to; empty for one left alone.
+
+    Raises:
+      ValueError: The payload holds a field it has no place for, or one of the wrong
+        type.
+
+    """
+    read = from_plain(dict(payload or {}), _Settings)
+    return read.model or "", read.effort or ""
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Box:
     """One red box as the agent is told of it."""
@@ -215,3 +234,11 @@ def _render_marks(marks: Sequence[WorkspaceMark]) -> str:
             for mark in marks
         ],
     )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Settings:
+    """A ``settings`` message's payload: what Chat changes about the run."""
+
+    model: str | None = None
+    effort: str | None = None

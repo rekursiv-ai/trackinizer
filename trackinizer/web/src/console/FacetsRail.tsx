@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { FeedActorFacet } from "../api/sessions";
+import { takenOver, waitingOf } from "../api/runState";
 import { useMinuteClock } from "../detail/time";
 import { Icon } from "../ui/icons";
 import { findAgents, type Grouping, groupAgents, isPicked, toggle } from "./facets";
@@ -27,7 +28,9 @@ export const ACTIVE: readonly { readonly value: Active; readonly label: string; 
  * twice. Working turns Quiet as the minutes pass, with or without new records.
  * A session the server says the caller may change (`hideable`: their own, and no
  * chat) has a switch that says Public or Private and flips on a click; another's
- * private session is marked Private.
+ * private session is marked Private. A chat's session that waits on the person is marked
+ * Waiting; one whose run someone took over in a terminal is marked so, and given
+ * Reattach to Chat when `onReattach` is, which reopens the run for Chat.
  */
 export function AgentsSection({
   agents,
@@ -36,6 +39,8 @@ export function AgentsSection({
   active,
   onActive,
   onHide = null,
+  onReattach = null,
+  reattaching = null,
 }: {
   agents: readonly FeedActorFacet[];
   picks: readonly string[];
@@ -45,6 +50,10 @@ export function AgentsSection({
   onActive: ((active: Active) => void) | null;
   /** Make a session of the caller's private, or public again; null offers no switch. */
   onHide?: ((agent: FeedActorFacet) => void) | null;
+  /** Reopen a chat's run that was taken over in a terminal; null offers no button. */
+  onReattach?: ((agent: FeedActorFacet) => void) | null;
+  /** The session being reattached now, whose button waits. */
+  reattaching?: string | null;
 }) {
   const [query, setQuery] = useState("");
   const [by, setBy] = useState<Grouping>("none");
@@ -89,7 +98,7 @@ export function AgentsSection({
                 />
               )}
               {group.agents.map((agent) => (
-                <AgentRow key={agent.session_id} agent={agent} picks={picks} onPicks={onPicks} onHide={onHide} />
+                <AgentRow key={agent.session_id} agent={agent} picks={picks} onPicks={onPicks} onHide={onHide} onReattach={onReattach} reattaching={reattaching} />
               ))}
             </div>
           );
@@ -188,39 +197,60 @@ function Find({
 
 /**
  * One session's tick, with its Public/Private switch beside it when the caller
- * may flip it, else marked Private when its owner made it so.
+ * may flip it, else marked Private when its owner made it so; and Reattach to Chat
+ * when its run was taken over in a terminal and the caller may reattach it.
  */
 function AgentRow({
   agent,
   picks,
   onPicks,
   onHide,
+  onReattach,
+  reattaching,
 }: {
   agent: FeedActorFacet;
   picks: readonly string[];
   onPicks: (picks: string[]) => void;
   onHide: ((agent: FeedActorFacet) => void) | null;
+  onReattach: ((agent: FeedActorFacet) => void) | null;
+  reattaching: string | null;
 }) {
   const { actor, count } = agent;
   const isPrivate = agent.audience === "private";
   const switchable = onHide !== null && agent.hideable;
+  const taken = takenOver(agent);
   const row = <Row label={actor} text={actor} count={count} picks={picks} names={[actor]} onChange={() => onPicks(toggle(picks, [actor], null))}
-    isPrivate={isPrivate && !switchable} />;
-  if (!switchable) return row;
+    isPrivate={isPrivate && !switchable} waiting={waitingOf(agent) === true} taken={taken} />;
+  const reattachable = taken && onReattach !== null;
+  if (!switchable && !reattachable) return row;
   return (
     <div className="console-agent">
       {row}
-      <button
-        type="button"
-        className={`btn ghost console-privacy${isPrivate ? " console-privacy-private" : ""}`}
-        aria-label={`${actor} is ${isPrivate ? "private: make it public" : "public: make it private"}`}
-        title={isPrivate
-          ? "Private: only you, staff and admins read its transcript. Click to let whoever may read your sessions read it."
-          : "Public: whoever may read your sessions reads its transcript. Click to keep it to you, staff and admins; its name stays listed."}
-        onClick={() => onHide(agent)}
-      >
-        {isPrivate ? "Private" : "Public"}
-      </button>
+      {switchable ? (
+        <button
+          type="button"
+          className={`btn ghost console-privacy${isPrivate ? " console-privacy-private" : ""}`}
+          aria-label={`${actor} is ${isPrivate ? "private: make it public" : "public: make it private"}`}
+          title={isPrivate
+            ? "Private: only you, staff and admins read its transcript. Click to let whoever may read your sessions read it."
+            : "Public: whoever may read your sessions reads its transcript. Click to keep it to you, staff and admins; its name stays listed."}
+          onClick={() => onHide(agent)}
+        >
+          {isPrivate ? "Private" : "Public"}
+        </button>
+      ) : null}
+      {reattachable ? (
+        <button
+          type="button"
+          className="btn ghost console-reattach"
+          aria-label={`Reattach ${actor} to Chat`}
+          title="Reopen this chat's run headless, so Chat can answer it again"
+          disabled={reattaching === agent.session_id}
+          onClick={() => onReattach(agent)}
+        >
+          Reattach to Chat
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -235,6 +265,8 @@ function Row({
   onChange,
   head = false,
   isPrivate = false,
+  waiting = false,
+  taken = false,
 }: {
   label: string;
   text: string;
@@ -245,6 +277,10 @@ function Row({
   head?: boolean;
   /** A session its owner made private: only they, staff and admins read it. */
   isPrivate?: boolean;
+  /** A chat's session an agent waits on the person in. */
+  waiting?: boolean;
+  /** A chat's session whose run someone took over in a terminal. */
+  taken?: boolean;
 }) {
   const ticked = names.filter((name) => isPicked(picks, name)).length;
   return (
@@ -264,6 +300,16 @@ function Row({
       {isPrivate ? (
         <span className="console-badge" title="Private: only its owner, staff and admins read it">
           Private
+        </span>
+      ) : null}
+      {waiting ? (
+        <span className="console-badge console-waiting" title="An agent is waiting for an answer">
+          Waiting
+        </span>
+      ) : null}
+      {taken ? (
+        <span className="console-badge" title="Someone attached to this run's terminal, which stopped the headless run">
+          Taken over in a terminal
         </span>
       ) : null}
       <span className="console-n">{count.toLocaleString("en")}</span>

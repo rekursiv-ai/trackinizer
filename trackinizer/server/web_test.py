@@ -48,6 +48,7 @@ from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.route_iter import (
     iter_routes,
     registered_paths,
@@ -72,6 +73,7 @@ from trackinizer.wire.bodies import (
     SubmitWebSearch,
 )
 from trackinizer.wire.wire_sessions import (
+    FeedActorFacet,
     FeedBucket,
     FeedEvent,
     FeedFacetsResponse,
@@ -1322,6 +1324,66 @@ class TestFeedReads:
         }
         backwards = (("since", window[1][1]), ("until", window[0][1]))
         assert client.get("/api/web/feed/facets", params=backwards).status_code == 400
+
+    def test_an_agent_with_a_live_run_says_what_the_run_is_doing(self) -> None:
+        """The console's Reattach button is for the agent whose run was taken over."""
+        taken, waiting, quiet, ended = (new_uuid() for _ in range(4))
+        run = "a" * 32
+        inbound = InboundQueue()
+        for session in (taken, waiting, ended):
+            inbound.mark_poller(session, cli="claude", instance=run)
+        assert inbound.report_state(taken, instance=run, state="taken_over")
+        store = AsyncMock()
+        store.engine = FakeEngine()
+        store.engine.conn.fetch.return_value = [
+            {"session_id": waiting, "opened": "a1", "closed": None},
+        ]
+        last = datetime(2026, 10, 1, tzinfo=UTC)
+        store.read_feed_facets = AsyncMock(
+            return_value=FeedFacetsResponse(
+                actors=[
+                    FeedActorFacet(
+                        actor=name,
+                        session_id=session,
+                        cli="claude",
+                        rooms=[],
+                        count=1,
+                        conversation=1,
+                        last=last,
+                        ended=last if session == ended else None,
+                    )
+                    for name, session in (
+                        ("taken", taken),
+                        ("waiting", waiting),
+                        ("quiet", quiet),
+                        ("ended", ended),
+                    )
+                ],
+                rooms=[],
+                kinds=[],
+            ),
+        )
+        client = self._client(store)
+        cast("FastAPI", client.app).state.inbound = inbound
+
+        response = client.get("/api/web/feed/facets")
+
+        assert response.status_code == 200, response.text
+        actors = from_plain(response.json(), dict[str, object])["actors"]
+        assert {
+            each["actor"]: each["state"]
+            for each in from_plain(actors, list[dict[str, object]])
+        } == {
+            "taken": "taken_over",
+            "waiting": "requires_action",
+            "quiet": "idle",
+            "ended": "idle",
+        }
+        asked = from_plain(
+            store.engine.conn.fetch.call_args.args[1],
+            list[uuid.UUID],
+        )
+        assert set(asked) == {taken, waiting}
 
     def test_a_histogram_has_2_to_1000_buckets_and_120_unless_asked(self) -> None:
         store = self._histogram_store()

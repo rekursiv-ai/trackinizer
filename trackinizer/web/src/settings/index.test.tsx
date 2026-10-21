@@ -89,6 +89,17 @@ test("the switch for highlighting what the assistant mentions is on, and turns o
   expect(localStorage.getItem(`trackinizer.v2.highlight-mentions.${ADA.email}`)).toBeNull();
 });
 
+test("the switch for showing tool calls in Chat is off, and turning it on is kept in the user's preferences", async () => {
+  const server = serveAccount(ADA);
+  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
+  const workspace = within(screen.getByRole("region", { name: "Agent workspace" }));
+  const toggle = workspace.getByRole<HTMLInputElement>("checkbox", { name: "Show tool calls in Chat" });
+  expect(toggle.checked).toBe(false);
+  fireEvent.click(toggle);
+  expect(toggle.checked).toBe(true);
+  await waitFor(() => expect(preferenceWrites(server)).toEqual([["PATCH", { chat_tool_calls: true }]]));
+});
+
 test("a theme chosen updates the page at once and is kept in the user's preferences", async () => {
   const server = serveAccount(ADA);
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);

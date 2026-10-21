@@ -2465,7 +2465,7 @@ async def test_a_claude_chat_queues_a_known_command_bare_and_a_slash_line_as_a_l
     """The command is typed as the CLI's own; the path stays a person's line."""
     conversation, session = await _claude_chat(pglite_engine)
     inbound = InboundQueue()
-    inbound.mark_poller(session)
+    inbound.mark_poller(session, cli="claude")
 
     commanded = await _post(pglite_engine, inbound=inbound, text="/Goal ship it")
     marks_after_command = await _marks_sent(pglite_engine)
@@ -2493,7 +2493,7 @@ async def test_a_command_chat_cannot_run_is_refused_and_queues_nothing(
 ) -> None:
     _, session = await _claude_chat(pglite_engine)
     inbound, key = InboundQueue(), uuid.uuid4()
-    inbound.mark_poller(session)
+    inbound.mark_poller(session, cli="claude")
 
     with pytest.raises(CommandRefusedError, match=r"^Chat cannot run /model: "):
         _ = await _post(pglite_engine, inbound=inbound, text="/model opus", key=key)
@@ -2540,7 +2540,7 @@ async def test_a_sharers_command_goes_by_the_chats_provider_not_their_station(
     """The sharer's own station is the assistant's, which would refuse /goal."""
     conversation, session = await _claude_chat(pglite_engine)
     inbound = InboundQueue()
-    inbound.mark_poller(session)
+    inbound.mark_poller(session, cli="claude")
 
     sent = await _post(
         pglite_engine,
@@ -2569,7 +2569,7 @@ async def test_only_the_runs_owner_answers_its_prompts(
     """An answer runs a tool on the starter's machine, so a sharer's is refused."""
     conversation, session = await _claude_chat(pglite_engine)
     inbound, key = InboundQueue(), uuid.uuid4()
-    inbound.mark_poller(session)
+    inbound.mark_poller(session, cli="claude")
     answer: dict[str, object] = {"prompt_id": "p1", "decision": "allow"}
 
     with pytest.raises(AnswerNotOwnerError) as refused:
@@ -2620,7 +2620,7 @@ async def test_the_trust_answer_chat_posts_is_queued_from_the_runs_owner_alone(
     payload = from_plain(posted["payload"], dict[str, object])
     conversation, session = await _claude_chat(pglite_engine)
     inbound = InboundQueue()
-    inbound.mark_poller(session)
+    inbound.mark_poller(session, cli="claude")
 
     with pytest.raises(AnswerNotOwnerError):
         _ = await _post(
@@ -2660,7 +2660,7 @@ async def test_a_post_of_another_kind_is_not_judged_as_a_command(
     """Only a line is classified: an answer that reads like a menu verb is an answer."""
     _, session = await _claude_chat(pglite_engine)
     inbound = InboundQueue()
-    inbound.mark_poller(session)
+    inbound.mark_poller(session, cli="claude")
 
     sent = await _post(
         pglite_engine,

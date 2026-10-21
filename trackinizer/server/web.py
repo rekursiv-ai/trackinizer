@@ -62,7 +62,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from treekle import from_plain, json_loads
 from treekle.absent import ABSENT
 
-from trackinizer.server.api._deps import get_assistant, get_store, tag_row
+from trackinizer.server.api._deps import (
+    get_assistant,
+    get_inbound,
+    get_store,
+    tag_row,
+)
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import parse_fields
 from trackinizer.server.api.session_access import session_reader
@@ -88,6 +93,7 @@ from trackinizer.server.store.session_search import (
     search_session_records,
 )
 from trackinizer.server.values import vetted_sql
+from trackinizer.server.visuals.partners import live_run_states
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
 from trackinizer.wire.json_types import UtcDatetime
@@ -802,7 +808,9 @@ async def web_feed_facets(
 
     The counts are of the records ``/feed`` returns for the same window and
     filters, so the console can list agents, rooms and verbosity levels with
-    their sizes before it loads any of them.
+    their sizes before it loads any of them. An agent whose run is polling says
+    in ``state`` what the run is doing, such as ``taken_over`` after someone opened
+    its CLI in a terminal, which the console offers to reattach.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -818,10 +826,27 @@ async def web_feed_facets(
     """
     _check_window(since, until)
     del identity
-    return await get_store(request).read_feed_facets(
-        since=since,
-        until=until,
-        scope=scope,
+    store = get_store(request)
+    facets = await store.read_feed_facets(since=since, until=until, scope=scope)
+    if not facets.actors:
+        return facets
+    inbound = get_inbound(request)
+    polled = [
+        actor.session_id
+        for actor in facets.actors
+        if actor.ended is None and inbound.has_poller(actor.session_id)
+    ]
+    if not polled:
+        return facets
+    async with store.engine.acquire() as conn:
+        states = await live_run_states(conn, inbound=inbound, session_ids=polled)
+    return facets.model_copy(
+        update={
+            "actors": [
+                actor.model_copy(update={"state": states.get(actor.session_id, "idle")})
+                for actor in facets.actors
+            ],
+        },
     )
 
 

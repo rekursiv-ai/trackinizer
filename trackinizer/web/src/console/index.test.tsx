@@ -29,6 +29,7 @@ afterEach(async () => {
   localStorage.clear();
   sessionStorage.clear();
   AUDIENCES.clear();
+  TAKEN_OVER.clear();
 });
 
 const TILES_A = "00000000-0000-4000-8000-0000000000c1";
@@ -72,6 +73,9 @@ const EVENTS = [
 /** The audience of each session its owner hid, as the fake server holds it; the rest are open. */
 const AUDIENCES = new Map<string, string>();
 
+/** The sessions whose run someone took over in a terminal, as the fake server holds them. */
+const TAKEN_OVER = new Set<string>();
+
 /**
  * Session `session`'s agent as the facets count it, last heard from `minutes`
  * before `now`. tiles-a is the signed-in person's, so they may hide it.
@@ -79,7 +83,8 @@ const AUDIENCES = new Map<string, string>();
 function facet(session: string, count: number, conversation: number, minutes: number, now: number, ended: string | null = null) {
   const last = new Date(now - minutes * 60_000).toISOString();
   const account = session === TILES_A ? PROFILE.email : "grace@example.com";
-  return { ...SESSIONS[session]!, session_id: session, count, conversation, last, ended, account, audience: AUDIENCES.get(session) ?? "open", hideable: session === TILES_A };
+  return { ...SESSIONS[session]!, session_id: session, count, conversation, last, ended, account, audience: AUDIENCES.get(session) ?? "open", hideable: session === TILES_A,
+    ...(TAKEN_OVER.has(session) && { state: "taken_over" as const }), ...(session === TILES_A && TAKEN_OVER.size > 0 && { state: "requires_action" as const }) };
 }
 
 /**
@@ -169,6 +174,11 @@ function serve(
       return Response.json({ start: "2026-10-01T10:00:00Z", end: "2026-10-01T11:00:00Z", bucket_seconds: 3600, counts: [] });
     }
     if (url.pathname === "/api/messages") return message(await request.json());
+    const reattaching = /^\/api\/sessions\/([^/]+)\/reattach$/.exec(url.pathname);
+    if (reattaching && request.method === "POST") {
+      TAKEN_OVER.delete(reattaching[1]!);
+      return new Response(null, { status: 204 });
+    }
     const hiding = /^\/api\/sessions\/([^/]+)\/audience$/.exec(url.pathname);
     if (hiding && request.method === "POST") {
       const { audience } = (await request.json()) as { audience: string };
@@ -1113,4 +1123,34 @@ test("the box names its targets: Message lead-2, or each of several, never a cou
   fireEvent.click(agents.getByRole("button", { name: "Pick tiles-*" }));
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toBe(
     "Message tiles-a:ops, tiles-a:lab… (@agent, @agent:room and @* still work)"));
+});
+
+test("a session whose run was taken over in a terminal offers Reattach to Chat, which reopens it and reads the agents again", async () => {
+  TAKEN_OVER.add(CLAUDE);
+  const sent = serve();
+  renderConsole();
+  await lines(3);
+  const reattach = await rail("Agents").findByRole("button", { name: "Reattach claude to Chat" });
+  expect(rail("Agents").getByText("Taken over in a terminal")).toBeTruthy();
+  // The same session in the console shows it waits, by the server's word.
+  expect(document.querySelectorAll(".console-waiting")).toHaveLength(1);
+  fireEvent.click(reattach);
+  expect(await screen.findByText("Reattached claude to Chat.")).toBeTruthy();
+  const posts = sent.filter((request) => request.path.endsWith("/reattach"));
+  expect(posts.map((request) => [request.path, request.headers["idempotency-key"]])).toEqual([[`/api/sessions/${CLAUDE}/reattach`, expect.any(String)]]);
+  await waitFor(() => expect(rail("Agents").queryByRole("button", { name: "Reattach claude to Chat" })).toBeNull());
+});
+
+test("a reattach the server refuses says why, and the session keeps its button", async () => {
+  TAKEN_OVER.add(CLAUDE);
+  serve();
+  renderConsole();
+  await lines(3);
+  const answer = globalThis.fetch;
+  vi.stubGlobal("fetch", async (request: Request) => (new URL(request.url).pathname.endsWith("/reattach")
+    ? Response.json({ detail: "Only the person who started this chat can do that.", code: "chat_not_starter" }, { status: 403 })
+    : answer(request)));
+  fireEvent.click(await rail("Agents").findByRole("button", { name: "Reattach claude to Chat" }));
+  expect(await screen.findByText("Only the person who started this chat can do that.")).toBeTruthy();
+  expect(rail("Agents").getByRole("button", { name: "Reattach claude to Chat" })).toBeTruthy();
 });

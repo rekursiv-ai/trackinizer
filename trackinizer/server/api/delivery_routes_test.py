@@ -201,6 +201,44 @@ def test_terminal_open_retry_creates_one_terminal_with_a_fresh_attach_ticket(
         assert asyncio.run(server.hub.wait(_MACHINE, wait_sec=0)) is None
 
 
+def test_a_retried_run_open_replays_its_terminal_and_a_new_open_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = _server(monkeypatch)
+    set_field_row(
+        server.app.state.engine.conn,
+        {"id": _MACHINE, "facts": {"clis": ["claude"]}, "confirmed": True},
+    )
+    run = {
+        "machine": "gx10",
+        "rows": 24,
+        "cols": 80,
+        "command": "claude",
+        "attach": str(_SESSION),
+    }
+    headers = _headers(uuid4())
+    with TestClient(server.app) as browser:
+        first = browser.post("/api/terminals", json=run, headers=headers)
+        assert first.status_code == 201, first.text
+        # The run the first open queued is now attached to the session, yet the
+        # retry of that same open is its receipt, not a second run.
+        retried = browser.post("/api/terminals", json=run, headers=headers)
+        assert retried.status_code == 201, retried.text
+        assert (
+            TerminalOpened.model_validate(retried.json()).terminal_id
+            == TerminalOpened.model_validate(first.json()).terminal_id
+        )
+        second = browser.post("/api/terminals", json=run, headers=_headers(uuid4()))
+        assert second.status_code == 409
+        assert second.json() == {
+            "detail": {
+                "code": "chat_run_live",
+                "message": "another run is attached to this session; stop it first",
+            },
+        }
+    assert len(server.hub.attached_to(_SESSION)) == 1
+
+
 @pytest.mark.asyncio
 async def test_a_session_end_before_receipt_work_starts_does_not_park_a_new_hold() -> (
     None

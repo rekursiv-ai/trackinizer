@@ -21,13 +21,16 @@ from trackinizer.wire.wire_sessions import (
     InboundEnqueueRequest,
     SendMessage,
     SessionEnd,
+    SessionRunState,
     SessionStart,
     WorkspaceMark,
     inbound_read_timeout,
     session_audience_path,
     session_end_path,
     session_inbound_path,
+    session_reattach_path,
     session_records_path,
+    session_run_state_path,
 )
 
 
@@ -107,6 +110,16 @@ class TestSessionEnd:
             with pytest.raises(ValidationError):
                 SessionEnd(actor=bad)
         assert SessionEnd(actor=None).actor is None
+
+    @pytest.mark.parametrize("instance", ["", "A" * 32, "a" * 31, "g" * 32, "a" * 33])
+    def test_rejects_an_instance_that_is_not_32_lowercase_hex_digits(
+        self,
+        instance: str,
+    ) -> None:
+        with pytest.raises(ValidationError):
+            SessionEnd(cli="claude", instance=instance)
+        assert SessionEnd(cli="claude", instance="a" * 32).instance == "a" * 32
+        assert SessionEnd().instance is None
 
 
 class TestFeedEvent:
@@ -388,6 +401,40 @@ class TestInboundReadTimeout:
 
     def test_a_drain_that_does_not_wait_keeps_the_transport_timeout(self) -> None:
         assert inbound_read_timeout(0.0) is None
+
+
+class TestRunState:
+    @pytest.mark.parametrize(
+        "state",
+        ["idle", "running", "requires_action", "taken_over"],
+    )
+    def test_a_run_reports_one_of_four_states_and_its_own_id(self, state: str) -> None:
+        reported = SessionRunState.model_validate(
+            {"state": state, "instance": "a" * 32},
+        )
+
+        assert (reported.state, reported.instance) == (state, "a" * 32)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"state": "asleep", "instance": "a" * 32},
+            {"state": "idle"},
+            {"state": "idle", "instance": "A" * 32},
+            {"state": "idle", "instance": "a" * 32, "extra": 1},
+        ],
+    )
+    def test_any_other_report_is_refused(self, body: dict[str, object]) -> None:
+        with pytest.raises(ValidationError):
+            SessionRunState.model_validate(body)
+
+    def test_a_run_reports_to_its_sessions_run_state_path_and_reattaches_by_its_own(
+        self,
+    ) -> None:
+        session = uuid.UUID(int=7)
+
+        assert session_run_state_path(session) == f"/api/sessions/{session}/run-state"
+        assert session_reattach_path(session) == f"/api/sessions/{session}/reattach"
 
 
 if __name__ == "__main__":

@@ -2368,7 +2368,7 @@ class TestSessionMethods:
             queries.append(
                 {
                     key: request.url.params.get_list(key)[0]
-                    for key in ("wait_sec", "run", "machine", "cwd")
+                    for key in ("wait_sec", "run", "machine", "cwd", "cli", "instance")
                     if request.url.params.get_list(key)
                 },
             )
@@ -2382,8 +2382,11 @@ class TestSessionMethods:
                 run="chat-1a2b3c4d",
                 machine="gx10",
                 cwd="~/work",
+                cli="codex",
+                instance="a" * 32,
             )
             _ = client.drain_inbound(uuid.uuid4(), machine="gx10")
+            _ = client.drain_inbound(uuid.uuid4(), cli="claude")
             _ = client.drain_inbound(uuid.uuid4())
 
         assert queries == [
@@ -2392,8 +2395,11 @@ class TestSessionMethods:
                 "run": "chat-1a2b3c4d",
                 "machine": "gx10",
                 "cwd": "~/work",
+                "cli": "codex",
+                "instance": "a" * 32,
             },
             {"machine": "gx10"},
+            {"cli": "claude"},
             {},
         ]
 

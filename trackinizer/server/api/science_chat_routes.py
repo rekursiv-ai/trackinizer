@@ -39,6 +39,7 @@ from trackinizer.server.visuals.chat_shares import delete_chat, set_share
 from trackinizer.server.visuals.science_chats import read_conversation, read_head
 from trackinizer.server.visuals.workspace_store import (
     AnswerNotOwnerError,
+    ChatTakenOverError,
     CommandRefusedError,
     PartnerBusyError,
     ProviderOfflineError,
@@ -55,6 +56,7 @@ from trackinizer.wire.wire_science_chat import (
     ChatSend,
     ChatSent,
 )
+from trackinizer.wire.wire_sessions import CHAT_TAKEN_OVER
 
 
 if TYPE_CHECKING:
@@ -101,10 +103,14 @@ async def post_chat_line_route(
     queues nothing again.
 
     The poster's station's provider answers, or in a chat someone else started, the
-    provider of its starter's station. ``assistant`` takes a ``line`` alone (422 for
-    any other ``kind``). For ``claude`` or ``codex`` the post, with its ``kind`` and
-    ``payload``, joins the queue of the chat's session that the CLI's run drains;
-    with no such run live it is 409 ``provider_offline``. A fork from a ``claude`` or
+    provider of its starter's station. ``assistant`` takes a ``line`` or an ``answer``
+    (422 for any other ``kind``); an ``answer`` is a choice on a card the assistant
+    asked, queued for the chat's own session, and is 409 ``provider_offline`` while the
+    assistant does not have the chat open. For ``claude`` or ``codex`` the post, with
+    its ``kind`` and ``payload``, joins the queue of the chat's session that the CLI's
+    run drains; with no such run live it is 409 ``provider_offline``, and while the run
+    reports ``taken_over``, its CLI opened in a terminal, it is 409 ``chat_taken_over``
+    with nothing queued: reattach first. A fork from a ``claude`` or
     ``codex`` station is one too: its new session is opened at once and its line
     waits there for the run the person starts.
 
@@ -113,9 +119,12 @@ async def post_chat_line_route(
     Chat (``/goal``, and claude's ``/compact``) is queued as a ``command``, typed
     bare, with no page, trail or marks; any other is 422 ``command_refused`` with
     the reason in ``message``, and nothing is queued. Every other ``/`` line stays a
-    line. An ``answer`` to a ``claude`` or ``codex`` chat is its starter's alone,
-    the run's owner, since it runs a tool or grants trust on their machine: anyone
-    else is 403 ``answer_not_owner``, and nothing is queued.
+    line. An ``answer`` for ``claude`` or ``codex`` is the chat's starter's alone, the
+    run's owner, since it runs a tool or grants trust on their machine. An ``answer``
+    to the assistant's card is the person's the card asked (``input.asker``, else the
+    starter's), since it lists their own choices, and it carries a line's page, trail
+    and marks. Anyone else is 403 ``answer_not_owner``, and nothing is queued. It names
+    the option taken (``{prompt_id, option}``), or in the older form a ``decision``.
 
     Args:
       body: The line, the poster's station, and the conversation to post into or the
@@ -166,6 +175,11 @@ async def post_chat_line_route(
         ) from error
     except ChatClosedError as error:
         raise HTTPException(status_code=409, detail={"code": error.code}) from error
+    except ChatTakenOverError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": CHAT_TAKEN_OVER, "message": str(error)},
+        ) from error
     except ProviderOfflineError as error:
         raise HTTPException(
             status_code=409,

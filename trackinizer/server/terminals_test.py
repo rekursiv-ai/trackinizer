@@ -111,6 +111,7 @@ class _World:
         machine_id: uuid.UUID = _MACHINE,
         workspace: uuid.UUID | None = None,
         surface: str | None = None,
+        attach: uuid.UUID | None = None,
     ) -> Terminal:
         return self.hub.open(
             Opening(
@@ -121,6 +122,8 @@ class _World:
                 cols=80,
                 workspace=workspace,
                 surface=surface,
+                command=None if attach is None else "claude",
+                attach=attach,
             ),
         )
 
@@ -329,6 +332,24 @@ async def test_a_terminal_told_to_stop_is_no_longer_listed_for_its_station() -> 
     assert host.sent == [(Frame.STOP, b"")]
     assert not closing.ended
     assert world.hub.live_in("a@x.y", workspace=_STATION) == [other]
+
+
+@pytest.mark.asyncio
+async def test_the_runs_attached_to_a_session_are_those_still_live_for_it() -> None:
+    world = _World()
+    chat, other = uuid.UUID(int=7), uuid.UUID(int=8)
+    run = world.open(attach=chat)
+    stopping = world.open(attach=chat)
+    ended = world.open(attach=chat)
+    world.open(attach=other)
+    world.open()
+
+    await world.hub.stop(stopping)
+    await world.hub.end(ended, code=wire_terminals.CLOSE_ENDED)
+
+    assert world.hub.attached_to(chat) == [run]
+    assert [t.attach for t in world.hub.attached_to(other)] == [other]
+    assert world.hub.attached_to(uuid.UUID(int=9)) == []
 
 
 @pytest.mark.asyncio

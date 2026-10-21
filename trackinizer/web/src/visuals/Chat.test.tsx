@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CHAT_DELETED, CHAT_FORK_CLOSED, CHAT_FORK_WIDER, CHAT_NOT_SHARED, CHAT_STAFF_ONLY, type ChatHead, type ChatPartial, type ChatPartialState, deleteChat, getChatHead,
-  readChatPartial, sendChatLine, shareChat, unshareChat } from "../api/chats";
+  readChatPartial, reattachChat, sendChatLine, shareChat, unshareChat } from "../api/chats";
 import { clearChat, hideStation as restoreStation, listStations, pinStation, renameStation, stationForChat } from "../api/stations";
 import { createStation as createStationInWorkstream, createWorkstream, listWorkstreams, moveStation } from "../api/workstreams";
 import { ApiError, type CallOptions } from "../api/client";
@@ -38,6 +38,7 @@ vi.mock("../api/chats", async (original) => ({
   getChatHead: vi.fn(),
   readChatPartial: vi.fn(),
   sendChatLine: vi.fn(),
+  reattachChat: vi.fn(),
   shareChat: vi.fn(),
   unshareChat: vi.fn(),
   deleteChat: vi.fn(),
@@ -137,7 +138,7 @@ afterEach(async () => {
   stopTrail = () => {};
   cleanup();
   vi.restoreAllMocks();
-  for (const mock of [getChatHead, readChatPartial, sendChatLine, shareChat, unshareChat, deleteChat, stationForChat, restoreStation, pinStation, listStations, listWorkstreams, moveStation, createWorkstream, createStationInWorkstream, clearChat, getWorkspace, listSessionParts, readSessionRecords, setSessionAudience, getDetail, findRef]) {
+  for (const mock of [getChatHead, readChatPartial, sendChatLine, reattachChat, shareChat, unshareChat, deleteChat, stationForChat, restoreStation, pinStation, listStations, listWorkstreams, moveStation, createWorkstream, createStationInWorkstream, clearChat, getWorkspace, listSessionParts, readSessionRecords, setSessionAudience, getDetail, findRef]) {
     vi.mocked(mock).mockReset();
   }
   sessions.clear();
@@ -145,7 +146,7 @@ afterEach(async () => {
   localStorage.clear();
   // A save still on its way (a flip of Chat's side, a style) would make the page ignore the next test's preferences.
   await sendWaiting();
-  receivePreferences({ ...preferences(), drafts: {}, highlight_mentions: true });
+  receivePreferences({ ...preferences(), drafts: {}, highlight_mentions: true, chat_tool_calls: false });
   history.replaceState(null, "", "#/");
 });
 
@@ -2238,4 +2239,212 @@ test("a server with no assistant offers no assistant in + New chat", async () =>
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
   expect(screen.getAllByRole("button", { name: /\+ New chat · / }).map((each) => each.textContent))
     .toEqual(["+ New chat · codex ★ default", "+ New chat · claude"]);
+});
+
+// Tool calls between the lines: the same conversation as each provider records it,
+// with the Settings switch off and on.
+const stampedAt = (at: SessionRecord, minute: number): SessionRecord => ({ ...at, timestamp: `2026-10-21T10:0${minute}:00Z` }) as SessionRecord;
+const TOOL_TALKS: readonly (readonly [string, readonly SessionRecord[]])[] = [
+  ["sagent", [said(0, ME, "list the home directory"),
+    record(1, "ToolCall", { call_id: "kb1", name: "Bash", arguments: { command: "ls ~" } }),
+    record(2, "ShellCommandResult", { call_id: "kb1", command: ["ls ~"], stdout: "notes\nsrc\n", extra: { is_error: false } }),
+    answered(3, "Two entries.")]],
+  ["claude", [record(0, "UserMessage", { content: "list the home directory", extra: { author: ME } }),
+    record(1, "ToolCall", { call_id: "toolu_1", name: "Bash", arguments: { command: "ls ~", description: "List home" } }),
+    record(2, "ShellCommandResult", { call_id: "toolu_1", command: ["ls ~"], stdout: "notes\nsrc\n", stderr: "", exit_code: 0 }),
+    answered(3, "Two entries.")]],
+  ["codex", [record(0, "UserMessage", { content: "list the home directory", extra: { author: ME } }),
+    record(1, "ToolCall", { call_id: "call_1", name: "shell", arguments: { command: ["bash", "-lc", "ls ~"], workdir: "/home/ada" } }),
+    record(2, "ShellCommandResult", { call_id: "call_1", command: ["bash", "-lc", "ls ~"], stdout: "notes\nsrc\n", stderr: "", exit_code: 0 }),
+    answered(3, "Two entries.")]],
+];
+const cardsOn = () => act(() => receivePreferences({ ...preferences(), chat_tool_calls: true }));
+const kindsShown = () => [...document.querySelectorAll(".chat-lines > article")].map((line) => /chat-line-(user|assistant|tool)\b/.exec(line.className)?.[1]);
+
+test.each(TOOL_TALKS)("with the switch off, a %s conversation shows its lines and no tool card", async (_provider, records) => {
+  open("c1");
+  hold("c1", ...records);
+  shell();
+  await screen.findByText("Two entries.");
+  expect(articles()).toEqual(["list the home directory", "Two entries."]);
+  expect(document.querySelector(".chat-line-tool")).toBeNull();
+  expect(screen.queryByText("Ran")).toBeNull();
+});
+
+test.each(TOOL_TALKS)("with the switch on, a %s conversation shows its call as a card between the lines, opening to its output", async (_provider, records) => {
+  cardsOn();
+  open("c1");
+  hold("c1", ...records.map((record, minute) => stampedAt(record, minute)));
+  shell();
+  await screen.findByText("Two entries.");
+  expect(kindsShown()).toEqual(["user", "tool", "assistant"]);
+  const card = document.querySelector<HTMLElement>(".chat-line-tool")!;
+  expect(card.querySelector(".tool-row .name")!.textContent).toBe("Ran");
+  expect(card.querySelector(".tool-arg")!.textContent).toBe("ls ~");
+  expect(card.querySelector(".chat-tool-state")!.textContent).toBe("done");
+  expect(card.querySelector(".tool-out")).toBeNull();
+  fireEvent.click(card.querySelector("summary")!);
+  await waitFor(() => expect(card.querySelector(".tool-out")!.textContent).toBe("notes\nsrc\n"));
+  // A card is no message: it has no fork button, and the working line does not stand
+  // for it.
+  expect(within(card).queryByRole("button", { name: "Fork from here" })).toBeNull();
+});
+
+test("turning the switch on shows the cards of the conversation open, and turning it off takes them away", async () => {
+  open("c1");
+  hold("c1", ...TOOL_TALKS[1]![1]);
+  shell();
+  await screen.findByText("Two entries.");
+  expect(document.querySelector(".chat-line-tool")).toBeNull();
+  cardsOn();
+  expect(document.querySelectorAll(".chat-line-tool")).toHaveLength(1);
+  act(() => receivePreferences({ ...preferences(), chat_tool_calls: false }));
+  expect(document.querySelector(".chat-line-tool")).toBeNull();
+});
+
+test("a call still running shows as a running card, and a failed one as failed with its error open", async () => {
+  cardsOn();
+  open("c1");
+  hold("c1", said(0, ME, "run both"),
+    record(1, "ToolCall", { call_id: "a", name: "Bash", arguments: { command: "sleep 200" } }),
+    record(2, "ToolCall", { call_id: "b", name: "Bash", arguments: { command: "ls /nope" } }),
+    record(3, "ShellCommandResult", { call_id: "b", command: ["ls /nope"], stdout: "", stderr: "no such directory\n", exit_code: 2 }));
+  shell();
+  await waitFor(() => expect(document.querySelectorAll(".chat-line-tool")).toHaveLength(2));
+  const [running, failed] = [...document.querySelectorAll<HTMLElement>(".chat-line-tool")];
+  expect(running!.querySelector(".chat-tool-state")!.textContent).toBe("running");
+  expect(failed!.querySelector(".chat-tool-state")!.textContent).toBe("failed");
+  expect(failed!.querySelector(".tool-out")!.textContent).toBe("no such directory\n");
+  // The agent is still working on the running call: its name stays on the working line.
+  expect(screen.getByText("Working: Bash…")).toBeTruthy();
+});
+
+// The unified ask path: a card of the agent's own options, a dot while any waits, and a takeover banner with Reattach.
+const ASK = { id: "a1", type: "permission", tool: "shell", input: {}, questions: null, plan: null, state: "pending", provider: "codex", kind: "command",
+  title: "Run a command", tool_call_id: "", command: "make test", cwd: "/work", reason: "", diff: "", answerable_in_chat: true,
+  options: [{ id: "turn", label: "Yes", kind: "allow_once" }, { id: "decline", label: "No", kind: "deny" }] };
+const asking = (idx: number) => record(idx, "SystemMessage", { extra: { $interaction: ASK } });
+const settled = (idx: number, body: { [field: string]: unknown }) => record(idx, "SystemMessage", { extra: { $interaction_resolved: { id: "a1", ...body } } });
+const CODEX_RUN: WorkspacePartner = { ...(livePartner as WorkspacePartner), provider: "codex", cli: "codex", label: "codex · gx10" };
+/** The station of a codex chat whose run is as `run` says, over the live one. */
+function codexChat(run: Partial<WorkspacePartner> = {}): WorkspaceState {
+  const partner: WorkspacePartner = { ...CODEX_RUN, ...run };
+  return { ...workspace, provider: "codex", partner };
+}
+
+test("an ask with options shows the agent's buttons, and a click posts that option as the chat's answer", async () => {
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"), asking(1));
+  shell(codexChat());
+  const card = (await screen.findByText("Codex wants to run a command")).closest("article")!;
+  fireEvent.click(within(card).getByRole("button", { name: "No" }));
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce());
+  const [line] = vi.mocked(sendChatLine).mock.calls[0]!;
+  expect(line).toMatchObject({ kind: "answer", text: "No", payload: { prompt_id: "a1", option: "decline", message: "" } });
+  expect(line.payload).not.toHaveProperty("decision");
+});
+
+test("the chat's header shows a dot while an ask waits, and drops it once the ask is resolved or released", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"), asking(1));
+  const { client } = shell(codexChat());
+  await screen.findByText("Codex wants to run a command");
+  expect(screen.getByRole("status", { name: "Waiting for your answer" })).toBeTruthy();
+  hold("c1", said(0, ME, "run the suite"), asking(1), settled(2, { option: "", by: "released", who: "", decision: "released" }));
+  await act(async () => { await client.invalidateQueries(); });
+  await changed("s-c1");
+  await waitFor(() => expect(screen.queryByRole("status", { name: "Waiting for your answer" })).toBeNull());
+});
+
+test("the dot follows the server's word too: it shows with no open card in this log, and an open card shows it whatever the server last said", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "hello"));
+  shell(codexChat({ state: "requires_action" }));
+  await screen.findByText("hello");
+  expect(screen.getByRole("status", { name: "Waiting for your answer" })).toBeTruthy();
+  cleanup();
+  hold("c1", said(0, ME, "hello"));
+  shell(codexChat({ state: "running" }));
+  await screen.findByText("hello");
+  expect(screen.queryByRole("status", { name: "Waiting for your answer" })).toBeNull();
+  cleanup();
+  hold("c1", said(0, ME, "run the suite"), asking(1));
+  shell(codexChat({ state: "idle" }));
+  await screen.findByText("Codex wants to run a command");
+  expect(screen.getByRole("status", { name: "Waiting for your answer" })).toBeTruthy();
+});
+
+test("a chat taken over in a terminal says so in place of Chat is off, takes no line, and Reattach to Chat reopens its run", async () => {
+  vi.mocked(reattachChat).mockResolvedValue(undefined);
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"));
+  const { client } = shell(codexChat({ status: "offline", label: "codex: no run", state: "taken_over" }));
+  const invalidated = vi.spyOn(client, "invalidateQueries");
+  expect(await screen.findByText(/^Taken over in a terminal/)).toBeTruthy();
+  expect(screen.queryByText(/^Chat is off/)).toBeNull();
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toBe("Taken over in a terminal"));
+  fireEvent.click(screen.getByRole("button", { name: "Reattach to Chat" }));
+  await waitFor(() => expect(reattachChat).toHaveBeenCalledOnce());
+  expect(vi.mocked(reattachChat).mock.calls[0]).toEqual(["s-c1", expect.any(String)]);
+  await waitFor(() => expect(invalidated).toHaveBeenCalledWith({ queryKey: ["workspace"] }));
+});
+
+test("a run taken over while its partner is still live takes no line, and its open card is answered in the terminal", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"), asking(1));
+  shell(codexChat({ state: "taken_over" }));
+  const card = (await screen.findByText("Codex wants to run a command")).closest("article")!;
+  expect(within(card).getByText("Answer it in the terminal.")).toBeTruthy();
+  for (const button of within(card).getAllByRole("button")) expect(button).toHaveProperty("disabled", true);
+  expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toBe("Taken over in a terminal");
+  // Only the terminal can answer the card now, so Chat does not say it waits on the person.
+  expect(screen.queryByRole("status", { name: "Waiting for your answer" })).toBeNull();
+});
+
+test("a card left open in a chat whose run is gone shows no dot: nobody can answer it from here", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"), asking(1));
+  shell(codexChat({ status: "offline", label: "codex: no run" }));
+  await screen.findByText("Codex wants to run a command");
+  expect(screen.queryByRole("status", { name: "Waiting for your answer" })).toBeNull();
+});
+
+test("a refused reattach shows the server's reason and the next press is a new request; a lost answer is repeated under its key", async () => {
+  vi.mocked(reattachChat).mockRejectedValueOnce(new ApiError(409, "This chat's run is live.", "chat_run_live"))
+    .mockRejectedValueOnce(new ApiError(0, "The server could not be reached", "network")).mockResolvedValue(undefined);
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"));
+  shell(codexChat({ status: "offline", state: "taken_over" }));
+  const button = await screen.findByRole("button", { name: "Reattach to Chat" });
+  fireEvent.click(button);
+  expect((await screen.findByText("This chat's run is live.")).className).toContain("chat-note");
+  await waitFor(() => expect(button).toHaveProperty("disabled", false));
+  fireEvent.click(button);
+  await waitFor(() => expect(reattachChat).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(button).toHaveProperty("disabled", false));
+  fireEvent.click(button);
+  await waitFor(() => expect(reattachChat).toHaveBeenCalledTimes(3));
+  const keys = vi.mocked(reattachChat).mock.calls.map(([, key]) => key);
+  expect([keys[0] === keys[1], keys[1] === keys[2]]).toEqual([false, true]);
+});
+
+test("a viewer who cannot post is not offered Reattach", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"));
+  shell(codexChat({ status: "offline", state: "taken_over" }), { profile: { role: "viewer" } });
+  expect(await screen.findByText(/^Taken over in a terminal/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Reattach to Chat" })).toBeNull();
+});
+
+test("with tool cards on, an ask that names its call sits flush under that call's card", async () => {
+  cardsOn();
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"), record(1, "ToolCall", { call_id: "item_1", name: "shell", arguments: { command: "make test" } }),
+    record(2, "AssistantMessage", { content: "Waiting on you." }), record(3, "SystemMessage", { extra: { $interaction: { ...ASK, tool_call_id: "item_1" } } }));
+  shell(codexChat());
+  const card = (await screen.findByText("Codex wants to run a command")).closest("article")!;
+  expect(card.className).toContain("prompt-card-attached");
+  expect(card.previousElementSibling!.className).toContain("chat-line-tool");
 });

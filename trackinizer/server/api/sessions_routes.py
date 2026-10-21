@@ -40,6 +40,7 @@ from trackinizer.server.api.session_access import (
     require_session_write_access,
     resolve_asker,
 )
+from trackinizer.server.asks import release_open_asks
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,
@@ -66,6 +67,11 @@ from trackinizer.wire.wire_science_chat import (
     chat_conversation_id,
 )
 from trackinizer.wire.wire_sessions import (
+    CHAT_RUN_LIVE,
+    CLI_REQUIRED,
+    PROVIDER_IS_ASSISTANT,
+    PROVIDER_IS_CLI,
+    PROVIDER_IS_OTHER_CLI,
     DrainInboundResponse,
     InboundDrainItem,
     InboundEnqueueRequest,
@@ -74,6 +80,7 @@ from trackinizer.wire.wire_sessions import (
     SendMessageResponse,
     SessionEnd,
     SessionEndResponse,
+    SessionRunState,
     SessionStart,
     SessionStartResponse,
 )
@@ -425,6 +432,8 @@ async def session_inbound_drain_route(
         str | None,
         Query(max_length=1_024, pattern=r"^[^\x00-\x1f\x7f-\x9f]*$"),
     ] = None,
+    cli: Annotated[str | None, Query(pattern=r"^[a-z][a-z0-9_-]{0,31}$")] = None,
+    instance: Annotated[str | None, Query(pattern=r"^[0-9a-f]{32}$")] = None,
 ) -> DrainInboundResponse:
     """Drain all pending inbound messages for a session (oldest first).
 
@@ -448,12 +457,22 @@ async def session_inbound_drain_route(
     (403 otherwise). Viewer access is scoped to the opening API key so reading chat
     does not grant graph-write permission.
 
-    A science chat's queue has one drainer, the provider its starter's station names.
-    For ``claude`` or ``codex`` a drain by the configured assistant's key is 409
-    ``provider_is_cli``, and the run that drains it may be under any key a chat takes
-    a run from (its opening key or its starter's; 403 otherwise). For ``assistant`` a
-    drain by its opening key that is not the assistant's is 409
+    A science chat's queue has one drainer, the provider its starter's station names,
+    and one live run. For ``claude`` or ``codex`` a drain by the configured assistant's
+    key is 409 ``provider_is_cli``, and the run that drains it may be under any key a
+    chat takes a run from (its opening key or its starter's; 403 otherwise). For
+    ``assistant`` a drain by its opening key that is not the assistant's is 409
     ``provider_is_assistant``. Either holds from the moment the station switches.
+
+    A chat answered by a CLI is drained by a run that names its ``cli``: a drain that
+    names none, as a ``trax`` older than the name sends, is 426 ``cli_required`` and
+    takes no lease, since the server cannot tell which CLI polls. A drain by the other
+    CLI than the station's is 409 ``provider_is_other_cli``. The lease records the
+    named CLI, and the chat is live for a provider only while a poller that named it
+    holds the lease. ``instance`` is an id the run minted for itself; a drain whose
+    ``instance`` differs from that of the unexpired lease of the same CLI is 409
+    ``chat_run_live``, so one chat never has two runs draining it. So is a drain by
+    a run the server replaced when it reattached the chat (``POST .../reattach``).
 
     ``run``, ``machine`` and ``cwd`` say where the draining run is, and the lease the
     drain takes keeps them for Chat to show (a malformed one is 422). They are the
@@ -471,6 +490,10 @@ async def session_inbound_drain_route(
       machine: The run's machine, as ``trax machine connect`` names it.
       cwd: The run's working directory, ``~/...`` under its home: at most 1,024
         characters, none of them a control character.
+      cli: The CLI the draining run is, as ``trax run`` names it: a lowercase word of
+        at most 32 characters.
+      instance: The run's own id, 32 lowercase hexadecimal digits, the same on each of
+        its drains.
 
     Returns:
       response: DrainInboundResponse with list of pending messages (text, kind,
@@ -478,43 +501,13 @@ async def session_inbound_drain_route(
 
     """
     store = get_store(request)
-    session = await require_session(store, session_id)
-    await require_session_access(request, identity, session=session, mode="drain")
-    provider = await _chat_provider_of(request, session=session)
-    if provider is not None and provider != "assistant":
-        _refuse_the_other_provider(request, identity, provider=provider)
-        # The run is the starter's own, under whichever of their keys its machine has.
-        await require_chat_writer(request, identity, session=session)
-    # Its queue holds every user's Chat, and a science chat's queue holds its posters'
-    # lines, so no one but the opening key reads either: a drain by another writer
-    # would take the owner's lines.
-    elif (
-        identity.api_key_id != session.opened_by_api_key_id
-        and await _takes_chat_lines(
-            request,
-            session=session,
-        )
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="A chat session is drained by its opening key",
-        )
-    else:
-        _refuse_the_other_provider(request, identity, provider=provider)
-    if identity.role == "viewer":
-        async with store.engine.acquire() as conn:
-            owned = await conn.fetchval(
-                "SELECT 1 FROM inquiries AS sess "
-                "JOIN api_keys AS credential "
-                "ON credential.id = sess.agentsession_opened_by_api_key_id "
-                "WHERE sess.id = $1 AND credential.id = $2 "
-                "AND credential.user_id = $3 AND credential.revoked_at IS NULL",
-                session_id,
-                identity.api_key_id,
-                identity.user_id,
-            )
-        if not owned:
-            raise HTTPException(status_code=403, detail="Own session key required")
+    session, provider = await _authorize_drain(
+        request,
+        identity,
+        session_id=session_id,
+        cli=cli,
+        names_cli=True,
+    )
     inbound = get_inbound(request)
     # A run closed for silence that polls again was alive all along -- cut off,
     # not dead -- so it gets its session back before this poll is served.
@@ -525,9 +518,32 @@ async def session_inbound_drain_route(
         session = await require_session(store, session_id)
     polling = session.status == "active" and session.ended is None
     if polling:
+        # No await between this test and the lease it protects: two runs that start
+        # together cannot both pass it.
+        if (
+            provider is not None
+            and provider != "assistant"
+            and cli is not None
+            and instance is not None
+            and inbound.held_by_another(session_id, cli=cli, instance=instance)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": CHAT_RUN_LIVE,
+                    "message": "Another run is draining this chat; stop it first",
+                },
+            )
         if not inbound.has_poller(session_id):
             get_hub(request).nudge()
-        inbound.mark_poller(session_id, run=run, machine=machine, cwd=cwd)
+        inbound.mark_poller(
+            session_id,
+            run=run,
+            machine=machine,
+            cwd=cwd,
+            cli=cli,
+            instance=instance,
+        )
         await store.record_session_seen(
             session_id,
             at=datetime.now(UTC),
@@ -565,6 +581,52 @@ async def session_inbound_drain_route(
     )
 
 
+@router.post("/api/sessions/{session_id}/run-state", status_code=204)
+async def session_run_state_route(
+    session_id: UUID,
+    body: SessionRunState,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> None:
+    """Take what a run says it is doing, for Chat to show.
+
+    The run reports between its drains, so a change shows at once, not after the
+    drain it is parked in. The state stays on the session's lease: it lapses with it,
+    and a drain of the same run leaves it as it is, so a run says a state other than
+    idle again while it holds; only a change rechecks open canvases. It is the run's own
+    word about its
+    own run, shown and never trusted. A report from a run other than the one holding
+    the lease, or while none does, changes nothing, and is answered the same.
+
+    ``taken_over`` is the report that matters: Chat then refuses the chat's lines with
+    409 ``chat_taken_over``, until a reattach starts a headless run again.
+
+    The caller is held to the rules of the session's drain: its opening key, or for a
+    chat answered by a CLI its starter's run (403 otherwise), and never the
+    assistant's (409 ``provider_is_cli``).
+
+    Args:
+      session_id: The session the run drains.
+      body: The state, and the run's own id.
+      request: Starlette request object.
+      identity: Authenticated run.
+
+    """
+    _ = await _authorize_drain(
+        request,
+        identity,
+        session_id=session_id,
+        cli=None,
+        names_cli=False,
+    )
+    inbound = get_inbound(request)
+    # A run says its state again while it holds, which changes nothing a stream shows.
+    before = inbound.poller_run(session_id)
+    kept = inbound.report_state(session_id, instance=body.instance, state=body.state)
+    if kept and (before is None or before.state != body.state):
+        get_hub(request).nudge()
+
+
 @router.post("/api/sessions/{session_id}/end")
 async def session_end_route(
     session_id: UUID,
@@ -582,11 +644,21 @@ async def session_end_route(
     steering messages. A second end on an already-closed session is a 409. A
     session whose audience the caller neither reads nor opened is 403
     ``session_audience``. A science chat is closed by a key that may run on it: its
-    opening key, the assistant's or its starter's (403 otherwise).
+    opening key, the assistant's or its starter's (403 otherwise). An end that names
+    a ``cli`` other than the chat's provider is a 200 that changes nothing: it is the
+    exit of a run a switch stopped, and the session is the chat's, now drained by the
+    provider its station chose. An end that names a ``cli`` and an ``instance`` is
+    the same 200 that changes nothing when the run it names was replaced, or another
+    run of that CLI holds the session's lease: it is the exit of a run a reattach
+    took over, and the run holding the chat goes on. Any other end first releases
+    the asks the run left open: an ``$interaction_resolved`` record with
+    ``by: released`` for each, which the
+    closed session would take no more.
 
     Args:
       session_id: UUID of the session to close.
-      body: Session status and optional cli_session_id backfill.
+      body: Session status, optional cli_session_id backfill, and the ending run's
+        CLI and instance.
       request: Starlette request object.
       identity: Authenticated user (audit actor for the change).
 
@@ -600,6 +672,23 @@ async def session_end_route(
     require_session_write_access(identity, session)
     await require_session_access(request, identity, session=session, mode="write")
     await require_chat_writer(request, identity, session=session)
+    # A switch stops the old run, which may exit after the new provider's run attached:
+    # ending the chat's session then would take that run's lease and queued lines.
+    provider = await _chat_provider_of(request, session=session)
+    if provider is not None and body.cli is not None and body.cli != provider:
+        return SessionEndResponse(id=session_id, ended=session.ended)
+    # A reattach replaces a run that may quit before its drain is turned away: its end
+    # would close the chat the new run holds, take that run's lease and release its asks.
+    if (
+        body.cli is not None
+        and body.instance is not None
+        and get_inbound(request).held_by_another(
+            session_id,
+            cli=body.cli,
+            instance=body.instance,
+        )
+    ):
+        return SessionEndResponse(id=session_id, ended=session.ended)
     # Ordinary vendor-ID finalization keeps shared writer access; only a chat
     # membership change uses the stricter ID-edit guard.
     if (
@@ -617,6 +706,9 @@ async def session_end_route(
             value=body.cli_session_id,
         )
     actor = _actor(identity, body.actor)
+    # Before the close, which takes records no more: an ask the run left open can be
+    # answered by no one once it is gone.
+    _ = await release_open_asks(store, session_id=session_id, at=datetime.now(UTC))
     # Always stamp a real ``ended``: ``ended IS NULL`` is the "live" predicate
     # (the active/previous split), so a complete session must never leave it
     # NULL even when the client omitted a timestamp.
@@ -649,6 +741,63 @@ async def session_end_route(
         )
     get_hub(request).nudge()
     return SessionEndResponse(id=session_id, ended=committed_ended)
+
+
+# The run is the starter's own, under whichever of their keys its machine has. Its
+# queue holds every user's Chat, and a science chat's queue holds its posters' lines,
+# so no one but the opening key reads either: a drain by another writer would take the
+# owner's lines.
+# Return it and its chat's provider.
+#
+# A run's report of its own state is held to the same rule, since it speaks for the same
+# run; it names no CLI (``names_cli``), the lease it reports to already does.
+async def _authorize_drain(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    session_id: UUID,
+    cli: str | None,
+    names_cli: bool,
+) -> tuple[AgentSession, ChatProvider | None]:
+    """Refuse a caller who may not drain a session."""
+    store = get_store(request)
+    session = await require_session(store, session_id)
+    await require_session_access(request, identity, session=session, mode="drain")
+    provider = await _chat_provider_of(request, session=session)
+    if provider is not None and provider != "assistant":
+        _refuse_the_other_provider(request, identity, provider=provider)
+        await require_chat_writer(request, identity, session=session)
+        # After the access checks: a stranger is not told who answers the chat.
+        if names_cli:
+            _require_the_providers_cli(provider, cli=cli)
+    elif (
+        identity.api_key_id != session.opened_by_api_key_id
+        and await _takes_chat_lines(
+            request,
+            session=session,
+        )
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="A chat session is drained by its opening key",
+        )
+    else:
+        _refuse_the_other_provider(request, identity, provider=provider)
+    if identity.role == "viewer":
+        async with store.engine.acquire() as conn:
+            owned = await conn.fetchval(
+                "SELECT 1 FROM inquiries AS sess "
+                "JOIN api_keys AS credential "
+                "ON credential.id = sess.agentsession_opened_by_api_key_id "
+                "WHERE sess.id = $1 AND credential.id = $2 "
+                "AND credential.user_id = $3 AND credential.revoked_at IS NULL",
+                session_id,
+                identity.api_key_id,
+                identity.user_id,
+            )
+        if not owned:
+            raise HTTPException(status_code=403, detail="Own session key required")
+    return session, provider
 
 
 def _no_direct_line() -> HTTPException:
@@ -703,7 +852,7 @@ def _refuse_the_other_provider(
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "provider_is_cli",
+                "code": PROVIDER_IS_CLI,
                 "message": f"This chat's station answers it with {provider}",
             },
         )
@@ -711,8 +860,31 @@ def _refuse_the_other_provider(
         raise HTTPException(
             status_code=409,
             detail={
-                "code": "provider_is_assistant",
+                "code": PROVIDER_IS_ASSISTANT,
                 "message": "This chat's station answers it with the assistant",
+            },
+        )
+
+
+# The drain names its CLI so that liveness and routing never rest on what a run
+# happened to write: ``trax run``'s own part has no format, and the newest part after a
+# ``/compact`` is that one. A drain that names none is refused rather than guessed at.
+def _require_the_providers_cli(provider: ChatProvider, *, cli: str | None) -> None:
+    """Refuse a chat's drain by a run that is not the CLI its station chose."""
+    if cli is None:
+        raise HTTPException(
+            status_code=426,
+            detail={
+                "code": CLI_REQUIRED,
+                "message": "Update trax: its inbound drain must name the CLI it runs",
+            },
+        )
+    if cli != provider:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": PROVIDER_IS_OTHER_CLI,
+                "message": f"This chat's station answers it with {provider}, not {cli}",
             },
         )
 

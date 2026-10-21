@@ -160,7 +160,10 @@ export async function readFeed(
   );
 }
 
-/** One session's share of a feed window: its records, how many are conversation, its newest, and when it ended. */
+/**
+ * One session's share of a feed window: its records, how many are conversation, its newest, and when it ended;
+ * and, for a chat's session, whether it waits on the person or its run was taken over in a terminal.
+ */
 export type FeedActorFacet = components["schemas"]["FeedActorFacet"];
 
 /** What a window of the feed holds, by session (newest first), room and record kind (largest first). */

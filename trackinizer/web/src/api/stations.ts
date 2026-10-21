@@ -3,7 +3,10 @@ import type { components } from "./generated/schema";
 import type { Provider } from "./providers";
 import { valid, type WorkspaceState } from "./workspaces";
 
-/** One station in the user's list: its name, its chat's conversation and the page it last showed. */
+/**
+ * One station in the user's list: its name, its chat's conversation and the page it last showed, and what its
+ * chat's run is doing (`state`: waiting on the person, or taken over in a terminal).
+ */
 export type StationSummary = components["schemas"]["WorkspaceSummary"];
 
 /** The user's stations, the one changed last first. */

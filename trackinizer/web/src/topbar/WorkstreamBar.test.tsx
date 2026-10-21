@@ -293,3 +293,12 @@ test("renaming refreshes the cached workstream Info heading", async () => {
   await screen.findByRole("dialog", { name: "Renamed info" });
   expect(mocks.workstreamInfo).toHaveBeenCalledTimes(2);
 });
+
+test("a workstream's tab carries a dot while a chat in it waits on the person, and the others do not", async () => {
+  const strip = await show([...stations, station("b-waiting", "ws-b", "2026-10-05T00:00:00Z", { state: "requires_action" }),
+    station("scratch-hidden", null, "2026-10-05T00:00:00Z", { state: "requires_action", hidden: true }),
+    station("a-quiet", "ws-a", "2026-10-05T00:00:00Z", { state: "running" })]);
+  const dots = [...strip.querySelectorAll<HTMLButtonElement>(".workstream-title")].map((tab) => [tab.getAttribute("aria-label"), tab.querySelector(".workstream-waiting")?.getAttribute("title") ?? null]);
+  // A chat the person hid is not one they are waited on in.
+  expect(dots).toEqual([["Scratch", null], ["Alpha", null], ["Beta", "A chat in Beta is waiting for your answer"]]);
+});

@@ -48,8 +48,10 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
+from trackinizer.server.asks_test_support import write_records
 from trackinizer.server.chat_hub import ChatHub, WorkspaceFrame
 from trackinizer.server.inbound import InboundQueue
+from trackinizer.trax.run.asks import Ask, Option, opened_record
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.audience import OPEN, STAFF
 from trackinizer.wire.wire_science_chat import (
@@ -179,10 +181,116 @@ async def test_a_sharers_post_goes_by_the_chats_provider_not_their_stations(
     posted = await _bob_says(client, chat, station=bob_station, text="thanks")
 
     assert command.status_code == 422, command.text
-    assert "The assistant takes a person's line, not a command" in command.text
+    assert "The assistant takes a person's line or an answer, not a command" in (
+        command.text
+    )
     assert posted.status_code == 200
     heard = await _heard(client, chat.session)
     assert [(each["text"], each["kind"]) for each in heard] == [("thanks", "line")]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_only_the_starter_answers_a_question_card_of_the_assistants_chat(
+    pglite_route_client: _Client,
+) -> None:
+    """A sharer reads and posts, but the chat's cards are its starter's, as a run's."""
+    client, store = pglite_route_client
+    chat = await _ada_chat(client, store)
+    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
+    browser()
+    _ = await client.put(_share_path(chat, BOB))
+    answer: dict[str, object] = {"prompt_id": "q1", "option": "1"}
+
+    def post(station: uuid.UUID) -> dict[str, object]:
+        return {
+            "workspace_id": str(station),
+            "conversation_id": str(chat.conversation),
+            "text": "Blue",
+            "kind": "answer",
+            "payload": answer,
+        }
+
+    browser(OTHER_USER_ID, email=BOB)
+    refused = await client.post(
+        "/api/chats",
+        json=post(bob_station),
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    browser()
+    answered = await client.post(
+        "/api/chats",
+        json=post(chat.station),
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+
+    assert refused.status_code == 403, refused.text
+    assert json_loads(refused.content, dict[str, object])["detail"] == {
+        "code": "answer_not_owner",
+        "message": f"Only {ADA} can answer this chat's questions.",
+    }
+    assert answered.status_code == 200, answered.text
+    heard = await _heard(client, chat.session)
+    assert [(each["text"], each["kind"], each["payload"]) for each in heard] == [
+        ("Blue", "answer", answer),
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_card_the_assistant_asked_a_sharer_is_theirs_to_answer(
+    pglite_route_client: _Client,
+) -> None:
+    """The card lists the asker's own choices, so their click alone is heard."""
+    client, store = pglite_route_client
+    chat = await _ada_chat(client, store)
+    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
+    browser()
+    _ = await client.put(_share_path(chat, BOB))
+    asked = Ask(
+        id="q2",
+        provider="assistant",
+        kind="question",
+        input={"asker": BOB.upper()},
+        options=(Option(id="1", label="gx10", kind="allow_once"),),
+    )
+    await write_records(
+        store,
+        chat.session,
+        [opened_record(asked, at=datetime.now(UTC))],
+        name="cards.jsonl",
+    )
+    answer: dict[str, object] = {"prompt_id": "q2", "option": "1"}
+
+    def post(station: uuid.UUID) -> dict[str, object]:
+        return {
+            "workspace_id": str(station),
+            "conversation_id": str(chat.conversation),
+            "text": "gx10",
+            "kind": "answer",
+            "payload": answer,
+        }
+
+    refused = await client.post(
+        "/api/chats",
+        json=post(chat.station),
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    browser(OTHER_USER_ID, email=BOB)
+    answered = await client.post(
+        "/api/chats",
+        json=post(bob_station),
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+
+    assert refused.status_code == 403, refused.text
+    assert json_loads(refused.content, dict[str, object])["detail"] == {
+        "code": "answer_not_owner",
+        "message": f"Only {BOB.upper()} can answer this question.",
+    }
+    assert answered.status_code == 200, answered.text
+    heard = await _heard(client, chat.session)
+    assert [(each["text"], each["source"]) for each in heard] == [("gx10", BOB)]
 
 
 @pytest.mark.db_pglite

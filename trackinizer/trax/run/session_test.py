@@ -22,13 +22,15 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, TextIO, cast, override
+from typing import TYPE_CHECKING, Final, Literal, TextIO, cast, override
 
 import asyncio
 import io
 import json
+import logging
 import os
 import pwd
+import re
 import shlex
 import shutil
 import sys
@@ -62,13 +64,23 @@ from trackinizer.lib.posix.testing import poll_fsevents
 from trackinizer.trax import machine_host
 from trackinizer.trax.daemon.protocol import socket_address
 from trackinizer.trax.profile import LOCALHOST_FALLBACK_URL
-from trackinizer.trax.run import detach, prompt_bridge, session
+from trackinizer.trax.run import detach, headless, prompt_bridge, session
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter
+from trackinizer.trax.run.asks import Answer, Ask, Resolved, StateChanged
+from trackinizer.trax.run.claude_stream import ClaudeStreamDriver
+from trackinizer.trax.run.codex_app import CodexAppDriver
 from trackinizer.trax.run.commands import command_record
 from trackinizer.trax.run.custom_types import Event
+from trackinizer.trax.run.detach import HeadlessSpec
+from trackinizer.trax.run.headless import (
+    HeadlessRun,
+    RunEndedError,
+    TakenOverError,
+    Tui,
+)
 from trackinizer.trax.run.inbound import render_inbound
 from trackinizer.trax.run.prompt_bridge import PromptBridge
 from trackinizer.trax.run.session import (
@@ -119,12 +131,15 @@ from trackinizer.wire.wire_sessions import (
 )
 
 
+_THIS: Final = Path(__file__).resolve()
+
 _CWD: Final = Path(__file__).resolve().parent
 
 if TYPE_CHECKING:
     from treekle import PlainTree
 
     from trackinizer.trax.run.adapters.custom_types import Adapter
+    from trackinizer.trax.run.asks import Driver
     from trackinizer.types.streams import TraxRecord
 
 
@@ -1172,11 +1187,137 @@ class TestARunSaysWhereItIs:
             run_name="chat-1a2b3c4d",
             machine="gx10",
             cwd="~/work",
+            cli="claude",
         )
 
-        assert client.said == [
-            {"run": "chat-1a2b3c4d", "machine": "gx10", "cwd": "~/work"},
-        ]
+        [said] = client.said
+        instance = said.pop("instance")
+        assert said == {
+            "run": "chat-1a2b3c4d",
+            "machine": "gx10",
+            "cwd": "~/work",
+            "cli": "claude",
+        }
+        assert re.fullmatch(r"[0-9a-f]{32}", instance or "")
+
+    def test_a_run_names_its_cli_and_the_same_instance_on_every_drain(self) -> None:
+        stop = threading.Event()
+        client = _WhereClient(stop, drains=3)
+
+        _inbound_poll_loop(
+            cast(Client, client),
+            cast(Sink, _SessionSink()),
+            cast(ThreadedRelay, _RecordingRelay()),
+            stop,
+            poll_interval=0.001,
+            cli="codex",
+        )
+
+        assert [said["cli"] for said in client.said] == ["codex"] * 3
+        assert len({said["instance"] for said in client.said}) == 1
+
+    def test_two_runs_do_not_share_an_instance(self) -> None:
+        instances: list[str | None] = []
+        for _ in range(2):
+            stop = threading.Event()
+            client = _WhereClient(stop)
+            _inbound_poll_loop(
+                cast(Client, client),
+                cast(Sink, _SessionSink()),
+                cast(ThreadedRelay, _RecordingRelay()),
+                stop,
+                cli="claude",
+            )
+            instances.append(client.said[0]["instance"])
+
+        assert instances[0] != instances[1]
+
+    def test_a_run_that_knows_no_cli_names_none(self) -> None:
+        stop = threading.Event()
+        client = _WhereClient(stop)
+
+        _inbound_poll_loop(
+            cast(Client, client),
+            cast(Sink, _SessionSink()),
+            cast(ThreadedRelay, _RecordingRelay()),
+            stop,
+        )
+
+        assert client.said[0]["cli"] is None
+
+    @pytest.mark.parametrize(
+        "code",
+        ["provider_is_other_cli", "provider_is_assistant", "chat_run_live"],
+    )
+    def test_a_run_the_chat_refuses_stops_instead_of_retrying(
+        self,
+        code: str,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        stop = threading.Event()
+        client = _RefusingClient(ClientError("409", status_code=409, code=code))
+        sink = _SessionSink()
+        relay = _RecordingRelay()
+
+        _inbound_poll_loop(
+            cast(Client, client),
+            cast(Sink, sink),
+            cast(ThreadedRelay, relay),
+            stop,
+            poll_interval=0.01,
+            cli="claude",
+        )
+
+        assert (client.drains, relay.terminated) == (1, 1)
+        assert code in capsys.readouterr().err
+
+    def test_a_refused_run_leaves_the_session_open_before_it_stops_the_cli(
+        self,
+    ) -> None:
+        """The session is the chat's: ending it ends the run the chat kept."""
+        refusal = ClientError("409", status_code=409, code="chat_run_live")
+        sink = _SessionSink()
+        relay = _TerminateSeesKeptOpen(sink)
+
+        _inbound_poll_loop(
+            cast(Client, _RefusingClient(refusal)),
+            cast(Sink, sink),
+            cast(ThreadedRelay, relay),
+            threading.Event(),
+            cli="claude",
+        )
+
+        assert relay.saw_kept_open == [True]
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ClientError("409", status_code=409, code="something_else"),
+            ClientError("409", status_code=409),
+            ClientError("500", status_code=500, code="provider_is_other_cli"),
+            ClientError("down"),
+        ],
+    )
+    def test_any_other_failure_is_retried_and_the_run_kept(
+        self,
+        error: ClientError,
+    ) -> None:
+        stop = threading.Event()
+        client = _RefusingClient(error, stop_after=3, stop=stop)
+        sink = _SessionSink()
+        relay = _RecordingRelay()
+
+        _inbound_poll_loop(
+            cast(Client, client),
+            cast(Sink, sink),
+            cast(ThreadedRelay, relay),
+            stop,
+            poll_interval=0.001,
+            cli="claude",
+        )
+
+        assert (client.drains, relay.terminated) == (3, 0)
+        assert not sink.kept_open
 
     @pytest.mark.parametrize(
         ("hostname", "machine"),
@@ -1227,10 +1368,11 @@ class TestARunSaysWhereItIs:
 
 
 class _WhereClient:
-    """Records what each drain says of the run, and stops the loop after one."""
+    """Records what each drain says of the run, and stops the loop after some."""
 
-    def __init__(self, stop: threading.Event) -> None:
+    def __init__(self, stop: threading.Event, *, drains: int = 1) -> None:
         self._stop = stop
+        self._drains = drains
         self.said: list[dict[str, str | None]] = []
 
     def drain_inbound(
@@ -1242,8 +1384,38 @@ class _WhereClient:
     ) -> list[InboundDrainItem]:
         del session_id, wait_sec
         self.said.append(where)
-        self._stop.set()
+        if len(self.said) >= self._drains:
+            self._stop.set()
         return []
+
+
+class _RefusingClient:
+    """A client whose every drain fails with ``error``, as the server refuses it."""
+
+    def __init__(
+        self,
+        error: ClientError,
+        *,
+        stop_after: int = 0,
+        stop: threading.Event | None = None,
+    ) -> None:
+        self._error = error
+        self._stop_after = stop_after
+        self._stop = stop
+        self.drains = 0
+
+    def drain_inbound(
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
+        **where: str | None,
+    ) -> list[InboundDrainItem]:
+        del session_id, wait_sec, where
+        self.drains += 1
+        if self._stop is not None and self.drains >= self._stop_after:
+            self._stop.set()
+        raise self._error
 
 
 def _start_host(
@@ -2903,6 +3075,21 @@ class TestAPrivateRun:
         with pytest.raises(PrivateNotHeldError):
             _ = _open_sink(config, IOStreamAdapter()).open()
 
+    def test_the_runs_session_end_names_the_instance_its_drains_name(self) -> None:
+        """The server tells a replaced run's exit by the id its drains named."""
+        client = _UploadsClient()
+        config = RunConfig(cli_name="sh", client=cast(Client, client))
+        sink = _open_sink(config, IOStreamAdapter())
+        _ = sink.open()
+
+        sink.close()
+
+        [end] = client.ends
+        assert end is not None
+        assert end.instance == config.instance
+        assert len(config.instance) == 32
+        assert RunConfig(cli_name="sh").instance != config.instance
+
     def test_a_run_stopped_so_exits_2(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -2951,6 +3138,7 @@ class TestFallbackClientInbound:
     ) -> None:
         polling = threading.Event()
         clients: list[Client] = []
+        instances: list[object] = []
 
         def watch(*args: object, **kwargs: object) -> None:
             stop = args[4]
@@ -2969,8 +3157,9 @@ class TestFallbackClientInbound:
                 return 0
 
         def poll(client: Client, *args: object, **kwargs: object) -> None:
-            del args, kwargs
+            del args
             clients.append(client)
+            instances.append(kwargs["instance"])
             polling.set()
 
         def open_sink(config: RunConfig, adapter: Adapter) -> Sink:
@@ -2992,9 +3181,12 @@ class TestFallbackClientInbound:
         monkeypatch.setattr(session, "ThreadedRelay", _Relay)
         monkeypatch.setattr(shutil, "which", _always_found)
 
-        assert run(RunConfig(cli_name="fake", client=None, quiesce_seconds=0.0)) == 0
+        config = RunConfig(cli_name="fake", client=None, quiesce_seconds=0.0)
+        assert run(config) == 0
         assert len(clients) == 1
         assert clients[0].base_url == LOCALHOST_FALLBACK_URL
+        # The drains name the id the run's session end names.
+        assert instances == [config.instance]
 
 
 class TestBoxHookLifetime:
@@ -4364,10 +4556,11 @@ class TestSpawnWiring:
         monkeypatch.setattr("socket.gethostname", lambda: "gx10.lan")
         _at_home(monkeypatch, tmp_path.parent)
         monkeypatch.chdir(tmp_path)
+        config = RunConfig(cli_name=cli, cli_args=("cat",), client=client)
         wiring, _ = _wire(
             monkeypatch,
             tmp_path,
-            RunConfig(cli_name=cli, cli_args=("cat",), client=client),
+            config,
             adapter(),
             sink=sink,
         )
@@ -4391,6 +4584,8 @@ class TestSpawnWiring:
             "cli": cli,
             "gate": None,
             "compact": None,
+            # The id its session end names too.
+            "instance": config.instance,
         }
         # A synced claude run bridges its prompts; a stream child asks none.
         assert isinstance(bridge, PromptBridge) is not stream
@@ -4709,6 +4904,73 @@ def _drain_until_stop(*args: object, armed: threading.Event, **kwargs: object) -
     stop = args[4]
     assert isinstance(stop, threading.Event)
     _ = stop.wait(5.0)
+
+
+class TestARefusedRunLeavesTheChatsSessionOpen:
+    """The run a chat refuses stops, and its exit does not end the chat's session.
+
+    ``--attach`` makes the chat's session the run's own, so the exit that ends a run's
+    session would end the one the chat's other run still drains.
+    """
+
+    def test_the_session_is_not_ended_when_the_run_stops(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        server = _RefusingServer()
+        client = cast(Client, server)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        monkeypatch.setattr(session, "ThreadedRelay", _StopsWhenTold)
+        monkeypatch.setattr(session, "_drain_filesystem_loop", _drain_until_stop)
+        monkeypatch.setattr(session, "_HOOK_READY_SEC", 0.0)
+        monkeypatch.setattr(shutil, "which", _always_found)
+
+        status = session._spawn_and_drain(
+            RunConfig(cli_name="claude", client=client, quiesce_seconds=0.0),
+            ClaudeAdapter(),
+            LockedSink(TrackinizerSink(client, "claude")),
+            _Stats(),
+        )
+
+        assert status == 0
+        assert server.drains == 1
+        assert not server.ended.is_set(), "the refused run ended the chat's session"
+
+
+class _RefusingServer(_HoldingServer):
+    """A server whose chat already has a live run, so every drain here is refused."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.drains = 0
+
+    @override
+    def drain_inbound(
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
+        **where: str | None,
+    ) -> list[InboundDrainItem]:
+        del session_id, wait_sec, where
+        self.drains += 1
+        raise ClientError("409", status_code=409, code="chat_run_live")
+
+
+class _StopsWhenTold:
+    """A CLI that runs until its inbound poller terminates it."""
+
+    def __init__(self, argv: object, **kwargs: object) -> None:
+        del argv, kwargs
+        self._terminated = threading.Event()
+
+    def run(self) -> int:
+        assert self._terminated.wait(5.0), "the poller never stopped the run"
+        return 0
+
+    def terminate(self) -> None:
+        self._terminated.set()
 
 
 class TestInboundIsWaitDriven:
@@ -5137,6 +5399,12 @@ class _SessionSink:
 
     session_id = uuid.UUID("11111111-2222-3333-4444-555555555555")
 
+    def __init__(self) -> None:
+        self.kept_open = False
+
+    def keep_session_open(self) -> None:
+        self.kept_open = True
+
 
 class _RecordingRelay:
     """Records what would have been typed into the CLI."""
@@ -5154,6 +5422,20 @@ class _RecordingRelay:
 
     def terminate(self) -> None:
         self.terminated += 1
+
+
+class _TerminateSeesKeptOpen(_RecordingRelay):
+    """Notes, at the moment the CLI is stopped, whether the session was kept open."""
+
+    def __init__(self, sink: _SessionSink) -> None:
+        super().__init__()
+        self._sink = sink
+        self.saw_kept_open: list[bool] = []
+
+    @override
+    def terminate(self) -> None:
+        self.saw_kept_open.append(self._sink.kept_open)
+        super().terminate()
 
 
 class _PromptWatchingRelay(_RecordingRelay):
@@ -5263,6 +5545,7 @@ class _UploadsClient:
 
     def __init__(self) -> None:
         self.sent: list[str] = []
+        self.ends: list[SessionEnd | None] = []
 
     def session_start(self, body: SessionStart) -> SessionStartResponse:
         return SessionStartResponse(id=uuid.uuid4(), seq=0, actor=body.actor)
@@ -5284,7 +5567,7 @@ class _UploadsClient:
         session_id: uuid.UUID,
         body: SessionEnd | None = None,
     ) -> SessionEndResponse:
-        del body
+        self.ends.append(body)
         return SessionEndResponse(id=session_id)
 
 
@@ -6823,6 +7106,2193 @@ def _keep_attached(
     assert session.main(argv, client_factory=lambda: cast(Client, client)) == 0
     (config,) = ran
     return config
+
+
+class TestAChatRunIsHeadless:
+    """A run a chat's host starts drives its CLI headless; a person's own run does not."""
+
+    def _config(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        argv: Sequence[str],
+        *,
+        lines: Sequence[str] = (),
+        host: HostSpec | None = None,
+        scoped: bool = False,
+        client: _ChatClient | None = None,
+    ) -> RunConfig:
+        if not scoped:
+            monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+        client = client or _ChatClient(lines=lines)
+        ran: list[RunConfig] = []
+        hosted: list[Callable[[HostSpec | None], int]] = []
+        monkeypatch.setattr(session, "run", partial(_keep_run, ran))
+        monkeypatch.setattr(detach, "launch", partial(_keep_host, hosted))
+        assert session.main(argv, client_factory=lambda: cast(Client, client)) == 0
+        for start in hosted:
+            assert start(host if host is not None else _spec(tmp_path)) == 0
+        [config] = ran
+        return config
+
+    @pytest.mark.parametrize("cli", ["claude", "codex"])
+    def test_a_detached_run_attached_to_a_chat_is_headless(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        cli: str,
+    ) -> None:
+        argv = ["--detach", "--attach", str(_CHAT), cli]
+        config = self._config(monkeypatch, tmp_path, argv, lines=[_claude_line("hi")])
+
+        assert config.headless
+        assert config.attach == _CHAT
+
+    @pytest.mark.parametrize("cli", ["claude", "codex"])
+    def test_the_driver_resumes_the_loaded_session_by_id_not_by_argument(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        cli: str,
+    ) -> None:
+        argv = ["--detach", "--attach", str(_CHAT), cli]
+        config = self._config(monkeypatch, tmp_path, argv, lines=[_claude_line("hi")])
+
+        assert config.cli_session_id is not None
+        assert config.resume_path is not None
+        assert config.prefix_bytes > 0
+        assert config.cli_args == ()
+
+    def test_what_the_person_passed_after_the_dashes_is_kept(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        argv = ["--detach", "--attach", str(_CHAT), "claude", "--", "--model", "opus"]
+        config = self._config(monkeypatch, tmp_path, argv, lines=[_claude_line("hi")])
+
+        assert config.cli_args == ("--model", "opus")
+
+    @pytest.mark.usefixtures("claude_scope")
+    def test_a_run_that_replaces_a_taken_over_one_resumes_the_session_it_was_on(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        claude_scope: Path,
+    ) -> None:
+        argv = ["--detach", "--attach", str(_CHAT), "claude"]
+        client = _ChatClient(lines=[_claude_line("hi")])
+
+        config = self._config(
+            monkeypatch,
+            tmp_path,
+            argv,
+            host=replace(_spec(tmp_path), resume=_OLD),
+            client=client,
+            scoped=True,
+        )
+
+        assert config.headless
+        assert config.cli_session_id == _OLD
+        assert config.resume_path == claude_scope / f"{_OLD}.jsonl"
+        assert config.resume_path is not None
+        assert config.prefix_bytes == config.resume_path.stat().st_size > 0
+        assert not config.compact_after_load
+        assert client.asked == 0
+
+    @pytest.mark.usefixtures("claude_scope")
+    def test_a_session_whose_file_is_gone_is_loaded_from_the_chat_instead(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        argv = ["--detach", "--attach", str(_CHAT), "claude"]
+        client = _ChatClient(lines=[_claude_line("hi")])
+
+        config = self._config(
+            monkeypatch,
+            tmp_path,
+            argv,
+            host=replace(_spec(tmp_path), resume=_ELSEWHERE),
+            client=client,
+            scoped=True,
+        )
+
+        assert client.asked == 1
+        assert config.cli_session_id not in {None, _ELSEWHERE}
+
+    @pytest.mark.usefixtures("claude_scope")
+    def test_a_resume_the_person_named_is_the_session_the_driver_resumes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        argv = [
+            "--detach",
+            "--attach",
+            str(_CHAT),
+            "claude",
+            "--",
+            "--resume",
+            _OLD,
+        ]
+        config = self._config(monkeypatch, tmp_path, argv, scoped=True)
+
+        assert config.headless
+        assert config.cli_session_id == _OLD
+        assert config.resume_path is not None
+
+    def test_a_chat_with_nothing_to_load_starts_a_fresh_session(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        argv = ["--detach", "--attach", str(_CHAT), "claude"]
+        config = self._config(monkeypatch, tmp_path, argv)
+
+        assert config.headless
+        assert (config.cli_session_id, config.resume_path, config.cli_args) == (
+            None,
+            None,
+            (),
+        )
+
+    def test_a_run_in_the_persons_terminal_keeps_its_tui(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        config = self._config(
+            monkeypatch,
+            tmp_path,
+            ["--attach", str(_CHAT), "claude"],
+            lines=[_claude_line("hi")],
+        )
+
+        assert not config.headless
+        assert config.cli_args == ("--resume", config.cli_session_id)
+
+    @pytest.mark.parametrize("cli", ["claude", "codex"])
+    def test_a_detached_run_of_no_chat_keeps_its_tui(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        cli: str,
+    ) -> None:
+        config = self._config(monkeypatch, tmp_path, ["--detach", cli])
+
+        assert not config.headless
+
+    def test_a_host_with_no_terminal_server_keeps_its_tui(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ran: list[RunConfig] = []
+        hosted: list[Callable[[HostSpec | None], int]] = []
+        monkeypatch.setattr(session, "run", partial(_keep_run, ran))
+        monkeypatch.setattr(detach, "launch", partial(_keep_host, hosted))
+        assert session.main(["--detach", "--attach", str(_CHAT), "claude"]) == 0
+        assert hosted[0](None) == 0
+
+        assert not ran[0].headless
+
+    def test_a_cli_with_no_driver_keeps_its_tui(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        argv = ["--detach", "--attach", str(_CHAT), "sh", "--", "true"]
+        config = self._config(monkeypatch, tmp_path, argv)
+
+        assert not config.headless
+
+
+def _spec(tmp_path: Path) -> HeadlessSpec:
+    """Return the spec a ``--detach`` host is given, in ``tmp_path``."""
+    return HeadlessSpec(
+        address=socket_address(tmp_path / "host.sock"),
+        scrollback=tmp_path / "scrollback.log",
+        control=socket_address(tmp_path / "control.sock"),
+    )
+
+
+class TestWhatDrivesAChatRun:
+    """The mode and policy a headless run gives its CLI, and the argv that starts it."""
+
+    @pytest.mark.parametrize(
+        ("cli_args", "sandboxed", "mode"),
+        [
+            ((), False, ""),
+            ((), True, "bypassPermissions"),
+            (("--permission-mode", "plan"), False, "plan"),
+            (("--permission-mode", "plan"), True, "plan"),
+            (("--permission-mode=acceptEdits",), True, "acceptEdits"),
+            (("--dangerously-skip-permissions",), False, "bypassPermissions"),
+        ],
+    )
+    def test_claude_asks_unless_the_computer_is_a_sandbox(
+        self,
+        cli_args: tuple[str, ...],
+        sandboxed: bool,
+        mode: str,
+    ) -> None:
+        assert session._claude_mode(cli_args, sandboxed=sandboxed) == mode
+
+    @pytest.mark.parametrize(
+        ("cli_args", "kept"),
+        [
+            ((), []),
+            (
+                ("--disallowedTools", "Bash", "Edit", "--model", "opus"),
+                ["--disallowedTools", "Bash", "Edit"],
+            ),
+            (("--allowed-tools=Read", "go on"), ["--allowed-tools=Read"]),
+            (("--settings", "mine.json", "go on"), ["--settings", "mine.json"]),
+            (
+                (
+                    "--allow-dangerously-skip-permissions",
+                    "go on",
+                    "--add-dir",
+                    "a",
+                    "b",
+                ),
+                ["--allow-dangerously-skip-permissions", "--add-dir", "a", "b"],
+            ),
+            (
+                ("--resume", "s1", "--fork-session", "--tools", "Read"),
+                ["--tools", "Read"],
+            ),
+            (("--allowedTools", "Bash", "--verbose", "x"), ["--allowedTools", "Bash"]),
+        ],
+    )
+    def test_claude_gets_the_persons_permission_flags_and_nothing_else(
+        self,
+        cli_args: tuple[str, ...],
+        kept: list[str],
+    ) -> None:
+        assert session._claude_permission_args(cli_args) == kept
+
+    @pytest.mark.parametrize(
+        ("cli_args", "sandboxed", "policy"),
+        [
+            ((), False, ("on-request", "workspace-write")),
+            ((), True, ("never", "danger-full-access")),
+            (("--yolo",), False, ("never", "danger-full-access")),
+            (
+                ("--dangerously-bypass-approvals-and-sandbox",),
+                False,
+                ("never", "danger-full-access"),
+            ),
+            (("--full-auto",), True, ("on-request", "workspace-write")),
+            (("-s", "read-only"), True, ("never", "read-only")),
+            (("--sandbox=read-only",), False, ("on-request", "read-only")),
+            (("-a", "untrusted"), True, ("untrusted", "danger-full-access")),
+            (("--ask-for-approval", "never"), False, ("never", "workspace-write")),
+            (("-c", 'approval_policy="never"'), False, ("never", "workspace-write")),
+            (("-c", 'sandbox_mode="read-only"'), True, ("never", "read-only")),
+            (
+                ("--config=approval_policy=untrusted",),
+                False,
+                ("untrusted", "workspace-write"),
+            ),
+            (
+                ("-c", 'approval_policy="untrusted"', "-a", "never"),
+                False,
+                ("never", "workspace-write"),
+            ),
+        ],
+    )
+    def test_codex_takes_the_persons_permission_flags_before_the_computers_default(
+        self,
+        cli_args: tuple[str, ...],
+        sandboxed: bool,
+        policy: tuple[str, str],
+    ) -> None:
+        assert session._codex_policy(cli_args, sandboxed=sandboxed) == policy
+
+    @pytest.mark.parametrize(
+        "cli_args",
+        [
+            ("-a", "on-failure"),
+            ("-s", "wide-open"),
+            ("-c", 'approval_policy="sometimes"'),
+            ("-c", "sandbox_mode=nowhere"),
+        ],
+    )
+    def test_codex_refuses_a_permission_it_cannot_run_with(
+        self,
+        cli_args: tuple[str, ...],
+    ) -> None:
+        with pytest.raises(SystemExit, match="trax run codex: "):
+            _ = session._codex_policy(cli_args, sandboxed=False)
+
+    def test_a_driver_starts_with_the_runs_environment_and_not_the_launchers(
+        self,
+    ) -> None:
+        argv = session._env_argv(
+            ["codex", "-c", 'developer_instructions="note"'],
+            env={"TRAX_ACTOR": "scout#2", "TRAX_WORKSPACE": "w1"},
+            drop={"TRAX_ROOMS", "TRAX_ACTOR"},
+        )
+
+        assert argv == [
+            "env",
+            "-u",
+            "TRAX_ACTOR",
+            "-u",
+            "TRAX_ROOMS",
+            "TRAX_ACTOR=scout#2",
+            "TRAX_WORKSPACE=w1",
+            "codex",
+            "-c",
+            'developer_instructions="note"',
+        ]
+
+    def test_codex_runs_its_app_server_with_goals_on(self) -> None:
+        argv = session._codex_argv(["codex"], cli_args=())
+
+        assert argv == ["codex", "app-server", "--enable", "goals"]
+
+    def test_codex_keeps_goals_as_the_person_set_them(self) -> None:
+        argv = session._codex_argv(["codex"], cli_args=("--disable", "goals"))
+
+        assert argv == ["codex", "app-server", "--disable", "goals"]
+
+    def test_codex_gets_the_persons_config_overrides(self) -> None:
+        argv = session._codex_argv(
+            ["codex"],
+            cli_args=(
+                "-m",
+                "gpt-6-luna",
+                "-c",
+                "model_verbosity=low",
+                "--config=a.b=1",
+            ),
+        )
+
+        assert argv == [
+            "codex",
+            "app-server",
+            "-c",
+            "model_verbosity=low",
+            "-c",
+            "a.b=1",
+            "--enable",
+            "goals",
+        ]
+
+    @pytest.mark.parametrize(
+        ("cli_args", "model", "effort"),
+        [
+            ((), "", ""),
+            (("--model", "opus", "--effort", "high"), "opus", "high"),
+            (("--model=opus",), "opus", ""),
+            (("-m", "gpt-6-luna"), "gpt-6-luna", ""),
+        ],
+    )
+    def test_the_model_and_effort_the_person_passed_start_the_driver(
+        self,
+        cli_args: tuple[str, ...],
+        model: str,
+        effort: str,
+    ) -> None:
+        assert session._model_and_effort(cli_args) == (model, effort)
+
+    def test_claude_gets_a_stream_driver_and_codex_an_app_server_driver(self) -> None:
+        claude_driver = session._make_driver(
+            RunConfig(cli_name="claude"),
+            ClaudeAdapter(),
+            argv=["claude"],
+            env={},
+            sandboxed=False,
+        )
+        codex_driver = session._make_driver(
+            RunConfig(cli_name="codex"),
+            CodexAdapter(),
+            argv=["codex"],
+            env={},
+            sandboxed=True,
+        )
+
+        assert isinstance(claude_driver, ClaudeStreamDriver)
+        assert isinstance(codex_driver, CodexAppDriver)
+
+
+_FAKE_CLAUDE: Final = """
+import json, os, sys
+
+with open(os.environ["FAKE_LOG"], "w") as log:
+    log.write(json.dumps({
+        "argv": sys.argv[1:],
+        "actor": os.environ.get("TRAX_ACTOR"),
+        "inherited": sorted({"CLAUDECODE", "TRAX_ROOMS"} & set(os.environ)),
+    }))
+for line in sys.stdin:
+    frame = json.loads(line)
+    if frame.get("type") == "control_request":
+        print(json.dumps({"type": "control_response", "response": {
+            "subtype": "success", "request_id": frame["request_id"], "response": {},
+        }}), flush=True)
+"""
+"""A claude that writes how it was started to ``$FAKE_LOG`` and answers ``initialize``."""
+
+
+_CODEX_ENV_WRAPPER: Final = """
+import os, runpy, sys
+
+with open(sys.argv[1] + ".env", "w") as seen:
+    seen.write(os.environ.get("TRAX_ACTOR", "") + "|" + os.environ.get("TRAX_ROOMS", ""))
+plan, fake = sys.argv[1], sys.argv[2]
+sys.argv = [fake, plan]
+runpy.run_path(fake, run_name="__main__")
+"""
+"""Starts the scripted codex, after noting the environment it was started with."""
+
+
+class TestTheDriversAreBuiltAsTheRunIsConfigured:
+    """What the run was told reaches the CLI the driver starts."""
+
+    def _claude_started_with(
+        self,
+        tmp_path: Path,
+        config: RunConfig,
+        *,
+        sandboxed: bool,
+    ) -> dict[str, object]:
+        script = tmp_path / "claude.py"
+        _ = script.write_text(_FAKE_CLAUDE)
+        log = tmp_path / "log.json"
+        driver = session._make_driver(
+            config,
+            ClaudeAdapter(),
+            argv=[sys.executable, "-I", "-S", str(script), "--given"],
+            env={"FAKE_LOG": str(log), "TRAX_ACTOR": "scout#2"},
+            sandboxed=sandboxed,
+        )
+
+        async def start() -> None:
+            _ = await driver.start(cwd=tmp_path, resume="", model="", effort="")
+            await driver.stop()
+
+        asyncio.run(start())
+        return from_plain(json_loads(log.read_text()), dict[str, object])
+
+    def test_claude_gets_its_environment_and_leaves_the_persons_mode_alone(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        started = self._claude_started_with(
+            tmp_path,
+            RunConfig(cli_name="claude"),
+            sandboxed=False,
+        )
+
+        argv = from_plain(started["argv"], list[str])
+        assert argv[0] == "--given"
+        assert "--permission-mode" not in argv
+        assert started["actor"] == "scout#2"
+
+    # The terminal run drops the same names (``_dropped_env``).
+    def test_claude_is_not_handed_what_names_the_launching_session(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.setenv("TRAX_ROOMS", "launcher")
+        monkeypatch.setenv("TRAX_ACTOR", "launcher")
+
+        started = self._claude_started_with(
+            tmp_path,
+            RunConfig(cli_name="claude"),
+            sandboxed=False,
+        )
+
+        assert started["inherited"] == []
+        assert started["actor"] == "scout#2"
+
+    def test_claude_on_a_declared_sandbox_asks_nothing(self, tmp_path: Path) -> None:
+        started = self._claude_started_with(
+            tmp_path,
+            RunConfig(cli_name="claude"),
+            sandboxed=True,
+        )
+
+        argv = from_plain(started["argv"], list[str])
+        assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
+
+    def test_claude_keeps_the_mode_the_person_passed(self, tmp_path: Path) -> None:
+        started = self._claude_started_with(
+            tmp_path,
+            RunConfig(cli_name="claude", cli_args=("--permission-mode", "plan")),
+            sandboxed=True,
+        )
+
+        argv = from_plain(started["argv"], list[str])
+        assert argv[argv.index("--permission-mode") + 1] == "plan"
+
+    @pytest.mark.parametrize(
+        ("sandboxed", "policy", "sandbox"),
+        [
+            (False, "on-request", "workspace-write"),
+            (True, "never", "danger-full-access"),
+        ],
+    )
+    def test_codex_is_told_when_to_ask_and_what_it_may_touch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        sandboxed: bool,
+        policy: str,
+        sandbox: str,
+    ) -> None:
+        # The launching session's rooms are not the run's.
+        monkeypatch.setenv("TRAX_ROOMS", "launcher")
+        log = tmp_path / "frames.jsonl"
+        plan = tmp_path / "plan.json"
+        _ = plan.write_text(
+            json.dumps(
+                {
+                    "log": str(log),
+                    "replies": {"thread/start": {"thread": {"id": "t1"}}},
+                    "after": {},
+                    "on_response": {},
+                },
+            ),
+        )
+        wrapper = tmp_path / "wrapper.py"
+        _ = wrapper.write_text(_CODEX_ENV_WRAPPER)
+        fake = _THIS.with_name("codex_app_fake.py")
+        driver = session._make_driver(
+            RunConfig(cli_name="codex"),
+            CodexAdapter(),
+            argv=[sys.executable, "-I", "-S", str(wrapper), str(plan), str(fake)],
+            env={"TRAX_ACTOR": "scout"},
+            sandboxed=sandboxed,
+        )
+
+        async def start() -> str:
+            thread = await driver.start(cwd=tmp_path, resume="", model="", effort="")
+            await driver.stop()
+            return thread
+
+        assert asyncio.run(start()) == "t1"
+        frames = [
+            from_plain(json_loads(line), dict[str, object])
+            for line in log.read_text().splitlines()
+        ]
+        [started] = [each for each in frames if each.get("method") == "thread/start"]
+        params = from_plain(started["params"], dict[str, object])
+        assert (params["approvalPolicy"], params["sandbox"]) == (policy, sandbox)
+        # The run's environment reaches the app-server, which has no way to be given it.
+        assert Path(f"{plan}.env").read_text() == "scout|"
+
+
+class _FakeRun:
+    """A headless run that notes what it is handed, and fails when told to."""
+
+    def __init__(self) -> None:
+        self.told: list[tuple[str, object]] = []
+        self.fail: Exception | None = None
+
+    def _tell(self, what: str, detail: object) -> None:
+        if self.fail is not None:
+            raise self.fail
+        self.told.append((what, detail))
+
+    def send_line(self, text: str) -> None:
+        self._tell("line", text)
+
+    def command(self, verb: str, args: str) -> None:
+        self._tell("command", (verb, args))
+
+    def answer(self, answer: Answer) -> None:
+        self._tell("answer", answer)
+
+    def interrupt(self) -> None:
+        self._tell("interrupt", None)
+
+    def settings(self, *, model: str, effort: str) -> None:
+        self._tell("settings", (model, effort))
+
+
+def _deliver(
+    item: InboundDrainItem,
+    run: _FakeRun,
+    *,
+    inbound: InboundState | None = None,
+    records: list[SystemMessage] | None = None,
+) -> None:
+    session._deliver_headless(
+        cast(HeadlessRun, run),
+        item,
+        inbound=inbound,
+        record=None if records is None else records.append,
+    )
+
+
+class TestDeliveringToAHeadlessRun:
+    """Each kind of message goes where the driver takes it."""
+
+    def test_a_line_goes_with_its_sender_and_its_record_is_stamped_with_it(
+        self,
+    ) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+
+        _deliver(
+            InboundDrainItem(text="hello", source="alice@x", room="lab"),
+            run,
+            inbound=inbound,
+        )
+
+        assert run.told == [("line", "[lab] alice@x: hello")]
+        stamped = inbound.stamp(UserMessage(content="[lab] alice@x: hello"))
+        assert isinstance(stamped, UserMessage)
+        assert stamped.extra["$inbound"] == {
+            "source": "alice@x",
+            "room": "lab",
+            "kind": "line",
+        }
+
+    def test_a_line_carries_the_canvas_it_was_sent_from(self) -> None:
+        run = _FakeRun()
+        context = WorkspaceMessageContext(workspace_id=uuid.uuid4(), visible_visuals=[])
+
+        _deliver(InboundDrainItem(text="hello", context=context), run)
+
+        [(_, told)] = run.told
+        assert isinstance(told, str)
+        assert told.startswith("hello\nTrackinizer context")
+        assert str(context.workspace_id) in told
+
+    def test_a_line_the_run_refuses_leaves_nothing_to_stamp(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.INFO)
+        run = _FakeRun()
+        run.fail = TakenOverError("taken over in a terminal")
+        inbound = InboundState(fallback_sec=0.0)
+
+        _deliver(InboundDrainItem(text="hello"), run, inbound=inbound)
+
+        assert run.told == []
+        unstamped = inbound.stamp(UserMessage(content="hello"))
+        assert isinstance(unstamped, UserMessage)
+        assert "$inbound" not in unstamped.extra
+        assert [each.getMessage() for each in caplog.records] == [
+            "trax run: a line message was not taken: taken over in a terminal",
+        ]
+
+    def test_a_line_with_no_stamping_state_is_still_sent(self) -> None:
+        run = _FakeRun()
+
+        _deliver(InboundDrainItem(text="hello"), run)
+
+        assert run.told == [("line", "hello")]
+
+    def test_an_answer_names_the_option_and_the_person(self) -> None:
+        run = _FakeRun()
+
+        _deliver(
+            InboundDrainItem(
+                text="Yes",
+                kind="answer",
+                source="alice@x",
+                payload={
+                    "prompt_id": "a1",
+                    "option": "accept",
+                    "updated_input": {"answers": {"q": "blue"}},
+                    "message": "ok",
+                },
+            ),
+            run,
+        )
+
+        assert run.told == [
+            (
+                "answer",
+                Answer(
+                    ask_id="a1",
+                    option="accept",
+                    updated_input={"answers": {"q": "blue"}},
+                    message="ok",
+                    who="alice@x",
+                ),
+            ),
+        ]
+
+    def test_an_answer_in_the_older_form_is_read_as_an_option_kind(self) -> None:
+        run = _FakeRun()
+
+        _deliver(
+            InboundDrainItem(
+                text="No",
+                kind="answer",
+                payload={"prompt_id": "a1", "decision": "deny"},
+            ),
+            run,
+        )
+
+        assert run.told == [("answer", Answer(ask_id="a1", option="deny"))]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [None, {}, {"prompt_id": "a1"}, {"prompt_id": "a1", "option": 3}],
+    )
+    def test_an_answer_that_names_no_choice_reaches_no_driver(
+        self,
+        payload: dict[str, object] | None,
+    ) -> None:
+        run = _FakeRun()
+
+        _deliver(InboundDrainItem(text="?", kind="answer", payload=payload), run)
+
+        assert run.told == []
+
+    def test_an_answer_the_driver_refuses_costs_only_itself(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        run = _FakeRun()
+        run.fail = ValueError("no such option")
+
+        _deliver(
+            InboundDrainItem(
+                text="Yes",
+                kind="answer",
+                payload={"prompt_id": "a1", "option": "nope"},
+            ),
+            run,
+        )
+
+        assert run.told == []
+        [record] = caplog.records
+        assert record.getMessage() == (
+            "trax run: could not deliver an inbound message; "
+            "continuing with the rest of the batch"
+        )
+        assert record.levelno == logging.WARNING
+        assert isinstance(record.exc_info, tuple)
+
+    def test_an_interrupt_stops_the_turn(self) -> None:
+        run = _FakeRun()
+
+        _deliver(InboundDrainItem(text="interrupt", kind="interrupt"), run)
+
+        assert run.told == [("interrupt", None)]
+
+    def test_settings_change_the_model_and_effort(self) -> None:
+        run = _FakeRun()
+
+        _deliver(
+            InboundDrainItem(
+                text="settings",
+                kind="settings",
+                payload={"model": "opus", "effort": None},
+            ),
+            run,
+        )
+
+        assert run.told == [("settings", ("opus", ""))]
+
+    def test_settings_that_are_not_settings_change_nothing(self) -> None:
+        run = _FakeRun()
+
+        _deliver(
+            InboundDrainItem(text="s", kind="settings", payload={"mood": "calm"}),
+            run,
+        )
+
+        assert run.told == []
+
+    def test_a_command_runs_as_the_drivers_own_and_is_recorded_as_typed(self) -> None:
+        run = _FakeRun()
+        records: list[SystemMessage] = []
+
+        _deliver(
+            InboundDrainItem(text="/goal ship it", kind="command", source="alice@x"),
+            run,
+            records=records,
+        )
+
+        assert run.told == [("command", ("goal", "ship it"))]
+        [record] = records
+        assert record.extra["$command"] == {
+            "text": "/goal ship it",
+            "verb": "goal",
+            "args": "ship it",
+            "source": "alice@x",
+            "room": None,
+            "state": "typed",
+            "reason": None,
+        }
+
+    def test_a_command_the_driver_does_not_know_is_recorded_as_refused(self) -> None:
+        run = _FakeRun()
+        run.fail = ValueError("the codex app-server has no command 'review'")
+        records: list[SystemMessage] = []
+
+        _deliver(
+            InboundDrainItem(text="/review", kind="command"),
+            run,
+            records=records,
+        )
+
+        [record] = records
+        command = from_plain(record.extra["$command"], dict[str, object])
+        assert command["state"] == "refused"
+        assert command["reason"] == "the codex app-server has no command 'review'"
+
+    def test_a_command_to_a_run_a_terminal_has_is_refused_with_why(self) -> None:
+        run = _FakeRun()
+        run.fail = TakenOverError("taken over in a terminal; reattach from Chat")
+        records: list[SystemMessage] = []
+
+        _deliver(
+            InboundDrainItem(text="/compact", kind="command"),
+            run,
+            records=records,
+        )
+
+        [record] = records
+        command = from_plain(record.extra["$command"], dict[str, object])
+        assert command["state"] == "refused"
+        assert "taken over in a terminal" in str(command["reason"])
+
+    def test_a_command_the_run_cannot_take_is_neither_recorded_nor_fatal(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        run = _FakeRun()
+        run.fail = RunEndedError("the codex run ended")
+        records: list[SystemMessage] = []
+
+        _deliver(
+            InboundDrainItem(text="/compact", kind="command"),
+            run,
+            records=records,
+        )
+
+        assert records == []
+        assert [each.getMessage() for each in caplog.records] == [
+            "trax run: could not run a command; the run has ended",
+        ]
+
+    def test_a_command_with_no_stamping_state_is_still_run_and_recorded(self) -> None:
+        run = _FakeRun()
+        records: list[SystemMessage] = []
+
+        _deliver(
+            InboundDrainItem(text="/goal clear", kind="command", room="lab"),
+            run,
+            records=records,
+        )
+
+        assert run.told == [("command", ("goal", "clear"))]
+        [record] = records
+        assert from_plain(record.extra["$command"], dict[str, object])["room"] == "lab"
+
+    def test_a_goal_clear_closes_the_goal_the_run_follows(self) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+        inbound.goal.observe(
+            UncategorizedRecord(
+                kind="event_msg/thread_goal_updated",
+                payload={"goal": {"status": "active"}},
+            ),
+        )
+        assert inbound.goal.open
+
+        _deliver(
+            InboundDrainItem(text="/goal clear", kind="command"),
+            run,
+            inbound=inbound,
+        )
+
+        assert not inbound.goal.open
+
+    def test_a_goal_set_over_an_open_one_is_not_refused(self) -> None:
+        """Codex's modal belongs to its TUI; the app-server just replaces the goal."""
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+        inbound.goal.observe(
+            UncategorizedRecord(
+                kind="event_msg/thread_goal_updated",
+                payload={"goal": {"status": "active"}},
+            ),
+        )
+
+        _deliver(
+            InboundDrainItem(text="/goal a new one", kind="command"),
+            run,
+            inbound=inbound,
+        )
+
+        assert run.told == [("command", ("goal", "a new one"))]
+
+    def test_the_poll_loop_gives_a_headless_run_these_deliveries(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        delivered: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            session,
+            "_deliver_headless",
+            partial(_note_delivery, delivered),
+        )
+        monkeypatch.setattr(
+            session,
+            "_deliver_headless_command",
+            partial(_note_command, delivered),
+        )
+        server = _OneBatchServer([InboundDrainItem(text="hello")])
+        stop = server.stop
+        run = _NotedRun(stop, [])
+
+        _inbound_poll_loop(
+            cast(Client, server),
+            _SessionOnlySink(),
+            run,
+            stop,
+            poll_interval=0.001,
+            inbound=InboundState(fallback_sec=0.0),
+            cli="claude",
+            compact="the loaded conversation is past what claude holds comfortably",
+        )
+
+        assert delivered == [
+            (
+                "command",
+                "/compact|the loaded conversation is past what claude holds comfortably",
+            ),
+            ("one", "hello"),
+        ]
+
+    def test_a_refusal_for_good_ends_the_headless_run(self) -> None:
+        server = _OneBatchServer([], refuse="chat_run_live")
+        ended: list[str] = []
+        run = _NotedRun(server.stop, ended)
+        sink = _SessionOnlySink()
+
+        _inbound_poll_loop(
+            cast(Client, server),
+            sink,
+            run,
+            server.stop,
+            poll_interval=0.001,
+            inbound=InboundState(fallback_sec=0.0),
+            cli="claude",
+        )
+
+        assert ended == ["terminated"]
+        assert not sink.closed
+
+
+def _note_delivery(
+    delivered: list[tuple[str, str]],
+    run: HeadlessRun,
+    item: InboundDrainItem,
+    **_: object,
+) -> None:
+    """Note a message the poll loop gave a headless run."""
+    del run
+    delivered.append(("one", item.text))
+
+
+def _note_command(
+    delivered: list[tuple[str, str]],
+    run: HeadlessRun,
+    item: InboundDrainItem,
+    *,
+    reason: str,
+    **_: object,
+) -> None:
+    """Note a command the poll loop gave a headless run, with why it was sent."""
+    del run
+    delivered.append(("command", f"{item.text}|{reason}"))
+
+
+_WORKSTREAM: Final = "5e5e5e5e-0000-4000-8000-0000000000bb"
+_WORKSPACE: Final = "6f6f6f6f-0000-4000-8000-0000000000cc"
+
+
+class _PostRecorder:
+    """A client that keeps what is posted to it; it places a session on a station."""
+
+    def __init__(self) -> None:
+        self.posted: list[tuple[str, dict[str, object]]] = []
+
+    def post(
+        self,
+        path: str,
+        *,
+        body: dict[str, object] | None = None,
+    ) -> dict[str, str]:
+        self.posted.append((path, body or {}))
+        if path.endswith("/place"):
+            return {"workstream_id": _WORKSTREAM, "workspace_id": _WORKSPACE}
+        return {}
+
+    def states(self) -> list[tuple[object, object]]:
+        """Return the (state, instance) of each run state posted."""
+        return [
+            (body["state"], body["instance"])
+            for path, body in self.posted
+            if path.endswith("/run-state")
+        ]
+
+
+class _OneBatchServer:
+    """A server that hands one batch to the first drain, then ends the poll."""
+
+    def __init__(
+        self,
+        batch: list[InboundDrainItem],
+        *,
+        refuse: str | None = None,
+    ) -> None:
+        self.stop = threading.Event()
+        self._batch = batch
+        self._refuse = refuse
+
+    def drain_inbound(
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
+        **where: str | None,
+    ) -> list[InboundDrainItem]:
+        del session_id, wait_sec, where
+        if self._refuse is not None:
+            raise ClientError(
+                "refused",
+                status_code=409,
+                code=self._refuse,
+            )
+        batch, self._batch = self._batch, list[InboundDrainItem]()
+        if not batch:
+            self.stop.set()
+        return batch
+
+
+class _OpenedSink(_RecordingSink):
+    """A sink whose session the server opened, granting the run its routing name."""
+
+    @property
+    @override
+    def session_id(self) -> uuid.UUID | None:
+        return _CHAT
+
+    @override
+    def open(self) -> str | None:
+        return "scout#2"
+
+
+class _SessionOnlySink(_RecordingSink):
+    """A sink that has a session, as the poll loop needs one to drain."""
+
+    @property
+    @override
+    def session_id(self) -> uuid.UUID | None:
+        return _CHAT
+
+    @override
+    def keep_session_open(self) -> None:
+        return
+
+
+class _NotedRun(HeadlessRun):
+    """A headless run that was never run: all the poll loop does with it is end it."""
+
+    def __init__(self, stop: threading.Event, ended: list[str]) -> None:
+        super().__init__(
+            cli="claude",
+            cwd=Path("/work"),
+            resume="",
+            model="",
+            effort="",
+            make_driver=_no_driver,
+            make_tui=_no_tui,
+            record=lambda _record: None,
+            on_session=lambda _id: None,
+        )
+        self._poll_stop = stop
+        self._ended = ended
+
+    @override
+    def terminate(self) -> None:
+        self._ended.append("terminated")
+        self._poll_stop.set()
+
+
+def _no_driver() -> Driver:
+    raise AssertionError("a run that never ran has no driver")
+
+
+def _no_tui(session_id: str, listening: Callable[[], None]) -> Tui:
+    del session_id, listening
+    raise AssertionError("a run that never ran has no terminal")
+
+
+class _ScriptedDriver:
+    """A driver that starts as told, reports what it was scripted to, and notes the rest."""
+
+    def __init__(
+        self,
+        *,
+        session: str = "s1",
+        events: Sequence[Ask | Resolved | StateChanged] = (),
+        fail: Exception | None = None,
+    ) -> None:
+        self.session = session
+        self.script = events
+        self.fail = fail
+        self.started: tuple[Path, str, str, str] | None = None
+        self.stopped = False
+        self._ended: asyncio.Event | None = None
+
+    async def start(self, *, cwd: Path, resume: str, model: str, effort: str) -> str:
+        if self.fail is not None:
+            raise self.fail
+        self._ended = asyncio.Event()
+        self.started = (cwd, resume, model, effort)
+        return self.session
+
+    async def send_line(self, text: str) -> None:
+        del text
+
+    async def command(self, verb: str, args: str) -> None:
+        del verb, args
+
+    async def answer(self, answer: Answer) -> None:
+        del answer
+
+    async def interrupt(self) -> None:
+        return
+
+    async def settings(self, *, model: str, effort: str) -> None:
+        del model, effort
+
+    async def stop(self) -> None:
+        self.stopped = True
+        assert self._ended is not None
+        self._ended.set()
+
+    async def events(self) -> AsyncIterator[Ask | Resolved | StateChanged]:
+        for event in self.script:
+            yield event
+        assert self._ended is not None
+        _ = await self._ended.wait()
+
+
+class _TuiRelay:
+    """A takeover terminal: it listens at once and runs until it is ended."""
+
+    def __init__(
+        self,
+        argv: list[str],
+        *,
+        wiring: _HeadlessWiring,
+        **kwargs: object,
+    ) -> None:
+        self.argv = list(argv)
+        self.kwargs = kwargs
+        self.ended = threading.Event()
+        self.over = False
+        wiring.relays.append(self)
+
+    def run(self) -> int:
+        host = self.kwargs["host"]
+        assert isinstance(host, HostSpec)
+        assert host.on_listening is not None
+        host.on_listening()
+        _ = self.ended.wait(5.0)
+        self.over = True
+        return 0
+
+    def terminate(self) -> None:
+        self.ended.set()
+
+    def submit(self, text: str) -> None:
+        del text
+
+
+@dataclass(slots=True, kw_only=True)
+class _HeadlessWiring(_Wiring):
+    """What a headless run handed each collaborator."""
+
+    drivers: list[_ScriptedDriver] = field(default_factory=list[_ScriptedDriver])
+    made: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
+    poll: list[object] = field(default_factory=list[object])
+    relays: list[_TuiRelay] = field(default_factory=list[_TuiRelay])
+    script: Callable[[HeadlessRun], None] | None = None
+    polled: threading.Event = field(default_factory=threading.Event)
+    stats: _Stats = field(default_factory=_Stats)
+    taken: list[str] = field(default_factory=list[str])
+    poll_thread: str = ""
+    up: threading.Event = field(default_factory=threading.Event)
+    after_ending: float = 0.0
+    poll_done: threading.Event = field(default_factory=threading.Event)
+
+
+def _hw_make_driver(
+    wiring: _HeadlessWiring,
+    config: RunConfig,
+    adapter: Adapter,
+    **kwargs: object,
+) -> Driver:
+    """Hand out the next scripted driver, noting what it was built from."""
+    argv = cast(list[str], kwargs["argv"])
+    # Read now: the run takes the file away when it ends.
+    settings = (
+        Path(argv[argv.index("--settings") + 1]).read_text()
+        if "--settings" in argv
+        else ""
+    )
+    wiring.made.append(
+        {"config": config, "adapter": adapter, "settings": settings, **kwargs},
+    )
+    return cast("Driver", wiring.drivers[len(wiring.made) - 1])
+
+
+def _hw_poll(wiring: _HeadlessWiring, *args: object, **kwargs: object) -> None:
+    """Note the poll loop's inputs, run the test's script against the run, end it."""
+    wiring.poll = [*args, kwargs]
+    wiring.daemons.append(threading.current_thread().daemon)
+    wiring.poll_thread = threading.current_thread().name
+    run = args[2]
+    assert isinstance(run, HeadlessRun)
+    wiring.polled.set()
+    if wiring.script is not None:
+        wiring.script(run)
+    run.terminate()
+    time.sleep(wiring.after_ending)
+    wiring.poll_done.set()
+
+
+def _wait_until(check: Callable[[], bool]) -> None:
+    pause = threading.Event()
+    for _ in range(1_000):
+        if check():
+            return
+        _ = pause.wait(0.005)
+    raise AssertionError("the run never got there")
+
+
+# ``host`` says what hosts the run: a ``--detach`` host with a control socket, one with
+# a terminal alone, or none. A ``clientless`` run has no server, so it is ended through
+# its control socket.
+def _wire_headless(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    config: RunConfig,
+    adapter: Adapter,
+    drivers: Sequence[_ScriptedDriver] = (),
+    *,
+    wiring: _HeadlessWiring | None = None,
+    script: Callable[[HeadlessRun], None] | None = None,
+    sink: Sink | None = None,
+    sandboxed: bool = False,
+    client: object | None = None,
+    host: Literal["terminal", "plain", "none"] = "terminal",
+    clientless: bool = False,
+) -> tuple[_HeadlessWiring, int]:
+    """Run ``_spawn_and_drain`` as a chat's headless run against scripted drivers."""
+    wiring = wiring or _HeadlessWiring(drivers=list(drivers), script=script)
+    spec = replace(
+        _spec(tmp_path),
+        on_takeover=wiring.taken.append,
+        on_listening=(
+            partial(_stop_soon, _spec(tmp_path).control)
+            if clientless
+            else wiring.up.set
+        ),
+    )
+    hosts: dict[str, HostSpec | None] = {
+        "terminal": spec,
+        "plain": HostSpec(
+            address=spec.address,
+            scrollback=spec.scrollback,
+            on_listening=wiring.up.set,
+        ),
+        "none": None,
+    }
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setattr(session, "_make_driver", partial(_hw_make_driver, wiring))
+    monkeypatch.setattr(
+        session,
+        "_drain_filesystem_loop",
+        partial(_wiring_drain, wiring),
+    )
+    monkeypatch.setattr(session, "_inbound_poll_loop", partial(_hw_poll, wiring))
+    monkeypatch.setattr(session, "ThreadedRelay", partial(_TuiRelay, wiring=wiring))
+    machine_host.set_sandbox(on=sandboxed)
+    status = session._spawn_and_drain(
+        replace(
+            config,
+            headless=True,
+            client=None if clientless else cast(Client, client or object()),
+            host=hosts[host],
+            run_name="chat-1",
+            quiesce_seconds=0.0,
+        ),
+        adapter,
+        sink or _RecordingSink(),
+        wiring.stats,
+    )
+    return wiring, status
+
+
+def _stop_soon(control: Path) -> None:
+    """Take the run over a moment after it is up, then end it as ``trax run stop``."""
+    threading.Timer(0.02, _take_over_then_stop, args=(control,)).start()
+
+
+def _take_over_then_stop(control: Path) -> None:
+    _ = headless.request(control, "takeover")
+    _ = headless.request(control, "stop")
+
+
+def _spy_on_placing(
+    placed: list[tuple[object, uuid.UUID, Path]],
+    place: Callable[..., SessionPlacement | None],
+    client: object,
+    *,
+    session_id: uuid.UUID,
+    environ: Mapping[str, str],
+    cwd: Path,
+) -> SessionPlacement | None:
+    """Note what the run asks the server to place, and place it."""
+    placed.append((client, session_id, cwd))
+    return place(client, session_id=session_id, environ=environ, cwd=cwd)
+
+
+def _headless_config(
+    cli: str = "claude",
+    *,
+    actor: str | None = None,
+    rooms: tuple[str, ...] = (),
+    private: bool = False,
+    cli_session_id: str | None = None,
+    cli_args: tuple[str, ...] = (),
+    compact_after_load: bool = False,
+) -> RunConfig:
+    """Return a chat run's config with the few fields these tests vary."""
+    return RunConfig(
+        cli_name=cli,
+        actor=actor,
+        rooms=rooms,
+        private=private,
+        cli_session_id=cli_session_id,
+        cli_args=cli_args,
+        compact_after_load=compact_after_load,
+    )
+
+
+class TestAHeadlessRunsWiring:
+    """``_spawn_and_drain`` drives the CLI through a driver, with no terminal at all."""
+
+    def test_the_driver_is_built_for_the_cli_and_started_in_this_folder(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        driver = _ScriptedDriver()
+
+        wiring, status = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            [driver],
+        )
+
+        assert status == 0
+        assert driver.started == (Path.cwd(), "", "", "")
+        assert cast(tuple[object, ...], wiring.drain["args"])[2] is wiring.stats
+        [made] = wiring.made
+        argv = cast(list[str], made["argv"])
+        assert argv[0] == "claude"
+        assert "--settings" in argv
+        assert made["sandboxed"] is False
+        assert wiring.relays == []
+        assert driver.stopped
+
+    def test_a_chat_session_resumes_with_the_persons_model_and_effort(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        driver = _ScriptedDriver(session="old")
+        config = _headless_config(
+            cli_session_id="old",
+            cli_args=("--model", "opus", "--effort", "high"),
+        )
+
+        _ = _wire_headless(monkeypatch, tmp_path, config, ClaudeAdapter(), [driver])
+
+        assert driver.started == (Path.cwd(), "old", "opus", "high")
+
+    # A sandbox's liberal default yields to what the person forbade, as in a terminal.
+    def test_claude_is_started_with_the_persons_permission_flags(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        mine = tmp_path / "mine.json"
+        _ = mine.write_text(json.dumps({"permissions": {"deny": ["WebFetch"]}}))
+        config = _headless_config(
+            cli_args=("--disallowedTools", "Bash", "--settings", str(mine), "hi"),
+        )
+
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            config,
+            ClaudeAdapter(),
+            [_ScriptedDriver()],
+            sandboxed=True,
+        )
+
+        [made] = wiring.made
+        argv = cast(list[str], made["argv"])
+        assert argv[argv.index("--disallowedTools") :][:2] == [
+            "--disallowedTools",
+            "Bash",
+        ]
+        assert "hi" not in argv
+        assert str(mine) not in argv
+        assert "WebFetch" in cast(str, made["settings"])
+
+    def test_the_run_is_told_its_computer_is_a_sandbox(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config("codex"),
+            CodexAdapter(),
+            [_ScriptedDriver()],
+            sandboxed=True,
+        )
+
+        [made] = wiring.made
+        assert made["sandboxed"] is True
+        assert cast(list[str], made["argv"])[0] == "codex"
+
+    def test_a_permission_codex_cannot_run_with_stops_the_run_before_it_starts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring = _HeadlessWiring(drivers=[_ScriptedDriver()])
+
+        with pytest.raises(SystemExit, match="on-failure"):
+            _ = _wire_headless(
+                monkeypatch,
+                tmp_path,
+                _headless_config("codex", cli_args=("-a", "on-failure")),
+                CodexAdapter(),
+                wiring=wiring,
+            )
+
+        assert wiring.made == []
+
+    def test_the_environment_the_driver_gets_names_the_session_not_a_pty(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        config = _headless_config(actor="scout", rooms=("lab",))
+
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            config,
+            ClaudeAdapter(),
+            [_ScriptedDriver()],
+        )
+
+        [made] = wiring.made
+        assert made["env"] == {"TRAX_ACTOR": "scout", "TRAX_ROOMS": "lab"}
+
+    def test_the_session_the_driver_reports_is_the_one_the_run_captures(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            [_ScriptedDriver(session="s9")],
+        )
+
+        owner = wiring.drain["owner"]
+        assert isinstance(owner, session._SessionOwner)
+        assert owner.session_id == "s9"
+
+    def test_the_poll_loop_serves_the_run_and_no_dialog_waits_on_a_terminal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        config = _headless_config()
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            config,
+            ClaudeAdapter(),
+            [_ScriptedDriver()],
+        )
+
+        *_, options = wiring.poll
+        found = cast(dict[str, object], options)
+        assert found["run_name"] == "chat-1"
+        assert found["instance"] == config.instance
+        assert found["cli"] == "claude"
+        assert found.get("bridge") is None
+        assert found.get("gate") is None
+        assert found["compact"] is None
+        assert callable(found["record"])
+        inbound = found["inbound"]
+        assert isinstance(inbound, InboundState)
+        assert inbound.ready()
+
+    def test_the_poll_names_itself_by_the_id_the_state_is_reported_under(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        client = _PostRecorder()
+
+        def take_over(run: HeadlessRun) -> None:
+            del run
+            assert headless.request(_spec(tmp_path).control, "takeover").ok
+            _wait_until(lambda: len(client.states()) == 1)
+
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            [_ScriptedDriver()],
+            script=take_over,
+            sink=_SessionOnlySink(),
+            client=client,
+        )
+
+        *_, options = wiring.poll
+        instance = cast(dict[str, object], options)["instance"]
+        assert isinstance(instance, str)
+        assert re.fullmatch(r"[0-9a-f]{32}", instance)
+        assert client.states() == [("taken_over", instance)]
+        assert [path for path, _ in client.posted if "run-state" in path] == [
+            f"/api/sessions/{_CHAT}/run-state",
+        ]
+
+    def test_the_session_a_person_took_over_is_handed_to_the_host_to_record(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        def take_over(run: HeadlessRun) -> None:
+            del run
+            assert headless.request(_spec(tmp_path).control, "takeover").ok
+
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            [_ScriptedDriver(session="s7")],
+            script=take_over,
+        )
+
+        assert wiring.taken == ["s7"]
+
+    def test_a_state_is_not_reported_before_the_session_is_open(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        client = _PostRecorder()
+
+        def take_over(run: HeadlessRun) -> None:
+            del run
+            assert headless.request(_spec(tmp_path).control, "takeover").ok
+
+        _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            [_ScriptedDriver()],
+            script=take_over,
+            client=client,
+        )
+
+        assert client.states() == []
+
+    def test_every_collaborator_gets_what_the_run_was_given(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        _write_session_file(ClaudeAdapter(), "earlier")
+        client = _PostRecorder()
+        sink = _OpenedSink()
+        opener = _RecordingOpener("the diff")
+        monkeypatch.setattr(session, "open_worktree_diff", opener)
+        placed: list[tuple[object, uuid.UUID, Path]] = []
+        monkeypatch.setattr(
+            session,
+            "place_run",
+            partial(_spy_on_placing, placed, session.place_run),
+        )
+        config = replace(
+            _headless_config(actor="scout", rooms=("lab",)),
+            profile="b2profile",
+            diff=True,
+        )
+
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            config,
+            ClaudeAdapter(),
+            [_ScriptedDriver()],
+            sink=sink,
+            client=client,
+        )
+
+        # The station the server placed the session on reaches the CLI's environment,
+        # its settings and its instructions.
+        assert [path for path, _ in client.posted if path.endswith("/place")] == [
+            f"/api/sessions/{_CHAT}/place",
+        ]
+        assert placed == [(client, _CHAT, Path.cwd())]
+        [made] = wiring.made
+        assert made["env"] == {
+            "TRAX_ACTOR": "scout#2",
+            "TRAX_ROOMS": "lab",
+            "TRAX_WORKSTREAM": _WORKSTREAM,
+            "TRAX_WORKSPACE": _WORKSPACE,
+        }
+        assert isinstance(made["adapter"], ClaudeAdapter)
+        assert cast(RunConfig, made["config"]).profile == "b2profile"
+        argv = cast(list[str], made["argv"])
+        assert argv[argv.index("--append-system-prompt") + 1] == _CANVAS_NOTE
+        assert "b2profile" in cast(str, made["settings"])
+        # The drain gets the files that were there, the sink, the stats and the diff.
+        drained = cast(tuple[object, ...], wiring.drain["args"])
+        assert isinstance(drained[0], ClaudeAdapter)
+        assert drained[1] is sink
+        assert drained[2] is wiring.stats
+        assert cast(RunConfig, drained[3]).profile == "b2profile"
+        stop = drained[4]
+        assert isinstance(stop, threading.Event)
+        assert any(
+            each.name == "earlier.jsonl"
+            for each in cast(frozenset[Path], wiring.drain["baseline"])
+        )
+        assert wiring.drain["slash_queue"] == deque()
+        assert wiring.drain["stream_queue"] is None
+        assert wiring.drain["worktree_diff"] == "the diff"
+        assert opener.calls == [Path.cwd()]
+        # The poll gets the client, the sink, the run and the same stop and state.
+        *polled, options = wiring.poll
+        found = cast(dict[str, object], options)
+        assert polled[0] is client
+        assert polled[1] is sink
+        assert isinstance(polled[2], HeadlessRun)
+        assert polled[3] is stop
+        assert found["inbound"] is wiring.drain["inbound"]
+        assert found["machine"] == session._machine_name()
+        assert found["cwd"] == session._shown_cwd(Path.cwd())
+        assert wiring.poll_thread == "inbound poll"
+        # What the poll records lands among the records the drain writes.
+        cast(Callable[[SystemMessage], None], found["record"])(
+            SystemMessage(content="x"),
+        )
+        [event] = cast(deque[Event], wiring.drain["run_records"])
+        assert event.path.name.startswith("prompts-")
+
+    def test_a_session_the_run_resumes_is_named_to_the_sink_before_it_opens(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        sink = _OpenWatchingSink()
+
+        _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(cli_session_id="old"),
+            ClaudeAdapter(),
+            [_ScriptedDriver(session="old")],
+            sink=sink,
+        )
+
+        assert sink.known_at_open == ["old"]
+
+    def test_the_launcher_is_told_the_run_is_up(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            [_ScriptedDriver()],
+        )
+
+        assert wiring.up.is_set()
+
+    def test_a_host_with_a_terminal_alone_cannot_be_taken_over(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            [_ScriptedDriver()],
+            host="plain",
+        )
+
+        assert wiring.up.is_set()
+        assert not _spec(tmp_path).control.exists()
+        assert wiring.taken == []
+
+    def test_a_run_with_no_host_is_still_driven(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        driver = _ScriptedDriver()
+
+        wiring, status = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            [driver],
+            host="none",
+        )
+
+        assert (status, wiring.up.is_set()) == (0, False)
+        assert driver.started is not None
+
+    def test_a_run_with_no_server_has_nothing_to_poll_or_report(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        wiring, status = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            [_ScriptedDriver()],
+            sink=_SessionOnlySink(),
+            clientless=True,
+        )
+
+        assert status == 0
+        assert wiring.poll == []
+        # The takeover changed the run's state, and there was no one to tell.
+        assert [
+            each for each in caplog.records if each.levelno >= logging.WARNING
+        ] == []
+
+    def test_a_diff_nobody_asked_for_is_not_followed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        opener = _RecordingOpener("the diff")
+        monkeypatch.setattr(session, "open_worktree_diff", opener)
+
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            [_ScriptedDriver()],
+        )
+
+        assert opener.calls == []
+        assert wiring.drain["worktree_diff"] is None
+
+    def test_the_settings_are_taken_away_even_if_they_are_gone_already(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        def lose_the_settings(run: HeadlessRun) -> None:
+            del run
+            argv = cast(list[str], wiring.made[0]["argv"])
+            shutil.rmtree(Path(argv[argv.index("--settings") + 1]).parent)
+
+        wiring = _HeadlessWiring(
+            drivers=[_ScriptedDriver()],
+            script=lose_the_settings,
+        )
+
+        _, status = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            wiring=wiring,
+        )
+
+        assert status == 0
+
+    def test_the_poll_has_ended_when_the_run_returns(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring = _HeadlessWiring(drivers=[_ScriptedDriver()])
+        wiring.after_ending = 0.05
+
+        _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            wiring=wiring,
+        )
+
+        assert wiring.poll_done.is_set()
+
+    def test_a_loaded_history_past_the_fit_is_compacted_first(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config("codex", compact_after_load=True),
+            CodexAdapter(),
+            [_ScriptedDriver()],
+        )
+
+        *_, options = wiring.poll
+        assert cast(dict[str, object], options)["compact"] == (
+            "the loaded conversation is past what codex holds comfortably"
+        )
+
+    def test_an_ask_the_driver_reports_is_a_card_in_the_runs_records(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        ask = Ask(id="a1", provider="claude", kind="plan", plan="Ship it.")
+        records: list[str] = []
+
+        def wait_for_the_card(run: HeadlessRun) -> None:
+            del run
+            held = cast(deque[Event], wiring.drain["run_records"])
+            _wait_until(lambda: len(held) > 0)
+            records.extend(next(iter(each.extra)) for each in _run_records(wiring))
+
+        wiring = _HeadlessWiring(
+            drivers=[_ScriptedDriver(events=[ask])],
+            script=wait_for_the_card,
+        )
+        _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            wiring=wiring,
+        )
+
+        assert records == ["$interaction"]
+
+    def test_the_hook_files_go_and_the_workers_stop(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            [_ScriptedDriver()],
+        )
+
+        settings = Path(cast(list[str], wiring.made[0]["argv"])[2])
+        assert not settings.exists()
+        stop = cast(tuple[object, ...], wiring.drain["args"])[4]
+        assert isinstance(stop, threading.Event)
+        assert stop.is_set()
+        assert wiring.daemons == [True, True]
+
+    def test_a_driver_that_cannot_start_ends_the_run_with_one(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        wiring, status = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(),
+            ClaudeAdapter(),
+            [_ScriptedDriver(fail=FileNotFoundError("claude"))],
+        )
+
+        assert status == 1
+        assert wiring.poll == []
+        assert "could not start claude headless: claude" in capsys.readouterr().err
+
+    def test_a_run_the_sink_will_not_hide_stops_before_the_driver_starts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        driver = _ScriptedDriver()
+
+        with pytest.raises(PrivateNotHeldError):
+            _ = _wire_headless(
+                monkeypatch,
+                tmp_path,
+                _headless_config(private=True),
+                ClaudeAdapter(),
+                [driver],
+                sink=_RefusingSink(),
+            )
+
+        assert driver.started is None
+
+
+class TestATakeoverFromAHeadlessRun:
+    """``trax run attach`` hands the CLI's own terminal the session the driver was on."""
+
+    def _take_over(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        adapter: Adapter,
+        *,
+        rollout: bool,
+        drivers: Sequence[_ScriptedDriver] = (),
+    ) -> tuple[_HeadlessWiring, headless.Reply]:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+        # A codex rollout is named by its thread's id.
+        thread = _ROLLOUT_ID if adapter.name == "codex" else "s1"
+        if rollout:
+            _write_session_file(adapter, thread)
+        replies: list[headless.Reply] = []
+
+        def attach(run: HeadlessRun) -> None:
+            del run
+            replies.append(headless.request(_spec(tmp_path).control, "takeover"))
+
+        wiring = _HeadlessWiring(
+            drivers=list(drivers)
+            or [_ScriptedDriver(session=thread), _ScriptedDriver(session=thread)],
+            script=attach,
+        )
+        _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(adapter.name, actor="scout"),
+            adapter,
+            wiring=wiring,
+        )
+        return wiring, replies[0]
+
+    def test_claude_resumes_the_session_it_was_on_in_its_own_terminal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, reply = self._take_over(
+            monkeypatch,
+            tmp_path,
+            ClaudeAdapter(),
+            rollout=True,
+        )
+
+        assert reply.ok
+        [relay] = wiring.relays
+        assert relay.argv[:3] == ["claude", "--resume", "s1"]
+        assert relay.kwargs["env"] == {"TRAX_ACTOR": "scout"}
+        assert relay.over, "the end of the run took the terminal down"
+        assert wiring.drivers[0].stopped
+
+    def test_what_the_person_passed_goes_on_after_the_session(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        _write_session_file(ClaudeAdapter(), "s1")
+        replies: list[headless.Reply] = []
+
+        def attach(run: HeadlessRun) -> None:
+            del run
+            replies.append(headless.request(_spec(tmp_path).control, "takeover"))
+
+        wiring = _HeadlessWiring(
+            drivers=[_ScriptedDriver(), _ScriptedDriver()],
+            script=attach,
+        )
+        _ = _wire_headless(
+            monkeypatch,
+            tmp_path,
+            _headless_config(cli_args=("--model", "haiku")),
+            ClaudeAdapter(),
+            wiring=wiring,
+        )
+
+        assert replies[0].ok
+        assert wiring.relays[0].argv == ["claude", "--resume", "s1", "--model", "haiku"]
+
+    def test_claude_with_no_turn_yet_starts_the_session_by_its_id(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, reply = self._take_over(
+            monkeypatch,
+            tmp_path,
+            ClaudeAdapter(),
+            rollout=False,
+        )
+
+        assert reply.ok
+        assert wiring.relays[0].argv[:3] == ["claude", "--session-id", "s1"]
+
+    def test_codex_resumes_its_thread_with_goals_on(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, reply = self._take_over(
+            monkeypatch,
+            tmp_path,
+            CodexAdapter(),
+            rollout=True,
+        )
+
+        assert reply.ok
+        assert wiring.relays[0].argv[:6] == [
+            "codex",
+            "--no-daemon",
+            "--enable",
+            "goals",
+            "resume",
+            _ROLLOUT_ID,
+        ]
+
+    def test_codex_with_no_turn_yet_has_nothing_to_resume_and_the_chat_keeps_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, reply = self._take_over(
+            monkeypatch,
+            tmp_path,
+            CodexAdapter(),
+            rollout=False,
+        )
+
+        assert not reply.ok
+        assert "no turn" in reply.reason
+        assert wiring.relays == []
+        assert wiring.drivers[1].started is not None
+
+    def test_the_terminal_is_hosted_where_attach_looks_for_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        wiring, _ = self._take_over(
+            monkeypatch,
+            tmp_path,
+            ClaudeAdapter(),
+            rollout=True,
+        )
+
+        host = wiring.relays[0].kwargs["host"]
+        assert isinstance(host, HeadlessSpec)
+        assert host.address == _spec(tmp_path).address
+        assert host.scrollback == _spec(tmp_path).scrollback
+        assert wiring.relays[0].kwargs["drop_env"] == (
+            ClaudeAdapter.parent_session_env
+            | {"TRAX_ACTOR", "TRAX_ROOMS", "TRAX_WORKSTREAM", "TRAX_WORKSPACE"}
+        )
+
+    def test_a_terminal_on_a_station_is_told_of_its_canvas(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        wiring = _HeadlessWiring()
+        monkeypatch.setattr(session, "ThreadedRelay", partial(_TuiRelay, wiring=wiring))
+
+        _ = session._make_tui(
+            replace(RunConfig(cli_name="claude"), host=_spec(tmp_path)),
+            ClaudeAdapter(),
+            env={"TRAX_WORKSPACE": _WORKSPACE},
+            session_id="s1",
+            listening=lambda: None,
+        )
+
+        argv = wiring.relays[0].argv
+        assert argv[argv.index("--append-system-prompt") + 1] == _CANVAS_NOTE
+
+    def test_a_run_with_no_host_has_no_terminal_to_give(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        with pytest.raises(RuntimeError) as refused:
+            _ = session._make_tui(
+                RunConfig(cli_name="claude"),
+                ClaudeAdapter(),
+                env={},
+                session_id="s1",
+                listening=lambda: None,
+            )
+        assert str(refused.value) == (
+            "this run has no terminal host to serve a terminal from"
+        )
+
+
+def _write_session_file(adapter: Adapter, session_id: str) -> None:
+    """Leave the CLI's own file for ``session_id``, as it has once it has had a turn."""
+    directory = next(iter(adapter.session_dirs()))
+    scope = adapter.session_scope() or directory
+    scope.mkdir(parents=True, exist_ok=True)
+    name = f"{session_id}.jsonl"
+    if adapter.name == "codex":
+        name = f"rollout-2026-10-21T00-00-00-{session_id}.jsonl"
+    _ = (scope / name).write_text(_claude_line("before"))
 
 
 if __name__ == "__main__":

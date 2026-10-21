@@ -53,11 +53,19 @@ def _reject_blank(value: str | None) -> str | None:
 
 __all__ = [
     "CAMPAIGN_ASKER_INFIX",
+    "CHAT_RUN_LIVE",
+    "CHAT_TAKEN_OVER",
+    "CHAT_TAKEN_OVER_MESSAGE",
+    "CLI_REQUIRED",
     "CONSOLE_RELAY_MARK",
     "FEED_FACETS_PATH",
     "FEED_HISTOGRAM_PATH",
     "FEED_PATH",
     "GIT_LABEL_PREFIX",
+    "PROVIDER_IS_ASSISTANT",
+    "PROVIDER_IS_CLI",
+    "PROVIDER_IS_OTHER_CLI",
+    "RUN_ENDING_REFUSALS",
     "SEND_MESSAGE_PATH",
     "SESSION_API_PATHS",
     "SESSION_AUDIENCE_PATH",
@@ -65,7 +73,9 @@ __all__ = [
     "SESSION_INBOUND_PATH",
     "SESSION_PARTS_PATH",
     "SESSION_PLACE_PATH",
+    "SESSION_REATTACH_PATH",
     "SESSION_RECORDS_PATH",
+    "SESSION_RUN_STATE_PATH",
     "SESSION_START_PATH",
     "SESSION_WORKSTREAM_PATH",
     "STATION_LABEL_PREFIX",
@@ -91,6 +101,7 @@ __all__ = [
     "InboundKind",
     "MoveSession",
     "PlaceSession",
+    "RunState",
     "SendMessage",
     "SendMessageResponse",
     "SessionAudienceChange",
@@ -98,6 +109,7 @@ __all__ = [
     "SessionEnd",
     "SessionEndResponse",
     "SessionPlacement",
+    "SessionRunState",
     "SessionStart",
     "SessionStartResponse",
     "WorkspaceMark",
@@ -107,6 +119,8 @@ __all__ = [
     "campaign_asker_label",
     "session_audience_path",
     "session_place_path",
+    "session_reattach_path",
+    "session_run_state_path",
 ]
 
 
@@ -360,6 +374,18 @@ class FeedResponse(BaseModel):
     next_after: FeedCursor | None = None
 
 
+type RunState = Literal["idle", "running", "requires_action", "taken_over"]
+"""What a chat's run says it is doing, so Chat can show it.
+
+Values:
+  idle: Waiting for the person's next line.
+  running: Working on a turn.
+  requires_action: Waiting for the person to answer an ask.
+  taken_over: Stopped as a headless run because someone opened its CLI in a terminal;
+    Chat refuses lines until the person reattaches.
+"""
+
+
 class FeedActorFacet(BaseModel):
     """One session's share of a feed window, as the console's agent list shows it."""
 
@@ -391,6 +417,11 @@ class FeedActorFacet(BaseModel):
     hideable: bool = False
     """Whether the caller may hide the session, or show it again: its owner, while it
     is not ``staff``. Never for a science chat, which is hidden from Chat."""
+
+    state: RunState = "idle"
+    """What its run is doing while a poller drains it: ``requires_action`` while an ask
+    is open, ``taken_over`` after its CLI was opened in a terminal, else what the run
+    last reported. ``idle`` for a session no run drains."""
 
 
 class FeedRoomFacet(BaseModel):
@@ -454,10 +485,23 @@ Values:
   settings: A model or effort change.
   interrupt: Stops the running turn.
 
-Payload by kind: ``answer`` is ``{"prompt_id": str, "decision": "allow" | "deny",
-"updated_input": object | null, "message": str}``; ``settings`` is ``{"model":
-str | null, "effort": str | null}``. The other kinds carry no payload.
+Payload by kind: ``answer`` is ``{"prompt_id": str, "option": str, "updated_input":
+object | null, "message": str}``, where ``option`` is the id of one of the ask's own
+options; the older ``"decision": "allow" | "deny"`` stands in for ``option``, and an
+answer names one of the two. ``settings`` is ``{"model": str | null, "effort": str |
+null}``. The other kinds carry no payload.
 """
+
+
+class SessionRunState(BaseModel):
+    """What a run reports of itself, between its drains of the session's queue."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: RunState
+    instance: str = Field(pattern=r"^[0-9a-f]{32}$")
+    """The run's own id, as its inbound drains name it. A report from a run other than
+    the one holding the session's lease changes nothing."""
 
 
 class InboundEnqueueRequest(BaseModel):
@@ -763,6 +807,14 @@ class SessionEnd(BaseModel):
 
     actor: str | None = None
 
+    cli: str | None = Field(default=None, min_length=1)
+    """The CLI of the run that ends the session, as its inbound drain names it."""
+
+    instance: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+    """The id of the run that ends the session, as its inbound drain names it. With
+    ``cli``, it lets the server tell the end of a run it replaced, or of one beside
+    the run that holds the chat, from the end of the run that holds it."""
+
     _reject_blank_scalars = field_validator("cli_session_id", "actor", mode="after")(
         staticmethod(_reject_blank),
     )
@@ -782,6 +834,8 @@ SESSION_PARTS_PATH: Final = "/api/sessions/{session_id}/parts"
 SESSION_END_PATH: Final = "/api/sessions/{session_id}/end"
 SESSION_AUDIENCE_PATH: Final = "/api/sessions/{session_id}/audience"
 SESSION_INBOUND_PATH: Final = "/api/sessions/{session_id}/inbound"
+SESSION_RUN_STATE_PATH: Final = "/api/sessions/{session_id}/run-state"
+SESSION_REATTACH_PATH: Final = "/api/sessions/{session_id}/reattach"
 SESSION_PLACE_PATH: Final = "/api/sessions/{session_id}/place"
 SESSION_WORKSTREAM_PATH: Final = "/api/sessions/{session_id}/workstream"
 SEND_MESSAGE_PATH: Final = "/api/messages"
@@ -789,6 +843,39 @@ VERSION_PATH: Final = "/api/version"
 FEED_PATH: Final = "/api/web/feed"
 FEED_FACETS_PATH: Final = "/api/web/feed/facets"
 FEED_HISTOGRAM_PATH: Final = "/api/web/feed/histogram"
+
+# The ``code`` of a science chat's refused drain (``GET /api/sessions/{id}/inbound``).
+# The chat's station names who answers it, and its queue has one drainer and one run.
+PROVIDER_IS_CLI: Final = "provider_is_cli"
+"""The station answers the chat with a CLI, and the assistant's key drained it."""
+
+PROVIDER_IS_ASSISTANT: Final = "provider_is_assistant"
+"""The station answers the chat with the assistant, and a run drained it."""
+
+PROVIDER_IS_OTHER_CLI: Final = "provider_is_other_cli"
+"""The station answers the chat with one CLI, and a run of the other drained it."""
+
+CHAT_RUN_LIVE: Final = "chat_run_live"
+"""Another run of the chat's CLI holds its lease: a chat has one live run at a time."""
+
+CLI_REQUIRED: Final = "cli_required"
+"""The chat is answered by a CLI and the drain named none, as a ``trax`` older than the
+name does: the server cannot tell which CLI polls, so it takes no lease."""
+
+RUN_ENDING_REFUSALS: Final = frozenset(
+    {PROVIDER_IS_ASSISTANT, PROVIDER_IS_OTHER_CLI, CHAT_RUN_LIVE},
+)
+"""The refusals after which no drain of that run can succeed, so ``trax run`` stops
+the run it is polling for, instead of retrying a drain the chat will keep refusing."""
+
+
+CHAT_TAKEN_OVER: Final = "chat_taken_over"
+"""The ``code`` of a post refused because the chat's CLI was opened in a terminal."""
+
+CHAT_TAKEN_OVER_MESSAGE: Final = (
+    "taken over in a terminal; reattach from Chat or Console"
+)
+"""Why Chat refuses a post to a chat whose run is :data:`RunState` ``taken_over``."""
 
 
 # Every non-field API path the client, SPA, or deploy probe depends on, as a
@@ -804,6 +891,8 @@ SESSION_API_PATHS: tuple[str, ...] = (
     SESSION_END_PATH,
     SESSION_AUDIENCE_PATH,
     SESSION_INBOUND_PATH,
+    SESSION_RUN_STATE_PATH,
+    SESSION_REATTACH_PATH,
     SESSION_PLACE_PATH,
     SESSION_WORKSTREAM_PATH,
     SEND_MESSAGE_PATH,
@@ -837,6 +926,16 @@ def session_audience_path(session_id: uuid.UUID) -> str:
 def session_inbound_path(session_id: uuid.UUID) -> str:
     """Return the inbound-message path for one session (POST enqueue, GET drain)."""
     return SESSION_INBOUND_PATH.format(session_id=session_id)
+
+
+def session_reattach_path(session_id: uuid.UUID) -> str:
+    """Return the path that reopens a chat's run headless."""
+    return SESSION_REATTACH_PATH.format(session_id=session_id)
+
+
+def session_run_state_path(session_id: uuid.UUID) -> str:
+    """Return the path a run reports its state to."""
+    return SESSION_RUN_STATE_PATH.format(session_id=session_id)
 
 
 def inbound_read_timeout(wait_sec: float) -> float | None:

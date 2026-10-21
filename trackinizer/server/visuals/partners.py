@@ -16,6 +16,7 @@ import uuid
 
 from treekle import from_plain
 
+from trackinizer.server.asks import open_ask_ids, waiting_sessions
 from trackinizer.server.inbound import PollerRun
 from trackinizer.server.preferences import ASSISTANT_KEYS, stored_preferences
 from trackinizer.server.visuals.science_chats import read_starter
@@ -30,12 +31,15 @@ from trackinizer.wire.wire_science_chat import (
     CHAT_SESSION_PREFIX,
     POSTER_LABEL_PREFIX,
     SCIENCE_CHAT_LABEL,
+    chat_conversation_id,
     chat_session_id,
 )
-from trackinizer.wire.wire_sessions import STATION_LABEL_PREFIX
+from trackinizer.wire.wire_sessions import STATION_LABEL_PREFIX, RunState
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from asyncpg import Record
 
     from trackinizer.lib.postgres import Conn
@@ -45,8 +49,13 @@ if TYPE_CHECKING:
     from trackinizer.wire.wire_science_chat import ChatProvider
 
 
-_CLI_PROVIDERS: Final = ("claude", "codex")
-"""The providers that are a person's own CLI run, each a ``session_manifests.format``."""
+_NEEDS: Final[Mapping[RunState, int]] = {
+    "idle": 0,
+    "running": 1,
+    "requires_action": 2,
+    "taken_over": 3,
+}
+"""How much of the person each state needs, for choosing among a chat's runs."""
 
 
 def is_assistant_session(
@@ -100,7 +109,19 @@ async def resolve_partner(
 
     """
     if provider == "assistant":
-        return await shared_partner(conn, inbound=inbound, assistant=assistant)
+        partner = await shared_partner(conn, inbound=inbound, assistant=assistant)
+        if partner is None or assistant is None or conversation_id is None:
+            return partner
+        # The assistant reports no state, so its chat's open ask is the whole of it.
+        chat = await live_chat_session(
+            conn,
+            inbound=inbound,
+            opener=assistant.email,
+            conversation_id=conversation_id,
+        )
+        if chat is None or not await open_ask_ids(conn, session_id=chat):
+            return partner
+        return partner.model_copy(update={"state": "requires_action"})
     return await cli_partner(
         conn,
         inbound=inbound,
@@ -110,8 +131,8 @@ async def resolve_partner(
     )
 
 
-# Audience: gated -- only the newest part's format is read, and the session's id and
-# liveness go to a station that holds the chat, which its owner bound as a reader.
+# Audience: gated -- the session's id and liveness go to a station that holds the
+# chat, which its owner bound as a reader.
 async def cli_partner(
     conn: Conn,
     *,
@@ -125,9 +146,9 @@ async def cli_partner(
     The chat's sessions are those under its ``chat:`` id that the assistant's key or
     its starter's opened (:func:`~.science_chats.read_starter`); one a stranger's key
     opened under the id is not the chat's. One is live when it is open, its opening
-    key is not revoked, a poller drains it, and its newest part is not the other
-    CLI's: a run just attached has written no part yet, and only a run the station's
-    provider allows drains it (``sessions_routes``), so the poller is that run.
+    key is not revoked, and a poller that named ``provider`` as its CLI drains it.
+    The drain names its CLI, never a part's format: a run just attached has written
+    no part yet, and ``trax run``'s own part after ``/compact`` has none.
 
     Args:
       conn: Connection the answer must be consistent with.
@@ -160,10 +181,7 @@ async def cli_partner(
     )
     rows = await conn.fetch(
         "SELECT sess.id, (sess.status = 'active' AND sess.agentsession_ended IS NULL "
-        "AND credential.revoked_at IS NULL AND sess.id = ANY($4::uuid[]) "
-        "AND (SELECT part.format FROM session_manifests AS part "
-        "WHERE part.session_id = sess.id ORDER BY part.part DESC LIMIT 1) "
-        "IS DISTINCT FROM $5) AS live "
+        "AND credential.revoked_at IS NULL AND sess.id = ANY($4::uuid[])) AS live "
         "FROM inquiries AS sess JOIN api_keys AS credential "
         "ON credential.id = sess.agentsession_opened_by_api_key_id "
         "JOIN users AS member ON member.id = credential.user_id "
@@ -173,8 +191,7 @@ async def cli_partner(
         chat_session_id(conversation_id),
         None if assistant is None else assistant.email,
         starter or "",
-        inbound.active_poller_ids(),
-        next(other for other in _CLI_PROVIDERS if other != provider),
+        inbound.active_poller_ids(cli=provider),
     )
     live = next((row for row in rows if from_plain(row["live"], bool)), None)
     if live is not None:
@@ -185,6 +202,7 @@ async def cli_partner(
             update={
                 "session_id": session_id,
                 "status": "live",
+                "state": await _run_state(conn, session_id=session_id, run=where),
                 "machine": where.machine,
                 "run_name": where.run,
                 "cwd": where.cwd,
@@ -198,6 +216,90 @@ async def cli_partner(
             "session_id": from_plain(rows[0]["id"], uuid.UUID) if rows else None,
         },
     )
+
+
+async def live_run_states(
+    conn: Conn,
+    *,
+    inbound: InboundQueue,
+    session_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, RunState]:
+    """Say what each live run among some sessions is doing.
+
+    Args:
+      conn: A database connection.
+      inbound: In-process poller leases, which hold what a run reported.
+      session_ids: The sessions to ask about.
+
+    Returns:
+      states: By session, for those a run polls now; a session no run polls is left out.
+
+    """
+    runs = {
+        session_id: run
+        for session_id in session_ids
+        if (run := inbound.poller_run(session_id)) is not None
+    }
+    waiting = await waiting_sessions(conn, session_ids=list(runs))
+    return {
+        session_id: _settled(run, waiting=session_id in waiting)
+        for session_id, run in runs.items()
+    }
+
+
+async def chat_run_states(
+    conn: Conn,
+    *,
+    inbound: InboundQueue,
+    openers: Sequence[str],
+    conversation_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, RunState]:
+    """Say what each chat's live runs are doing, for the badges of a station list.
+
+    A chat's runs are the sessions under its id that one of ``openers`` opened and some
+    poller drains, as :func:`cli_partner` finds them; one a stranger's key opened is
+    not the chat's. When a chat has several, the state that needs the most from the
+    person wins: taken over, then waiting, then running.
+
+    Args:
+      conn: A database connection.
+      inbound: In-process poller leases.
+      openers: The emails whose keys open a chat's sessions, in any case: the
+        station's owner and the assistant.
+      conversation_ids: The chats to ask about.
+
+    Returns:
+      states: By chat, for those with a live run.
+
+    """
+    if not conversation_ids:
+        return {}
+    rows = await conn.fetch(
+        "SELECT sess.id, sess.agentsession_cli_session_id AS chat "
+        "FROM inquiries AS sess JOIN api_keys AS credential "
+        "ON credential.id = sess.agentsession_opened_by_api_key_id "
+        "JOIN users AS member ON member.id = credential.user_id "
+        "WHERE sess.kind = 'AgentSession' AND sess.status = 'active' "
+        "AND sess.agentsession_ended IS NULL AND credential.revoked_at IS NULL "
+        "AND sess.agentsession_cli_session_id = ANY($1::text[]) "
+        "AND lower(member.email) = ANY($2::text[]) AND sess.id = ANY($3::uuid[])",
+        [chat_session_id(each) for each in conversation_ids],
+        [each.lower() for each in openers],
+        inbound.active_poller_ids(),
+    )
+    states = await live_run_states(
+        conn,
+        inbound=inbound,
+        session_ids=[from_plain(row["id"], uuid.UUID) for row in rows],
+    )
+    by_chat: dict[uuid.UUID, RunState] = {}
+    for row in rows:
+        state = states.get(from_plain(row["id"], uuid.UUID))
+        chat = chat_conversation_id(from_plain(row["chat"], str))
+        if state is not None and chat is not None:
+            held = by_chat.get(chat, "idle")
+            by_chat[chat] = max(held, state, key=_NEEDS.__getitem__)
+    return by_chat
 
 
 async def provider_availability(
@@ -546,3 +648,16 @@ async def _live_sessions(
         email,
         inbound.active_poller_ids(),
     )
+
+
+# A run in a terminal is not asking anything of Chat, whatever an old ask says.
+def _settled(run: PollerRun, *, waiting: bool) -> RunState:
+    """Say what a live run is doing: its own word, or waiting on an ask open in the chat."""
+    if run.state == "taken_over":
+        return run.state
+    return "requires_action" if waiting else run.state
+
+
+async def _run_state(conn: Conn, *, session_id: uuid.UUID, run: PollerRun) -> RunState:
+    """Say what a live run is doing."""
+    return _settled(run, waiting=bool(await open_ask_ids(conn, session_id=session_id)))

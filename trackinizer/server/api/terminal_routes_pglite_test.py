@@ -7,7 +7,7 @@ test client cannot share the session event loop that owns the database.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import asyncio
 import uuid
@@ -22,17 +22,24 @@ from trackinizer.lib.posix.host import Frame, decode_frame, encode_frame, encode
 from trackinizer.server.api import terminal_routes
 from trackinizer.server.api._deps import terminal_hub
 from trackinizer.server.api.app import app
+from trackinizer.server.api.canvas_test_support import Agent, seed_session
 from trackinizer.server.api.conftest import clear_identity_override
 from trackinizer.server.auth import create_api_key
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.session import SESSION_COOKIE_NAME, set_session_cookie
-from trackinizer.wire import wire_terminals
+from trackinizer.server.terminals import Opening
+from trackinizer.wire import wire_sessions, wire_terminals
 from trackinizer.wire.wire_machine_host import (
     ENROLL_PATH,
     JOIN_PATH,
     REVOKE_PATH,
 )
 from trackinizer.wire.wire_machines import MACHINES_PATH
+from trackinizer.wire.wire_science_chat import (
+    SCIENCE_CHAT_LABEL,
+    chat_actor,
+    chat_session_id,
+)
 
 
 if TYPE_CHECKING:
@@ -42,6 +49,7 @@ if TYPE_CHECKING:
 
     import httpx2
 
+    from trackinizer.server.inbound import InboundQueue
     from trackinizer.server.store.core import Store
 
 
@@ -1371,6 +1379,47 @@ async def test_the_host_is_handed_each_run_with_its_session_and_its_name(
     assert not {"command", "attach", "run_name", "cwd"} & set(shell)
 
 
+async def test_a_session_has_one_run_open_at_a_time(world: _World) -> None:
+    """A run opened on a session another run is attached to is refused, until it ends."""
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude", "codex"]})
+    await world.wait()
+    session_id = uuid.uuid4()
+
+    first, _ = _opened(await world.open(cookie, command="claude", attach=session_id))
+    refused = await world.open(cookie, command="codex", attach=session_id)
+    _opened(await world.open(cookie, command="codex", attach=uuid.uuid4()))
+    hub = terminal_hub(app)
+    term = hub.terminal(first)
+    assert term is not None
+    await hub.stop(term)
+
+    assert (refused.status_code, _code(refused)) == (409, "chat_run_live")
+    _opened(await world.open(cookie, command="codex", attach=session_id))
+
+
+async def test_a_run_a_trax_started_by_hand_holds_its_session_against_a_second(
+    world: _World,
+) -> None:
+    """The lease its drain takes counts: the browser may not start another beside it."""
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.wait()
+    session_id = uuid.uuid4()
+    inbound = cast("InboundQueue", app.state.inbound)
+
+    # The assistant's lease names no CLI: it is not a run of the chat.
+    inbound.mark_poller(session_id)
+    _opened(await world.open(cookie, command="claude", attach=session_id))
+    inbound.mark_poller(session_id, cli="claude", instance="a" * 32)
+    refused = await world.open(cookie, command="claude", attach=session_id)
+    inbound.forget_poller(session_id)
+
+    assert (refused.status_code, _code(refused)) == (409, "chat_run_live")
+
+
 async def test_the_host_is_handed_the_folder_each_run_starts_in_as_named(
     world: _World,
 ) -> None:
@@ -1454,6 +1503,338 @@ async def test_the_servers_stun_list_reaches_the_open_the_attach_and_the_host_wa
         assert from_plain(response.json(), dict[str, object])["ice_servers"] == [
             "stun:s.test:3478",
         ]
+
+
+_OLD_RUN = "a" * 32
+
+
+class _Chat:
+    """A person's chat on claude: its session, its station, and the run that drained it."""
+
+    def __init__(
+        self,
+        session: uuid.UUID,
+        station: uuid.UUID,
+        conversation: uuid.UUID,
+    ) -> None:
+        self.session = session
+        self.station = station
+        self.conversation = conversation
+
+
+async def _chat(
+    world: _World,
+    user_id: uuid.UUID,
+    email: str,
+    *,
+    provider: str = "claude",
+) -> _Chat:
+    """Give a person a station on ``provider`` holding a chat their key opened."""
+    async with world.store.engine.acquire() as conn:
+        key_id, _, _, _ = await create_api_key(
+            conn,
+            user_id=user_id,
+            name="run",
+            ceiling="writer",
+        )
+    conversation = uuid.uuid4()
+    session = await seed_session(
+        world.store,
+        Agent(key_id=key_id, email=email),
+        actor=chat_actor(conversation),
+        cli=provider,
+        cli_session_id=chat_session_id(conversation),
+        labels=[SCIENCE_CHAT_LABEL],
+        polled=False,
+    )
+    station = uuid.uuid4()
+    async with world.store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO visual_workspaces (id, user_id, station, state) "
+            "VALUES ($1, $2, $3, $4)",
+            station,
+            user_id,
+            {"name": f"s-{station.hex[:6]}", "conversation_id": str(conversation)},
+            {"visuals": [], "provider": provider},
+        )
+    return _Chat(session, station, conversation)
+
+
+def _taken_over(chat: _Chat) -> None:
+    """Make the chat's run, working in ``~/work`` on gx10, report a takeover."""
+    inbound = cast("InboundQueue", app.state.inbound)
+    inbound.mark_poller(
+        chat.session,
+        run="chat-aaaaaaaa",
+        machine="gx10",
+        cwd="~/work",
+        cli="claude",
+        instance=_OLD_RUN,
+    )
+    assert inbound.report_state(chat.session, instance=_OLD_RUN, state="taken_over")
+
+
+async def _reattach(
+    world: _World,
+    cookie: str,
+    chat: _Chat,
+    *,
+    key: uuid.UUID | None = None,
+    origin: str | None = _ORIGIN,
+) -> httpx2.Response:
+    """Ask the server to reopen the chat's run headless, as the browser does."""
+    return await world.call(
+        "POST",
+        wire_sessions.session_reattach_path(chat.session),
+        headers={
+            **world.browser(cookie, origin=origin),
+            "Idempotency-Key": str(key or uuid.uuid4()),
+        },
+    )
+
+
+async def test_a_chat_taken_over_is_reopened_headless_where_it_ran(
+    world: _World,
+) -> None:
+    """The host is offered the run in the same folder; the taken-over run is turned away."""
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.wait()
+    chat = await _chat(world, ada, "ada@x.y")
+    _taken_over(chat)
+    inbound = cast("InboundQueue", app.state.inbound)
+    hub = terminal_hub(app)
+    held = hub.open(
+        Opening(
+            user="ada@x.y",
+            machine_id=world.machine_id,
+            machine="gx10",
+            rows=24,
+            cols=80,
+            command="claude",
+            attach=chat.session,
+        ),
+    )
+    _ = await world.wait()
+    key = uuid.uuid4()
+
+    reattached = await _reattach(world, cookie, chat, key=key)
+    again = await _reattach(world, cookie, chat, key=key)
+
+    assert (reattached.status_code, again.status_code) == (204, 204)
+    offered = from_plain((await world.wait()).json(), dict[str, object])
+    assert (offered["command"], offered["attach"], offered["cwd"]) == (
+        "claude",
+        str(chat.session),
+        "~/work",
+    )
+    assert (offered["opener"], offered["workspace"]) == ("ada@x.y", str(chat.station))
+    # The taken-over run's own name: a launch of it ends that host and resumes the
+    # CLI session its terminal continued.
+    assert offered["run_name"] == "chat-aaaaaaaa"
+    # The retry under the same key reopened nothing.
+    assert (await world.wait()).json() is None
+    assert held.stopping
+    assert inbound.poller_run(chat.session) is None
+    assert inbound.held_by_another(chat.session, cli="claude", instance=_OLD_RUN)
+
+
+async def test_a_chat_whose_run_is_gone_is_reopened_where_it_last_ran(
+    world: _World,
+) -> None:
+    """The lease is gone with the run, but the place it named is kept."""
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.wait()
+    chat = await _chat(world, ada, "ada@x.y")
+    inbound = cast("InboundQueue", app.state.inbound)
+    inbound.mark_poller(chat.session, machine="gx10", cwd="/srv/app", cli="claude")
+    inbound.forget_poller(chat.session)
+
+    reattached = await _reattach(world, cookie, chat)
+
+    assert reattached.status_code == 204, reattached.text
+    offered = from_plain((await world.wait()).json(), dict[str, object])
+    assert (offered["command"], offered["cwd"]) == ("claude", "/srv/app")
+    # A run that named no host gets the name the server gives a chat's run.
+    assert offered["run_name"] == f"chat-{chat.session.hex[:8]}"
+
+
+async def test_a_live_run_is_not_reattached(world: _World) -> None:
+    """Reattach is for a chat no headless run holds: a live one keeps its lease."""
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.wait()
+    chat = await _chat(world, ada, "ada@x.y")
+    _taken_over(chat)
+    inbound = cast("InboundQueue", app.state.inbound)
+    assert inbound.report_state(chat.session, instance=_OLD_RUN, state="running")
+
+    refused = await _reattach(world, cookie, chat)
+
+    assert (refused.status_code, _code(refused)) == (409, "chat_run_live")
+    assert (await world.wait()).json() is None
+    held = inbound.poller_run(chat.session)
+    assert held is not None
+    assert held.instance == _OLD_RUN
+    assert not inbound.held_by_another(chat.session, cli="claude", instance=_OLD_RUN)
+
+
+async def test_a_reattach_past_the_open_rate_leaves_the_taken_over_run_alone(
+    world: _World,
+) -> None:
+    """No new run can start, so the terminal that took the chat over is not ended."""
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.wait()
+    chat = await _chat(world, ada, "ada@x.y")
+    _taken_over(chat)
+    inbound = cast("InboundQueue", app.state.inbound)
+    hub = terminal_hub(app)
+    held = [
+        hub.open(
+            Opening(
+                user="ada@x.y",
+                machine_id=world.machine_id,
+                machine="gx10",
+                rows=24,
+                cols=80,
+                command="claude",
+                attach=chat.session,
+            ),
+        )
+        for _ in range(wire_terminals.MAX_OPENS_PER_MIN_PER_USER)
+    ]
+
+    refused = await _reattach(world, cookie, chat)
+
+    assert (refused.status_code, _code(refused)) == (429, "terminal_limit")
+    assert not any(each.stopping for each in held)
+    still = inbound.poller_run(chat.session)
+    assert still is not None
+    assert (still.instance, still.state) == (_OLD_RUN, "taken_over")
+    assert not inbound.held_by_another(chat.session, cli="claude", instance=_OLD_RUN)
+
+
+async def test_only_the_starter_reattaches_a_chat_from_their_own_browser(
+    world: _World,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # One organisation reads every chat, so bob reads it and is refused as a non-starter.
+    monkeypatch.setattr(
+        app.state,
+        "config",
+        Config(
+            session_secret=_SESSION_KEY,
+            session_max_age_seconds=600,
+            chat_orgs="single",
+        ),
+        raising=False,
+    )
+    ada = await world.person("ada@x.y")
+    bob = await world.person("bob@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.wait()
+    chat = await _chat(world, ada, "ada@x.y")
+    _taken_over(chat)
+
+    by_bob = await _reattach(world, world.cookie(bob), chat)
+    no_origin = await _reattach(world, cookie, chat, origin=None)
+    other_site = await _reattach(world, cookie, chat, origin="https://evil.test")
+    unknown = await world.call(
+        "POST",
+        wire_sessions.session_reattach_path(uuid.uuid4()),
+        headers={**world.browser(cookie), "Idempotency-Key": str(uuid.uuid4())},
+    )
+
+    assert (by_bob.status_code, _code(by_bob)) == (403, "reattach_not_owner")
+    assert (no_origin.status_code, other_site.status_code) == (403, 403)
+    assert unknown.status_code == 404
+    assert (await world.wait()).json() is None
+    inbound = cast("InboundQueue", app.state.inbound)
+    assert inbound.poller_run(chat.session) is not None
+
+
+async def test_a_session_that_is_no_chat_and_a_chat_of_the_assistant_are_refused(
+    world: _World,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.wait()
+    assistants = await _chat(world, ada, "ada@x.y", provider="assistant")
+    async with world.store.engine.acquire() as conn:
+        key_id, _, _, _ = await create_api_key(
+            conn,
+            user_id=ada,
+            name="plain",
+            ceiling="writer",
+        )
+    plain = await seed_session(
+        world.store,
+        Agent(key_id=key_id, email="ada@x.y"),
+        actor="plain-run",
+        cli="claude",
+        polled=False,
+    )
+
+    on_assistant = await _reattach(world, cookie, assistants)
+    on_plain = await world.call(
+        "POST",
+        wire_sessions.session_reattach_path(plain),
+        headers={**world.browser(cookie), "Idempotency-Key": str(uuid.uuid4())},
+    )
+
+    assert (on_assistant.status_code, _code(on_assistant)) == (
+        409,
+        "provider_is_assistant",
+    )
+    assert (on_plain.status_code, _code(on_plain)) == (409, "not_a_chat")
+    assert (await world.wait()).json() is None
+
+
+async def test_a_chat_that_never_named_where_it_ran_is_not_guessed_at(
+    world: _World,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.wait()
+    chat = await _chat(world, ada, "ada@x.y")
+    inbound = cast("InboundQueue", app.state.inbound)
+    inbound.mark_poller(chat.session, cli="claude")
+    inbound.forget_poller(chat.session)
+
+    refused = await _reattach(world, cookie, chat)
+
+    assert (refused.status_code, _code(refused)) == (409, "reattach_place_unknown")
+    assert (await world.wait()).json() is None
+
+
+async def test_the_machine_must_still_list_the_cli_and_be_online(world: _World) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"clis": ["codex"]})
+    await world.wait()
+    chat = await _chat(world, ada, "ada@x.y")
+    _taken_over(chat)
+    gone = await _chat(world, ada, "ada@x.y")
+    inbound = cast("InboundQueue", app.state.inbound)
+    inbound.mark_poller(gone.session, machine="elsewhere", cwd="~/w", cli="claude")
+
+    no_cli = await _reattach(world, cookie, chat)
+    no_machine = await _reattach(world, cookie, gone)
+
+    assert (no_cli.status_code, _code(no_cli)) == (409, "cli_not_installed")
+    assert no_machine.status_code == 404
+    assert (await world.wait()).json() is None
+    # A refused reattach leaves the run as it was: nothing was retired.
+    assert not inbound.held_by_another(chat.session, cli="claude", instance=_OLD_RUN)
 
 
 if __name__ == "__main__":

@@ -185,6 +185,7 @@ async def seed_session(
     account: str | None = None,
     labels: Sequence[str] = (),
     polled: bool = True,
+    drained_by: str | None = None,
 ) -> uuid.UUID:
     """Open a session for ``agent`` straight in the store, and poll it once if asked.
 
@@ -202,6 +203,8 @@ async def seed_session(
       account: The person the session is attributed to; the key's owner by default.
       labels: The labels the row carries.
       polled: Whether the session's runner polls its inbound queue.
+      drained_by: The CLI its poller names, as a ``trax run`` does; none, as the
+        assistant's does.
 
     Returns:
       session_id: The new session.
@@ -232,7 +235,7 @@ async def seed_session(
     if polled:
         inbound = getattr(app.state, "inbound", None)
         assert isinstance(inbound, InboundQueue)
-        inbound.mark_poller(session_id)
+        inbound.mark_poller(session_id, cli=drained_by)
         await store.record_session_seen(
             session_id,
             at=datetime.now(UTC),
@@ -510,18 +513,29 @@ async def drain(
     client: httpx2.AsyncClient,
     *,
     session_id: uuid.UUID,
+    cli: str | None = None,
+    instance: str | None = None,
 ) -> httpx2.Response:
     """Drain a session's inbound queue as the installed identity.
 
     Args:
       client: The test client.
       session_id: The session.
+      cli: The CLI the draining run says it is; none, as an older ``trax`` sends.
+      instance: The draining run's own id; none, as an older ``trax`` sends.
 
     Returns:
       response: The raw response.
 
     """
-    return await client.get(f"/api/sessions/{session_id}/inbound")
+    return await client.get(
+        f"/api/sessions/{session_id}/inbound",
+        params={
+            name: value
+            for name, value in (("cli", cli), ("instance", instance))
+            if value is not None
+        },
+    )
 
 
 def _agent(key_id: uuid.UUID, *, user_id: uuid.UUID, email: str, role: Role) -> None:

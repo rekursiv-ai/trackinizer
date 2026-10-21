@@ -1042,13 +1042,22 @@ class FakeClient:
         run: str | None = None,
         machine: str | None = None,
         cwd: str | None = None,
+        cli: str | None = None,
+        instance: str | None = None,
     ) -> list[InboundDrainItem]:
         """Drain inbound."""
         self.calls.append(
             (
                 "drain_inbound",
                 (session_id,),
-                {"wait_sec": wait_sec, "run": run, "machine": machine, "cwd": cwd},
+                {
+                    "wait_sec": wait_sec,
+                    "run": run,
+                    "machine": machine,
+                    "cwd": cwd,
+                    "cli": cli,
+                    "instance": instance,
+                },
             ),
         )
         return []

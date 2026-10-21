@@ -2900,6 +2900,10 @@
             "format": "uuid",
             "title": "Session Id",
             "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState",
+            "default": "idle"
           }
         },
         "required": [
@@ -6317,6 +6321,13 @@
             "type": "string",
             "x-setting": true
           },
+          "chat_tool_calls": {
+            "default": false,
+            "description": "Show each tool call an agent makes in Chat as a card between the lines: what it ran, and what came back.",
+            "title": "Chat Tool Calls",
+            "type": "boolean",
+            "x-setting": true
+          },
           "collapsed": {
             "default": [],
             "description": "The sections you folded, by key.",
@@ -7043,6 +7054,15 @@
         "pattern": "^[/~][^\\x00-\\x1f\\x7f]*$",
         "type": "string"
       },
+      "RunState": {
+        "enum": [
+          "idle",
+          "running",
+          "requires_action",
+          "taken_over"
+        ],
+        "type": "string"
+      },
       "SavedView": {
         "additionalProperties": false,
         "description": "A named list query.",
@@ -7504,6 +7524,18 @@
             ],
             "title": "Actor"
           },
+          "cli": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cli"
+          },
           "cli_session_id": {
             "anyOf": [
               {
@@ -7527,6 +7559,18 @@
               }
             ],
             "title": "Ended"
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{32}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance"
           }
         },
         "title": "SessionEnd",
@@ -7588,6 +7632,26 @@
           }
         },
         "title": "SessionPlacement",
+        "type": "object"
+      },
+      "SessionRunState": {
+        "additionalProperties": false,
+        "description": "What a run reports of itself, between its drains of the session's queue.",
+        "properties": {
+          "instance": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Instance",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          }
+        },
+        "required": [
+          "state",
+          "instance"
+        ],
+        "title": "SessionRunState",
         "type": "object"
       },
       "SessionStart": {
@@ -11588,6 +11652,10 @@
             ],
             "title": "Session Id"
           },
+          "state": {
+            "$ref": "#/components/schemas/RunState",
+            "default": "idle"
+          },
           "status": {
             "enum": [
               "live",
@@ -11992,6 +12060,10 @@
             "default": false,
             "title": "Pinned",
             "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState",
+            "default": "idle"
           },
           "suggestion": {
             "anyOf": [
@@ -14146,7 +14218,7 @@
     },
     "/api/chats": {
       "post": {
-        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nWhoever reads a chat posts into it: its starter, each person it is shared with\nand anyone the server's ``TRACKINIZER_CHAT_ORGS`` lets in, holding its audience;\na viewer may not, and any other writer is refused with 403 ``chat_not_shared``,\nwhether the chat is named by ``conversation_id`` or by the ``Idempotency-Key`` of\na post that names none. A reader forks a chat from one of its lines (``fork``\nnames it); a fork from a line of a chat the poster does not read is 422, since it\nwould copy lines they may not read, a fork of a ``private`` or ``staff`` chat is\n409 ``chat_fork_closed``, since its copies would not keep the audience, a fork\nthat the poster's organisation would read and the chat's readers do not\ninclude is 409 ``chat_fork_wider``, and a fork whose key names a conversation\nsomeone else began is refused with 409. A\nline under the id of a\ndeleted chat, named or as a fork's key, or a fork from a line of one, is refused\nwith 410 ``chat_deleted``: no chat starts under that id again. A station holds one\nchat: its first line binds the station to the line's conversation, and a line\nnaming another conversation is refused with 409, as is one for a conversation\nanother station of the poster holds. A fork goes to a new station, copied from\nthe one it was sent from and named in the answer's ``workspace_id``. The line's\nposter is the attested identity, never anything in the body. The answer is the\nconversation id at once: the conversation's session appears when the assistant\nopens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key\nqueues nothing again.\n\nThe poster's station's provider answers, or in a chat someone else started, the\nprovider of its starter's station. ``assistant`` takes a ``line`` alone (422 for\nany other ``kind``). For ``claude`` or ``codex`` the post, with its ``kind`` and\n``payload``, joins the queue of the chat's session that the CLI's run drains;\nwith no such run live it is 409 ``provider_offline``. A fork from a ``claude`` or\n``codex`` station is one too: its new session is opened at once and its line\nwaits there for the run the person starts.\n\nA ``line`` that starts with a known slash command of claude or codex is judged\nby the chat's provider, not the poster's station. One the provider runs from\nChat (``/goal``, and claude's ``/compact``) is queued as a ``command``, typed\nbare, with no page, trail or marks; any other is 422 ``command_refused`` with\nthe reason in ``message``, and nothing is queued. Every other ``/`` line stays a\nline. An ``answer`` to a ``claude`` or ``codex`` chat is its starter's alone,\nthe run's owner, since it runs a tool or grants trust on their machine: anyone\nelse is 403 ``answer_not_owner``, and nothing is queued.\n\nArgs:\n  body: The line, the poster's station, and the conversation to post into or the\n    line to fork; neither continues the station's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the station it went to, and its session when the line\n    was queued on it.",
+        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nWhoever reads a chat posts into it: its starter, each person it is shared with\nand anyone the server's ``TRACKINIZER_CHAT_ORGS`` lets in, holding its audience;\na viewer may not, and any other writer is refused with 403 ``chat_not_shared``,\nwhether the chat is named by ``conversation_id`` or by the ``Idempotency-Key`` of\na post that names none. A reader forks a chat from one of its lines (``fork``\nnames it); a fork from a line of a chat the poster does not read is 422, since it\nwould copy lines they may not read, a fork of a ``private`` or ``staff`` chat is\n409 ``chat_fork_closed``, since its copies would not keep the audience, a fork\nthat the poster's organisation would read and the chat's readers do not\ninclude is 409 ``chat_fork_wider``, and a fork whose key names a conversation\nsomeone else began is refused with 409. A\nline under the id of a\ndeleted chat, named or as a fork's key, or a fork from a line of one, is refused\nwith 410 ``chat_deleted``: no chat starts under that id again. A station holds one\nchat: its first line binds the station to the line's conversation, and a line\nnaming another conversation is refused with 409, as is one for a conversation\nanother station of the poster holds. A fork goes to a new station, copied from\nthe one it was sent from and named in the answer's ``workspace_id``. The line's\nposter is the attested identity, never anything in the body. The answer is the\nconversation id at once: the conversation's session appears when the assistant\nopens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key\nqueues nothing again.\n\nThe poster's station's provider answers, or in a chat someone else started, the\nprovider of its starter's station. ``assistant`` takes a ``line`` or an ``answer``\n(422 for any other ``kind``); an ``answer`` is a choice on a card the assistant\nasked, queued for the chat's own session, and is 409 ``provider_offline`` while the\nassistant does not have the chat open. For ``claude`` or ``codex`` the post, with\nits ``kind`` and ``payload``, joins the queue of the chat's session that the CLI's\nrun drains; with no such run live it is 409 ``provider_offline``, and while the run\nreports ``taken_over``, its CLI opened in a terminal, it is 409 ``chat_taken_over``\nwith nothing queued: reattach first. A fork from a ``claude`` or\n``codex`` station is one too: its new session is opened at once and its line\nwaits there for the run the person starts.\n\nA ``line`` that starts with a known slash command of claude or codex is judged\nby the chat's provider, not the poster's station. One the provider runs from\nChat (``/goal``, and claude's ``/compact``) is queued as a ``command``, typed\nbare, with no page, trail or marks; any other is 422 ``command_refused`` with\nthe reason in ``message``, and nothing is queued. Every other ``/`` line stays a\nline. An ``answer`` for ``claude`` or ``codex`` is the chat's starter's alone, the\nrun's owner, since it runs a tool or grants trust on their machine. An ``answer``\nto the assistant's card is the person's the card asked (``input.asker``, else the\nstarter's), since it lists their own choices, and it carries a line's page, trail\nand marks. Anyone else is 403 ``answer_not_owner``, and nothing is queued. It names\nthe option taken (``{prompt_id, option}``), or in the older form a ``decision``.\n\nArgs:\n  body: The line, the poster's station, and the conversation to post into or the\n    line to fork; neither continues the station's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the station it went to, and its session when the line\n    was queued on it.",
         "operationId": "post_chat_line_route_api_chats_post",
         "parameters": [
           {
@@ -20338,7 +20410,7 @@
     },
     "/api/sessions/{session_id}/end": {
       "post": {
-        "description": "Close a session atomically and release its inbound queue.\n\n``end_session`` stamps ``ended`` + ``status`` (and backfills\n``cli_session_id`` when given) in one transaction, so a partial\nfailure can never leave a zombie session -- ``ended`` set yet\n``status`` non-terminal -- and the inbound queue is drained only after\nthe close commits, so a failed end never silently discards undelivered\nsteering messages. A second end on an already-closed session is a 409. A\nsession whose audience the caller neither reads nor opened is 403\n``session_audience``. A science chat is closed by a key that may run on it: its\nopening key, the assistant's or its starter's (403 otherwise).\n\nArgs:\n  session_id: UUID of the session to close.\n  body: Session status and optional cli_session_id backfill.\n  request: Starlette request object.\n  identity: Authenticated user (audit actor for the change).\n\nReturns:\n  response: SessionEndResponse with session id and committed ended\n    timestamp (original value on idempotent replay).",
+        "description": "Close a session atomically and release its inbound queue.\n\n``end_session`` stamps ``ended`` + ``status`` (and backfills\n``cli_session_id`` when given) in one transaction, so a partial\nfailure can never leave a zombie session -- ``ended`` set yet\n``status`` non-terminal -- and the inbound queue is drained only after\nthe close commits, so a failed end never silently discards undelivered\nsteering messages. A second end on an already-closed session is a 409. A\nsession whose audience the caller neither reads nor opened is 403\n``session_audience``. A science chat is closed by a key that may run on it: its\nopening key, the assistant's or its starter's (403 otherwise). An end that names\na ``cli`` other than the chat's provider is a 200 that changes nothing: it is the\nexit of a run a switch stopped, and the session is the chat's, now drained by the\nprovider its station chose. An end that names a ``cli`` and an ``instance`` is\nthe same 200 that changes nothing when the run it names was replaced, or another\nrun of that CLI holds the session's lease: it is the exit of a run a reattach\ntook over, and the run holding the chat goes on. Any other end first releases\nthe asks the run left open: an ``$interaction_resolved`` record with\n``by: released`` for each, which the\nclosed session would take no more.\n\nArgs:\n  session_id: UUID of the session to close.\n  body: Session status, optional cli_session_id backfill, and the ending run's\n    CLI and instance.\n  request: Starlette request object.\n  identity: Authenticated user (audit actor for the change).\n\nReturns:\n  response: SessionEndResponse with session id and committed ended\n    timestamp (original value on idempotent replay).",
         "operationId": "session_end_route_api_sessions__session_id__end_post",
         "parameters": [
           {
@@ -20389,7 +20461,7 @@
     },
     "/api/sessions/{session_id}/inbound": {
       "get": {
-        "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's ``trax run`` to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nThe drain is 403 ``session_audience`` unless the caller opened the session or reads\nits audience.\n\nWriters retain shared access to the drains of ordinary sessions, but a science\nchat and the assistant's service session are drained by their opening key alone\n(403 otherwise). Viewer access is scoped to the opening API key so reading chat\ndoes not grant graph-write permission.\n\nA science chat's queue has one drainer, the provider its starter's station names.\nFor ``claude`` or ``codex`` a drain by the configured assistant's key is 409\n``provider_is_cli``, and the run that drains it may be under any key a chat takes\na run from (its opening key or its starter's; 403 otherwise). For ``assistant`` a\ndrain by its opening key that is not the assistant's is 409\n``provider_is_assistant``. Either holds from the moment the station switches.\n\n``run``, ``machine`` and ``cwd`` say where the draining run is, and the lease the\ndrain takes keeps them for Chat to show (a malformed one is 422). They are the\ncaller's own word about its own run, shown and never trusted; a run that names\nnone is shown as it was before runs named themselves.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n  run: The ``trax run --detach`` host the run is, which ``trax run attach``\n    takes; absent for a run in a terminal of its own.\n  machine: The run's machine, as ``trax machine connect`` names it.\n  cwd: The run's working directory, ``~/...`` under its home: at most 1,024\n    characters, none of them a control character.\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text, kind,\n    payload, source, room), oldest first, or empty list if none are queued.",
+        "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's ``trax run`` to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nThe drain is 403 ``session_audience`` unless the caller opened the session or reads\nits audience.\n\nWriters retain shared access to the drains of ordinary sessions, but a science\nchat and the assistant's service session are drained by their opening key alone\n(403 otherwise). Viewer access is scoped to the opening API key so reading chat\ndoes not grant graph-write permission.\n\nA science chat's queue has one drainer, the provider its starter's station names,\nand one live run. For ``claude`` or ``codex`` a drain by the configured assistant's\nkey is 409 ``provider_is_cli``, and the run that drains it may be under any key a\nchat takes a run from (its opening key or its starter's; 403 otherwise). For\n``assistant`` a drain by its opening key that is not the assistant's is 409\n``provider_is_assistant``. Either holds from the moment the station switches.\n\nA chat answered by a CLI is drained by a run that names its ``cli``: a drain that\nnames none, as a ``trax`` older than the name sends, is 426 ``cli_required`` and\ntakes no lease, since the server cannot tell which CLI polls. A drain by the other\nCLI than the station's is 409 ``provider_is_other_cli``. The lease records the\nnamed CLI, and the chat is live for a provider only while a poller that named it\nholds the lease. ``instance`` is an id the run minted for itself; a drain whose\n``instance`` differs from that of the unexpired lease of the same CLI is 409\n``chat_run_live``, so one chat never has two runs draining it. So is a drain by\na run the server replaced when it reattached the chat (``POST .../reattach``).\n\n``run``, ``machine`` and ``cwd`` say where the draining run is, and the lease the\ndrain takes keeps them for Chat to show (a malformed one is 422). They are the\ncaller's own word about its own run, shown and never trusted; a run that names\nnone is shown as it was before runs named themselves.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n  run: The ``trax run --detach`` host the run is, which ``trax run attach``\n    takes; absent for a run in a terminal of its own.\n  machine: The run's machine, as ``trax machine connect`` names it.\n  cwd: The run's working directory, ``~/...`` under its home: at most 1,024\n    characters, none of them a control character.\n  cli: The CLI the draining run is, as ``trax run`` names it: a lowercase word of\n    at most 32 characters.\n  instance: The run's own id, 32 lowercase hexadecimal digits, the same on each of\n    its drains.\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text, kind,\n    payload, source, room), oldest first, or empty list if none are queued.",
         "operationId": "session_inbound_drain_route_api_sessions__session_id__inbound_get",
         "parameters": [
           {
@@ -20462,6 +20534,40 @@
                 }
               ],
               "title": "Cwd"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cli",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cli"
+            }
+          },
+          {
+            "in": "query",
+            "name": "instance",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{32}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Instance"
             }
           }
         ],
@@ -20810,6 +20916,50 @@
         "summary": "Place Session Route"
       }
     },
+    "/api/sessions/{session_id}/reattach": {
+      "post": {
+        "description": "Reopen a chat's run headless, where it ran, after a terminal took it over.\n\nThe chat's run keeps its CLI session: the new run attaches to the chat's session,\nwhich resumes the CLI's own stored session, on the machine and in the folder the\nlast run named. When a person opened the CLI in a terminal, that run is replaced:\nits lease is revoked and it is turned away when it drains again, which ends its\nterminal, and the terminals this server opened for it are stopped. The run starts\nas a detached host of the old run's name (``chat-<session>`` for a run that named\nnone): a launch of that name ends the old host and resumes the CLI session its\nterminal continued.\n\nOnly the chat's starter reattaches it, from their own browser. A chat whose run is\nlive and not taken over is 409 ``chat_run_live``, and one whose machine or folder\nthe server does not know (it restarted since the run last polled) is 409\n``reattach_place_unknown``. The machine and CLI are held to the rules of an open:\n404 for a machine that is not online, 409 ``cli_not_installed``,\n``terminal_unconfirmed`` and ``terminal_not_enabled``. A retry under the same\n``Idempotency-Key`` opens one run.\n\nArgs:\n  session_id: The chat's session, as the Chat or the Console row names it.\n  request: Request carrying the store, the terminal hub and the inbound queue.\n  identity: The signed-in starter.\n  key: Required retry-safe idempotency key.\n\nRaises:\n  HTTPException: 403 ``terminal_forbidden`` for a key, a service account or a\n    foreign origin, 403 ``reattach_not_owner`` for anyone but the chat's starter;\n    404 for no such session; 409 ``not_a_chat``, ``provider_is_assistant``,\n    ``chat_run_live``, ``reattach_place_unknown``; 429 ``terminal_limit`` past 10\n    opens a minute.",
+        "operationId": "reattach_session_route_api_sessions__session_id__reattach_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reattach Session Route"
+      }
+    },
     "/api/sessions/{session_id}/records": {
       "get": {
         "description": "Read one page of a part's records.\n\n``after_idx`` is an EXCLUSIVE lower bound rather than an offset, so paging\nis stable while a capture is still appending: an offset would re-window\nevery time the part grew.\n\n``plaintext_only`` skips the ciphertext splice, which is what a viewer\nwants -- only a replay needs the encrypted half, and it is the largest\nthing on the row.\n\nArgs:\n  session_id: AgentSession ID to read from.\n  request: FastAPI request (carries auth and store).\n  identity: Authenticated reader.\n  part: Which file, as ``GET .../parts`` numbers it; ``-1`` holds turns\n    backfilled from the retired event log.\n  after_idx: Exclusive lower bound on idx (cursor-based paging).\n  limit: Max rows per page.\n  plaintext_only: Omit ciphertext.\n  asker: The account the configured assistant reads for.\n  chat: The conversation the configured assistant reads into.\n\nReturns:\n  result: ReadRecordsResponse with matching records.",
@@ -20973,6 +21123,50 @@
         "summary": "Append Session Records Route"
       }
     },
+    "/api/sessions/{session_id}/run-state": {
+      "post": {
+        "description": "Take what a run says it is doing, for Chat to show.\n\nThe run reports between its drains, so a change shows at once, not after the\ndrain it is parked in. The state stays on the session's lease: it lapses with it,\nand a drain of the same run leaves it as it is, so a run says a state other than\nidle again while it holds; only a change rechecks open canvases. It is the run's own\nword about its\nown run, shown and never trusted. A report from a run other than the one holding\nthe lease, or while none does, changes nothing, and is answered the same.\n\n``taken_over`` is the report that matters: Chat then refuses the chat's lines with\n409 ``chat_taken_over``, until a reattach starts a headless run again.\n\nThe caller is held to the rules of the session's drain: its opening key, or for a\nchat answered by a CLI its starter's run (403 otherwise), and never the\nassistant's (409 ``provider_is_cli``).\n\nArgs:\n  session_id: The session the run drains.\n  body: The state, and the run's own id.\n  request: Starlette request object.\n  identity: Authenticated run.",
+        "operationId": "session_run_state_route_api_sessions__session_id__run_state_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRunState"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Session Run State Route"
+      }
+    },
     "/api/sessions/{session_id}/turns": {
       "get": {
         "description": "Read recent conversation turns without transferring intervening tools.\n\nArgs:\n  session_id: AgentSession ID to read from.\n  request: FastAPI request carrying auth and store.\n  identity: Authenticated reader.\n  limit: Maximum user and assistant turns, from 1 through 100.\n  asker: The account the configured assistant reads for.\n  chat: The conversation the configured assistant reads into.\n\nReturns:\n  result: The newest turns in display order across session parts.",
@@ -21103,7 +21297,7 @@
     },
     "/api/terminals": {
       "post": {
-        "description": "Open a terminal on one of the caller's machines.\n\nA browser session opens the owner's terminal. The configured assistant may open\nonly a detached campaign run for an attested writer or admin named as ``asker``;\nevery other key, service account or foreign origin is refused. The machine must\nbe online and its host must have asked for terminals within 45 seconds\n(``TRAX_MACHINE_TERMINAL=1``). Attach with the ticket within 30 seconds.\n\nArgs:\n  body: The machine, the terminal's size, and the station it opens from.\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n  asker: The person the configured assistant starts a campaign for.\n\nReturns:\n  opened: The terminal id and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for an untrusted key, a service account or a foreign origin;\n    404 for no such machine of the asker, or station; 409 ``terminal_unconfirmed`` until the\n    owner confirms a machine a key enrolled, ``cli_not_installed`` when the machine's\n    facts do not list the CLI asked for, ``terminal_not_enabled`` when the host is\n    not asking; 429 ``terminal_limit`` past 10 opens a minute. Every terminal route\n    answers 403 on a server with authentication off.",
+        "description": "Open a terminal on one of the caller's machines.\n\nA browser session opens the owner's terminal. The configured assistant may open\nonly a detached campaign run for an attested writer or admin named as ``asker``;\nevery other key, service account or foreign origin is refused. The machine must\nbe online and its host must have asked for terminals within 45 seconds\n(``TRAX_MACHINE_TERMINAL=1``). Attach with the ticket within 30 seconds.\n\nArgs:\n  body: The machine, the terminal's size, and the station it opens from.\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n  asker: The person the configured assistant starts a campaign for.\n\nReturns:\n  opened: The terminal id and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for an untrusted key, a service account or a foreign origin;\n    404 for no such machine of the asker, or station; 409 ``terminal_unconfirmed`` until the\n    owner confirms a machine a key enrolled, ``cli_not_installed`` when the machine's\n    facts do not list the CLI asked for, ``terminal_not_enabled`` when the host is\n    not asking, ``chat_run_live`` when a run is already attached to the ``attach``\n    session, whether opened here or started by hand; 429 ``terminal_limit`` past 10\n    opens a minute. Every terminal route answers 403 on a server with authentication\n    off.",
         "operationId": "open_terminal_route_api_terminals_post",
         "parameters": [
           {
@@ -22005,7 +22199,7 @@
     },
     "/api/web/feed/facets": {
       "get": {
-        "description": "Count the feed between ``since`` and ``until`` by session, room and kind.\n\nThe counts are of the records ``/feed`` returns for the same window and\nfilters, so the console can list agents, rooms and verbosity levels with\ntheir sizes before it loads any of them.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  scope: Which sessions and record kinds to count.\n  since: Window start (inclusive); unset counts from the first record.\n  until: Window end (inclusive); unset counts to the last.\n\nReturns:\n  facets: Per session, room and record kind, what the window holds of the\n    sessions the caller reads.",
+        "description": "Count the feed between ``since`` and ``until`` by session, room and kind.\n\nThe counts are of the records ``/feed`` returns for the same window and\nfilters, so the console can list agents, rooms and verbosity levels with\ntheir sizes before it loads any of them. An agent whose run is polling says\nin ``state`` what the run is doing, such as ``taken_over`` after someone opened\nits CLI in a terminal, which the console offers to reattach.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  scope: Which sessions and record kinds to count.\n  since: Window start (inclusive); unset counts from the first record.\n  until: Window end (inclusive); unset counts to the last.\n\nReturns:\n  facets: Per session, room and record kind, what the window holds of the\n    sessions the caller reads.",
         "operationId": "web_feed_facets_api_web_feed_facets_get",
         "parameters": [
           {
@@ -23172,7 +23366,7 @@
     },
     "/api/workspaces": {
       "get": {
-        "description": "List the principal's stations, the one changed last first.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  stations: Their ids, names, chats, pages and times.",
+        "description": "List the principal's stations, the one changed last first.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  stations: Their ids, names, chats, pages and times, and in ``state`` what each\n    chat needs of them: ``requires_action`` while an ask is open, ``taken_over``\n    after its CLI was opened in a terminal.",
         "operationId": "list_workspaces_route_api_workspaces_get",
         "responses": {
           "200": {

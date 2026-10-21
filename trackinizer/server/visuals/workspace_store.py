@@ -14,6 +14,7 @@ import uuid
 
 from treekle import from_plain
 
+from trackinizer.server.asks import asked_of
 from trackinizer.server.audience import NOBODY, reads_session
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import tx
@@ -36,6 +37,7 @@ from trackinizer.server.visuals.chat_forks import (
 from trackinizer.server.visuals.partners import (
     assistant_key_may_use,
     attach_partner,
+    chat_run_states,
     cli_partner,
     live_chat_session,
     provider_availability,
@@ -91,6 +93,7 @@ from trackinizer.wire.wire_science_chat import (
     CHAT_TITLE,
     FORK_EDGE_LABEL,
     SCIENCE_CHAT_LABEL,
+    ChatAnswer,
     ChatProvider,
     ChatSend,
     ChatSent,
@@ -98,7 +101,10 @@ from trackinizer.wire.wire_science_chat import (
     chat_session_id,
     fork_point_label,
 )
-from trackinizer.wire.wire_sessions import WorkspaceMessageContext
+from trackinizer.wire.wire_sessions import (
+    CHAT_TAKEN_OVER_MESSAGE,
+    WorkspaceMessageContext,
+)
 
 
 if TYPE_CHECKING:
@@ -166,6 +172,10 @@ class WorkspaceSessionUnavailableError(Exception):
 
 class ProviderOfflineError(WorkspaceSessionUnavailableError):
     """The station's provider is a CLI, and no run of it holds the chat."""
+
+
+class ChatTakenOverError(WorkspaceSessionUnavailableError):
+    """The chat's CLI was opened in a terminal, so its headless run takes no post."""
 
 
 class ProviderUnavailableError(Exception):
@@ -257,7 +267,11 @@ async def send_chat_line(
     page, trail or marks, so the run types it bare; one the provider does not run
     from Chat is refused before anything is queued or bound. An ``answer`` to a
     ``claude`` or ``codex`` run's prompt comes from the chat's starter alone, the
-    run's owner: it runs a tool, or grants trust, on their machine.
+    run's owner: it runs a tool, or grants trust, on their machine. An ``answer`` to a
+    card the assistant asked comes from the person the card asked (its starter's when
+    it names nobody), queued for the chat's own session, where the card is, with the
+    page, trail and marks a line carries: the assistant hears the pick as that
+    person's line. A run taken over in a terminal takes no post of any kind.
 
     Args:
       store: The store, which opens and fills a fork's session.
@@ -282,7 +296,9 @@ async def send_chat_line(
     Raises:
       WorkspaceSessionUnavailableError: The station has no live partner.
       ProviderOfflineError: The station's provider is a CLI and no run of it holds
-        the chat, or the forker has no key to open a fork's session for it with.
+        the chat, or the forker has no key to open a fork's session for it with, or an
+        ``answer`` is posted to an assistant chat the assistant does not have open.
+      ChatTakenOverError: The chat's run was taken over in a terminal.
       PartnerBusyError: The queue the line would join is full.
       StationChatError: The station's chat is another conversation, or another
         station of the poster holds the one named.
@@ -296,10 +312,10 @@ async def send_chat_line(
         was deleted, or the fork point is a line of one.
       CommandRefusedError: The line is a slash command its provider does not run
         from Chat; the message says why. It is a ``ValueError``.
-      AnswerNotOwnerError: An ``answer`` to a ``claude`` or ``codex`` chat came from
-        someone other than its starter.
+      AnswerNotOwnerError: An ``answer`` came from someone other than the chat's
+        starter.
       ValueError: The fork names no line of a science chat, or an ``assistant``
-        station is sent a post that is not a line.
+        station is sent a post that is not a line or an answer.
 
     """
     async with store.engine.acquire() as conn, tx(conn):
@@ -398,7 +414,9 @@ async def send_chat_line(
                 conversation_id=conversation_id,
                 reader=reader,
             )
+            # An answer to the assistant's card is heard as the person's line.
             if body.kind == "line"
+            or (body.kind == "answer" and provider == "assistant")
             else None
         )
         line = (
@@ -477,6 +495,8 @@ async def chat_line_target(
 
     Raises:
       ProviderOfflineError: The provider is a CLI and no run of it holds the chat.
+      ChatTakenOverError: The run's CLI was opened in a terminal, which the run
+        reported; its headless run is stopped, so a post would reach no one.
 
     """
     if provider != "assistant":
@@ -491,6 +511,8 @@ async def chat_line_target(
             raise ProviderOfflineError(
                 f"No {provider} run holds this chat; pick a machine to start one",
             )
+        if partner.state == "taken_over":
+            raise ChatTakenOverError(CHAT_TAKEN_OVER_MESSAGE)
         return partner.session_id
     if assistant is None:
         return None
@@ -916,15 +938,19 @@ async def list_workspaces(
     engine: DatabaseEngine,
     *,
     user_id: uuid.UUID,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
 ) -> list[WorkspaceSummary]:
     """List the user's stations, the one changed last first.
 
     Args:
       engine: Database connection source.
       user_id: Owner of the stations.
+      inbound: In-process poller leases, which say what each chat's run is doing.
+      assistant: The configured assistant, whose chats' open asks show too.
 
     Returns:
-      stations: Every station of the user.
+      stations: Every station of the user, each with what its chat needs of them.
 
     """
     async with engine.acquire() as conn:
@@ -933,14 +959,33 @@ async def list_workspaces(
             "WHERE user_id = $1 ORDER BY modified_at DESC, id DESC",
             user_id,
         )
+        stations = [StationData.model_validate(row["station"]) for row in rows]
+        owner = from_plain(
+            await conn.fetchval("SELECT email FROM users WHERE id = $1", user_id),
+            str,
+            default="",
+        )
+        states = await chat_run_states(
+            conn,
+            inbound=inbound,
+            openers=[owner, *([] if assistant is None else [assistant.email])],
+            conversation_ids=[
+                each.conversation_id
+                for each in stations
+                if each.conversation_id is not None
+            ],
+        )
     return [
         WorkspaceSummary.of(
-            StationData.model_validate(row["station"]),
+            data,
             workspace_id=cast("uuid.UUID", row["id"]),
             created_at=cast("datetime", row["created_at"]),
             modified_at=cast("datetime", row["modified_at"]),
+            state=states.get(data.conversation_id, "idle")
+            if data.conversation_id is not None
+            else "idle",
         )
-        for row in rows
+        for row, data in zip(rows, stations, strict=True)
     ]
 
 
@@ -1968,24 +2013,19 @@ async def _post_target(
     assistant: Assistant | None,
 ) -> tuple[uuid.UUID | None, uuid.UUID | None]:
     """Return the queue a post joins and the chat's session it names, if either is known."""
-    if provider != "assistant":
-        # A permission answer runs a tool on the run's machine, and a trust answer
-        # trusts a folder there for good, so only the run's owner gives either; a
-        # sharer reads and posts but never answers. A chat no session carries has no
-        # run and no prompt: ``chat_line_target`` refuses it as offline.
-        starter = (
-            await read_starter(
-                conn,
-                assistant=assistant,
-                conversation_id=conversation_id,
-            )
-            if body.kind == "answer"
-            else None
+    # A permission answer runs a tool on the run's machine, and a trust answer trusts
+    # a folder there for good, so only the run's owner gives either; a sharer reads and
+    # posts but never answers. A chat no session carries has no run and no prompt:
+    # ``chat_line_target`` refuses it as offline.
+    if body.kind == "answer" and provider != "assistant":
+        await _check_starter_answers(
+            conn,
+            assistant=assistant,
+            conversation_id=conversation_id,
+            poster=poster,
+            words="can answer prompts from their machine",
         )
-        if starter is not None and starter.lower() != poster.lower():
-            raise AnswerNotOwnerError(
-                f"Only {starter} can answer prompts from their machine.",
-            )
+    if provider != "assistant":
         if body.fork is not None:
             return None, None
         chat = await chat_line_target(
@@ -1996,8 +2036,31 @@ async def _post_target(
             conversation_id=conversation_id,
         )
         return chat, chat
+    if body.kind == "answer":
+        # A card the assistant asks in a chat is answered in that chat's own session:
+        # the cards are released when it closes the chat, so no other session has one.
+        card = await chat_line_target(
+            conn,
+            inbound=inbound,
+            assistant=assistant,
+            provider=provider,
+            conversation_id=conversation_id,
+        )
+        if card is None:
+            raise ProviderOfflineError("The assistant does not have this chat open")
+        await _check_asker_answers(
+            conn,
+            body=body,
+            session_id=card,
+            assistant=assistant,
+            conversation_id=conversation_id,
+            poster=poster,
+        )
+        return card, card
     if body.kind != "line":
-        raise ValueError(f"The assistant takes a person's line, not a {body.kind}")
+        raise ValueError(
+            f"The assistant takes a person's line or an answer, not a {body.kind}",
+        )
     partner = await shared_partner(conn, inbound=inbound, assistant=assistant)
     if partner is None or partner.session_id is None or partner.status != "live":
         raise WorkspaceSessionUnavailableError("The assistant is not running")
@@ -2009,6 +2072,52 @@ async def _post_target(
         conversation_id=conversation_id,
     )
     return chat or partner.session_id, chat
+
+
+# The assistant's card asks the person whose line asked, and lists that person's own
+# choices, such as their machines; a click is heard as the clicker's line, so another
+# member's pick would act for the wrong person. A card that names nobody is the
+# starter's, as a run's is.
+async def _check_asker_answers(
+    conn: Conn,
+    *,
+    body: ChatSend,
+    session_id: uuid.UUID,
+    assistant: Assistant | None,
+    conversation_id: uuid.UUID,
+    poster: str,
+) -> None:
+    """Refuse an answer to the assistant's card from anyone but the person it asked."""
+    answer = ChatAnswer.model_validate(body.payload)
+    asker = await asked_of(conn, session_id=session_id, ask_id=answer.prompt_id)
+    if not asker:
+        await _check_starter_answers(
+            conn,
+            assistant=assistant,
+            conversation_id=conversation_id,
+            poster=poster,
+            words="can answer this chat's questions",
+        )
+    elif asker.lower() != poster.lower():
+        raise AnswerNotOwnerError(f"Only {asker} can answer this question.")
+
+
+async def _check_starter_answers(
+    conn: Conn,
+    *,
+    assistant: Assistant | None,
+    conversation_id: uuid.UUID,
+    poster: str,
+    words: str,
+) -> None:
+    """Refuse an answer from anyone but the chat's starter, saying who ``words``."""
+    starter = await read_starter(
+        conn,
+        assistant=assistant,
+        conversation_id=conversation_id,
+    )
+    if starter is not None and starter.lower() != poster.lower():
+        raise AnswerNotOwnerError(f"Only {starter} {words}.")
 
 
 async def _line_context(

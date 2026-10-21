@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type DragEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createWorkstream, createStation, listWorkstreams, setWorkstreamOrder, updateWorkstream, workstreamInfo, type Workstream, type WorkstreamInfo } from "../api/workstreams";
+import { waitingOf } from "../api/runState";
 import type { StationSummary } from "../api/stations";
 import { openStation, stationsQuery } from "../stations/actions";
 import { showStation, useStation } from "../stations/useStation";
@@ -197,6 +198,8 @@ export function WorkstreamBar() {
               onDragEnd={() => setDraggedId(null)}>
               {stream.pinned && <span className="workstream-pin" title="Pinned workstream" aria-hidden="true"><Icon name="bookmark" size={12} /></span>}
               <span className="workstream-title-text">{stream.title}</span>
+              {stations.some((each) => belongs(each, stream) && !each.hidden && waitingOf(each) === true)
+                && <span className="workstream-waiting" role="img" aria-label="Waiting for your answer" title={`A chat in ${stream.title} is waiting for your answer`} />}
             </button>
           )}
           </span>

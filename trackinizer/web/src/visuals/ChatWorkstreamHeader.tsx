@@ -17,6 +17,8 @@ import { ProviderPicker, reasonText, useChatDefault, useProviderStatuses } from 
 type Props = {
   readonly workspace: WorkspaceState | null;
   readonly head: ChatHead | undefined;
+  /** An agent waits on the person for an answer: the header shows a dot. */
+  readonly waiting?: boolean;
   readonly onHide: () => Promise<void>;
   readonly onClear: () => Promise<void>;
   readonly onDeleted: (conversation: string) => void;
@@ -25,7 +27,7 @@ type Props = {
 type HeaderMenu = "name" | "workstream" | "more" | "info" | "provider";
 
 /** Chat naming, switching, workstream placement, the provider, and its compact header controls. */
-export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDeleted }: Props) {
+export function ChatWorkstreamHeader({ workspace, head, waiting = false, onHide, onClear, onDeleted }: Props) {
   const queryClient = useQueryClient();
   const { side, hidden } = useChatColumn();
   const defaults = useChatDefault();
@@ -193,6 +195,7 @@ export function ChatWorkstreamHeader({ workspace, head, onHide, onClear, onDelet
         {head?.audience === "staff" && <span>Staff only</span>}
         {head?.audience === "private" && <span>Private</span>}
       </span>
+      {waiting && <span className="chat-waiting" role="status" aria-label="Waiting for your answer" title="An agent is waiting for your answer" />}
       {workspace && <div className="chat-provider-pick">
         <button type="button" className="chat-provider-button" aria-label={`Chat provider: ${providerName(provider, workspace)}`} aria-expanded={providerOpen}
           title="Choose what this chat talks to" onClick={() => setMenu(providerOpen ? null : "provider")}>

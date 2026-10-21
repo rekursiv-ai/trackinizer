@@ -343,6 +343,252 @@ class TestWhereAPollerRuns:
         assert expired not in queue._leases
 
 
+class TestWhichCliPolls:
+    """A lease keeps the CLI and run instance its drain named, and nothing else says."""
+
+    def test_a_lease_answers_which_cli_and_run_polls_it(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+
+        queue.mark_poller(session, cli="codex", instance="a" * 32)
+
+        assert queue.poller_run(session) == PollerRun(cli="codex", instance="a" * 32)
+        # A renewal that names neither leaves the lease nameless, as an older trax's.
+        queue.mark_poller(session)
+        assert queue.poller_run(session) == PollerRun()
+
+    def test_active_poller_ids_can_be_asked_for_one_clis_alone(self) -> None:
+        queue = InboundQueue()
+        claude, codex, nameless = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        queue.mark_poller(claude, cli="claude")
+        queue.mark_poller(codex, cli="codex")
+        queue.mark_poller(nameless)
+
+        assert queue.active_poller_ids(cli="claude") == [claude]
+        assert queue.active_poller_ids(cli="codex") == [codex]
+        assert queue.active_poller_ids(cli="sagent") == []
+        assert queue.active_poller_ids() == [claude, codex, nameless]
+
+    def test_a_run_is_held_off_by_another_runs_live_lease_alone(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+        first, second = "a" * 32, "b" * 32
+
+        assert not queue.held_by_another(session, cli="claude", instance=first)
+        queue.mark_poller(session, cli="claude", instance=first)
+        assert not queue.held_by_another(session, cli="claude", instance=first)
+        assert queue.held_by_another(session, cli="claude", instance=second)
+        # A lease of another CLI is a run the chat no longer takes lines from.
+        assert not queue.held_by_another(session, cli="codex", instance=second)
+        # A lease that names no run, as the assistant's, holds nobody off.
+        queue.mark_poller(session, cli="claude")
+        assert not queue.held_by_another(session, cli="claude", instance=second)
+        # Nor does one that lapsed, or one that was revoked.
+        queue.mark_poller(session, cli="claude", instance=first)
+        now[0] = 145.0
+        assert not queue.held_by_another(session, cli="claude", instance=second)
+        queue.mark_poller(session, cli="claude", instance=first)
+        queue.forget_poller(session)
+        assert not queue.held_by_another(session, cli="claude", instance=second)
+
+
+class TestWhatTheRunReportsOfItself:
+    """A run says idle, running, waiting for the person, or taken over in a terminal."""
+
+    def test_the_state_a_run_reports_stays_through_its_next_polls(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        run = "a" * 32
+        queue.mark_poller(session, cli="claude", instance=run)
+        assert queue.poller_run(session) == PollerRun(cli="claude", instance=run)
+
+        assert queue.report_state(session, instance=run, state="requires_action")
+        queue.mark_poller(session, cli="claude", instance=run)
+
+        held = queue.poller_run(session)
+        assert held is not None
+        assert held.state == "requires_action"
+
+    def test_a_report_of_another_run_or_of_no_lease_changes_nothing(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+        run = "a" * 32
+
+        assert not queue.report_state(session, instance=run, state="running")
+        queue.mark_poller(session, cli="claude", instance=run)
+        assert not queue.report_state(session, instance="b" * 32, state="taken_over")
+        now[0] = 145.0
+        assert not queue.report_state(session, instance=run, state="running")
+
+        assert queue.poller_run(session) is None
+
+    def test_a_run_that_polls_as_another_starts_idle(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        queue.mark_poller(session, cli="claude", instance="a" * 32)
+        _ = queue.report_state(session, instance="a" * 32, state="taken_over")
+
+        queue.mark_poller(session, cli="claude", instance="b" * 32)
+        later = queue.poller_run(session)
+        queue.mark_poller(session, cli="claude")
+        nameless = queue.poller_run(session)
+
+        assert later is not None
+        assert later.state == "idle"
+        assert nameless == PollerRun(cli="claude")
+
+
+class TestRunsThatWentOffline:
+    """The server is told which runs stopped polling, to release what they asked."""
+
+    def test_a_lease_that_lapses_is_listed_once(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        lapsed, live = uuid.uuid4(), uuid.uuid4()
+        queue.mark_poller(lapsed, cli="claude")
+        now[0] = 120.0
+        queue.mark_poller(live, cli="claude")
+        now[0] = 150.0
+
+        assert queue.take_gone() == [lapsed]
+        assert queue.take_gone() == []
+        assert queue.has_poller(live)
+
+    def test_a_lease_read_after_it_lapsed_is_listed_too(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+        queue.mark_poller(session, cli="claude")
+        now[0] = 200.0
+
+        assert not queue.has_poller(session)
+        assert queue.take_gone() == [session]
+
+    def test_a_revoked_lease_is_listed_and_a_renewed_one_is_not(self) -> None:
+        queue = InboundQueue()
+        revoked, renewed = uuid.uuid4(), uuid.uuid4()
+        queue.mark_poller(revoked, cli="claude")
+        queue.mark_poller(renewed, cli="claude")
+        queue.mark_poller(renewed, cli="claude")
+
+        queue.forget_poller(revoked)
+
+        assert queue.take_gone() == [revoked]
+
+    def test_a_session_that_never_polled_is_not_listed(self) -> None:
+        queue = InboundQueue()
+
+        queue.forget_poller(uuid.uuid4())
+
+        assert queue.take_gone() == []
+
+    def test_the_assistants_lease_is_not_a_run_that_went_offline(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        assistant, revoked = uuid.uuid4(), uuid.uuid4()
+        queue.mark_poller(assistant)
+        queue.mark_poller(revoked)
+        queue.forget_poller(revoked)
+        now[0] = 200.0
+
+        assert queue.take_gone() == []
+        assert not queue.has_poller(assistant)
+
+    def test_the_list_keeps_the_newest_sessions_when_nothing_takes_it(self) -> None:
+        queue = InboundQueue(max_gone=2)
+        first, second, third = (uuid.uuid4() for _ in range(3))
+        for session in (first, second, third):
+            queue.mark_poller(session, cli="claude")
+            queue.forget_poller(session)
+
+        assert queue.take_gone() == [second, third]
+
+
+class TestReplacingARun:
+    """A run the server replaces is turned away when it drains again."""
+
+    def test_the_replaced_run_is_held_off_though_no_lease_names_it(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        old, new = "a" * 32, "b" * 32
+        queue.mark_poller(session, cli="claude", instance=old)
+
+        queue.retire_run(session)
+
+        assert queue.poller_run(session) is None
+        assert queue.held_by_another(session, cli="claude", instance=old)
+        assert not queue.held_by_another(session, cli="claude", instance=new)
+        queue.mark_poller(session, cli="claude", instance=new)
+        assert queue.held_by_another(session, cli="claude", instance=old)
+
+    def test_a_run_whose_lease_lapsed_is_held_off_by_where_it_last_ran(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+        old, new = "a" * 32, "b" * 32
+        queue.mark_poller(session, cli="claude", machine="box", instance=old)
+        now[0] = 200.0
+        assert queue.take_gone() == [session]
+
+        queue.retire_run(session)
+
+        assert queue.held_by_another(session, cli="claude", instance=old)
+        assert not queue.held_by_another(session, cli="claude", instance=new)
+
+    def test_a_session_with_no_run_retires_nobody(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+
+        queue.retire_run(session)
+
+        assert not queue.held_by_another(session, cli="claude", instance="a" * 32)
+
+    def test_the_server_keeps_the_newest_retired_runs_alone(self) -> None:
+        queue = InboundQueue(max_retired=1)
+        first, second = uuid.uuid4(), uuid.uuid4()
+        for session in (first, second):
+            queue.mark_poller(session, cli="claude", instance="a" * 32)
+            queue.retire_run(session)
+
+        assert not queue.held_by_another(first, cli="claude", instance="a" * 32)
+        assert queue.held_by_another(second, cli="claude", instance="a" * 32)
+
+
+class TestWhereARunWas:
+    """Where a run said it ran outlives its lease, for a run to start there again."""
+
+    def test_the_place_stays_after_the_lease_lapses(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+        _mark_at(queue, session)
+        now[0] = 200.0
+
+        assert queue.poller_run(session) is None
+        assert queue.last_run(session) == _AT
+
+    def test_a_poll_that_names_no_place_leaves_the_last_one(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        assert queue.last_run(session) is None
+        _mark_at(queue, session)
+
+        queue.mark_poller(session, cli="claude")
+
+        assert queue.last_run(session) == _AT
+
+    def test_the_server_keeps_the_newest_places_alone(self) -> None:
+        queue = InboundQueue(max_places=1)
+        first, second = uuid.uuid4(), uuid.uuid4()
+        _mark_at(queue, first)
+        _mark_at(queue, second)
+
+        assert queue.last_run(first) is None
+        assert queue.last_run(second) == _AT
+
+
 _AT = PollerRun(run="chat-1a2b3c4d", machine="gx10", cwd="~/work")
 """Where a detached run on gx10, working in ``~/work``, says it is."""
 

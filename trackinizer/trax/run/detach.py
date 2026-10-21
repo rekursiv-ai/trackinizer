@@ -14,7 +14,9 @@ exactly as in a foreground run. Each host has a name and a directory,
 These reach a host by name:
 
 - ``trax run ls`` lists the live hosts; ``--all`` lists every host and its state.
-- ``trax run attach NAME`` drives it from this terminal; Ctrl-\ detaches.
+- ``trax run attach NAME`` drives it from this terminal; Ctrl-\ detaches. A chat's run
+  has no terminal until then: attach takes it over, and the chat gets it back when it
+  is reattached from Chat, which launches the name again.
 - ``trax run log NAME [--follow]`` prints its scrollback.
 - ``trax run send NAME TEXT`` types a message in and presses Enter.
 - ``trax run stop NAME`` stops it and waits until it has exited.
@@ -22,11 +24,12 @@ These reach a host by name:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Protocol, cast
+from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
 import argparse
 import asyncio
@@ -47,13 +50,23 @@ from trackinizer.lib.posix.host import HostSpec
 from trackinizer.lib.posix.terminal import write_all
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.daemon.protocol import socket_address
+from trackinizer.trax.run import headless
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
+
+    from trackinizer.trax.run.headless import Reply
 
 
-__all__ = ["HOST_COMMANDS", "HostRecord", "build_parser", "launch", "main"]
+__all__ = [
+    "HOST_COMMANDS",
+    "HeadlessSpec",
+    "HostRecord",
+    "build_parser",
+    "launch",
+    "main",
+]
 
 _logger = logging.getLogger(__name__)
 
@@ -78,6 +91,9 @@ _READY_TIMEOUT_SEC: Final = 120.0
 # How long ``stop`` waits for the host process to finish once the CLI is gone:
 # its teardown drains capture and closes the session under a 30s deadline of
 # its own, and the name is not reusable until it has.
+_RESUME_WINDOW_SEC: Final = 120.0
+"""How long after a taken-over run ended a launch of its name still resumes its session."""
+
 _STOP_TIMEOUT_SEC: Final = 60.0
 
 
@@ -104,6 +120,33 @@ class HostRecord:
 
     exit_code: int | None = None
     ended: str | None = None
+    machine: str = ""
+    """The computer the host runs on, which alone can attach to it; empty in a record
+    from before hosts named theirs."""
+
+    control: str = ""
+    """The socket a chat's headless run listens on for attach, send and stop, recorded
+    for the reason ``address`` is. Nothing listens there for a run that has a terminal
+    of its own."""
+
+    session: str = ""
+    """The CLI session a person took the run over on; empty for a run never taken over.
+    A launch of the same name resumes it, so the chat's turns go on in the session the
+    terminal continued."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HeadlessSpec(HostSpec):
+    """Where a host is served: the terminal's socket, and the control socket."""
+
+    control: Path
+    """Where a headless run listens for control requests."""
+
+    resume: str = ""
+    """The CLI session of the taken-over run this host replaces; empty for none."""
+
+    on_takeover: Callable[[str], None] | None = None
+    """Called with the CLI session once a person has taken the run over on it."""
 
 
 def launch(
@@ -129,15 +172,11 @@ def launch(
     """
     paths = _paths(name)
     previous = _read_record(paths)
-    state = "absent" if previous is None else _state(previous)
-    if state in {"starting", "running", "exiting"}:
-        raise SystemExit(
-            f"trax run: host {name!r} is {state}; "
-            f"stop it (trax run stop {name}) or choose another --name",
-        )
+    resume = "" if previous is None else _replace(name, previous, command=command)
     shutil.rmtree(paths, ignore_errors=True)
     paths.mkdir(parents=True, mode=0o700)
     address = socket_address(paths / "host.sock")
+    control = socket_address(paths / "control.sock")
     # Unflushed output would be written twice: once by this process and once by
     # the host, which inherits the buffer.
     sys.stdout.flush()
@@ -150,6 +189,8 @@ def launch(
             _detach(
                 paths,
                 address=address,
+                control=control,
+                resume=resume,
                 command=command,
                 ready=ready_w,
                 start=start,
@@ -275,6 +316,8 @@ def _detach(
     paths: Path,
     *,
     address: Path,
+    control: Path,
+    resume: str,
     command: str,
     ready: int,
     start: Callable[[HostSpec], int],
@@ -291,16 +334,21 @@ def _detach(
         pid=os.getpid(),
         address=str(address),
         started=_now(),
+        machine=socket.gethostname(),
+        control=str(control),
     )
     _write_record(paths, record)
     readiness = _Readiness(ready)
     status = 1
     try:
         status = start(
-            HostSpec(
+            HeadlessSpec(
                 address=address,
                 scrollback=paths / "scrollback.log",
                 on_listening=partial(_listening, paths, record, readiness),
+                control=control,
+                resume=resume,
+                on_takeover=partial(_taken_over, paths),
             ),
         )
     except SystemExit as exit_:
@@ -311,9 +359,15 @@ def _detach(
         _logger.exception("trax run: the host failed")
     finally:
         readiness.close()
+        # Read again: the record now may hold a session the first one did not.
         _write_record(
             paths,
-            replace(record, state="exited", exit_code=status, ended=_now()),
+            replace(
+                _read_record(paths) or record,
+                state="exited",
+                exit_code=status,
+                ended=_now(),
+            ),
         )
         sys.stdout.flush()
         sys.stderr.flush()
@@ -353,6 +407,13 @@ def _exit_status(code: object) -> int:
         return code
     sys.stderr.write(f"{code}\n")
     return 1
+
+
+def _taken_over(paths: Path, session: str) -> None:
+    """Record the CLI session a person took the host over on."""
+    record = _read_record(paths)
+    if record is not None:
+        _write_record(paths, replace(record, session=session))
 
 
 def _listening(paths: Path, record: HostRecord, readiness: _Readiness) -> None:
@@ -412,18 +473,30 @@ def _ls(*, every: bool) -> int:
     return 0
 
 
+# A chat's run is headless: it has no terminal until a person asks for one. The run is
+# asked to stop its driver and host the CLI's own terminal on the same session, and only
+# then is this terminal attached to it, the way it is to any host. A host with a
+# terminal of its own answers no such request and is attached as it always was.
 def _attach(name: str) -> int:
     """Drive the host from this terminal until it exits or is detached."""
-    record = _require_record(name)
+    record = _require_local(name)
+    taken = _control(record, "takeover")
+    if taken is not None and not taken.ok:
+        raise SystemExit(f"trax run: {name} cannot be taken over: {taken.reason}")
     try:
         status = asyncio.run(attach(Path(record.address)))
     except OSError:
         raise SystemExit(f"trax run: host {name!r} is {_state(record)}") from None
     if status is None:
         sys.stderr.write(f"\n[trax run] detached from {name}; it is still running\n")
-        return 0
-    sys.stderr.write(f"\n[trax run] {name} exited with status {status}\n")
-    return status
+    else:
+        sys.stderr.write(f"\n[trax run] {name} exited with status {status}\n")
+    if taken is not None:
+        sys.stderr.write(
+            "[trax run] Chat stays taken over; use Reattach to Chat in the chat or "
+            "the Console to give it back.\n",
+        )
+    return 0 if status is None else status
 
 
 # A follower stops once the host no longer accepts -- and reads once more after, since
@@ -452,7 +525,14 @@ def _log(name: str, *, follow: bool) -> int:
 
 def _send(name: str, text: str) -> int:
     """Type ``text`` into the host and press Enter."""
-    record = _require_record(name)
+    record = _require_local(name)
+    sent = _reach(record, lambda address: headless.say(address, text))
+    if sent is not None:
+        if not sent.ok:
+            sys.stderr.write(
+                f"trax run: {name} did not take the message: {sent.reason}\n",
+            )
+        return 0 if sent.ok else 1
     try:
         submitted = asyncio.run(submit(Path(record.address), text=text))
     except OSError:
@@ -465,22 +545,72 @@ def _send(name: str, text: str) -> int:
 
 def _stop(name: str) -> int:
     """Stop the host's CLI, then wait until the host itself has exited."""
-    record = _require_record(name)
-    try:
-        status = asyncio.run(stop(Path(record.address)))
-    except OSError:
-        raise SystemExit(f"trax run: host {name!r} is {_state(record)}") from None
-    deadline = time.monotonic() + _STOP_TIMEOUT_SEC
-    while _alive(record.pid) and time.monotonic() < deadline:
-        time.sleep(0.05)
-    if _alive(record.pid):
+    record = _require_local(name)
+    # A headless run ends whole: stopping its terminal alone would leave it running.
+    ended = _control(record, "stop")
+    detail = ""
+    if ended is None:
+        try:
+            detail = f" (status {asyncio.run(stop(Path(record.address)))})"
+        except OSError:
+            raise SystemExit(f"trax run: host {name!r} is {_state(record)}") from None
+    if not _wait_exit(record):
         sys.stderr.write(
             f"trax run: {name} stopped its CLI but the host (pid {record.pid}) "
             f"is still closing after {_STOP_TIMEOUT_SEC:.0f}s\n",
         )
         return 1
-    sys.stderr.write(f"[trax run] {name} stopped (status {status})\n")
+    sys.stderr.write(f"[trax run] {name} stopped{detail}\n")
     return 0
+
+
+def _wait_exit(record: HostRecord) -> bool:
+    """Wait for the host process to end; return whether it did within the time."""
+    deadline = time.monotonic() + _STOP_TIMEOUT_SEC
+    while _alive(record.pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return not _alive(record.pid)
+
+
+# The launch that gives a chat its CLI back finds the run a person took over holding the
+# name. The server turns that run away as it opens the new one, so the old run may be
+# ending already, or still answering: either way it is gone before the new one starts,
+# and the new one resumes the session the terminal continued. A run never taken over,
+# or one on another CLI, leaves nothing to resume; one that is live and not taken over
+# keeps its name.
+def _replace(name: str, previous: HostRecord, *, command: str) -> str:
+    """End the taken-over run that holds ``name``; return the session to resume."""
+    state = _state(previous)
+    session = previous.session
+    if state in {"starting", "running", "exiting"}:
+        reply = _control(previous, "state")
+        if reply is not None and reply.state == "taken_over":
+            session = reply.session
+            _ = _control(previous, "stop")
+        elif reply is not None or not previous.session:
+            why = "" if reply is None else " (the chat is not taken over)"
+            raise SystemExit(
+                f"trax run: host {name!r} is {state}{why}; "
+                f"stop it (trax run stop {name}) or choose another --name",
+            )
+        if not _wait_exit(previous):
+            raise SystemExit(
+                f"trax run: host {name!r} is still closing; "
+                f"stop it (trax run stop {name}) or choose another --name",
+            )
+    same_cli = previous.command.split()[:1] == command.split()[:1]
+    return session if same_cli and _recent(previous, now=datetime.now(UTC)) else ""
+
+
+# A session a person took over is resumed by the launch that follows it, not by one that
+# comes after the chat has been answered by another provider, whose turns it lacks.
+def _recent(record: HostRecord, *, now: datetime) -> bool:
+    """Whether the host is still there or ended no longer ago than a reattach takes."""
+    if record.ended is None:
+        return True
+    return now - datetime.fromisoformat(record.ended) < timedelta(
+        seconds=_RESUME_WINDOW_SEC,
+    )
 
 
 def _require_record(name: str) -> HostRecord:
@@ -489,6 +619,42 @@ def _require_record(name: str) -> HostRecord:
     if record is None:
         raise SystemExit(f"trax run: no host named {name!r}; see trax run ls --all")
     return record
+
+
+# A home directory shared between computers shows each one the others' hosts, whose
+# sockets and processes are not here to reach.
+def _require_local(name: str) -> HostRecord:
+    """Return ``name``'s record, or exit when the host runs on another computer."""
+    record = _require_record(name)
+    here = socket.gethostname()
+    if record.machine and record.machine != here:
+        raise SystemExit(
+            f"trax run: host {name!r} runs on {record.machine}, not on this "
+            f"machine ({here}); run this command there",
+        )
+    return record
+
+
+# A host with a terminal of its own, or one from before runs were headless, records no
+# control socket or has nothing listening on it.
+def _control(
+    record: HostRecord,
+    op: Literal["state", "takeover", "stop"],
+) -> Reply | None:
+    """Ask a headless run to do ``op``; ``None`` when the host is not one."""
+    return _reach(record, lambda address: headless.request(address, op))
+
+
+# A host with a terminal of its own, or one from before runs were headless, records no
+# control socket or has nothing listening on it, and is not one.
+def _reach(record: HostRecord, call: Callable[[Path], Reply]) -> Reply | None:
+    """Make ``call`` at the host's control socket; ``None`` when the host has none."""
+    if not record.control:
+        return None
+    try:
+        return call(Path(record.control))
+    except (OSError, ValueError):
+        return None
 
 
 def _read_record(paths: Path) -> HostRecord | None:
@@ -516,7 +682,9 @@ def _state(record: HostRecord) -> str:
     """Return ``record``'s live state: its own, ``exiting``, or ``lost``."""
     if record.state == "exited":
         return f"exited {record.exit_code}"
-    if _accepts(Path(record.address)):
+    if _accepts(Path(record.address)) or (
+        record.control and _accepts(Path(record.control))
+    ):
         return "running"
     if not _alive(record.pid):
         return "lost"

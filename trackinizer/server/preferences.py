@@ -51,6 +51,7 @@ ASSISTANT_KEYS: Final = frozenset(
         "terminal_tab_chords",
         "home",
         "chat_provider",
+        "chat_tool_calls",
     },
 )
 """The preferences a station's assistant may read and change for its owner: the
@@ -286,6 +287,14 @@ class Preferences(_Strict):
         description=(
             "The provider a new chat starts on: the assistant, or claude or codex run on "
             "a machine of yours."
+        ),
+        json_schema_extra=SETTING,
+    )
+    chat_tool_calls: bool = Field(
+        default=False,
+        description=(
+            "Show each tool call an agent makes in Chat as a card between the lines: "
+            "what it ran, and what came back."
         ),
         json_schema_extra=SETTING,
     )

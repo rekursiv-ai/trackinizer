@@ -32,6 +32,7 @@ from trackinizer.server.api.conftest import TEST_USER_EMAIL, make_test_identity
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Assistant, ChatOrgs, Config
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.audience_aggregates_pglite_test import (
     ASSISTANT_EMAIL,
     CANARY,
@@ -124,6 +125,7 @@ async def served(pglite_engine: PGliteEngine) -> AsyncIterator[_Served]:
     app.state.store = store
     app.state.engine = store.engine
     app.state.config = _config("domain")
+    app.state.inbound = InboundQueue()
     web.attach(app)
     app.include_router(query.router)
     app.include_router(export_routes.router)
