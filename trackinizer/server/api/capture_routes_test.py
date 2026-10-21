@@ -8,10 +8,12 @@ import asyncio
 import base64
 import uuid
 
+from fastapi import FastAPI
 from treekle import from_plain, json_loads
 
 import pytest
 
+from trackinizer.server.api import capture_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,
@@ -283,14 +285,22 @@ async def test_a_malformed_answer_is_refused_without_echoing_the_picture(
 
 
 def test_the_answer_body_the_schema_declares_is_the_one_the_route_reads() -> None:
-    """The web app's typed client is built from the declared body, stated by hand."""
-    served: object = app.openapi()
+    """The web app's typed client is built from the declared body, stated by hand.
+
+    The schema is the route module's own, read from an app mounting only it:
+    the served app's whole schema took 0.7s, and the tests above reach this
+    route through the served app.
+    """
+    path = "/api/workspaces/{workspace_id}/captures/{capture_id}"
+    alone = FastAPI()
+    alone.include_router(capture_routes.router)
+    served: object = alone.openapi()
     declared = from_plain(
         from_plain(served, dict[str, object])["paths"],
         dict[str, object],
     )
     put = from_plain(
-        declared["/api/workspaces/{workspace_id}/captures/{capture_id}"],
+        declared[path],
         dict[str, object],
     )["put"]
     body = from_plain(
