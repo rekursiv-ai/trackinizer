@@ -935,24 +935,35 @@ def test_a_box_takes_its_author_page_and_a_rising_seq_from_the_server() -> None:
 
 def test_the_two_hundred_and_first_box_drops_the_oldest() -> None:
     """The count cap evicts from the front and seq keeps counting."""
-    data = initial_data(default_catalog())
-    for _ in range(MAX_MARKS + 1):
-        data = _draw(data, new=_box())
+    full = _draw(initial_data(default_catalog()), new=_box())
+    # A full canvas, seeded in place: drawing all 200 re-copies the canvas each time.
+    full.marks = [
+        full.marks[0].model_copy(update={"seq": seq}) for seq in range(1, 201)
+    ]
+    full.marks_seq = MAX_MARKS
+    data = _draw(full, new=_box())
     assert [m.seq for m in data.marks] == list(range(2, MAX_MARKS + 2))
 
 
 def test_boxes_past_sixty_four_kib_drop_the_oldest_until_they_fit() -> None:
     """The byte cap binds before the count when the boxes are large."""
-    data = initial_data(default_catalog())
     covers = {"records": [str(uuid.uuid4()) for _ in range(20)]}
-    for _ in range(100):
-        data = _draw(data, new=_box(covers=covers))
+    data = _draw(initial_data(default_catalog()), new=_box(covers=covers))
+    one = len(json.dumps([data.marks[0].model_dump(mode="json")]))
+    # Seeded one box short of the byte cap: well under the count cap of 200.
+    count = MAX_MARKS_BYTES // one
+    data.marks = [
+        data.marks[0].model_copy(update={"seq": seq}) for seq in range(1, count + 1)
+    ]
+    data.marks_seq = count
+    assert count < MAX_MARKS
+    data = _draw(_draw(data, new=_box(covers=covers)), new=_box(covers=covers))
     stored = json.dumps([mark.model_dump(mode="json") for mark in data.marks])
     assert len(stored) <= MAX_MARKS_BYTES
     # The oldest went: what is left is the newest run, ending at the last drawn.
     seqs = [mark.seq for mark in data.marks]
-    assert 1 < seqs[0] <= 100
-    assert seqs == list(range(seqs[0], 101))
+    assert seqs[0] > 1
+    assert seqs == list(range(seqs[0], count + 3))
 
 
 def test_removing_a_box_takes_that_one_whoever_drew_it_and_a_gone_one_changes_nothing() -> (
