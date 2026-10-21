@@ -158,12 +158,8 @@ class ReplayConflictError(Exception):
         self.current = current
 
 
-class WorkspaceDisabledError(Exception):
-    """The account cannot access a visual canvas."""
-
-
 class WorkspaceKeyRefusedError(Exception):
-    """The API key is not the canvas's Chat partner, which alone may use it."""
+    """The API key has no session authorized to use this canvas."""
 
 
 class WorkspaceSessionUnavailableError(Exception):
@@ -1631,11 +1627,12 @@ async def agent_may_operate(
       assistant: The configured assistant, if any.
 
     Returns:
-      allowed: False when the canvas does not exist or the key is not its partner.
+      allowed: False when the canvas does not exist or the key has no authorized
+        session associated with it.
 
     Raises:
-      WorkspaceKeyRefusedError: The account owns the canvas but this key is not
-        its partner.
+      WorkspaceKeyRefusedError: The account owns the canvas but this key has no
+        authorized session associated with it.
 
     """
     async with engine.acquire() as conn:
@@ -2442,13 +2439,11 @@ async def _check_record(
         raise ValueError("Artifact content not found.")
 
 
-# A browser sees only its own stations. An agent key may use a station only as its Chat
-# partner: the key opened the partner's live session and the live science chat the
-# station holds, in which the station's owner is the account or a poster. A station
-# without a chat has no partner to be, so it refuses every agent key. That partner is
-# the shared assistant whatever the station's provider: a claude or codex run on the
-# chat is reached through Chat, not given the canvas. The owner's own key is refused by
-# name, so a terminal `trax workspace` learns why. Any other is told nothing.
+# A browser sees only its own stations. The shared assistant's key needs its live
+# service session and the station's science chat, whose owner is a member. An owner's
+# key instead needs its own placed session or its starter's live CLI chat on this
+# station. An unrelated key learns nothing of the station; an owner's unrelated
+# key is told why it was refused, so a terminal `trax workspace` explains the failure.
 async def _workspace_for_principal(
     conn: Conn,
     *,
@@ -2478,24 +2473,86 @@ async def _workspace_for_principal(
     if agent_api_key_id is None:
         return state, owner_id
     partner = await shared_partner(conn, inbound=inbound, assistant=assistant)
-    if await assistant_key_may_use(
-        conn,
-        owner_id=owner_id,
-        partner=partner,
-        conversation_id=state.conversation_id,
-        api_key_id=agent_api_key_id,
-    ) or await station_session_key_may_use(
-        conn,
-        owner_id=owner_id,
-        workspace_id=workspace_id,
-        api_key_id=agent_api_key_id,
+    if (
+        await assistant_key_may_use(
+            conn,
+            owner_id=owner_id,
+            partner=partner,
+            conversation_id=state.conversation_id,
+            api_key_id=agent_api_key_id,
+        )
+        or await station_session_key_may_use(
+            conn,
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            api_key_id=agent_api_key_id,
+        )
+        or await _chat_run_key_may_use(
+            conn,
+            state=state,
+            owner_id=owner_id,
+            api_key_id=agent_api_key_id,
+            inbound=inbound,
+            assistant=assistant,
+        )
     ):
         return state, owner_id
     if owner_id == user_id:
         raise WorkspaceKeyRefusedError(
-            "Only the canvas's Chat partner may use it with an API key",
+            "Only the canvas's Chat partner or an associated live session "
+            "may use it with an API key",
         )
     return None
+
+
+async def _chat_run_key_may_use(
+    conn: Conn,
+    *,
+    state: WorkspaceState,
+    owner_id: uuid.UUID,
+    api_key_id: uuid.UUID,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> bool:
+    """Allow the chat's starter to use its canvas through any live key of their own."""
+    if state.provider == "assistant" or state.conversation_id is None:
+        return False
+    email = from_plain(
+        await conn.fetchval(
+            """
+            SELECT member.email FROM api_keys AS credential
+            JOIN users AS member ON member.id = credential.user_id
+            JOIN inquiries AS sess ON sess.agentsession_cli_session_id = $3
+            WHERE credential.id = $1 AND credential.user_id = $2
+            AND credential.revoked_at IS NULL AND sess.kind = 'AgentSession'
+            AND sess.status = 'active' AND sess.agentsession_ended IS NULL
+            AND $4 = ANY(sess.labels) LIMIT 1
+            """,
+            api_key_id,
+            owner_id,
+            chat_session_id(state.conversation_id),
+            SCIENCE_CHAT_LABEL,
+        ),
+        str,
+        default=None,
+    )
+    if email is None:
+        return False
+    starter = await read_starter(
+        conn,
+        assistant=assistant,
+        conversation_id=state.conversation_id,
+    )
+    if starter is None or email.lower() != starter.lower():
+        return False
+    partner = await cli_partner(
+        conn,
+        inbound=inbound,
+        assistant=assistant,
+        provider=state.provider,
+        conversation_id=state.conversation_id,
+    )
+    return partner.status == "live"
 
 
 # The starter asked about is the conversation the line will be queued for, which the
