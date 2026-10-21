@@ -134,6 +134,11 @@ CORPUS: tuple[Case, ...] = (
     Case(label="verb machine label del", tokens="machine gpu-box label del gpu"),
     Case(label="verb machine delete", tokens="machine gpu-box del"),
     Case(label="verb machine connect", tokens="machine gpu-box connect"),
+    Case(
+        label="verb machine connect sandbox",
+        tokens="machine gpu-box connect --sandbox",
+    ),
+    Case(label="verb machine own connect sandbox", tokens="machine connect --sandbox"),
     # == row commands: a leading KIND, then the row grammar ===================
     # -- bare kind + list queries (no mutation) -----------------------------
     Case(label="bare kind (list all)", tokens="issue"),

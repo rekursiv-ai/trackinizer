@@ -53,7 +53,8 @@ MACHINE_WORD: Final = "machine"
 """The verb that selects this command, in matching, help and usage."""
 
 _FORMS: Final = (
-    "[NAME [FIELD [to VALUE|-|@FILE] | label add|del LABEL | del | connect] | connect]"
+    "[NAME [FIELD [to VALUE|-|@FILE] | label add|del LABEL | del | connect [--sandbox]]"
+    " | connect [--sandbox]]"
 )
 
 _USAGE: Final = f"usage: trax {MACHINE_WORD} {_FORMS}"
@@ -80,6 +81,12 @@ class Machines(Command):
             ("how", "one line telling an agent how to use the machine; to '' clears"),
             ("VALUE", "text; '-' reads stdin, '@FILE' reads a file"),
         ),
+        options=(
+            (
+                "--sandbox",
+                "after connect only: this computer is a disposable sandbox",
+            ),
+        ),
         examples=(
             f"trax {MACHINE_WORD}                           list machines",
             f"trax {MACHINE_WORD} NAME                      show one machine",
@@ -93,6 +100,8 @@ class Machines(Command):
             f"trax {MACHINE_WORD} NAME del                  unregister the machine",
             f"trax {MACHINE_WORD} NAME connect < TOKEN      join, then heartbeat",
             f"trax {MACHINE_WORD} connect                   enroll this computer, serve a terminal",
+            f"trax {MACHINE_WORD} connect --sandbox         the same, on a disposable computer",
+            f"trax {MACHINE_WORD} NAME connect --sandbox    join, as a disposable computer",
         ),
         notes=(
             "A field left out of a set keeps its value; to '' clears one.",
@@ -111,6 +120,14 @@ class Machines(Command):
                 "enrolls it as your personal machine when it is new, and serves "
                 "terminals in the browser (TRAX_MACHINE_TERMINAL=1 for that run). "
                 "Needs the writer role."
+            ),
+            (
+                "--sandbox declares this computer a disposable sandbox where agents "
+                "may act freely. Every connect records its answer for this user, so "
+                "a connect without the flag withdraws it. While it holds, 'trax run' "
+                "starts codex without approvals and claude in auto mode, unless you "
+                "pass the agent's own permission flags. Never declare a computer "
+                "that holds work or keys you would mind losing."
             ),
             (
                 "A last word of help, -h or --help shows this page: set such a value "
@@ -140,13 +157,16 @@ class Machines(Command):
         client_factory: Callable[[], Client],
     ) -> None:
         del verb
-        tokens = cast(Sequence[str], args.rest)
+        tokens = list(cast(Sequence[str], args.rest))
+        sandbox = _declares_sandbox(tokens)
+        if sandbox:
+            tokens.pop()
         words = [token.lower() for token in tokens]
         if not tokens:
             cls.run_list(client_factory)
             return
         if len(tokens) == 1 and words[0] == "connect":
-            cls.run_connect(client_factory, None)
+            cls.run_connect(client_factory, None, sandbox=sandbox)
             return
         name = tokens[0]
         _check_name(name)
@@ -155,7 +175,7 @@ class Machines(Command):
         elif len(tokens) == 2 and words[1] == "del":
             cls.run_del(client_factory, name)
         elif len(tokens) == 2 and words[1] == "connect":
-            cls.run_connect(client_factory, name)
+            cls.run_connect(client_factory, name, sandbox=sandbox)
         elif len(tokens) == 2 and words[1] in _FIELDS:
             cls.run_field(client_factory, name, words[1])
         elif len(tokens) == 4 and words[1] in _FIELDS and words[2] == "to":
@@ -303,6 +323,8 @@ class Machines(Command):
         cls,
         client_factory: Callable[[], Client],
         name: str | None,
+        *,
+        sandbox: bool = False,
     ) -> None:
         """Join as ``name`` when no credential is saved, then heartbeat until revoked.
 
@@ -311,6 +333,7 @@ class Machines(Command):
             with no ``name`` its key enrolls this computer.
           name: Machine name; ``None`` names this computer by its hostname, enrolls
             it as a personal machine if new, and serves terminals.
+          sandbox: Whether this connect declares the computer a disposable sandbox.
 
         """
         client = client_factory()
@@ -334,6 +357,7 @@ class Machines(Command):
                 if serve
                 else None
             ),
+            sandbox=sandbox,
         )
 
 
@@ -355,6 +379,18 @@ def host_name() -> str:
     name = name.strip("-")[:63]
     _check_name(name)
     return name
+
+
+# ``--sandbox`` is a flag of ``connect`` and of nothing else. Any other place it turns
+# up stays a token: a value may be spelled like it (``how to --sandbox``), and every
+# other form refuses a token it does not know.
+def _declares_sandbox(tokens: Sequence[str]) -> bool:
+    """Return whether ``tokens`` end a ``connect`` form with ``--sandbox``."""
+    return (
+        len(tokens) in {2, 3}
+        and tokens[-1] == "--sandbox"
+        and tokens[-2].lower() == "connect"
+    )
 
 
 def _terminal_host(

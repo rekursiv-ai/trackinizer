@@ -15,6 +15,10 @@ calling process rather than in traxd.
 
 A host that opted in to terminals also serves them (``trax/terminal_host.py``) for as
 long as it stays connected, and kills every shell when the machine is revoked.
+
+Each connect also records whether the person declared this computer a sandbox, a
+disposable computer where agents may act freely (:func:`is_sandbox`). ``trax run``
+reads the record when it starts an agent.
 """
 
 from __future__ import annotations
@@ -56,6 +60,8 @@ __all__ = [
     "TerminalServing",
     "connect",
     "host_facts",
+    "is_sandbox",
+    "set_sandbox",
 ]
 
 HOST_CLIS: Final = ("claude", "codex", "gemini", "git", "uv")
@@ -114,6 +120,7 @@ def connect(
     read_token: Callable[[], str],
     sleep: Callable[[float], None],
     terminals_for: Callable[[JoinResponse], TerminalServing] | None = None,
+    sandbox: bool = False,
 ) -> None:
     """Join ``name`` when no credential is saved, then heartbeat until it is revoked.
 
@@ -128,6 +135,9 @@ def connect(
       sleep: Waits the given seconds between heartbeats.
       terminals_for: Makes the terminal server for the joined machine's credential;
         ``None`` serves none, whatever the server asks.
+      sandbox: Whether this connect declares the computer a sandbox. Every connect
+        records its own answer once it holds a credential, so ``False`` withdraws
+        an earlier declaration.
 
     Raises:
       ClientError: The token was refused, the saved credential is unknown to the
@@ -157,6 +167,9 @@ def connect(
         _save_credential(name, joined=saved, server=server)
         echo(f"joined: machine {name}")
         unsent = None
+    set_sandbox(on=sandbox)
+    if sandbox:
+        echo("sandbox: on (agents on this computer act without asking)")
     terminals = None if terminals_for is None else terminals_for(saved)
     if terminals is not None:
         terminals.start(saved.machine_id, instance)
@@ -209,6 +222,30 @@ def host_facts(*, terminal: bool = False) -> Facts:
         "user": getpass.getuser(),
         "clis": [cli for cli in HOST_CLIS if shutil.which(cli) is not None],
     }
+
+
+def is_sandbox() -> bool:
+    """Return whether the last connect on this computer declared it a sandbox."""
+    return (state_dir() / "rekursiv-ai" / "trax" / "machines" / ".sandbox").exists()
+
+
+def set_sandbox(*, on: bool) -> None:
+    """Record that this computer is a sandbox, or that it is not.
+
+    The record belongs to the computer, not to a server or a machine name, so it sits
+    in the directory that holds the per-server credential directories; the dot keeps
+    its name from ever being a server's.
+
+    Args:
+      on: Whether agents on this computer may act freely.
+
+    """
+    path = state_dir() / "rekursiv-ai" / "trax" / "machines" / ".sandbox"
+    if on:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.touch()
+    else:
+        path.unlink(missing_ok=True)
 
 
 # The first heartbeat that lands takes the machine, so a restart never waits out the

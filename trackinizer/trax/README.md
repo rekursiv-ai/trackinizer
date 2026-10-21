@@ -113,6 +113,15 @@ install from a local checkout needs the same source: `uv tool install --with aio
 /path/to/that/checkout` (`uv tool list --show-paths` and the tool's `uv-receipt.toml`
 name it). `TRAX_MACHINE_TERMINAL_DIRECT=0` turns the link off.
 
+`connect --sandbox`, in either form, declares the computer a disposable sandbox
+where agents may act freely. Each connect records the answer for this user,
+beside the machine credential: on with the flag, off without it. While it is on,
+`trax run codex` starts codex with `--dangerously-bypass-approvals-and-sandbox`
+and `trax run claude` starts claude with `--permission-mode auto`, unless you pass
+the agent's own permission flags. `trax run` has no such flag: codex's `--sandbox`
+stays codex's. Do not declare a computer that holds work or keys you would mind
+losing.
+
 ```bash
 trax machine                                           # list
 trax machine gpu-box                                   # show one
@@ -122,6 +131,7 @@ trax machine gpu-box label add gpu                     # add a label
 trax machine gpu-box del                               # unregister
 trax machine gpu-box connect < token                   # on the host: join, heartbeat
 trax machine connect                                   # this computer: enroll, serve a terminal
+trax machine connect --sandbox                         # the same, on a disposable computer
 ```
 
 ## Run (CLI shim)

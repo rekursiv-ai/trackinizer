@@ -59,6 +59,7 @@ from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.lib.posix.host import HostSpec
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.posix.testing import poll_fsevents
+from trackinizer.trax import machine_host
 from trackinizer.trax.daemon.protocol import socket_address
 from trackinizer.trax.profile import LOCALHOST_FALLBACK_URL
 from trackinizer.trax.run import detach, prompt_bridge, session
@@ -3371,6 +3372,265 @@ class TestSessionOwnerAndArgv:
         config = RunConfig(cli_name="gemini", cli_args=("-p", "x"))
         assert _session_owner(GeminiAdapter(), config) is None
         assert _cli_argv(GeminiAdapter(), config, None) == ["gemini", "-p", "x"]
+
+
+_CHAT_RUN: Final = uuid.UUID("44444444-4444-4444-8444-444444444444")
+"""The AgentSession a Chat run writes into, as ``--attach`` names it."""
+
+
+def _spawned(
+    cli: str,
+    *,
+    cli_args: tuple[str, ...],
+    attach: uuid.UUID | None,
+) -> list[str]:
+    """Return the argv a run of ``cli`` spawns, with no session owner."""
+    adapter = {
+        "claude": ClaudeAdapter,
+        "codex": CodexAdapter,
+        "gemini": GeminiAdapter,
+    }[cli]()
+    config = RunConfig(cli_name=cli, cli_args=cli_args, attach=attach)
+    return _cli_argv(adapter, config, None)
+
+
+class TestChatRunApprovals:
+    """What a run's CLI is told about approvals, and what the person overrides.
+
+    A Chat run gets the interim auto review. On a computer declared a sandbox every
+    run gets liberal permissions. The person's own permission flags always win.
+    """
+
+    @pytest.mark.parametrize(
+        ("cli", "args", "expected"),
+        [
+            ("claude", (), ["claude", "--permission-mode", "auto"]),
+            (
+                "claude",
+                ("--model", "haiku"),
+                ["claude", "--permission-mode", "auto", "--model", "haiku"],
+            ),
+            (
+                "codex",
+                ("exec", "hi"),
+                [
+                    "codex",
+                    "-c",
+                    'approvals_reviewer="auto_review"',
+                    "--no-daemon",
+                    "--enable",
+                    "goals",
+                    "exec",
+                    "hi",
+                ],
+            ),
+        ],
+        ids=["claude", "claude-with-args", "codex"],
+    )
+    def test_a_chat_run_gets_the_interim_auto_review(
+        self,
+        cli: str,
+        args: tuple[str, ...],
+        expected: list[str],
+    ) -> None:
+        assert _spawned(cli, cli_args=args, attach=_CHAT_RUN) == expected
+
+    @pytest.mark.parametrize(
+        ("cli", "args", "expected"),
+        [
+            ("claude", ("--model", "haiku"), ["claude", "--model", "haiku"]),
+            (
+                "codex",
+                ("exec", "hi"),
+                ["codex", "--no-daemon", "--enable", "goals", "exec", "hi"],
+            ),
+        ],
+        ids=["claude", "codex"],
+    )
+    def test_a_run_outside_a_chat_is_unchanged(
+        self,
+        cli: str,
+        args: tuple[str, ...],
+        expected: list[str],
+    ) -> None:
+        assert _spawned(cli, cli_args=args, attach=None) == expected
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ("--permission-mode", "plan"),
+            ("--permission-mode=acceptEdits",),
+            ("--dangerously-skip-permissions",),
+            ("--permission-prompt-tool", "stdio"),
+        ],
+        ids=["mode", "mode-equals", "skip", "prompt-tool"],
+    )
+    def test_claude_keeps_the_permission_flags_the_person_passed(
+        self,
+        args: tuple[str, ...],
+    ) -> None:
+        assert _spawned("claude", cli_args=args, attach=_CHAT_RUN) == ["claude", *args]
+
+    @pytest.mark.parametrize("declared", [False, True], ids=["chat", "sandbox"])
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ("-a", "never"),
+            ("--ask-for-approval=never",),
+            ("-s", "read-only"),
+            ("--sandbox=read-only",),
+            ("--sandbox", "danger-full-access"),
+            ("--full-auto",),
+            ("--approve-for-me",),
+            ("--dangerously-bypass-approvals-and-sandbox",),
+            ("--yolo",),
+            ("-c", 'approvals_reviewer="user"'),
+            ('--config=approvals_reviewer="user"',),
+            ("-c", 'approval_policy="on-request"'),
+            ("--config", 'sandbox_mode="read-only"'),
+            ("-c", 'sandbox_mode = "read-only"'),
+        ],
+        ids=[
+            "ask",
+            "ask-equals",
+            "sandbox",
+            "sandbox-equals",
+            "sandbox-split",
+            "full-auto",
+            "approve-for-me",
+            "bypass",
+            "yolo",
+            "reviewer",
+            "reviewer-equals",
+            "policy",
+            "mode",
+            "mode-spaced",
+        ],
+    )
+    def test_codex_keeps_the_permission_flags_the_person_passed(
+        self,
+        args: tuple[str, ...],
+        declared: bool,
+    ) -> None:
+        machine_host.set_sandbox(on=declared)
+        assert _spawned("codex", cli_args=(*args, "exec", "hi"), attach=_CHAT_RUN) == [
+            "codex",
+            "--no-daemon",
+            "--enable",
+            "goals",
+            *args,
+            "exec",
+            "hi",
+        ]
+
+    def test_other_codex_config_still_gets_the_auto_review(self) -> None:
+        args = ("-c", 'model="o3"', "exec", "hi")
+        assert _spawned("codex", cli_args=args, attach=_CHAT_RUN) == [
+            "codex",
+            "-c",
+            'approvals_reviewer="auto_review"',
+            "--no-daemon",
+            "--enable",
+            "goals",
+            *args,
+        ]
+
+    @pytest.mark.parametrize(
+        ("attach", "expected"),
+        [
+            (None, ["claude", "--permission-mode", "auto", "--model", "haiku"]),
+            (_CHAT_RUN, ["claude", "--permission-mode", "auto", "--model", "haiku"]),
+        ],
+        ids=["plain", "chat"],
+    )
+    def test_claude_on_a_sandbox_runs_in_auto_mode_never_in_bypass_mode(
+        self,
+        attach: uuid.UUID | None,
+        expected: list[str],
+    ) -> None:
+        # Bypass mode opens a startup dialog whose default is "No, exit" on a computer
+        # that never accepted it, and nobody is watching a run that could answer it.
+        machine_host.set_sandbox(on=True)
+        argv = _spawned("claude", cli_args=("--model", "haiku"), attach=attach)
+
+        assert argv == expected
+        assert "--dangerously-skip-permissions" not in argv
+        assert "bypassPermissions" not in argv
+
+    @pytest.mark.parametrize("attach", [None, _CHAT_RUN], ids=["plain", "chat"])
+    def test_codex_on_a_sandbox_skips_approvals(
+        self,
+        attach: uuid.UUID | None,
+    ) -> None:
+        machine_host.set_sandbox(on=True)
+        assert _spawned("codex", cli_args=("exec", "hi"), attach=attach) == [
+            "codex",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--no-daemon",
+            "--enable",
+            "goals",
+            "exec",
+            "hi",
+        ]
+
+    def test_other_codex_config_on_a_sandbox_still_gets_the_bypass(self) -> None:
+        machine_host.set_sandbox(on=True)
+        args = (
+            "-c",
+            'model="o3"',
+            "--config=sandbox_workspace_write.network_access=true",
+            "exec",
+        )
+        assert _spawned("codex", cli_args=args, attach=None) == [
+            "codex",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--no-daemon",
+            "--enable",
+            "goals",
+            *args,
+        ]
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ("--permission-mode", "plan"),
+            ("--permission-mode=acceptEdits",),
+            ("--dangerously-skip-permissions",),
+            ("--permission-prompt-tool", "stdio"),
+        ],
+        ids=["mode", "mode-equals", "skip", "prompt-tool"],
+    )
+    def test_claude_on_a_sandbox_keeps_the_permission_flags_the_person_passed(
+        self,
+        args: tuple[str, ...],
+    ) -> None:
+        machine_host.set_sandbox(on=True)
+        assert _spawned("claude", cli_args=args, attach=None) == ["claude", *args]
+
+    def test_withdrawing_the_declaration_returns_to_the_default(self) -> None:
+        machine_host.set_sandbox(on=True)
+        machine_host.set_sandbox(on=False)
+        assert _spawned("codex", cli_args=("exec", "hi"), attach=None) == [
+            "codex",
+            "--no-daemon",
+            "--enable",
+            "goals",
+            "exec",
+            "hi",
+        ]
+        assert _spawned("claude", cli_args=("--model", "haiku"), attach=None) == [
+            "claude",
+            "--model",
+            "haiku",
+        ]
+
+    def test_another_cli_gets_no_approval_flags(self) -> None:
+        machine_host.set_sandbox(on=True)
+        assert _spawned("gemini", cli_args=("-p", "x"), attach=_CHAT_RUN) == [
+            "gemini",
+            "-p",
+            "x",
+        ]
 
 
 class TestWrappedCliIsATopLevelSession:

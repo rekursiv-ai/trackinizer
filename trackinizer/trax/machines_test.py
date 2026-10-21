@@ -496,8 +496,11 @@ def test_machine_help_lists_every_form(capsys: pytest.CaptureFixture[str]) -> No
         f"trax {MACHINE_WORD} NAME label add LABEL",
         f"trax {MACHINE_WORD} NAME label del LABEL",
         f"trax {MACHINE_WORD} NAME del",
+        f"trax {MACHINE_WORD} connect --sandbox",
+        f"trax {MACHINE_WORD} NAME connect --sandbox",
     ):
         assert form in out
+    assert "--no-sandbox" not in out
     assert client.calls == []
 
 
@@ -596,6 +599,96 @@ def test_a_named_connect_serves_terminals_only_when_the_host_opted_in(
     assert off["terminals_for"] is None
     assert on["terminals_for"] is not None
     assert on["read_token"] == sys.stdin.readline
+
+
+@pytest.mark.parametrize(
+    ("argv", "name"),
+    [
+        (["connect"], "dev-box"),
+        (["gx10", "connect"], "gx10"),
+        (["connect", "--sandbox"], "dev-box"),
+        (["gx10", "connect", "--sandbox"], "gx10"),
+        (["gx10", "CONNECT", "--sandbox"], "gx10"),
+    ],
+    ids=["own", "named", "own-sandbox", "named-sandbox", "named-sandbox-upper"],
+)
+def test_connect_hands_the_host_loop_whether_it_was_declared_a_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    name: str,
+) -> None:
+    monkeypatch.setattr("socket.gethostname", lambda: "Dev_Box.local")
+
+    seen = _connect_seen(monkeypatch, argv, _StubClient())
+
+    assert seen["name"] == name
+    assert seen["sandbox"] is ("--sandbox" in argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["gx10", "--sandbox"],
+        ["gx10", "--sandbox", "connect"],
+        ["gx10", "connect", "--sandbox", "--sandbox"],
+        ["gx10", "connect", "--sandbox", "now"],
+        ["gx10", "del", "--sandbox"],
+        ["gx10", "role", "--sandbox"],
+        ["gx10", "label", "add", "gpu", "--sandbox"],
+        ["gx10", "how", "to", "connect", "--sandbox"],
+        ["gx10", "connect", "--no-sandbox"],
+    ],
+)
+def test_the_sandbox_flag_belongs_to_connect_alone(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+) -> None:
+    client = _StubClient()
+
+    def never_connect(name: str, **kwargs: object) -> None:
+        raise AssertionError(f"connect {name} {kwargs}")
+
+    monkeypatch.setattr(machine_host, "connect", never_connect)
+
+    with pytest.raises(ClientError):
+        _run(argv, client=client)
+
+    assert client.calls == []
+
+
+def test_a_value_may_still_be_spelled_like_the_flag() -> None:
+    client = _StubClient()
+
+    _run(["gx10", "how", "to", "--sandbox"], client=client)
+
+    assert client.calls == [("put", "gx10", None, "--sandbox")]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["issue", "--sandbox"],
+        ["issue", "7", "--sandbox"],
+        ["title", "re", "x", "--sandbox"],
+        ["recent", "--sandbox"],
+        ["profile", "--sandbox"],
+        ["env", "--sandbox"],
+        ["doctor", "--sandbox"],
+        ["help", "--sandbox"],
+        ["run", "claude", "--sandbox"],
+        ["--sandbox", "machine", "connect"],
+        [MACHINE_WORD, "--sandbox"],
+        [MACHINE_WORD, "--sandbox", "connect"],
+    ],
+)
+def test_every_other_command_refuses_the_sandbox_flag(argv: list[str]) -> None:
+    client = _StubClient()
+
+    with pytest.raises(SystemExit) as refused:
+        cli.parse_and_run(argv, client_factory=lambda: cast(Client, client))
+
+    assert refused.value.code == 2
+    assert client.calls == []
 
 
 def test_the_terminal_server_names_the_server_and_the_profile_but_holds_no_key(

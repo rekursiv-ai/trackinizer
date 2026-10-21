@@ -523,7 +523,8 @@ def _verb_lines() -> list[str]:
     lines.append(f"//   {ENV_WORD} [ [secret] NAME to V | NAME del ]")
     # Machine parses ``rest`` by hand as well; V is a literal, ``-`` or ``@FILE``.
     lines.append(
-        f"//   {MACHINE_WORD} [ NAME [ role|how [to V] | label add|del L | del | connect ] ]",
+        f"//   {MACHINE_WORD} [ NAME [ role|how [to V] | label add|del L | del"
+        " | connect [--sandbox] ] | connect [--sandbox] ]",
     )
     lines = sorted(lines)
     # ``argparse`` positionals/--as carry meaning the bare usage can't show; gloss the

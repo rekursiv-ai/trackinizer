@@ -18,6 +18,8 @@ from trackinizer.trax.machine_host import (
     HOST_CLIS,
     connect,
     host_facts,
+    is_sandbox,
+    set_sandbox,
 )
 from trackinizer.wire.wire_machine_host import (
     HEARTBEAT_SEC,
@@ -124,6 +126,94 @@ def _connect(host: _Host, *, stdin: str = f"{_TOKEN}\n") -> list[float]:
         sleep=slept.append,
     )
     return slept
+
+
+def _connect_as(name: str, host: _Host, *, sandbox: bool = False) -> list[float]:
+    """Connect ``name`` with the token on stdin, declaring a sandbox if asked."""
+    slept: list[float] = []
+    connect(
+        name,
+        server=_SERVER,
+        client_for=host,
+        read_token=lambda: f"{_TOKEN}\n",
+        sleep=slept.append,
+        sandbox=sandbox,
+    )
+    return slept
+
+
+def test_a_computer_is_no_sandbox_until_a_connect_declares_it() -> None:
+    _save()
+
+    _ = _connect_as("box-1", _Host())
+
+    assert not is_sandbox()
+
+
+def test_a_first_connect_with_sandbox_records_it_beside_the_credentials_and_says_so(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _ = _connect_as("box-1", _Host(), sandbox=True)
+
+    assert is_sandbox()
+    machines = state_dir() / "rekursiv-ai" / "trax" / "machines"
+    assert (machines / ".sandbox").is_file()
+    assert (machines / "trax.example" / "box-1.credential").is_file()
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "joined: machine box-1"
+    assert lines[1].startswith("sandbox: on (")
+    assert lines[2:] == ["revoked: machine box-1"]
+
+
+def test_a_saved_credential_connect_with_sandbox_records_it_too(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _save()
+
+    _ = _connect_as("box-1", _Host(), sandbox=True)
+
+    assert is_sandbox()
+    assert capsys.readouterr().out.count("sandbox: on") == 1
+
+
+def test_a_connect_without_the_flag_clears_the_declaration_and_says_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _save()
+    set_sandbox(on=True)
+
+    _ = _connect_as("box-1", _Host())
+
+    assert not is_sandbox()
+    assert "sandbox" not in capsys.readouterr().out
+
+
+def test_the_declaration_belongs_to_the_computer_not_to_one_machine_name() -> None:
+    _ = _connect_as("box-1", _Host(), sandbox=True)
+    assert is_sandbox()
+
+    _ = _connect_as("box-2", _Host())
+
+    assert not is_sandbox()
+
+
+def test_a_refused_join_leaves_the_declaration_as_it_was() -> None:
+    refused = ClientError("-> 401", status_code=401)
+
+    with pytest.raises(ClientError):
+        _ = _connect_as("box-1", _Host(join_error=refused), sandbox=True)
+    assert not is_sandbox()
+
+    set_sandbox(on=True)
+    with pytest.raises(ClientError):
+        _ = _connect_as("box-1", _Host(join_error=refused))
+    assert is_sandbox()
+
+
+def test_clearing_a_declaration_that_was_never_made_creates_nothing() -> None:
+    set_sandbox(on=False)
+
+    assert not (state_dir() / "rekursiv-ai").exists()
 
 
 def test_a_first_connect_joins_with_the_stdin_token_and_saves_the_credential(
