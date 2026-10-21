@@ -585,8 +585,8 @@ request (E011). `secret` is a keyword only in front of `NAME to VALUE`;
 
 ```
 machine_command ::= "machine" machine_tail?
-machine_tail    ::= machine_name machine_action?
-machine_action  ::= "del" | "connect"
+machine_tail    ::= machine_name machine_action? | "connect" "--sandbox"?
+machine_action  ::= "del" | "connect" "--sandbox"?
                  |  machine_field ( "to" value )?
                  |  "label" ( "add" | "del" ) label
 machine_field   ::= "role" | "how"
@@ -613,6 +613,14 @@ reading the one-use enrollment token from stdin (never the command line), saves
 the machine credential for this user only, then heartbeats every 15 seconds
 until the machine is revoked, and exits 0. Lost contact never stops it; it
 retries, sooner at first.
+
+`connect --sandbox` declares this computer a disposable sandbox where agents
+may act freely. The declaration is about the computer, not one machine name:
+each connect records it for this user beside the machine credential, on with
+the flag and off without it, and says `sandbox: on` when it is on. Every
+`trax run` there then gives the agent CLI liberal permissions, unless the
+person passed that CLI's own permission flags. The flag follows `connect` and
+nothing else; `trax run` has none, since codex's own `--sandbox` is its.
 
 `machine NAME role to ROLE` sets one field and creates the machine when it
 is new; a field left out keeps its value, and `to ''` clears one. A `value`
@@ -1138,6 +1146,8 @@ trax machine gpu-box label add gpu
 trax machine gpu-box label del gpu
 trax machine gpu-box del
 printf '%s\n' "$ENROLLMENT_TOKEN" | trax machine gpu-box connect
+printf '%s\n' "$ENROLLMENT_TOKEN" | trax machine gpu-box connect --sandbox
+trax machine connect --sandbox
 ```
 
 ## 11. Counterexamples

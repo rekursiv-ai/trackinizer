@@ -107,6 +107,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import datetime
 
+    from trackinizer.trax import machine_host
     from trackinizer.trax.run.box_hook import hook
     from trackinizer.trax.run.resume import prepare_resume
     from trackinizer.types.streams import TraxRecord
@@ -117,6 +118,8 @@ else:
     # Only a claude run touches the box hook; any other run loads none of it
     # (0.4 ms measured, so this is about scope, not speed).
     hook = lazy_import("trackinizer.trax.run.box_hook.hook")
+    # Only spawning a CLI asks whether the person declared this computer a sandbox.
+    machine_host = lazy_import("trackinizer.trax.machine_host")
     # Only a run attached to a chat loads its conversation, and the loader brings the
     # readers and writers of every CLI's format.
     prepare_resume = lazy_import("trackinizer.trax.run.resume", "prepare_resume")
@@ -1534,7 +1537,62 @@ def _cli_argv(
             *(() if "--no-daemon" in config.cli_args else ("--no-daemon",)),
             *(() if _sets_codex_goals(config.cli_args) else ("--enable", "goals")),
         ]
+    argv[1:1] = _approval_args(
+        adapter.name,
+        cli_args=config.cli_args,
+        attached=config.attach is not None,
+        sandbox=machine_host.is_sandbox(),
+    )
     return argv
+
+
+# A Chat run's asks go to Chat, but a CLI left to its own dialog stops there with
+# nobody watching, so an attached run gets the interim auto review until one ask path
+# ships (JP, 2026-10-21). A computer the person declared a sandbox, with
+# ``trax machine connect --sandbox``, is one where agents may act freely, so every run
+# there gets liberal permissions: codex skips its approvals and its own sandbox. Claude
+# gets its auto mode and never its bypass mode: bypass opens a startup dialog whose
+# default is "No, exit" on a computer that never accepted it, and a run nobody watches
+# cannot answer it. A headless claude run (``-p``) opens no such dialog and may use
+# bypassPermissions. The person's own permission flags win over all of it: a flag they
+# set is never replaced. ``--yolo`` is codex's hidden alias of its bypass flag, and
+# codex refuses the two together (exit 2, 0.163.0).
+def _approval_args(
+    cli_name: str,
+    *,
+    cli_args: tuple[str, ...],
+    attached: bool,
+    sandbox: bool,
+) -> list[str]:
+    """Return the approval flags to hand ``cli_name``, placed before its own args."""
+    given = {arg.partition("=")[0] for arg in cli_args}
+    if cli_name == "claude":
+        if given & {
+            "--dangerously-skip-permissions",
+            "--permission-mode",
+            "--permission-prompt-tool",
+        }:
+            return []
+        return ["--permission-mode", "auto"] if attached or sandbox else []
+    if cli_name == "codex":
+        keys = {
+            value.partition("=")[0].strip() for value in _codex_config_values(cli_args)
+        }
+        if keys & {"approval_policy", "approvals_reviewer", "sandbox_mode"} or given & {
+            "--approve-for-me",
+            "--ask-for-approval",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--full-auto",
+            "--sandbox",
+            "--yolo",
+            "-a",
+            "-s",
+        }:
+            return []
+        if sandbox:
+            return ["--dangerously-bypass-approvals-and-sandbox"]
+        return ["-c", 'approvals_reviewer="auto_review"'] if attached else []
+    return []
 
 
 # Codex drops ``/goal`` without a word when its goals feature is off, so a run turns it

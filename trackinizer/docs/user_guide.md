@@ -222,6 +222,31 @@ and later runs use it. While it runs it prints whether the direct link is on
 (see [below](#typing-feels-slow-the-direct-link)), `joined: machine laptop` the
 first time, and `terminal opened by` with your address for each terminal.
 
+If the computer is one you can afford to lose, such as a disposable cloud box or
+a virtual machine, say so when you connect it:
+
+```bash
+trax machine connect --sandbox
+```
+
+`trax machine NAME connect --sandbox` works the same way. Connect prints
+`sandbox: on`, and from then on every `trax run` on that computer starts its
+agent without the usual questions:
+
+- codex skips its approvals and its own sandbox;
+- claude runs in its auto permission mode.
+
+Flags you give the agent yourself, such as `--permission-mode plan` for claude
+or `-s read-only` for codex, are never replaced. The declaration describes
+the computer, not one machine name, and each connect sets it: a `trax machine
+connect` without `--sandbox` turns it off again.
+
+Use it on a computer built to be thrown away. Do not use it on your own
+laptop, or on anything that holds work or keys you would mind losing: an agent
+with free rein can delete files and run any command you could. Keep that
+computer for yourself, and give agents a sandbox of their own. The idea is in
+[the session and the computer it works on](#the-session-and-the-computer-it-works-on).
+
 The shell is your login shell, started in your home directory with a fresh
 environment, as an ssh login is. It knows the chat that opened it
 (`TRAX_WORKSPACE`, `TRAX_WORKSTREAM`) and the server (`TRACKINIZER_PROFILE`),
@@ -286,6 +311,8 @@ you reinstall `trax`: an install without it removes the library.
   machine over, and the old one stops.
 - Ctrl-C stops it, and the machine shows offline at once.
 - Either way, the shells it was serving end.
+- Restart it with the same flags: a connect without `--sandbox` turns the
+  sandbox off.
 
 If one terminal is open in two windows, the newer window takes it, and the
 older one says "Another window took this terminal over." with a **Take over**
@@ -341,6 +368,23 @@ after `--` go to the CLI.
 trax run claude
 trax run codex -- "fix the failing test"
 ```
+
+### The session and the computer it works on
+
+Think of a session as two parts. The session is the brain: its conversation,
+its records and its history live in Trackinizer. The computer it works on is
+the hand: the place where it reads files and runs commands. The two need not be
+the same.
+
+- A session can work on your laptop today and on a disposable box or a GPU
+  machine tomorrow, and keep its history. Resume it on the other computer with
+  `trax agentsession 7 run claude`.
+- So the place you develop need not be the place an agent acts. Keep the
+  computer that holds your work and your keys for yourself, and give agents
+  their own.
+- A hand with nothing to lose can be given free rein. Connect a disposable
+  computer with `--sandbox`, and agents there stop asking before they act
+  ([Connect a computer](#connect-a-computer)).
 
 ### Where a session lands
 
