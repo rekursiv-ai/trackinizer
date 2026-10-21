@@ -1,6 +1,6 @@
-// The terminal view: xterm on a socket to a shell on one of the user's machines. The `trax.terminal` tile
-// and the Chat column's terminal side (`ChatTerminalSide.tsx`) both render it. Nothing starts until the user
-// clicks Start; a terminal already live re-attaches once, when this mounts. The tile holds several, one per tab.
+// The terminal view: xterm on a socket to a shell on one of the user's machines, as the `trax.terminal` tile
+// renders it. Nothing starts until the user clicks Start; a terminal already live re-attaches once, when this
+// mounts. The tile holds several, one per tab.
 import { ClipboardAddon } from "@xterm/addon-clipboard";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as Xterm } from "@xterm/xterm";
@@ -379,7 +379,7 @@ function refusal(error: unknown): string {
   if (!(error instanceof ApiError)) return "Could not start the terminal.";
   if (error.code === "terminal_not_enabled") return "Start the host with `trax machine connect`: that one command turns terminals on.";
   if (error.code === "terminal_limit") return "Too many terminals opened just now; wait a minute.";
-  if (error.code === "terminal_unconfirmed") return "Allow terminals on this machine first: open Chat's terminal side and click Allow.";
+  if (error.code === "terminal_unconfirmed") return "Allow terminals on this machine first: open Chat's provider card and click Allow.";
   if (error.code === "terminal_forbidden") return "Terminals are not available on a server without sign-in.";
   return error.message;
 }
@@ -391,5 +391,5 @@ function refusal(error: unknown): string {
  */
 function requester(placedBy: string | null | undefined, viewer: string | null, workspace: WorkspaceState | null): string {
   if (placedBy && placedBy !== viewer) return placedBy;
-  return workspace?.partner?.kind === "shared" && workspace.partner.actor ? workspace.partner.actor : "your agent";
+  return workspace?.partner?.provider === "assistant" && workspace.partner.actor ? workspace.partner.actor : "your agent";
 }

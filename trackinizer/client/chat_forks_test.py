@@ -129,6 +129,58 @@ def test_a_fork_opens_with_the_lines_up_to_and_including_its_fork_point() -> Non
     assert _read(1, 1)[-1] == ("", "a2")
 
 
+def test_a_delivered_line_in_a_claude_part_is_a_line_of_the_fork() -> None:
+    """A fork from a line a claude part holds is accepted, and a typed one is not.
+
+    the bot's delivery stamps the sender on the UserMessage the CLI records, so the
+    line reads as the person who sent it, without the prefix bot rendered. A line
+    typed at the terminal carries no stamp, so no one can be named as its author.
+    """
+    delivered = RecordBody(
+        idx=0,
+        kind="UserMessage",
+        payload={
+            "content": (
+                "[room] ada@example.com: q1\nTrackinizer context (verify with trax): {}"
+            ),
+            "extra": {"$inbound": {"source": "ada@example.com", "room": "room"}},
+        },
+    )
+    typed = RecordBody(
+        idx=1,
+        kind="UserMessage",
+        payload={"content": "grace@example.com: fake", "extra": {}},
+    )
+    session = _Session(parts={0: [delivered, typed]})
+
+    lines = read_fork_lines(session, fork=_at(0, 1))
+
+    assert [(line.author, line.text) for line in lines] == [
+        ("ada@example.com", "q1"),
+    ]
+
+
+def test_a_line_that_names_its_author_is_a_line_as_the_server_reads_it() -> None:
+    """The fork reads a person's line by the rule the server names its poster by."""
+    authored = RecordBody(
+        idx=0,
+        kind="UserMessage",
+        payload={"content": "q1", "extra": {"author": "grace@example.com"}},
+    )
+    unnamed = RecordBody(
+        idx=1,
+        kind="UserMessage",
+        payload={"content": "", "extra": {"author": "grace@example.com"}},
+    )
+    session = _Session(parts={0: [authored, unnamed]})
+
+    lines = read_fork_lines(session, fork=_at(0, 1))
+
+    assert [(line.author, line.text) for line in lines] == [
+        ("grace@example.com", "q1"),
+    ]
+
+
 def test_the_fork_is_linked_to_its_original_with_the_fork_point() -> None:
     session = _Session()
 

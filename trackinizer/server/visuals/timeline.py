@@ -101,7 +101,8 @@ async def load_timeline(
             results_per_direction,
         )
     else:
-        root_results, root_truncated = [], False
+        root_results: list[dict[str, object]] = []
+        root_truncated = False
 
     direction_rows = await conn.fetch(
         "SELECT i.id, i.kind, i.seq, LEFT(i.title, 2000) AS title, i.status, "

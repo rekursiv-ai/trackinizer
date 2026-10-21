@@ -106,6 +106,18 @@ class Terminal:
     workstream: UUID | None = None
     requested_by: str | None = None
     surface: str | None = None
+    command: wire_terminals.TerminalCommand | None = None
+    """The CLI the host runs as a detached ``trax run``, in place of a login shell."""
+
+    attach: UUID | None = None
+    """The AgentSession the detached run re-opens."""
+
+    run_name: str | None = None
+    """The detached run's name; set whenever ``command`` is."""
+
+    cwd: str | None = None
+    """The folder the run starts in, as the browser named it; the host resolves it."""
+
     detached_at: float | None = None
     """When no browser was attached since; ``None`` while one is."""
 
@@ -156,6 +168,10 @@ class Opening:
     workstream: UUID | None = None
     requested_by: str | None = None
     surface: str | None = None
+    command: wire_terminals.TerminalCommand | None = None
+    attach: UUID | None = None
+    run_name: str | None = None
+    cwd: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -283,8 +299,16 @@ class TerminalHub:
         now = self._clock()
         user = opening.user
         machine_id = opening.machine_id
+        term_id = uuid4()
+        run_name = opening.run_name
+        if opening.command is not None and run_name is None:
+            run_name = (
+                f"run-{term_id.hex[:8]}"
+                if opening.attach is None
+                else f"chat-{opening.attach.hex[:8]}"
+            )
         term = Terminal(
-            id=uuid4(),
+            id=term_id,
             user=user,
             machine_id=machine_id,
             machine=opening.machine,
@@ -295,6 +319,10 @@ class TerminalHub:
             workstream=opening.workstream,
             requested_by=opening.requested_by,
             surface=opening.surface,
+            command=opening.command,
+            attach=opening.attach,
+            run_name=run_name,
+            cwd=opening.cwd,
             detached_at=now,
             last_input_at=now,
         )

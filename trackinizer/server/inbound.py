@@ -32,7 +32,7 @@ import threading
 import time
 
 from trackinizer.server.auth import Role
-from trackinizer.wire.wire_sessions import WorkspaceMessageContext
+from trackinizer.wire.wire_sessions import InboundKind, WorkspaceMessageContext
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -43,6 +43,12 @@ class Inbound:
     """One queued inbound message: text, attested sender, and routed room."""
 
     text: str
+
+    kind: InboundKind = "line"
+    """What the message is, as its sender named it; the drain hands it on."""
+
+    payload: dict[str, object] | None = None
+    """The kind's structured data, as :data:`InboundKind` documents it."""
 
     source: str | None = None
 
@@ -55,6 +61,33 @@ class Inbound:
     sender:`` injection prefix. ``None`` for a direct (session-id) enqueue."""
 
     context: WorkspaceMessageContext | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PollerRun:
+    """Where a session's poller says its run is: shown in Chat, never a grant.
+
+    The run reports it on each drain, under the key that opened the session, so it is
+    the owner's own word about their own machine.
+    """
+
+    run: str | None = None
+    """The detached host's name, which ``trax run attach`` takes; ``None`` for a run in
+    a terminal of its own."""
+
+    machine: str | None = None
+    """The run's machine, named as ``trax machine connect`` names it."""
+
+    cwd: str | None = None
+    """The run's working directory, ``~/...`` under its home directory."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Lease:
+    """Until when a session counts as polled, and where its poller said it runs."""
+
+    expires: float
+    where: PollerRun
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -120,7 +153,7 @@ class InboundQueue:
 
     _clock: Callable[[], float] = field(default=time.monotonic, repr=False)
 
-    _poller_expires: dict[UUID, float] = field(default_factory=dict)
+    _leases: dict[UUID, _Lease] = field(default_factory=dict)
 
     _queues: dict[UUID, deque[Inbound]] = field(
         default_factory=lambda: defaultdict(deque),
@@ -147,22 +180,42 @@ class InboundQueue:
 
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def mark_poller(self, session_id: UUID) -> None:
+    # Each poll replaces what the last one said: a run that stops saying where it is
+    # (an older trax resumed in its place) is not shown where the last one was.
+    def mark_poller(
+        self,
+        session_id: UUID,
+        *,
+        run: str | None = None,
+        machine: str | None = None,
+        cwd: str | None = None,
+    ) -> None:
         """Renew a session's short lease after an authorized inbound poll.
+
+        The rest is where the poller says its run is, kept while the lease holds
+        (:class:`PollerRun`).
 
         Args:
           session_id: Session whose inbound poll was authorized.
+          run: The detached host's name, if the run is one.
+          machine: The run's machine.
+          cwd: The run's working directory.
 
         """
         with self._lock:
             now = self._clock()
-            self._poller_expires[session_id] = now + self.poller_ttl_sec
-            if len(self._poller_expires) > 1_024:
-                self._poller_expires = {
-                    sid: expiry
-                    for sid, expiry in self._poller_expires.items()
-                    if expiry > now
-                }
+            self._leases[session_id] = _Lease(
+                expires=now + self.poller_ttl_sec,
+                where=PollerRun(run=run, machine=machine, cwd=cwd),
+            )
+            if len(self._leases) > 1_024:
+                self._sweep(now)
+
+    def _sweep(self, now: float) -> None:
+        """Drop every lease expired by ``now``. Caller holds ``_lock``."""
+        self._leases = {
+            sid: lease for sid, lease in self._leases.items() if lease.expires > now
+        }
 
     def has_poller(self, session_id: UUID) -> bool:
         """Return whether an inbound poll renewed this session's lease recently.
@@ -174,12 +227,25 @@ class InboundQueue:
           active: Whether the session's lease is unexpired.
 
         """
+        return self.poller_run(session_id) is not None
+
+    def poller_run(self, session_id: UUID) -> PollerRun | None:
+        """Say where a session's poller runs, while its lease holds.
+
+        Args:
+          session_id: Session to check.
+
+        Returns:
+          where: What its last poll said of its run, empty when it said nothing;
+            ``None`` when the lease has expired or was revoked.
+
+        """
         with self._lock:
-            expiry = self._poller_expires.get(session_id, 0.0)
-            if expiry <= self._clock():
-                self._poller_expires.pop(session_id, None)
-                return False
-            return True
+            lease = self._leases.get(session_id)
+            if lease is None or lease.expires <= self._clock():
+                _ = self._leases.pop(session_id, None)
+                return None
+            return lease.where
 
     def active_poller_ids(self) -> list[UUID]:
         """Snapshot unexpired poller sessions for database candidate filtering.
@@ -189,13 +255,8 @@ class InboundQueue:
 
         """
         with self._lock:
-            now = self._clock()
-            self._poller_expires = {
-                sid: expiry
-                for sid, expiry in self._poller_expires.items()
-                if expiry > now
-            }
-            return list(self._poller_expires)
+            self._sweep(self._clock())
+            return list(self._leases)
 
     # A lease is revoked as its session ends, and that session's poller is then parked
     # in a held request. Left parked, the hold keeps the exiting run -- which ends its
@@ -203,7 +264,7 @@ class InboundQueue:
     def forget_poller(self, session_id: UUID) -> None:
         """Revoke a session's lease and end every hold parked on it."""
         with self._lock:
-            self._poller_expires.pop(session_id, None)
+            _ = self._leases.pop(session_id, None)
             for waiter in self._waiters.get(session_id, ()):
                 waiter.released = True
             self._wake(session_id)

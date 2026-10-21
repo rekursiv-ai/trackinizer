@@ -49,7 +49,7 @@ from trackinizer.server.api.conftest import (
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.types.change_log import Change, Snapshot
-from trackinizer.types.inquiries import KIND_TO_CLASS
+from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
 from trackinizer.wire.bodies import (
     SubmitAgentSession,
     SubmitArtifact,
@@ -73,7 +73,6 @@ if TYPE_CHECKING:
 
     from trackinizer.server.store.core import Store
     from trackinizer.types.edges import Edge
-    from trackinizer.types.inquiries import Inquiry
 
 
 class TestRoutes:
@@ -83,7 +82,7 @@ class TestRoutes:
     ) -> None:
         client, _store, engine = route_client
         set_field_row(engine.conn, {"kind": "Issue", "account": TEST_USER_EMAIL})
-        engine.conn.fetch.return_value = []
+        engine.conn.fetch.return_value = list[dict[str, object]]()
         r = client.request(
             "DELETE",
             f"/api/inquiries/{new_uuid()}",
@@ -164,7 +163,7 @@ class TestRoutes:
         """
         client, store, _engine = route_client
         with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             r = client.get(
                 "/api/inquiries",
                 params=[
@@ -198,7 +197,7 @@ class TestRoutes:
         """
         client, store, _engine = route_client
         with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             r = client.get(
                 "/api/inquiries",
                 params=[
@@ -236,7 +235,7 @@ class TestRoutes:
         client, store, _engine = route_client
         asked: list[tuple[frozenset[str], str]] = []
         with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             for audiences in (frozenset({"open"}), frozenset({"open", "staff"})):
                 install_identity(
                     replace(make_test_identity(), read_audiences=audiences),
@@ -262,7 +261,7 @@ class TestRoutes:
             patch.object(store, "list_kind", new_callable=AsyncMock) as mock,
             caplog.at_level(logging.INFO),
         ):
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             response = client.get(
                 "/api/inquiries",
                 params=[
@@ -325,7 +324,7 @@ class TestRoutes:
         """
         client, store, _engine = route_client
         with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             ok = client.get(
                 "/api/inquiries",
                 params=[
@@ -455,7 +454,7 @@ class TestRoutes:
         """
         client, store, _engine = route_client
         with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             r = client.get(
                 "/api/inquiries",
                 params=[
@@ -511,7 +510,7 @@ class TestRoutes:
         """
         client, store, _engine = route_client
         with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             bad = client.get(
                 "/api/inquiries",
                 params=[("kind", "Issue"), ("fields", "id"), ("fields", "bogus")],
@@ -575,7 +574,7 @@ class TestRoutes:
         time.tzset()
         try:
             with patch.object(store, "list_changes", new_callable=AsyncMock) as mock:
-                mock.return_value = []
+                mock.return_value = list[Inquiry]()
                 client.get("/api/change_log", params={"since": "2024-12-10T00:00:00"})
         finally:
             monkeypatch.undo()
@@ -626,7 +625,7 @@ class TestRoutes:
         # against 46,742 bytes in 0.050s for one copy -- a 200x amplification
         # available to any viewer.
         client, _store, engine = route_client
-        engine.conn.fetch.return_value = []
+        engine.conn.fetch.return_value = list[dict[str, object]]()
         params = "&".join(["kind=Issue"] * 50)
         r = client.get(f"/api/inquiries?{params}")
         assert r.status_code == 200, r.text
@@ -828,18 +827,18 @@ class TestCoverageRoutesAndCli:
         )
         engine.conn.fetch.side_effect = [
             # /api/inquiries/{id}: fetch_edges (outbound + inbound).
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
             # /api/inquiries/{kind}/{seq}: fetch_edges after inner get_inquiry.
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
             # /api/inquiries?kind=: list-select then fetch_edges_bulk.
             [self._row(target_id)],
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
             # /api/inquiries/next_issue: fetch_edges outbound + inbound.
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
         ]
         assert (
             from_plain(
@@ -919,10 +918,10 @@ class TestCoverageRoutesAndCli:
         engine.conn.fetch.side_effect = [
             # proves_belief: main select + bulk outbound + bulk inbound.
             [self._row(target_id, kind="Experiment")],
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
             # change_log: list_changes rows.
-            [],
+            list[dict[str, object]](),
         ]
         assert (
             from_plain(
@@ -993,7 +992,7 @@ class TestMissingResourceIs404:
     ) -> None:
         client, _store, engine = route_client
         engine.conn.fetchval.return_value = "Belief"  # Claimable kind probe.
-        engine.conn.fetch.return_value = []  # No proving edges.
+        engine.conn.fetch.return_value = list[dict[str, object]]()  # No proving edges.
         r = client.get(f"/api/inquiries/{new_uuid()}/confidence")
         assert r.status_code == 200
         assert from_plain(r.json(), dict[str, object])["confidence"] == 0.5

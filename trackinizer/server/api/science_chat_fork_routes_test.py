@@ -8,11 +8,15 @@ from typing import TYPE_CHECKING, Final
 
 import uuid
 
-from treekle import from_plain, json_loads
+from treekle import from_plain, immutable, json_loads
 
 import pytest
 
-from trackinizer.lib.agent.types.sessions import AgentToAgentMessage, AssistantMessage
+from trackinizer.lib.agent.types.sessions import (
+    AgentToAgentMessage,
+    AssistantMessage,
+    UserMessage,
+)
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,
@@ -481,6 +485,54 @@ async def test_a_fork_needs_a_line_of_a_science_chat_and_names_no_conversation(
     assert await _fork(client, body, chat.at(0), **named) == 422
     assert await _fork(client, body, chat.at(0)) == 200
     assert (await _heard(client, session_id=chat.session)) == []
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_cli_user_turn_is_a_line_to_fork_from_only_when_it_names_its_sender(
+    pglite_route_client: _Client,
+) -> None:
+    """A turn ``trax run`` stamped, or one with an author, is a person's line."""
+    client, store = pglite_route_client
+    chat = await _original(store, starter=TEST_USER_EMAIL)
+    workspace_id = await _canvas(client, email=OTHER_EMAIL)
+    turns = (
+        UserMessage(
+            content="q3",
+            extra=immutable({"$inbound": {"source": ALICE, "room": None}}),
+            timestamp=_now(),
+        ),
+        UserMessage(content="q4", extra=immutable({"author": ALICE}), timestamp=_now()),
+        UserMessage(content="typed at the terminal", timestamp=_now()),
+    )
+    part = await store.upsert_session_manifest(
+        chat.session,
+        name="claude.jsonl",
+        metadata={},
+        ir_id=uuid.uuid4(),
+        format="claude",
+        records=len(turns),
+    )
+    _ = await store.append_session_records(
+        chat.session,
+        [
+            SessionRecordRow.of(
+                session_id=chat.session,
+                part=part,
+                idx=idx,
+                record=turn,
+            )
+            for idx, turn in enumerate(turns)
+        ],
+    )
+    body = {"workspace_id": str(workspace_id), "text": "fork"}
+
+    forked = [
+        await _fork(client, body, {**chat.at(idx), "part": part})
+        for idx in range(len(turns))
+    ]
+
+    assert forked == [200, 200, 422]
 
 
 @pytest.mark.db_pglite

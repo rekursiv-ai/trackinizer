@@ -102,7 +102,7 @@ def test_an_answer_is_a_picture_or_a_reason_and_never_both_or_neither() -> None:
     image = CaptureImage.model_validate(_image())
 
     assert CaptureAnswer(image=image).error is None
-    for both_or_neither in ({}, {"image": _image(), "error": "x"}):
+    for both_or_neither in (dict[str, object](), {"image": _image(), "error": "x"}):
         with pytest.raises(ValidationError):
             CaptureAnswer.model_validate(both_or_neither)
 

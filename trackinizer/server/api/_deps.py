@@ -312,7 +312,7 @@ def _jsonable(value: object) -> object:
             field_value = cast(object, getattr(value, field.name))
             result[field.name] = _jsonable(field_value)
         return result
-    if isinstance(value, tuple | list):
+    if isinstance(value, (tuple, list)):
         # Tuples become lists: the projection fields (edges, ``labels``,
         # ``issue_kind``) are tuples on the model, and a caller comparing
         # structures in-process would see the type differ even though both

@@ -8,8 +8,9 @@ There is deliberately no ``search`` route. Matching records is a filter on the
 AgentSession list (``trax agentsession tool_call re bar``), not a second query
 surface with its own grammar.
 
-The append requires ``writer``, and for a science chat the key that opened it; the
-reads require ``viewer``. Each route also answers 403 ``session_audience`` to a caller
+The append requires ``writer``, and for a science chat the key that opened the part
+it writes, or for a new part a key the chat takes a run from; the reads require
+``viewer``. Each route also answers 403 ``session_audience`` to a caller
 who neither opened the session nor reads it. A read takes an ``asker`` and a ``chat``:
 the configured assistant reads for that user, on the user's rights and never its own,
 into the chat it answers them in (see ``require_session_access``), and anyone else's
@@ -29,7 +30,8 @@ from treekle import from_plain, immutable
 from trackinizer.server.api._deps import get_assistant, get_inbound, get_store
 from trackinizer.server.api._routes_shared import engine_of
 from trackinizer.server.api.session_access import (
-    require_chat_opener,
+    is_a_science_chat,
+    require_part_writer,
     require_session,
     require_session_access,
     require_session_write_access,
@@ -80,6 +82,10 @@ async def append_session_records_route(
     into the SESSION, and one submitted before the CLI has written a
     transcript has no part to belong to.
 
+    A science chat holds one part per run that answered in it, and the key whose
+    first write opened a part alone writes it after: another key's write is 403,
+    so one run never rewrites another's lines.
+
     Args:
       session_id: AgentSession ID to append to.
       request: FastAPI request (carries auth and store).
@@ -94,7 +100,7 @@ async def append_session_records_route(
     session = await require_session(store, session_id)
     require_session_write_access(identity, session)
     await require_session_access(request, identity, session=session, mode="write")
-    require_chat_opener(identity, session=session)
+    await require_part_writer(request, identity, session=session, name=body.name)
     # A run closed for silence that uploads again was alive all along; reopen
     # its session first, or the append is refused as a write to an ended one.
     if session.ended is not None:
@@ -110,6 +116,8 @@ async def append_session_records_route(
             ir_id=manifest.ir_id,
             format=manifest.format,
             records=manifest.records,
+            api_key_id=identity.api_key_id,
+            exclusive=is_a_science_chat(session),
         )
     )
     written, skipped, slash = await store.append_session_records(
@@ -318,10 +326,27 @@ async def read_recent_session_turns_route(
 
 def _posters(records: Sequence[RecordBody]) -> list[str]:
     """Name the poster of each person's line among ``records``, in order."""
-    return [
-        sender
-        for record in records
-        if record.kind == "AgentToAgentMessage" and isinstance(record.payload, dict)
-        for sender in (record.payload.get("sender"),)
-        if isinstance(sender, str)
-    ]
+    return [sender for record in records if (sender := _poster(record)) is not None]
+
+
+# The loader's rule for a person's line: the assistant records one as an
+# ``AgentToAgentMessage`` with its sender, and a CLI run as a ``UserMessage`` that
+# `trax run` stamped ``$inbound`` with the attested sender on delivery, or that carries
+# an ``author``. Reading the first shape alone missed every line a CLI part records,
+# which then kept counting as on its way into the chat until its hand-out expired.
+def _poster(record: RecordBody) -> str | None:
+    """Name who posted ``record`` if it is a person's line, from its stored payload."""
+    payload = record.payload
+    if not isinstance(payload, dict):
+        return None
+    if record.kind == "AgentToAgentMessage":
+        sender = payload.get("sender")
+    elif record.kind == "UserMessage" and isinstance(
+        extra := payload.get("extra"),
+        dict,
+    ):
+        stamp = extra.get("$inbound")
+        sender = stamp.get("source") if isinstance(stamp, dict) else extra.get("author")
+    else:
+        return None
+    return sender if isinstance(sender, str) else None

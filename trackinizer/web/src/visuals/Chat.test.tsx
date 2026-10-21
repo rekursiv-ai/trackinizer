@@ -9,7 +9,7 @@ import { ApiError, type CallOptions } from "../api/client";
 import { findRef, getDetail } from "../api/detail";
 import type { Profile } from "../api/me";
 import { listSessionParts, readSessionRecords, SESSION_NOT_OWNER, SESSION_STAFF, type SessionRecord, setSessionAudience } from "../api/sessions";
-import { getWorkspace, type WorkspaceState } from "../api/workspaces";
+import { getWorkspace, type WorkspacePartner, type WorkspaceState } from "../api/workspaces";
 import { MetaContext, ProfileContext } from "../app/boot";
 import { HighlightContext, HighlightStore } from "../app/highlights";
 import { META, uuid } from "../detail/testing";
@@ -28,6 +28,10 @@ import { OPENING } from "./chatRecords";
 import { ToastProvider } from "../ui/toast";
 import { AGREED, stubFetch } from "../api/testing";
 import { Session, SessionContext } from "../app/session";
+import goalCommand from "../../test/seams/goalCommand.json";
+import livePartner from "../../test/seams/livePartner.json";
+import trustAnswer from "../../test/seams/trustAnswer.json";
+import trustCard from "../../test/seams/trustCard.json";
 
 vi.mock("../api/chats", async (original) => ({
   ...(await original<typeof import("../api/chats")>()),
@@ -54,16 +58,14 @@ vi.mock("../api/sessions", async (original) => ({
   setSessionAudience: vi.fn(),
 }));
 vi.mock("../api/terminals", () => ({ listTerminalMachines: vi.fn(async () => ({ machines: [], live: null })) }));
-vi.mock("./Terminal", () => ({ TerminalView: () => <div>terminal view</div> }));
 vi.mock("../api/detail", () => ({ getDetail: vi.fn(), findRef: vi.fn() }));
 
 const WORKSPACE_ID = "c5286865-67b6-4bd8-ab51-e06e10c326c5";
 const ME = "ada@example.com";
 const GRACE = "grace@example.com";
 const SCOUT = { kind: "shared", session_id: "kb-session", actor: "scout", cli: "sagent", status: "live" } as const;
-const NO_HELPER = { kind: "local", session_id: null, actor: null, cli: null, status: "unavailable" } as const;
 const workspace: WorkspaceState = {
-  id: WORKSPACE_ID, name: "unnamed-workstream#1", conversation_id: null, page: null, revision: 3, focused_instance: null, partner: SCOUT, assistant: "scout", partner_choice: "shared",
+  id: WORKSPACE_ID, name: "unnamed-workstream#1", conversation_id: null, page: null, revision: 3, focused_instance: null, partner: SCOUT, assistant: "scout",
   visuals: [{ id: "889ffcb2-cf44-43e7-9806-eb08428c6203", type: "trax.browse", version: 1,
     placement: "main", record_id: null, params: {} }],
 };
@@ -339,6 +341,56 @@ test("the info pop-over names the session a station was made for, with its state
   expect(dialog.textContent).toContain("· live");
 });
 
+/** A claude run on gx10 that `trax run --detach --name chat-1a2b3c4d` holds, as the station reads it. */
+const DETACHED: WorkspacePartner = { session_id: "s-chat", actor: null, cli: "claude", status: "live",
+  label: "claude · gx10", provider: "claude", machine: "gx10", run_name: "chat-1a2b3c4d" };
+
+test("the info pop-over of a claude run on a trax run gives the command that attaches to it, and copies it exactly", async () => {
+  const writeText = vi.fn(async (_text: string) => {});
+  vi.stubGlobal("navigator", { clipboard: { writeText } });
+  shell({ ...workspace, provider: "claude", partner: DETACHED });
+  openMore();
+  fireEvent.click(screen.getByRole("button", { name: "Info" }));
+  const dialog = screen.getByRole("dialog", { name: "Chat info" });
+  expect(within(dialog).getByText("Attach on gx10:")).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Copy" }));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith("trax run attach chat-1a2b3c4d"));
+  vi.unstubAllGlobals();
+});
+
+test("the info pop-over names the folder a trax run attaches in, when the station reads it", () => {
+  const inLoop: WorkspacePartner = { ...DETACHED, cwd: "~/project" };
+  shell({ ...workspace, provider: "claude", partner: inLoop });
+  openMore();
+  fireEvent.click(screen.getByRole("button", { name: "Info" }));
+  expect(within(screen.getByRole("dialog", { name: "Chat info" })).getByText("Attach on gx10 (in ~/project):")).toBeTruthy();
+});
+
+test("the info pop-over of a claude run in a terminal names its machine, with no command to attach", () => {
+  const foreground: WorkspacePartner = { ...DETACHED, run_name: null };
+  shell({ ...workspace, provider: "claude", partner: foreground });
+  openMore();
+  fireEvent.click(screen.getByRole("button", { name: "Info" }));
+  const dialog = screen.getByRole("dialog", { name: "Chat info" });
+  expect(within(dialog).getByText("Runs in a terminal on gx10")).toBeTruthy();
+  expect(within(dialog).queryByRole("button", { name: "Copy" })).toBeNull();
+});
+
+test("the info pop-over says where a CLI with no run is to be run, and says nothing of a run for the assistant", () => {
+  const offline: WorkspacePartner = { session_id: "s-chat", actor: "claude", cli: "claude", status: "offline",
+    label: "claude: no run", provider: "claude", machine: null };
+  shell({ ...workspace, provider: "claude", partner: offline });
+  openMore();
+  fireEvent.click(screen.getByRole("button", { name: "Info" }));
+  expect(screen.getByRole("dialog", { name: "Chat info" }).textContent).toContain("No run: pick a machine in the provider card");
+  cleanup();
+  shell();
+  openMore();
+  fireEvent.click(screen.getByRole("button", { name: "Info" }));
+  const text = screen.getByRole("dialog", { name: "Chat info" }).textContent ?? "";
+  expect(text).not.toMatch(/No run|Attach|Runs in|trax run/);
+});
+
 test("the info pop-over says nothing of a session for a station that was not made for one", () => {
   shell();
   openMore();
@@ -475,9 +527,9 @@ test("the chat menu lists pinned then recent visible chats and creates in the cu
     .map((button) => button.textContent)).toEqual(["Pinned", "Recent", "Current"]);
   expect(chats.getByRole("button", { name: "Pin Recent" })).toBeTruthy();
   expect(chats.getByRole("button", { name: "Hide Recent" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "+ New chat" }));
+  fireEvent.click(screen.getByRole("button", { name: /\+ New chat · scout/ }));
   await waitFor(() => expect(currentStation().id).toBe("new-chat"));
-  expect(createStationInWorkstream).toHaveBeenCalledWith("scratch");
+  expect(createStationInWorkstream).toHaveBeenCalledWith("scratch", "assistant");
 });
 
 test("the workstream picker creates a missing workstream and moves the chat", async () => {
@@ -547,6 +599,109 @@ test("a relay line reads as \"you → lead-2: text\", in its own style, with no 
   expect(mine.className).not.toContain("chat-line-assistant");
   expect(within(mine).queryByRole("button", { name: "Fork from here" })).toBeNull();
   expect(screen.getByText(/stop/).closest("article")!.textContent).toBe("grace → lead-3: stop");
+});
+
+test("a prompt a claude run asked shows as a card, and Yes posts the decision as the chat's answer, not as a line of mine", async () => {
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"), record(1, "SystemMessage", { extra: { $interaction: { id: "p1", type: "permission", tool: "Bash", input: { command: "make test" } } } }));
+  shell();
+  const prompt = (await screen.findByText("Claude wants to use Bash")).closest("article")!;
+  fireEvent.click(within(prompt).getByRole("button", { name: "Yes" }));
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce());
+  const [line] = vi.mocked(sendChatLine).mock.calls[0]!;
+  expect(line).toMatchObject({ workspaceId: WORKSPACE_ID, conversationId: "c1", kind: "answer", text: "Yes", payload: { prompt_id: "p1", decision: "allow" } });
+  expect(document.querySelector(".chat-line-pending")).toBeNull();
+});
+
+test("a folder trust a CLI asks shows as a card in Chat, and Trust posts the answer as the chat's answer", async () => {
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"), record(1, "SystemMessage", { extra: { $interaction: { id: "t1", type: "trust", tool: "claude", input: { folder: "~/proj" },
+    questions: null, plan: null, state: "pending", cli: "claude", folder: "~/proj", machine: "gx10", remembered: true } } }));
+  shell();
+  const card = (await screen.findByText("Trust this folder?")).closest("article")!;
+  fireEvent.click(within(card).getByRole("button", { name: "Trust ~/proj" }));
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce());
+  const [line] = vi.mocked(sendChatLine).mock.calls[0]!;
+  expect(line).toMatchObject({ workspaceId: WORKSPACE_ID, conversationId: "c1", kind: "answer", text: "Trust ~/proj", payload: { prompt_id: "t1", decision: "allow" } });
+});
+
+test("an answer from someone other than the run's owner (403) shows the server's reason, and the card keeps its answer", async () => {
+  vi.mocked(sendChatLine).mockRejectedValue(new ApiError(403, "Only ada@example.com can answer prompts from their machine.", "answer_not_owner"));
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"), record(1, "SystemMessage", { extra: { $interaction: { id: "t1", type: "trust", tool: "claude", input: { folder: "~/proj" },
+    questions: null, plan: null, state: "pending", cli: "claude", folder: "~/proj", machine: "gx10", remembered: true } } }));
+  shell();
+  const card = (await screen.findByText("Trust this folder?")).closest("article")!;
+  fireEvent.click(within(card).getByRole("button", { name: "Trust ~/proj" }));
+  expect((await screen.findByText("Only ada@example.com can answer prompts from their machine.")).className).toContain("chat-note");
+  await waitFor(() => expect(within(card).getByRole("button", { name: "Trust ~/proj" })).toHaveProperty("disabled", false));
+  expect(document.querySelector(".chat-line-pending")).toBeNull();
+});
+
+test("a /goal the run recorded is the sender's monospace line, its log's goal a note, and the strip above the box names the goal until it stops", async () => {
+  open("c1");
+  hold("c1",
+    record(0, "SystemMessage", { subtype: "command", content: "/goal ship it", extra: { $command: { text: "/goal ship it", verb: "goal", args: "ship it", source: ME,
+      room: "lab", state: "typed", reason: null } } }),
+    record(1, "ContextState", { kind: "goal_status", content: null, extra: { attachment: { type: "goal_status", met: false, sentinel: true, condition: "ship it" } } }),
+    record(2, "ContextState", { kind: "goal_status", content: null, extra: { attachment: { type: "goal_status", met: false, condition: "ship it", reason: "the tests have not run" } } }));
+  shell();
+  expect((await screen.findByText("Goal set: ship it")).closest("article")!.className).toContain("chat-line-note");
+  const command = screen.getByText("/goal ship it").closest("article")!;
+  expect(command.className).toContain("chat-line-user");
+  expect(command.className).toContain("chat-line-command");
+  expect(document.querySelector(".chat-goal")!.textContent).toBe("Goal: ship it · last check: the tests have not run · /goal clear stops it");
+});
+
+// The records `trax run` writes, the partner the server reads, and the answer the server
+// queues: `test/seams/*.json`, which the Python producers' and consumers' tests hold too.
+test("the trust card trax run writes renders, and Trust posts the answer the server queues and the run takes", async () => {
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"), trustCard as unknown as SessionRecord);
+  shell();
+  const card = (await screen.findByText("Trust this folder?")).closest("article")!;
+  expect(within(card).getByText("claude on gx10 is waiting to start in ~/proj.")).toBeTruthy();
+  fireEvent.click(within(card).getByRole("button", { name: "Trust ~/proj" }));
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce());
+  const [line] = vi.mocked(sendChatLine).mock.calls[0]!;
+  expect({ kind: line.kind, text: line.text, payload: line.payload }).toEqual(trustAnswer);
+});
+
+test("the /goal command trax run records is its sender's command line", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "go"), goalCommand as unknown as SessionRecord);
+  shell();
+  const command = (await screen.findByText("/goal ship it")).closest("article")!;
+  expect(command.className).toContain("chat-line-command");
+  expect(command.className).toContain("chat-line-user");
+});
+
+test("the info pop-over of the partner the server reads for a detached run gives its attach command", async () => {
+  const writeText = vi.fn(async (_text: string) => {});
+  vi.stubGlobal("navigator", { clipboard: { writeText } });
+  shell({ ...workspace, provider: "claude", partner: livePartner as WorkspacePartner });
+  openMore();
+  fireEvent.click(screen.getByRole("button", { name: "Info" }));
+  const dialog = screen.getByRole("dialog", { name: "Chat info" });
+  expect(within(dialog).getByText("Attach on gx10 (in ~/project):")).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Copy" }));
+  await waitFor(() => expect(writeText).toHaveBeenCalledWith("trax run attach chat-1a2b3c4d"));
+  vi.unstubAllGlobals();
+});
+
+test("a command the run refuses (422) shows its reason and keeps the draft", async () => {
+  open("c1");
+  hold("c1", ...TALK);
+  vi.mocked(sendChatLine).mockRejectedValue(new ApiError(422, "Chat cannot run /model: it opens a menu. Use the terminal: trax run attach <run>", "command_refused"));
+  shell();
+  await screen.findByText("a2");
+  await type("/model opus");
+  expect((await screen.findByRole("alert")).textContent).toContain("Chat cannot run /model: it opens a menu.");
+  expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("value", "/model opus");
+  expect(sendChatLine).toHaveBeenCalledOnce();
 });
 
 test("Chat asks its partner: the box reads Ask <partner>", () => {
@@ -1228,55 +1383,34 @@ test("every part of the session is read, in order", async () => {
   expect(articles()).toEqual(["before the restart", "after the restart"]);
 });
 
-const SHARED_LINE = "Ask your admin to set up a shared Chat assistant, or set up a local one:";
-const SETUP = `uv tool install git+https://github.com/rekursiv-ai/trackinizer && trax profile url to ${location.origin} && trax profile token to <TOKEN>`;
+const OFF_LINE = "Chat is off: the assistant is not connected.";
 const emptyPanel = () => document.querySelector(".chat-panel")!.textContent!;
 
 test.each([
   ["no assistant is set up", { ...workspace, partner: null, assistant: null }],
   ["the assistant has no live session", { ...workspace, partner: { ...SCOUT, status: "unavailable" as const } }],
-])("when %s, Chat says to ask an admin or set up a local helper, once, with Settings and both commands", (_, state) => {
+])("when %s, Chat says it is off, once, and the box is disabled with no setup", (_, state) => {
   shell(state);
-  expect(screen.getAllByText(SHARED_LINE)).toHaveLength(1);
-  expect(screen.getByRole("link", { name: "Use a local helper in Settings" }).getAttribute("href")).toBe("#/settings");
-  expect(screen.getByText(SETUP)).toBeTruthy();
-  expect(screen.getByText("trax helper claude")).toBeTruthy();
-  expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(2);
-  expect(screen.getByRole("link", { name: "Settings → API tokens" }).getAttribute("href")).toBe("#/settings");
-  expect(emptyPanel()).not.toMatch(/No partner is available|This partner is unavailable|No assistant is set up/);
+  expect(screen.getAllByText(OFF_LINE)).toHaveLength(1);
+  expect(emptyPanel()).not.toMatch(/No partner is available|This partner is unavailable|No assistant is set up|Ask your admin|helper|uv tool install/);
+  expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
   expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", true);
   expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toBe("Chat is off");
 });
 
-test("when the local helper is chosen but not running, Chat says to start it, with no Settings link", () => {
-  shell({ ...workspace, partner: NO_HELPER, partner_choice: "local" });
-  expect(screen.getAllByText("Start your local helper:")).toHaveLength(1);
-  expect(screen.queryByText(SHARED_LINE)).toBeNull();
-  expect(screen.queryByRole("link", { name: "Use a local helper in Settings" })).toBeNull();
-  expect(screen.getByText(SETUP)).toBeTruthy();
-  expect(screen.getByText("trax helper claude")).toBeTruthy();
-  expect(within(screen.getByLabelText("Chat partner")).getByText("your local helper")).toBeTruthy();
+test("a CLI chat with no live run says so, and asks for a machine", () => {
+  shell({ ...workspace, provider: "claude", partner: { ...SCOUT, status: "offline" as const, provider: "claude", label: "claude: no run" } });
+  expect(screen.getAllByText("Chat is off: no claude run holds this chat. Pick a machine.")).toHaveLength(1);
+  expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", true);
+  expect(emptyPanel()).not.toMatch(/Chat is off: the assistant/);
 });
 
-test("the commands copy with their own origin", async () => {
-  const written: string[] = [];
-  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => void written.push(text) } });
-  shell({ ...workspace, partner: null, assistant: null });
-  fireEvent.click(screen.getAllByRole("button", { name: "Copy" })[1]!);
-  await waitFor(() => expect(written).toEqual(["trax helper claude"]));
-  await screen.findByText("Copied");
-  Reflect.deleteProperty(navigator, "clipboard");
-});
-
-test("a live partner shows none of the setup, and a live local helper is named as such", () => {
-  shell();
-  expect(emptyPanel()).not.toMatch(/Ask your admin|Start your local helper|trax helper|uv tool install/);
-  expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
-  cleanup();
-  shell({ ...workspace, partner_choice: "local", partner: { kind: "local", session_id: "s", actor: "ada-run", cli: "claude", status: "live" } });
-  expect(within(screen.getByLabelText("Chat partner")).getByText("your local helper (ada-run)")).toBeTruthy();
+test("a live partner shows none of the off line, and the header names it", () => {
+  shell({ ...workspace, partner: { ...SCOUT, actor: "ada-run" } });
+  expect(within(screen.getByLabelText("Chat partner")).getByText("ada-run")).toBeTruthy();
   expect(screen.getByText("Say something to ada-run.")).toBeTruthy();
-  expect(emptyPanel()).not.toMatch(/Ask your admin|Start your local helper|trax helper|uv tool install/);
+  expect(emptyPanel()).not.toMatch(/Chat is off|helper|uv tool install/);
+  expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
 });
 
 test("a record link in an answer is a plain link that only sets the address, and writes nothing", async () => {
@@ -1477,6 +1611,37 @@ test("Cancel fork goes back to posting into the chat", async () => {
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
   expect(vi.mocked(sendChatLine).mock.calls[0]![0]).toMatchObject({ conversationId: "c1" });
   expect(vi.mocked(sendChatLine).mock.calls[0]![0]).not.toHaveProperty("fork");
+});
+
+/** Pick "Fork from here" on the first answer of the conversation `c1`, which `TALK` holds, for a station in `state`. */
+async function pickFork(state: WorkspaceState) {
+  open("c1");
+  hold("c1", ...TALK);
+  const view = shell(state);
+  await screen.findByText("a2");
+  fireEvent.click(forkButton("a1"));
+  return view;
+}
+
+test("the fork banner says the fork runs on the assistant by its name", async () => {
+  await pickFork(workspace);
+  expect(screen.getByText("The fork runs on scout")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Cancel fork" })).toBeTruthy();
+});
+
+test("the fork banner says the fork runs on a CLI's live machine and folder", async () => {
+  const inLoop: WorkspacePartner = { ...DETACHED, cwd: "~/project" };
+  await pickFork({ ...workspace, provider: "claude", partner: inLoop });
+  expect(screen.getByText("The fork runs on claude on gx10 in ~/project")).toBeTruthy();
+});
+
+test("the fork banner says a CLI whose run has ended gets its machine picked after the fork", async () => {
+  const live: WorkspacePartner = { session_id: "s-chat", actor: "codex", cli: "codex", status: "live",
+    label: "codex · gx10", provider: "codex", machine: "gx10" };
+  const ended: WorkspacePartner = { ...live, status: "offline", label: "codex: no run", machine: null };
+  const { again } = await pickFork({ ...workspace, provider: "codex", partner: live });
+  again({ ...workspace, provider: "codex", partner: ended });
+  expect(screen.getByText("The fork runs on codex (no run yet: pick a machine after)")).toBeTruthy();
 });
 
 test("a chat not shared with me says so, reads none of its lines and takes none of mine", async () => {
@@ -2009,92 +2174,35 @@ test("hovering a stored line shows when it was sent, in the reader's own time; a
   expect(pending!.getAttribute("title")).toBeNull();
 });
 
-test("the header's terminal button flips Chat to the terminal side and back, keeping the draft", async () => {
-  shell();
-  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "half a thought" } });
-  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
-  const side = await screen.findByRole("region", { name: "Terminal", hidden: true });
-  expect(side.hasAttribute("hidden")).toBe(false);
-  expect(document.querySelector(".chat-panel")!.hasAttribute("hidden")).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
-  expect(screen.getByRole("region", { name: "Chat", hidden: true }).hasAttribute("hidden")).toBe(false);
-  expect(side.hasAttribute("hidden")).toBe(true);
-  expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("half a thought");
+test("the header names the provider the chat talks to, with its live label and dot", () => {
+  shell({ ...workspace, provider: "claude", partner: { ...SCOUT, status: "live" as const, provider: "claude", label: "claude · gx10", machine: "gx10" } });
+  const button = screen.getByRole("button", { name: "Chat provider: claude" });
+  expect(button.textContent).toContain("claude · gx10");
+  expect(button.querySelector(".provider-dot")?.classList.contains("live")).toBe(true);
 });
 
-test("flipped, the terminal side keeps the Chat header's buttons and only names the terminal", async () => {
-  shell();
-  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
-  const side = await screen.findByRole("region", { name: "Terminal", hidden: true });
-  const head = within(side).getByRole("banner");
-  expect(within(head).getByRole("button", { name: "Terminal" }).textContent).toContain("Terminal");
-  expect(within(head).queryByRole("button", { name: workspace.name })).toBeNull();
-  expect(within(head).getByRole("button", { name: /^Move Chat to the/ })).toBeTruthy();
-  expect(within(head).getByRole("button", { name: "More chat actions" })).toBeTruthy();
-  expect(within(head).getByRole("button", { name: /^Workstream:/ })).toBeTruthy();
-  expect(within(head).queryByRole("button", { name: "Open terminal" })).toBeNull();
-  expect(within(head).getByRole("button", { name: "Back to chat" })).toBeTruthy();
+test("+ New chat offers the three providers, the default first and starred, and a grayed one does nothing", async () => {
+  vi.mocked(createStationInWorkstream).mockResolvedValue({ ...workspace, id: "new-chat", name: "unnamed-workstream#2" });
+  const { client } = shell({ ...workspace, available: { claude: false },
+    reasons: { claude: "Connect a machine with `trax machine connect` and install claude on it" } }, {
+    // The preference a profile carries, which openapi.json does not list yet.
+    profile: { preferences: { chat_provider: "codex" } as unknown as Profile["preferences"] },
+  });
+  client.setQueryData(["workstreams"], [{ id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 }]);
+  fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
+  const rows = screen.getAllByRole("button", { name: /\+ New chat · / });
+  expect(rows.map((each) => each.textContent)).toEqual(["+ New chat · codex ★ default", "+ New chat · scout", "+ New chat · claude"]);
+  expect((rows[2] as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText(/install claude on it/)).toBeTruthy();
+  fireEvent.click(rows[2]!);
+  expect(createStationInWorkstream).not.toHaveBeenCalled();
+  fireEvent.click(rows[0]!);
+  await waitFor(() => expect(createStationInWorkstream).toHaveBeenCalledWith("scratch", "codex"));
 });
 
-test("flipped, the More menu keeps every item, graying those that act on the chat only", async () => {
-  open("c1");
-  hold("c1", ...TALK);
-  vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_share: true, may_delete: true, may_hide: true }));
-  shell();
-  const more = () => within(screen.getByRole("region", { name: "Terminal", hidden: true })).getByRole("button", { name: "More chat actions" });
-  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
-  await screen.findByRole("region", { name: "Terminal", hidden: true });
-  fireEvent.click(more());
-  await screen.findByRole("button", { name: "Delete chat forever" });
-  const state = (root: string) => Object.fromEntries(Array.from(document.querySelectorAll<HTMLButtonElement>(`${root} .chat-more-menu .chat-menu-item`), (each) => [each.textContent, each.disabled]));
-  const flippedState = state(".chat-terminal-side");
-  const grayed = ["Clear chat", "Delete chat forever", "Share"];
-  expect(Object.entries(flippedState).filter(([, off]) => off).map(([name]) => name)).toEqual(grayed);
-  expect(Object.keys(flippedState)).toEqual(["Clear chat", "Hide panel", "Delete chat forever", "Terminal help", "Info", "Public", "Share"]);
-  expect(screen.getByRole("button", { name: "Clear chat" }).title).toBe("Applies to the chat; flip back to use it");
-  fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
-  fireEvent.click(screen.getAllByRole("button", { name: "More chat actions" })[0]!);
-  const chatState = state(".chat-panel");
-  expect(Object.values(chatState).some((off) => off)).toBe(false);
-  expect(Object.keys(chatState)).toEqual(["Clear chat", "Hide panel", "Delete chat forever", "Info", "Public", "Share"]);
-});
-
-test("flipped, the name opens the terminals menu, which says when no machine is ready", async () => {
-  shell();
-  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
-  await screen.findByRole("region", { name: "Terminal", hidden: true });
-  fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
-  const menu = screen.getByRole("dialog", { name: "Terminals" });
-  expect(within(menu).getByText("No terminals yet.")).toBeTruthy();
-  expect(menu.textContent).toContain("No machine is ready");
-});
-
-test("the flip is remembered for the station and no terminal side is mounted before the first flip", () => {
-  shell();
-  expect(screen.queryByRole("region", { name: "Terminal" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
-  expect(localStorage.getItem(`trackinizer.chat.flip.${WORKSPACE_ID}`)).toBe("terminal");
-});
-
-test("the terminal side belongs to its station: another station never shows this one's shell", async () => {
-  const station = shell();
-  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
-  await screen.findByRole("region", { name: "Terminal", hidden: true });
-  station.again({ ...workspace, id: "w-other" });
-  expect(document.querySelector(".chat-terminal-side")).toBeNull();
-  station.again(workspace);
-  expect(document.querySelector(".chat-terminal-side")).not.toBeNull();
-});
-
-test("Terminal help is in the ⋯ menu only on the terminal side, and reopens a dismissed help", async () => {
-  shell();
-  openMore();
-  expect(screen.queryByRole("button", { name: "Terminal help" })).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Open terminal" }));
-  const side = await screen.findByRole("region", { name: "Terminal", hidden: true });
-  localStorage.setItem("trackinizer.chat.terminalBar.dismissed", "1");
-  fireEvent.click(within(side).getByRole("button", { name: "More chat actions" }));
-  fireEvent.click(within(side).getByRole("button", { name: "Terminal help" }));
-  expect(localStorage.getItem("trackinizer.chat.terminalBar.dismissed")).toBe("open");
-  expect(within(side).queryByRole("button", { name: "Terminal help" })).toBeNull();
+test("a server with no assistant offers no assistant in + New chat", async () => {
+  shell({ ...workspace, assistant: null }, { profile: { preferences: { chat_provider: "codex" } as unknown as Profile["preferences"] } });
+  fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
+  expect(screen.getAllByRole("button", { name: /\+ New chat · / }).map((each) => each.textContent))
+    .toEqual(["+ New chat · codex ★ default", "+ New chat · claude"]);
 });

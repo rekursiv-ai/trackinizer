@@ -863,6 +863,96 @@ async def test_only_an_ack_of_eight_bytes_restarts_the_ring() -> None:
     assert term.ring.since(0) == (b"abc", 0, False)
 
 
+@pytest.mark.asyncio
+async def test_a_run_open_hands_the_wait_its_cli_its_session_and_its_name() -> None:
+    world = _World()
+    session_id = uuid.UUID("9f1c2e3a-0000-4000-8000-000000000001")
+    opened = world.hub.open(
+        Opening(
+            user="a@x.y",
+            machine_id=_MACHINE,
+            machine="gx10",
+            rows=24,
+            cols=80,
+            command="claude",
+            attach=session_id,
+            run_name="chat-9f1c2e3a",
+        ),
+    )
+
+    offered = await world.hub.wait(_MACHINE, wait_sec=0)
+
+    assert offered is opened
+    assert offered is not None
+    assert (offered.command, offered.attach, offered.run_name) == (
+        "claude",
+        session_id,
+        "chat-9f1c2e3a",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_run_open_without_a_name_is_named_by_its_session_or_its_terminal() -> (
+    None
+):
+    world = _World()
+    session_id = uuid.UUID("9f1c2e3a-0000-4000-8000-000000000001")
+    chat = world.hub.open(
+        Opening(
+            user="a@x.y",
+            machine_id=_MACHINE,
+            machine="gx10",
+            rows=24,
+            cols=80,
+            command="codex",
+            attach=session_id,
+        ),
+    )
+    run = world.hub.open(
+        Opening(
+            user="a@x.y",
+            machine_id=_MACHINE,
+            machine="gx10",
+            rows=24,
+            cols=80,
+            command="claude",
+        ),
+    )
+
+    assert chat.run_name == "chat-9f1c2e3a"
+    assert run.run_name == f"run-{run.id.hex[:8]}"
+
+
+@pytest.mark.asyncio
+async def test_a_login_shell_open_names_no_run() -> None:
+    term = _World().open()
+
+    assert (term.command, term.attach, term.run_name) == (None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_run_open_hands_the_wait_the_folder_it_starts_in_as_named() -> None:
+    world = _World()
+    opened = world.hub.open(
+        Opening(
+            user="a@x.y",
+            machine_id=_MACHINE,
+            machine="gx10",
+            rows=24,
+            cols=80,
+            command="claude",
+            cwd="~/project",
+        ),
+    )
+
+    offered = await world.hub.wait(_MACHINE, wait_sec=0)
+
+    assert offered is opened
+    assert offered is not None
+    assert offered.cwd == "~/project"
+    assert world.open().cwd is None
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

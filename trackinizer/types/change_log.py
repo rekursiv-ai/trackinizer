@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal, Self, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, Self, cast
+from typing_extensions import TypedDict
 from uuid import UUID, uuid4
 
 from trackinizer.types.cost import Cost
@@ -349,7 +350,7 @@ class Change:
         return cls(**cast(_ChangeKwargs, kwargs))
 
 
-class _SnapshotKwargs(TypedDict, total=False):
+class _SnapshotKwargs(TypedDict, total=False, closed=True):
     title: str | None
     description: str | None
     labels: tuple[str, ...] | None
@@ -395,7 +396,7 @@ class _SnapshotKwargs(TypedDict, total=False):
     marginal_cost: Cost | None
 
 
-class _ChangeKwargs(TypedDict, total=False):
+class _ChangeKwargs(TypedDict, total=False, closed=True):
     id: UUID
     created: datetime
     actor: Inquiry.Actor

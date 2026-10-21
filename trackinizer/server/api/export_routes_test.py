@@ -283,7 +283,10 @@ def test_database_selector_failures_are_client_errors(
 ) -> None:
     """Database rejection and cancellation cross the real store and HTTP guard."""
     client, _store, engine = route_client
-    engine.conn.fetch.side_effect = [error_type("query refused"), []]
+    engine.conn.fetch.side_effect = [
+        error_type("query refused"),
+        list[dict[str, object]](),
+    ]
 
     response = client.get(
         EXPORT_API_PATH,

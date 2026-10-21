@@ -570,7 +570,7 @@ def _selection(
         params.append(list(experiments))
         return vetted_sql("experiment_id = ANY($", str(len(params)), "::uuid[])")
     clauses = ["kind = 'Experiment'"]
-    for filt in cast("Sequence[Filter]", experiments):
+    for filt in cast("Sequence[Filter]", experiments):  # pyrefly: ignore[redundant-cast] -- ty or basedpyright needs this cast; pyrefly already infers it.
         reject_inadmissible(filt)
         column = canonical_filter_field(filt.field)
         template = sql_template(column, filt.op)

@@ -535,7 +535,7 @@ def _row_value(value: object, depth: int = 0) -> str:
         return "..."
     if value is None or value == "":
         return ""
-    if isinstance(value, list | tuple):
+    if isinstance(value, (list, tuple)):
         items = cast(Sequence[object], value)
         return ",".join(_row_value(item, depth + 1) for item in items)
     return str(value)
@@ -652,7 +652,7 @@ def _relation_title(edge_kind: str, *, inbound: bool) -> str:
     # (forward/inverse_label), never a parallel table here.
     if edge_kind not in EDGE_POLICIES:
         return edge_kind.replace("_", " ").title()
-    policy = EDGE_POLICIES[cast("Edge.Kind", edge_kind)]
+    policy = EDGE_POLICIES[cast("Edge.Kind", edge_kind)]  # pyrefly: ignore[redundant-cast] -- ty or basedpyright needs this cast; pyrefly already infers it.
     return policy.inverse_label if inbound else policy.forward_label
 
 

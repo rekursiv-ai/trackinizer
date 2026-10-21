@@ -120,7 +120,7 @@ class ForwardModel(Protocol):
 async def embed_bucketed(
     model: ForwardModel,
     tokenizer: TokenBatcher,
-    texts: list[str],
+    texts: Sequence[str],
     *,
     edges: Sequence[int],
     rows: Mapping[int, int],

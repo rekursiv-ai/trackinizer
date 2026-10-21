@@ -10,6 +10,8 @@ from uuid import UUID
 
 
 if TYPE_CHECKING:
+    from asyncpg import Record
+
     from trackinizer.lib.postgres import Conn
     from trackinizer.types.edges import Edge
     from trackinizer.types.inquiries import Inquiry
@@ -78,7 +80,7 @@ async def load_lineage_page(
     )
     selected = rows[:page_size]
     peer_ids = [UUID(str(row["id"])) for row in selected]
-    edges = []
+    edges: list[Record] = []
     if peer_ids:
         edges = await conn.fetch(
             "SELECT e.from_id,e.to_id,e.edge_kind,e.valence,LEFT(e.note,2000) AS note "
@@ -145,7 +147,7 @@ def decode_cursor(cursor: str, *, context: str) -> tuple[datetime | None, UUID |
         )
         created = datetime.fromisoformat(timestamp)
         after_id = UUID(record_id)
-    except (ValueError, UnicodeError) as error:
+    except ValueError as error:
         raise ValueError("Invalid lineage cursor.") from error
     if prefix != context or created.tzinfo is None:
         raise ValueError("Lineage cursor does not match this section.")

@@ -1265,7 +1265,10 @@ class TestFeedReads:
         store.read_feed = AsyncMock(return_value=[])
         client = self._client(store)
 
-        for params, conversation in (({}, False), ({"conversation": "true"}, True)):
+        for params, conversation in (
+            (dict[str, str](), False),
+            ({"conversation": "true"}, True),
+        ):
             response = client.get("/api/web/feed", params=params)
             assert response.status_code == 200, response.text
             assert store.read_feed.call_args.kwargs["conversation"] is conversation

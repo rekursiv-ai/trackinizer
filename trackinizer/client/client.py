@@ -107,13 +107,19 @@ if TYPE_CHECKING:
         SlashCommandBody,
     )
     from trackinizer.wire.wire_sessions import (
+        InboundDrainItem,
+        InboundKind,
         SessionEnd,
         SessionEndResponse,
         SessionStart,
         SessionStartResponse,
-        WorkspaceMessageContext,
     )
-    from trackinizer.wire.wire_terminals import TerminalWait
+    from trackinizer.wire.wire_terminals import (
+        OpenTerminal,
+        TerminalMachines,
+        TerminalOpened,
+        TerminalWait,
+    )
     from trackinizer.wire.wire_variables import Variable
 else:
     from wrapt import lazy_import
@@ -343,6 +349,7 @@ class Client:
 
         """
         uuid_indices = [i for i, r in enumerate(refs) if isinstance(r, UuidRef)]
+        uuid_kinds: dict[str, str]
         if uuid_indices:
             uuid_refs = [cast(UuidRef, refs[i]) for i in uuid_indices]
             response = self.post(
@@ -1744,6 +1751,9 @@ class Client:
         self,
         session_id: uuid.UUID,
         text: str,
+        *,
+        kind: InboundKind = "line",
+        payload: dict[str, object] | None = None,
     ) -> int:
         """Enqueue a message to inject into a live session; return queued count.
 
@@ -1753,16 +1763,21 @@ class Client:
         Args:
           session_id: AgentSession ID to message.
           text: Message text to enqueue.
+          kind: What the message is: a person's line unless another kind is named.
+          payload: The kind's structured data; ``None`` for a kind that has none.
 
         Returns:
           result: Number of messages now queued for this session.
 
         """
-        # This client never names an asker, and an older server forbids the field.
-        body = wire_sessions.InboundEnqueueRequest(text=text).model_dump(
-            mode="json",
-            exclude={"asker"},
-        )
+        # Defaults are left out: an older server forbids every field it does not know,
+        # so a plain line stays the body it always accepted. This client never names
+        # an asker.
+        body = wire_sessions.InboundEnqueueRequest(
+            text=text,
+            kind=kind,
+            payload=payload,
+        ).model_dump(mode="json", exclude={"asker"}, exclude_defaults=True)
         where = wire_sessions.session_inbound_path(session_id)
         response = self._request("POST", where, body=body)
         return _validate_model(
@@ -1776,18 +1791,16 @@ class Client:
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[
-        tuple[
-            str,
-            str | None,
-            str | None,
-            WorkspaceMessageContext | None,
-        ]
-    ]:
+        run: str | None = None,
+        machine: str | None = None,
+        cwd: str | None = None,
+    ) -> list[InboundDrainItem]:
         """Drain pending inbound messages for a session, oldest first.
 
-        Returns ``(text, source, room, context)`` tuples so ``trax run``
-        can inject both routed messages and server-derived canvas context.
+        Each item carries its kind and payload beside the text, attested sender,
+        room and canvas context, so ``trax run`` delivers each the way its CLI
+        expects. ``run``, ``machine`` and ``cwd`` tell the server where the draining
+        run is, for Chat to show; each is sent only when given.
 
         Args:
           session_id: Session whose queue to drain.
@@ -1797,20 +1810,31 @@ class Client:
             one round trip per interval, and delivery on arrival rather than
             up to an interval late. The read timeout must exceed it, or the
             client aborts the very wait it asked for.
+          run: The ``trax run --detach`` host draining it, which ``trax run attach``
+            takes; None for a run in a terminal of its own.
+          machine: This computer's machine name, as ``trax machine connect`` names it.
+          cwd: The run's working directory, ``~/...`` under its home.
 
         Returns:
-          result: Inbound text, attested sender, room, and optional canvas context.
+          messages: The drained messages, as the server sent them.
 
         """
         where = wire_sessions.session_inbound_path(session_id)
         response = self._request(
             "GET",
             where,
-            params={"wait_sec": wait_sec} if wait_sec else None,
+            # Each None is left out, so a run that knows none of these sends the query
+            # an older server always took.
+            params={
+                "wait_sec": wait_sec or None,
+                "run": run,
+                "machine": machine,
+                "cwd": cwd,
+            },
             timeout=wire_sessions.inbound_read_timeout(wait_sec),
         )
         drained = _validate_model(wire_sessions.DrainInboundResponse, response, where)
-        return [(m.text, m.source, m.room, m.context) for m in drained.messages]
+        return drained.messages
 
     def send_message(
         self,
@@ -2250,6 +2274,48 @@ class Client:
             return None
         return _validate_model(wire_terminals.TerminalWait, response, where)
 
+    def terminal_machines(
+        self,
+        *,
+        workspace: uuid.UUID | None = None,
+    ) -> TerminalMachines:
+        """List the caller's machines, and the live terminals of one station.
+
+        The server answers for the signed-in owner only: an API key is refused.
+
+        Args:
+          workspace: The station whose live terminals to list; ``None`` lists none.
+
+        Returns:
+          machines: The caller's machines, each with whether it can take a terminal
+            now and the CLIs its facts list.
+
+        """
+        where = wire_terminals.TERMINAL_MACHINES_PATH
+        response = self._request(
+            "GET",
+            where,
+            params=None if workspace is None else {"workspace": str(workspace)},
+        )
+        return _validate_model(wire_terminals.TerminalMachines, response, where)
+
+    def open_terminal(self, body: OpenTerminal) -> TerminalOpened:
+        """Queue a terminal, or a detached ``trax run``, on one of the caller's machines.
+
+        The server admits only the owner's browser here: an API key, a service
+        account, or a request without the server's own ``Origin`` is refused.
+
+        Args:
+          body: The machine, the terminal's size and station, and the run to start.
+
+        Returns:
+          opened: The terminal's id and its one-use attach ticket.
+
+        """
+        where = wire_terminals.TERMINALS_PATH
+        response = self._request("POST", where, body=body.model_dump(mode="json"))
+        return _validate_model(wire_terminals.TerminalOpened, response, where)
+
     def revoke_machine(self, name: str) -> None:
         """Take a machine out of service (admin or owner); 404 when absent."""
         self._request(
@@ -2456,13 +2522,13 @@ class Client:
                 )
                 if attempt == retry_attempts - 1:
                     raise ClientError(f"{method} {path} failed: {err}") from err
-                time.sleep(0.1 * (3.0 ** int(attempt)))
+                time.sleep(0.1 * (3.0 ** int(attempt)))  # pyrefly: ignore[unnecessary-type-conversion] -- The stub's type hides the runtime value (numpy/torch scalar or non-str key); the conversion is load-bearing.
                 continue
             if (
                 response.status_code in (500, 502, 503, 504)
                 and attempt < retry_attempts - 1
             ):
-                time.sleep(0.1 * (3.0 ** int(attempt)))
+                time.sleep(0.1 * (3.0 ** int(attempt)))  # pyrefly: ignore[unnecessary-type-conversion] -- The stub's type hides the runtime value (numpy/torch scalar or non-str key); the conversion is load-bearing.
                 continue
             break
         else:

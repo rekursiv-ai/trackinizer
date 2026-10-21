@@ -61,6 +61,12 @@ _LOCK_SESSION_SQL: Final = (
 )
 """Lock a session's row for a lifecycle move, reading what each move checks."""
 
+_RESUMED_SQL: Final = (
+    "SELECT id, owner, status, agentsession_ended, agentsession_rooms, "
+    "agentsession_audience FROM inquiries WHERE kind = 'AgentSession' "
+)
+"""Read what a resume or an attach re-opens; the caller names the row and locks it."""
+
 _SEEN_WRITE_EVERY: Final = timedelta(minutes=1)
 """How stale a session's ``last_seen`` must be before a sign of life rewrites it."""
 
@@ -134,9 +140,10 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         requested_actor: str,
         audience: str,
         api_key_id: UUID | None = None,
+        attach: UUID | None = None,
         max_reserve_attempts: int = 16,
     ) -> tuple[UUID, str, int]:
-        """Open or RESUME a session, returning ``(id, granted_owner, next_seq)``.
+        """Open, RESUME or ATTACH a session; return ``(id, granted_owner, next_seq)``.
 
         Reserves the next free ``@actor`` name (:meth:`reserve_session_actor`)
         and inserts the row, retrying when the live-owner partial unique index
@@ -155,6 +162,12 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         always 0: record keys derive from their position in the source file, so a
         resumed run re-derives the same keys and needs no continuation point.
 
+        Attach: ``attach`` names the session a run re-opens by its id, whichever key
+        opened it, as a resume re-opens one by its ``cli_session_id``. Its
+        ``cli_session_id`` is left as it is, so a science chat keeps its
+        ``chat:<id>``; the run's file becomes the session's next part. The caller
+        has already checked that its key may write the session.
+
         Idempotent: when this request reuses a prior start's idempotency key,
         the original session id AND its granted owner are replayed -- the
         change_log is probed for the key BEFORE reserving, so a retry never
@@ -166,18 +179,33 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
           audience: Who may read the transcript of a session this call mints;
             ``private`` hides one it resumes too.
           api_key_id: API key that opened this session; used in resume correlation.
+          attach: The session to re-open by its id, or ``None`` to open or resume.
           max_reserve_attempts: Max retries on live-owner unique constraint.
 
         Returns:
-          session_id: Server-minted UUID (or re-attached on resume).
-          granted_actor: Routing name (requested or requested#N).
+          session_id: Server-minted UUID (or re-attached on resume or attach).
+          granted_actor: Routing name (requested or requested#N); the session's own
+            on a resume or attach.
           next_seq: Zero (deprecated; kept for wire compatibility).
 
         Raises:
           ConflictError: Max reserve attempts exhausted; cannot acquire a name. Or
-            a ``private`` resume of a session in an audience other than ``open``.
+            a ``private`` resume or attach of a session in an audience other than
+            ``open``.
+          NotFoundError: ``attach`` names no session.
 
         """
+        if attach is not None:
+            attached = await self._resume_session(
+                req,
+                api_key_id=api_key_id,
+                actor=requested_actor,
+                hide=audience == PRIVATE,
+                attach=attach,
+            )
+            if attached is None:
+                raise NotFoundError(f"session {attach} not found")
+            return attached
         # Resume correlation BEFORE reserve/replay: a known cli_session_id
         # re-attaches the original session. Guard non-null so two fresh
         # (null-id) runs never correlate to each other.
@@ -302,6 +330,10 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
     # disabled after the stamp does not rewrite anyone's existing stamp, and resume --
     # like a plain field edit -- never revalidates it. Resume inherits the stamp as-is;
     # this is the consistent behavior, not a carve-out.
+    #
+    # An attach names the session by its id instead, and is not scoped to the opening
+    # key: the route has checked the caller may write it, and a science chat takes runs
+    # from more keys than its opener's.
     async def _resume_session(
         self,
         req: SubmitAgentSession,
@@ -309,22 +341,30 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
         hide: bool,
+        attach: UUID | None = None,
     ) -> tuple[UUID, str, int] | None:
-        """Re-attach (and re-open if ended) the session for this CLI session id."""
+        """Re-attach (and re-open if ended) the session by CLI session id or by id."""
         async with (
             notify_after_commit(),
             self.engine.acquire() as conn,
             tx(conn),
         ):
-            row = await conn.fetchrow(
-                "SELECT id, owner, status, agentsession_ended, agentsession_rooms, "
-                "agentsession_audience FROM inquiries WHERE kind = 'AgentSession' "
-                "AND agentsession_cli_session_id = $1 "
-                "AND agentsession_opened_by_api_key_id IS NOT DISTINCT FROM $2 "
-                "ORDER BY seq LIMIT 1 FOR UPDATE",
-                req.cli_session_id,
-                api_key_id,
-            )
+            if attach is None:
+                row = await conn.fetchrow(
+                    vetted_sql(
+                        _RESUMED_SQL,
+                        "AND agentsession_cli_session_id = $1 "
+                        "AND agentsession_opened_by_api_key_id IS NOT DISTINCT FROM $2 "
+                        "ORDER BY seq LIMIT 1 FOR UPDATE",
+                    ),
+                    req.cli_session_id,
+                    api_key_id,
+                )
+            else:
+                row = await conn.fetchrow(
+                    vetted_sql(_RESUMED_SQL, "AND id = $1 FOR UPDATE"),
+                    attach,
+                )
             if row is None:
                 return None
             session_id = row["id"]

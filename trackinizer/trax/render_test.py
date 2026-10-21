@@ -674,7 +674,7 @@ def test_print_rows_json(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_format_edge_includes_changes_section() -> None:
-    view = {
+    view: dict[str, object] = {
         "title": "blocked_by",
         "endpoints": (
             {"label": "blocker", "kind": "Issue", "seq": 1, "title": "a"},

@@ -19,11 +19,11 @@ not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final, Literal
+from typing import Final, Literal, Self
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from trackinizer.wire.json_types import JSON, UtcDatetime
 from trackinizer.wire.wire_science_chat import ChatForkAt
@@ -88,6 +88,7 @@ __all__ = [
     "InboundDrainItem",
     "InboundEnqueueRequest",
     "InboundEnqueueResponse",
+    "InboundKind",
     "MoveSession",
     "PlaceSession",
     "SendMessage",
@@ -150,6 +151,10 @@ class SessionStart(BaseModel):
     """The CLI's own session id, when known at start; may be backfilled via
     ``end`` if the CLI only reveals it later."""
 
+    attach: uuid.UUID | None = None
+    """An existing AgentSession this run re-opens, appending a new part and keeping its
+    ``cli_session_id``; exclusive with ``cli_session_id``."""
+
     title: str | None = None
     started: UtcDatetime | None = None
     actor: str | None = None
@@ -196,6 +201,13 @@ class SessionStart(BaseModel):
                 if "," in room:
                     raise ValueError(f"room name must not contain a comma: {room!r}")
         return value
+
+    @model_validator(mode="after")
+    def _attach_excludes_cli_session_id(self) -> Self:
+        """Refuse a start that re-opens a session and also names a CLI session id."""
+        if self.attach is not None and self.cli_session_id is not None:
+            raise ValueError("attach and cli_session_id are exclusive")
+        return self
 
 
 class SessionStartResponse(BaseModel):
@@ -432,6 +444,22 @@ class FeedHistogramResponse(BaseModel):
     counts: list[FeedBucket]
 
 
+type InboundKind = Literal["line", "command", "answer", "settings", "interrupt"]
+"""What an inbound message is, so the run delivers it the way its CLI expects.
+
+Values:
+  line: A person's chat line, delivered with its sender.
+  command: A slash command typed verbatim, such as ``/compact``, with no sender.
+  answer: A decision on a pending prompt. Its payload names the prompt.
+  settings: A model or effort change.
+  interrupt: Stops the running turn.
+
+Payload by kind: ``answer`` is ``{"prompt_id": str, "decision": "allow" | "deny",
+"updated_input": object | null, "message": str}``; ``settings`` is ``{"model":
+str | null, "effort": str | null}``. The other kinds carry no payload.
+"""
+
+
 class InboundEnqueueRequest(BaseModel):
     """A message a client asks trackinizer to inject into a live session.
 
@@ -449,6 +477,15 @@ class InboundEnqueueRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
+    """The message as a person reads it: for ``answer`` the one-line form, "Yes" or
+    "No: <reason>"; for ``interrupt``, "interrupt"."""
+
+    kind: InboundKind = "line"
+    """What the message is; a person's line unless the client names another kind."""
+
+    payload: dict[str, object] | None = None
+    """The kind's structured data, as :data:`InboundKind` documents it; ``None`` for
+    the kinds that carry none."""
 
     asker: str | None = Field(default=None, max_length=_MAX_ACCOUNT_CHARS)
     """The account of the user the configured assistant sends this line for.
@@ -613,6 +650,14 @@ class InboundDrainItem(BaseModel):
     """
 
     text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
+    """The message as a person reads it; see :attr:`InboundEnqueueRequest.text`."""
+
+    kind: InboundKind = "line"
+    """What the message is, as the enqueue named it; see :data:`InboundKind`."""
+
+    payload: dict[str, object] | None = None
+    """The kind's structured data, as :data:`InboundKind` documents it."""
+
     source: str | None = None
     source_role: str | None = None
     """The sender's role (``viewer``, ``writer`` or ``admin``) as the server attested

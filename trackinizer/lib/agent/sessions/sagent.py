@@ -9,6 +9,9 @@ knows sagent's three record families:
 - the older ``kind: message`` records tagged by ``descriptor``;
 - the oldest ``kind: message`` records tagged by ``role``.
 
+A ``context_splice`` (or legacy ``context_override``) is a compaction; one that
+summarized also opens a window, as the IR's :class:`ContextClear`.
+
 A tool result carries no tool name in sagent -- only the ``call_id`` of the
 call it answers -- so the reader remembers each call and types the result by
 what that call was.
@@ -34,6 +37,7 @@ from trackinizer.lib.agent.types.sessions import (
     AgentToAgentMessage,
     AnyToolResult,
     AssistantMessage,
+    ContextClear,
     ContextCompaction,
     FileEditResult,
     FileReadResult,
@@ -179,7 +183,7 @@ class _Reader:
         if kind == "message" and "role" in record:
             return self._role(record)
         if kind in {"context_override", "context_splice"}:
-            return [ContextCompaction(extra=immutable(_scalars(record)))]
+            return self._compaction(record)
         return [
             UncategorizedRecord(kind=kind or "unknown", payload=immutable(record)),
         ]
@@ -236,6 +240,31 @@ class _Reader:
             UncategorizedRecord(
                 kind=f"history/{kind}",
                 payload=immutable(record),
+            ),
+        ]
+
+    # A summary compaction's payload is what the agent's next context begins with: the
+    # continuation that holds the summary, then the turns it kept. That is the IR's
+    # opening of a window, so it reads as the event followed by the clear, as claude's
+    # and codex's compactions do; a window read as the event alone named the whole
+    # session as what the model was looking at. A splice that carries no summary, such
+    # as a fallback that dropped history, states no window and reads as the event.
+    def _compaction(self, record: dict[str, object]) -> list[SessionRecord]:
+        """Read a compaction: the event, and the window it opened when it summarized."""
+        event = ContextCompaction(extra=immutable(_scalars(record)))
+        # Only a splice states a strategy, and it writes its payload as a list; the
+        # legacy override's payload is a mapping this never reads.
+        if _str(record.get("strategy")) != "summary":
+            return [event]
+        payload = _mappings(record.get("payload"))
+        if not payload or _str(payload[0].get("type")) not in {"user", "agent_send"}:
+            return [event]
+        first, *kept = payload
+        return [
+            event,
+            ContextClear(
+                summary=_str(first.get("text")),
+                history=tuple(each for entry in kept for each in self._history(entry)),
             ),
         ]
 

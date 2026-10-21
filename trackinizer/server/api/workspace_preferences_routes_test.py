@@ -53,6 +53,7 @@ _DEFAULTS = {
     "terminal_font_size": "13px",
     "terminal_tab_chords": False,
     "home": "graph",
+    "chat_provider": "assistant",
 }
 
 

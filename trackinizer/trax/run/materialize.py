@@ -48,6 +48,7 @@ from trackinizer.lib.agent.types.sessions import (
     SessionRecord,
     Thinking,
     TurnContext,
+    UncategorizedRecord,
 )
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
@@ -100,12 +101,21 @@ class Materialized:
     """The freshly minted id: the file's name, the id stated INSIDE it, and
     the argument the CLI's resume flag takes are all this value."""
 
+    attach: UUID
+    """The AgentSession the run re-enters. The chat keeps its own id, so the run
+    opens on this one rather than on a session the CLI's id would name."""
+
+    prefix_bytes: int
+    """How many bytes of the file hold the loaded history. The run uploads only what the
+    CLI writes after them, so the history is not stored a second time."""
+
 
 def materialize(
     *,
     target: str,
     records: Sequence[SessionRecord],
     encoding: Mapping[str, PlainTree],
+    attach: UUID,
     sealed: Sequence[str | None] = (),
     session_id: UUID | None = None,
     source: str | None = None,
@@ -124,16 +134,16 @@ def materialize(
       sealed: Each record's ciphertext, positionally aligned with ``records``
         (``None`` where a record has none). Empty means none was fetched,
         which is only correct for a session that stored none.
-      session_id: The id to mint into the file; generated when omitted. Taken
-        as an argument so the caller can stamp the server after writing and
-        before the runner starts, keeping the resumed AgentSession attached.
+      attach: The AgentSession the file re-enters, carried back on the result.
+      session_id: The id to mint into the file; generated when omitted.
       source: Which CLI captured ``records``. Names a CROSSING when it differs
         from ``target``, which is what decides whether a provider-sealed or
         unparsed record can be replayed; see :func:`_crossed`. Omitted means
         records built by hand, which cross nothing.
 
     Returns:
-      written: The path and the id that names it.
+      written: The path, the id that names it, the session it re-enters, and the
+        size of the file, which is all of it loaded.
 
     Raises:
       NotResumableError: ``target`` names no CLI this can write for.
@@ -167,7 +177,12 @@ def materialize(
     # AFTER the write: an index entry naming a file that does not exist offers
     # the operator a session whose selection fails.
     spec.announce(path, minted)
-    return Materialized(path=path, cli_session_id=minted)
+    return Materialized(
+        path=path,
+        cli_session_id=minted,
+        attach=attach,
+        prefix_bytes=path.stat().st_size,
+    )
 
 
 def prepared(
@@ -196,14 +211,15 @@ def prepared(
       records: Encoding, replayable acts, and target identity in write order.
 
     """
-    restored = (
-        list(records)
-        if source is not None and source != target
-        else _spliced(records, sealed)
-    )
+    crossing = source is not None and source != target
+    restored = list(records) if crossing else _spliced(records, sealed)
+    kept = _crossed(restored, source, target)
     return identified(
         target,
-        [TurnContext(encoding=encoding), *_crossed(restored, source, target)],
+        [
+            _opening(target=target, encoding=encoding, crossing=crossing),
+            *(_stamped(kept) if crossing else kept),
+        ],
         session_id,
     )
 
@@ -341,13 +357,12 @@ def _codex_identified(
 # Its own stamp is kept when it has one, since the time a turn happened is a fact about
 # that turn rather than about this materialization.
 #
-# ``getattr``, because ``IncompleteRecord`` declares no ``timestamp`` at all -- it is a
-# raw line the reader could not parse, carrying only its text. Stamping it unguarded
-# crashed a real resume before anything was written. The same reason ``_renamed`` reads
-# the residual that way.
+# ``IncompleteRecord`` declares no ``timestamp`` at all -- it is a raw line the reader
+# could not parse, carrying only its text. Stamping it unguarded crashed a real resume
+# before anything was written.
 def _codex_stamped(record: SessionRecord, at: str) -> SessionRecord:
     """Give a record a timestamp when it crossed in without one."""
-    if getattr(record, "timestamp", "") is not None:
+    if isinstance(record, IncompleteRecord) or record.timestamp is not None:
         return record
     return replace(record, timestamp=at)
 
@@ -476,14 +491,12 @@ def _stamp() -> str:
 # neither states a ``sessionId`` the writer replays.
 def _renamed(record: SessionRecord, session_id: UUID) -> SessionRecord:
     """Rewrite the ``sessionId`` a record carries in its provider residual."""
-    # ``getattr`` because two members declare no ``extra`` at all. Narrowed
-    # through ``DictCodec`` rather than an isinstance check: the attribute is
-    # untyped, and the codec takes ``object`` and returns a typed mapping.
-    #
+    if isinstance(record, (IncompleteRecord, UncategorizedRecord)):
+        return record
     # Not thawed first: the values are re-frozen unchanged, so unfreezing the
     # whole residual only to freeze it again would walk every nested structure
     # twice for one replaced key.
-    residual = from_plain(getattr(record, "extra", None) or {}, dict[str, object])
+    residual = record.extra
     if "sessionId" not in residual:
         return record
     return replace(
@@ -528,8 +541,8 @@ _TARGETS: Mapping[str, _Target] = MappingProxyType(
 )
 
 
-# Two things do not survive a crossing, both measured on a claude session resumed as
-# codex:
+# Three things do not survive a crossing, the first two measured on a claude session
+# resumed as codex:
 #
 # - A :class:`Thinking` seal. Reasoning bytes are encrypted BY the provider that issued
 # them, so claude's rode into codex's ``encrypted_content`` and the first request came
@@ -537,7 +550,10 @@ _TARGETS: Mapping[str, _Target] = MappingProxyType(
 # verified``. The readable summary crosses; the seal cannot. - An
 # :class:`IncompleteRecord` written into a FOREIGN file. It is one provider's raw line,
 # replayed verbatim, so in a rollout it landed with no envelope -- the resulting line
-# parsed as nothing that format defines.
+# parsed as nothing that format defines. - An :class:`UncategorizedRecord`. The writers
+# tell a foreign one apart by its kind's spelling, and a sagent kind is bare, as claude's
+# own are, so the claude writer cannot tell it from a line claude wrote. Measured: a
+# bot session's ``tool_state`` and ``runtime_event`` lines reached a claude file.
 #
 # The seal is a crossing question; an unstated source is not a crossing, since a caller
 # naming no format is building records by hand rather than moving them between two CLIs.
@@ -577,6 +593,8 @@ def _crossed(
 # reproduce it byte for byte.
 def _writable(record: SessionRecord, crossing: bool) -> bool:
     """Whether ``record`` can be written as ONE line of the target's file."""
+    if isinstance(record, UncategorizedRecord):
+        return not crossing
     if not isinstance(record, IncompleteRecord):
         return True
     if crossing:
@@ -622,5 +640,50 @@ def _spliced(
                 "longer stored; the provider rejects a transcript with an "
                 "empty 'encrypted' field, so this session cannot be resumed",
             )
+        out.append(record)
+    return out
+
+
+# A crossing states an encoding even when its source stated none, since a foreign
+# encoding is what makes claude synthesize the identity its reader needs. Measured: a
+# sagent part states an empty encoding, and a claude file written from it had no uuid
+# chain, so the writer took it for a native file and wrote the lines unlinked.
+#
+# The cwd goes on the opening context of a claude file only when claude synthesizes
+# lines, which take their working directory from here. It is this machine's, since the
+# resume runs here and claude looks for the project in the directory it runs from.
+def _opening(
+    *,
+    target: str,
+    encoding: Mapping[str, PlainTree],
+    crossing: bool,
+) -> TurnContext:
+    """Build the context a written file opens with: how it is spelled, and where."""
+    spelled = encoding
+    if not spelled and crossing:
+        spelled = immutable({"newline_terminated": True})
+    if target == "claude" and spelled and "ascii_escaped" not in spelled:
+        return TurnContext(
+            encoding=spelled,
+            extra=immutable({"cwd": str(Path.cwd())}),
+        )
+    return TurnContext(encoding=spelled)
+
+
+# Only a crossing is stamped: a same-format rewrite keeps the bytes its source wrote,
+# which is what makes it byte-exact, so a line the source left unstamped stays so.
+def _stamped(records: Sequence[SessionRecord]) -> list[SessionRecord]:
+    """Give each record a timestamp, filled in from the one before it."""
+    last = _stamp()
+    out: list[SessionRecord] = []
+    for record in records:
+        if isinstance(record, IncompleteRecord):
+            out.append(record)
+            continue
+        stamp = record.timestamp
+        if stamp is None or not stamp:
+            out.append(replace(record, timestamp=last))
+            continue
+        last = stamp
         out.append(record)
     return out

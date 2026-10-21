@@ -31,13 +31,15 @@ longer holds instead of lowering the session to ``open``. A caller asks for
 ``private`` to start a session hidden.
 
 A viewer key mutates only the session it opened. A science chat is stricter: only the
-key that opened it writes it, and only that key or an admin purges it by id, where
-any other row is purged, and moved to another account, by its account or an admin.
-Its lines name their poster, and its labels and account say who started it and who
-posted, so a second writer's write would forge a poster or hide the chat from
-History. A chat is known by its ``chat:`` id alone, whoever opened it and whether or
-not an assistant is configured: a user's own ``trax helper`` opens chats under that
-user's key, and answers the last line of one with that user's local CLI.
+key that opened it edits its row, and only that key or an admin purges it by id,
+where any other row is purged, and moved to another account, by its account or an
+admin. Its lines name their poster, and its labels and account say who started it and
+who posted, so a second writer's write would forge a poster or hide the chat from
+History. Its transcript is one part per run that answered in it: a new part, or a run
+attaching to it, comes from its opening key, the configured assistant's or its
+starter's, and each part is written by the key that opened it alone, so no run
+rewrites another's lines. A chat is known by its ``chat:`` id alone, whoever opened
+it and whether or not an assistant is configured.
 """
 
 from __future__ import annotations
@@ -74,7 +76,10 @@ from trackinizer.server.visuals.science_chats import (
 from trackinizer.types.errors import ConflictError
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE, STAFF
-from trackinizer.wire.wire_science_chat import CHAT_SESSION_PREFIX
+from trackinizer.wire.wire_science_chat import (
+    CHAT_SESSION_PREFIX,
+    chat_conversation_id,
+)
 from trackinizer.wire.wire_service_accounts import is_service_address
 
 
@@ -95,7 +100,8 @@ __all__ = [
     "hidden_session",
     "is_a_science_chat",
     "require_attributable",
-    "require_chat_opener",
+    "require_chat_writer",
+    "require_part_writer",
     "require_row_account",
     "require_row_purge",
     "require_session",
@@ -240,22 +246,96 @@ def is_a_science_chat(session: AgentSession) -> bool:
     return (session.cli_session_id or "").startswith(CHAT_SESSION_PREFIX)
 
 
-def require_chat_opener(identity: AuthIdentity, *, session: AgentSession) -> None:
-    """Refuse a write to a science chat from any key but the one that opened it.
+async def require_chat_writer(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    session: AgentSession,
+) -> None:
+    """Refuse a run on a science chat from a key that may not add a part to it.
+
+    A chat takes a new part, a run attaching to it and that run's close from the key
+    that opened it, any key of the configured assistant's account, or any key of the
+    account that started it (:func:`~trackinizer.server.visuals.science_chats.read_starter`).
+    A browser has no key to own a part by, so it adds none. Any other session passes.
 
     Args:
+      request: The request, which carries the store and the configuration.
       identity: Authenticated caller and its API key.
       session: Target session.
 
     Raises:
-      HTTPException: ``session`` is a science chat and the caller did not open it.
+      HTTPException: 403: ``session`` is a science chat the caller may not add to.
 
     """
-    _refuse_a_stranger(
-        identity,
-        cli_session_id=session.cli_session_id,
-        opener=session.opened_by_api_key_id,
+    if not is_a_science_chat(session) or identity.api_key_id == (
+        session.opened_by_api_key_id
+    ):
+        return
+    assistant = get_assistant(request)
+    conversation_id = chat_conversation_id(session.cli_session_id)
+    if identity.api_key_id is not None and conversation_id is not None:
+        if _is_the_assistant(identity, assistant):
+            return
+        async with get_store(request).engine.acquire() as conn:
+            starter = await read_starter(
+                conn,
+                assistant=assistant,
+                conversation_id=conversation_id,
+            )
+        if (starter or "").lower() == identity.email.lower():
+            return
+    raise HTTPException(
+        status_code=403,
+        detail="A science chat takes a run from its opener, the assistant or its "
+        "starter",
     )
+
+
+async def require_part_writer(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    session: AgentSession,
+    name: str,
+) -> None:
+    """Refuse a write into a science chat's part by any key but the one that opened it.
+
+    A file the chat holds no part for yet opens one, which :func:`require_chat_writer`
+    decides, as it does a write that names no file. A part opened before parts named
+    their key keeps the chat's old rule: its opening key alone writes it. Any other
+    session passes.
+
+    Args:
+      request: The request, which carries the store.
+      identity: Authenticated caller and its API key.
+      session: Target session.
+      name: The file the write names; empty for one that carries only slash commands.
+
+    Raises:
+      HTTPException: 403: the caller may not write that part, or open a new one.
+
+    """
+    if not is_a_science_chat(session):
+        return
+    manifest = (
+        await get_store(request).read_session_manifest(session.id, name=name)
+        if name
+        else None
+    )
+    if manifest is None:
+        await require_chat_writer(request, identity, session=session)
+    elif manifest.opened_by_api_key_id is None:
+        _refuse_a_stranger(
+            identity,
+            cli_session_id=session.cli_session_id,
+            opener=session.opened_by_api_key_id,
+        )
+    elif identity.api_key_id != manifest.opened_by_api_key_id:
+        raise HTTPException(
+            status_code=403,
+            detail="A part of a science chat is written by the key that opened it",
+        )
 
 
 async def require_session(store: Store, session_id: uuid.UUID) -> AgentSession:

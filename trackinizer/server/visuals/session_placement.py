@@ -18,10 +18,7 @@ from treekle import from_plain
 from trackinizer.server.notify import tx
 from trackinizer.server.visuals.workspace_store import new_session_station
 from trackinizer.server.visuals.workstreams import check_workstream, open_scratch
-from trackinizer.wire.wire_science_chat import (
-    CHAT_HELPER_CLI,
-    CHAT_SESSION_PREFIX,
-)
+from trackinizer.wire.wire_science_chat import CHAT_SESSION_PREFIX
 from trackinizer.wire.wire_service_accounts import is_service_address
 from trackinizer.wire.wire_sessions import (
     GIT_LABEL_PREFIX,
@@ -73,12 +70,11 @@ def is_placed(session: AgentSession) -> bool:
       session: The session.
 
     Returns:
-      placed: False for a service account, a science chat and a ``trax helper``.
+      placed: False for a service account and a science chat.
 
     """
     return not (
         is_service_address(session.account)
-        or session.cli == CHAT_HELPER_CLI
         or (session.cli_session_id or "").startswith(CHAT_SESSION_PREFIX)
     )
 

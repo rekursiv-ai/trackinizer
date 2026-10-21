@@ -346,12 +346,12 @@ def _matches_order(value: object, op: str, expected: str) -> bool:
     """Compare in the arithmetic the row's own SQL type selects."""
     parsed = as_numeric(expected)
     if parsed is None:
-        return _ordered(str(value), op, str(expected))
+        return _ordered(str(value), op, expected)
     if isinstance(value, float):
         return _ordered(value, op, float(parsed))
     if isinstance(value, int | Decimal):
         return _ordered(Decimal(value), op, parsed)
-    return _ordered(str(value), op, str(expected))
+    return _ordered(str(value), op, expected)
 
 
 # An assert rather than a trailing ``return left >= right``: that fallthrough would make

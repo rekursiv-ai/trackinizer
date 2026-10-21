@@ -972,7 +972,7 @@ async def test_postgres_enter_configures_pool_listener_and_exit(
 
 def test_postgres_on_notify_publishes_string_payload() -> None:
     engine = PostgresEngine("postgresql:///unused", listen_channel="updates")
-    connection = asyncpg.Connection.__new__(asyncpg.Connection)
+    connection = asyncpg.Connection.__new__(asyncpg.Connection)  # pyrefly: ignore[bad-specialization] -- pyrefly reads a bare generic class as ``Connection[Unknown]``, outside its own bound.
 
     stream = engine.listen("updates")
 

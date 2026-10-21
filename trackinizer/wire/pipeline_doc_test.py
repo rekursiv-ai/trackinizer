@@ -88,7 +88,7 @@ def test_a_stage_past_a_bound_is_refused(stage: dict[str, object], named: str) -
     tree = json_loads(dump_pipeline(_doc()), dict[str, object])
     first = {**json_loads(json.dumps(tree["stages"]), list[dict[str, object]])[0]}
     tree["stages"] = [first | stage]
-    tree["flows"] = []
+    tree["flows"] = list[dict[str, object]]()
 
     with pytest.raises(ValueError, match=named):
         _ = load_pipeline(json.dumps(tree))

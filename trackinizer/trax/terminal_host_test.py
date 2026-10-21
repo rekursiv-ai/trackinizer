@@ -6,25 +6,30 @@ from typing import TYPE_CHECKING
 
 import asyncio
 import os
+import pwd
+import shutil
 import stat
 import subprocess
+import sys
 import threading
 import uuid
 
 from websockets.asyncio.server import Server, ServerConnection, serve
+from websockets.exceptions import ConnectionClosed
 
 import pytest
 
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.posix.host import Frame, decode_frame, encode_frame, encode_winsize
 from trackinizer.lib.userdirs import state_dir
-from trackinizer.trax.terminal_host import TerminalHost
+from trackinizer.trax.terminal_host import TerminalHost, _end_with_line
 from trackinizer.wire import wire_terminals
 from trackinizer.wire.wire_terminals import TerminalWait
 
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
+    from pathlib import Path
 
     from trackinizer.trax.terminal_direct import PeerFactory
 
@@ -268,6 +273,159 @@ async def test_each_open_and_close_is_logged_once_for_this_user_only() -> None:
     assert '"status":5' in second
 
 
+async def test_a_terminal_without_a_folder_starts_in_the_home_directory() -> None:
+    result: list[tuple[bytes, int]] = []
+
+    async def handler(ws: ServerConnection) -> None:
+        result.append(await _until_exit(ws))
+
+    server, url = await _listening(handler)
+    await _run(_host(url, "/bin/sh", "-c", "pwd -P"), _opened())
+    server.close()
+
+    # ``pwd -P`` prints the physical path, which a symlinked home does not share.
+    home = await asyncio.to_thread(os.path.realpath, pwd.getpwuid(os.getuid()).pw_dir)
+    assert result[0] == (f"{home}\r\n".encode(), 0)
+
+
+async def test_a_run_starts_in_the_folder_it_names_and_says_so_on_its_first_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = tmp_path / "project"
+    folder.mkdir()
+    # The fake trax prints the folder its run starts in, as the CLI would see it.
+    trax = _trax(tmp_path, "pwd -P\n")
+    monkeypatch.setattr(sys, "argv", [str(trax)])
+    result: list[tuple[bytes, int]] = []
+
+    async def handler(ws: ServerConnection) -> None:
+        result.append(await _until_exit(ws))
+
+    server, url = await _listening(handler)
+    await _run(
+        _host(url),
+        _opened(command="claude", run_name="run-1a2b3c4d", cwd=str(folder)),
+    )
+    server.close()
+
+    output, status = result[0]
+    first, _, shell = output.partition(b"\r\n")
+    physical = await asyncio.to_thread(folder.resolve)
+    assert status == 0
+    assert first == f"trax: started in {folder}".encode()
+    assert shell.split() == [str(physical).encode()]
+
+
+async def test_a_tilde_folder_is_resolved_against_the_home_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    (home / "project").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    trax = _trax(tmp_path, "pwd -P\n")
+    monkeypatch.setattr(sys, "argv", [str(trax)])
+    result: list[tuple[bytes, int]] = []
+
+    async def handler(ws: ServerConnection) -> None:
+        result.append(await _until_exit(ws))
+
+    server, url = await _listening(handler)
+    await _run(
+        _host(url),
+        _opened(command="claude", run_name="run-1a2b3c4d", cwd="~/project"),
+    )
+    server.close()
+
+    first, _, shell = result[0][0].partition(b"\r\n")
+    physical = await asyncio.to_thread((home / "project").resolve)
+    assert first == f"trax: started in {home / 'project'}".encode()
+    assert shell.split() == [str(physical).encode()]
+
+
+async def test_a_run_without_a_folder_says_it_starts_in_the_home_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trax = _trax(tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(trax)])
+    result: list[tuple[bytes, int]] = []
+
+    async def handler(ws: ServerConnection) -> None:
+        result.append(await _until_exit(ws))
+
+    server, url = await _listening(handler)
+    await _run(_host(url), _opened(command="codex", run_name="run-1a2b3c4d"))
+    server.close()
+
+    home = pwd.getpwuid(os.getuid()).pw_dir
+    assert result[0] == (f"trax: started in {home}\r\n".encode(), 0)
+
+
+async def test_a_folder_that_is_missing_or_a_file_ends_the_terminal_and_runs_nothing(
+    tmp_path: Path,
+) -> None:
+    file = tmp_path / "notes.txt"
+    _ = file.write_text("not a folder")
+    refusals: list[tuple[bytes, int]] = []
+
+    async def handler(ws: ServerConnection) -> None:
+        refusals.append(await _until_exit(ws))
+
+    # A ``~name`` of a user this machine lacks has no home to resolve against.
+    stranger = "~no-such-user-c8/project"
+    server, url = await _listening(handler)
+    for folder in (str(tmp_path / "gone"), str(file), stranger):
+        await _run(
+            _host(url, "/bin/sh", "-c", "echo ran"),
+            _opened(cwd=folder),
+        )
+    server.close()
+
+    assert refusals == [
+        (f"trax: {tmp_path / 'gone'} is not a folder on this machine\r\n".encode(), 1),
+        (f"trax: {file} is not a folder on this machine\r\n".encode(), 1),
+        (f"trax: {stranger} is not a folder on this machine\r\n".encode(), 1),
+    ]
+    # The refusal is logged as a close with the status it reported, so the log pairs
+    # every open with its close as it does for a shell.
+    path = state_dir() / "rekursiv-ai" / "trax" / "machines" / "box.terminals.log"
+    closes = [
+        line for line in path.read_text().splitlines() if '"event":"close"' in line
+    ]
+    assert len(closes) == 3
+    assert all('"status":1' in line for line in closes)
+
+
+class _Leg:
+    """A WebSocket leg a refusal writes to; ``gone`` makes every send find it closed."""
+
+    def __init__(self, *, gone: bool = False) -> None:
+        self.gone = gone
+        self.sent: list[bytes] = []
+
+    async def send(self, message: bytes) -> None:
+        if self.gone:
+            raise ConnectionClosed(None, None)
+        self.sent.append(message)
+
+
+async def test_a_refusal_sends_its_line_then_exit_one_to_a_leg_still_open() -> None:
+    leg = _Leg()
+
+    await _end_with_line(leg, "trax: x is not a folder on this machine")
+
+    assert leg.sent == [
+        encode_frame(Frame.OUTPUT, b"trax: x is not a folder on this machine\r\n"),
+        encode_frame(Frame.EXIT, (1).to_bytes(4)),
+    ]
+
+
+async def test_a_refusal_to_a_leg_already_closed_is_not_an_error() -> None:
+    await _end_with_line(_Leg(gone=True), "trax: x is not a folder on this machine")
+
+
 async def _five_opens(
     wait_for: Callable[[list[ServerConnection]], bool],
 ) -> tuple[TerminalHost, _Client, list[ServerConnection], Server]:
@@ -415,6 +573,96 @@ async def test_an_offer_is_answered_and_the_shells_output_then_goes_direct() -> 
     assert (Frame.EXIT, (0).to_bytes(4)) in peer.sent
     assert all(kind is not Frame.OUTPUT for kind, _ in relayed)
     assert relayed[-1] == (Frame.EXIT, (0).to_bytes(4))
+
+
+def _trax(tmp_path: Path, body: str = "") -> Path:
+    trax = tmp_path / "trax"
+    _ = trax.write_text(f"#!/bin/sh\n{body}")
+    trax.chmod(0o755)
+    return trax
+
+
+def _login_shell() -> list[str]:
+    return [pwd.getpwuid(os.getuid()).pw_shell, "-l"]
+
+
+def _only_on_path(trax: str | None) -> Callable[[str], str | None]:
+    """Return a ``shutil.which`` that finds ``trax`` and nothing else."""
+    return lambda name: trax if name == "trax" else None
+
+
+async def test_a_claude_run_starts_detached_and_attaches_its_chat_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trax = _trax(tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(trax), "machine", "connect"])
+    session_id = uuid.UUID("9f1c2e3a-0000-4000-8000-000000000001")
+
+    argv = _host("http://127.0.0.1:1")._argv(
+        _opened(command="claude", attach=session_id, run_name="chat-9f1c2e3a"),
+    )
+
+    assert argv == [
+        str(trax),
+        "run",
+        "--detach",
+        "--name",
+        "chat-9f1c2e3a",
+        "--attach",
+        str(session_id),
+        "claude",
+    ]
+
+
+async def test_a_codex_run_without_a_session_attaches_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trax = _trax(tmp_path)
+    monkeypatch.setattr(sys, "argv", [str(trax)])
+
+    argv = _host("http://127.0.0.1:1")._argv(
+        _opened(command="codex", run_name="run-1a2b3c4d"),
+    )
+
+    assert argv == [str(trax), "run", "--detach", "--name", "run-1a2b3c4d", "codex"]
+
+
+async def test_a_terminal_without_a_command_runs_the_login_shell() -> None:
+    assert _host("http://127.0.0.1:1")._argv(_opened()) == _login_shell()
+    shell = _host("http://127.0.0.1:1", "/bin/sh", "-c", "true")._argv(_opened())
+    assert shell == ["/bin/sh", "-c", "true"]
+
+
+async def test_a_run_finds_trax_on_the_path_when_argv_names_no_executable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trax = _trax(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["trax-module-entry"])
+    monkeypatch.setattr(shutil, "which", _only_on_path(str(trax)))
+
+    argv = _host("http://127.0.0.1:1")._argv(
+        _opened(command="claude", run_name="run-1a2b3c4d"),
+    )
+
+    assert argv[:2] == [str(trax), "run"]
+
+
+async def test_a_run_with_no_trax_executable_falls_back_to_the_login_shell(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["trax-module-entry"])
+    monkeypatch.setattr(shutil, "which", _only_on_path(None))
+
+    argv = _host("http://127.0.0.1:1")._argv(
+        _opened(command="claude", run_name="run-1a2b3c4d"),
+    )
+
+    assert argv == _login_shell()
+    assert "no trax executable" in capsys.readouterr().err
 
 
 if __name__ == "__main__":

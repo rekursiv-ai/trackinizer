@@ -462,6 +462,23 @@ class ThreadedRelay:
         if self._terminal.submitted == before:
             _logger.warning("submit dropped: master died (%d bytes)", len(text))
 
+    def write(self, data: bytes) -> None:
+        """Send raw keys to the child, with no paste and no Enter. Thread-safe.
+
+        For a key a TUI reads directly, such as Escape to stop a turn, which
+        :meth:`submit` would wrap in a paste and follow with Enter. Blocks until
+        the bytes are written; a write with no live child is logged, as for
+        :meth:`submit`.
+
+        Args:
+          data: The bytes to send.
+
+        """
+        if not self._running.is_set():
+            _logger.warning("write dropped: child not running (%d bytes)", len(data))
+            return
+        self._on_loop(self._terminal.write(data), timeout_sec=5.0)
+
     def terminate(self) -> None:
         """Stop the child's process group; safe to call repeatedly."""
         self._on_loop(self._terminal.terminate(), timeout_sec=5.0)

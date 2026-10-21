@@ -1,11 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api/client";
-import { newUuid } from "../api/idempotency";
+import { type Keyed, newUuid } from "../api/idempotency";
 import { CHAT_DELETED, CHAT_FORK_CLOSED, CHAT_FORK_WIDER, type ChatFork, conversationOf, getChatHead, SCIENCE_CHAT_LABEL, sendChatLine } from "../api/chats";
 import type { OrgMode } from "../api/me";
 import { getWorkspace } from "../api/workspaces";
 import type { WorkspacePartner, WorkspaceState } from "../api/workspaces";
+import { type Provider, providerName, stationProvider } from "../api/providers";
 import { MetaContext, useProfile, useWriteMode } from "../app/boot";
 import { Composer } from "../composer/Composer";
 import { detailQueries } from "../detail/queries";
@@ -13,11 +14,10 @@ import { useLiveDetail } from "../live";
 import { Markdown } from "../markdown/Markdown";
 import { parseHash } from "../router/route";
 import { useHash, validHash, visited } from "../router/trail";
-import { HelperCommands } from "../settings/ChatPartner";
 import { stationForChat, type StationSummary } from "../api/stations";
 import { clearChat as clearStationChat, hideStation, STATIONS_KEY } from "../stations/actions";
 import { showStation } from "../stations/useStation";
-import { type ChatPart, type Line, type LineAt, linesThrough, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
+import { type ChatPart, type Goal, goalOf, type Line, type LineAt, linesThrough, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
 import { chatRecordsKey, OPENING, readChatParts, useLiveChat } from "./chatRecords";
 import { useChatFeed } from "./chatFeed";
 import { FOLLOW_UP_ASK, followUpSuggested } from "./chatFollowUp";
@@ -25,9 +25,8 @@ import { useAnswerHighlights } from "./chatHighlights";
 import { useChatPartial } from "./chatPartial";
 import { useChatDraft } from "./chatDraft";
 import { ChatWorkstreamHeader } from "./ChatWorkstreamHeader";
-import { ChatTerminalSide, type TerminalHead } from "./ChatTerminalSide";
-import { setFlipped, useFlipped } from "./terminalFlip";
 import { RecordField } from "./RecordField";
+import { type AnswerPrompt, type PromptAnswer, PromptCard } from "./PromptCard";
 
 /** The most characters one message may have, as the server holds it. */
 const MAX_TEXT = 16_384;
@@ -167,6 +166,9 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
       launching.current = false;
     }
   }, []);
+  // A prompt's card answers through the same ref pattern, so its identity stays stable for the memoized lines.
+  const answerRef = useRef<AnswerPrompt>(() => Promise.resolve(false));
+  const answerStable = useCallback<AnswerPrompt>((attempt) => answerRef.current(attempt), []);
   // The line a message sent now would fork after: the one "Fork from here" picked.
   const fork: ChatFork | null = session && forkAt ? { sessionId: session, part: forkAt.part, idx: forkAt.idx } : null;
 
@@ -353,82 +355,91 @@ export function Chat({ workspace }: { readonly workspace: WorkspaceState | null 
     }
   }
 
+  /**
+   * Answer a prompt the claude run asked: the decision goes to the chat as its `answer` line, and no line
+   * of mine shows for it, since the run's resolution record is what closes the card. A refusal is shown and
+   * the card keeps its answer, to resend under the same key.
+   */
+  async function answerPrompt(attempt: Keyed<PromptAnswer>): Promise<boolean> {
+    if (!workspace || !conversationId) return false;
+    try {
+      await sendChatLine({ workspaceId: workspace.id, text: attempt.body.text, conversationId, kind: "answer", payload: attempt.body.payload,
+        ...whereFrom(location.hash) }, attempt.key);
+      return true;
+    } catch (error) {
+      if (mounted.current) setNotice(failureText(error));
+      return false;
+    }
+  }
+
   sendRef.current = send;
+  answerRef.current = answerPrompt;
   targetRef.current = target;
   // The last line, when it is a stored recap and posting is open, may carry a "keep going" button.
   // The same gate as the composer's: no follow-up while the chat is read, closed to me, or a line is on its way.
   const followUpKey = live && !reading && !loading && !outsider && sending.size === 0 && last && !last.pending && last.role === "assistant" ? last.key : null;
+  // A prompt's card answers where a line could be posted now: the same gate as the composer's.
+  const answerable = live && !reading && !outsider;
+  // The goal the run is working toward, which the strip above the box says until it is met or cleared.
+  const goal = goalOf(transcript);
 
-  // Flipped, the column shows the station's terminal; Chat stays mounted, with its draft and stream.
-  const flip = useFlipped(workspaceId ?? undefined);
-  // The terminal side belongs to the station that opened it: another station gets its own, never this one's shell.
-  const [terminalOpenedFor, setTerminalOpenedFor] = useState<string | null>(null);
-  useEffect(() => {
-    if (flip && workspace) setTerminalOpenedFor(workspace.id);
-  }, [flip, workspace?.id]);
-  // The same header on both sides, so its buttons stay; flipped, it names the terminal and flips back.
-  const header = (flipped: boolean, terminal?: TerminalHead) => <ChatWorkstreamHeader workspace={workspace} head={head.data ?? undefined} flipped={flipped} terminal={terminal}
-    onFlip={workspace ? () => setFlipped(workspace.id, !flipped) : undefined}
-    onHide={hideCurrentStation} onClear={clearCurrentChat}
-    onDeleted={(conversation) => chatDeleted(conversation)} />;
-  const terminalSide = workspace && (terminalOpenedFor === workspace.id || flip)
-    && <ChatTerminalSide key={workspace.id} workspace={workspace} shown={flip} header={(terminal) => header(true, terminal)} />;
-
-  return (<>
-    <section className="chat-panel" aria-label="Chat" hidden={flip}>
-      {header(false)}
-      {screen.name === "lookup" && <ChatScreenContext id={screen.id} label={screen.id} />}
-      {screen.name === "ref" && <ChatScreenRef kind={screen.kind} seq={screen.seq} />}
-      <div className="chat-lines" ref={stage} role="log" aria-label="Messages" aria-live="polite"
-        onScroll={(event) => {
-          const element = event.currentTarget;
-          stuck.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
-        }}>
-        {notice && <p className="chat-note" role="status">{notice}</p>}
-        {loading && <p className="chat-note">Loading the conversation…</p>}
-        {((head.isError && !goneHead) || records.isError) && <p role="alert" className="chat-error">Could not load the conversation.{" "}
-          <button className="btn ghost" type="button" onClick={() => void (head.isError ? head.refetch() : records.refetch())}>Retry</button></p>}
-        {unopened && !stale && sentAt === null && <p className="chat-note" role="status">
-          This conversation has no session on this server yet. It starts when the assistant hears its first line.</p>}
-        {stale && <p className="chat-error" role="alert">The assistant has not opened this chat. Your line may not have been
-          delivered; send it again.</p>}
-        {lines.length === 0 && !loading && !notice && !unopened && live && <p className="chat-note">
-          Say something to {partner?.actor ?? "your partner"}.</p>}
-        {head.data && head.data.account !== me && <p className="chat-note">Started by {head.data.account}.</p>}
-        {head.data?.forked_from && <p className="chat-note">Forked from{" "}
-          <button className="btn ghost" type="button" onClick={() => void openConversation(head.data!.forked_from!)}>another chat</button>.</p>}
-        {head.data && head.data.forks > 0 && <p className="chat-note">{forkedTimes(head.data.forks)}</p>}
-        {outsider && <p className="chat-note" role="status">{outsiderNote(head.data!.audience)}</p>}
-        {lines.map((line) => <ChatLine key={line.key} line={line} me={me} kinds={kinds}
-          onFork={forkable ? pickFork : undefined} onFollowUp={line.key === followUpKey ? launchFollowUp : undefined} />)}
-        {/* One working line, the last tool call's name, in place of a status the partner no longer sends.
-            The reply being written takes its place, drawn as the answer will be; busy, so the log
-            announces the answer once, when it is stored, and not each word on its way. */}
-        {reply
-          ? <article className="chat-line chat-line-assistant chat-line-partial" aria-busy="true">
-              <Markdown source={reply.text} kinds={kinds} className="md chat-line-body" images={false} />
-            </article>
-          : statusText && <p className="chat-status" role="status">{statusText}</p>}
-        {workspace && writing && !live && !loading && <ChatOff local={workspace.partner_choice === "local"} />}
-      </div>
-      {forkAt && <p className="chat-fork-banner" role="status">
-        Your next message starts a fork of this chat after “{forkAt.quote}”.{" "}
-        <button className="btn ghost" type="button" onClick={() => setForkAt(null)}>Cancel fork</button>
-      </p>}
-      <p className="chat-notice">{chatNotice(head.data?.audience ?? "open", orgMode)}</p>
-      {draft.problem && <p role="status" className="chat-note">{draft.problem}</p>}
-      <Composer send={send} target={target} draft={draft} field={(props, edit) => <RecordField field={props} edit={edit} />}
-        history={{ key: JSON.stringify([me, workspaceId, conversationId]), entries: lines
-          .filter((line) => line.role === "user" && line.author === me && (!line.pending || !sending.has(line.key.slice(PENDING.length))))
-          .map((line) => line.text) }}
-        enabled={live && !reading && !loading && !outsider} editable pending={sending.size > 0}
-        placeholder={reading ? "Loading the conversation…" : outsider ? closedTo(head.data!.audience)
-          : live ? `Ask ${partner?.actor ?? "your partner"}…` : readOnly(partner?.status, writing)}
-        check={checkText} retryable={resendable}
-        failure={failureText} />
-    </section>
-    {terminalSide}
-  </>);
+  return <section className="chat-panel" aria-label="Chat">
+    <ChatWorkstreamHeader workspace={workspace} head={head.data ?? undefined}
+      onHide={hideCurrentStation} onClear={clearCurrentChat}
+      onDeleted={(conversation) => chatDeleted(conversation)} />
+    {screen.name === "lookup" && <ChatScreenContext id={screen.id} label={screen.id} />}
+    {screen.name === "ref" && <ChatScreenRef kind={screen.kind} seq={screen.seq} />}
+    <div className="chat-lines" ref={stage} role="log" aria-label="Messages" aria-live="polite"
+      onScroll={(event) => {
+        const element = event.currentTarget;
+        stuck.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+      }}>
+      {notice && <p className="chat-note" role="status">{notice}</p>}
+      {loading && <p className="chat-note">Loading the conversation…</p>}
+      {((head.isError && !goneHead) || records.isError) && <p role="alert" className="chat-error">Could not load the conversation.{" "}
+        <button className="btn ghost" type="button" onClick={() => void (head.isError ? head.refetch() : records.refetch())}>Retry</button></p>}
+      {unopened && !stale && sentAt === null && <p className="chat-note" role="status">
+        This conversation has no session on this server yet. It starts when the assistant hears its first line.</p>}
+      {stale && <p className="chat-error" role="alert">The assistant has not opened this chat. Your line may not have been
+        delivered; send it again.</p>}
+      {lines.length === 0 && !loading && !notice && !unopened && live && <p className="chat-note">
+        Say something to {partner?.actor ?? "your partner"}.</p>}
+      {head.data && head.data.account !== me && <p className="chat-note">Started by {head.data.account}.</p>}
+      {head.data?.forked_from && <p className="chat-note">Forked from{" "}
+        <button className="btn ghost" type="button" onClick={() => void openConversation(head.data!.forked_from!)}>another chat</button>.</p>}
+      {head.data && head.data.forks > 0 && <p className="chat-note">{forkedTimes(head.data.forks)}</p>}
+      {outsider && <p className="chat-note" role="status">{outsiderNote(head.data!.audience)}</p>}
+      {lines.map((line) => <ChatLine key={line.key} line={line} me={me} kinds={kinds}
+        onFork={forkable ? pickFork : undefined} onFollowUp={line.key === followUpKey ? launchFollowUp : undefined}
+        onAnswer={answerable ? answerStable : undefined} />)}
+      {/* One working line, the last tool call's name, in place of a status the partner no longer sends.
+          The reply being written takes its place, drawn as the answer will be; busy, so the log
+          announces the answer once, when it is stored, and not each word on its way. */}
+      {reply
+        ? <article className="chat-line chat-line-assistant chat-line-partial" aria-busy="true">
+            <Markdown source={reply.text} kinds={kinds} className="md chat-line-body" images={false} />
+          </article>
+        : statusText && <p className="chat-status" role="status">{statusText}</p>}
+      {workspace && writing && !live && !loading && <ChatOff provider={stationProvider(workspace)} />}
+    </div>
+    {forkAt && <p className="chat-fork-banner" role="status">
+      Your next message starts a fork of this chat after “{forkAt.quote}”.{" "}
+      <span className="chat-fork-runs">{forkRuns(workspace)}</span>{" "}
+      <button className="btn ghost" type="button" onClick={() => setForkAt(null)}>Cancel fork</button>
+    </p>}
+    <p className="chat-notice">{chatNotice(head.data?.audience ?? "open", orgMode)}</p>
+    {draft.problem && <p role="status" className="chat-note">{draft.problem}</p>}
+    {goal && <p className="chat-note chat-goal">{goalStrip(goal)}</p>}
+    <Composer send={send} target={target} draft={draft} field={(props, edit) => <RecordField field={props} edit={edit} />}
+      history={{ key: JSON.stringify([me, workspaceId, conversationId]), entries: lines
+        .filter((line) => line.role === "user" && line.author === me && (!line.pending || !sending.has(line.key.slice(PENDING.length))))
+        .map((line) => line.text) }}
+      enabled={live && !reading && !loading && !outsider} editable pending={sending.size > 0}
+      placeholder={reading ? "Loading the conversation…" : outsider ? closedTo(head.data!.audience)
+        : live ? `Ask ${partner?.actor ?? "your partner"}…` : readOnly(partner?.status, writing)}
+      check={checkText} retryable={resendable}
+      failure={failureText} />
+  </section>;
 }
 
 /** The page a message is sent from and the up to 8 pages before it, oldest first. */
@@ -470,15 +481,17 @@ function closedTo(audience: string): string {
   return audience === "staff" ? "This chat is staff only" : "This chat is not shared with you";
 }
 
-/** What to do when no partner is live: two lines, then the commands that start a local helper. */
-function ChatOff({ local }: { readonly local: boolean }) {
+/** What Chat says when its provider is not live: the assistant, or a CLI no run holds. */
+function ChatOff({ provider }: { readonly provider: Provider }) {
   return <div className="chat-off">
-    <p className="chat-note">{local
-      ? "Start your local helper:"
-      : "Ask your admin to set up a shared Chat assistant, or set up a local one:"}</p>
-    {!local && <p className="chat-note"><a href="#/settings">Use a local helper in Settings</a></p>}
-    <HelperCommands tokens="link" />
+    <p className="chat-note">{offCopy(provider)}</p>
   </div>;
+}
+
+/** Why a chat's provider is off, in words for each provider. */
+export function offCopy(provider: Provider): string {
+  return provider === "assistant" ? "Chat is off: the assistant is not connected."
+    : `Chat is off: no ${provider} run holds this chat. Pick a machine.`;
 }
 
 /**
@@ -486,7 +499,7 @@ function ChatOff({ local }: { readonly local: boolean }) {
  * so the panel's renders (a status, the canvas around it) leave each line's
  * Markdown alone unless its text changed. A line by someone else says who.
  */
-const ChatLine = memo(function ChatLine({ line, me, kinds, onFork, onFollowUp }: {
+const ChatLine = memo(function ChatLine({ line, me, kinds, onFork, onFollowUp, onAnswer }: {
   readonly line: Line;
   readonly me: string;
   readonly kinds: readonly string[];
@@ -494,17 +507,25 @@ const ChatLine = memo(function ChatLine({ line, me, kinds, onFork, onFollowUp }:
   readonly onFork?: (at: LineAt, quote: string) => void;
   /** Launch the follow-up a recap proposes; absent where none is offered on this line. */
   readonly onFollowUp?: () => void;
+  /** Answer the prompt a claude run asked; absent where Chat cannot post an answer now. */
+  readonly onAnswer?: AnswerPrompt;
 }) {
-  const other = line.role === "user" && line.author !== null && line.author !== me;
+  const sender = line.role === "user" || line.role === "command";
+  const other = sender && line.author !== null && line.author !== me;
   const at = line.at;
   // Hovering a line shows when it was sent, in the reader's own time zone.
   const when = line.sentAt ? sentWhen(line.sentAt) : undefined;
+  if (line.prompt) return <PromptCard prompt={line.prompt} kinds={kinds} onAnswer={onAnswer} />;
   if (line.role === "relay") {
     // What the person told agents from the Console: "you → lead-2: text", neither a message to the partner nor an answer.
     const who = line.author === null || line.author === me ? "you" : line.author.split("@")[0];
     return <article className="chat-line chat-line-relay" title={when}><p className="chat-line-body">{who} {line.text}</p></article>;
   }
-  return <article className={`chat-line chat-line-${line.role}${other ? " chat-line-other" : ""}${line.pending ? " chat-line-pending" : ""}`} title={when}>
+  // A goal and what a CLI printed for a command are notes in the log, not anyone's words.
+  if (line.role === "goal" || line.role === "reply") return <article className="chat-line chat-line-note" title={when}><p className="chat-line-body">{line.text}</p></article>;
+  // A command is its sender's line, set on the sender's side in monospace.
+  const side = line.role === "command" ? "user chat-line-command" : line.role;
+  return <article className={`chat-line chat-line-${side}${other ? " chat-line-other" : ""}${line.pending ? " chat-line-pending" : ""}`} title={when}>
     {other && <span className="chat-line-author">{line.author}</span>}
     {line.role === "assistant"
       ? <Markdown source={line.text} kinds={kinds} className="md chat-line-body" images={false} />
@@ -531,6 +552,25 @@ function sentWhen(iso: string): string {
 function quoted(text: string): string {
   const flat = text.split(/\s+/).join(" ").trim();
   return flat.length > QUOTED ? `${flat.slice(0, QUOTED - 1)}…` : flat;
+}
+
+/**
+ * Where a fork will run, which is the station's provider: the assistant by its name; a CLI on its live run's machine
+ * and folder, or with no run yet, which the person picks a machine for after the fork.
+ */
+function forkRuns(workspace: WorkspaceState | null): string {
+  const provider = stationProvider(workspace);
+  const name = providerName(provider, workspace);
+  if (provider === "assistant") return `The fork runs on ${name}`;
+  const partner = workspace?.partner ?? null;
+  if (partner?.status !== "live") return `The fork runs on ${name} (no run yet: pick a machine after)`;
+  const folder = partner.cwd ? ` in ${partner.cwd}` : "";
+  return `The fork runs on ${name} on ${partner.machine ?? "your machine"}${folder}`;
+}
+
+/** The goal strip above the box: what the run is working toward, its last check, and how to stop it. */
+function goalStrip({ condition, lastReason }: Goal): string {
+  return `Goal: ${condition}${lastReason ? ` · last check: ${lastReason}` : ""} · /goal clear stops it`;
 }
 
 function forkedTimes(count: number): string {

@@ -488,12 +488,12 @@ def chat_beginnings_sql(*, assistant: str) -> str:
     """Return the ``FROM`` and ``WHERE`` of the sessions that may begin a science chat.
 
     A chat is begun by the oldest session under its id that the assistant opened, or
-    that a key of the session's own account opened, as a person's helper opens
-    theirs. Any writer's key may open a session under a ``chat:`` id, but only as
-    its own account and after the chat's first session, so neither that nor a
-    session a rotated assistant key opens later for a poster begins it. The caller
-    adds the id test and orders by ``began.created, began.id``: oldest is by
-    ``created``, which no route writes, never by ``started``, which one does.
+    that a key of the session's own account opened. Any writer's key may open a
+    session under a ``chat:`` id, but only as its own account and after the chat's
+    first session, so neither that nor a session a rotated assistant key opens later
+    for a poster begins it. The caller adds the id test and orders by
+    ``began.created, began.id``: oldest is by ``created``, which no route writes, never
+    by ``started``, which one does.
 
     Args:
       assistant: SQL naming the assistant's email, such as ``$2``; a NULL or empty

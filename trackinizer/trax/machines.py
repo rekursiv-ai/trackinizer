@@ -316,7 +316,7 @@ class Machines(Command):
         client = client_factory()
         url = client.base_url
         own = name is None
-        name = _host_name() if name is None else name
+        name = host_name() if name is None else name
         serve = own or env("TRAX_MACHINE_TERMINAL") == "1"
         direct = _direct_link() if serve else None
         machine_host.connect(
@@ -337,8 +337,20 @@ class Machines(Command):
         )
 
 
-def _host_name() -> str:
-    """Return this computer's short hostname as a machine name."""
+def host_name() -> str:
+    """Return this computer's short hostname as a machine name.
+
+    ``connect`` with no name enrolls this computer under it, and ``trax run`` says it
+    runs on the machine of that name.
+
+    Returns:
+      name: The hostname's first label, lowercased, each character a machine name
+        may not hold made ``-``, trimmed of ``-`` and cut to 63.
+
+    Raises:
+      ClientError: The result is reserved or still not a machine name.
+
+    """
     name = re.sub(r"[^a-z0-9-]", "-", socket.gethostname().split(".")[0].lower())
     name = name.strip("-")[:63]
     _check_name(name)

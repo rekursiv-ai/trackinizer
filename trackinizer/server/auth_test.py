@@ -362,7 +362,7 @@ class TestCurrentUser:
         secret, _ = generate_token()
         engine = FakeEngine()
         # No matching prefix row in the DB.
-        engine.conn.fetch.return_value = []
+        engine.conn.fetch.return_value = list[dict[str, object]]()
         with pytest.raises(HTTPException) as exc_info:
             await current_user(_request_with(engine, f"Bearer {secret}"))
         assert exc_info.value.status_code == 401
@@ -379,7 +379,7 @@ class TestCurrentUser:
         # prefixes exist. The dummy verify is the constant-time floor.
         secret, _ = generate_token()
         engine = FakeEngine()
-        engine.conn.fetch.return_value = []  # `prefix` miss.
+        engine.conn.fetch.return_value = list[dict[str, object]]()  # `prefix` miss.
 
         calls: list[str] = []
         real_verify = auth.verify_secret
@@ -403,7 +403,7 @@ class TestCurrentUser:
         # returning no rows, mirroring what the live query would do.
         secret, _ = generate_token()
         engine = FakeEngine()
-        engine.conn.fetch.return_value = []
+        engine.conn.fetch.return_value = list[dict[str, object]]()
         with pytest.raises(HTTPException) as exc_info:
             await current_user(_request_with(engine, f"Bearer {secret}"))
         assert exc_info.value.status_code == 401
@@ -700,7 +700,7 @@ class TestVerifiedBearerCache:
         # ``test_prefix_miss_runs_dummy_scrypt_for_constant_time`` closes.
         secret, _ = generate_token()
         engine = FakeEngine()
-        engine.conn.fetch.return_value = []
+        engine.conn.fetch.return_value = list[dict[str, object]]()
         store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
@@ -1065,7 +1065,7 @@ class TestCurrentHuman:
         with pytest.raises(HTTPException) as refused:
             await current_human(service)
         assert refused.value.status_code == 403
-        assert "service account" in str(refused.value.detail)
+        assert "service account" in refused.value.detail
 
     @pytest.mark.asyncio
     async def test_a_session_resolves_only_a_person(self) -> None:
@@ -1741,7 +1741,7 @@ class TestUserOf:
     async def test_an_unknown_bearer_is_401_invalid_bearer_token(self) -> None:
         secret, _ = generate_token()
         engine = FakeEngine()
-        engine.conn.fetch.return_value = []
+        engine.conn.fetch.return_value = list[dict[str, object]]()
 
         with pytest.raises(HTTPException) as refused:
             await user_of(_request_with(engine, f"Bearer {secret}"))

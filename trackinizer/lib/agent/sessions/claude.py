@@ -2148,7 +2148,7 @@ def _read_user(
         extra["message"] = residual_message
     if list(message) != ["role", *residual_message, "content"]:
         extra["$message_keys"] = list(message)
-    if "content" in message and not isinstance(content, str | list):
+    if "content" in message and not isinstance(content, (str, list)):
         extra["$content_value"] = cast(PlainTree, content)
     if isinstance(content, str):
         extra["$bare"] = True

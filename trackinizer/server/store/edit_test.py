@@ -357,7 +357,7 @@ class TestCoverageStoreEdits:
             target_uuid = new[0]
             conn.fetch.side_effect = [
                 [{"id": target_uuid, "kind": "CodeChange"}],
-                [],
+                list[dict[str, object]](),
             ]
         set_field_row(conn, {column: old, "kind": kind})
         store, _engine = make_store(conn)
@@ -412,7 +412,7 @@ class TestAddCostFloor:
                     "old_resource": 0.0,
                     "new_agent": agent,
                     "new_resource": resource,
-                    "current_subscribers": [],
+                    "current_subscribers": list[str](),
                 }
             return None
 
@@ -450,7 +450,7 @@ class TestAddCostFloor:
                     "old_resource": 0.0,
                     "new_agent": agent,
                     "new_resource": resource,
-                    "current_subscribers": [],
+                    "current_subscribers": list[str](),
                 }
             return None
 

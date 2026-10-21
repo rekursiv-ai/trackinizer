@@ -228,7 +228,7 @@ def test_existing_source_link_is_healthy_and_preserved(
     destination.parent.mkdir(parents=True)
     destination.symlink_to(source, target_is_directory=True)
     args = ["doctor", "--target", "codex", "--project", "--offline"]
-    for operation in ([], ["--fix"], ["--uninstall"]):
+    for operation in (list[str](), ["--fix"], ["--uninstall"]):
         cli.parse_and_run([*args, *operation], client_factory=_unexpected_server)
         assert destination.is_symlink()
         assert destination.resolve() == source

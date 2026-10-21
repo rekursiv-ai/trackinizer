@@ -176,15 +176,15 @@ class TestCoverageStoreReads:
         conn.fetch.side_effect = [
             # list_kind: main select, then bulk-edges outbound + inbound.
             [self._row(kind="Issue", priority=20)],
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
             # next_issue: edge_fetch outbound + inbound for the returned row.
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
             # proves_belief: main select, then bulk-edges outbound + inbound.
             [self._row(kind="Experiment", codechanges=[], outcome="ok")],
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
             # what_changed_for_me: change_log rows.
             [
                 {
@@ -233,7 +233,11 @@ class TestCoverageStoreReads:
         bounds bind every interval's present sides.
         """
         conn = make_conn()
-        conn.fetch.side_effect = [[], [], []]  # `main` select + bulk-edges.
+        conn.fetch.side_effect = [
+            list[dict[str, object]](),
+            list[dict[str, object]](),
+            list[dict[str, object]](),
+        ]  # `main` select + bulk-edges.
         store, _engine = make_store(conn)
         await store.list_kind(
             "Issue",
@@ -285,7 +289,7 @@ class TestListKindFilterLowering:
     async def sql_for(cls, *filters: Filter, limit: int = 5) -> str:
         """Return the SELECT ``list_kind`` issues for ``filters``."""
         conn = make_conn()
-        conn.fetch.side_effect = [[], []]
+        conn.fetch.side_effect = [list[dict[str, object]](), list[dict[str, object]]()]
         store, _engine = make_store(conn)
         await store.list_kind("Issue", limit=limit, filters=filters)
         sql, *_params = conn.fetch.call_args_list[0].args
@@ -294,7 +298,7 @@ class TestListKindFilterLowering:
     @pytest.mark.asyncio
     async def test_lowers_an_equality_filter_into_sql(self) -> None:
         conn = make_conn()
-        conn.fetch.side_effect = [[], []]
+        conn.fetch.side_effect = [list[dict[str, object]](), list[dict[str, object]]()]
         store, _engine = make_store(conn)
 
         await store.list_kind(
@@ -317,7 +321,7 @@ class TestListKindFilterLowering:
         the whole reason the post-filter path exists (Issue#256).
         """
         conn = make_conn()
-        conn.fetch.side_effect = [[], []]
+        conn.fetch.side_effect = [list[dict[str, object]](), list[dict[str, object]]()]
         store, _engine = make_store(conn)
 
         await store.list_kind(
@@ -351,7 +355,7 @@ class TestListKindFilterLowering:
     async def test_lowers_presence_ops_without_binding_an_operand(self) -> None:
         """``isnull`` carries no value, so it must not consume a placeholder."""
         conn = make_conn()
-        conn.fetch.side_effect = [[], []]
+        conn.fetch.side_effect = [list[dict[str, object]](), list[dict[str, object]]()]
         store, _engine = make_store(conn)
 
         await store.list_kind(
@@ -442,7 +446,7 @@ class TestListKindAudiences:
     ) -> tuple[str, list[object]]:
         """Return the SELECT ``list_kind`` issues for a caller that reads staff too."""
         conn = make_conn()
-        conn.fetch.side_effect = [[], []]
+        conn.fetch.side_effect = [list[dict[str, object]](), list[dict[str, object]]()]
         store, _engine = make_store(conn)
         await store.list_kind(
             kind,

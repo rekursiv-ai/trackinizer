@@ -12,6 +12,7 @@ from trackinizer.wire import wire_terminals
 from trackinizer.wire.wire_terminals import (
     DirectSignal,
     OpenTerminal,
+    TerminalMachine,
     TerminalOpened,
     TerminalTicket,
     TerminalWait,
@@ -136,6 +137,127 @@ def test_the_ice_servers_default_to_none_and_are_stun_only() -> None:
     for bad in (["turn:relay.example.org"], ["stun:a b"], ["stun:x"] * 5):
         with pytest.raises(pydantic.ValidationError):
             TerminalOpened.model_validate({**opened, "ice_servers": bad})
+
+
+def test_an_open_is_a_login_shell_unless_it_names_a_command() -> None:
+    opened = OpenTerminal(machine="gx10", rows=24, cols=80)
+    assert (opened.command, opened.attach, opened.run_name) == (None, None, None)
+
+
+def test_an_open_starts_a_trax_run_of_an_allowed_cli() -> None:
+    session_id = uuid.UUID(int=21_056)
+    opened = OpenTerminal(
+        machine="gx10",
+        rows=24,
+        cols=80,
+        command="claude",
+        attach=session_id,
+        run_name="chat-21056",
+    )
+    assert (opened.command, opened.attach, opened.run_name) == (
+        "claude",
+        session_id,
+        "chat-21056",
+    )
+    codex = OpenTerminal(machine="gx10", rows=24, cols=80, command="codex")
+    assert codex.command == "codex"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"attach": str(uuid.UUID(int=1))},
+        {"run_name": "chat-1"},
+        {"cwd": "~/project"},
+    ],
+)
+def test_an_attach_a_run_name_or_a_folder_without_a_command_is_refused(
+    extra: dict[str, object],
+) -> None:
+    base = {"machine": "gx10", "rows": 24, "cols": 80}
+    assert OpenTerminal.model_validate({**base, "command": "claude", **extra})
+    with pytest.raises(pydantic.ValidationError):
+        OpenTerminal.model_validate({**base, **extra})
+
+
+@pytest.mark.parametrize(
+    "folder",
+    ["/", "/srv/project", "~", "~/project", "/" + "x" * 1_023],
+)
+def test_a_run_folder_is_absolute_or_home_relative_and_takes_1024_characters(
+    folder: str,
+) -> None:
+    base = {"machine": "gx10", "rows": 24, "cols": 80, "command": "claude"}
+    assert OpenTerminal.model_validate({**base, "cwd": folder}).cwd == folder
+
+
+@pytest.mark.parametrize(
+    "folder",
+    ["loop", "./loop", "", "/a\nb", "/a\x1b[31mred", "/" + "x" * 1_024],
+)
+def test_a_run_folder_that_is_relative_empty_or_has_a_control_is_refused(
+    folder: str,
+) -> None:
+    base = {"machine": "gx10", "rows": 24, "cols": 80, "command": "claude"}
+    with pytest.raises(pydantic.ValidationError):
+        OpenTerminal.model_validate({**base, "cwd": folder})
+
+
+@pytest.mark.parametrize("command", ["bash", "sh", "Claude", ""])
+def test_a_command_outside_the_two_clis_is_refused(command: str) -> None:
+    base = {"machine": "gx10", "rows": 24, "cols": 80}
+    assert OpenTerminal.model_validate({**base, "command": "codex"})
+    with pytest.raises(pydantic.ValidationError):
+        OpenTerminal.model_validate({**base, "command": command})
+
+
+@pytest.mark.parametrize("run_name", ["Bad Name", "-leading", "x" * 64, ""])
+def test_a_run_name_matches_the_machine_name_pattern(run_name: str) -> None:
+    base = {"machine": "gx10", "rows": 24, "cols": 80, "command": "claude"}
+    assert OpenTerminal.model_validate({**base, "run_name": "chat-1"})
+    with pytest.raises(pydantic.ValidationError):
+        OpenTerminal.model_validate({**base, "run_name": run_name})
+
+
+def test_the_host_receives_the_run_fields_on_the_wait() -> None:
+    session_id = uuid.UUID(int=21_056)
+    wait = TerminalWait.model_validate(
+        {
+            "terminal_id": uuid.UUID(int=1),
+            "opener": "a@x.y",
+            "rows": 24,
+            "cols": 80,
+            "command": "codex",
+            "attach": str(session_id),
+            "run_name": "chat-21056",
+        },
+    )
+    assert (wait.command, wait.attach, wait.run_name) == (
+        "codex",
+        session_id,
+        "chat-21056",
+    )
+    plain = TerminalWait(terminal_id=uuid.UUID(int=1), opener="a@x.y", rows=1, cols=1)
+    assert (plain.command, plain.attach, plain.run_name) == (None, None, None)
+
+
+def test_the_host_is_handed_the_folder_its_run_starts_in() -> None:
+    wait = {"terminal_id": uuid.UUID(int=1), "opener": "a@x.y", "rows": 1, "cols": 1}
+    handed = TerminalWait.model_validate(
+        {**wait, "command": "claude", "cwd": "~/project"},
+    )
+    assert handed.cwd == "~/project"
+    plain = TerminalWait(terminal_id=uuid.UUID(int=1), opener="a@x.y", rows=1, cols=1)
+    assert plain.cwd is None
+    with pytest.raises(pydantic.ValidationError):
+        TerminalWait.model_validate({**wait, "cwd": "loop"})
+
+
+def test_a_machine_lists_the_clis_its_facts_name_and_defaults_to_none() -> None:
+    machine = {"name": "gx10", "status": "online", "terminal_ready": True}
+    assert TerminalMachine.model_validate({**machine, "confirmed": True}).clis == []
+    listed = {**machine, "confirmed": True, "clis": ["claude", "codex"]}
+    assert TerminalMachine.model_validate(listed).clis == ["claude", "codex"]
 
 
 if __name__ == "__main__":

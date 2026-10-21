@@ -896,6 +896,10 @@ CREATE TABLE IF NOT EXISTS session_manifests (
     -- Live prefix bound: every reader takes ``idx < records``, so a file that
     -- shrank leaves its tail rows inert rather than deleted.
     records     INTEGER NOT NULL CHECK (records >= 0),
+    -- The key whose first write opened the part. A science chat's part is
+    -- written by that key alone; NULL for a part opened before this column, or
+    -- without auth, which keeps the chat's rule (its opener's key alone).
+    opened_by_api_key_id UUID,
     PRIMARY KEY (session_id, part),
     -- Serializes part assignment: two appends racing on an unseen file both
     -- compute max(part)+1, and the loser re-reads the winner's.
@@ -980,7 +984,8 @@ CREATE TABLE IF NOT EXISTS machines (
     facts          JSONB NOT NULL DEFAULT '{}'
                    CHECK (jsonb_typeof(facts) = 'object' AND octet_length(facts::text) <= 8192),
     owner          TEXT,
-    confirmed_at   TIMESTAMPTZ
+    confirmed_at   TIMESTAMPTZ,
+    last_run_cwd   TEXT
 );
 
 -- One-use tokens that let a host join as a machine, and the credentials it joins

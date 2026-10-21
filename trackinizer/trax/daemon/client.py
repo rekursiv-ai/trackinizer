@@ -62,9 +62,8 @@ _VALUE_OPERATORS: Final[frozenset[str]] = frozenset({"to"})
 
 # Verbs that must run in the calling process. ``run`` spawns a CLI on a PTY
 # whose master fd it holds and mirrors the terminal both ways, so it cannot
-# execute in a daemon that owns neither; ``helper`` serves until the user stops
-# it, and a daemon request would hold it and its CLIs hostage.
-_LOCAL_ONLY_VERBS: Final[frozenset[str]] = frozenset({"run", "helper"})
+# execute in a daemon that owns neither.
+_LOCAL_ONLY_VERBS: Final[frozenset[str]] = frozenset({"run"})
 
 # The verbs after ``machine NAME`` that must run in the calling process.
 _MACHINE_HOST_VERBS: Final[frozenset[str]] = frozenset({"enroll", "connect"})
@@ -258,7 +257,7 @@ def _try_once(argv: Sequence[str], path: Path, source_version: str) -> Response 
             return None
         try:
             return Response.from_json(read_frame(conn))
-        except (OSError, ValueError, ConnectionError) as err:
+        except (OSError, ValueError) as err:
             raise DaemonRequestLostError(
                 f"the daemon accepted this command but did not report its result: {err}",
             ) from err

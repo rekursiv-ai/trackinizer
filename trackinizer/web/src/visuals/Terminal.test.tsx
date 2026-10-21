@@ -271,7 +271,7 @@ async function refused(status: number, code: string, message: string): Promise<A
 test.each([
   ["terminal_not_enabled", 409, "Start the host with `trax machine connect`: that one command turns terminals on."],
   ["terminal_limit", 429, "Too many terminals opened just now; wait a minute."],
-  ["terminal_unconfirmed", 409, "Allow terminals on this machine first: open Chat's terminal side and click Allow."],
+  ["terminal_unconfirmed", 409, "Allow terminals on this machine first: open Chat's provider card and click Allow."],
   ["terminal_forbidden", 403, "Terminals are not available on a server without sign-in."],
 ])("an open refused with %s says what to do", async (code, status, text) => {
   vi.mocked(openTerminal).mockRejectedValue(await refused(status, code, "the server's own words"));
@@ -390,10 +390,10 @@ test("who asked is the placing user when not the viewer, the shared assistant, o
   tile("q1", "grace@example.com", null);
   expect(await screen.findByText("Opened at grace@example.com's request.")).toBeTruthy();
   cleanup();
-  tile("q2", null, { id: "w1", partner: { kind: "shared", actor: "scout" } });
+  tile("q2", null, { id: "w1", partner: { provider: "assistant", actor: "scout" } });
   expect(await screen.findByText("Opened at scout's request.")).toBeTruthy();
   cleanup();
-  tile("q3", "ada@example.com", { id: "w1", partner: { kind: "local", actor: null } });
+  tile("q3", "ada@example.com", { id: "w1", partner: null });
   expect(await screen.findByText("Opened at your agent's request.")).toBeTruthy();
 });
 

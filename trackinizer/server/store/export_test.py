@@ -20,7 +20,10 @@ async def test_query_budget_is_set_before_reading_a_selected_graph(
 ) -> None:
     """Bound selector reads while retaining the whole-graph backup's query budget."""
     store, engine = make_store()
-    engine.conn.fetch.side_effect = [asyncpg.QueryCanceledError("query stopped"), []]
+    engine.conn.fetch.side_effect = [
+        asyncpg.QueryCanceledError("query stopped"),
+        list[dict[str, object]](),
+    ]
     selector = (Filter(field="labels", op="re", value="x"),) if selected else ()
 
     with pytest.raises(asyncpg.QueryCanceledError):
@@ -64,12 +67,12 @@ async def test_store_preserves_selected_rows_external_references() -> None:
         [{"name": "schema.sql"}],
         catalog,
         [{"id": inquiry_id, "experiment_codechanges": [codechange_id]}],
-        [],
+        list[dict[str, object]](),
         [{"id": audit_id, "subject_id": inquiry_id, "caused_by": cause_id}],
-        [],
-        [],
-        [],
-        [],
+        list[dict[str, object]](),
+        list[dict[str, object]](),
+        list[dict[str, object]](),
+        list[dict[str, object]](),
     ]
     engine.conn.fetchval.return_value = 0
 

@@ -77,18 +77,23 @@ from trackinizer.server.visuals.workspace_store import (
     settings_refs_for_chat,
 )
 from trackinizer.server.visuals.workspaces import (
+    NO_MACHINE_REASON,
     CampaignSetup,
     NameChat,
+    NewStation,
     SessionCampaign,
     WorkspaceSettingsRefs,
     WorkspaceState,
 )
 from trackinizer.server.visuals.workstreams import (
-    NewWorkspace,
     SetStationWorkstream,
     open_scratch,
 )
-from trackinizer.wire.wire_science_chat import ChatHead
+from trackinizer.wire.wire_science_chat import (
+    SCIENCE_CHAT_LABEL,
+    ChatHead,
+    chat_session_id,
+)
 
 
 if TYPE_CHECKING:
@@ -98,6 +103,7 @@ if TYPE_CHECKING:
     from trackinizer.server.auth import AuthIdentity
     from trackinizer.server.chat_hub import Frame, Subscription
     from trackinizer.server.visuals.catalog import VisualCatalogBody
+    from trackinizer.wire.wire_science_chat import ChatProvider
 
 
 async def _clear_chat_fake(
@@ -161,11 +167,14 @@ async def _new_workspace_fake(
     inbound: InboundQueue,
     assistant: Assistant | None,
     workstream_id: uuid.UUID | None = None,
+    provider: ChatProvider | None = None,
     calls: list[tuple[str, object]],
     state: WorkspaceState,
 ) -> WorkspaceState:
     del engine, user_id, catalog, inbound, assistant
     calls.append(("new", workstream_id))
+    if provider is not None:
+        calls.append(("provider", provider))
     return state
 
 
@@ -745,7 +754,11 @@ async def test_browser_chat_reaches_the_assistant_with_the_page_and_no_pinned_re
         "actor": KB_ACTOR,
         "cli": "codex",
         "status": "live",
-        "kind": "shared",
+        "provider": "assistant",
+        "machine": None,
+        "run_name": None,
+        "cwd": None,
+        "label": KB_ACTOR,
     }
     async with store.engine.acquire() as conn:
         await conn.execute(
@@ -1322,7 +1335,11 @@ async def test_a_canvas_talks_to_the_assistant_however_its_session_is_named(
         "actor": KB_ACTOR,
         "cli": "codex",
         "status": "live",
-        "kind": "shared",
+        "provider": "assistant",
+        "machine": None,
+        "run_name": None,
+        "cwd": None,
+        "label": KB_ACTOR,
     }
     sent = await send_chat(
         client,
@@ -2554,11 +2571,16 @@ async def test_new_station_selects_a_workstream_after_opening_scratch(
     made = await workspace_routes.new_workspace_route(
         request=cast("Request", MagicMock()),
         identity=make_test_identity(api_key_id=None),
-        body=NewWorkspace(workstream_id=chosen_id),
+        body=NewStation(workstream_id=chosen_id, provider="codex"),
     )
 
     assert made == state
-    assert calls == [("scratch", None), ("check", None), ("new", chosen_id)]
+    assert calls == [
+        ("scratch", None),
+        ("check", None),
+        ("new", chosen_id),
+        ("provider", "codex"),
+    ]
 
 
 @pytest.mark.db_pglite
@@ -2789,6 +2811,177 @@ async def _station_json(store: Store, workspace_id: uuid.UUID) -> dict[str, obje
             workspace_id,
         )
     return from_plain(station, dict[str, object])
+
+
+async def _new_station(
+    client: httpx2.AsyncClient,
+    body: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Make a station as the browser user; return its state."""
+    browser()
+    made = await client.post("/api/workspaces/new", json=body)
+    assert made.status_code == 200, made.text
+    return json_loads(made.content, dict[str, object])
+
+
+async def _chat_sessions(store: Store, *, conversation_id: object) -> list[object]:
+    """Return the ids of the sessions under a chat's id."""
+    async with store.engine.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id FROM inquiries WHERE agentsession_cli_session_id = $1",
+            f"chat:{conversation_id}",
+        )
+    return [str(row["id"]) for row in rows]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_new_chat_starts_on_the_provider_named_else_on_the_preference(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A CLI station is taken without a machine, with a session to start a run on."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            'UPDATE users SET preferences = \'{"chat_provider": "codex"}\' '
+            "WHERE id = $1",
+            TEST_USER_ID,
+        )
+
+    preferred = await _new_station(client)
+    named = await _new_station(client, {"provider": "assistant"})
+    unrunnable = await _new_station(client, {"provider": "claude"})
+
+    assert (preferred["provider"], named["provider"], unrunnable["provider"]) == (
+        "codex",
+        "assistant",
+        "claude",
+    )
+    assert named["conversation_id"] is None
+    for state in (preferred, unrunnable):
+        partner = from_plain(state["partner"], dict[str, object])
+        assert partner["status"] == "offline"
+        assert await _chat_sessions(
+            store,
+            conversation_id=state["conversation_id"],
+        ) == [
+            partner["session_id"],
+        ]
+    assert from_plain(unrunnable["reasons"], dict[str, object])["claude"] == (
+        NO_MACHINE_REASON.format(cli="claude")
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_choosing_a_cli_needs_a_machine_and_gives_the_chat_its_session(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The picker always has a session to attach a run to, and a retry makes no other."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    workspace_id = await open_workspace(client)
+
+    async def choose(provider: str) -> httpx2.Response:
+        return await client.post(
+            f"/api/workspaces/{workspace_id}/operations",
+            json={
+                "revision": await revision_of(client, workspace_id=workspace_id),
+                "operation": {"kind": "provider", "provider": provider},
+            },
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+        )
+
+    refused = await choose("claude")
+    assert refused.status_code == 409
+    assert from_plain(
+        json_loads(refused.content, dict[str, object])["detail"],
+        dict[str, object],
+    ) == {
+        "code": "provider_unavailable",
+        "message": NO_MACHINE_REASON.format(cli="claude"),
+    }
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO machines (name, updated_by, owner, confirmed_at, "
+            "host_instance, last_heartbeat, facts) VALUES ('laptop', $1, $1, now(), "
+            'gen_random_uuid(), now(), \'{"clis": ["claude"]}\')',
+            TEST_USER_EMAIL,
+        )
+
+    chosen = await choose("claude")
+    again = await choose("claude")
+
+    assert (chosen.status_code, again.status_code) == (200, 200)
+    state = json_loads(chosen.content, dict[str, object])
+    partner = from_plain(state["partner"], dict[str, object])
+    assert (state["provider"], partner["status"], partner["label"]) == (
+        "claude",
+        "offline",
+        "claude: no run",
+    )
+    assert from_plain(state["available"], dict[str, object])["claude"] is True
+    assert await _chat_sessions(store, conversation_id=state["conversation_id"]) == [
+        partner["session_id"],
+    ]
+    assert json_loads(again.content, dict[str, object])["partner"] == state["partner"]
+    back = await choose("assistant")
+    assert json_loads(back.content, dict[str, object])["provider"] == "assistant"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_choosing_a_cli_drops_the_assistants_hold_on_the_chat(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The assistant's poll of the chat would read as the run's until its lease ran out."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    workspace_id = await open_workspace(client)
+    conversation = uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE visual_workspaces SET station = station || "
+            "jsonb_build_object('conversation_id', $2::text) WHERE id = $1",
+            workspace_id,
+            str(conversation),
+        )
+        await conn.execute(
+            "INSERT INTO machines (name, updated_by, owner, confirmed_at, "
+            "host_instance, last_heartbeat, facts) VALUES ('laptop', $1, $1, now(), "
+            'gen_random_uuid(), now(), \'{"clis": ["claude"]}\')',
+            TEST_USER_EMAIL,
+        )
+    held = await seed_session(
+        store,
+        ASSISTANT,
+        actor=f"chat-{conversation.hex[:12]}",
+        cli_session_id=chat_session_id(conversation),
+        account=TEST_USER_EMAIL,
+        labels=[SCIENCE_CHAT_LABEL],
+    )
+
+    chosen = await client.post(
+        f"/api/workspaces/{workspace_id}/operations",
+        json={
+            "revision": await revision_of(client, workspace_id=workspace_id),
+            "operation": {"kind": "provider", "provider": "claude"},
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+
+    assert chosen.status_code == 200, chosen.text
+    partner = from_plain(
+        json_loads(chosen.content, dict[str, object])["partner"],
+        dict[str, object],
+    )
+    assert (partner["status"], partner["session_id"]) == ("offline", str(held))
+    inbound = cast("InboundQueue", app.state.inbound)
+    assert not inbound.has_poller(held)
 
 
 if __name__ == "__main__":

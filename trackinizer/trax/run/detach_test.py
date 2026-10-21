@@ -22,7 +22,9 @@ from trackinizer.trax.run.detach import HostRecord, launch, main
 
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator
+
+    from trackinizer.lib.posix.host import HostSpec
 
 
 # A slug as long as the campaign names whose launch failed when tmux could not
@@ -223,6 +225,17 @@ class TestCommands:
             ["beta", "starting"],
         ]
 
+    def test_ls_reads_the_directory_hosts_are_made_in(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Compared as text: a case-insensitive disk finds hosts under any spelling."""
+        made = detach._paths("alpha").parent
+        asked: list[Path] = []
+        monkeypatch.setattr(Path, "is_dir", _noting_is_dir(asked, Path.is_dir))
+        assert main(["ls"]) == 0
+        assert made in asked
+
     def test_ls_all_lists_each_host(self, capsys: pytest.CaptureFixture[str]) -> None:
         root = detach._paths("alpha")
         root.mkdir(parents=True)
@@ -331,6 +344,18 @@ class TestCommands:
             detach._write_record(root, _record(root, name="delta", address=address))
             with pytest.raises(SystemExit, match="'delta' is running"):
                 _ = launch("delta", command="sh", start=_never)
+
+    def test_launch_repeats_what_the_host_said_before_it_accepted(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The host loads a chat after the fork; its line still reaches the person."""
+        assert launch("eta", command="sh", start=_say_then_accept) == 0
+        said, up = capsys.readouterr().err.splitlines()
+        assert said == "[trax run] loaded 2 records"
+        assert (
+            up == "[trax run] eta is running detached; attach with: trax run attach eta"
+        )
 
 
 @pytest.mark.cli_python_subprocess
@@ -526,6 +551,29 @@ def _dead_pid() -> int:
     finished = subprocess.Popen([sys.executable, "-c", "pass"])
     _ = finished.wait()
     return finished.pid
+
+
+def _noting_is_dir(
+    asked: list[Path],
+    is_dir: Callable[[Path], bool],
+) -> Callable[[Path], bool]:
+    """Return ``is_dir`` that first notes each path it is asked about."""
+
+    def noted(path: Path) -> bool:
+        asked.append(path)
+        return is_dir(path)
+
+    return noted
+
+
+# Written to the descriptor, not ``sys.stderr``: the host points descriptor 2 at its
+# log, and pytest's capture replaces ``sys.stderr`` with a file of its own.
+def _say_then_accept(spec: HostSpec) -> int:
+    """Say one line, as a host loading a chat does, then accept and end."""
+    _ = os.write(2, b"[trax run] loaded 2 records\n")
+    assert spec.on_listening is not None
+    spec.on_listening()
+    return 0
 
 
 def _never(spec: object) -> int:

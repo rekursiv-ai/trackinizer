@@ -527,10 +527,16 @@ def _body(path: str) -> object:
             "backlinks": {"narrows": [peer, peer]},
         }
     if path.startswith("/api/web/get/"):
-        return {"self": {"kind": "Issue", "seq": 1}, "edges": {}, "backlinks": {}}
+        return {
+            "self": {"kind": "Issue", "seq": 1},
+            "edges": dict[str, list[dict[str, object]]](),
+            "backlinks": dict[str, list[dict[str, object]]](),
+        }
     if path == "/api/change_log":
         return [{"id": "c", "created": "2026-09-27T00:00:00+00:00"}]
-    return [] if path == "/api/web/search" else {}
+    return (
+        list[dict[str, object]]() if path == "/api/web/search" else dict[str, object]()
+    )
 
 
 if __name__ == "__main__":

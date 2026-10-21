@@ -1,10 +1,11 @@
 """Routes for the browser terminal: open one, attach to it, and the host's two legs.
 
-Only a machine's owner opens a terminal on it, from a browser session: an API key never
-does, whatever its role. Opening asks the hub (``server/terminals.py``) to queue the
+Only a machine's owner opens a terminal on it, from a browser session. The configured
+assistant may open only a detached campaign run for an attested writer or admin on
+that person's machine. Opening asks the hub (``server/terminals.py``) to queue the
 terminal for the machine's host, which holds a ``GET`` on the wait route and dials the
 host WebSocket. The browser dials the browser WebSocket and sends ``ATTACH`` with the
-one-use ticket the open returned. The hub relays; nothing is stored.
+one-use ticket the open returned. The hub relays; the owner's last run folder is kept.
 
 A WebSocket cannot answer 404 or 410 after the handshake, so both sockets accept, and
 then refuse with a close code (``wire_terminals``).
@@ -21,7 +22,7 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from starlette.websockets import WebSocketDisconnect
-from treekle import from_plain
+from treekle import ReadError, from_plain
 
 from trackinizer.lib.posix.host import Frame, decode_frame
 from trackinizer.server import auth
@@ -87,34 +88,51 @@ async def open_terminal_route(
     body: OpenTerminal,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
+    asker: str | None = None,
 ) -> TerminalOpened:
     """Open a terminal on one of the caller's machines.
 
-    Only a browser session opens one: an API key, a service account, a request without
-    this server's ``Origin``, and anyone but the machine's owner are refused. The
-    machine must be online and its host must have asked for terminals within 45 seconds
-    (``TRAX_MACHINE_TERMINAL=1``). Attach with the returned ticket within 30 seconds.
+    A browser session opens the owner's terminal. The configured assistant may open
+    only a detached campaign run for an attested writer or admin named as ``asker``;
+    every other key, service account or foreign origin is refused. The machine must
+    be online and its host must have asked for terminals within 45 seconds
+    (``TRAX_MACHINE_TERMINAL=1``). Attach with the ticket within 30 seconds.
 
     Args:
       body: The machine, the terminal's size, and the station it opens from.
       request: Request carrying the store and the terminal hub.
       identity: The signed-in owner.
+      asker: The person the configured assistant starts a campaign for.
 
     Returns:
       opened: The terminal id and the one-use attach ticket.
 
     Raises:
-      HTTPException: 403 for a key, a service account or a foreign origin; 404 for no
-        such machine of the caller's, or station; 409 ``terminal_unconfirmed`` until the
-        owner confirms a machine a key enrolled, ``terminal_not_enabled`` when the host
-        is not asking; 429 ``terminal_limit`` past 10 opens a minute. Every terminal
-        route answers 403 on a server with authentication off.
+      HTTPException: 403 for an untrusted key, a service account or a foreign origin;
+        404 for no such machine of the asker, or station; 409 ``terminal_unconfirmed`` until the
+        owner confirms a machine a key enrolled, ``cli_not_installed`` when the machine's
+        facts do not list the CLI asked for, ``terminal_not_enabled`` when the host is
+        not asking; 429 ``terminal_limit`` past 10 opens a minute. Every terminal route
+        answers 403 on a server with authentication off.
 
     """
-    _require_human(request, identity)
-    _require_origin(request)
-    machine_id = await _owned_machine(request, identity, name=body.machine)
-    workstream = await _station_workstream(request, identity, workspace=body.workspace)
+    owner = await _terminal_owner(request, identity, asker=asker, body=body)
+    machine_id, clis = await _owned_machine(
+        request,
+        replace(identity, email=owner),
+        name=body.machine,
+    )
+    if body.command is not None and body.command not in clis:
+        raise _refused(
+            409,
+            code="cli_not_installed",
+            message=f"the host reports no {body.command} on its PATH",
+        )
+    workstream = await _station_workstream(
+        request,
+        owner=owner,
+        workspace=body.workspace,
+    )
     hub = get_terminal_hub(request)
     if not hub.ready(machine_id):
         raise _refused(
@@ -122,10 +140,18 @@ async def open_terminal_route(
             code="terminal_not_enabled",
             message="start the host with TRAX_MACHINE_TERMINAL=1",
         )
+    if body.command is not None:
+        async with engine_of(request).acquire() as conn:
+            await conn.execute(
+                "UPDATE machines SET last_run_cwd = $1 WHERE id = $2 AND owner = $3",
+                body.cwd,
+                machine_id,
+                owner,
+            )
     try:
         term = hub.open(
             Opening(
-                user=identity.email,
+                user=owner,
                 machine_id=machine_id,
                 machine=body.machine,
                 rows=body.rows,
@@ -134,6 +160,10 @@ async def open_terminal_route(
                 workstream=workstream,
                 requested_by=body.requested_by,
                 surface=body.surface,
+                command=body.command,
+                attach=body.attach,
+                run_name=body.run_name,
+                cwd=body.cwd,
             ),
         )
     except TerminalLimitError as error:
@@ -149,7 +179,7 @@ async def open_terminal_route(
     )
 
 
-@router.get(TERMINAL_MACHINES_PATH)
+@router.get(TERMINAL_MACHINES_PATH, response_model_exclude_none=True)
 async def list_terminal_machines_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
@@ -196,6 +226,8 @@ async def list_terminal_machines_route(
                 "terminal_ready": row["status"] == "online"
                 and hub.ready(from_plain(row["id"], UUID)),
                 "confirmed": row["confirmed_at"] is not None,
+                "clis": _clis_of(row["facts"]),
+                "cwd": row["last_run_cwd"],
             },
         )
         for row in sorted(
@@ -204,7 +236,9 @@ async def list_terminal_machines_route(
             reverse=True,
         )
     ]
-    live = [] if workspace is None else hub.live_in(email, workspace=workspace)
+    live: list[Terminal] = (
+        [] if workspace is None else hub.live_in(email, workspace=workspace)
+    )
     return TerminalMachines(
         machines=machines,
         terminals=[
@@ -294,7 +328,9 @@ async def close_terminal_route(
     await get_terminal_hub(request).stop(term)
 
 
-@router.get(MACHINE_TERMINAL_WAIT_PATH)
+# A host on an older wire refuses a key it does not know, even a null one; a wait for a
+# login shell names none of the fields a run adds, so such a host still opens it.
+@router.get(MACHINE_TERMINAL_WAIT_PATH, response_model_exclude_none=True)
 async def terminal_wait_route(
     machine_id: UUID,
     request: Request,
@@ -335,6 +371,10 @@ async def terminal_wait_route(
         workspace=term.workspace,
         workstream=term.workstream,
         requested_by=term.requested_by,
+        command=term.command,
+        attach=term.attach,
+        run_name=term.run_name,
+        cwd=term.cwd,
         ice_servers=list(hub.ice_servers),
     )
 
@@ -489,6 +529,39 @@ def _parse_attach(frame: tuple[Frame, bytes] | None) -> tuple[str, int] | None:
         return None
 
 
+# A browser opens any of its own terminal forms. The configured assistant is trusted
+# to name its asker, but only for the detached campaign shape: never a login shell or
+# a freely chosen command. The wire admits only claude/codex as ``command``; the other
+# fields make the host use ``trax run --detach`` with a named attached session.
+async def _terminal_owner(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    asker: str | None,
+    body: OpenTerminal,
+) -> str:
+    """Return the owner for a browser terminal or an attested campaign run."""
+    if asker is None:
+        _require_human(request, identity)
+        _require_origin(request)
+        return identity.email
+    if auth_is_disabled(request):
+        raise _forbidden()
+    found = await resolve_asker(request, identity, email=asker)
+    if (
+        found is None
+        or found.role not in {"writer", "admin"}
+        or body.command is None
+        or body.attach is None
+        or body.workspace is None
+        or body.cwd is None
+        or body.run_name is None
+        or not body.run_name.startswith("campaign-")
+    ):
+        raise _forbidden()
+    return found.email
+
+
 # The assistant is trusted to say whom it answers, as for a chat's settings, and the
 # server reads that person's role itself: a viewer opens no terminal, so the assistant
 # lists none for one. Anyone else naming an owner is refused, not ignored, so a person
@@ -562,11 +635,11 @@ async def _owned_machine(
     identity: AuthIdentity,
     *,
     name: str,
-) -> UUID:
-    """Return the id of the caller's online machine that has a live credential."""
+) -> tuple[UUID, list[str]]:
+    """Return the id and CLIs of the caller's online machine with a live credential."""
     async with engine_of(request).acquire() as conn:
         machine = await conn.fetchrow(
-            "SELECT m.id, m.confirmed_at IS NOT NULL AS confirmed "
+            "SELECT m.id, m.facts, m.confirmed_at IS NOT NULL AS confirmed "
             "FROM machines m WHERE m.name = $1 AND m.owner = $2 "
             "AND m.host_instance IS NOT NULL "
             "AND m.last_heartbeat > now() - make_interval(secs => $3) "
@@ -584,25 +657,41 @@ async def _owned_machine(
             code="terminal_unconfirmed",
             message="confirm this machine first",
         )
-    return from_plain(machine["id"], UUID)
+    return from_plain(machine["id"], UUID), _clis_of(machine["facts"])
+
+
+def _clis_of(facts: object) -> list[str]:
+    """Return the CLIs a machine's facts list; none when its host reported no list."""
+    # Any fact may be a string, a number or a flag, so a host can send ``clis`` in
+    # another shape; that machine then offers no CLI, rather than failing the listing.
+    try:
+        return from_plain(
+            from_plain(facts, dict[str, object]).get("clis"),
+            list[str],
+            default=[],
+        )
+    except ReadError:
+        return []
 
 
 async def _station_workstream(
     request: Request,
-    identity: AuthIdentity,
     *,
+    owner: str,
     workspace: UUID | None,
 ) -> UUID | None:
-    """Return the workstream of the caller's station; refuse another user's."""
+    """Return the workstream of the owner's station; refuse another user's."""
     if workspace is None:
         return None
     async with engine_of(request).acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT user_id, station->>'workstream_id' AS workstream "
-            "FROM visual_workspaces WHERE id = $1",
+            "SELECT w.station->>'workstream_id' AS workstream "
+            "FROM visual_workspaces w JOIN users u ON u.id = w.user_id "
+            "WHERE w.id = $1 AND u.email = $2 AND u.status = 'active'",
             workspace,
+            owner,
         )
-    if row is None or from_plain(row["user_id"], UUID) != identity.user_id:
+    if row is None:
         raise NotFoundError("no such station")
     workstream = from_plain(row["workstream"], str, default="")
     return UUID(workstream) if workstream else None

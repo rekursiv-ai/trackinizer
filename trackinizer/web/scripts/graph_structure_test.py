@@ -45,7 +45,10 @@ def test_nothing_but_the_shape_is_written() -> None:
 
 
 def test_a_word_outside_the_vocabulary_is_refused() -> None:
-    graph = {"nodes": [{**_NODES[0], "kind": "Secret plan"}], "edges": []}
+    graph: dict[str, object] = {
+        "nodes": [{**_NODES[0], "kind": "Secret plan"}],
+        "edges": [],
+    }
     with pytest.raises(ValueError, match="is not one of"):
         scrub(graph)
 
@@ -92,7 +95,7 @@ def test_a_zero_valence_has_no_sign() -> None:
 
 def test_nodes_made_at_the_same_moment_keep_the_servers_order() -> None:
     made = "2026-07-01T00:00:00+00:00"
-    graph = {
+    graph: dict[str, object] = {
         "nodes": [
             {**_NODES[0], "created": made},
             {**_NODES[1], "created": made},

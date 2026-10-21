@@ -218,13 +218,13 @@ class TestSubmitModels:
 
     def test_priority_pydantic_rejects_negative(self) -> None:
         with pytest.raises(ValueError, match="greater than or equal"):
-            SubmitIssue(title="x", priority=-1)
+            SubmitIssue(title="x", priority=-1)  # pyrefly: ignore[bad-argument-type] -- The negative test passes the out-of-range value under test.
         with pytest.raises(ValueError, match="greater than or equal"):
             CreateEdgeItem(
                 from_id=new_uuid(),
                 to_id=new_uuid(),
                 edge_kind="narrows",
-                priority=-3,
+                priority=-3,  # pyrefly: ignore[bad-argument-type] -- The negative test passes the out-of-range value under test.
             )
 
     def test_narrows_rejects_negative_priority(self) -> None:

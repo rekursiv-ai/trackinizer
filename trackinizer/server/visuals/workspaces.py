@@ -18,6 +18,8 @@ from pydantic import (
     model_validator,
 )
 
+from trackinizer.wire.wire_science_chat import ChatProvider
+
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -38,8 +40,10 @@ type Placement = Literal["main", "left", "side", "floating"]
 of it (``side``), or floating over them."""
 
 
-type PartnerChoice = Literal["shared", "local"]
-"""Chat's partner: the server's shared assistant, or the owner's own helper."""
+NO_MACHINE_REASON: Final = (
+    "Connect a machine with `trax machine connect` and install {cli} on it"
+)
+"""Why ``claude`` or ``codex`` is unavailable, ``{cli}`` the provider."""
 
 
 class FloatingRect(BaseModel):
@@ -145,8 +149,12 @@ class WorkspaceData(BaseModel):
     focused_instance: uuid.UUID | None = None
     agent_instructions: str | None = Field(default=None, max_length=8_192)
     continuation_record_id: uuid.UUID | None = None
-    partner_choice: PartnerChoice = "shared"
-    """Whose session Chat talks to: the shared assistant or the owner's helper."""
+    # A canvas stored before providers holds ``partner_choice`` (``shared``, or the
+    # retired ``local``) and no ``provider``; the key is ignored, so it reads as the
+    # shared assistant's, ``assistant``, and the next write drops it.
+    provider: ChatProvider = "assistant"
+    """Who answers the station's Chat: the shared assistant, or the owner's own claude
+    or codex run."""
 
     marks: list[Mark] = Field(default_factory=list)
     marks_seq: int = Field(default=0, ge=0)
@@ -414,19 +422,69 @@ class StationData(BaseModel):
 class WorkspacePartner(BaseModel):
     """Who a canvas's Chat talks to now, computed on every read and never stored.
 
-    With the shared choice, the partner is the assistant's newest live session; an
-    assistant with no live session is still named, as unavailable. With the local
-    choice, it is the owner's newest live `trax helper` session, or unavailable.
+    For ``assistant`` the partner is the assistant's newest live session; an assistant
+    with no live session is still named, as unavailable. For ``claude`` or ``codex``
+    it is the chat's session while a run of that CLI drains it, else ``offline``,
+    still naming the chat's session, so a run can be started attached to it.
     """
 
     session_id: uuid.UUID | None
     actor: str | None
-    """The configured name of the assistant, or the local helper's actor."""
+    """The configured name of the assistant, or the CLI's."""
 
     cli: str | None
-    status: Literal["live", "unavailable"]
-    kind: PartnerChoice = "shared"
-    """Which choice it answers for."""
+    status: Literal["live", "unavailable", "offline"]
+    provider: ChatProvider = "assistant"
+    """Which provider it answers for: the station's."""
+
+    machine: str | None = None
+    """The machine a CLI's run is on, while live, when the run names it."""
+
+    run_name: str | None = None
+    """The detached host to attach to on ``machine`` (``trax run attach``), while live;
+    None for a run in a terminal of its own."""
+
+    cwd: str | None = None
+    """The folder a CLI's run works in, ``~/...`` under its home, while live, when the
+    run names it."""
+
+    label: str = ""
+    """What Chat shows for it: the assistant's name; ``claude · <machine>``, or
+    ``claude`` when the machine is not known; ``claude: no run`` while offline."""
+
+
+class ProviderFlags(BaseModel):
+    """Which providers the station's owner may choose now."""
+
+    assistant: bool = True
+    claude: bool = False
+    codex: bool = False
+
+
+class ProviderReasons(BaseModel):
+    """Why each unavailable provider is: empty for an available one."""
+
+    assistant: str = ""
+    claude: str = NO_MACHINE_REASON.format(cli="claude")
+    codex: str = NO_MACHINE_REASON.format(cli="codex")
+
+    def of(self, provider: ChatProvider) -> str:
+        """Return why ``provider`` is unavailable.
+
+        Args:
+          provider: The provider asked about.
+
+        Returns:
+          reason: Why it is unavailable; empty when it is available.
+
+        """
+        match provider:
+            case "assistant":
+                return self.assistant
+            case "claude":
+                return self.claude
+            case "codex":
+                return self.codex
 
 
 class WorkspaceState(WorkspaceData):
@@ -458,6 +516,13 @@ class WorkspaceState(WorkspaceData):
     """The configured assistant's actor, or None when the server has none."""
 
     partner: WorkspacePartner | None = None
+
+    available: ProviderFlags = Field(default_factory=ProviderFlags)
+    """Which providers the owner may choose now, computed on each read. ``assistant``
+    is always true here: the credit ledger is the site's, which the browser reads."""
+
+    reasons: ProviderReasons = Field(default_factory=ProviderReasons)
+    """Why each provider ``available`` says no to is unavailable."""
 
     preferences: dict[str, JsonValue] | None = None
     """The owner's preferences a station's assistant may see (``ASSISTANT_KEYS``), so
@@ -610,6 +675,7 @@ class WorkspaceSettingsRefs(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    station_id: uuid.UUID | None = None
     workstream_issue_id: uuid.UUID | None = None
     session_id: uuid.UUID | None = None
     personal_artifact_id: uuid.UUID | None = None
@@ -691,11 +757,33 @@ class SetPreferences(OperationModel):
     """Keys of ``ASSISTANT_KEYS`` only: the UI's, never the user's own data."""
 
 
-class ChoosePartner(OperationModel):
-    """Choose whose session the canvas's Chat talks to."""
+class ChooseProvider(OperationModel):
+    """Choose who answers the station's Chat; only its owner's browser does.
 
-    kind: Literal["partner"]
-    choice: PartnerChoice
+    The switch is the next revision, and takes hold at once: from then on the chat's
+    queue is drained only by the new provider, and its lines go there. An assistant
+    turn already running is not interrupted: its answer still lands, and since every
+    record is read in the order of its time, it sorts where it was written. Choosing
+    ``claude`` or ``codex`` gives the chat a session a run can attach to when it has
+    none, before any line, so the picker always has one to name.
+    """
+
+    kind: Literal["provider"]
+    provider: ChatProvider
+
+
+class NewStation(BaseModel):
+    """What a new station starts with: its workstream and its provider, either unset.
+
+    An unset workstream is the owner's Scratch, and an unset provider their
+    ``chat_provider`` preference. A provider with no machine to run on is taken all
+    the same: nothing runs until a machine is picked.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    workstream_id: uuid.UUID | None = None
+    provider: ChatProvider | None = None
 
 
 class AddMark(OperationModel):
@@ -730,7 +818,7 @@ type Operation = Annotated[
     | Highlight
     | ChatWindow
     | SetPreferences
-    | ChoosePartner
+    | ChooseProvider
     | AddMark
     | RemoveMark
     | ClearMarks,
@@ -752,11 +840,16 @@ class WorkspaceConflict(BaseModel):
     current: WorkspaceState
 
 
-def initial_data(catalog: VisualCatalogBody) -> WorkspaceData:
+def initial_data(
+    catalog: VisualCatalogBody,
+    *,
+    provider: ChatProvider = "assistant",
+) -> WorkspaceData:
     """Start a new canvas with the default visual.
 
     Args:
       catalog: Trusted visual definitions and initial selection.
+      provider: Who answers its Chat.
 
     Returns:
       state: Initial canvas data.
@@ -774,6 +867,7 @@ def initial_data(catalog: VisualCatalogBody) -> WorkspaceData:
                 placement="main",
             ),
         ],
+        provider=provider,
     )
 
 
@@ -1024,8 +1118,8 @@ def apply_operation(
         updated.focused_instance = instance.id
     elif isinstance(operation, Navigate | Highlight | ChatWindow | SetPreferences):
         pass
-    elif isinstance(operation, ChoosePartner):
-        updated.partner_choice = operation.choice
+    elif isinstance(operation, ChooseProvider):
+        updated.provider = operation.provider
     elif isinstance(operation, HideVisual):
         if not any(visual.id == operation.instance_id for visual in updated.visuals):
             raise ValueError("Visual instance not found.")

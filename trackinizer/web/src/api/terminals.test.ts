@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { Frame, decodeFrame, encodeFrame } from "../visuals/terminalFrames";
 import { ApiError } from "./client";
-import { connectTerminal, type LinkStatus } from "./terminals";
+import { connectTerminal, listTerminalMachines, type LinkStatus, openTerminal } from "./terminals";
+import { stubFetch } from "./testing";
 
 class FakeSocket {
   static all: FakeSocket[] = [];
@@ -384,4 +385,32 @@ test("the shell's exit on the channel ends the link", async () => {
   FakePeer.all[0]!.channel.frame(Frame.EXIT, Uint8Array.from([0, 0, 0, 2]));
 
   expect(statuses.at(-1)).toEqual({ state: "ended", note: "The shell exited.", exit: 2 });
+});
+
+test("opening a terminal sends only the fields it has, and a run adds its CLI and the chat session it re-opens", async () => {
+  const session = "11111111-2222-4333-8444-555555555555";
+  const sent = stubFetch(() => Response.json({ terminal_id: "t1", ticket: "k" }));
+  await openTerminal("gx10", "w1", 24, 80, null);
+  await openTerminal("gx10", "w1", 24, 80, null, { command: "claude", attach: session });
+  expect(sent.map((each) => [each.path, each.body])).toEqual([
+    ["/api/terminals", { machine: "gx10", workspace: "w1", rows: 24, cols: 80, surface: null }],
+    ["/api/terminals", { machine: "gx10", workspace: "w1", rows: 24, cols: 80, surface: null, command: "claude", attach: session }],
+  ]);
+});
+
+test("a run sends the folder it starts in, and a run without one sends none", async () => {
+  const session = "11111111-2222-4333-8444-555555555555";
+  const sent = stubFetch(() => Response.json({ terminal_id: "t1", ticket: "k" }));
+  await openTerminal("gx10", "w1", 24, 80, null, { command: "codex", attach: session, cwd: "~/project" });
+  await openTerminal("gx10", "w1", 24, 80, null, { command: "codex", attach: session });
+  expect(sent.map((each) => each.body)).toEqual([
+    { machine: "gx10", workspace: "w1", rows: 24, cols: 80, surface: null, command: "codex", attach: session, cwd: "~/project" },
+    { machine: "gx10", workspace: "w1", rows: 24, cols: 80, surface: null, command: "codex", attach: session },
+  ]);
+});
+
+test("the machines list carries each machine's installed CLIs", async () => {
+  stubFetch(() => Response.json({ machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: true, clis: ["claude", "git"] }] }));
+  const listed = await listTerminalMachines("w1");
+  expect(listed.machines[0]?.clis).toEqual(["claude", "git"]);
 });

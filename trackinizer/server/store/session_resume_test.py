@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 
 import json
 
-from treekle import from_plain, immutable
+from treekle import immutable
 
 import pytest
 import pytest_asyncio
@@ -24,7 +24,12 @@ from trackinizer.lib.agent.sessions import (
     codex,
 )
 from trackinizer.lib.agent.sessions.tail import Tail
-from trackinizer.lib.agent.types.sessions import SessionRecord, Thinking
+from trackinizer.lib.agent.types.sessions import (
+    IncompleteRecord,
+    SessionRecord,
+    Thinking,
+    UncategorizedRecord,
+)
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.trax.run.errors import CiphertextDroppedError
@@ -138,6 +143,7 @@ async def test_a_claude_session_resumes_to_its_stored_records(store: Store) -> N
         target="claude",
         records=records,
         encoding=manifests[0].metadata,
+        attach=session_id,
         sealed=sealed,
     )
     with written.path.open(encoding="utf-8") as handle:
@@ -153,15 +159,20 @@ def _without_session_id(records: Sequence[TraxRecord]) -> list[TraxRecord]:
     """Each record with any ``sessionId`` dropped from its residual."""
     out: list[TraxRecord] = []
     for record in records:
-        residual = from_plain(getattr(record, "extra", None) or {}, dict[str, object])
-        if "sessionId" not in residual:
+        if (
+            isinstance(
+                record,
+                (IncompleteRecord, UncategorizedRecord, Stdin, Stdout, Stderr),
+            )
+            or "sessionId" not in record.extra
+        ):
             out.append(record)
             continue
         out.append(
             replace(
                 record,
                 extra=immutable(
-                    {k: v for k, v in residual.items() if k != "sessionId"},
+                    {k: v for k, v in record.extra.items() if k != "sessionId"},
                 ),
             ),
         )
@@ -184,6 +195,7 @@ async def test_a_codex_capture_resumes_as_claude(store: Store) -> None:
         target="claude",
         records=records,
         encoding=manifests[0].metadata,
+        attach=session_id,
         sealed=sealed,
     )
 
@@ -211,6 +223,7 @@ async def test_the_materialized_file_names_the_minted_id(store: Store) -> None:
         target="claude",
         records=records,
         encoding=manifests[0].metadata,
+        attach=session_id,
         sealed=sealed,
     )
 
@@ -303,6 +316,7 @@ async def test_dropped_ciphertext_refuses_the_resume(store: Store) -> None:
             target="claude",
             records=records,
             encoding=manifests[0].metadata,
+            attach=session_id,
             sealed=sealed,
         )
 

@@ -18,7 +18,15 @@ import uuid
 
 from treekle import MutablePlainTree, PlainTree, from_plain, json_loads
 
+from trackinizer.client.conversation import delivery_of
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.agent.types.sessions import (
+    AgentToAgentMessage,
+    AssistantMessage,
+    ToolCall,
+    ToolResult,
+    UserMessage,
+)
 from trackinizer.trax import render
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import cwd, env, workspace_from_env
@@ -95,6 +103,7 @@ if TYPE_CHECKING:
     from trackinizer.client.client import Client
     from trackinizer.trax.run import session
     from trackinizer.trax.run.resume import prepare_resume
+    from trackinizer.wire.wire_session_ir import PartBody, RecordBody
 else:
     from wrapt import lazy_import
 
@@ -267,6 +276,10 @@ class Kind(Command):
             args = cls.make_parser().parse_args(split[0])
             cls.run_resume(split[0], split[1], args, client_factory)
             return
+        # Split before the kind's parser, which would refuse the tail's own flags.
+        if verb == "agentsession" and (split := _split_records_tail(rest)) is not None:
+            cls.run_records(split[0], split[1], client_factory)
+            return
         super().dispatch(verb, rest, client_factory)
 
     @classmethod
@@ -416,6 +429,9 @@ class Kind(Command):
         ``run claude --as bob -- --model opus`` re-emits as
         ``session.main(["claude", "--as", "bob", "--", "--model", "opus"])``.
 
+        The run writes into the session it resumes, as a new part, and uploads only
+        what the CLI writes after the history it was loaded with.
+
         Args:
           before: Session identifier.
           tail: Target CLI followed by runner args.
@@ -457,7 +473,67 @@ class Kind(Command):
             client_factory=client_factory,
             resume_path=written.path,
             cli_session_id=str(written.cli_session_id),
+            attach=written.attach,
+            prefix_bytes=written.prefix_bytes,
         )
+
+    @classmethod
+    def run_records(
+        cls,
+        before: Sequence[str],
+        tail: Sequence[str],
+        client_factory: Callable[[], Client],
+    ) -> None:
+        """Print ``agentsession 42 records [--part P] [--to P:IDX] [--format F]``.
+
+        Reads the session's stored records, part by part, and changes nothing. A
+        loaded window's note names this command with ``--to``, the last record it
+        left out, so what it prints is what the window did not load.
+
+        Args:
+          before: Session identifier.
+          tail: The action's own flags.
+          client_factory: Callable that creates a client.
+
+        Raises:
+          ClientError: The session or a flag is not one this reads.
+
+        """
+        if not starts_with_ref(before):
+            raise ClientError("records needs one session: trax agentsession 42 records")
+        ref, consumed = consume_ref(before, 0, kind_hint="AgentSession")
+        if before[consumed:]:
+            raise ClientError(
+                f"unexpected tokens before 'records': {list(before[consumed:])}",
+            )
+        try:
+            options, extra = _records_parser().parse_known_args(list(tail))
+        except argparse.ArgumentError as err:
+            raise ClientError(f"records: {err}") from err
+        if extra:
+            raise ClientError(f"records takes --part, --to and --format, not {extra}")
+        only = from_plain(_arg_values(options).get("part"), int, default=None)
+        last = _record_place(_arg_str(options, "to"))
+        as_json = _arg_str(options, "format_") == "json"
+        client = client_factory()
+        _kind, session_id = client.resolve_id(ref)
+        for part in sorted(client.read_session_parts(session_id), key=lambda p: p.part):
+            if (only is not None and part.part != only) or (
+                last is not None and part.part > last[0]
+            ):
+                continue
+            for body in client.read_session_records(
+                session_id,
+                part=part.part,
+                plaintext_only=True,
+            ):
+                if last is not None and part.part == last[0] and body.idx > last[1]:
+                    break
+                echo(
+                    json.dumps({"part": part.part, **body.model_dump(mode="json")})
+                    if as_json
+                    else _record_line(session_id, part, body),
+                )
 
     @classmethod
     def _run_metric_single(
@@ -3614,6 +3690,69 @@ def _split_run_tail(
     if consumed < len(rest) and rest[consumed].lower() == "run":
         return rest[:consumed], rest[consumed + 1 :]
     return None
+
+
+def _split_records_tail(
+    rest: Sequence[str],
+) -> tuple[Sequence[str], Sequence[str]] | None:
+    """Split a records marker only immediately after its session subject."""
+    if not starts_with_ref(rest):
+        return None
+    _, consumed = consume_ref(rest, 0, kind_hint="AgentSession")
+    if consumed < len(rest) and rest[consumed].lower() == "records":
+        return rest[:consumed], rest[consumed + 1 :]
+    return None
+
+
+def _records_parser() -> argparse.ArgumentParser:
+    """Return the parser of the ``records`` action's own flags."""
+    parser = argparse.ArgumentParser(
+        prog="trax agentsession SEQ records",
+        exit_on_error=False,
+    )
+    parser.add_argument("--part", type=int, default=None)
+    parser.add_argument("--to", default="", metavar="PART:IDX")
+    parser.add_argument(
+        "--format",
+        dest="format_",
+        choices=("text", "json"),
+        default="text",
+    )
+    return parser
+
+
+def _record_place(text: str) -> tuple[int, int] | None:
+    """Read ``PART:IDX``, the last record to print; empty prints every record."""
+    if not text:
+        return None
+    part, _, idx = text.partition(":")
+    try:
+        return int(part), int(idx)
+    except ValueError as err:
+        raise ClientError(f"--to takes PART:IDX, such as 0:12, not {text!r}") from err
+
+
+# One line per record, as a person scans it: who said what, a call by its tool's name,
+# and a result's first words, which is enough to find the record to read whole.
+def _record_line(session_id: uuid.UUID, part: PartBody, body: RecordBody) -> str:
+    """Return one stored record as ``p<part>#<idx> <time> <role> <author>: <text>``."""
+    record = body.row(session_id, part.part).record()
+    provider = {"sagent": "bot"}.get(part.format, part.format) or "terminal"
+    role, author, text = body.kind, provider, body.text
+    if isinstance(record, AgentToAgentMessage):
+        role, author, text = "user", record.sender or "unknown", record.content or ""
+    elif isinstance(record, UserMessage):
+        delivery = delivery_of(record.extra)
+        role, author = "user", "terminal" if delivery is None else delivery.source
+        text = record.content or ""
+    elif isinstance(record, AssistantMessage):
+        role, text = "assistant", record.content or ""
+    elif isinstance(record, ToolCall):
+        role, text = "call", record.name
+    elif isinstance(record, ToolResult):
+        role, text = "result", body.text[:200]
+    stamp = "-" if body.timestamp is None else body.timestamp.isoformat()
+    return f"p{part.part}#{body.idx} {stamp} {role} {author}: {' '.join(text.split())}"
 
 
 # A structural 1:1 map. The parser already narrows ``op`` to the metric op set, and the

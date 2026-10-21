@@ -116,9 +116,10 @@ async def test_migration_019_matches_the_baseline_shape(
     """The migrated session-IR tables equal the ones a fresh install gets.
 
     Bootstrap builds the baseline shape. This drops the four tables (as a
-    pre-019 database has them), replays ``schema.019.sql`` alone, and compares
-    every column against what the baseline produced -- the check neither file
-    can make about itself, since each is read by a different population.
+    pre-019 database has them), replays ``schema.019.sql`` and the column 051 adds
+    after it, and compares every column against what the baseline produced -- the
+    check neither file can make about itself, since each is read by a different
+    population.
     """
     await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
     columns = (
@@ -133,6 +134,7 @@ async def test_migration_019_matches_the_baseline_shape(
         for table in _SESSION_IR_TABLES:
             await conn.execute(f"DROP TABLE {table}")
         await conn.execute(load_sql("schema.019"))
+        await conn.execute(load_sql("schema.051"))
         migrated = [dict(r) for r in await conn.fetch(columns, _SESSION_IR_TABLES)]
 
     assert migrated == baseline
@@ -602,11 +604,11 @@ async def test_variables_checks_refuse_a_secret_that_stores_its_value(
 async def test_migration_035_matches_the_baseline_machines_table(
     scratch_engine: postgres.PostgresEngine,
 ) -> None:
-    """The ``machines`` table 035 builds, then 036 extends, equals the fresh one.
+    """The ``machines`` table 035 builds, then later migrations equal the fresh one.
 
     Bootstrap builds the baseline shape. This drops the table (as a pre-035
-    database lacks it), replays ``schema.035`` and ``schema.036``, and compares
-    every column, constraint and index against what the baseline produced.
+    database lacks it), replays 035, 036, 049 and 052, and compares every column,
+    constraint and index against what the baseline produced.
     """
     await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
     columns = (
@@ -631,10 +633,11 @@ async def test_migration_035_matches_the_baseline_machines_table(
             "DROP TABLE machine_credentials, machine_enrollments, machines",
         )
         await conn.execute(load_sql("schema.035"))
-        # The baseline holds 036's and 049's columns too, so they are added before
+        # The baseline holds later migrations' columns too, so they are added before
         # comparing.
         await conn.execute(load_sql("schema.036"))
         await conn.execute(load_sql("schema.049"))
+        await conn.execute(load_sql("schema.052"))
         migrated_cols = [dict(r) for r in await conn.fetch(columns)]
         migrated_cons = {
             (r["conname"], r["def"]) for r in await conn.fetch(constraints)
@@ -691,10 +694,10 @@ _MACHINE_HOST_TABLES = ("machines", "machine_enrollments", "machine_credentials"
 async def test_migration_036_matches_the_baseline_machine_host_tables(
     scratch_engine: postgres.PostgresEngine,
 ) -> None:
-    """The columns and tables 036 adds equal the fresh-install ones.
+    """The machine-host tables after later migrations equal the fresh-install ones.
 
     Bootstrap builds the baseline shape. This drops the three tables (as a
-    pre-035 database lacks them), replays ``schema.035`` then ``schema.036``,
+    pre-035 database lacks them), replays 035, 036, 049 and 052,
     and compares every column, constraint and index of each table against what
     the baseline produced.
     """
@@ -709,6 +712,7 @@ async def test_migration_036_matches_the_baseline_machine_host_tables(
         await conn.execute(load_sql("schema.035"))
         await conn.execute(load_sql("schema.036"))
         await conn.execute(load_sql("schema.049"))
+        await conn.execute(load_sql("schema.052"))
         migrated = {t: await _table_shape(conn, t) for t in _MACHINE_HOST_TABLES}
         # Replaying it over the existing tables is a no-op, not an error.
         await conn.execute(load_sql("schema.036"))
@@ -1354,7 +1358,7 @@ async def test_the_app_column_holds_one_object_of_at_most_64_kib_on_any_kind(
         "old_app, new_app) "
         "VALUES (gen_random_uuid(), 'tester', gen_random_uuid(), $1, 'app', $2, $3)"
     )
-    largest = {"b": "x" * 65_527}
+    largest: dict[str, str] = {"b": "x" * 65_527}
     async with pglite_engine.acquire() as conn:
         for seq, bad in enumerate((["works"], "works", 7, {"b": "x" * 65_528}), 1):
             with pytest.raises(asyncpg.CheckViolationError):
@@ -1687,6 +1691,64 @@ async def _seed_audiences(conn: Conn) -> dict[str, uuid.UUID]:
         )
     await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.050.sql'")
     return sessions
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_051_gives_a_part_the_key_that_opened_it(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """A 050 database's manifests gain ``opened_by_api_key_id``, NULL for each one held.
+
+    The catalog equals a fresh install's, and a replay keeps a key already stamped.
+    """
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    session_id, key = uuid.uuid4(), uuid.uuid4()
+    async with pglite_engine.acquire() as conn:
+        fresh = await _catalog_names_aside(conn)
+        await conn.execute(
+            "ALTER TABLE session_manifests DROP COLUMN opened_by_api_key_id",
+        )
+        await conn.execute(
+            "DELETE FROM applied_migrations WHERE name = 'schema.051.sql'",
+        )
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) VALUES ($1, 'AgentSession', "
+            "nextval('seq_agentsession'), 'active', 'a@x.y', 't', 'open')",
+            session_id,
+        )
+        await conn.execute(
+            "INSERT INTO session_manifests "
+            "(session_id, part, name, metadata, ir_id, format, records) "
+            "VALUES ($1, 0, 'held.jsonl', '{}'::json, $1, 'claude', 0)",
+            session_id,
+        )
+
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        migrated = await _catalog_names_aside(conn)
+        held = await conn.fetchval(
+            "SELECT opened_by_api_key_id FROM session_manifests WHERE session_id = $1",
+            session_id,
+        )
+        await conn.execute(
+            "UPDATE session_manifests SET opened_by_api_key_id = $2 "
+            "WHERE session_id = $1",
+            session_id,
+            key,
+        )
+        await conn.execute(load_sql("schema.051"))
+        kept = await conn.fetchval(
+            "SELECT opened_by_api_key_id FROM session_manifests WHERE session_id = $1",
+            session_id,
+        )
+
+    assert migrated == fresh
+    assert held is None
+    assert kept == key
 
 
 if __name__ == "__main__":

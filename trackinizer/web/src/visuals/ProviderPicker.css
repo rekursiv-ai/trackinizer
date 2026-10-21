@@ -1,0 +1,33 @@
+/* The provider card: one row a provider, its live state, its default star, and why it is out when it is. */
+.provider-picker { display: flex; flex-direction: column; gap: 8px; padding: 8px; font-size: 12px; }
+.provider-card { display: flex; flex-direction: column; gap: 6px; }
+.provider-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 2px 8px; }
+.provider-row.grayed .provider-choice, .provider-row.grayed .provider-name { color: var(--muted); }
+.provider-reason { grid-column: 1 / -1; margin: 0; font-size: 11px; }
+.provider-choice { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.provider-choice input { flex: none; margin: 0; }
+.provider-choice input:disabled { cursor: not-allowed; }
+/* The status is a flex row, which text-overflow skips, so its text is the box that clips with an ellipsis. */
+.provider-live { display: inline-flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; color: var(--muted); }
+.provider-live-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.provider-dot { display: inline-block; flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.provider-dot.live { background: var(--green); }
+.provider-star { border: 0; background: none; padding: 0 4px; font-size: 14px; color: var(--muted); cursor: pointer; }
+.provider-star[aria-pressed="true"] { color: var(--accent-hover); }
+.provider-star:disabled { cursor: not-allowed; opacity: .5; }
+.provider-machines { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.provider-machines code { padding: 0 4px; background: var(--surface-raised); }
+.provider-allow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.provider-machine { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.provider-folder { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.provider-folder input { width: 220px; min-width: 0; font: inherit; }
+.chat-info-run { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.provider-notice { margin: 0; color: var(--error-text); }
+/* The header's provider button, and its card's menu under it. */
+.chat-provider-pick { position: relative; display: inline-flex; min-width: 0; }
+.chat-provider-button { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 260px; padding: 2px 6px; border: 0; border-radius: 4px; background: none; color: var(--text); font-size: 12px; cursor: pointer; }
+.chat-provider-button:hover, .chat-provider-button[aria-expanded="true"] { background: var(--surface-hover); }
+.chat-provider-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.chat-provider-menu { left: 0; right: auto; top: 100%; }
+.provider-new { display: flex; flex-direction: column; }
+.provider-mark { color: var(--accent); font-size: 11px; }

@@ -31,9 +31,11 @@ from trackinizer.server.chat_hub import (
     iter_workspace_events,
 )
 from trackinizer.server.notify import iter_changed_ids
+from trackinizer.server.visuals.partners import live_chat_session
 from trackinizer.server.visuals.science_chats import read_head
 from trackinizer.server.visuals.session_placement import move_station_sessions
 from trackinizer.server.visuals.workspace_store import (
+    ProviderUnavailableError,
     ReplayConflictError,
     RevisionConflictError,
     StationNameTakenError,
@@ -43,6 +45,7 @@ from trackinizer.server.visuals.workspace_store import (
     list_workspaces,
     name_unnamed_station,
     new_workspace,
+    open_chat_session,
     open_latest_workspace,
     open_personal_settings,
     read_workspace,
@@ -59,9 +62,11 @@ from trackinizer.server.visuals.workspace_store import (
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
     ChatWindow,
+    ChooseProvider,
     Highlight,
     NameChat,
     Navigate,
+    NewStation,
     SessionCampaign,
     SetPage,
     SetPreferences,
@@ -75,7 +80,6 @@ from trackinizer.server.visuals.workspaces import (
     WorkstreamSuggestion,
 )
 from trackinizer.server.visuals.workstreams import (
-    NewWorkspace,
     SetStationWorkstream,
     check_workstream,
     open_scratch,
@@ -196,14 +200,20 @@ async def list_workspaces_route(
 async def new_workspace_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
-    body: NewWorkspace | None = None,
+    body: NewStation | None = None,
 ) -> WorkspaceState:
     """Make a station named with the lowest free ``unnamed-workstream#N``.
+
+    It starts on the ``provider`` the body names, else on the caller's
+    ``chat_provider`` preference. A provider with no machine to run on is taken all
+    the same: nothing runs until a machine is picked. A ``claude`` or ``codex``
+    station is given its chat and the chat's session at once, which its partner
+    names, so a run can be started attached to it before any line.
 
     Args:
       request: Request carrying the database engine.
       identity: Authenticated browser account.
-      body: Optional workstream selection; omission selects Scratch.
+      body: Optional workstream and provider; an unset workstream selects Scratch.
 
     Returns:
       state: The new station.
@@ -226,14 +236,16 @@ async def new_workspace_route(
         workstream_id=workstream_id,
     ):
         raise HTTPException(status_code=404, detail="Workstream not found")
-    return await new_workspace(
+    state = await new_workspace(
         engine,
         user_id=identity.user_id,
         catalog=visual_catalog(request).catalog(),
         inbound=get_inbound(request),
         assistant=get_assistant(request),
         workstream_id=workstream_id,
+        provider=None if body is None else body.provider,
     )
+    return await _with_chat_session(request, identity, state=state)
 
 
 @router.post("/api/workspaces/{workspace_id}/clear-chat", response_model=WorkspaceState)
@@ -753,6 +765,13 @@ async def workspace_operation_route(
     change. A replay of an applied key returns the original state and publishes
     nothing.
 
+    A ``provider`` operation, which only the owner's browser sends, chooses who
+    answers the station's Chat: ``assistant``, ``claude`` or ``codex``. A provider
+    the owner cannot run now (no confirmed online machine of theirs lists the CLI) is
+    409 ``provider_unavailable`` with the reason. Choosing ``claude`` or ``codex``
+    gives the station a chat, and the chat a session, when it has none, so the
+    partner names a session for a run to attach to.
+
     Args:
       workspace_id: Canvas to change.
       body: Expected revision and visual operation.
@@ -795,12 +814,21 @@ async def workspace_operation_route(
                 current=error.current,
             ).model_dump(mode="json"),
         )
+    except ProviderUnavailableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "provider_unavailable", "message": str(error)},
+        ) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except WorkspaceKeyRefusedError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
     if applied is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    state = applied.state
+    if isinstance(body.operation, ChooseProvider):
+        # Also on a replay: a retry finishes a choice whose session was not opened.
+        state = await _with_chat_session(request, identity, state=state)
     if not applied.replayed:
         hub = get_hub(request)
         if isinstance(body.operation, Navigate):
@@ -820,8 +848,52 @@ async def workspace_operation_route(
                         frame=PreferencesFrame(preferences=applied.preferences),
                     )
         else:
-            hub.publish(workspace_id, frame=WorkspaceFrame(state=applied.state))
-    return applied.state
+            hub.publish(workspace_id, frame=WorkspaceFrame(state=state))
+    return state
+
+
+# Its own transaction after the station's: the station's provider is stored first, so a
+# session that could not be opened is opened by the next choice, or its retry. The
+# assistant's lease on the chat outlives the drains refused it from now on, and would
+# read as the run's: revoked once the provider is stored, it does not come back, and a
+# drain it held from before returns without the run's lines.
+async def _with_chat_session(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    state: WorkspaceState,
+) -> WorkspaceState:
+    """Give a CLI station's chat its session, and return the station as it is then."""
+    if state.provider == "assistant":
+        return state
+    assistant = get_assistant(request)
+    released = False
+    if assistant is not None and state.conversation_id is not None:
+        inbound = get_inbound(request)
+        async with engine_of(request).acquire() as conn:
+            while held := await live_chat_session(
+                conn,
+                inbound=inbound,
+                opener=assistant.email,
+                conversation_id=state.conversation_id,
+            ):
+                inbound.forget_poller(held)
+                released = True
+    if state.partner is None or state.partner.session_id is None:
+        _ = await open_chat_session(
+            get_store(request),
+            user_id=identity.user_id,
+            workspace_id=state.id,
+            assistant=assistant,
+        )
+    elif not released:
+        return state
+    return await _current_state(
+        request,
+        user_id=identity.user_id,
+        workspace_id=state.id,
+        reader=session_reader(request, identity),
+    )
 
 
 async def _current_state(

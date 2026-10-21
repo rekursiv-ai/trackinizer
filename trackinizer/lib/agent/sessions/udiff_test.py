@@ -213,6 +213,23 @@ def test_an_unterminated_context_only_diff_keeps_its_last_byte() -> None:
     assert render_udiff(edits) == " context"
 
 
+@pytest.mark.parametrize(
+    ("splice", "want"),
+    [
+        (Splice(lead="a\n", trail="z\n"), Splice(lead="a\n", trail="z")),
+        (Splice(lead="a\n", after="y\n"), Splice(lead="a\n", after="y")),
+        (Splice(lead="a\n", before="x\n"), Splice(lead="a\n", before="x")),
+        (Splice(lead="a\n"), Splice(lead="a")),
+    ],
+    ids=["trail", "after", "before", "lead"],
+)
+def test_unterminate_trims_only_the_last_populated_field(
+    splice: Splice,
+    want: Splice,
+) -> None:
+    assert udiff._unterminate(splice) == want
+
+
 def test_an_empty_splice_is_unchanged_when_unterminated() -> None:
     splice = Splice()
 

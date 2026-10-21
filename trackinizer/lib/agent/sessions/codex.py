@@ -1029,6 +1029,7 @@ def _write_rows(
         return None
     templates = from_plain(extra.pop("$rows", []), list[object])
     row_order = extra.pop("$row_order", [])
+    order: list[str]
     try:
         order = from_plain(row_order, list[str])
     except ReadError:
@@ -1078,6 +1079,7 @@ def _write_content(
 ) -> list[object]:
     """Return content members in native order, then append new semantics."""
     parts_value = extra.pop("$parts", [])
+    parts: list[int]
     try:
         parts = from_plain(parts_value, list[int])
     except ReadError:
@@ -1089,6 +1091,7 @@ def _write_content(
         templates = from_plain(extra.pop("$blocks", []), list[object])
     has_order = "$order" in extra
     order_value = extra.pop("$order", [])
+    order: list[str]
     try:
         order = from_plain(order_value, list[str])
     except ReadError:
@@ -1509,7 +1512,7 @@ def _read_declaration(
                     for key, value in stored.items()
                 },
             )
-            if isinstance(held, Mapping | str)
+            if isinstance(held, (Mapping, str))
             else immutable(stored)
         )
     # WITHOUT the payload, which ``extra["payload"]`` above already is and
@@ -2087,7 +2090,7 @@ def _read_tool_result(
     """Read what one tool invocation returned."""
     output = payload.get("output")
     consumed = {"call_id"}
-    if isinstance(output, str | list):
+    if isinstance(output, (str, list)):
         consumed.add("output")
     extra = _codex_residual(payload, consumed)
     attachments: tuple[Attachment, ...] = ()

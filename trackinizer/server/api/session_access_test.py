@@ -1,4 +1,4 @@
-"""A science chat is written only by the key that opened it, and read by its members.
+"""A science chat's part is written only by the key that opened it; members read it.
 
 A session is read, written and drained by the key that opened it and by a caller the
 transcript test lets read it; the assistant may also send input to a session for a
@@ -331,6 +331,105 @@ async def test_a_session_that_is_not_a_chat_stays_shared(
     )
 
     assert (appended.status_code, labelled.status_code) == (200, 200)
+
+
+def _into(name: str, content: str) -> dict[str, object]:
+    """Return the body that appends one line to the part the file ``name`` opens."""
+    body = _append(_line(content))
+    manifest = from_plain(body["manifest"], dict[str, object])
+    return {**body, "name": name, "manifest": {**manifest, "name": name}}
+
+
+async def _texts(
+    client: httpx2.AsyncClient,
+    chat: uuid.UUID,
+    part: int,
+) -> list[object]:
+    """Read one part's records back as the assistant; return their texts."""
+    act_as_assistant("writer")
+    read = await client.get(f"/api/sessions/{chat}/records", params={"part": part})
+    return [record["text"] for record in _records(read)]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_each_run_on_a_chat_writes_its_own_part_alone(
+    pglite_route_client: _Client,
+) -> None:
+    """The starter's key adds part 1; neither key writes the other's part; no stranger.
+
+    The assistant opened the chat and wrote part 0. The starter's run is the next part,
+    and a key writing into a part another key opened would rewrite that run's lines.
+    """
+    client, store = pglite_route_client
+    chat = await _chat(client, store, conversation=uuid.uuid4())
+    act_as_assistant("writer")
+    assistants = await client.post(
+        f"/api/sessions/{chat}/records",
+        json=_into("kb.jsonl", "kb"),
+    )
+    act_as_user_agent("writer")
+    own = await client.post(
+        f"/api/sessions/{chat}/records",
+        json=_into("claude.jsonl", "mine"),
+    )
+    into_assistants = await client.post(
+        f"/api/sessions/{chat}/records",
+        json={**_into("kb.jsonl", "forged"), "restart": True},
+    )
+    act_as_assistant("writer")
+    into_own = await client.post(
+        f"/api/sessions/{chat}/records",
+        json={**_into("claude.jsonl", "forged"), "restart": True},
+    )
+    act_as_other_agent("writer")
+    stranger = await client.post(
+        f"/api/sessions/{chat}/records",
+        json=_into("codex.jsonl", "x"),
+    )
+
+    assert [
+        r.status_code for r in (assistants, own, into_assistants, into_own, stranger)
+    ] == [200, 200, 403, 403, 403]
+    assert json_loads(own.content, dict[str, object])["part"] == 1
+    assert (await _texts(client, chat, 0), await _texts(client, chat, 1)) == (
+        ["kb"],
+        ["mine"],
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_part_from_before_parts_named_their_key_keeps_the_chats_rule(
+    pglite_route_client: _Client,
+) -> None:
+    """A part with no recorded opener is written by the chat's opening key alone."""
+    client, store = pglite_route_client
+    chat = await _chat(client, store, conversation=uuid.uuid4())
+    act_as_assistant("writer")
+    first = await client.post(
+        f"/api/sessions/{chat}/records",
+        json=_into("kb.jsonl", "kb"),
+    )
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE session_manifests SET opened_by_api_key_id = NULL "
+            "WHERE session_id = $1",
+            chat,
+        )
+    act_as_user_agent("writer")
+    starter = await client.post(
+        f"/api/sessions/{chat}/records",
+        json={**_into("kb.jsonl", "forged"), "restart": True},
+    )
+    act_as_assistant("writer")
+    opener = await client.post(
+        f"/api/sessions/{chat}/records",
+        json={**_into("kb.jsonl", "kb again"), "restart": True},
+    )
+
+    assert [r.status_code for r in (first, starter, opener)] == [200, 403, 200]
+    assert await _texts(client, chat, 0) == ["kb again"]
 
 
 _OPENER = uuid.uuid4()

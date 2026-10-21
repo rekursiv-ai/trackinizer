@@ -33,11 +33,11 @@ not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 
 from __future__ import annotations
 
-from typing import Annotated, Final, Literal
+from typing import Annotated, Final, Literal, Self
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from trackinizer.wire.wire_machines import NAME_PATTERN, MachineStatus
 
@@ -98,6 +98,7 @@ __all__ = [
     "DirectSignal",
     "LiveTerminal",
     "OpenTerminal",
+    "TerminalCommand",
     "TerminalMachine",
     "TerminalMachines",
     "TerminalOpened",
@@ -215,6 +216,16 @@ type IceServers = Annotated[
 ]
 """STUN servers the browser and the host both use to find each other's address."""
 
+type TerminalCommand = Literal["claude", "codex"]
+"""A CLI a terminal may start in place of a login shell; the host allows two."""
+
+type RunFolder = Annotated[
+    str,
+    Field(max_length=1_024, pattern=r"^[/~][^\x00-\x1f\x7f]*$"),
+]
+"""The folder a run starts in: absolute or ``~``-relative, with no control character,
+since the host writes it into the terminal."""
+
 
 class OpenTerminal(BaseModel):
     """Open a terminal on one of the caller's machines."""
@@ -235,6 +246,27 @@ class OpenTerminal(BaseModel):
 
     surface: Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")] | None = None
     """The view that opened it (Chat's terminal side, or one tile): it re-attaches to its own."""
+
+    command: TerminalCommand | None = None
+    """Start ``trax run`` of this CLI in the terminal, in place of a login shell."""
+
+    attach: uuid.UUID | None = None
+    """The AgentSession the run re-opens; needs ``command``."""
+
+    run_name: str | None = Field(default=None, pattern=NAME_PATTERN)
+    """The detached run's name, for ``trax run attach NAME``; needs ``command``."""
+
+    cwd: RunFolder | None = None
+    """The run's folder on the machine, absolute or ``~``; needs ``command``."""
+
+    @model_validator(mode="after")
+    def _run_fields_need_a_command(self) -> Self:
+        """Refuse an ``attach``, ``run_name`` or ``cwd`` that names no CLI."""
+        if self.command is None and (
+            self.attach is not None or self.run_name is not None or self.cwd is not None
+        ):
+            raise ValueError("attach, run_name and cwd need a command")
+        return self
 
 
 class TerminalOpened(BaseModel):
@@ -272,6 +304,13 @@ class TerminalMachine(BaseModel):
     confirmed: bool
     """Whether its owner confirmed it; a terminal opens only on a confirmed machine
     (409 ``terminal_unconfirmed``). An admin's enroll confirms; a writer's does not."""
+
+    clis: list[str] = Field(default_factory=list)
+    """The CLIs its facts list, such as ``claude`` or ``codex``, so a picker offers
+    only what is installed."""
+
+    cwd: RunFolder | None = None
+    """The folder its owner last chose for a CLI run; None until one is named."""
 
 
 class LiveTerminal(BaseModel):
@@ -316,6 +355,18 @@ class TerminalWait(BaseModel):
 
     workspace: uuid.UUID | None = None
     workstream: uuid.UUID | None = None
+
+    command: TerminalCommand | None = None
+    """As :attr:`OpenTerminal.command`: the CLI to start in place of a login shell."""
+
+    attach: uuid.UUID | None = None
+    """As :attr:`OpenTerminal.attach`: the AgentSession the run re-opens."""
+
+    run_name: str | None = Field(default=None, pattern=NAME_PATTERN)
+    """As :attr:`OpenTerminal.run_name`: the detached run's name."""
+
+    cwd: RunFolder | None = None
+    """As :attr:`OpenTerminal.cwd`: the folder the run starts in, on this machine."""
 
 
 class DirectSignal(BaseModel):

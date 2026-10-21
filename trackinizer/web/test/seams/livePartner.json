@@ -1,0 +1,11 @@
+{
+  "actor": "claude",
+  "cli": "claude",
+  "cwd": "~/project",
+  "label": "claude · gx10",
+  "machine": "gx10",
+  "provider": "claude",
+  "run_name": "chat-1a2b3c4d",
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "status": "live"
+}

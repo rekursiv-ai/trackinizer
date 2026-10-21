@@ -128,7 +128,7 @@ def _make_put(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON]]
 
     handler.__name__ = f"set_{route.column}_route"
     handler.__qualname__ = handler.__name__
-    handler.__annotations__["body"] = FieldSet[route.value_type]  # ty: ignore[invalid-type-form] -- The pydantic model is parameterized dynamically for FastAPI's runtime schema.
+    handler.__annotations__["body"] = FieldSet[route.value_type]  # ty: ignore[invalid-type-form] -- The pydantic model is parameterized dynamically for FastAPI's runtime schema.  # pyrefly: ignore[not-a-type] -- The pydantic model is parameterized dynamically for FastAPI's runtime schema.
     return handler
 
 
@@ -149,7 +149,7 @@ def _make_patch(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON
 
     handler.__name__ = f"patch_{route.column}_route"
     handler.__qualname__ = handler.__name__
-    handler.__annotations__["body"] = FieldOp[route.element_type]  # ty: ignore[invalid-type-form] -- The pydantic model is parameterized dynamically for FastAPI's runtime schema.
+    handler.__annotations__["body"] = FieldOp[route.element_type]  # ty: ignore[invalid-type-form] -- The pydantic model is parameterized dynamically for FastAPI's runtime schema.  # pyrefly: ignore[not-a-type] -- The pydantic model is parameterized dynamically for FastAPI's runtime schema.
     return handler
 
 

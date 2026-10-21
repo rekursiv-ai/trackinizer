@@ -1,0 +1,277 @@
+"""The slash command rule: which typed text Chat sends as a command, per provider."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Final
+
+import pytest
+
+from trackinizer.wire.chat_commands import (
+    COMMAND_CHARS,
+    KNOWN_VERBS,
+    Command,
+    Line,
+    Refused,
+    classify,
+)
+
+
+if TYPE_CHECKING:
+    from trackinizer.wire.chat_commands import Classified
+    from trackinizer.wire.wire_science_chat import ChatProvider
+
+
+_TOO_LONG: Final = (
+    "A command is one line of at most 800 characters; put a longer goal in a file "
+    "and write /goal follow <path>"
+)
+_GOAL_BARE: Final = "Chat shows the goal above the box; /goal clear stops it"
+_ASSISTANT: Final = (
+    "The assistant runs no slash commands. /goal works in a chat on claude or "
+    "codex: pick one in the provider card."
+)
+
+
+def _menu(verb: str) -> Refused:
+    return Refused(
+        reason=f"Chat cannot run /{verb}: it opens a menu, changes settings or "
+        "switches the session. Use the terminal: trax run attach <run>",
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "provider", "expected"),
+    [
+        # Only a known verb at the very start of the text is a command.
+        ("/etc/hosts is broken", "claude", Line()),
+        ("/tmp is full", "claude", Line()),  # noqa: S108 -- A typed line, never opened.
+        (" /goal x", "claude", Line()),
+        ("ship it /goal x", "codex", Line()),
+        ("/review-pr 12", "claude", Line()),
+        ("/", "claude", Line()),
+        ("", "claude", Line()),
+        (" \n ", "codex", Line()),
+        ("/etc/hosts is broken", "assistant", Line()),
+        # /goal <text> sets a goal, and the verb is read in any case.
+        (
+            "/goal ship it",
+            "claude",
+            Command(text="/goal ship it", verb="goal", args="ship it"),
+        ),
+        (
+            "/goal ship it",
+            "codex",
+            Command(text="/goal ship it", verb="goal", args="ship it"),
+        ),
+        ("/Goal X", "claude", Command(text="/goal X", verb="goal", args="X")),
+        (
+            "/goal\tship it ",
+            "codex",
+            Command(text="/goal ship it", verb="goal", args="ship it"),
+        ),
+        (
+            "/goal ship it\n",
+            "claude",
+            Command(text="/goal ship it", verb="goal", args="ship it"),
+        ),
+        # A bare /goal would open claude's panel.
+        ("/goal", "claude", Refused(reason=_GOAL_BARE)),
+        ("/goal  ", "codex", Refused(reason=_GOAL_BARE)),
+        # Every word that clears a goal is typed as /goal clear.
+        (
+            "/goal stop",
+            "claude",
+            Command(text="/goal clear", verb="goal", args="clear"),
+        ),
+        ("/goal OFF", "codex", Command(text="/goal clear", verb="goal", args="clear")),
+        (
+            "/goal reset",
+            "claude",
+            Command(text="/goal clear", verb="goal", args="clear"),
+        ),
+        (
+            "/goal none",
+            "claude",
+            Command(text="/goal clear", verb="goal", args="clear"),
+        ),
+        (
+            "/goal cancel",
+            "codex",
+            Command(text="/goal clear", verb="goal", args="clear"),
+        ),
+        (
+            "/goal clear",
+            "codex",
+            Command(text="/goal clear", verb="goal", args="clear"),
+        ),
+        # A clear word that begins a longer condition sets that condition.
+        (
+            "/goal stop the leak",
+            "claude",
+            Command(text="/goal stop the leak", verb="goal", args="stop the leak"),
+        ),
+        # Claude would take pause as the goal's condition; codex pauses it.
+        (
+            "/goal pause",
+            "claude",
+            Refused(reason="claude has no goal pause; /goal clear stops it"),
+        ),
+        (
+            "/goal resume",
+            "claude",
+            Refused(reason="claude has no goal pause; /goal clear stops it"),
+        ),
+        (
+            "/goal pause",
+            "codex",
+            Command(text="/goal pause", verb="goal", args="pause"),
+        ),
+        (
+            "/goal Resume",
+            "codex",
+            Command(text="/goal resume", verb="goal", args="resume"),
+        ),
+        # /goal edit opens an editor in the terminal.
+        (
+            "/goal edit",
+            "claude",
+            Refused(
+                reason="Chat cannot run /goal edit: it opens an editor. "
+                "Use the terminal: trax run attach <run>",
+            ),
+        ),
+        (
+            "/goal edit",
+            "codex",
+            Refused(
+                reason="Chat cannot run /goal edit: it opens an editor. "
+                "Use the terminal: trax run attach <run>",
+            ),
+        ),
+        # Claude queues /compact until its turn ends; codex refuses it mid-turn.
+        ("/compact", "claude", Command(text="/compact", verb="compact", args="")),
+        (
+            "/compact keep the plan",
+            "claude",
+            Command(
+                text="/compact keep the plan",
+                verb="compact",
+                args="keep the plan",
+            ),
+        ),
+        (
+            "/compact",
+            "codex",
+            Refused(reason="codex runs /compact only between turns; attach to run it"),
+        ),
+        # Any other known verb opens a menu, changes settings or switches session.
+        ("/model opus", "claude", _menu("model")),
+        ("/model", "codex", _menu("model")),
+        ("/Resume", "claude", _menu("resume")),
+        ("/exit", "codex", _menu("exit")),
+        # The assistant runs none of them.
+        ("/goal x", "assistant", Refused(reason=_ASSISTANT)),
+        ("/compact", "assistant", Refused(reason=_ASSISTANT)),
+        ("/model opus", "assistant", Refused(reason=_ASSISTANT)),
+        ("/goal x\nand more", "assistant", Refused(reason=_ASSISTANT)),
+        # A command is one line: a second line would reach the CLI as a paste.
+        ("/goal ship it\nthen test it", "claude", Refused(reason=_TOO_LONG)),
+        ("/goal ship it\r\nthen test it", "codex", Refused(reason=_TOO_LONG)),
+        ("/model\nopus", "claude", Refused(reason=_TOO_LONG)),
+        # A line that only starts with an unknown slash word stays a line.
+        ("/tmp is full\nand /goal x", "claude", Line()),  # noqa: S108 -- Never opened.
+    ],
+)
+def test_each_row_of_the_table(
+    text: str,
+    provider: ChatProvider,
+    expected: Classified,
+) -> None:
+    assert classify(text, provider) == expected
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_a_command_is_at_most_800_characters(provider: ChatProvider) -> None:
+    """Claude makes a longer paste a pill it does not run as a command."""
+    longest = "/goal " + "x" * (COMMAND_CHARS - len("/goal "))
+
+    fits = classify(longest, provider)
+    over = classify(longest + "x", provider)
+
+    assert fits == Command(
+        text=longest,
+        verb="goal",
+        args=longest.removeprefix("/goal "),
+    )
+    assert over == Refused(reason=_TOO_LONG)
+
+
+def test_the_known_verbs_are_the_built_ins_of_claude_and_codex() -> None:
+    """A verb missing here would reach the CLI as a line; one added runs as a menu."""
+    assert sorted(KNOWN_VERBS) == sorted(
+        [
+            "goal",
+            "compact",
+            "clear",
+            "new",
+            "model",
+            "effort",
+            "permissions",
+            "resume",
+            "status",
+            "config",
+            "exit",
+            "quit",
+            "init",
+            "review",
+            "plan",
+            "fork",
+            "rename",
+            "diff",
+            "mcp",
+            "agents",
+            "cost",
+            "help",
+            "hooks",
+            "skills",
+            "usage",
+            "export",
+            "copy",
+            "theme",
+            "vim",
+            "ide",
+            "side",
+            "btw",
+            "rewind",
+            "undo",
+            "cd",
+            "pwd",
+            "stop",
+            "ps",
+            "login",
+            "logout",
+            "memory",
+            "context",
+            "fast",
+            "doctor",
+            "feedback",
+            "statusline",
+        ],
+    )
+
+
+@pytest.mark.parametrize("verb", sorted(KNOWN_VERBS - {"goal", "compact"}))
+def test_every_other_known_verb_is_refused_on_both_clis(verb: str) -> None:
+    assert (
+        classify(f"/{verb} now", "claude")
+        == classify(f"/{verb}", "codex")
+        == _menu(
+            verb,
+        )
+    )
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.runner import test_main
+
+    test_main(__file__)

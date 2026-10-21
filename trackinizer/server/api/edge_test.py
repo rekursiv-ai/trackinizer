@@ -134,18 +134,8 @@ class _PartialEdgeStore(_StubEdgeStore):
         api_key_id: uuid.UUID | None = None,
         actor: Inquiry.Actor,
     ) -> tuple[uuid.UUID | None, bool]:
-        del (
-            from_id,
-            to_id,
-            edge_kind,
-            priority,
-            note,
-            valence,
-            labels,
-            reason,
-            api_key_id,
-            actor,
-        )
+        del from_id, to_id, edge_kind, priority, note, valence, labels, reason
+        del api_key_id, actor
         self.calls += 1
         if self.calls == 2:
             raise RuntimeError("boom")
@@ -213,18 +203,8 @@ class _LeakyEdgeStore(_StubEdgeStore):
         api_key_id: uuid.UUID | None = None,
         actor: Inquiry.Actor,
     ) -> tuple[uuid.UUID | None, bool]:
-        del (
-            from_id,
-            to_id,
-            edge_kind,
-            priority,
-            note,
-            valence,
-            labels,
-            reason,
-            api_key_id,
-            actor,
-        )
+        del from_id, to_id, edge_kind, priority, note, valence, labels, reason
+        del api_key_id, actor
         err = asyncpg.ForeignKeyViolationError(
             'insert violates foreign key "secret_constraint" on column from_id',
         )
@@ -469,7 +449,7 @@ class TestDelete:
         # ``remove_edge``: FOR UPDATE SELECT (fetchrow) then captured-edge
         # walk (fetch) then DELETE.
         set_field_row(engine.conn, _edge_row(from_id=from_id, to_id=to_id))
-        engine.conn.fetch.return_value = []
+        engine.conn.fetch.return_value = list[dict[str, object]]()
         r = client.request(
             "DELETE",
             f"/api/edges/{from_id}/narrows/{to_id}",
@@ -630,7 +610,7 @@ class TestCoverageRoutesAndCli:
             == 200
         )
         set_field_row(engine.conn, _edge_row(from_id=source_id, to_id=target_id))
-        engine.conn.fetch.return_value = []
+        engine.conn.fetch.return_value = list[dict[str, object]]()
         assert (
             client.request(
                 "DELETE",

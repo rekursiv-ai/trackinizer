@@ -45,8 +45,7 @@ async def place_session_route(
     caller's; the placement the session already has; the workstream of the caller's
     newest earlier session on the same git branch, in a new station; else the caller's
     Scratch, in a new station. Placing a placed session returns its placement. A
-    service account's session, a science chat and a ``trax helper`` are not placed:
-    both ids are null.
+    service account's session and a science chat are not placed: both ids are null.
 
     Args:
       session_id: The session, which the caller's own key opened.

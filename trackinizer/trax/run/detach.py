@@ -118,7 +118,10 @@ def launch(
       name: The host's name; must not belong to a live host.
       command: The wrapped command line, recorded for ``trax run ls``.
       start: Runs the CLI served at the given spec, returning its status. It is
-        called in the host process, after this one has returned.
+        called in the host process, after this one has returned, so it opens any
+        connection the run needs: a caller that opened one before the fork would
+        hand the host frameworks macOS forbids a forked child. What it writes to
+        stderr before the host accepts is repeated here.
 
     Returns:
       exit_code: 0 once the host accepts; 1 when it failed or is not up yet.
@@ -156,6 +159,9 @@ def launch(
     _ = os.waitpid(pid, 0)
     message = _await_ready(ready_r)
     if message == b"ok":
+        # What the host said before it accepted, such as how much of a chat it
+        # loaded, is said to the person who started it.
+        sys.stderr.write(_tail(paths / "host.log"))
         sys.stderr.write(
             f"[trax run] {name} is running detached; "
             f"attach with: trax run attach {name}\n",
@@ -369,7 +375,7 @@ def _redirect_stdio(log: Path) -> None:
 def _await_ready(fd: int) -> bytes | None:
     """Return the host's readiness message, or None if it never answered."""
     try:
-        readable, _, _ = select.select([fd], [], [], _READY_TIMEOUT_SEC)
+        readable, _, _ = select.select([fd], (), (), _READY_TIMEOUT_SEC)
         return os.read(fd, 2) if readable else None
     finally:
         os.close(fd)

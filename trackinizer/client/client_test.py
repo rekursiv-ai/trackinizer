@@ -51,6 +51,11 @@ from trackinizer.wire.wire_session_ir import (
     SlashCommandBody,
 )
 from trackinizer.wire.wire_sessions import SessionStart
+from trackinizer.wire.wire_terminals import (
+    TERMINAL_MACHINES_PATH,
+    TERMINALS_PATH,
+    OpenTerminal,
+)
 from trackinizer.wire.wire_variables import VARIABLES_PATH
 
 
@@ -2272,9 +2277,14 @@ class TestSessionMethods:
             _install_mock_transport(client, handler)
             drained = client.drain_inbound(session_id)
 
-        assert len(drained) == 1
-        text, source, room, context = drained[0]
-        assert (text, source, room) == ("What led here?", "viewer@example.com", None)
+        [item] = drained
+        assert (item.text, item.source, item.room, item.kind) == (
+            "What led here?",
+            "viewer@example.com",
+            None,
+            "line",
+        )
+        context = item.context
         assert context is not None
         assert context.model_dump(mode="json") == {
             "workspace_id": str(workspace_id),
@@ -2325,8 +2335,9 @@ class TestSessionMethods:
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
-            ((_text, _source, _room, context),) = client.drain_inbound(session_id)
+            [item] = client.drain_inbound(session_id)
 
+        context = item.context
         assert context is not None
         assert context.relay is not None
         assert context.relay.model_dump(mode="json") == relay
@@ -2349,6 +2360,42 @@ class TestSessionMethods:
 
         [read] = reads
         assert (read is not None and read > wait_sec) if wait_sec else read == 5.0
+
+    def test_inbound_drain_says_where_the_run_is_only_when_it_knows(self) -> None:
+        queries: list[dict[str, str]] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            queries.append(
+                {
+                    key: request.url.params.get_list(key)[0]
+                    for key in ("wait_sec", "run", "machine", "cwd")
+                    if request.url.params.get_list(key)
+                },
+            )
+            return httpx2.Response(200, json={"messages": []})
+
+        with Client("http://server") as client:
+            _install_mock_transport(client, handler)
+            _ = client.drain_inbound(
+                uuid.uuid4(),
+                wait_sec=25.0,
+                run="chat-1a2b3c4d",
+                machine="gx10",
+                cwd="~/work",
+            )
+            _ = client.drain_inbound(uuid.uuid4(), machine="gx10")
+            _ = client.drain_inbound(uuid.uuid4())
+
+        assert queries == [
+            {
+                "wait_sec": "25.0",
+                "run": "chat-1a2b3c4d",
+                "machine": "gx10",
+                "cwd": "~/work",
+            },
+            {"machine": "gx10"},
+            {},
+        ]
 
     def test_get_sends_the_timeout_it_is_given(self) -> None:
         reads: list[float | None] = []
@@ -2393,6 +2440,58 @@ class TestSessionMethods:
             _ = client.enqueue_inbound(uuid.uuid4(), "hi")
 
         assert bodies == [{"text": "hi"}]
+
+    def test_enqueue_inbound_names_a_kind_and_its_payload(self) -> None:
+        bodies: list[object] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            bodies.append(json_loads(request.content))
+            return httpx2.Response(200, json={"queued": 1})
+
+        answer: dict[str, object] = {"prompt_id": "p1", "decision": "allow"}
+        with Client("http://server") as client:
+            _install_mock_transport(client, handler)
+            _ = client.enqueue_inbound(uuid.uuid4(), "/compact", kind="command")
+            _ = client.enqueue_inbound(
+                uuid.uuid4(),
+                "Yes",
+                kind="answer",
+                payload=answer,
+            )
+
+        assert bodies == [
+            {"text": "/compact", "kind": "command"},
+            {"text": "Yes", "kind": "answer", "payload": answer},
+        ]
+
+    def test_inbound_drain_returns_each_kind_and_payload(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(
+                200,
+                json={
+                    "messages": [
+                        {"text": "hello", "source": "ann@x"},
+                        {"text": "interrupt", "kind": "interrupt"},
+                        {
+                            "text": "model",
+                            "kind": "settings",
+                            "payload": {"model": "opus", "effort": None},
+                        },
+                    ],
+                },
+            )
+
+        with Client("http://server") as client:
+            _install_mock_transport(client, handler)
+            drained = client.drain_inbound(uuid.uuid4())
+
+        assert [(item.kind, item.payload) for item in drained] == [
+            ("line", None),
+            ("interrupt", None),
+            ("settings", {"model": "opus", "effort": None}),
+        ]
+        assert drained[0].source == "ann@x"
 
 
 class TestExport:
@@ -3086,6 +3185,114 @@ class TestMachineHostMethods:
             ("POST", "/api/machines/gpu-box/revoke"),
         ] * 2
         assert err.value.status_code == 404
+
+
+class TestTerminalMethods:
+    """The terminal methods build the right requests and parse the answers."""
+
+    def test_terminal_machines_asks_for_a_station_only_when_named(self) -> None:
+        seen: list[httpx2.Request] = []
+        station = uuid.UUID("22222222-2222-2222-2222-222222222222")
+        listing = {
+            "machines": [
+                {
+                    "name": "gx10",
+                    "status": "online",
+                    "terminal_ready": True,
+                    "confirmed": True,
+                    "clis": ["claude", "codex"],
+                },
+            ],
+            "terminals": list[PlainTree](),
+        }
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json=listing)
+
+        with Client("https://server", api_key=_CREDENTIAL) as client:
+            _install_mock_transport(client, handler)
+            named = client.terminal_machines(workspace=station)
+            bare = client.terminal_machines()
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", TERMINAL_MACHINES_PATH),
+        ] * 2
+        assert seen[0].url.params["workspace"] == str(station)
+        assert "workspace" not in seen[1].url.params
+        assert [(m.name, m.terminal_ready, m.clis) for m in named.machines] == [
+            ("gx10", True, ["claude", "codex"]),
+        ]
+        assert bare.terminals == []
+
+    def test_terminal_machines_wraps_a_malformed_payload(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(200, json={"machines": [{"name": "gx10"}]})
+
+        with Client("https://server", api_key=_CREDENTIAL) as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError, match="malformed payload"):
+                client.terminal_machines()
+
+    def test_open_terminal_sends_the_run_fields_and_reads_the_ticket(self) -> None:
+        seen: list[httpx2.Request] = []
+        station = uuid.UUID("22222222-2222-2222-2222-222222222222")
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(
+                201,
+                json={"terminal_id": str(_MACHINE_ID), "ticket": "ticket-1"},
+            )
+
+        with Client("https://server", api_key=_CREDENTIAL) as client:
+            _install_mock_transport(client, handler)
+            opened = client.open_terminal(
+                OpenTerminal(
+                    machine="gx10",
+                    rows=40,
+                    cols=120,
+                    workspace=station,
+                    command="claude",
+                    attach=_INSTANCE,
+                    run_name="campaign-issue-7",
+                    cwd="~/work",
+                ),
+            )
+
+        assert [(r.method, r.url.path) for r in seen] == [("POST", TERMINALS_PATH)]
+        assert json_loads(seen[0].content) == {
+            "machine": "gx10",
+            "rows": 40,
+            "cols": 120,
+            "workspace": str(station),
+            "requested_by": None,
+            "surface": None,
+            "command": "claude",
+            "attach": str(_INSTANCE),
+            "run_name": "campaign-issue-7",
+            "cwd": "~/work",
+        }
+        assert (opened.terminal_id, opened.ticket) == (_MACHINE_ID, "ticket-1")
+
+    def test_open_terminal_surfaces_a_refusal_with_its_status_and_code(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(
+                403,
+                json={"detail": {"code": "terminal_forbidden", "message": "no"}},
+            )
+
+        with Client("https://server", api_key=_CREDENTIAL) as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError) as err:
+                client.open_terminal(OpenTerminal(machine="gx10", rows=40, cols=120))
+
+        assert (err.value.status_code, err.value.code) == (
+            403,
+            "terminal_forbidden",
+        )
 
 
 class TestMetricQueries:

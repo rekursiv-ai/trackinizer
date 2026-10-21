@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import get_args
+
 import uuid
 
 from pydantic import ValidationError
@@ -11,6 +13,7 @@ import pytest
 from trackinizer.wire.wire_science_chat import (
     CHAT_PARTIAL_CHARS,
     CHAT_SESSION_PREFIX,
+    ChatLineKind,
     ChatPartial,
     ChatPartialState,
     ChatSend,
@@ -18,6 +21,7 @@ from trackinizer.wire.wire_science_chat import (
     chat_session_id,
     poster_label,
 )
+from trackinizer.wire.wire_sessions import InboundKind
 
 
 _WORKSPACE = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -39,9 +43,100 @@ def test_a_poster_label_names_the_attested_email() -> None:
     assert poster_label("ada@example.com") == "poster:ada@example.com"
 
 
-def test_a_line_is_science_chat_from_a_canvas_by_default() -> None:
+def test_a_post_is_a_persons_line_by_default() -> None:
     sent = ChatSend(workspace_id=_WORKSPACE, text="hello")
-    assert (sent.kind, sent.conversation_id) == ("science", None)
+    assert (sent.kind, sent.payload, sent.conversation_id) == ("line", None, None)
+
+
+def test_the_post_kinds_are_the_inbound_kinds() -> None:
+    """A post's kind is handed on as the queued message's, so the sets match."""
+    assert get_args(ChatLineKind.__value__) == get_args(InboundKind.__value__)
+
+
+def test_a_browser_that_still_sends_science_posts_a_line() -> None:
+    sent = ChatSend.model_validate(
+        {"workspace_id": str(_WORKSPACE), "text": "hello", "kind": "science"},
+    )
+    assert sent.kind == "line"
+
+
+@pytest.mark.parametrize(
+    ("kind", "payload"),
+    [
+        ("command", None),
+        ("interrupt", None),
+        ("answer", {"prompt_id": "p1", "decision": "allow"}),
+        (
+            "answer",
+            {
+                "prompt_id": "p1",
+                "decision": "deny",
+                "updated_input": None,
+                "message": "not that file",
+            },
+        ),
+        ("settings", {"model": "opus"}),
+        ("settings", {"effort": "high"}),
+    ],
+)
+def test_each_kind_takes_the_payload_its_queue_documents(
+    kind: str,
+    payload: dict[str, object] | None,
+) -> None:
+    sent = ChatSend.model_validate(
+        {
+            "workspace_id": str(_WORKSPACE),
+            "text": "Yes",
+            "kind": kind,
+            "payload": payload,
+        },
+    )
+    assert (sent.kind, sent.payload) == (kind, payload)
+
+
+@pytest.mark.parametrize(
+    ("kind", "payload"),
+    [
+        ("line", {"model": "opus"}),
+        ("command", {"x": 1}),
+        ("answer", None),
+        ("answer", {"prompt_id": "p1", "decision": "maybe"}),
+        ("answer", {"prompt_id": "", "decision": "allow"}),
+        ("answer", {"prompt_id": "p1", "decision": "allow", "poster": "mallory"}),
+        ("settings", {}),
+        ("settings", None),
+        ("incognito", None),
+    ],
+)
+def test_a_payload_the_kind_does_not_take_is_refused(
+    kind: str,
+    payload: dict[str, object] | None,
+) -> None:
+    with pytest.raises(ValidationError):
+        ChatSend.model_validate(
+            {
+                "workspace_id": str(_WORKSPACE),
+                "text": "Yes",
+                "kind": kind,
+                "payload": payload,
+            },
+        )
+
+
+def test_a_fork_starts_from_a_line_only() -> None:
+    fork = {"session_id": str(uuid.uuid4()), "part": 0, "idx": 3}
+    assert ChatSend.model_validate(
+        {"workspace_id": str(_WORKSPACE), "text": "hi", "fork": fork},
+    ).fork
+    with pytest.raises(ValidationError):
+        ChatSend.model_validate(
+            {
+                "workspace_id": str(_WORKSPACE),
+                "text": "/compact",
+                "kind": "command",
+                "fork": fork,
+            },
+        )
 
 
 @pytest.mark.parametrize("text", ["", " ", "\n\t "])
@@ -65,13 +160,6 @@ def test_a_line_names_no_poster_and_no_unknown_field() -> None:
             ChatSend.model_validate(
                 {"workspace_id": str(_WORKSPACE), "text": "hello", field: value},
             )
-
-
-def test_science_is_the_only_kind_of_chat() -> None:
-    with pytest.raises(ValidationError):
-        ChatSend.model_validate(
-            {"workspace_id": str(_WORKSPACE), "text": "hello", "kind": "incognito"},
-        )
 
 
 def test_a_partial_holds_at_most_16384_characters() -> None:
