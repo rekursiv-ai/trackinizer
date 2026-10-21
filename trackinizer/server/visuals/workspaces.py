@@ -418,6 +418,19 @@ class StationData(BaseModel):
     clear_key: uuid.UUID | None = None
     """Internal idempotency key for a cleared station; not exposed in workspace state."""
 
+    @model_validator(mode="after")
+    def _drop_suggestion_for_own_workstream(self) -> StationData:
+        # A chat made inside a workstream starts unnamed there, so the assistant's best
+        # match is that same workstream. Every surface reads the station through this
+        # model, so dropping it here also clears rows stored before this rule.
+        if (
+            self.suggestion is not None
+            and self.suggestion.workstream_id is not None
+            and self.suggestion.workstream_id == self.workstream_id
+        ):
+            self.suggestion = None
+        return self
+
 
 class WorkspacePartner(BaseModel):
     """Who a canvas's Chat talks to now, computed on every read and never stored.
