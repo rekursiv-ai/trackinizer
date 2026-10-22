@@ -4,14 +4,15 @@ A Chat post is typed into a ``claude`` or ``codex`` run's terminal. A line goes 
 with its sender and the canvas, so the CLI reads ``/goal x`` there as a prompt. A
 command goes in bare, so the CLI runs it as one of its own built-ins. The server
 classifies each line with :func:`classify` before it queues it: a command is queued
-as kind ``command``, a refusal is answered at once and nothing is queued, and any
-other text stays a line.
+as kind ``command``, a settings change as kind ``settings``, a refusal is
+answered at once and nothing is queued, and any other text stays a line.
 
 Only a known built-in of either CLI (:data:`KNOWN_VERBS`) at the very start of the
 text is a command, so ``/etc/hosts is broken`` and ``/tmp is full`` stay lines. Of
-those, Chat runs only the ones that need no terminal: ``/goal`` and claude's
-``/compact``. Every other one opens a menu, changes settings or switches the
-session, which the person does at the terminal.
+those, Chat runs only the ones that need no terminal: ``/goal``, claude's
+``/compact``, and ``/model <name>`` or ``/effort <level>``, which are queued as a
+``settings`` post rather than typed. Every other one opens a menu, changes settings
+or switches the session, which the person does at the terminal.
 
 This package is part of the publishable client distribution, so it must not
 import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
@@ -38,6 +39,7 @@ __all__ = [
     "Command",
     "Line",
     "Refused",
+    "Settings",
     "classify",
 ]
 
@@ -114,6 +116,36 @@ _MENU: Final = (
     "session. Use the terminal: trax run attach <run>"
 )
 
+_SETTING_CHARS: Final = {"model": 120, "effort": 20}
+"""The longest argument of ``/model`` and ``/effort``: the limits of ``ChatSettings``."""
+
+# Where the options come from: claude's aliases are the catalog's roles (``best``,
+# ``default`` and ``utility`` in ``lib/agent/catalog/anthropic.py``); codex's models
+# are the catalog's ``wire_model_id`` of its newest rows (``lib/agent/catalog/
+# openai.py``); the levels are ``Effort`` in ``lib/agent/harness/types.py``, which both
+# CLIs take. This package may not import ``lib``, so the lists are spelled here.
+_MODELS: Final[Mapping[ChatProvider, str]] = {
+    "claude": "opus, sonnet, fable, or a full id such as claude-opus-5-5",
+    "codex": "gpt-6.1-sol, gpt-6-sol, gpt-6-luna, gpt-5.6, gpt-5.5",
+}
+_EXAMPLE: Final[Mapping[ChatProvider, str]] = {
+    "claude": "opus",
+    "codex": "gpt-6.1-sol",
+}
+_EFFORTS: Final = "low, medium, high, xhigh, max"
+_BARE_MODEL: Final = (
+    "Chat can't open the model menu. Type /model <name> to switch, for example "
+    "/model {example}. Options: {options}."
+)
+_BARE_EFFORT: Final = (
+    "Chat can't open the effort menu. Type /effort <level> to switch, for example "
+    f"/effort high. Options: {_EFFORTS}."
+)
+_ONE_TOKEN: Final = {
+    "model": "/model takes one model name of at most 120 characters, as in /model opus",
+    "effort": "/effort takes one level of at most 20 characters, as in /effort high",
+}
+
 _GOAL_BARE: Final = "Chat shows the goal above the box; /goal clear stops it"
 _GOAL_EDIT: Final = (
     "Chat cannot run /goal edit: it opens an editor. Use the terminal: "
@@ -165,7 +197,18 @@ class Refused:
     reason: str
 
 
-type Classified = Line | Command | Refused
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Settings:
+    """A ``/model`` or ``/effort`` with its argument, queued as a ``settings`` post."""
+
+    text: str
+    """What was typed, normalized: ``/model opus`` or ``/effort high``."""
+
+    model: str | None
+    effort: str | None
+
+
+type Classified = Line | Command | Refused | Settings
 """What :func:`classify` makes of a typed text."""
 
 
@@ -177,8 +220,10 @@ def classify(text: str, provider: ChatProvider) -> Classified:
       provider: Who answers the chat: the chat's own provider, not the poster's.
 
     Returns:
-      classified: ``Command`` for a command the provider runs from Chat, ``Refused``
-        for a known command it does not, and ``Line`` for any other text.
+      classified: ``Command`` for a command the provider runs from Chat,
+        ``Settings`` for ``/model <name>`` or ``/effort <level>`` (one token; the
+        level lowercased), ``Refused`` for a known command it does not run, a bare
+        ``/model`` or ``/effort`` included, and ``Line`` for any other text.
 
     """
     lines = text.rstrip().splitlines()
@@ -196,6 +241,8 @@ def classify(text: str, provider: ChatProvider) -> Classified:
             "put a longer goal in a file and write /goal follow <path>",
         )
     verb = first["verb"].lower()
+    if verb in _SETTING_CHARS:
+        return _setting(verb, args=(first["args"] or "").strip(), provider=provider)
     row, args = _row(verb, args=(first["args"] or "").strip())
     reason = _TABLE.get(row, {}).get(provider, _MENU.format(verb=verb))
     if reason is not None:
@@ -217,3 +264,21 @@ def _row(verb: str, *, args: str) -> tuple[str, str]:
     if word == "edit":
         return "goal edit", word
     return "goal", args
+
+
+def _setting(verb: str, *, args: str, provider: ChatProvider) -> Settings | Refused:
+    """Return ``/model`` or ``/effort`` with its one argument, or why it is refused."""
+    if not args:
+        return Refused(
+            reason=_BARE_EFFORT
+            if verb == "effort"
+            else _BARE_MODEL.format(
+                example=_EXAMPLE[provider],
+                options=_MODELS[provider],
+            ),
+        )
+    if len(args.split()) > 1 or len(args) > _SETTING_CHARS[verb]:
+        return Refused(reason=_ONE_TOKEN[verb])
+    if verb == "model":
+        return Settings(text=f"/model {args}", model=args, effort=None)
+    return Settings(text=f"/effort {args.lower()}", model=None, effort=args.lower())

@@ -268,6 +268,12 @@ test("a command a run typed is its sender's line, and a refused one says why", (
   expect(working).toBe("");
 });
 
+test("a /model or /effort a run applied shows as the typed command and owes no work", () => {
+  const { lines, working } = readTranscript(parts(typedCommand(0, "/model opus", "model", "opus"), typedCommand(1, "/effort high", "effort", "high")));
+  expect(lines.map(({ role, author, text }) => [role, author, text])).toEqual([["command", ME, "/model opus"], ["command", ME, "/effort high"]]);
+  expect(working).toBeNull();
+});
+
 test("a command that sets no goal is no work owed, and a goal control is not a condition", () => {
   expect(readTranscript(parts(typedCommand(0, "/compact", "compact", ""))).working).toBeNull();
   expect(readTranscript(parts(typedCommand(0, "/goal clear", "goal", "clear"))).working).toBeNull();

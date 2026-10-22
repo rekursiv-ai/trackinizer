@@ -88,7 +88,13 @@ from trackinizer.server.visuals.workstreams import check_workstream, open_scratc
 from trackinizer.types.errors import ChatDeletedError, ConflictError
 from trackinizer.wire.audience import OPEN
 from trackinizer.wire.bodies import SubmitAgentSession, SubmitArtifact
-from trackinizer.wire.chat_commands import Command, Line, Refused, classify
+from trackinizer.wire.chat_commands import (
+    Command,
+    Line,
+    Refused,
+    Settings,
+    classify,
+)
 from trackinizer.wire.wire_science_chat import (
     CHAT_TITLE,
     FORK_EDGE_LABEL,
@@ -97,6 +103,7 @@ from trackinizer.wire.wire_science_chat import (
     ChatProvider,
     ChatSend,
     ChatSent,
+    ChatSettings,
     chat_actor,
     chat_session_id,
     fork_point_label,
@@ -260,7 +267,10 @@ async def send_chat_line(
     A ``line`` that is a known slash command (by
     :func:`~trackinizer.wire.chat_commands.classify`, for the chat's provider)
     is queued as a ``command`` of its normalized text, with no
-    page, trail or marks, so the run types it bare; one the provider does not run
+    page, trail or marks, so the run types it bare; ``/model <name>`` and
+    ``/effort <level>`` are queued as a ``settings`` post of that text and a
+    :class:`~trackinizer.wire.wire_science_chat.ChatSettings` payload, the
+    same way; one the provider does not run
     from Chat is refused before anything is queued or bound. An ``answer`` to a
     ``claude`` or ``codex`` run's prompt comes from the chat's starter alone, the
     run's owner: it runs a tool, or grants trust, on their machine. An ``answer`` to a
@@ -352,6 +362,17 @@ async def send_chat_line(
             match classify(body.text, provider):
                 case Command(text=text):
                     body = body.model_copy(update={"kind": "command", "text": text})
+                case Settings(text=text, model=model, effort=effort):
+                    body = body.model_copy(
+                        update={
+                            "kind": "settings",
+                            "text": text,
+                            "payload": ChatSettings(
+                                model=model,
+                                effort=effort,
+                            ).model_dump(),
+                        },
+                    )
                 case Refused(reason=reason):
                     raise CommandRefusedError(reason)
                 case Line():

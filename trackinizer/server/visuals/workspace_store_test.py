@@ -2488,6 +2488,45 @@ async def test_a_claude_chat_queues_a_known_command_bare_and_a_slash_line_as_a_l
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_a_model_or_effort_line_queues_a_settings_post_with_no_page_or_marks(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """The run applies a settings post; it carries no page, trail or marks."""
+    _, session = await _claude_chat(pglite_engine)
+    inbound = InboundQueue()
+    inbound.mark_poller(session, cli="claude")
+
+    _ = await _post(pglite_engine, inbound=inbound, text="/Model opus")
+    _ = await _post(pglite_engine, inbound=inbound, text="/effort High")
+
+    heard = inbound.drain(session)
+    assert [(each.text, each.kind, each.payload, each.context) for each in heard] == [
+        ("/model opus", "settings", {"model": "opus", "effort": None}, None),
+        ("/effort high", "settings", {"model": None, "effort": "high"}, None),
+    ]
+    assert await _marks_sent(pglite_engine) == 0
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_bare_model_line_is_refused_with_what_works(
+    pglite_engine: PGliteEngine,
+) -> None:
+    _, session = await _claude_chat(pglite_engine)
+    inbound = InboundQueue()
+    inbound.mark_poller(session, cli="claude")
+
+    with pytest.raises(
+        CommandRefusedError,
+        match=r"^Chat can't open the model menu\. Type /model <name> ",
+    ):
+        _ = await _post(pglite_engine, inbound=inbound, text="/model")
+
+    assert inbound.drain(session) == []
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_a_command_chat_cannot_run_is_refused_and_queues_nothing(
     pglite_engine: PGliteEngine,
 ) -> None:
@@ -2495,8 +2534,8 @@ async def test_a_command_chat_cannot_run_is_refused_and_queues_nothing(
     inbound, key = InboundQueue(), uuid.uuid4()
     inbound.mark_poller(session, cli="claude")
 
-    with pytest.raises(CommandRefusedError, match=r"^Chat cannot run /model: "):
-        _ = await _post(pglite_engine, inbound=inbound, text="/model opus", key=key)
+    with pytest.raises(CommandRefusedError, match=r"^Chat cannot run /resume: "):
+        _ = await _post(pglite_engine, inbound=inbound, text="/resume", key=key)
 
     assert inbound.drain(session) == []
     assert inbound.sender_of(key) is None

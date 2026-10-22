@@ -12,6 +12,7 @@ from trackinizer.wire.chat_commands import (
     Command,
     Line,
     Refused,
+    Settings,
     classify,
 )
 
@@ -37,6 +38,28 @@ def _menu(verb: str) -> Refused:
         reason=f"Chat cannot run /{verb}: it opens a menu, changes settings or "
         "switches the session. Use the terminal: trax run attach <run>",
     )
+
+
+_BARE_MODEL: Final = {
+    "claude": "Chat can't open the model menu. Type /model <name> to switch, for "
+    "example /model opus. Options: opus, sonnet, fable, or a full id such as "
+    "claude-opus-5-5.",
+    "codex": "Chat can't open the model menu. Type /model <name> to switch, for "
+    "example /model gpt-6.1-sol. Options: gpt-6.1-sol, gpt-6-sol, gpt-6-luna, "
+    "gpt-5.6, gpt-5.5.",
+}
+_BARE_EFFORT: Final = (
+    "Chat can't open the effort menu. Type /effort <level> to switch, for example "
+    "/effort high. Options: low, medium, high, xhigh, max."
+)
+
+
+_ONE_MODEL: Final = (
+    "/model takes one model name of at most 120 characters, as in /model opus"
+)
+_ONE_EFFORT: Final = (
+    "/effort takes one level of at most 20 characters, as in /effort high"
+)
 
 
 @pytest.mark.parametrize(
@@ -164,15 +187,62 @@ def _menu(verb: str) -> Refused:
             "codex",
             Refused(reason="codex runs /compact only between turns; attach to run it"),
         ),
+        # /model and /effort with an argument change the run's settings; bare, they
+        # would open a menu.
+        (
+            "/model opus",
+            "claude",
+            Settings(text="/model opus", model="opus", effort=None),
+        ),
+        (
+            "/Model gpt-5.5",
+            "codex",
+            Settings(text="/model gpt-5.5", model="gpt-5.5", effort=None),
+        ),
+        (
+            "/effort high",
+            "claude",
+            Settings(text="/effort high", model=None, effort="high"),
+        ),
+        (
+            "/EFFORT\tHigh ",
+            "codex",
+            Settings(text="/effort high", model=None, effort="high"),
+        ),
+        ("/model", "codex", Refused(reason=_BARE_MODEL["codex"])),
+        ("/model  ", "claude", Refused(reason=_BARE_MODEL["claude"])),
+        ("/effort", "claude", Refused(reason=_BARE_EFFORT)),
+        ("/effort", "codex", Refused(reason=_BARE_EFFORT)),
+        ("/model opus please", "claude", Refused(reason=_ONE_MODEL)),
+        ("/effort very high", "codex", Refused(reason=_ONE_EFFORT)),
+        (
+            "/model " + "m" * 120,
+            "claude",
+            Settings(
+                text="/model " + "m" * 120,
+                model="m" * 120,
+                effort=None,
+            ),
+        ),
+        ("/model " + "m" * 121, "claude", Refused(reason=_ONE_MODEL)),
+        (
+            "/effort " + "e" * 20,
+            "codex",
+            Settings(
+                text="/effort " + "e" * 20,
+                model=None,
+                effort="e" * 20,
+            ),
+        ),
+        ("/effort " + "e" * 21, "codex", Refused(reason=_ONE_EFFORT)),
         # Any other known verb opens a menu, changes settings or switches session.
-        ("/model opus", "claude", _menu("model")),
-        ("/model", "codex", _menu("model")),
         ("/Resume", "claude", _menu("resume")),
         ("/exit", "codex", _menu("exit")),
         # The assistant runs none of them.
         ("/goal x", "assistant", Refused(reason=_ASSISTANT)),
         ("/compact", "assistant", Refused(reason=_ASSISTANT)),
         ("/model opus", "assistant", Refused(reason=_ASSISTANT)),
+        ("/effort", "assistant", Refused(reason=_ASSISTANT)),
         ("/goal x\nand more", "assistant", Refused(reason=_ASSISTANT)),
         # A command is one line: a second line would reach the CLI as a paste.
         ("/goal ship it\nthen test it", "claude", Refused(reason=_TOO_LONG)),
@@ -260,7 +330,10 @@ def test_the_known_verbs_are_the_built_ins_of_claude_and_codex() -> None:
     )
 
 
-@pytest.mark.parametrize("verb", sorted(KNOWN_VERBS - {"goal", "compact"}))
+@pytest.mark.parametrize(
+    "verb",
+    sorted(KNOWN_VERBS - {"goal", "compact", "model", "effort"}),
+)
 def test_every_other_known_verb_is_refused_on_both_clis(verb: str) -> None:
     assert (
         classify(f"/{verb} now", "claude")

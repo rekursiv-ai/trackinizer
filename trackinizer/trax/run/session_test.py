@@ -8034,6 +8034,62 @@ class TestDeliveringToAHeadlessRun:
 
         assert run.told == [("settings", ("opus", ""))]
 
+    def test_a_settings_change_is_recorded_as_a_typed_command(self) -> None:
+        run = _FakeRun()
+        records: list[SystemMessage] = []
+
+        _deliver(
+            InboundDrainItem(
+                text="/model opus",
+                kind="settings",
+                payload={"model": "opus", "effort": "high"},
+                source="alice@x",
+                room="lab",
+            ),
+            run,
+            records=records,
+        )
+
+        assert run.told == [("settings", ("opus", "high"))]
+        assert [record.extra["$command"] for record in records] == [
+            {
+                "text": "/model opus",
+                "verb": "model",
+                "args": "opus",
+                "source": "alice@x",
+                "room": "lab",
+                "state": "typed",
+                "reason": None,
+            },
+            {
+                "text": "/effort high",
+                "verb": "effort",
+                "args": "high",
+                "source": "alice@x",
+                "room": "lab",
+                "state": "typed",
+                "reason": None,
+            },
+        ]
+
+    def test_a_settings_change_the_driver_refuses_is_recorded_as_failed(self) -> None:
+        run = _FakeRun()
+        run.fail = ValueError("no such model")
+        records: list[SystemMessage] = []
+
+        _deliver(
+            InboundDrainItem(
+                text="/model nope",
+                kind="settings",
+                payload={"model": "nope", "effort": None},
+            ),
+            run,
+            records=records,
+        )
+
+        [record] = records
+        assert record.subtype == "delivery_failed"
+
     def test_settings_that_are_not_settings_change_nothing(self) -> None:
         run = _FakeRun()
 

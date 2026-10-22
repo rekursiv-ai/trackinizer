@@ -121,3 +121,6 @@
 }
 /* A chat in the workstream waits on the person: the blue dot an editor puts on a tab that needs you. */
 .workstream-waiting { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+
+/* Pinned, the icon reads plainly; hovered or focused, it dims and crosses out: the click unpins. */
+.topbar-pin[aria-pressed="true"]:is(:hover, :focus-visible) span { opacity: .5; text-decoration: line-through; }

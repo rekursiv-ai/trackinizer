@@ -76,6 +76,8 @@ beforeAll(() => Promise.all([DetailView.preload(), GraphView.preload()]));
 beforeEach(() => {
   history.replaceState(null, "", location.pathname);
   sessionStorage.clear();
+  // The bar starts pinned, and an open bar reads Machines; these tests count the reads of the page.
+  localStorage.setItem("trackinizer.topbar.pinned", "0");
   vi.stubGlobal("EventSource", FakeEventSource);
   // jsdom has none; a list scrolls its focused row into view.
   Element.prototype.scrollIntoView = () => {};
