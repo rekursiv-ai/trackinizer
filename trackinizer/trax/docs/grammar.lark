@@ -244,7 +244,7 @@ VERB_ARG: /\S+/
 //   job [ submit [--gpus N] [--minutes M] [--label TEXT] [--follow] [--include-untracked] -- CMD... | status [JOB] | logs JOB [-f] | results JOB [--to DIR] | cancel JOB | secrets | secret NAME set|del ]
 //   machine [ NAME [ role|how [to V] | label add|del L | del | connect [--sandbox] ] | connect [--sandbox] ]
 //   next [CLAIM] [--format text|json|ids] [--as/--actor V] [--reason V]
-//   profile [NAME] [ url|actor|token [to V] | current NAME | del ]
+//   profile [NAME] [ url|actor|token [to V] | current NAME | login URL | del ]
 //   recent [--limit V] [--format text|json]
 //   run attach NAME
 //   run claude|gemini|codex|sh [--out V] [--verbose] [--dry-run] [--no-sync] [--as V] [--room V] [--private] [--diff] [--detach] [--name V] [--attach V]

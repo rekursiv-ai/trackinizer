@@ -61,6 +61,7 @@ _LEFT_OUT: Final = frozenset(
         "code_snapshots",
         "credit_entries",
         "credit_grace",
+        "device_logins",
         "gpu_issuances",
         "gpu_jobs",
         "gpu_owners",
@@ -91,7 +92,8 @@ the database, so a restored export could not carry them, and its plain values
 are launch configuration, not graph records. ``machines`` is the same: it names
 where campaigns may run, which belongs to the deployment, not the graph.
 ``machine_enrollments`` and ``machine_credentials`` hold hashes of the secrets a
-host joins with, which is access control, as ``api_keys`` is.
+host joins with, which is access control, as ``api_keys`` is. So is ``device_logins``,
+the short-lived codes a program polls with to be given a key.
 """
 
 

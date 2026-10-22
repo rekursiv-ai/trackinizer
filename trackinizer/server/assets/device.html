@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#090a0b">
+<!-- The visitor is signed in, but the app's own files are not loaded here, so the page
+     follows the system's appearance as the sign-in page does. -->
+<script>if(!matchMedia("(prefers-color-scheme: dark)").matches){document.documentElement.dataset.theme="light";document.querySelector('meta[name="theme-color"]').content="#edf1f5"}</script>
+<title>Connect a computer - {{app_name}}</title>
+<style>
+  /* Copied from the sign-in page (assets/login.html), which copies the web app's
+     tokens: this page loads nothing else. */
+  :root {
+    --sidebar: #090a0b;
+    --surface-overlay: #1d1e20;
+    --text: #f7f8f8;
+    --muted: #8a8f98;
+    --line-strong: #343538;
+    --accent: #3174c5;
+    --danger: #e0707a;
+    --shadow: 0 24px 80px #000c, inset 0 1px 0 #ffffff08;
+    --sans: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: dark;
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.5;
+    color: var(--text);
+    background: var(--sidebar);
+    -webkit-font-smoothing: antialiased;
+  }
+  :root[data-theme="light"] {
+    --sidebar: #edf1f5;
+    --surface-overlay: #ffffff;
+    --text: #17212d;
+    --muted: #5d6978;
+    --line-strong: #bec9d4;
+    --accent: #286fc5;
+    --danger: #b3333f;
+    --shadow: 0 24px 80px #17212d29;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html { height: 100%; }
+  body { min-height: 100%; margin: 0; padding: 16px; display: grid; place-items: center; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .card {
+    width: min(420px, 100%); padding: 24px 24px 28px;
+    background: var(--surface-overlay); border: 1px solid var(--line-strong); border-radius: 12px;
+    box-shadow: var(--shadow);
+  }
+  .brand { font-size: 13.5px; font-weight: 600; }
+  h1 { margin: 24px 0 6px; font-size: 22px; font-weight: 600; letter-spacing: -0.3px; line-height: 1.25; }
+  p { margin: 0; }
+  .lede, .note { color: var(--muted); font-size: 13.5px; }
+  form { margin-top: 20px; display: grid; gap: 12px; }
+  label { font-size: 13px; color: var(--muted); }
+  input {
+    width: 100%; min-height: 48px; padding: 8px 12px; border-radius: 8px;
+    border: 1px solid var(--line-strong); background: transparent; color: inherit;
+    font: 600 22px var(--mono); letter-spacing: 3px; text-transform: uppercase; text-align: center;
+  }
+  dl { margin: 20px 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; }
+  dt { color: var(--muted); font-size: 13px; }
+  dd { margin: 0; overflow-wrap: anywhere; font-weight: 500; }
+  .code { font-family: var(--mono); letter-spacing: 2px; }
+  .actions { margin-top: 24px; display: grid; gap: 10px; }
+  button {
+    min-height: 48px; padding: 4px 14px; border-radius: 8px; border: 1px solid var(--line-strong);
+    background: transparent; color: inherit; font: 500 15px var(--sans); cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: transparent; color: #fff; }
+  button:disabled { opacity: .6; cursor: default; }
+  .status { margin-top: 16px; min-height: 1.5em; font-size: 13.5px; }
+  .status.bad { color: var(--danger); }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="brand">{{app_name}}</div>
+  <h1>Connect a computer</h1>
+
+  <section id="enter">
+    <p class="lede">Enter the code your terminal is showing. Do not continue with a code you did not start yourself.</p>
+    <form id="code-form">
+      <label for="code">Code</label>
+      <input id="code" name="user_code" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="9" placeholder="ABCD-EFGH" required>
+      <button class="primary" type="submit">Continue</button>
+    </form>
+  </section>
+
+  <section id="review" hidden>
+    <p class="lede">Approve only if you started this yourself. It gives the program below a key that acts as you.</p>
+    <dl>
+      <dt>Code</dt><dd id="r-code" class="code"></dd>
+      <dt>Program</dt><dd id="r-client"></dd>
+      <dt>Computer</dt><dd id="r-host"></dd>
+      <dt>Machine</dt><dd id="r-machine"></dd>
+      <dt>Role</dt><dd id="r-role"></dd>
+    </dl>
+    <div class="actions">
+      <button id="approve" class="primary" type="button">Approve</button>
+      <button id="deny" type="button">Deny</button>
+    </div>
+  </section>
+
+  <p id="status" class="status" role="status"></p>
+</main>
+<script>
+  const el = (id) => document.getElementById(id);
+  const sections = { enter: el("enter"), review: el("review") };
+  let current = "";
+
+  function show(name) {
+    for (const [key, section] of Object.entries(sections)) section.hidden = key !== name;
+  }
+
+  function say(text, bad) {
+    el("status").textContent = text;
+    el("status").classList.toggle("bad", Boolean(bad));
+  }
+
+  /** Post the code to one of the device routes; resolve to `{ ok, status, body }`. */
+  async function post(path, code) {
+    const response = await fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_code: code }),
+    });
+    let body = null;
+    try { body = await response.json(); } catch { /* 204 has none. */ }
+    return { ok: response.ok, status: response.status, body };
+  }
+
+  function problem(result) {
+    const detail = result.body && result.body.detail;
+    return (detail && detail.message) || (typeof detail === "string" && detail) || "Something went wrong. Try again.";
+  }
+
+  function signIn() {
+    location.href = `/auth/login_page?next=${encodeURIComponent(location.pathname + location.search)}`;
+  }
+
+  async function look(code) {
+    say("Checking...");
+    const result = await post("/auth/device/lookup", code);
+    if (result.status === 401) return signIn();
+    if (!result.ok) {
+      show("enter");
+      say(problem(result), true);
+      return;
+    }
+    const view = result.body;
+    current = view.user_code;
+    el("r-code").textContent = view.user_code;
+    el("r-client").textContent = view.client;
+    el("r-host").textContent = view.host || "not given";
+    el("r-machine").textContent = view.machine ? `${view.machine} (becomes your machine)` : "none";
+    el("r-role").textContent = view.role;
+    say("");
+    show("review");
+  }
+
+  async function decide(path, done) {
+    el("approve").disabled = el("deny").disabled = true;
+    const result = await post(path, current);
+    if (result.status === 401) return signIn();
+    if (!result.ok) {
+      el("approve").disabled = el("deny").disabled = false;
+      say(problem(result), true);
+      return;
+    }
+    show("");
+    say(done);
+  }
+
+  el("code-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    look(el("code").value);
+  });
+  el("approve").addEventListener("click", () => decide("/auth/device/approve", "Approved. Go back to your terminal: it finishes by itself."));
+  el("deny").addEventListener("click", () => decide("/auth/device/deny", "Denied. Nothing was connected."));
+
+  // A link can carry a code, but a stranger can send a link too, so it only fills the
+  // field: the person checks it against their terminal and continues themselves.
+  const given = new URLSearchParams(location.search).get("user_code");
+  show("enter");
+  if (given) {
+    el("code").value = given;
+    say("Check that this code is the one in your terminal, then continue.");
+    el("code").focus();
+  }
+</script>
+</body>
+</html>

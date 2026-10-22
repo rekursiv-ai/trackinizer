@@ -537,6 +537,7 @@ profile_tail    ::= profile_name profile_action?
                  |  profile_action
 profile_action  ::= "del"
                  |  "current" profile_name
+                 |  "login" url
                  |  profile_field ( "to" value )?
 profile_field   ::= "url" | "actor" | "token"
 profile_name    ::= [a-zA-Z0-9_-]+
@@ -552,6 +553,14 @@ A profile field-set uses the same `field "to" value` action as a row
 scalar edit (§4): `profile [name] url to URL`. A bare `profile_field`
 (no `to`) projects the field's current value. One field per command --
 the read/set grammar matches rows exactly. Examples in section 10.
+
+`profile NAME login URL` logs in to the server at `URL` without a pasted key. It
+prints a code and a link, waits while a person signs in at the link and approves the
+code, then saves the key it gets as profile `NAME`. The profile becomes current only
+when trax had none: no `TRACKINIZER_PROFILE`, no `current` file and no `default`
+profile. It runs in the calling process, never in the daemon, and it fails when the
+person denies it or does not approve within ten minutes. Its example stays outside
+the runnable blocks, since it needs a server and a person.
 
 ## 8a. Env command
 

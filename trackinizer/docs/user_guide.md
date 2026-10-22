@@ -196,6 +196,11 @@ Allow, and these same steps with your server's address filled in.
    trax profile token to <TOKEN>
    ```
 
+   To skip step 1, log in instead: `trax profile work login
+   https://trackinizer.example` prints a link and a code. Open the link, check
+   who is asking and click **Approve**; `trax` saves the key it receives as the
+   profile `work`. The profile becomes the current one only when you have none.
+
 4. Connect, and leave it running, in tmux or as a user service:
 
    ```bash

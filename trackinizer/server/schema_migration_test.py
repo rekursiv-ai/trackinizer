@@ -1316,6 +1316,38 @@ async def test_migration_054_matches_the_baseline_gpu_tables(
     assert migrated == baseline
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_055_matches_the_baseline_device_logins_table(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """The device login table 055 builds equals the fresh-install one.
+
+    Bootstrap builds the baseline shape. This drops the table (as a pre-055 database
+    lacks it), replays ``schema.055`` alone, and compares every column, constraint and
+    index against what the baseline produced.
+    """
+    await reset_schema(pglite_engine)
+    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
+    async with pglite_engine.acquire() as conn:
+        baseline = await _table_shape(conn, "device_logins")
+        assert baseline[0], "the baseline lacks the table"
+
+        await conn.execute("DROP TABLE device_logins")
+        await conn.execute(load_sql("schema.055"))
+        migrated = await _table_shape(conn, "device_logins")
+        # Replaying it over the existing table is a no-op, not an error.
+        await conn.execute(load_sql("schema.055"))
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute(
+                "INSERT INTO device_logins (device_sha256, user_code, client, "
+                "expires_at) VALUES (decode(repeat('00', 32), 'hex'), 'abcdefgh', "
+                "'rai-shell', now())",
+            )
+
+    assert migrated == baseline
+
+
 async def _catalog_names_aside(conn: Conn) -> list[tuple[str, str, str]]:
     """Return ``_CATALOG``, each constraint keyed by its table rather than its name."""
     rows = [

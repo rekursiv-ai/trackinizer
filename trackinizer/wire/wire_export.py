@@ -135,6 +135,8 @@ Left out on purpose, and why:
   value is not in the database at all.
 * ``machine_enrollments``, ``machine_credentials`` -- hashes of the secrets a
   host joins and authenticates with: access control, like ``api_keys``.
+* ``device_logins`` -- the open codes a program polls with to be given an API key,
+  each gone within ten minutes: access control, like ``api_keys``.
 * ``code_blobs``, ``code_snapshots`` -- each record's code, kept per owner, a
   private snapshot read by its owner alone, which a graph export would show to
   everyone who can read it.

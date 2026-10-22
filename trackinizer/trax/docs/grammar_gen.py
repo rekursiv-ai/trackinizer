@@ -518,7 +518,9 @@ def _verb_lines() -> list[str]:
         for name, subparser in _subcommands(detach.build_parser()).items()
     )
     # Profile parses ``rest`` by hand; its sub-grammar is fixed, stated directly.
-    lines.append("//   profile [NAME] [ url|actor|token [to V] | current NAME | del ]")
+    lines.append(
+        "//   profile [NAME] [ url|actor|token [to V] | current NAME | login URL | del ]",
+    )
     # Env parses ``rest`` by hand too. Its V is a literal, ``-`` (stdin) or ``@FILE``;
     # a secret's V is never a literal.
     lines.append(f"//   {ENV_WORD} [ [secret] NAME to V | NAME del ]")

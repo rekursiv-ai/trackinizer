@@ -100,8 +100,8 @@ def should_delegate(argv: Sequence[str]) -> bool:
 
     Refuses the daemon's own serve flag, anything that SPAWNS a CLI on a PTY,
     any command whose value is the ``-`` stdin sentinel, ``machine NAME
-    enroll`` / ``machine NAME connect``, ``job``, and ``export``, whose output
-    outgrows a frame. Each is judged by POSITION rather than
+    enroll`` / ``machine NAME connect``, ``profile NAME login URL``, ``job``, and
+    ``export``, whose output outgrows a frame. Each is judged by POSITION rather than
     by presence, so a row whose title happens to be "run" still gets the
     daemon. An invocation with both ``TRACKINIZER_TOKEN`` and
     ``TRACKINIZER_URL`` non-empty runs in this process: the key must not cross
@@ -121,7 +121,7 @@ def should_delegate(argv: Sequence[str]) -> bool:
     # call there for nothing.
     if os.getenv(KEY_ENV, default="") and os.getenv("TRACKINIZER_URL", default=""):
         return False
-    if _spawns_a_terminal(argv) or _hosts_a_machine(argv):
+    if _spawns_a_terminal(argv) or _hosts_a_machine(argv) or _logs_in(argv):
         return False
     if _verb(argv) in _STREAMING_VERBS | _JOB_VERBS:
         return False
@@ -217,6 +217,17 @@ def _hosts_a_machine(argv: Sequence[str]) -> bool:
     start = _verb_index(argv)
     tail = [token.lower() for token in argv[start : start + 3]]
     return len(tail) == 3 and tail[0] == "machine" and tail[2] in _MACHINE_HOST_VERBS
+
+
+# ``profile NAME login URL`` prints a code and then polls for minutes until a person
+# approves it in a browser. A daemon answers with a command's whole output in one frame
+# when it ends, so the code would reach the terminal only after the login had timed out.
+# The third token, so ``profile NAME url to login`` still delegates.
+def _logs_in(argv: Sequence[str]) -> bool:
+    """Whether ``argv`` is ``profile NAME login URL``."""
+    start = _verb_index(argv)
+    tail = [token.lower() for token in argv[start : start + 3]]
+    return len(tail) == 3 and tail[0] == "profile" and tail[2] == "login"
 
 
 def _verb(argv: Sequence[str]) -> str:

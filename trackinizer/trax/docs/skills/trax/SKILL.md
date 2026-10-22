@@ -547,7 +547,9 @@ value on stdin; the job never holds it. Never put a secret on a command line.
   check whether it already applied.
 - Server unreachable or auth error: `trax profile`, then `trax profile url to
   ...` / `trax profile token to ...` / `trax profile current <name>`. Ask the
-  user before changing profile settings on a shared host.
+  user before changing profile settings on a shared host. A new key comes from
+  `trax profile <name> login <url>`: it prints a code the user approves in a browser,
+  so run it only with the user at hand.
 - Abandoning work without losing history:
   `trax issue 7 status to abandoned --reason "..."`. Use `del` only when the
   row should disappear entirely.

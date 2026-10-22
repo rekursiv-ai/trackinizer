@@ -33,7 +33,12 @@ trax profile                                           # list all (active *)
 trax profile prod                                      # show one profile
 trax profile prod url to https://trackinizer.example   # define one
 trax profile current prod                              # switch active
+trax profile prod login https://trackinizer.example    # log in with a code you approve
 ```
+
+`login` prints a link and a code. Sign in at the link, check who is asking, and
+approve; the command saves the key it receives as the profile. The profile becomes
+the current one only when none is set, so a login never switches a profile you chose.
 
 ### Choosing the server from the environment
 

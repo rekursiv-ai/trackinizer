@@ -1236,3 +1236,23 @@ CREATE TABLE IF NOT EXISTS gpu_issuances (
 
 CREATE INDEX IF NOT EXISTS gpu_issuances_job
     ON gpu_issuances (job_id, id);
+
+-- Device login: see ``schema.055.sql`` for what the table keeps. Added in 055.
+CREATE TABLE IF NOT EXISTS device_logins (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_sha256  BYTEA NOT NULL UNIQUE CHECK (octet_length(device_sha256) = 32),
+    user_code      TEXT NOT NULL UNIQUE CHECK (user_code ~ '^[A-Z]{8}$'),
+    client         TEXT NOT NULL CHECK (client ~ '^[a-z][a-z0-9-]{0,31}$'),
+    host           TEXT NOT NULL DEFAULT '' CHECK (char_length(host) <= 63),
+    machine        TEXT CHECK (machine ~ '^[a-z0-9][a-z0-9-]{0,62}$'),
+    status         TEXT NOT NULL DEFAULT 'pending'
+                   CHECK (status IN ('pending', 'approved', 'denied')),
+    approver       UUID REFERENCES users(id) ON DELETE CASCADE,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at     TIMESTAMPTZ NOT NULL,
+    last_polled_at TIMESTAMPTZ,
+    CHECK ((status = 'pending') = (approver IS NULL))
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_logins_expires
+    ON device_logins (expires_at);

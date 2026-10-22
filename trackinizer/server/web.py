@@ -7,6 +7,9 @@ Adds:
   (``--app-dir``). With it, ``/`` answers 302 to ``/app/``, and ``/me``,
   ``/admin``, ``/graph`` and ``/console`` lead into the app likewise.
 - ``GET /auth/login_page`` -- the sign-in page (``assets/login.html``).
+- ``GET /auth/device`` -- where a person approves a program's device login
+  (``assets/device.html``), for a signed-in visitor; the others go to the sign-in
+  page, which returns them here.
 - ``GET /static/*`` -- files from ``--static-dir``, to anyone.
 - ``GET /api/web/search`` -- cross-kind ILIKE search over title/description.
 - ``GET /api/web/recent_changes`` -- the most-recent ``change_log`` rows
@@ -98,6 +101,7 @@ from trackinizer.types.change_log import Snapshot
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
 from trackinizer.wire.json_types import UtcDatetime
 from trackinizer.wire.routes import MAX_LIST_LIMIT, inquiry_relation_fields
+from trackinizer.wire.wire_device import DEVICE_PAGE_PATH
 from trackinizer.wire.wire_sessions import (
     FeedCursor,
     FeedFacetsResponse,
@@ -991,7 +995,8 @@ def attach(
 
     Args:
       app: FastAPI instance to mount routes on.
-      assets_dir: Directory holding ``login.html`` (overrides the bundled one).
+      assets_dir: Directory holding ``login.html`` and ``device.html`` (overrides the
+        bundled ones).
       static_dir: Directory to serve at /static; unset mounts none.
       app_dir: Directory of a built web app to serve at /app/; unset mounts none.
 
@@ -1020,6 +1025,7 @@ def attach(
         ):
             _get(app, path, _RedirectRoute(location=location))
     _add_login_route(app, page_path=assets / "login.html", app_dir=app_dir)
+    _add_device_route(app, page_path=assets / "device.html", app_dir=app_dir)
 
 
 # What a browser fetches to offer "Install" before anyone has signed in: Chrome asks
@@ -1126,6 +1132,38 @@ class _LoginPageRoute:
         name = _app_name(self.app_dir)
         return HTMLResponse(
             self.page_path.read_text().replace("{{app_name}}", html.escape(name)),
+        )
+
+
+# The device page asks the API for everything it shows, so it holds nothing of anyone's
+# and is served as the sign-in page is. A visitor who is not signed in is sent to sign
+# in and back, with the code the link carried.
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _DevicePageRoute:
+    page_path: Path
+    app_dir: Path | None
+
+    async def __call__(
+        self,
+        request: Request,
+        identity: Annotated[AuthIdentity | None, Depends(optional_identity)],
+    ) -> Response:
+        if identity is None:
+            return _login_redirect(request)
+        name = _app_name(self.app_dir)
+        return HTMLResponse(
+            self.page_path.read_text().replace("{{app_name}}", html.escape(name)),
+            headers={"Cache-Control": _APP_CACHE_CONTROL},
+        )
+
+
+def _add_device_route(app: FastAPI, page_path: Path, app_dir: Path | None) -> None:
+    """Mount the device login page when its asset exists."""
+    if page_path.is_file():
+        _get(
+            app,
+            DEVICE_PAGE_PATH,
+            _DevicePageRoute(page_path=page_path, app_dir=app_dir),
         )
 
 
