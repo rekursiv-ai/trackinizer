@@ -86,6 +86,11 @@ class EnrollRequest(BaseModel):
     name: str = Field(pattern=NAME_PATTERN)
     """The machine's name; it is registered when new."""
 
+    asker: str | None = Field(default=None, max_length=254)
+    """From the configured assistant alone: the person the machine is enrolled for.
+    It becomes theirs, personal and already confirmed. The assistant attests to it as
+    it does for a chat's settings; anyone else's ``asker`` is refused."""
+
 
 class EnrollResponse(BaseModel):
     """A one-use enrollment token, shown once."""

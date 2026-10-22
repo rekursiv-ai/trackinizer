@@ -2673,6 +2673,18 @@
         "additionalProperties": false,
         "description": "Enroll a machine: the name the host will join as.",
         "properties": {
+          "asker": {
+            "anyOf": [
+              {
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asker"
+          },
           "name": {
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
             "title": "Name",
@@ -18528,7 +18540,7 @@
     },
     "/api/machines/enroll": {
       "post": {
-        "description": "Register the machine if it is new and issue a one-use enrollment token.\n\nA new token supersedes any open one for the same machine. An admin enrolls a\nmachine that is new, unowned or already theirs, and confirms it; one another person\nowns answers 409 ``machine_owned``, naming the owner. A writer may enroll a machine\nthat is new, which becomes theirs with the role ``personal`` and stays unconfirmed\nuntil they confirm it in the web app, or one that is already theirs.\n\nArgs:\n  body: The machine's name.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n  identity: Writer principal, recorded as who enrolled the machine.\n\nReturns:\n  enrolled: The token, shown once, when it expires, and the machine's owner.\n\nRaises:\n  ValidationError: The name is reserved.\n  MachineOwnedError: An admin names a machine another person owns.\n  HTTPException: 403 when a writer names a machine that is not theirs.",
+        "description": "Register the machine if it is new and issue a one-use enrollment token.\n\nA new token supersedes any open one for the same machine. An admin enrolls a\nmachine that is new, unowned or already theirs, and confirms it; one another person\nowns answers 409 ``machine_owned``, naming the owner. A writer may enroll a machine\nthat is new, which becomes theirs with the role ``personal`` and stays unconfirmed\nuntil they confirm it in the web app, or one that is already theirs.\n\nThe configured assistant may name an ``asker``, a writer or admin it answers. The\nmachine is then the asker's: personal, confirmed, and theirs to open a terminal on,\nand the token joins only for them. The assistant owns nothing it enrolls.\n\nArgs:\n  body: The machine's name, and the asker when the assistant enrolls for one.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n  identity: Writer principal, recorded as who enrolled the machine.\n\nReturns:\n  enrolled: The token, shown once, when it expires, and the machine's owner.\n\nRaises:\n  ValidationError: The name is reserved.\n  MachineOwnedError: An admin names a machine another person owns.\n  HTTPException: 403 when a writer names a machine that is not theirs, or anyone\n    but the assistant names an asker, or the asker is no active writer.",
         "operationId": "enroll_machine_route_api_machines_enroll_post",
         "requestBody": {
           "content": {
