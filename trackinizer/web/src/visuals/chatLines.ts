@@ -384,8 +384,9 @@ function personOf(kind: string, payload: Readonly<Record<string, unknown>>): Per
 function delivered(content: string, stamp: Readonly<Record<string, unknown>>): string {
   const room = text(stamp.room);
   const source = text(stamp.source);
-  const prefix = `${room ? `[${room}] ` : ""}${source ? `${source}: ` : ""}`;
-  const body = content.startsWith(prefix) ? content.slice(prefix.length) : content;
+  const unroomed = room && content.startsWith(`[${room}] `) ? content.slice(room.length + 3) : content;
+  const sender = source ? `${source}: ` : "";
+  const body = sender && unroomed.startsWith(sender) ? unroomed.slice(sender.length) : unroomed;
   // The same trailer `_TRAILER` names in `client/conversation.py`, which the loader cuts too.
   return body.split("\nTrackinizer context (verify with trax): ")[0];
 }
