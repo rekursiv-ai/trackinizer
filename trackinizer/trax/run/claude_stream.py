@@ -31,6 +31,9 @@ What was measured on claude 2.1.306 (haiku, ``--permission-mode default``):
 - ``/compact``, ``/goal``, ``/context``, ``/effort``, ``/model``, ``/rename``, ``/usage``
   and ``/clear`` work as lines. ``/help``, ``/status`` and ``/permissions`` answer
   "isn't available in this environment".
+- On 2.1.308, an ``AskUserQuestion`` allow reads ``updatedInput.answers`` keyed by each
+  question's text. Keyed by its ``header``, the model's tool result is "The user did not
+  answer the questions."; keyed by its text, "The user answered: ...".
 """
 
 from __future__ import annotations
@@ -617,10 +620,30 @@ def _body(held: _Open, chosen: Option, answer: Answer) -> dict[str, PlainTree]:
     merged = {**held.ask.input, **(answer.updated_input or {})}
     if held.ask.kind == "question" and "answers" not in merged:
         raise ValueError("a question is answered with updated_input.answers")
+    if held.ask.kind == "question":
+        merged["answers"] = _by_question(held.ask.questions or [], merged["answers"])
     body: dict[str, PlainTree] = {"behavior": "allow", "updatedInput": merged}
     if chosen.kind == "allow_session":
         body["updatedPermissions"] = [held.grants[chosen.id]]
     return body
+
+
+# Claude reads a question's answer under the question's text; under any other key it
+# tells the model "The user did not answer the questions." The card keys by header.
+def _by_question(questions: Sequence[PlainTree], answers: PlainTree) -> PlainTree:
+    """Return ``answers`` keyed by question text, from text, header or id keys."""
+    names: dict[str, str] = {}
+    for each in questions:
+        question = from_plain(each, dict[str, PlainTree])
+        text = _text(question, "question")
+        for name in (text, _text(question, "id"), _text(question, "header")):
+            if name:
+                names.setdefault(name, text)
+    supplied = from_plain(answers, dict[str, PlainTree])
+    unknown = next((name for name in supplied if name not in names), None)
+    if unknown is not None:
+        raise ValueError(f"the ask has no question named {unknown!r}")
+    return {names[name]: value for name, value in supplied.items()}
 
 
 # Only a ``session`` destination is offered: the others write the person's settings
