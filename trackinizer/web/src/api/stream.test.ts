@@ -115,3 +115,62 @@ test("closing stops the stream and any reopening", () => {
   source.drop();
   expect(heard).toEqual(["drop", "refuse"]);
 });
+
+test("a stream that hears nothing for 62.5 s is dead: it is closed and opened again, and the listener sees a drop", () => {
+  const { heard, listener } = recorder();
+  openStream(listener, { connect });
+  const dead = FakeEventSource.last;
+  dead.open();
+  vi.advanceTimersByTime(62_499);
+  expect(FakeEventSource.made).toHaveLength(1);
+  vi.advanceTimersByTime(1);
+  expect(dead.readyState).toBe(2);
+  expect(heard).toEqual(["open", "drop"]);
+  vi.advanceTimersByTime(1_000);
+  expect(FakeEventSource.made).toHaveLength(2);
+  FakeEventSource.last.open();
+  expect(heard).toEqual(["open", "drop", "open"]);
+});
+
+test("the server's ping event keeps a quiet stream alive", () => {
+  const { heard, listener } = recorder();
+  openStream(listener, { connect });
+  const source = FakeEventSource.last;
+  source.open();
+  for (let beat = 0; beat < 10; beat++) {
+    vi.advanceTimersByTime(25_000);
+    source.ping();
+  }
+  expect(FakeEventSource.made).toHaveLength(1);
+  expect(heard).toEqual(["open"]);
+});
+
+test("a frame keeps the stream alive as a ping does", () => {
+  const { listener } = recorder();
+  openStream(listener, { connect });
+  const source = FakeEventSource.last;
+  source.open();
+  vi.advanceTimersByTime(60_000);
+  source.send("a");
+  vi.advanceTimersByTime(60_000);
+  expect(FakeEventSource.made).toHaveLength(1);
+  vi.advanceTimersByTime(2_500);
+  expect(source.readyState).toBe(2);
+});
+
+test("a stream that never opens is also opened again after the silence", () => {
+  const { listener } = recorder();
+  openStream(listener, { connect });
+  vi.advanceTimersByTime(62_500 + 1_000);
+  expect(FakeEventSource.made).toHaveLength(2);
+});
+
+test("closing for good stops the silence watch", () => {
+  const { heard, listener } = recorder();
+  const close = openStream(listener, { connect });
+  FakeEventSource.last.open();
+  close();
+  vi.advanceTimersByTime(300_000);
+  expect(FakeEventSource.made).toHaveLength(1);
+  expect(heard).toEqual(["open"]);
+});

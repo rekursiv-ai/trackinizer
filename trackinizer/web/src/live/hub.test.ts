@@ -246,3 +246,24 @@ test("a hidden tab holds at most 100 ids; past that it recovers the gap on retur
   expect(batches[0]!.gap).toBe(true);
   expect(batches[0]!.ids.length).toBeLessThanOrEqual(100);
 });
+
+test("the browser coming back online recovers the gap", async () => {
+  const { hub, batches } = hubWithQuery();
+  hub.open();
+  await vi.advanceTimersByTimeAsync(0);
+  batches.length = 0;
+  hub.online();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(batches).toEqual([{ ids: [], gap: true }]);
+});
+
+test("coming online while hidden waits for the tab to come back", async () => {
+  const { hub, batches } = hubWithQuery();
+  hub.hide();
+  hub.online();
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(batches).toEqual([]);
+  hub.show();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(batches).toEqual([{ ids: [], gap: true }]);
+});

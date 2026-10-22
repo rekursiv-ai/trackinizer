@@ -286,6 +286,41 @@ test("a change from the stream joins the top of Activity, and lines already show
   expect(lookups()).toBe(before + 1);
 });
 
+/** Open the stream, show the one row, and change it on the server without the stream saying so. */
+async function listWithUnheardChange() {
+  server = [issue(1)];
+  show(<ListView kind="Issue" />);
+  await until(() => expect(rowTitle(1)).toBe("Issue 1"));
+  FakeEventSource.last.open();
+  server[0] = issue(1, { title: "Changed unheard" });
+}
+
+test("a stream that goes silent is reopened, and the new open re-reads what the list missed", async () => {
+  await listWithUnheardChange();
+  const dead = FakeEventSource.last;
+  await act(() => vi.advanceTimersByTimeAsync(62_500 + 1_000));
+  expect(dead.readyState).toBe(2);
+  expect(FakeEventSource.made).toHaveLength(2);
+  act(() => FakeEventSource.last.open());
+  await until(() => expect(rowTitle(1)).toBe("Changed unheard"));
+});
+
+test("the browser coming back online re-reads what the list missed", async () => {
+  await listWithUnheardChange();
+  act(() => void dispatchEvent(new Event("online")));
+  await until(() => expect(rowTitle(1)).toBe("Changed unheard"));
+});
+
+test("a tab shown again after more than 30 s hidden re-reads what the list missed", async () => {
+  await listWithUnheardChange();
+  vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+  act(() => void document.dispatchEvent(new Event("visibilitychange")));
+  await act(() => vi.advanceTimersByTimeAsync(31_000));
+  vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  act(() => void document.dispatchEvent(new Event("visibilitychange")));
+  await until(() => expect(rowTitle(1)).toBe("Changed unheard"));
+});
+
 test("a stream that never opens counts as down: the paused bar shows after 10 s (CR-LIVE-R4-A1)", async () => {
   show(<PausedBar />);
   vi.setTimerTickMode("manual");

@@ -21,6 +21,8 @@ export type EventSourceLike = {
   onopen: ((event: Event) => void) | null;
   onmessage: ((event: MessageEvent) => void) | null;
   onerror: ((event: Event) => void) | null;
+  /** The server's keep-alive, `event: ping`; `onmessage` never sees it. */
+  addEventListener(type: "ping", listener: () => void): void;
   close(): void;
 };
 
@@ -40,9 +42,8 @@ export type EventsListener = Pick<StreamListener, "open" | "drop" | "refuse"> & 
 
 /**
  * Listen to `GET /api/web/subscribe`: one frame per `change_log` row, each
- * `data: {"id": "<subject uuid>"}` with no event name or resume, plus comment
- * lines (on open and every 25 s idle) that `EventSource` drops before
- * `onmessage`. Returns a function that closes the stream for good.
+ * `data: {"id": "<subject uuid>"}` with no event name or resume, plus a
+ * `ping` event every 25 s idle. Returns a function that closes the stream for good.
  */
 export function openStream(listener: StreamListener, options: StreamOptions = {}): () => void {
   return openEvents(SUBSCRIBE_PATH, {
@@ -65,7 +66,12 @@ export function openStream(listener: StreamListener, options: StreamOptions = {}
  * `EventSource` reconnects by itself after a dropped connection, so an error
  * never closes the stream here: the old UI closed it on every error and never
  * recovered. Only when the browser gives up (the server answered with anything
- * but a stream) does the wrapper open a new one, after a delay. Returns a
+ * but a stream) does the wrapper open a new one, after a delay.
+ *
+ * A tunnel can also drop a connection without the browser seeing an error. The
+ * server speaks at least every 25 s (a frame or a `ping` event), so a source that
+ * has heard nothing for `SILENCE_MS` is dead: the wrapper tells the listener it
+ * dropped, closes it and opens a new one after the same delays. Returns a
  * function that closes the stream for good.
  */
 export function openEvents(path: string, listener: EventsListener, options: StreamOptions = {}): () => void {
@@ -74,33 +80,58 @@ export function openEvents(path: string, listener: EventsListener, options: Stre
   let source: EventSourceLike | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let refusals = 0;
+  let silence: ReturnType<typeof setTimeout> | null = null;
   let closed = false;
+  const later = () => {
+    timer = setTimeout(start, delays[Math.min(refusals, delays.length - 1)]);
+    refusals += 1;
+  };
   const start = () => {
     timer = null;
     if (closed) return;
     const opened = connect(new URL(path, globalThis.location.origin).href);
     source = opened;
+    // Whatever the server sends restarts the wait; so does connecting.
+    const heard = () => {
+      if (silence !== null) clearTimeout(silence);
+      silence = setTimeout(() => {
+        silence = null;
+        opened.onerror = null;
+        opened.close();
+        listener.drop();
+        later();
+      }, SILENCE_MS);
+    };
+    heard();
     opened.onopen = () => {
       refusals = 0;
+      heard();
       listener.open();
     };
-    opened.onmessage = (event) => listener.data(event.data);
+    opened.onmessage = (event) => {
+      heard();
+      listener.data(event.data);
+    };
+    opened.addEventListener("ping", heard);
     opened.onerror = () => {
       if (closed) return;
       listener.drop();
       if (opened.readyState !== CLOSED) return;
       // A closed source is done: one refusal, one new try, whatever it fires next.
       opened.onerror = null;
+      if (silence !== null) clearTimeout(silence);
+      silence = null;
       listener.refuse();
-      timer = setTimeout(start, delays[Math.min(refusals, delays.length - 1)]);
-      refusals += 1;
+      later();
     };
   };
   start();
   return () => {
     closed = true;
     if (timer !== null) clearTimeout(timer);
+    if (silence !== null) clearTimeout(silence);
     timer = null;
+    silence = null;
     source?.close();
   };
 }
@@ -110,6 +141,12 @@ const SUBSCRIBE_PATH = "/api/web/subscribe" satisfies keyof paths;
 
 /** `EventSource.CLOSED`, which a fake need not define. */
 const CLOSED = 2;
+
+/**
+ * How long a source may hear nothing before it counts as dead: 2.5 times the
+ * server's 25 s keep-alive, so one late or lost ping does not cut a live stream.
+ */
+const SILENCE_MS = 62_500;
 
 const RETRY_DELAYS_MS = [1_000, 3_000, 10_000, 30_000];
 

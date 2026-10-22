@@ -294,11 +294,11 @@ class TestSseEvents:
         )
         async with asyncio.timeout(1):
             assert await anext(stream) == b": open\n\n"
-            assert await anext(stream) == b": keepalive\n\n"
-            assert await anext(stream) == b": keepalive\n\n"
+            assert await anext(stream) == b"event: ping\ndata: {}\n\n"
+            assert await anext(stream) == b"event: ping\ndata: {}\n\n"
             engine.queue.put_nowait('{"id": "abc-123"}')
             frame = await anext(stream)
-            while frame == b": keepalive\n\n":
+            while frame == b"event: ping\ndata: {}\n\n":
                 frame = await anext(stream)
         assert frame == b'data: {"id": "abc-123"}\n\n'
         assert engine.channels == [NOTIFY_CHANNEL]
@@ -320,7 +320,7 @@ class TestSseEvents:
             assert await anext(stream) == b": open\n\n"
             engine.publish('{"id": "abc-123"}')
             frame = await anext(stream)
-            while frame == b": keepalive\n\n":
+            while frame == b"event: ping\ndata: {}\n\n":
                 frame = await anext(stream)
         assert frame == b'data: {"id": "abc-123"}\n\n'
         await stream.aclose()
