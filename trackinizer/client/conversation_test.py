@@ -19,6 +19,7 @@ from trackinizer.lib.agent.types.sessions import (
     AgentToAgentMessage,
     AssistantMessage,
     ContextClear,
+    ContextState,
     IncompleteRecord,
     SessionRecord,
     SystemMessage,
@@ -335,6 +336,31 @@ def test_a_delivery_with_no_attested_sender_is_from_unknown() -> None:
     )
 
     assert _people(_neutral_of([segment])) == [("unknown", "hello")]
+
+
+def test_a_stamped_mid_turn_line_is_a_persons_and_a_notice_is_not() -> None:
+    """Claude queues a line sent mid-turn as a ``queued_command``; only trax run's stamp makes it a person's."""
+    segment = _segment(
+        0,
+        "claude",
+        [
+            ContextState(
+                timestamp=_at(1),
+                kind="queued_command",
+                content="[room] ada@example.com: also check CI\nTrackinizer context (verify with trax): {}",
+                extra=immutable(
+                    {"$inbound": {"source": "ada@example.com", "room": "room"}},
+                ),
+            ),
+            ContextState(
+                timestamp=_at(2),
+                kind="queued_command",
+                content="<task-notification>done</task-notification>",
+            ),
+        ],
+    )
+
+    assert _people(_neutral_of([segment])) == [("ada@example.com", "also check CI")]
 
 
 def test_overlapping_parts_interleave_by_time_not_by_part() -> None:

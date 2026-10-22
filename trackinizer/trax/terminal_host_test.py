@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import asyncio
 import functools
+import logging
 import os
 import pwd
 import shutil
@@ -16,13 +17,16 @@ import threading
 import uuid
 
 from websockets.asyncio.server import Server, ServerConnection, serve
-from websockets.exceptions import ConnectionClosed
+from websockets.datastructures import Headers
+from websockets.exceptions import ConnectionClosed, InvalidStatus
+from websockets.http11 import Response
 
 import pytest
 
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.posix.host import Frame, decode_frame, encode_frame, encode_winsize
 from trackinizer.lib.userdirs import state_dir
+from trackinizer.trax import terminal_host
 from trackinizer.trax.terminal_host import TerminalHost, _end_with_line, _LogLine
 from trackinizer.wire import wire_terminals
 from trackinizer.wire.wire_terminals import TerminalWait
@@ -365,6 +369,74 @@ async def test_the_shell_starts_clean_with_the_trax_context_and_no_secret(
         f"LC_TRAX_WORKSTREAM={workstream}",
     } <= lines
     assert not [line for line in lines if "sentinel" in line]
+
+
+async def _run_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    trax_env: dict[str, str],
+    workspace: uuid.UUID,
+) -> set[str]:
+    """Return the environment a run dumps; the fake ``trax`` is ``env``."""
+    trax = _trax(tmp_path, "env\n")
+    monkeypatch.setattr(sys, "argv", [str(trax)])
+    result: list[tuple[bytes, int]] = []
+
+    async def handler(ws: ServerConnection) -> None:
+        result.append(await _until_exit(ws))
+
+    server, url = await _listening(handler)
+    host = _host(url, trax_env=trax_env)
+    await _run(
+        host,
+        _opened(command="claude", run_name="run-1a2b3c4d", workspace=workspace),
+    )
+    server.close()
+    return set(result[0][0].decode().split())
+
+
+async def test_a_run_inherits_the_host_environment_like_a_typed_trax_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1/bus")
+    monkeypatch.setenv("SENTINEL_FROM_HOST", "kept")
+    workspace = uuid.uuid4()
+    lines = await _run_env(
+        tmp_path,
+        monkeypatch,
+        {"TRACKINIZER_PROFILE": "hosted"},
+        workspace,
+    )
+    assert {
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1/bus",
+        "SENTINEL_FROM_HOST=kept",
+        "TRACKINIZER_PROFILE=hosted",
+        f"TRAX_WORKSPACE={workspace}",
+    } <= lines
+
+
+async def test_the_stations_trax_context_replaces_any_the_host_inherited(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRACKINIZER_URL", "http://elsewhere.invalid")
+    monkeypatch.setenv("TRACKINIZER_TOKEN", "sentinel-token")
+    monkeypatch.setenv("TRACKINIZER_PROFILE", "elsewhere")
+    monkeypatch.setenv("TRAX_ACTOR", "sentinel-actor")
+    monkeypatch.setenv("LC_TRAX_WORKSPACE", "sentinel-workspace")
+    workspace = uuid.uuid4()
+    lines = await _run_env(
+        tmp_path,
+        monkeypatch,
+        {"TRACKINIZER_PROFILE": "hosted"},
+        workspace,
+    )
+    assert {
+        "TRACKINIZER_PROFILE=hosted",
+        f"LC_TRAX_WORKSPACE={workspace}",
+    } <= lines
+    assert not [line for line in lines if "sentinel" in line or "elsewhere" in line]
 
 
 async def test_each_open_and_close_is_logged_once_for_this_user_only() -> None:
@@ -846,6 +918,241 @@ async def test_a_run_with_no_trax_executable_falls_back_to_the_login_shell(
 
     assert argv == _login_shell()
     assert "no trax executable" in capsys.readouterr().err
+
+
+class _FakeSocket:
+    """A leg that answers the startup handshake as scripted."""
+
+    def __init__(
+        self,
+        *,
+        reply: bytes = encode_frame(Frame.ACK),
+        send_error: ConnectionClosed | None = None,
+        hang: bool = False,
+    ) -> None:
+        self.reply = reply
+        self.send_error = send_error
+        self.hang = hang
+        self.closed = False
+        self.waiting = asyncio.Event()
+
+    async def send(self, data: bytes) -> None:
+        del data
+        if self.send_error is not None:
+            raise self.send_error
+
+    async def recv(self) -> bytes:
+        if self.hang:
+            self.waiting.set()
+            await asyncio.Event().wait()
+        return self.reply
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _Connector:
+    """Stands in for ``connect``: scripted outcomes, the last one repeating."""
+
+    def __init__(self, *outcomes: _FakeSocket | Exception) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[dict[str, object]] = []
+
+    async def __call__(self, url: str, **kwargs: object) -> _FakeSocket:
+        del url
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _connector(
+    monkeypatch: pytest.MonkeyPatch,
+    *outcomes: _FakeSocket | Exception,
+) -> _Connector:
+    connector = _Connector(*outcomes)
+    monkeypatch.setattr(terminal_host, "connect", connector)
+    return connector
+
+
+async def _connect(
+    opened: TerminalWait | None = None,
+    **timing: float,
+) -> object:
+    return await _host("http://box.invalid")._connect(
+        opened or _opened(),
+        machine_id=_MACHINE,
+        instance=_INSTANCE,
+        **timing,
+    )
+
+
+def _status(code: int) -> InvalidStatus:
+    return InvalidStatus(Response(code, "x", Headers(), b""))
+
+
+def _startup_log() -> str:
+    path = state_dir() / "rekursiv-ai" / "trax" / "machines" / "box.terminals.log"
+    return path.read_text()
+
+
+async def test_connect_sends_the_credential_and_the_timeouts_a_leg_needs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leg = _FakeSocket()
+    connector = _connector(monkeypatch, leg)
+    assert await _connect() is leg
+    (kwargs,) = connector.calls
+    assert kwargs["additional_headers"] == {"Authorization": f"Bearer {_CREDENTIAL}"}
+    assert kwargs["ping_interval"] == 20
+    assert kwargs["close_timeout"] == 1
+    assert kwargs["open_timeout"] == 10.0
+
+
+async def test_connect_caps_the_open_timeout_by_the_time_left(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _connector(monkeypatch, _FakeSocket())
+    _ = await _connect(open_timeout_sec=1000)
+    open_timeout = connector.calls[0]["open_timeout"]
+    assert isinstance(open_timeout, float)
+    assert 44 < open_timeout <= 45
+
+
+async def test_connect_pauses_between_attempts_for_the_retry_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = _connector(monkeypatch, OSError("down"), _FakeSocket())
+    pauses: list[float] = []
+
+    async def pause(delay: float) -> None:
+        pauses.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", pause)
+    assert await _connect() is not None
+    assert pauses == [1.0]
+
+
+async def test_connect_starts_an_attempt_with_under_a_second_left(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leg = _FakeSocket()
+    _ = _connector(monkeypatch, leg)
+    assert await _connect(startup_timeout_sec=0.5) is leg
+
+
+async def test_connect_without_time_never_dials_and_says_the_deadline_passed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    connector = _connector(monkeypatch, _FakeSocket())
+    # A frozen clock makes the time left exactly zero, which is no time at all.
+    now = asyncio.get_running_loop().time()
+    monkeypatch.setattr(asyncio.get_running_loop(), "time", lambda: now)
+    assert await _connect(startup_timeout_sec=0) is None
+    assert not connector.calls
+    assert "): connection deadline exceeded" in capsys.readouterr().err
+    line = _startup_log()
+    assert '"event":"startup_failed"' in line
+    assert '"status":1' in line
+
+
+async def test_connect_stops_on_a_wrong_acknowledgement_and_closes_the_leg(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    leg = _FakeSocket(reply=b"nope")
+    connector = _connector(monkeypatch, leg)
+    assert await _connect() is None
+    assert len(connector.calls) == 1
+    assert leg.closed
+    assert "): invalid startup acknowledgement" in capsys.readouterr().err
+    assert '"event":"startup_failed"' in _startup_log()
+
+
+async def test_connect_names_the_error_that_ended_the_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _ = _connector(monkeypatch, OSError("boom"))
+    assert await _connect(startup_timeout_sec=0.03, retry_sec=0.005) is None
+    assert capsys.readouterr().err.endswith("): boom\n")
+
+
+async def test_connect_names_an_error_without_a_message_by_its_type(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _ = _connector(monkeypatch, OSError())
+    assert await _connect(startup_timeout_sec=0.03, retry_sec=0.005) is None
+    assert capsys.readouterr().err.endswith("): OSError\n")
+
+
+async def test_connect_logs_each_retry_with_the_terminal_and_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _ = _connector(monkeypatch, OSError("boom"), _FakeSocket())
+    caplog.set_level(logging.DEBUG)
+    opened = _opened()
+    _ = await _connect(opened, retry_sec=0.001)
+    retry = [r for r in caplog.records if "startup retry" in r.getMessage()]
+    (record,) = retry
+    assert record.levelno == logging.DEBUG
+    assert record.getMessage() == f"terminal {opened.terminal_id}: startup retry: boom"
+
+
+@pytest.mark.parametrize(
+    ("code", "retried"),
+    [(404, False), (499, False), (429, True), (500, True), (503, True)],
+)
+async def test_connect_retries_only_what_a_retry_can_fix(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    code: int,
+    retried: bool,
+) -> None:
+    connector = _connector(monkeypatch, _status(code))
+    assert await _connect(startup_timeout_sec=0.05, retry_sec=0.002) is None
+    assert (len(connector.calls) > 2) is retried
+    if not retried:
+        assert len(connector.calls) == 1
+    assert "trax: terminal startup failed" in capsys.readouterr().err
+    assert '"event":"startup_failed"' in _startup_log()
+
+
+async def test_connect_never_sleeps_past_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = _connector(monkeypatch, OSError("down"))
+    result = await asyncio.wait_for(
+        _connect(startup_timeout_sec=0.05, retry_sec=5.0),
+        1,
+    )
+    assert result is None
+
+
+async def test_connect_closes_a_leg_that_fails_during_the_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leg = _FakeSocket(send_error=ConnectionClosed(None, None))
+    _ = _connector(monkeypatch, leg)
+    assert await _connect(startup_timeout_sec=0.03, retry_sec=0.005) is None
+    assert leg.closed
+
+
+async def test_connect_closes_a_leg_when_cancelled_mid_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leg = _FakeSocket(hang=True)
+    _ = _connector(monkeypatch, leg)
+    task = asyncio.create_task(_connect())
+    _ = await asyncio.wait_for(leg.waiting.wait(), 1)
+    _ = task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert leg.closed
 
 
 if __name__ == "__main__":

@@ -64,7 +64,11 @@ from treekle import PlainTree, from_plain, json_dumps, json_loads
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.agent.types.sessions import SystemMessage, UserMessage
+from trackinizer.lib.agent.types.sessions import (
+    ContextState,
+    SystemMessage,
+    UserMessage,
+)
 from trackinizer.lib.posix.follow import follow_dir, follow_tree
 from trackinizer.lib.posix.host import HostSpec
 from trackinizer.lib.posix.relay import ThreadedRelay
@@ -724,18 +728,24 @@ class InboundState:
         """Return ``record`` stamped with its sender when it is a line this run typed.
 
         Each remembered line stamps one record, the first that reads the same, and
-        is then forgotten. Whitespace is compared collapsed, on both sides.
+        is then forgotten. Whitespace is compared collapsed, on both sides. A line
+        typed while claude is mid-turn is queued, and claude records it as a
+        ``queued_command`` ``ContextState`` instead of a ``UserMessage``; that stamps
+        the same way, while one no line was typed for (a task notification) does not.
 
         Args:
           record: A record the CLI wrote.
 
         Returns:
           stamped: ``record``, with ``extra["$inbound"]`` naming the sender, room and
-            kind when it is a ``UserMessage`` this run typed; otherwise unchanged.
+            kind when it is a ``UserMessage`` or a ``queued_command`` ``ContextState``
+            this run typed; otherwise unchanged.
 
         """
         self.goal.observe(record)
-        if not isinstance(record, UserMessage) or record.content is None:
+        if isinstance(record, ContextState) and record.kind != "queued_command":
+            return record
+        if not isinstance(record, UserMessage | ContextState) or record.content is None:
             return record
         key = _spaced(record.content)
         with self._lock:

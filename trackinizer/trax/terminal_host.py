@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Final, Protocol
 
 import asyncio
 import contextlib
@@ -68,6 +68,12 @@ class TerminalClient(Protocol):
     def close(self) -> None:
         """Release the connection."""
         ...
+
+
+_ROUTING_ENV: Final = frozenset(
+    {"TRACKINIZER_URL", "TRACKINIZER_TOKEN", "TRACKINIZER_PROFILE"},
+)
+"""The variables ``trax`` reads to choose its server, credential and profile."""
 
 
 class TerminalHost:
@@ -351,7 +357,8 @@ class TerminalHost:
                 self._argv(opened),
                 cwd=folder,
                 env=self._env(opened),
-                clean_env=True,
+                clean_env=opened.command is None,
+                drop_env=() if opened.command is None else _inherited_trax_context(),
                 terminate_grace_sec=2.0,
                 winsize=(opened.rows, opened.cols),
             ) as terminal:
@@ -436,8 +443,12 @@ class TerminalHost:
             opened.command,
         ]
 
+    # A shell starts clean, so this and the essentials are all it has. A run inherits
+    # the host's environment like a ``trax run`` typed where ``trax machine connect``
+    # was started, and this replaces the trax context it inherited (see
+    # :func:`_inherited_trax_context`).
     def _env(self, opened: TerminalWait) -> dict[str, str]:
-        """Return the shell's environment beyond the essentials; no secret in it."""
+        """Return the environment laid over the child's; no secret in it."""
         env = {
             "TERM": "xterm-256color",
             "COLORTERM": "truecolor",
@@ -558,3 +569,15 @@ class _LogLine(BaseModel):
     opener: str
     requested_by: str | None = None
     status: int | None = None
+
+
+# The station's trax context replaces any the host inherited: a server, a credential, a
+# profile, or a ``TRAX_*`` / ``LC_TRAX_*`` name left by a trax run the host itself sits
+# in outranks what the station sets for the run.
+def _inherited_trax_context() -> frozenset[str]:
+    """Return the host's variables that would route a run off this station."""
+    return frozenset(
+        name
+        for name in os.environ
+        if name in _ROUTING_ENV or name.startswith(("TRAX_", "LC_TRAX_"))
+    )
