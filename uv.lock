@@ -1592,28 +1592,32 @@ name = "trackinizer"
 version = "0.1.7"
 source = { editable = "." }
 dependencies = [
-    { name = "asyncpg" },
     { name = "bashlex" },
-    { name = "configgle" },
-    { name = "fastapi" },
     { name = "httpx2" },
-    { name = "huggingface-hub" },
-    { name = "itsdangerous" },
     { name = "lark" },
-    { name = "peft" },
-    { name = "py-pglite", extra = ["asyncpg", "extensions"] },
     { name = "pydantic" },
     { name = "pydantic-core" },
+    { name = "treekle" },
+    { name = "typing-extensions" },
+    { name = "watchdog", marker = "sys_platform != 'linux'" },
+    { name = "websockets" },
+    { name = "wrapt" },
+]
+
+[package.optional-dependencies]
+server = [
+    { name = "asyncpg" },
+    { name = "configgle" },
+    { name = "fastapi" },
+    { name = "huggingface-hub" },
+    { name = "itsdangerous" },
+    { name = "peft" },
+    { name = "py-pglite", extra = ["asyncpg", "extensions"] },
     { name = "starlette" },
     { name = "torch", version = "2.11.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
     { name = "transformers" },
-    { name = "treekle" },
-    { name = "typing-extensions" },
     { name = "uvicorn" },
-    { name = "watchdog", marker = "sys_platform != 'linux'" },
-    { name = "websockets" },
-    { name = "wrapt" },
     { name = "zstandard" },
 ]
 
@@ -1684,30 +1688,31 @@ typecheck = [
 
 [package.metadata]
 requires-dist = [
-    { name = "asyncpg", specifier = ">=0.31.0" },
+    { name = "asyncpg", marker = "extra == 'server'", specifier = ">=0.31.0" },
     { name = "bashlex", specifier = ">=0.18" },
-    { name = "configgle", specifier = ">=1.4.3" },
-    { name = "fastapi", specifier = ">=0.123.9" },
+    { name = "configgle", marker = "extra == 'server'", specifier = ">=1.4.3" },
+    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.123.9" },
     { name = "httpx2", specifier = ">=2.12" },
-    { name = "huggingface-hub", specifier = ">=0.30.0" },
-    { name = "itsdangerous", specifier = ">=2.2.0" },
+    { name = "huggingface-hub", marker = "extra == 'server'", specifier = ">=0.30.0" },
+    { name = "itsdangerous", marker = "extra == 'server'", specifier = ">=2.2.0" },
     { name = "lark", specifier = ">=1.1" },
-    { name = "peft", specifier = ">=0.21.0" },
-    { name = "py-pglite", extras = ["asyncpg", "extensions"], specifier = ">=0.5.3" },
+    { name = "peft", marker = "extra == 'server'", specifier = ">=0.21.0" },
+    { name = "py-pglite", extras = ["asyncpg", "extensions"], marker = "extra == 'server'", specifier = ">=0.5.3" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-core" },
-    { name = "starlette", specifier = ">=0.40" },
-    { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.11.0" },
-    { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "transformers", specifier = ">=4.57.0" },
+    { name = "starlette", marker = "extra == 'server'", specifier = ">=0.40" },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'server'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", marker = "sys_platform != 'linux' and extra == 'server'", specifier = ">=2.11.0" },
+    { name = "transformers", marker = "extra == 'server'", specifier = ">=4.57.0" },
     { name = "treekle", git = "https://github.com/rekursiv-ai/treekle?branch=main" },
     { name = "typing-extensions", specifier = ">=4.10" },
-    { name = "uvicorn", specifier = ">=0.30.0" },
+    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.30.0" },
     { name = "watchdog", marker = "sys_platform == 'darwin'", specifier = ">=6.0.0" },
     { name = "websockets", specifier = ">=15" },
     { name = "wrapt" },
-    { name = "zstandard", specifier = ">=0.25.0" },
+    { name = "zstandard", marker = "extra == 'server'", specifier = ">=0.25.0" },
 ]
+provides-extras = ["server"]
 
 [package.metadata.requires-dev]
 debug = [

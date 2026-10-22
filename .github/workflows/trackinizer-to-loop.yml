@@ -253,7 +253,7 @@ jobs:
             --report "$IMPORT_REPORT" \
             --record-on-validation-failure "${{ github.event_name == 'push' }}" \
             --refresh-public-lockfile \
-            --validation-command 'uv sync --frozen --all-groups' \
+            --validation-command 'uv sync --frozen --all-groups --all-extras' \
             --validation-command 'uv run pre-commit run --all-files --hook-stage pre-commit' \
             --validation-command 'uv run pre-commit run --all-files --hook-stage pre-push' \
             --validation-command 'uv run python -c "import trackinizer"' \
@@ -261,7 +261,8 @@ jobs:
             --validation-command 'rm -rf dist' \
             --validation-command 'uv build --out-dir dist' \
             --validation-command 'uv run python -m zipfile -l dist/trackinizer-*.whl | grep -q trackinizer/web/dist/index.html' \
-            --validation-command 'wheels=(dist/trackinizer-*.whl); wheel="${wheels[0]}"; uv run --isolated --index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match --with "$wheel" --with "treekle @ git+https://github.com/rekursiv-ai/treekle@main" python -P -c "import trackinizer; print(trackinizer.__file__)"' \
+            --validation-command 'wheels=(dist/trackinizer-*.whl); wheel="${wheels[0]}"; uv run --isolated --no-project --with "$wheel" --with "treekle @ git+https://github.com/rekursiv-ai/treekle@main" python -P -c "import importlib.metadata as m, importlib.util as u, re, trackinizer.trax.cli, trackinizer.client.client; extra = [re.match(r'"'"'[A-Za-z0-9_.-]+'"'"', r)[0].replace('"'"'-'"'"', '"'"'_'"'"') for r in m.requires('"'"'trackinizer'"'"') if '"'"'server'"'"' in r.partition('"'"';'"'"')[2]]; assert extra, '"'"'the wheel has no server extra'"'"'; leaked = [name for name in extra if u.find_spec(name)]; assert not leaked, leaked; print(trackinizer.__file__)"' \
+            --validation-command 'wheels=(dist/trackinizer-*.whl); wheel="${wheels[0]}"; uv run --isolated --no-project --index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match --with "${wheel}[server]" --with "treekle @ git+https://github.com/rekursiv-ai/treekle@main" python -P -c "import trackinizer.server.server; print(trackinizer.__file__)"' \
             --open-pr false
 
       - name: Open or update target import PR

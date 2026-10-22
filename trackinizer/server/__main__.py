@@ -14,7 +14,7 @@ Runnable wrapper for the trackinizer server; the implementation lives in
 
 from __future__ import annotations
 
-from trackinizer.server.server import main
+from trackinizer.server.entry import main
 
 
 if __name__ == "__main__":  # pragma: no cover -- entry point only.

@@ -41,11 +41,16 @@ jobs:
 
       # Resolve the wheel against PyPI alone -- a symbol that exists only on
       # treekle main fails HERE, before an irreversible upload, instead of in a
-      # user's `pip install`.
+      # user's `pip install`. Twice: the base wheel is the client side and must
+      # pull none of the server's packages; the `server` extra carries torch, so
+      # the CPU index keeps the CUDA build (about 2.5 GB) off the runner's disk
+      # while every other dependency still resolves from PyPI. `--no-project`
+      # keeps the checkout out of both environments.
       - name: Validate against published dependencies
         run: |
           wheels=(dist/trackinizer-*.whl)
-          uv run --isolated --with "${wheels[0]}" python -P -c "import trackinizer"
+          uv run --isolated --no-project --with "${wheels[0]}" python -P -c "import importlib.util, trackinizer.trax.cli, trackinizer.client.client; assert not any(importlib.util.find_spec(name) for name in ('torch', 'fastapi', 'asyncpg'))"
+          uv run --isolated --no-project --index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match --with "${wheels[0]}[server]" python -P -c "import trackinizer.server.server"
 
       - name: Publish package
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
