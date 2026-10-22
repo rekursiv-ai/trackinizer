@@ -33,6 +33,7 @@ from pydantic import (
 
 
 __all__ = [
+    "BOX_CREDENTIAL_PREFIX",
     "GATE_RO_VERBS",
     "GATE_RW_VERBS",
     "JOBS_PATH",
@@ -78,6 +79,9 @@ JOB_START_PATH: Final = f"{JOB_PREFIX}/jobs/{{job_id}}/start"
 JOB_CANCEL_PATH: Final = f"{JOB_PREFIX}/jobs/{{job_id}}/cancel"
 JOB_SECRETS_PATH: Final = f"{JOB_PREFIX}/secrets"
 JOB_SECRET_PATH: Final = f"{JOB_PREFIX}/secrets/{{name}}"
+
+BOX_CREDENTIAL_PREFIX: Final = "trax_gpubox_"
+"""Starts every campaign-box credential; only the job routes accept one."""
 
 NODE_PATTERN: Final = r"^[a-z0-9][a-z0-9-]{0,62}$"
 """A node name, as Slurm and the principal spell it."""
