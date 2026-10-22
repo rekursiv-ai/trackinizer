@@ -74,6 +74,7 @@ if TYPE_CHECKING:
 
     from trackinizer.wire import (
         wire_code,
+        wire_exec,
         wire_job,
         wire_machine_host,
         wire_machines,
@@ -86,6 +87,7 @@ if TYPE_CHECKING:
     )
     from trackinizer.wire.filters import Filter
     from trackinizer.wire.wire_code import CodeSnapshot, CodeSnapshotHead
+    from trackinizer.wire.wire_exec import ExecRequest, ExecResult, ExecWait
     from trackinizer.wire.wire_job import (
         GrantStatus,
         GrantTicket,
@@ -152,6 +154,8 @@ else:
     wire_machines = lazy_import("trackinizer.wire.wire_machines")
     wire_machine_host = lazy_import("trackinizer.wire.wire_machine_host")
     wire_terminals = lazy_import("trackinizer.wire.wire_terminals")
+    # Same lazy-bind for ``wire_exec``: only the exec methods touch it.
+    wire_exec = lazy_import("trackinizer.wire.wire_exec")
     # Same lazy-bind for ``wire_variables``: only the variable methods touch it.
     wire_variables = lazy_import("trackinizer.wire.wire_variables")
     # Same lazy-bind for ``wire_code``: only the code-store methods touch it.
@@ -2348,6 +2352,109 @@ class Client:
         where = wire_terminals.TERMINALS_PATH
         response = self._request("POST", where, body=body.model_dump(mode="json"))
         return _validate_model(wire_terminals.TerminalOpened, response, where)
+
+    def exec_command(
+        self,
+        name: str,
+        request: ExecRequest,
+        *,
+        asker: str,
+        change_id: uuid.UUID | None = None,
+    ) -> ExecResult:
+        """Run a command on the asker's machine, as the configured assistant.
+
+        The call holds until the machine's host reports, so its read timeout exceeds
+        the command's own. It is never retried on its own. The same ``change_id`` sent
+        again within a minute returns the first try's result, or its 504 or 410 once the
+        host was handed the command, and runs nothing twice; after a refusal, or a 504
+        because no host took the command, it runs the command anew.
+
+        Args:
+          name: The machine's name.
+          request: The command, its folder and timeout, and optionally stdin and
+            variables.
+          asker: The person the command runs for, who owns the machine.
+          change_id: The idempotency key of this command; new when omitted.
+
+        Returns:
+          result: The exit code, both streams, the folder it ended in, and whether
+            output was cut.
+
+        """
+        where = wire_exec.EXEC_PATH.format(name=quote(name, safe=""))
+        response = self._request(
+            "POST",
+            where,
+            body=request.model_dump(mode="json", exclude_none=True),
+            params={"asker": asker},
+            change_id=change_id,
+            retry_attempts=1,
+            timeout=request.timeout_sec
+            + wire_exec.OFFER_TTL_SEC
+            + wire_exec.RESULT_GRACE_SEC
+            + 5,
+        )
+        return _validate_model(wire_exec.ExecResult, response, where)
+
+    def wait_exec(
+        self,
+        machine_id: uuid.UUID,
+        *,
+        instance: uuid.UUID,
+        wait_sec: float,
+    ) -> ExecWait | None:
+        """Hold up to ``wait_sec`` for a command to run, as the machine's host.
+
+        Args:
+          machine_id: The machine's id, from joining.
+          instance: The host's id, which must be the machine's current one.
+          wait_sec: How long the server may hold the request; the read timeout
+            exceeds it, or the client would abort the very wait it asked for.
+
+        Returns:
+          command: The command to run, or ``None`` when none came in time.
+
+        """
+        where = wire_exec.MACHINE_EXEC_WAIT_PATH.format(machine_id=machine_id)
+        return self._consume(
+            where,
+            scope=f"{where}/{instance}",
+            params={"instance": str(instance), "wait_sec": wait_sec},
+            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            decode=lambda response: (
+                None
+                if response is None
+                else _validate_model(wire_exec.ExecWait, response, where)
+            ),
+        )
+
+    def post_exec_result(
+        self,
+        machine_id: uuid.UUID,
+        exec_id: uuid.UUID,
+        result: ExecResult,
+    ) -> None:
+        """Report what a command produced, as the machine's host.
+
+        Args:
+          machine_id: The machine's id, from joining.
+          exec_id: The command, from :meth:`wait_exec`.
+          result: What running it produced.
+
+        Raises:
+          ClientError: The server answered 404 when the command ended without a result
+            (its caller timed out or its machine was revoked), so the result is no use.
+            A result sent again after the server accepted it is accepted again.
+
+        """
+        self._request(
+            "POST",
+            wire_exec.MACHINE_EXEC_RESULT_PATH.format(
+                machine_id=machine_id,
+                exec_id=exec_id,
+            ),
+            body=result.model_dump(mode="json"),
+        )
 
     def revoke_machine(self, name: str) -> None:
         """Take a machine out of service (admin or owner); 404 when absent."""

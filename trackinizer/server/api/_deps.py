@@ -14,6 +14,7 @@ from trackinizer.server.capture_relay import CaptureRelay
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.chat_partials import ChatPartials
 from trackinizer.server.config import Config
+from trackinizer.server.execs import ExecHub
 from trackinizer.server.terminals import Terminal, TerminalHub
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
@@ -133,6 +134,23 @@ def get_terminal_hub(request: HTTPConnection) -> TerminalHub:
 
     """
     return terminal_hub(cast("FastAPI", request.app))
+
+
+def get_exec_hub(request: HTTPConnection) -> ExecHub:
+    """Return the exec hub held on the app state, made on first use.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The hub.
+
+    """
+    app = cast("FastAPI", request.app)
+    hub: object = getattr(app.state, "execs", None)
+    if not isinstance(hub, ExecHub):
+        hub = app.state.execs = ExecHub()
+    return hub
 
 
 def get_relay(request: Request) -> CaptureRelay:

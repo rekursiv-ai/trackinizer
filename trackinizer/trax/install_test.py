@@ -13,7 +13,13 @@ from treekle import json_loads, to_plain
 
 import pytest
 
-from trackinizer.trax.install import TARGETS, InstallError, install, uninstall
+from trackinizer.trax.install import (
+    TARGETS,
+    InstallError,
+    Skill,
+    install,
+    uninstall,
+)
 
 import trackinizer.trax.install as install_module
 
@@ -686,6 +692,85 @@ def test_publication_preserves_a_concurrent_empty_directory(
         install(TARGETS["claude"])
     assert destination.stat().st_ino == appeared[0]
     assert list(destination.iterdir()) == []
+
+
+@pytest.fixture
+def custom(tmp_path: Path) -> Skill:
+    """Supply a skill that is not trax: a tree plus one loose file beside it."""
+    source = tmp_path / "custom/skills/rai-shell"
+    (source / "notes").mkdir(parents=True)
+    (source / "SKILL.md").write_text("shell guidance")
+    (source / "notes/SKILL.md").write_text("shell notes")
+    extra = tmp_path / "custom/EXTRA.md"
+    extra.write_text("loose file")
+    return Skill(name="rai-shell", source=source, extras=(extra,))
+
+
+def test_custom_skill_installs_under_its_own_name(
+    fake_home: Path,
+    custom: Skill,
+) -> None:
+    destination, count = install(TARGETS["claude"], skill=custom)
+    assert destination == fake_home / ".claude/skills/rai-shell"
+    assert count == 3
+    assert {
+        path.relative_to(destination).as_posix(): path.read_text()
+        for path in destination.rglob("*")
+        if path.is_file() and path.name != ".trax-install.json"
+    } == {
+        "SKILL.md": "shell guidance",
+        "notes/SKILL.md": "shell notes",
+        "EXTRA.md": "loose file",
+    }
+    assert (destination / ".trax-install.json").is_file()
+
+
+def test_custom_skill_lifecycle_leaves_trax_alone(
+    fake_home: Path,
+    custom: Skill,
+    bundle: Path,
+) -> None:
+    del bundle
+    trax, _ = install(TARGETS["claude"])
+    destination, _ = install(TARGETS["claude"], skill=custom)
+    assert install_module.check_skills(TARGETS["claude"], skill=custom).status == (
+        "current"
+    )
+    (custom.source / "SKILL.md").write_text("new shell guidance")
+    stale = install_module.check_skills(TARGETS["claude"], skill=custom)
+    assert stale.status == "stale"
+    assert install(TARGETS["claude"], skill=custom)[0] == destination
+    assert (destination / "SKILL.md").read_text() == "new shell guidance"
+    assert uninstall(TARGETS["claude"], skill=custom) == destination
+    assert not destination.exists()
+    assert trax.is_dir()
+    assert install_module.check_skills(TARGETS["claude"]).status == "current"
+    assert fake_home.joinpath(".claude/skills/trax") == trax
+
+
+def test_custom_skill_uninstall_does_not_require_its_source(
+    tmp_path: Path,
+    custom: Skill,
+) -> None:
+    destination, _ = install(TARGETS["claude"], skill=custom)
+    shutil.rmtree(tmp_path / "custom")
+    assert uninstall(TARGETS["claude"], skill=custom) == destination
+
+
+def test_custom_skill_with_a_missing_extra_preserves_the_install(
+    custom: Skill,
+) -> None:
+    destination, _ = install(TARGETS["claude"], skill=custom)
+    custom.extras[0].unlink()
+    with pytest.raises(InstallError, match="could not install"):
+        install(TARGETS["claude"], skill=custom)
+    assert (destination / "EXTRA.md").read_text() == "loose file"
+
+
+@pytest.mark.parametrize("name", ["", ".", "..", "a/b", "/abs", "../x"])
+def test_skill_name_must_be_one_path_segment(tmp_path: Path, name: str) -> None:
+    with pytest.raises(InstallError, match="one path segment"):
+        Skill(name=name, source=tmp_path)
 
 
 def _appear_before_rename(

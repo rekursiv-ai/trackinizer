@@ -20,7 +20,11 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from treekle import from_plain
 
-from trackinizer.server.api._deps import auth_is_disabled, get_terminal_hub
+from trackinizer.server.api._deps import (
+    auth_is_disabled,
+    get_exec_hub,
+    get_terminal_hub,
+)
 from trackinizer.server.api._routes_shared import engine_of
 from trackinizer.server.api.machines_routes import (
     MachineName,
@@ -235,6 +239,7 @@ async def join_machine_route(
                 body.instance,
                 body.host_version,
             )
+    get_exec_hub(request).close_machine(from_plain(machine_id, UUID))
     await get_terminal_hub(request).close_machine(from_plain(machine_id, UUID))
     response.headers["Cache-Control"] = "no-store"
     return JoinResponse(
@@ -368,6 +373,7 @@ async def revoke_machine_route(
             "UPDATE machines SET host_instance = NULL WHERE id = $1",
             machine_id,
         )
+    get_exec_hub(request).close_machine(from_plain(machine_id, UUID))
     await get_terminal_hub(request).close_machine(from_plain(machine_id, UUID))
     return Response(status_code=204)
 

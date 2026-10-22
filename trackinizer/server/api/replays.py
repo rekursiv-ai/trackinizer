@@ -11,7 +11,9 @@ from uuid import UUID
 import asyncio
 import time
 
+from trackinizer.server.execs import MayHaveRun
 from trackinizer.server.inbound import Inbound
+from trackinizer.wire.wire_exec import ExecResult, ExecWait
 from trackinizer.wire.wire_terminals import TerminalWait
 
 
@@ -121,6 +123,16 @@ class Replays:
     inbound: Replay[list[Inbound]] = field(default_factory=Replay)
     terminal_waits: Replay[TerminalWait | None] = field(default_factory=Replay)
     terminal_opens: Replay[UUID] = field(default_factory=Replay)
+    # A receipt holds a whole command, up to 1.4 MB of stdin among it, or a result of
+    # up to two 1 MiB streams, so the default 4,096 slots kept 15 minutes would let
+    # one user's retries pin gigabytes. A minute holds the 60 a user may start in it,
+    # and a retry follows a lost response within seconds.
+    exec_waits: Replay[ExecWait | None] = field(
+        default_factory=lambda: Replay(max_entries=256, retention_sec=60),
+    )
+    exec_runs: Replay[ExecResult | MayHaveRun] = field(
+        default_factory=lambda: Replay(max_entries=256, retention_sec=60),
+    )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

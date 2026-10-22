@@ -1398,6 +1398,8 @@ class TestClientMethods:
 # ``trax/variables_test.py`` and ``trax/machines_test.py``, so the shared fake does
 # not carry them. No ``trax`` command files code, so the fake carries no code-store
 # method either. The canvas capture is an agent's alone, and no command takes one.
+# The exec calls are the assistant's and a machine host's, which no ``trax`` command is,
+# and ``client/client_exec_test.py`` drives them.
 _FAKE_EXEMPT: frozenset[str] = frozenset(
     {"flags", "from_args", "get", "post", "put", "patch", "delete"}
     | {"list_variables", "put_variable", "delete_variable"}
@@ -1405,6 +1407,7 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
     | {"change_machine_labels", "delete_machine"}
     | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"}
     | {"wait_terminals"}
+    | {"exec_command", "wait_exec", "post_exec_result"}
     | {"job_submit", "job_list", "job_view", "job_grant", "job_read_grant"}
     | {"job_grant_serial", "job_start", "job_cancel", "job_secret_names"}
     | {"job_put_secret", "job_delete_secret"}

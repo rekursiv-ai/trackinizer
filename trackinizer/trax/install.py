@@ -1,6 +1,7 @@
-"""Manage copied trax skills while preserving source links and local changes.
+"""Manage copied skills while preserving source links and local changes.
 
-The package bundles a router, per-kind guidance, and both grammar manuals.
+The package bundles the trax skill: a router, per-kind guidance, and both
+grammar manuals. A ``Skill`` places any other skill, as the endpoint commands do.
 Managed copies carry a receipt so upgrades and removal can distinguish package
 snapshots from user edits. Existing source discovery links remain authoritative.
 """
@@ -29,11 +30,13 @@ _CWD: Final = Path(__file__).resolve().parent
 __all__ = [
     "TARGETS",
     "InstallError",
+    "Skill",
     "SkillCheck",
     "Target",
     "bundled_skills",
     "check_skills",
     "install",
+    "trax_skill",
     "uninstall",
 ]
 
@@ -50,6 +53,32 @@ class Target:
     label: str
     user: str | None
     project: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Skill:
+    """Describe a skill directory to place under an agent's skills folder.
+
+    Attributes:
+      name: Directory name under the agent's skills folder; one path segment.
+      source: Directory holding the skill's ``SKILL.md`` and its subdirectories.
+      extras: Files copied beside ``SKILL.md``, each under its own file name.
+
+    """
+
+    name: str
+    source: Path
+    extras: tuple[Path, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Reject a name that would leave the skills folder.
+
+        Raises:
+          InstallError: The name is empty, nested, or a parent reference.
+
+        """
+        if not self.name or Path(self.name).name != self.name or self.name == "..":
+            raise InstallError(f"skill name {self.name!r} must be one path segment")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -113,11 +142,30 @@ def bundled_skills() -> Path:
     return root
 
 
+def trax_skill() -> Skill:
+    """Return the trax skill bundled with this package.
+
+    Returns:
+      skill: The router and per-kind guidance, with both grammar manuals.
+
+    Raises:
+      InstallError: Required package resources are missing or unreadable.
+
+    """
+    root = bundled_skills()
+    return Skill(
+        name="trax",
+        source=root / "trax",
+        extras=(root.parent / "grammar.lark", root.parent / "GRAMMAR.md"),
+    )
+
+
 def check_skills(
     target: Target,
     *,
     project: bool = False,
     root: Path | None = None,
+    skill: Skill | None = None,
 ) -> SkillCheck:
     """Inspect guidance without changing an agent's skill directories.
 
@@ -125,6 +173,7 @@ def check_skills(
       target: Agent directory convention.
       project: Inspect the project rather than the user's home.
       root: Project root; defaults to the current directory.
+      skill: Skill to inspect; defaults to the bundled trax skill.
 
     Returns:
       check: Destination, ownership status, and a human-readable explanation.
@@ -133,11 +182,16 @@ def check_skills(
       InstallError: The destination or required package resources cannot be read.
 
     """
-    destination, boundary = _location(target, project=project, root=root or Path.cwd())
+    destination, boundary = _location(
+        target,
+        project=project,
+        root=root or Path.cwd(),
+        name=skill.name if skill else "trax",
+    )
     try:
         check, receipt = _inspect(destination, boundary=boundary)
         if receipt is not None and check.status == "current":
-            _, expected = _bundle()
+            _, expected = _bundle(skill)
             if expected != (receipt["files"], receipt["directories"]):
                 return SkillCheck(
                     destination=destination,
@@ -155,6 +209,7 @@ def install(
     project: bool = False,
     root: Path | None = None,
     dry_run: bool = False,
+    skill: Skill | None = None,
 ) -> tuple[Path, int]:
     """Install missing guidance or refresh an unchanged managed copy.
 
@@ -163,21 +218,27 @@ def install(
       project: Install into the project rather than the user's home.
       root: Project root; defaults to the current directory.
       dry_run: Inspect and report the destination without writing.
+      skill: Skill to install; defaults to the bundled trax skill.
 
     Returns:
-      destination: Installed, preserved, or proposed trax directory.
-      count: Number of bundled guidance files, including both grammar manuals.
+      destination: Installed, preserved, or proposed skill directory.
+      count: Number of guidance files, including the skill's extras.
 
     Raises:
       InstallError: Resources are unavailable, ownership is unsafe, or a write fails.
 
     """
-    destination, boundary = _location(target, project=project, root=root or Path.cwd())
+    destination, boundary = _location(
+        target,
+        project=project,
+        root=root or Path.cwd(),
+        name=skill.name if skill else "trax",
+    )
     created: list[Path] = []
     try:
         check, receipt = _inspect(destination, boundary=boundary)
         _require_owned(check)
-        source, expected = _bundle()
+        bundled, expected = _bundle(skill)
         count = len(expected[0])
         if dry_run or check.status == "source":
             return destination, count
@@ -193,7 +254,7 @@ def install(
             else [str(p) for p in created]
         )
         _install_tree(
-            source,
+            bundled,
             destination=destination,
             expected=expected,
             parents=parents,
@@ -219,6 +280,7 @@ def uninstall(
     project: bool = False,
     root: Path | None = None,
     dry_run: bool = False,
+    skill: Skill | None = None,
 ) -> Path | None:
     """Remove unchanged managed guidance and its empty installer-created parents.
 
@@ -227,6 +289,7 @@ def uninstall(
       project: Operate on the project rather than the user's home.
       root: Project root; defaults to the current directory.
       dry_run: Inspect and report an owned copy without removing it.
+      skill: Skill to remove; defaults to trax. Only its name is read.
 
     Returns:
       removed: Removed or proposed path, or None for absent guidance or a source link.
@@ -235,7 +298,12 @@ def uninstall(
       InstallError: Ownership is unsafe or inspection, removal, or cleanup fails.
 
     """
-    destination, boundary = _location(target, project=project, root=root or Path.cwd())
+    destination, boundary = _location(
+        target,
+        project=project,
+        root=root or Path.cwd(),
+        name=skill.name if skill else "trax",
+    )
     try:
         check, receipt = _inspect(destination, boundary=boundary)
         _require_owned(check)
@@ -267,8 +335,14 @@ def _destination(target: Target, *, project: bool, root: Path) -> Path:
     return Path.home() / target.user  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Agent CLI's fixed skill dir, not ours (AGENTS.md rule 3).
 
 
-def _location(target: Target, *, project: bool, root: Path) -> tuple[Path, Path]:
-    destination = _destination(target, project=project, root=root) / "trax"
+def _location(
+    target: Target,
+    *,
+    project: bool,
+    root: Path,
+    name: str,
+) -> tuple[Path, Path]:
+    destination = _destination(target, project=project, root=root) / name
     convention = target.project if project else target.user
     assert isinstance(convention, str)
     return destination, destination.parents[len(Path(convention).parts)]
@@ -412,16 +486,16 @@ def _snapshot(root: Path, *, installed: bool = False) -> _Snapshot | None:
     return files, sorted(directories)
 
 
-def _bundle() -> tuple[Path, _Snapshot]:
-    source = bundled_skills() / "trax"
-    expected = _snapshot(source)
+def _bundle(skill: Skill | None) -> tuple[Skill, _Snapshot]:
+    bundled = skill or trax_skill()
+    expected = _snapshot(bundled.source)
     if expected is None or ".trax-install.json" in expected[0]:
-        raise InstallError(f"bundled skills contain unsupported entries at {source}")
-    for name in ("grammar.lark", "GRAMMAR.md"):
-        expected[0][name] = hashlib.sha256(
-            (source.parent.parent / name).read_bytes(),
-        ).hexdigest()
-    return source, expected
+        raise InstallError(
+            f"bundled skills contain unsupported entries at {bundled.source}",
+        )
+    for extra in bundled.extras:
+        expected[0][extra.name] = hashlib.sha256(extra.read_bytes()).hexdigest()
+    return bundled, expected
 
 
 def _make_parents(parent: Path, *, boundary: Path, created: list[Path]) -> None:
@@ -449,7 +523,7 @@ def _cleanup_parents(parents: list[Path]) -> None:
 
 
 def _install_tree(
-    source: Path,
+    skill: Skill,
     *,
     destination: Path,
     expected: _Snapshot,
@@ -462,9 +536,9 @@ def _install_tree(
     previous = staging / "previous"
     published = False
     try:
-        shutil.copytree(source, replacement)
-        for name in ("grammar.lark", "GRAMMAR.md"):
-            shutil.copy2(source.parent.parent / name, replacement / name)
+        shutil.copytree(skill.source, replacement)
+        for extra in skill.extras:
+            shutil.copy2(extra, replacement / extra.name)
         _verify_copy(replacement, expected=expected)
         replacement_receipt = _Receipt(
             owner="trackinizer.trax.install",
