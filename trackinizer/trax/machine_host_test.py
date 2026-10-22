@@ -19,6 +19,7 @@ from trackinizer.trax.machine_host import (
     connect,
     host_facts,
     is_sandbox,
+    server_dir,
     set_sandbox,
 )
 from trackinizer.wire.wire_machine_host import (
@@ -631,6 +632,21 @@ def _version_of(name: str, *, installed: dict[str, str]) -> str:
     if name not in installed:
         raise metadata.PackageNotFoundError(name)
     return installed[name]
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://Trax.Example", "trax.example"),
+        ("http://127.0.0.1:8765/api", "127.0.0.1_8765"),
+        ("https://trax.example:443", "trax.example_443"),
+    ],
+)
+def test_a_server_has_one_directory_named_by_its_host_and_port(
+    url: str,
+    expected: str,
+) -> None:
+    assert server_dir(url) == expected
 
 
 if __name__ == "__main__":

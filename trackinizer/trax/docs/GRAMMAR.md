@@ -466,7 +466,7 @@ These are the non-row top-level verbs. Each parses its own argv with
 flags documented here.
 
 ```
-verb_name   ::= "help" | "profile" | "env" | "machine" | "next" | "recent"
+verb_name   ::= "help" | "profile" | "env" | "machine" | "job" | "next" | "recent"
              |  "cost" | "confidence" | "authority" | "blocked" | "board"
              |  "graph" | "id" | "version" | "export" | "send" | "run"
              |  "search-sessions"
@@ -484,6 +484,8 @@ kinds resolve first, so a field can never shadow a command.
   see section 8a.
 - `trax machine [NAME (action)]` -- the registry of machines campaigns may
   run on, and hosting one; see section 8b.
+- `trax job (action)` -- run a command on a GPU node straight from this
+  computer, and read its logs and results; see section 8c.
 - `trax id <uuid> [--format table|json] [--changes]` -- show one row by its
   global id, with no leading kind (the UUID is unique, so the kind is
   redundant). Unlike `trax <kind> <uuid>` it applies no kind typo-guard.
@@ -634,6 +636,70 @@ most 2,000 characters, and a label is any non-blank text. `label add` and
 A name outside `machine_name`, or one of `enroll join init import check
 connect leave top`, is refused before any request (E012, E013).
 Examples in section 10.
+
+## 8c. Job command
+
+```
+job_command ::= "job" job_action
+job_action  ::= "submit" submit_flag* "--" word+
+             |  "status" job_id?
+             |  "logs" job_id ( "-f" )?
+             |  "results" job_id ( "--to" dir )?
+             |  "cancel" job_id
+             |  "secrets"
+             |  "secret" secret_name ( "set" | "del" )
+submit_flag ::= "--gpus" int | "--minutes" int | "--label" text | "--follow"
+             |  "--include-untracked"
+job_id      ::= int
+secret_name ::= "HF_TOKEN" | "WANDB_API_KEY"
+```
+
+`job submit` runs a command on a GPU node. It snapshots the repository the
+caller is in (uncommitted and untracked files included, ignored files left
+out) without touching its index, `HEAD`, refs or objects, and asks the server
+for a job. The server checks credit and caps, picks a node, and signs a
+certificate for one throwaway key, valid for that one job on that one node.
+The caller then uploads the code, as a git bundle cut on top of the commits the
+node already holds, directly to the node over ssh, and the server queues the
+job. It prints the job id alone on its line of stdout and exits 0 once the job is
+queued; progress goes to stderr. `--gpus` is 1 to 8 (default 1) and `--minutes`
+is 1 to 360 (default 10). `--follow` then streams the log until the job ends.
+
+An untracked file the caller did not ignore is part of the snapshot, so `submit`
+says which ones it took (to stderr, ten names at most) and refuses to send one
+whose base name looks like a credential: `.env*`, `*.pem`, `id_*`,
+`*credentials*`, `.netrc` or `*.key`, in any case. A `.gitignore` entry leaves
+such a file out; `--include-untracked` sends it anyway. A tracked file is the
+caller's own choice and is not checked.
+
+Everything after the first `--` is the job's command, run without a shell in
+the root of the snapshot, even when it contains `--help`. A `--` with nothing
+after it, or a command given to any other action, is refused.
+
+`job logs JOB` prints the job's log, and `-f` keeps streaming it until the job
+ends. `job results JOB` downloads the job's `out/` directory straight from the
+node into `OUT/out/` and writes the job's record to `OUT/job.json`; `OUT` is a
+directory of the caller's data folder named by server and job, or `--to DIR`.
+A `DIR` inside the repository the caller is in is refused. Files already held
+with the same size and digest are skipped, so an interrupted download resumes
+by running it again. `submit` keeps the exact code that ran beside the results
+as `src.bundle`, which a later pull request can fetch.
+
+`job status` lists the caller's jobs, one line each: id, state, node and
+command; `job status JOB` shows one in full. `job cancel JOB` stops a job; the
+minutes that already ran are charged.
+
+`job secrets` lists the names of the caller's job secrets, and `job secret NAME
+set` stores one. The value is read from stdin, never from the command line, so
+it stays out of shell history and process listings; one trailing newline is
+stripped and an empty value is refused. A secret is write-only: the job never
+holds it, and the node adds it to the job's requests to Hugging Face
+(`HF_TOKEN`) and Weights & Biases (`WANDB_API_KEY`).
+
+The caller holds no long-lived key: each action makes a throwaway ssh key and
+deletes it when the action ends. `job` needs `ssh`, `ssh-keygen` and `git` on
+`PATH`, runs in the calling process and never in traxd, and no code or result
+bytes pass through the server. Examples in section 10.
 
 ## 9. Token tables
 
@@ -1148,6 +1214,25 @@ trax machine gpu-box del
 printf '%s\n' "$ENROLLMENT_TOKEN" | trax machine gpu-box connect
 printf '%s\n' "$ENROLLMENT_TOKEN" | trax machine gpu-box connect --sandbox
 trax machine connect --sandbox
+```
+
+### Job
+
+Job commands reach a server and a GPU node, so these examples are not run
+against the test fake:
+
+```
+trax job submit -- python train.py --steps 100
+trax job submit --gpus 2 --minutes 60 --label sweep --follow -- python train.py
+trax job status
+trax job status 7
+trax job logs 7 -f
+trax job results 7
+trax job results 7 --to ~/results/run7
+trax job cancel 7
+trax job secrets
+printf '%s' "$HF_TOKEN" | trax job secret HF_TOKEN set
+trax job secret HF_TOKEN del
 ```
 
 ## 11. Counterexamples

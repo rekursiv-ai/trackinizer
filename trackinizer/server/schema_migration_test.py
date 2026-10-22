@@ -1282,6 +1282,40 @@ async def test_migration_053_matches_the_baseline_credit_grace_table(
     assert migrated == baseline
 
 
+_GPU_TABLES = ("gpu_owners", "gpu_jobs", "gpu_issuances")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_054_matches_the_baseline_gpu_tables(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """The three GPU tables 054 builds equal the fresh-install ones.
+
+    Bootstrap builds the baseline shape. This drops the tables (as a pre-054 database
+    lacks them), replays ``schema.054`` alone, and compares every column, constraint
+    and index of each against what the baseline produced.
+    """
+    await reset_schema(pglite_engine)
+    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
+    async with pglite_engine.acquire() as conn:
+        baseline = {t: await _table_shape(conn, t) for t in _GPU_TABLES}
+        assert baseline["gpu_jobs"][0], "the baseline lacks the tables"
+
+        await conn.execute("DROP TABLE gpu_issuances, gpu_jobs, gpu_owners")
+        await conn.execute(load_sql("schema.054"))
+        migrated = {t: await _table_shape(conn, t) for t in _GPU_TABLES}
+        # Replaying it over the existing tables is a no-op, not an error.
+        await conn.execute(load_sql("schema.054"))
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute(
+                "INSERT INTO gpu_issuances (job_id, email, kind) "
+                "VALUES (1, 'jan@example.com', 'ssh-key')",
+            )
+
+    assert migrated == baseline
+
+
 async def _catalog_names_aside(conn: Conn) -> list[tuple[str, str, str]]:
     """Return ``_CATALOG``, each constraint keyed by its table rather than its name."""
     rows = [

@@ -54,6 +54,27 @@ test("the agent is working on the last line when it is a person's: on its last t
   expect(readTranscript(parts(said(0, "ada", "q"), call(1, "SearchRecords"), said(2, "grace", "and?"))).working).toBe("");
 });
 
+// What each CLI logs when its turn is interrupted: claude a user turn of its own, codex a developer message.
+test("an interrupt the CLI logs ends the turn: it is one note, and no answer is owed", () => {
+  const stops = [
+    record(2, "UserMessage", { content: "[Request interrupted by user]", extra: {} }),
+    record(2, "UserMessage", { content: "[Request interrupted by user for tool use]", extra: {} }),
+    record(2, "SystemMessage", { subtype: "developer", content: "<turn_aborted>\nThe previous turn was interrupted on purpose." }),
+  ];
+  for (const stop of stops) {
+    const { lines, working } = readTranscript(parts(said(0, "ada", "run it"), call(1, "Bash"), stop));
+    expect(lines.map(({ role, text }) => [role, text])).toEqual([["user", "run it"], ["interrupt", "Interrupted"]]);
+    expect(working).toBeNull();
+  }
+  // A person's delivered line in the same words is still their line, and still owed an answer.
+  const typed = record(1, "UserMessage", { content: "ada: [Request interrupted by user]", extra: { $inbound: { source: "ada" } } });
+  const { lines, working } = readTranscript(parts(said(0, "ada", "run it"), typed));
+  expect(lines.map(({ role, text }) => [role, text])).toEqual([["user", "run it"], ["user", "[Request interrupted by user]"]]);
+  expect(working).toBe("");
+  // Codex's other developer messages are no line.
+  expect(readTranscript(parts(record(0, "SystemMessage", { subtype: "developer", content: "<permissions instructions>" }))).lines).toEqual([]);
+});
+
 test("a line sent from here shows until the session holds one more line by the sender", () => {
   const stored = readTranscript(parts(said(0, "ada", "hi"), answer(1, "hello")));
   const me = { me: "ada" };

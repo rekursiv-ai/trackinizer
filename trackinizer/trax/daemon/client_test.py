@@ -269,6 +269,35 @@ class TestMachineHostCommands:
         assert should_delegate(argv)
 
 
+class TestJobCommands:
+    """``trax job`` ssh-es to a node and reads secrets from stdin: it runs in-process."""
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["job", "status"],
+            ["job", "submit", "--", "python", "x.py"],
+            ["JOB", "secrets"],
+            ["--profile", "origin", "job", "results", "7"],
+            ["--port=9", "job", "logs", "7", "-f"],
+        ],
+    )
+    def test_refuses_every_job_verb(self, argv: list[str]) -> None:
+        assert not should_delegate(argv)
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["issue", "title", "to", "job"],
+            ["issue", "7", "label", "add", "job"],
+            ["machine", "gpu-box", "role", "to", "job"],
+            ["issue", "job", "status"],
+        ],
+    )
+    def test_delegates_a_value_that_is_the_word_job(self, argv: list[str]) -> None:
+        assert should_delegate(argv)
+
+
 class TestDelegate:
     def test_returns_the_daemon_response(self, tmp_path: Path) -> None:
         sock = tmp_path / "traxd.sock"

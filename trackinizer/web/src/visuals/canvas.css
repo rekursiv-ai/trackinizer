@@ -100,6 +100,9 @@
 .chat-line:hover .chat-line-fork, .chat-line:focus-within .chat-line-fork { opacity: 1; }
 @media (hover: none) { .chat-line-fork { opacity: 1; } }
 .chat-fork-banner { margin: 0; padding: 6px 12px 0; color: var(--muted); font-size: 12px; }
+/* Stop sits over the box while a run is on a turn, wherever the log is scrolled to. */
+.chat-stop { display: flex; justify-content: flex-end; padding: 6px 12px 0; }
+.chat-stop .btn { padding: 2px 10px; font-size: 12px; }
 .chat-line p.chat-line-body { white-space: pre-wrap; }
 .chat-status { align-self: flex-start; color: var(--muted); font-size: 12px; font-style: italic; }
 /* The reply the assistant is writing ends in a caret after its last word. It needs no rule

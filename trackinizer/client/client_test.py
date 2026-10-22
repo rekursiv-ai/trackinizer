@@ -35,6 +35,20 @@ from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
 from trackinizer.wire.wire_code import CODE_BLOBS_PATH, CODE_MISSING_PATH
 from trackinizer.wire.wire_export import EXPORT_API_PATH
+from trackinizer.wire.wire_job import (
+    JOB_CANCEL_PATH,
+    JOB_GRANT_PATH,
+    JOB_GRANT_SERIAL_PATH,
+    JOB_GRANTS_PATH,
+    JOB_PATH,
+    JOB_SECRET_PATH,
+    JOB_SECRETS_PATH,
+    JOB_START_PATH,
+    JOBS_PATH,
+    ReadGrantBody,
+    StartBody,
+    SubmitBody,
+)
 from trackinizer.wire.wire_machine_host import (
     ENROLL_PATH,
     HEARTBEAT_PATH,
@@ -1391,6 +1405,9 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
     | {"change_machine_labels", "delete_machine"}
     | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"}
     | {"wait_terminals"}
+    | {"job_submit", "job_list", "job_view", "job_grant", "job_read_grant"}
+    | {"job_grant_serial", "job_start", "job_cancel", "job_secret_names"}
+    | {"job_put_secret", "job_delete_secret"}
     | {"code_missing", "code_put_blobs", "code_put_snapshot", "code_snapshot"}
     | {"capture_workspace"},
 )
@@ -3347,6 +3364,278 @@ class TestMetricQueries:
             with pytest.raises(ClientError, match="metric rank"):
                 client.rank_metrics(experiments, masks=[])
         assert sent == []
+
+
+_JOB_KEY = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPtWmP3ce7m3hrwpxvm9x5s3WnCClGsA5R5nJ9J25ir1"
+)
+_JOB_CERT = "ssh-ed25519-cert-v01@openssh.com " + "CERTBODY" * 6
+_JOB_COMMIT = "a" * 40
+_JOB_VIEW: dict[str, object] = {
+    "id": 7,
+    "state": "queued",
+    "node": "gpu-node-b",
+    "gpus": 1,
+    "minutes": 5,
+    "label": "t",
+    "argv": ["python", "x.py"],
+    "commit": _JOB_COMMIT,
+    "bundle_sha256": None,
+    "created_at": "2026-10-21T12:00:00Z",
+    "started_at": None,
+    "ended_at": None,
+    "gpu_minutes": None,
+    "usd": None,
+    "reason": "",
+    "upload_serial": 3,
+}
+_JOB_GRANT: dict[str, object] = {
+    "job_id": 7,
+    "serial": 3,
+    "role": "rw",
+    "node": {
+        "name": "gpu-node-b",
+        "host": "203.0.113.7",
+        "port": 22,
+        "user": "gj7",
+        "host_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPtWmP3ce7m3hrwpxvm9x5s3WnCClGsA5R5nJ9J25ir1",
+    },
+    "certificate": _JOB_CERT,
+    "valid_before": "2026-10-21T13:00:00Z",
+    "max_bundle_bytes": 1_000_000,
+}
+
+
+def _job_client(
+    seen: list[httpx2.Request],
+    *answers: httpx2.Response,
+) -> Client:
+    queue = list(answers)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request)
+        return queue.pop(0) if queue else httpx2.Response(200, json={})
+
+    client = Client("https://server")
+    _install_mock_transport(client, handler)
+    return client
+
+
+class TestJobMethods:
+    """Each ``job_*`` method hits its Appendix A path with the right body."""
+
+    def test_submit_posts_the_body_once_and_parses_the_job(self) -> None:
+        seen: list[httpx2.Request] = []
+        body = SubmitBody(
+            public_key=_JOB_KEY,
+            gpus=1,
+            minutes=5,
+            label="t",
+            argv=["python", "x.py"],
+            commit=_JOB_COMMIT,
+        )
+        with _job_client(
+            seen,
+            httpx2.Response(503, json={}),
+            httpx2.Response(201, json=_JOB_VIEW),
+        ) as client:
+            with pytest.raises(ClientError) as err:
+                _ = client.job_submit(body)
+            job = client.job_submit(body)
+
+        # A retry after a lost answer would hold the credit twice.
+        assert err.value.status_code == 503
+        assert [(r.method, r.url.path) for r in seen] == [("POST", JOBS_PATH)] * 2
+        assert json_loads(seen[0].content) == {
+            "public_key": _JOB_KEY,
+            "gpus": 1,
+            "minutes": 5,
+            "label": "t",
+            "argv": ["python", "x.py"],
+            "commit": _JOB_COMMIT,
+        }
+        assert (job.id, job.state, job.upload_serial) == (7, "queued", 3)
+
+    def test_jobs_and_job_read_the_callers_jobs(self) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(
+            seen,
+            httpx2.Response(200, json={"jobs": [_JOB_VIEW]}),
+            httpx2.Response(200, json=_JOB_VIEW),
+        ) as client:
+            listing = client.job_list()
+            one = client.job_view(7)
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", JOBS_PATH),
+            ("GET", JOB_PATH.format(job_id=7)),
+        ]
+        assert [job.id for job in listing.jobs] == [7]
+        assert one.node == "gpu-node-b"
+
+    def test_a_malformed_job_is_wrapped(self) -> None:
+        seen: list[httpx2.Request] = []
+        with (
+            _job_client(seen, httpx2.Response(200, json={"id": 1})) as client,
+            pytest.raises(ClientError, match="malformed payload"),
+        ):
+            _ = client.job_view(7)
+
+    def test_grant_long_polls_with_a_read_timeout_past_the_wait(self) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(
+            seen,
+            httpx2.Response(200, json={"state": "pending"}),
+            httpx2.Response(200, json={"state": "ready", "grant": _JOB_GRANT}),
+        ) as client:
+            pending = client.job_grant(7, wait=25)
+            ready = client.job_grant(7, wait=25)
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", JOB_GRANT_PATH.format(job_id=7)),
+        ] * 2
+        assert seen[0].url.params["wait"] == "25"
+        assert _read_timeout(seen[0]) == 35
+        assert pending.grant is None
+        assert ready.grant is not None
+        assert ready.grant.node.user == "gj7"
+
+    def test_read_grant_posts_the_key_and_returns_the_serial(self) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(seen, httpx2.Response(201, json={"serial": 9})) as client:
+            ticket = client.job_read_grant(7, ReadGrantBody(public_key=_JOB_KEY))
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("POST", JOB_GRANTS_PATH.format(job_id=7)),
+        ]
+        assert json_loads(seen[0].content) == {"public_key": _JOB_KEY}
+        assert ticket.serial == 9
+
+    def test_read_grant_is_sent_once_too(self) -> None:
+        seen: list[httpx2.Request] = []
+        with (
+            _job_client(seen, httpx2.Response(503, json={})) as client,
+            pytest.raises(ClientError),
+        ):
+            _ = client.job_read_grant(7, ReadGrantBody(public_key=_JOB_KEY))
+
+        assert len(seen) == 1
+
+    def test_grant_serial_long_polls_the_ticket(self) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(
+            seen,
+            httpx2.Response(200, json={"state": "refused", "reason": "no room"}),
+        ) as client:
+            status = client.job_grant_serial(7, 9, wait=10)
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", JOB_GRANT_SERIAL_PATH.format(job_id=7, serial=9)),
+        ]
+        assert seen[0].url.params["wait"] == "10"
+        assert _read_timeout(seen[0]) == 20
+        assert (status.state, status.reason) == ("refused", "no room")
+
+    def test_a_malformed_grant_never_quotes_the_certificate(self) -> None:
+        seen: list[httpx2.Request] = []
+        broken = {**_JOB_GRANT, "role": "admin"}
+        with _job_client(
+            seen,
+            httpx2.Response(200, json={"state": "ready", "grant": broken}),
+            httpx2.Response(200, json={"state": "ready", "grant": broken}),
+        ) as client:
+            with pytest.raises(ClientError, match="malformed payload") as first:
+                _ = client.job_grant(7, wait=1)
+            with pytest.raises(ClientError, match="malformed payload") as second:
+                _ = client.job_grant_serial(7, 9, wait=1)
+
+        for err in (first.value, second.value):
+            assert "CERTBODY" not in str(err)
+            assert err.__cause__ is None
+
+    def test_start_posts_the_commit_and_bundle_hash(self) -> None:
+        seen: list[httpx2.Request] = []
+        body = StartBody(commit=_JOB_COMMIT, bundle_sha256="b" * 64, bundle_bytes=10)
+        with _job_client(seen, httpx2.Response(200, json=_JOB_VIEW)) as client:
+            job = client.job_start(7, body)
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("POST", JOB_START_PATH.format(job_id=7)),
+        ]
+        assert json_loads(seen[0].content) == {
+            "commit": _JOB_COMMIT,
+            "bundle_sha256": "b" * 64,
+            "bundle_bytes": 10,
+        }
+        assert job.id == 7
+
+    def test_cancel_posts_to_the_job(self) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(seen, httpx2.Response(200, json=_JOB_VIEW)) as client:
+            job = client.job_cancel(7)
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("POST", JOB_CANCEL_PATH.format(job_id=7)),
+        ]
+        assert job.id == 7
+
+    def test_secret_names_list_names_only(self) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(
+            seen,
+            httpx2.Response(200, json={"names": ["HF_TOKEN"]}),
+        ) as client:
+            names = client.job_secret_names()
+
+        assert [(r.method, r.url.path) for r in seen] == [("GET", JOB_SECRETS_PATH)]
+        assert names.names == ["HF_TOKEN"]
+
+    def test_put_and_delete_a_secret(self) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(seen, httpx2.Response(204), httpx2.Response(204)) as client:
+            assert client.job_put_secret("HF_TOKEN", "hf_value") is None
+            assert client.job_delete_secret("HF_TOKEN") is None
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("PUT", JOB_SECRET_PATH.format(name="HF_TOKEN")),
+            ("DELETE", JOB_SECRET_PATH.format(name="HF_TOKEN")),
+        ]
+        assert json_loads(seen[0].content) == {"value": "hf_value"}
+
+    def test_a_secret_name_is_escaped_in_the_path(self) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(seen, httpx2.Response(204)) as client:
+            client.job_delete_secret("a/b")
+
+        assert str(seen[0].url).endswith("/secrets/a%2Fb")
+
+    def test_a_secret_value_is_refused_before_sending_without_quoting_it(self) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(seen) as client:
+            with pytest.raises(ClientError, match="value") as err:
+                client.job_put_secret("HF_TOKEN", "")
+            with pytest.raises(ClientError, match="value") as long:
+                client.job_put_secret("HF_TOKEN", "S" * 5_000)
+
+        assert seen == []
+        assert "S" * 20 not in str(long.value)
+        assert err.value.__cause__ is None
+
+    def test_a_server_error_that_echoes_the_secret_value_is_redacted(self) -> None:
+        seen: list[httpx2.Request] = []
+        echo = httpx2.Response(
+            422,
+            json={"detail": {"code": "bad_secret", "input": "hf_SECRETVALUE"}},
+        )
+        with (
+            _job_client(seen, echo) as client,
+            pytest.raises(ClientError) as err,
+        ):
+            client.job_put_secret("HF_TOKEN", "hf_SECRETVALUE")
+
+        assert "hf_SECRETVALUE" not in str(err.value)
+        assert (err.value.status_code, err.value.code) == (422, "bad_secret")
+        assert err.value.__cause__ is None
 
 
 if __name__ == "__main__":

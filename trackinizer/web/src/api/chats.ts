@@ -58,8 +58,11 @@ export type ChatLine = {
   readonly page: string | null;
   /** The hashes the sender came through before `page`, oldest first. */
   readonly trail: readonly string[];
-  /** `answer` posts a decision on a prompt, with its `payload`; absent for a line a person typed. */
-  readonly kind?: "answer";
+  /**
+   * `answer` posts a decision on a prompt, with its `payload`; `interrupt` stops the turn a claude or codex run is on,
+   * with none; absent for a line a person typed.
+   */
+  readonly kind?: "answer" | "interrupt";
   readonly payload?: AnswerPayload;
 };
 

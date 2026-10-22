@@ -2485,6 +2485,77 @@ test("the dot follows the server's word too: it shows with no open card in this 
   expect(screen.getByRole("status", { name: "Waiting for your answer" })).toBeTruthy();
 });
 
+test.each([
+  ["a codex run on a turn", codexChat({ state: "running" })],
+  ["a claude run waiting on an ask", { ...workspace, provider: "claude" as const, partner: { ...(livePartner as WorkspacePartner), state: "requires_action" as const } }],
+])("Stop interrupts %s: it posts the chat's interrupt, a fresh one each press", async (_name, station) => {
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"));
+  shell(station);
+  await screen.findByText("run the suite");
+  fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce());
+  await waitFor(() => expect(screen.getByRole("button", { name: "Stop" })).toHaveProperty("disabled", false));
+  fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledTimes(2));
+  const [[first, firstKey], [second, secondKey]] = vi.mocked(sendChatLine).mock.calls as [Parameters<typeof sendChatLine>, Parameters<typeof sendChatLine>];
+  expect(first).toMatchObject({ workspaceId: WORKSPACE_ID, conversationId: "c1", kind: "interrupt", text: "interrupt" });
+  expect(first.payload).toBeUndefined();
+  expect(second).toMatchObject({ kind: "interrupt" });
+  expect(secondKey).not.toBe(firstKey);
+});
+
+// Each chat still owes an answer to its last line, so it looks busy: its status says so.
+test.each([
+  ["an idle run", codexChat({ state: "idle" }), "Working…"],
+  ["the assistant, which takes no interrupt", workspace, "Working…"],
+  ["a run taken over in a terminal", codexChat({ status: "offline", label: "codex: no run", state: "taken_over" }), "claude is unavailable."],
+])("no Stop shows for %s", async (_name, station, status) => {
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"));
+  shell(station);
+  await screen.findByText("run the suite");
+  expect(screen.getByText(status)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+});
+
+test("Esc in the box interrupts the turn a run is on and keeps the draft; with no turn on, it sends nothing", async () => {
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"));
+  const { again } = shell(codexChat({ state: "idle" }));
+  await screen.findByText("run the suite");
+  const box = screen.getByRole("textbox", { name: "Message" });
+  fireEvent.change(box, { target: { value: "next idea" } });
+  expect(fireEvent.keyDown(box, { key: "Escape" })).toBe(true);
+  again(codexChat({ state: "running" }));
+  expect(fireEvent.keyDown(box, { key: "Escape", isComposing: true })).toBe(true);
+  expect(fireEvent.keyDown(box, { key: "Escape" })).toBe(false);
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce());
+  expect(vi.mocked(sendChatLine).mock.calls[0]![0]).toMatchObject({ kind: "interrupt", text: "interrupt" });
+  expect(box).toHaveProperty("value", "next idea");
+});
+
+test("a refused interrupt says why", async () => {
+  vi.mocked(sendChatLine).mockRejectedValue(new ApiError(409, "No codex run holds this chat", "provider_offline"));
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"));
+  shell(codexChat({ state: "running" }));
+  await screen.findByText("run the suite");
+  fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+  expect(await screen.findByText("No codex run holds this chat")).toBeTruthy();
+});
+
+test("the CLI's record of an interrupt ends the wait: Interrupted shows in place of Working", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "run the suite"), record(1, "UserMessage", { content: "[Request interrupted by user]", extra: {} }));
+  shell({ ...workspace, provider: "claude", partner: livePartner as WorkspacePartner });
+  await screen.findByText("run the suite");
+  expect(articles()).toEqual(["run the suite", "Interrupted"]);
+  expect(screen.queryByText("Working…")).toBeNull();
+});
+
 test("a chat taken over in a terminal says so in place of Chat is off, takes no line, and Reattach to Chat reopens its run", async () => {
   vi.mocked(reattachChat).mockResolvedValue(undefined);
   open("c1");

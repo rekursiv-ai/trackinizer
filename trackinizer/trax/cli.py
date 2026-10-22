@@ -27,6 +27,7 @@ from trackinizer.trax.client_cache import (
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import env
 from trackinizer.trax.doctor import Doctor
+from trackinizer.trax.job import JOB_WORD, Job
 from trackinizer.trax.machines import MACHINE_WORD, Machines
 from trackinizer.trax.parser import parse_backfill_timestamp, parse_list_query
 from trackinizer.trax.profile import (
@@ -136,7 +137,7 @@ class Help(Command):
         notes=(
             (
                 "Commands: recent next blocked graph board cost profile doctor "
-                f"{ENV_WORD} {MACHINE_WORD}"
+                f"{ENV_WORD} {MACHINE_WORD} {JOB_WORD}"
             ),
             "Help: trax issue help; trax issue 7 priority help; trax profile url help",
         ),
@@ -190,6 +191,7 @@ DISPATCHERS: tuple[type[Command], ...] = (
     Help,
     Profiles,
     Variables,
+    Job,
     Machines,
 )
 

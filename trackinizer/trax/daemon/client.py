@@ -65,6 +65,12 @@ _VALUE_OPERATORS: Final[frozenset[str]] = frozenset({"to"})
 # execute in a daemon that owns neither.
 _LOCAL_ONLY_VERBS: Final[frozenset[str]] = frozenset({"run"})
 
+# ``job`` runs ssh with a throwaway key that lives in the caller's temp directory,
+# reads a secret's value from the caller's stdin and streams logs and files to the
+# caller, none of which a daemon shares. Judged in verb position only, so ``title to
+# job`` still delegates.
+_JOB_VERBS: Final[frozenset[str]] = frozenset({"job"})
+
 # The verbs after ``machine NAME`` that must run in the calling process.
 _MACHINE_HOST_VERBS: Final[frozenset[str]] = frozenset({"enroll", "connect"})
 
@@ -94,8 +100,8 @@ def should_delegate(argv: Sequence[str]) -> bool:
 
     Refuses the daemon's own serve flag, anything that SPAWNS a CLI on a PTY,
     any command whose value is the ``-`` stdin sentinel, ``machine NAME
-    enroll`` / ``machine NAME connect``, and ``export``, whose output outgrows
-    a frame. Each is judged by POSITION rather than
+    enroll`` / ``machine NAME connect``, ``job``, and ``export``, whose output
+    outgrows a frame. Each is judged by POSITION rather than
     by presence, so a row whose title happens to be "run" still gets the
     daemon. An invocation with both ``TRACKINIZER_TOKEN`` and
     ``TRACKINIZER_URL`` non-empty runs in this process: the key must not cross
@@ -117,7 +123,7 @@ def should_delegate(argv: Sequence[str]) -> bool:
         return False
     if _spawns_a_terminal(argv) or _hosts_a_machine(argv):
         return False
-    if _verb(argv) in _STREAMING_VERBS:
+    if _verb(argv) in _STREAMING_VERBS | _JOB_VERBS:
         return False
     return not any(
         token == _STDIN_SENTINEL and argv[index - 1].lower() in _VALUE_OPERATORS
