@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 from fastapi import HTTPException
 
 import pytest
 
-from trackinizer.server.api.replays import Replay
+from trackinizer.server.api.replays import Replay, Replays
+from trackinizer.server.execs import MayHaveRun
+from trackinizer.wire.wire_exec import ExecWait
 
 
 class _Operation:
@@ -162,6 +165,53 @@ async def test_default_retention_ends_at_fifteen_minutes() -> None:
         == []
     )
     assert operation.calls == 2
+
+
+async def _fills_at_the_rate_limit[T](
+    replay: Replay[T],
+    value: T,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Start one command a second for ten minutes, then let a second user in."""
+    now = [0.0]
+    monkeypatch.setattr(replay, "_clock", lambda: now[0])
+
+    async def kept() -> T:
+        return value
+
+    for second in range(600):
+        now[0] = float(second)
+        _ = await replay.run(("ada", second), fingerprint="exec", operation=kept)
+
+    assert await replay.run(("bob", 0), fingerprint="exec", operation=kept) == value
+
+
+@pytest.mark.asyncio
+async def test_exec_run_receipts_never_fill_for_a_user_at_the_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _fills_at_the_rate_limit(
+        Replays().exec_runs,
+        MayHaveRun(revoked=False),
+        monkeypatch,
+    )
+
+
+@pytest.mark.asyncio
+async def test_exec_wait_receipts_never_fill_for_a_user_at_the_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _fills_at_the_rate_limit(
+        Replays().exec_waits,
+        ExecWait(
+            command="ls",
+            cwd="~",
+            timeout_sec=5,
+            exec_id=uuid.UUID(int=1),
+            asker="ada@x.y",
+        ),
+        monkeypatch,
+    )
 
 
 if __name__ == "__main__":

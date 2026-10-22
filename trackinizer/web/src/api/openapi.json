@@ -695,6 +695,11 @@
       "AudienceName": {
         "type": "string"
       },
+      "Base64": {
+        "maxLength": 1398104,
+        "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+        "type": "string"
+      },
       "BatchEdge": {
         "description": "One edge in a :class:`SubmitBatch`.\n\nEach endpoint is named EITHER by batch item index (``from_index`` /\n``to_index``, 0-based into ``items``) for a row created in this batch,\nOR by an existing row's ``from_id`` / ``to_id`` UUID. Exactly one of\nindex/id must be set per endpoint. Index references are the only way to\nlink two brand-new rows -- inline-created targets have no id until the\nbatch commits. Annotations mirror :class:`CreateEdge`.",
         "properties": {
@@ -2799,6 +2804,104 @@
           "unresolved_questions"
         ],
         "title": "EvidenceTimelineResponse",
+        "type": "object"
+      },
+      "ExecRequest": {
+        "additionalProperties": false,
+        "description": "One command to run on a machine.",
+        "properties": {
+          "command": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "pattern": "^[^\\x00]+$",
+            "title": "Command",
+            "type": "string"
+          },
+          "cwd": {
+            "$ref": "#/components/schemas/RunFolder"
+          },
+          "env": {
+            "anyOf": [
+              {
+                "maxProperties": 64,
+                "patternProperties": {
+                  "^[A-Za-z_][A-Za-z0-9_]{0,127}$": {
+                    "maxLength": 8192,
+                    "pattern": "^[^\\x00]*$",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Env"
+          },
+          "stdin_b64": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Base64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timeout_sec": {
+            "maximum": 600.0,
+            "minimum": 1.0,
+            "title": "Timeout Sec",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command",
+          "cwd",
+          "timeout_sec"
+        ],
+        "title": "ExecRequest",
+        "type": "object"
+      },
+      "ExecResult": {
+        "additionalProperties": false,
+        "description": "What running a command produced.",
+        "properties": {
+          "cwd": {
+            "$ref": "#/components/schemas/RunFolder"
+          },
+          "duration_ms": {
+            "minimum": 0.0,
+            "title": "Duration Ms",
+            "type": "integer"
+          },
+          "exit_code": {
+            "maximum": 255.0,
+            "minimum": -255.0,
+            "title": "Exit Code",
+            "type": "integer"
+          },
+          "stderr_b64": {
+            "$ref": "#/components/schemas/Base64"
+          },
+          "stdout_b64": {
+            "$ref": "#/components/schemas/Base64"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "exit_code",
+          "stdout_b64",
+          "stderr_b64",
+          "cwd",
+          "truncated",
+          "duration_ms"
+        ],
+        "title": "ExecResult",
         "type": "object"
       },
       "FactValue": {
@@ -18850,6 +18953,73 @@
           }
         },
         "summary": "Put Machine Route"
+      }
+    },
+    "/api/machines/{name}/exec": {
+      "post": {
+        "description": "Run a command on the asker's machine and return what it produced.\n\nOnly the configured assistant calls this, naming an attested writer or admin\n``asker`` who owns the machine. The request is held until the machine's host\nreports, up to the command's ``timeout_sec`` and a short grace. A retry under the\nsame ``Idempotency-Key`` is told what the first try was, its result or its 504 or\n410 once the host was handed the command, and runs nothing twice. A command that\nwas refused, or that no host took, is run by the retry. The machine must be online,\nconfirmed by its owner, and report ``exec: true``.\n\nArgs:\n  name: The machine's name.\n  body: The command, its folder and timeout, and optionally stdin and variables.\n  request: Request carrying the database engine and the exec hub.\n  identity: The assistant's key.\n  asker: The person the assistant runs the command for.\n\nReturns:\n  result: The exit code, both streams, the folder the command ended in, whether\n    output was cut, and how long it ran.\n\nRaises:\n  HTTPException: 403 ``exec_forbidden`` for any caller but the assistant naming a\n    writer or admin, and on a server with authentication off; 404 for no such\n    machine of the asker; 409 ``exec_not_enabled`` for a machine that is offline,\n    unconfirmed or not opted in, ``exec_busy`` past 4 commands on one machine; 410\n    ``exec_machine_revoked`` when the machine was revoked meanwhile; 429\n    ``exec_limit`` past 60 commands a minute for the asker; 504 ``exec_lost`` when\n    the host did not take the command or did not report in time.",
+        "operationId": "exec_route_api_machines__name__exec_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asker",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asker"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Exec Route"
       }
     },
     "/api/machines/{name}/labels": {
