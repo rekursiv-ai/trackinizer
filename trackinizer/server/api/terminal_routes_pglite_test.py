@@ -716,6 +716,76 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
     assert {_code(each) for each in refused} == {"terminal_forbidden"}
 
 
+async def test_a_box_the_assistant_enrolls_for_a_person_opens_a_terminal_for_that_person_alone(
+    world: _World,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        app.state,
+        "config",
+        Config(
+            session_secret=_SESSION_KEY,
+            session_max_age_seconds=600,
+            assistant=Assistant(actor="kb", email="kb@x.y"),
+        ),
+        raising=False,
+    )
+    ada = await world.person("ada@x.y")
+    bob = await world.person("bob@x.y")
+    assistant = {
+        "Authorization": f"Bearer {await world.key(await world.person('kb@x.y'))}",
+    }
+    enrolled = await world.call(
+        "POST",
+        ENROLL_PATH,
+        headers=assistant,
+        body={"name": "box-1a2b3c4d", "asker": "ada@x.y"},
+    )
+    joined = await world.call(
+        "POST",
+        JOIN_PATH,
+        headers={},
+        body={
+            "name": "box-1a2b3c4d",
+            "token": from_plain(enrolled.json(), dict[str, str])["token"],
+            "instance": str(_INSTANCE),
+            "host_version": "t",
+            "facts": {"terminal": True},
+        },
+    )
+    world.machine_id = uuid.UUID(
+        from_plain(joined.json(), dict[str, str])["machine_id"],
+    )
+    world.credential = from_plain(joined.json(), dict[str, str])["credential"]
+    await world.wait()
+    listing = wire_terminals.TERMINAL_MACHINES_PATH
+    ada_sees = await world.call(
+        "GET",
+        listing,
+        headers=world.browser(world.cookie(ada)),
+    )
+    bob_sees = await world.call(
+        "GET",
+        listing,
+        headers=world.browser(world.cookie(bob)),
+    )
+    ada_opens = await world.open(world.cookie(ada), machine="box-1a2b3c4d")
+    bob_opens = await world.open(world.cookie(bob), machine="box-1a2b3c4d")
+
+    assert enrolled.status_code == 201, enrolled.text
+    assert from_plain(enrolled.json(), dict[str, str])["owner"] == "ada@x.y"
+    assert joined.status_code == 201, joined.text
+    assert [
+        (each["name"], each["terminal_ready"], each["confirmed"])
+        for each in from_plain(ada_sees.json(), dict[str, list[dict[str, object]]])[
+            "machines"
+        ]
+    ] == [("box-1a2b3c4d", True, True)]
+    assert from_plain(bob_sees.json(), dict[str, object])["machines"] == []
+    assert ada_opens.status_code == 201, ada_opens.text
+    assert bob_opens.status_code == 404
+
+
 async def test_the_assistant_opens_only_a_detached_run_on_its_askers_machine(
     world: _World,
     monkeypatch: pytest.MonkeyPatch,

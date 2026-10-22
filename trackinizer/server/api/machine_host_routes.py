@@ -20,13 +20,14 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from treekle import from_plain
 
-from trackinizer.server.api._deps import get_terminal_hub
+from trackinizer.server.api._deps import auth_is_disabled, get_terminal_hub
 from trackinizer.server.api._routes_shared import engine_of
 from trackinizer.server.api.machines_routes import (
     MachineName,
     absent_machine,
     refuse_reserved,
 )
+from trackinizer.server.api.session_access import resolve_asker
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.machine_auth import (
     MachineIdentity,
@@ -102,8 +103,12 @@ async def enroll_machine_route(
     that is new, which becomes theirs with the role ``personal`` and stays unconfirmed
     until they confirm it in the web app, or one that is already theirs.
 
+    The configured assistant may name an ``asker``, a writer or admin it answers. The
+    machine is then the asker's: personal, confirmed, and theirs to open a terminal on,
+    and the token joins only for them. The assistant owns nothing it enrolls.
+
     Args:
-      body: The machine's name.
+      body: The machine's name, and the asker when the assistant enrolls for one.
       request: Request carrying the database engine.
       response: Response, marked ``no-store`` because it carries a secret.
       identity: Writer principal, recorded as who enrolled the machine.
@@ -114,10 +119,13 @@ async def enroll_machine_route(
     Raises:
       ValidationError: The name is reserved.
       MachineOwnedError: An admin names a machine another person owns.
-      HTTPException: 403 when a writer names a machine that is not theirs.
+      HTTPException: 403 when a writer names a machine that is not theirs, or anyone
+        but the assistant names an asker, or the asker is no active writer.
 
     """
     refuse_reserved(body.name)
+    asker = await _asker_of(request, identity, asker=body.asker)
+    who = identity.email if asker is None else asker
     minted = mint_secret(ENROLLMENT_PREFIX)
     async with engine_of(request).acquire() as conn, tx(conn):
         # One statement registers the machine or, through the no-op update, locks its
@@ -126,25 +134,26 @@ async def enroll_machine_route(
         # inserted with a NULL machine, and the route answers 500. The lock also
         # serialises two enrollments of one machine, so the later one always
         # supersedes the earlier.
-        admin = identity.role == "admin"
+        admin = asker is None and identity.role == "admin"
         machine = await conn.fetchrow(
             "INSERT INTO machines (name, updated_by, owner, role, confirmed_at) "
             "VALUES ($1, $2, $2, $3, CASE WHEN $4 THEN now() END) "
             "ON CONFLICT (name) DO UPDATE SET "
-            "owner = CASE WHEN $4 THEN COALESCE(machines.owner, EXCLUDED.owner) "
+            "owner = CASE WHEN $4 AND $3 = '' "
+            "THEN COALESCE(machines.owner, EXCLUDED.owner) "
             "ELSE machines.owner END, "
             "confirmed_at = CASE WHEN $4 THEN COALESCE(machines.confirmed_at, now()) "
             "ELSE machines.confirmed_at END RETURNING id, owner",
             body.name,
-            identity.email,
+            who,
             "" if admin else PERSONAL_ROLE,
-            admin,
+            asker is not None or admin,
         )
         if machine is None:
             raise ValueError("Expected machine is not None.")
         machine_id = machine["id"]
         owner = from_plain(machine["owner"], str | None)
-        if owner != identity.email:
+        if owner != who:
             # Nobody adopts a name another person holds: the machine under it, and any
             # shell opened on it, stay that person's. Raised inside the transaction, so
             # nothing is kept.
@@ -170,14 +179,14 @@ async def enroll_machine_route(
             minted.id,
             machine_id,
             minted.digest,
-            identity.email,
+            who,
             ENROLL_TTL_SEC,
         )
     response.headers["Cache-Control"] = "no-store"
     return EnrollResponse(
         token=minted.token,
         expires_at=from_plain(expires_at, datetime),
-        owner=identity.email,
+        owner=who,
     )
 
 
@@ -400,6 +409,31 @@ async def revoke_machine_route(
         )
     await get_terminal_hub(request).close_machine(from_plain(machine_id, UUID))
     return Response(status_code=204)
+
+
+# The assistant is trusted to say whom it answers, as for a chat's settings, and the
+# server reads that person's role itself. Anyone else naming an asker is refused, not
+# ignored: a machine enrolled for the wrong person would be theirs to open a shell on.
+async def _asker_of(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    asker: str | None,
+) -> str | None:
+    """Return the account the assistant enrolls for, or ``None`` when it names none."""
+    if asker is None:
+        return None
+    if auth_is_disabled(request):
+        raise _no_asker()
+    found = await resolve_asker(request, identity, email=asker)
+    if found is None or found.role not in {"writer", "admin"}:
+        raise _no_asker()
+    return found.email
+
+
+def _no_asker() -> HTTPException:
+    """Return the one 403 of every asker that may not have a machine enrolled."""
+    return HTTPException(status_code=403, detail="asker not accepted")
 
 
 async def _token_is_usable(conn: Conn, *, parsed: ParsedSecret, name: str) -> bool:

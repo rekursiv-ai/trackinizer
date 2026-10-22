@@ -17,11 +17,13 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import executed_sql, set_field_row
+from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
 )
+from trackinizer.server.config import Assistant, Config
 from trackinizer.server.machine_auth import (
     MintedSecret,
     mint_secret,
@@ -121,6 +123,85 @@ def test_a_writer_enrolls_a_machine_that_is_new_as_their_own_personal_one(
     assert response.status_code == 201
     upsert = engine.conn.fetchrow.call_args
     assert upsert.args[1:] == ("laptop", TEST_USER_EMAIL, "personal", False)
+
+
+def _assistant(monkeypatch: pytest.MonkeyPatch, *, email: str) -> None:
+    monkeypatch.setattr(
+        app.state,
+        "config",
+        Config(
+            session_secret="s" * 32,
+            session_max_age_seconds=600,
+            assistant=Assistant(actor="kb", email=email),
+        ),
+        raising=False,
+    )
+
+
+def test_the_assistant_enrolls_a_machine_for_its_asker_as_their_confirmed_personal_one(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, engine = route_client
+    _assistant(monkeypatch, email=TEST_USER_EMAIL)
+    asker = {"email": "ada@x.y", "role": "writer", "hosted_domain": None}
+    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": "ada@x.y"})
+    engine.conn.fetchrow.side_effect = [asker, {"id": _MACHINE_ID, "owner": "ada@x.y"}]
+    engine.conn.fetchval.side_effect = [_BEAT]
+
+    response = client.post(
+        ENROLL_PATH,
+        json={"name": "box-1a2b3c4d", "asker": "ada@x.y"},
+    )
+
+    assert response.status_code == 201, response.text
+    assert from_plain(response.json(), dict[str, str])["owner"] == "ada@x.y"
+    upsert = engine.conn.fetchrow.call_args
+    assert upsert.args[1:] == ("box-1a2b3c4d", "ada@x.y", "personal", True)
+    assert engine.conn.fetchval.call_args.args[4] == "ada@x.y"
+
+
+@pytest.mark.parametrize(
+    "asker",
+    [
+        None,
+        {"email": "vic@x.y", "role": "viewer", "hosted_domain": None},
+    ],
+    ids=["unknown", "viewer"],
+)
+def test_an_asker_who_is_unknown_or_cannot_write_gets_no_machine(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+    asker: dict[str, object] | None,
+) -> None:
+    client, _, engine = route_client
+    _assistant(monkeypatch, email=TEST_USER_EMAIL)
+    engine.conn.fetchrow.side_effect = [asker]
+
+    response = client.post(
+        ENROLL_PATH,
+        json={"name": "box-1a2b3c4d", "asker": "vic@x.y"},
+    )
+
+    assert response.status_code == 403
+    engine.conn.fetchval.assert_not_called()
+    assert engine.conn.fetchrow.call_count == 1
+
+
+def test_an_asker_named_by_anyone_but_the_assistant_is_refused_unread(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, engine = route_client
+    _assistant(monkeypatch, email="kb@x.y")
+
+    response = client.post(
+        ENROLL_PATH,
+        json={"name": "box-1a2b3c4d", "asker": "ada@x.y"},
+    )
+
+    assert response.status_code == 403
+    _assert_untouched(engine)
 
 
 def test_a_writer_cannot_enroll_a_machine_that_belongs_to_someone_else(
