@@ -8,7 +8,7 @@ does not import it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, overload
+from typing import TYPE_CHECKING, Final, Literal, overload
 
 import json
 
@@ -23,6 +23,52 @@ if TYPE_CHECKING:
         WorkspaceMark,
         WorkspaceMessageContext,
     )
+
+
+# What the run's start note tells the CLI about moving the canvas, once. One line with
+# no double quote or backslash, so it is a TOML string as it stands, for codex's ``-c``.
+# The line after a compaction carries it again: the CLI may have lost the note.
+CANVAS_COMMANDS: Final = (
+    "Canvas: run these commands; describing them does nothing. "
+    "`trax workspace` acts on your station, $TRAX_WORKSPACE (a line's Trackinizer "
+    "context names it as workspace_id). RECORD_UUID is the record on screen "
+    "(page.record.id in that context) or any record's uuid. "
+    "Show a record: trax workspace navigate '#/lookup/RECORD_UUID'. "
+    "Show its graph: trax workspace show trax.subgraph --record RECORD_UUID "
+    "--placement side. "
+    "Show its timeline: trax workspace show trax.timeline --record RECORD_UUID. "
+    "Show an artifact: trax workspace show trax.artifact --record RECORD_UUID "
+    "--placement main. "
+    "Show its files and diffs: trax workspace show trax.files --record RECORD_UUID "
+    "(narrow: --param path=DIR/ or a glob, --param changed=true, --param file=NAME). "
+    "Open a terminal on your machine: trax workspace show trax.terminal "
+    "--param machine=NAME --param start=true. "
+    "Point at records: trax workspace highlight UUID[,UUID...] (highlight '' clears). "
+    "Go to a view: trax workspace navigate '#/list/Issue' (or '#/graph', "
+    "'#/activity', '#/console', '#/search/TEXT' with TEXT percent-encoded). "
+    "Hide your Chat window so they look at the page: trax workspace hide chat "
+    "(show chat brings it back). "
+    "Hide a visual: trax workspace hide INSTANCE_UUID (never the page)."
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Disclosure:
+    """What a person's line says beyond their words.
+
+    The default says everything but the canvas commands, which the run's start note
+    holds. A line reads as it would typed at the CLI: the run says more only when the
+    CLI could not know it (see ``InboundState.disclosure``).
+    """
+
+    sender: bool = True
+    """Whether the line names its sender, which the CLI tells speakers apart by."""
+
+    context: bool = True
+    """Whether the line carries the Trackinizer context: it is the first, or changed."""
+
+    canvas: bool = False
+    """Whether the line repeats :data:`CANVAS_COMMANDS`: the CLI may have lost them."""
 
 
 # A single PTY interleaves every room's messages into one input stream, so the agent
@@ -43,6 +89,11 @@ if TYPE_CHECKING:
 # Only a person's line carries the prefix. A slash command or a prompt's answer is
 # typed bare: with ``sender: `` before it, ``/compact`` reaches the model as a prompt
 # and never runs as a command.
+#
+# A Chat line reads as one typed at the CLI (see :class:`Disclosure`): the canvas commands
+# are in the run's start note, the context goes only when it changed, and the sender is
+# named only when it tells speakers apart. Marks ride with their line every time, after
+# the context, which readers of a transcript cut them off by.
 @overload
 def render_inbound(
     text: str,
@@ -52,6 +103,7 @@ def render_inbound(
     context: WorkspaceMessageContext | None = None,
     stream: bool = False,
     kind: Literal["line"] = "line",
+    disclosure: Disclosure | None = None,
 ) -> str: ...
 
 
@@ -64,6 +116,7 @@ def render_inbound(
     context: WorkspaceMessageContext | None = None,
     stream: bool = False,
     kind: InboundKind,
+    disclosure: Disclosure | None = None,
 ) -> str | bytes | None: ...
 
 
@@ -75,6 +128,7 @@ def render_inbound(
     context: WorkspaceMessageContext | None = None,
     stream: bool = False,
     kind: InboundKind = "line",
+    disclosure: Disclosure | None = None,
 ) -> str | bytes | None:
     """Decorate an inbound message with its routing context for injection.
 
@@ -86,6 +140,8 @@ def render_inbound(
       stream: Whether the receiver is an IO-stream child rather than a model CLI.
       kind: What the message is; see
         :data:`~trackinizer.wire.wire_sessions.InboundKind`.
+      disclosure: What of the context, the canvas commands and the sender the line
+        carries; see :class:`Disclosure`.
 
     Returns:
       rendered: Text to type and submit with Enter; raw keys to send as they are
@@ -109,44 +165,26 @@ def render_inbound(
     prefix = ""
     if scope := room or "":
         prefix += f"[{scope}] "
-    if sender := source or "":
-        prefix += f"{sender}: "
+    sender = ""
+    if named := source or "":
+        sender = f"{named}: "
     if context is not None and context.relay is not None:
         # Told to agents, not asked of this one: no canvas to move, nothing to run.
         return (
-            f"{prefix}[Console relay: told to these agents directly, not a question "
-            f"for you; do not contradict it] {context.relay.line()}"
+            f"{prefix}{sender}[Console relay: told to these agents directly, not a "
+            f"question for you; do not contradict it] {context.relay.line()}"
         )
-    rendered = f"{prefix}{text}"
+    shown = disclosure or Disclosure()
+    rendered = f"{prefix}{sender if shown.sender else ''}{text}"
     if context is not None:
-        rendered += (
-            f"\nTrackinizer context (verify with trax): {context.model_dump_json()}"
-        )
-        workspace = f"trax workspace {context.workspace_id}"
-        on_screen = None if context.page is None else context.page.record
-        record = on_screen.id if on_screen else "RECORD_UUID"
+        if shown.context:
+            rendered += (
+                f"\nTrackinizer context (verify with trax): {context.model_dump_json()}"
+            )
         if context.marks:
             rendered += _render_marks(context.marks)
-        rendered += (
-            "\nCanvas: run these commands; describing them does nothing."
-            f"\n  Show a record: {workspace} navigate '#/lookup/{record}'"
-            f"\n  Show its graph: {workspace} show trax.subgraph --record {record}"
-            " --placement side"
-            f"\n  Show its timeline: {workspace} show trax.timeline --record {record}"
-            f"\n  Show an artifact: {workspace} show trax.artifact --record {record}"
-            " --placement main"
-            f"\n  Show its files and diffs: {workspace} show trax.files --record {record}"
-            " (narrow: --param path=DIR/ or a glob, --param changed=true, --param file=NAME)"
-            f"\n  Open a terminal on your machine: {workspace} show trax.terminal"
-            " --param machine=NAME --param start=true"
-            f"\n  Point at records: {workspace} highlight UUID[,UUID...]"
-            " (highlight '' clears)"
-            f"\n  Go to a view: {workspace} navigate '#/list/Issue' (or '#/graph',"
-            " '#/activity', '#/console', '#/search/TEXT' with TEXT percent-encoded)"
-            f"\n  Hide your Chat window so they look at the page: {workspace} hide chat"
-            " (show chat brings it back)"
-            f"\n  Hide a visual: {workspace} hide INSTANCE_UUID (never the page)"
-        )
+        if shown.canvas:
+            rendered += f"\n{CANVAS_COMMANDS}"
     return rendered
 
 

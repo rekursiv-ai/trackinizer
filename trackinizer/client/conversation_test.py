@@ -9,7 +9,9 @@ from treekle import immutable
 import pytest
 
 from trackinizer.client.conversation import (
+    Delivery,
     Segment,
+    delivered_text,
     lines,
     neutral,
     placed,
@@ -604,6 +606,27 @@ def test_a_foreign_tool_result_is_quoted_to_a_bounded_length() -> None:
     assert turn is not None
     assert turn.endswith(f"\n[exec returned: {'x' * 1500}]")
     assert "x" * 1501 not in turn
+
+
+@pytest.mark.parametrize(
+    ("content", "room", "words"),
+    [
+        ("[lab] ada@x: hi", "lab", "hi"),
+        ("[lab] hi", "lab", "hi"),
+        ("ada@x: hi", "", "hi"),
+        ("hi", "", "hi"),
+        ("[lab] ada@x: hi\nTrackinizer context (verify with trax): {}", "lab", "hi"),
+        ("hi\nTrackinizer context (verify with trax): {}\nBoxes", "", "hi"),
+        ("ada@x: hi\nbye", "", "hi\nbye"),
+    ],
+)
+def test_delivered_text_is_the_words_with_or_without_a_sender_or_a_trailer(
+    content: str,
+    room: str,
+    words: str,
+) -> None:
+    """The sender is named only when it says something, so the prefix may lack it."""
+    assert delivered_text(content, Delivery(source="ada@x", room=room)) == words
 
 
 if __name__ == "__main__":

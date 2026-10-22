@@ -565,3 +565,22 @@ test("a question its agent marks secret is read as secret", () => {
   ] })));
   expect(lines[0]!.prompt!.questions).toEqual([{ id: "tok", question: "API token?", header: "Token", multiSelect: false, options: [], secret: true }]);
 });
+
+// The run names a sender only when it says something: the run's own person is typed bare while nobody else speaks.
+test("a delivered line shows its words with or without a room, a sender or a context trailer", () => {
+  const stamp = { source: "ada@example.com", room: "lab" };
+  const context = "\nTrackinizer context (verify with trax): {}";
+  const delivered = (idx: number, content: string, extra: { [field: string]: unknown }) =>
+    record(idx, "UserMessage", { content, extra: { $inbound: extra } });
+  const { lines } = readTranscript([{ part: 2, format: "sagent", records: [
+    delivered(0, "[lab] ada@example.com: one", stamp),
+    delivered(1, "[lab] two", stamp),
+    delivered(2, `[lab] three${context}`, stamp),
+    delivered(3, "four", { source: "ada@example.com", room: "" }),
+    delivered(4, `ada@example.com: five${context}`, { source: "ada@example.com", room: "" }),
+  ] }]);
+  expect(lines.map(({ author, text }) => [author, text])).toEqual([
+    ["ada@example.com", "one"], ["ada@example.com", "two"], ["ada@example.com", "three"],
+    ["ada@example.com", "four"], ["ada@example.com", "five"],
+  ]);
+});

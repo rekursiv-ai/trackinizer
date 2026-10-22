@@ -65,6 +65,7 @@ from treekle import PlainTree, from_plain, json_dumps, json_loads
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.agent.types.sessions import (
+    ContextCompaction,
     ContextState,
     SystemMessage,
     UserMessage,
@@ -103,7 +104,12 @@ from trackinizer.trax.run.headless import (
     StateReporter,
     TakenOverError,
 )
-from trackinizer.trax.run.inbound import render_inbound, settings_from_payload
+from trackinizer.trax.run.inbound import (
+    CANVAS_COMMANDS,
+    Disclosure,
+    render_inbound,
+    settings_from_payload,
+)
 from trackinizer.trax.run.placement import place_run, placement_env
 from trackinizer.trax.run.prompt_bridge import PromptBridge
 from trackinizer.trax.run.redact import Redactor, redactor_from_environ
@@ -129,6 +135,7 @@ from trackinizer.wire.wire_sessions import (
     RUN_ENDING_REFUSALS,
     InboundDrainItem,
     SessionRunState,
+    WorkspaceMessageContext,
     session_run_state_path,
 )
 
@@ -145,7 +152,9 @@ if TYPE_CHECKING:
     from trackinizer.trax.run.headless import HostState
     from trackinizer.trax.run.resume import prepare_resume
     from trackinizer.types.streams import TraxRecord
-    from trackinizer.wire.wire_sessions import InboundKind
+    from trackinizer.wire.wire_sessions import (
+        InboundKind,
+    )
 else:
     from wrapt import lazy_import
 
@@ -238,7 +247,8 @@ _CANVAS_NOTE: Final = (
     "`trax workspace --help` lists the rest. "
     "This conversation is already logged to trax as the chat's AgentSession; "
     "file each result to trax with the `trax` CLI as a row, with `--as` set to "
-    "$TRAX_ACTOR (`trax help` lists the grammar)."
+    "$TRAX_ACTOR (`trax help` lists the grammar). "
+    f"{CANVAS_COMMANDS}"
 )
 
 
@@ -617,6 +627,12 @@ class InboundState:
     stamped with who sent it (:meth:`stamp`). The sender comes from the route that
     delivered the line, never from its text: a person typing ``bob@x: hi`` at the
     terminal is not bob. Every record it is shown also feeds :attr:`goal`.
+
+    It keeps what it has told the CLI of the canvas and of who speaks, so a Chat line
+    reads as one typed at the CLI (:meth:`disclosure`): the context only when it
+    changed, the sender only when it says something. A compaction (:meth:`stamp`) may
+    have cost the CLI its start note and the last context, so the next line repeats
+    both.
     """
 
     marker: Path | None = None
@@ -642,18 +658,24 @@ class InboundState:
     goal: GoalWatch = field(default_factory=GoalWatch)
     """Whether the CLI follows a goal, as the records it writes say."""
 
+    noted: bool = True
+    """Whether the CLI's start note holds the canvas commands; if not, the first line
+    carries them."""
+
     _ready: threading.Event = field(default_factory=threading.Event, init=False)
     _deadline: float = field(default=0.0, init=False)
-    _typed: deque[tuple[str, Mapping[str, PlainTree]]] = field(
-        default_factory=lambda: deque[tuple[str, Mapping[str, PlainTree]]](
+    _typed: deque[tuple[str, Mapping[str, PlainTree], _Told]] = field(
+        default_factory=lambda: deque[tuple[str, Mapping[str, PlainTree], _Told]](
             maxlen=_TYPED_REMEMBERED,
         ),
         init=False,
     )
+    _told: _Told = field(init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     def __post_init__(self) -> None:
         self._deadline = self.clock() + self.fallback_sec
+        self._told = _Told(stale=not self.noted)
 
     def ready(self) -> bool:
         """Whether the CLI can take a typed line; once true, true for the run.
@@ -696,6 +718,41 @@ class InboundState:
                 return False
         return True
 
+    def disclosure(
+        self,
+        *,
+        source: str | None,
+        context: WorkspaceMessageContext | None,
+    ) -> Disclosure:
+        """Return what a Chat line from ``source`` has to say that the CLI lacks.
+
+        The context goes with the run's first line, then only when it changed since
+        the last line (or a compaction came); marks go with their line every time, and
+        with the context, which the readers of a transcript cut them off by. The
+        sender is dropped for the run's own person while nobody else has spoken, and
+        the canvas commands repeat only after a compaction.
+
+        Args:
+          source: The route-attested sender of the line.
+          context: The canvas the line was sent from.
+
+        Returns:
+          disclosure: What the line carries; the default for a line that is no
+            person's Chat line (no context, or a console relay).
+
+        """
+        if context is None or context.relay is not None:
+            return Disclosure()
+        with self._lock:
+            told = self._told
+        return Disclosure(
+            sender=told.names(source),
+            context=(
+                told.stale or bool(context.marks) or told.context != _unmarked(context)
+            ),
+            canvas=told.stale,
+        )
+
     def typed(
         self,
         text: str,
@@ -703,15 +760,33 @@ class InboundState:
         source: str | None,
         room: str | None,
         kind: InboundKind,
+        context: WorkspaceMessageContext | None = None,
     ) -> None:
-        """Remember a line about to be typed, with who sent it, for :meth:`stamp`."""
+        """Remember a line about to be typed, with who sent it, for :meth:`stamp`.
+
+        What the line told the CLI is remembered with it, for :meth:`disclosure`.
+
+        Args:
+          text: The line as typed.
+          source: The route-attested sender.
+          room: The room it was sent to.
+          kind: What the message is.
+          context: The canvas it was sent from, if a Chat line.
+
+        """
         with self._lock:
+            before = self._told
+            self._told = before.after(source=source, context=context)
             self._typed.append(
-                (_spaced(text), {"source": source, "room": room, "kind": kind}),
+                (
+                    _spaced(text),
+                    {"source": source, "room": room, "kind": kind},
+                    before,
+                ),
             )
 
     def withdraw(self, text: str) -> None:
-        """Forget the newest remembered line that reads ``text``.
+        """Forget the newest remembered line that reads ``text``, and what it told.
 
         Args:
           text: A line :meth:`typed` remembered that never reached the CLI.
@@ -721,6 +796,7 @@ class InboundState:
         with self._lock:
             for index in reversed(range(len(self._typed))):
                 if self._typed[index][0] == key:
+                    self._told = self._typed[index][2]
                     del self._typed[index]
                     return
 
@@ -743,6 +819,10 @@ class InboundState:
 
         """
         self.goal.observe(record)
+        if isinstance(record, ContextCompaction):
+            with self._lock:
+                self._told = replace(self._told, stale=True)
+            return record
         if isinstance(record, ContextState) and record.kind != "queued_command":
             return record
         if not isinstance(record, UserMessage | ContextState) or record.content is None:
@@ -750,14 +830,86 @@ class InboundState:
         key = _spaced(record.content)
         with self._lock:
             found = next(
-                (index for index, (text, _) in enumerate(self._typed) if text == key),
+                (
+                    index
+                    for index, (text, _, _) in enumerate(self._typed)
+                    if text == key
+                ),
                 None,
             )
             if found is None:
                 return record
-            _, sent = self._typed[found]
+            _, sent, _ = self._typed[found]
             del self._typed[found]
         return replace(record, extra={**record.extra, "$inbound": sent})
+
+
+# The one sender that is no one's voice: the server speaking for itself. It is named on
+# every line and neither is nor makes anyone "the other person".
+_TRAX_SENDER: Final = "trackinizer"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Told:
+    """What a run's Chat lines have told its CLI so far."""
+
+    context: WorkspaceMessageContext | None = None
+    """The context the last line carried, as the model, without the marks."""
+
+    owner: str | None = None
+    """The run's own person: whoever sent its first Chat line. The server attests the
+    sender but names no owner to the run, and a run starts from its owner's first line."""
+
+    others: bool = False
+    """Whether anyone but :attr:`owner` has sent a line."""
+
+    stale: bool = False
+    """Whether the CLI may have lost the start note and the last context."""
+
+    def names(self, source: str | None) -> bool:
+        """Whether a line from ``source`` must name its sender."""
+        return (
+            source in (None, _TRAX_SENDER)
+            or self.others
+            or source != (self.owner or source)
+        )
+
+    def after(
+        self,
+        *,
+        source: str | None,
+        context: WorkspaceMessageContext | None,
+    ) -> _Told:
+        """Return what the CLI has been told once a line from ``source`` is typed.
+
+        Args:
+          source: The route-attested sender of the line.
+          context: The canvas it was sent from, if a Chat line.
+
+        Returns:
+          told: This, or what is told once the line is in.
+
+        """
+        if context is not None and context.relay is not None:
+            return self
+        owner, others = self.owner, self.others
+        if source not in (None, _TRAX_SENDER):
+            if owner is None and context is not None:
+                owner = source
+            elif source != owner:
+                others = True
+        if context is None:
+            return replace(self, owner=owner, others=others)
+        return _Told(
+            context=_unmarked(context),
+            owner=owner,
+            others=others,
+        )
+
+
+def _unmarked(context: WorkspaceMessageContext) -> WorkspaceMessageContext:
+    """Return ``context`` without its marks, which go with their line alone."""
+    return context.model_copy(update={"marks": []})
 
 
 def run(config: RunConfig) -> int:
@@ -2057,7 +2209,11 @@ def _inbound_state(adapter: Adapter) -> InboundState:
         return InboundState(fallback_sec=0.0)
     if adapter.name == "claude":
         return InboundState(fallback_sec=_HOOK_READY_SEC)
-    return InboundState(by_record=True, fallback_sec=_RECORD_READY_SEC)
+    return InboundState(
+        by_record=True,
+        fallback_sec=_RECORD_READY_SEC,
+        noted=adapter.name == "codex",
+    )
 
 
 # A paste can come back with its whitespace changed -- line endings, a trailing newline
@@ -2686,6 +2842,7 @@ def _deliver_one(
         context=item.context,
         stream=stream,
         kind=item.kind,
+        disclosure=_disclosure(item, inbound=inbound),
     )
     if rendered is None:
         _logger.info("trax run: a %s message is not typed: %s", item.kind, item.payload)
@@ -2695,7 +2852,13 @@ def _deliver_one(
             relay.write(rendered)
             return
         if inbound is not None:
-            inbound.typed(rendered, source=item.source, room=item.room, kind=item.kind)
+            inbound.typed(
+                rendered,
+                source=item.source,
+                room=item.room,
+                kind=item.kind,
+                context=item.context,
+            )
         relay.submit(rendered)
     except Exception as error:
         if inbound is not None and isinstance(rendered, str):
@@ -2706,6 +2869,13 @@ def _deliver_one(
             "continuing with the rest of the batch",
             exc_info=True,
         )
+
+
+def _disclosure(item: InboundDrainItem, *, inbound: InboundState | None) -> Disclosure:
+    """Return what the line says of itself: all but the canvas commands, with no run."""
+    if inbound is None:
+        return Disclosure()
+    return inbound.disclosure(source=item.source, context=item.context)
 
 
 # A command is typed bare, never as a person's line: with a sender before it the CLI
@@ -2802,9 +2972,21 @@ def _deliver_headless_line(
     inbound: InboundState | None,
 ) -> None:
     """Send a person's line to the driver, remembering who sent it."""
-    rendered = render_inbound(item.text, item.source, item.room, context=item.context)
+    rendered = render_inbound(
+        item.text,
+        item.source,
+        item.room,
+        context=item.context,
+        disclosure=_disclosure(item, inbound=inbound),
+    )
     if inbound is not None:
-        inbound.typed(rendered, source=item.source, room=item.room, kind="line")
+        inbound.typed(
+            rendered,
+            source=item.source,
+            room=item.room,
+            kind="line",
+            context=item.context,
+        )
     try:
         run.send_line(rendered)
     except Exception:

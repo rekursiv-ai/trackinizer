@@ -469,12 +469,13 @@ def delivered_text(content: str, delivery: Delivery) -> str:
       delivery: The sender and room it was rendered with.
 
     Returns:
-      text: The message, without its ``[room] sender: `` prefix or context block.
+      text: The message, without its ``[room] `` and ``sender: `` prefixes (the sender
+        may be absent) or context block.
 
     """
     room = f"[{delivery.room}] " if delivery.room else ""
     sender = f"{delivery.source}: " if delivery.source else ""
-    return content.removeprefix(f"{room}{sender}").split(_TRAILER, 1)[0]
+    return content.removeprefix(room).removeprefix(sender).split(_TRAILER, 1)[0]
 
 
 # A record with no stamp takes the one before it in its own part, and a leading one takes

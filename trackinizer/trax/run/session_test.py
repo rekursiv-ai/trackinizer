@@ -50,6 +50,7 @@ from trackinizer.lib.agent.sessions import claude, codex
 from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
+    ContextCompaction,
     ContextState,
     FileEditResult,
     IncompleteRecord,
@@ -83,7 +84,7 @@ from trackinizer.trax.run.headless import (
     TakenOverError,
     Tui,
 )
-from trackinizer.trax.run.inbound import render_inbound
+from trackinizer.trax.run.inbound import CANVAS_COMMANDS, render_inbound
 from trackinizer.trax.run.prompt_bridge import PromptBridge
 from trackinizer.trax.run.session import (
     _CANVAS_NOTE,
@@ -123,6 +124,8 @@ from trackinizer.wire.wire_session_ir import (
     SlashCommandBody,
 )
 from trackinizer.wire.wire_sessions import (
+    ConsoleRelay,
+    ConsoleTarget,
     InboundDrainItem,
     SessionEnd,
     SessionEndResponse,
@@ -9423,6 +9426,250 @@ def _write_session_file(adapter: Adapter, session_id: str) -> None:
     if adapter.name == "codex":
         name = f"rollout-2026-10-21T00-00-00-{session_id}.jsonl"
     _ = (scope / name).write_text(_claude_line("before"))
+
+
+_STATION = uuid.UUID("c5286865-67b6-4bd8-ab51-e06e10c326c5")
+_TRAILER = "\nTrackinizer context (verify with trax): "
+
+
+def _on(route: str, *, marks: bool = False) -> WorkspaceMessageContext:
+    """Return the context of a line sent from ``route``, with a box when asked."""
+    return WorkspaceMessageContext.model_validate(
+        {
+            "workspace_id": _STATION,
+            "visible_visuals": [],
+            "page": {"route": route},
+            "marks": [{"id": uuid.uuid4(), "author": "ann@x"}] if marks else [],
+        },
+    )
+
+
+def _told(run: _FakeRun) -> list[str]:
+    """Return the lines the run was handed."""
+    return [text for _, text in run.told if isinstance(text, str)]
+
+
+class TestChatLinesReadLikeTheCli:
+    """A Chat line reads as one typed at the CLI; the run says more only when needed."""
+
+    def test_the_first_line_carries_the_context_and_no_canvas_commands(self) -> None:
+        run = _FakeRun()
+        context = _on("#/graph")
+
+        _deliver(
+            InboundDrainItem(text="hi", source="ann@x", context=context),
+            run,
+            inbound=InboundState(fallback_sec=0.0),
+        )
+
+        assert _told(run) == [f"hi{_TRAILER}{context.model_dump_json()}"]
+
+    def test_a_line_with_the_same_context_carries_none(self) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+
+        for text in ("one", "two"):
+            _deliver(
+                InboundDrainItem(text=text, source="ann@x", context=_on("#/graph")),
+                run,
+                inbound=inbound,
+            )
+
+        assert _told(run)[1] == "two"
+
+    def test_a_changed_page_brings_the_context_back(self) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+        moved = _on("#/activity")
+
+        for text, context in (("a", _on("#/graph")), ("b", moved), ("c", moved)):
+            _deliver(
+                InboundDrainItem(text=text, source="ann@x", context=context),
+                run,
+                inbound=inbound,
+            )
+
+        told = _told(run)
+        assert told[1] == f"b{_TRAILER}{moved.model_dump_json()}"
+        assert told[2] == "c"
+
+    def test_marks_come_with_their_line_every_time_after_the_context(self) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+
+        for text in ("a", "b"):
+            _deliver(
+                InboundDrainItem(
+                    text=text,
+                    source="ann@x",
+                    context=_on("#/graph", marks=True),
+                ),
+                run,
+                inbound=inbound,
+            )
+
+        told = _told(run)
+        assert told[1].startswith(f"b{_TRAILER}")
+        assert "\nBoxes drawn on the canvas since your last line" in told[1]
+        assert told[1].index(_TRAILER) < told[1].index("\nBoxes drawn")
+
+    def test_a_context_that_differs_by_its_marks_alone_has_not_changed(self) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+
+        for text, marks in (("a", True), ("b", False)):
+            _deliver(
+                InboundDrainItem(
+                    text=text,
+                    source="ann@x",
+                    context=_on("#/graph", marks=marks),
+                ),
+                run,
+                inbound=inbound,
+            )
+
+        assert _told(run)[1] == "b"
+
+    def test_the_owner_is_unnamed_until_another_person_posts(self) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+
+        for text, who in (("a", "ann@x"), ("b", "bob@x"), ("c", "ann@x")):
+            _deliver(
+                InboundDrainItem(
+                    text=text,
+                    source=who,
+                    room="lab",
+                    context=_on("#/graph"),
+                ),
+                run,
+                inbound=inbound,
+            )
+
+        assert [t.split(_TRAILER)[0] for t in _told(run)] == [
+            "[lab] a",
+            "[lab] bob@x: b",
+            "[lab] ann@x: c",
+        ]
+
+    def test_a_line_from_the_server_or_with_no_context_names_its_sender(self) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+
+        _deliver(InboundDrainItem(text="note", source="ann@x"), run, inbound=inbound)
+        _deliver(
+            InboundDrainItem(text="hi", source="ann@x", context=_on("#/graph")),
+            run,
+            inbound=inbound,
+        )
+
+        assert _told(run)[0] == "ann@x: note"
+        assert _told(run)[1].startswith("ann@x: hi")
+
+    def test_the_first_line_after_a_compaction_repeats_the_context_and_canvas(
+        self,
+    ) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+        context = _on("#/graph")
+        for text in ("a", "b"):
+            _deliver(
+                InboundDrainItem(text=text, source="ann@x", context=context),
+                run,
+                inbound=inbound,
+            )
+
+        _ = inbound.stamp(ContextCompaction())
+        for text in ("c", "d"):
+            _deliver(
+                InboundDrainItem(text=text, source="ann@x", context=context),
+                run,
+                inbound=inbound,
+            )
+
+        told = _told(run)
+        assert told[2] == (f"c{_TRAILER}{context.model_dump_json()}\n{CANVAS_COMMANDS}")
+        assert told[3] == "d"
+
+    def test_a_cli_with_no_start_note_is_given_the_canvas_commands_once(self) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0, noted=False)
+
+        for text in ("a", "b"):
+            _deliver(
+                InboundDrainItem(text=text, source="ann@x", context=_on("#/graph")),
+                run,
+                inbound=inbound,
+            )
+
+        told = _told(run)
+        assert told[0].endswith(f"\n{CANVAS_COMMANDS}")
+        assert told[1] == "b"
+
+    def test_a_line_that_never_reached_the_cli_does_not_count_as_told(self) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+        item = InboundDrainItem(text="a", source="ann@x", context=_on("#/graph"))
+        run.fail = RunEndedError("run ended")
+
+        _deliver(item, run, inbound=inbound)
+        run.fail = None
+        _deliver(item, run, inbound=inbound)
+
+        assert _told(run) == [f"a{_TRAILER}{_on('#/graph').model_dump_json()}"]
+
+    def test_a_console_relay_neither_tells_the_context_nor_counts_as_a_speaker(
+        self,
+    ) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+        relay = WorkspaceMessageContext(
+            workspace_id=_STATION,
+            visible_visuals=[],
+            relay=ConsoleRelay(
+                targets=[ConsoleTarget(actor="lead-2", room=None)],
+                text="go",
+            ),
+        )
+
+        _deliver(
+            InboundDrainItem(text="go", source="bob@x", context=relay),
+            run,
+            inbound=inbound,
+        )
+        _deliver(
+            InboundDrainItem(text="hi", source="ann@x", context=_on("#/graph")),
+            run,
+            inbound=inbound,
+        )
+
+        assert _told(run)[0].startswith("bob@x: [Console relay")
+        assert _told(run)[1].startswith(f"hi{_TRAILER}")
+
+    def test_the_line_typed_is_the_line_that_stamps_its_record(self) -> None:
+        run = _FakeRun()
+        inbound = InboundState(fallback_sec=0.0)
+        for text in ("a", "b"):
+            _deliver(
+                InboundDrainItem(
+                    text=text,
+                    source="ann@x",
+                    room="lab",
+                    context=_on("#/graph"),
+                ),
+                run,
+                inbound=inbound,
+            )
+
+        records = [inbound.stamp(UserMessage(content=told)) for told in _told(run)]
+        stamps = [
+            r.extra.get("$inbound") for r in records if isinstance(r, UserMessage)
+        ]
+
+        assert stamps == [{"source": "ann@x", "room": "lab", "kind": "line"}] * 2
+
+    def test_the_start_note_holds_the_canvas_commands(self) -> None:
+        assert CANVAS_COMMANDS in _CANVAS_NOTE
 
 
 if __name__ == "__main__":
