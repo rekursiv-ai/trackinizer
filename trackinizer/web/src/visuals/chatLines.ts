@@ -177,7 +177,8 @@ export type Transcript = {
 
 /**
  * The lines of a science chat, read from its session's records in the order they happened:
- * a person's line is an `AgentToAgentMessage` from its poster, or a `UserMessage` a CLI run
+ * a person's line is an `AgentToAgentMessage` from its poster, or a `UserMessage` (a line sent
+ * mid-turn is a `queued_command` `ContextState` instead) a CLI run
  * recorded for a person (see `personOf`); an answer is an `AssistantMessage` with words, named
  * by the agent its part's format says wrote it. A prompt a run asked is a line, which its
  * resolution record closes. A slash command a run typed is a `command` line, and the goal its
@@ -352,21 +353,25 @@ type Person = { readonly author: string | null; readonly text: string };
 
 /**
  * The person a record speaks for, or null when it is no person's line. An
- * `AgentToAgentMessage` is one from its sender. A `UserMessage` is one when a CLI run
+ * `AgentToAgentMessage` is one from its sender. A `UserMessage`, or a claude `queued_command`
+ * (a line sent mid-turn, which claude queues instead of recording as a user turn), is one when a CLI run
  * recorded it for a person: the bot delivered it, so `trax run` stamped `$inbound` with the
- * attested sender, or it carries an `author`. A CLI-written user turn carries neither. The
+ * attested sender, or (a `UserMessage` only) it carries an `author`. A CLI-written user turn and
+ * claude's own queued notices carry neither. The
  * sender is read from the stamp and never from the text, which anyone can type. This is
  * the loader's rule in `client/conversation.py`.
  */
 function personOf(kind: string, payload: Readonly<Record<string, unknown>>): Person | null {
   if (kind === "AgentToAgentMessage") return { author: text(payload.sender) || null, text: text(payload.content) };
-  if (kind !== "UserMessage") return null;
+  const queued = kind === "ContextState" && payload.kind === "queued_command";
+  if (kind !== "UserMessage" && !queued) return null;
   const extra = objectOf(payload.extra);
   const stamp = objectOf(extra.$inbound);
   if (Object.keys(stamp).length > 0) {
     const words = delivered(text(payload.content), stamp);
     return words ? { author: text(stamp.source) || null, text: words } : null;
   }
+  if (queued) return null;
   const author = text(extra.author);
   const words = text(payload.content);
   return author && words ? { author, text: words } : null;

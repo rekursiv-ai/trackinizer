@@ -50,6 +50,7 @@ from trackinizer.lib.agent.sessions import claude, codex
 from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
+    ContextState,
     FileEditResult,
     IncompleteRecord,
     SessionRecord,
@@ -5983,6 +5984,43 @@ class TestDeliveredLinesAreStamped:
         record = UserMessage(content="alice@x: poison")
 
         assert state.stamp(record) is record
+
+    def test_a_line_typed_mid_turn_is_stamped_on_the_queued_command_that_holds_it(
+        self,
+    ) -> None:
+        state = InboundState(fallback_sec=0.0)
+        state.typed("hello  there", source="alice@x", room="lab", kind="line")
+
+        stamped = state.stamp(
+            ContextState(kind="queued_command", content="hello there"),
+        )
+
+        assert isinstance(stamped, ContextState)
+        assert stamped.extra["$inbound"] == {
+            "source": "alice@x",
+            "room": "lab",
+            "kind": "line",
+        }
+
+    def test_a_queued_command_nobody_typed_is_left_alone(self) -> None:
+        state = InboundState(fallback_sec=0.0)
+        state.typed("hello", source="alice@x", room=None, kind="line")
+        notice = ContextState(kind="queued_command", content="<task-notification>")
+        other = ContextState(kind="goal_status", content="hello")
+
+        assert state.stamp(notice) is notice
+        assert state.stamp(other) is other
+
+    def test_a_typed_line_is_consumed_by_the_first_record_that_reads_it(self) -> None:
+        state = InboundState(fallback_sec=0.0)
+        state.typed("hello", source="alice@x", room=None, kind="line")
+
+        queued = state.stamp(ContextState(kind="queued_command", content="hello"))
+        again = UserMessage(content="hello")
+
+        assert isinstance(queued, ContextState)
+        assert "$inbound" in queued.extra
+        assert state.stamp(again) is again
 
     def test_a_record_that_is_not_a_users_line_is_left_alone(self) -> None:
         state = InboundState(fallback_sec=0.0)

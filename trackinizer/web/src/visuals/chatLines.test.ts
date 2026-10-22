@@ -219,6 +219,26 @@ test("a question keeps its options, and is answered under its header, or its que
   ]);
 });
 
+// A line sent while claude is mid-turn is queued: claude logs it as a `queued_command` ContextState, not a UserMessage.
+// trax run stamps the one it typed; claude's own queued notices (task notifications) carry no stamp.
+test("a stamped queued_command is the person's line and clears a pending post; an unstamped one is no line", () => {
+  const me = { me: "ada@example.com" };
+  const first = record(0, "UserMessage", { content: "go", extra: { author: "ada@example.com" } });
+  const queued = record(1, "ContextState", { kind: "queued_command", content: "[lab] ada@example.com: also check CI\nTrackinizer context (verify with trax): cwd /work",
+    extra: { $inbound: { source: "ada@example.com", room: "lab" } } });
+  const notice = record(2, "ContextState", { kind: "queued_command", content: "<task-notification>done</task-notification>", extra: {} });
+  const sent = [{ key: "k", text: "also check CI", conversationId: "c", baseline: 1 }];
+  const before = readTranscript([{ part: 0, format: "claude", records: [first, notice] }]);
+  const after = readTranscript([{ part: 0, format: "claude", records: [first, queued, notice] }]);
+  expect(after.lines.map(({ role, author, text }) => [role, author, text])).toEqual([
+    ["user", "ada@example.com", "go"], ["user", "ada@example.com", "also check CI"],
+  ]);
+  expect(sentBefore(before.lines, me)).toBe(1);
+  expect(sentBefore(after.lines, me)).toBe(2);
+  expect(withPending(before, sent, me).filter((line) => line.pending)).toHaveLength(1);
+  expect(withPending(after, sent, me).filter((line) => line.pending)).toHaveLength(0);
+});
+
 // A record stamped by its CLI or trax run, and the goal, command and reply records they write.
 const ME = "ada@example.com";
 const stamped = (at: SessionRecord, timestamp: string): SessionRecord => ({ ...at, timestamp }) as SessionRecord;

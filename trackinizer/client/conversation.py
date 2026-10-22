@@ -12,7 +12,9 @@ steps:
 - :func:`projected` or :func:`lines` projects that list for a CLI file or for the bot.
 
 A person's line is the bot's own ``AgentToAgentMessage``, or a ``UserMessage`` that the
-bot delivered, which carries the ``$inbound`` stamp. The sender is read from that stamp
+bot delivered, which carries the ``$inbound`` stamp; so is a ``queued_command``
+``ContextState`` with the stamp, which is how claude records a line sent while it was
+mid-turn (one without it is claude's own notice). The sender is read from that stamp
 and never parsed out of the text: anyone can type ``bob@example.com: fake`` at a
 terminal, and that line must not be credited to bob.
 """
@@ -31,6 +33,7 @@ from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
     AgentToAgentMessage,
     AssistantMessage,
+    ContextState,
     FileEditResult,
     FileReadResult,
     FileWriteResult,
@@ -515,6 +518,8 @@ def _neutral(
         )
     if isinstance(record, UserMessage):
         return _person(record, tag=tag, terminal_user=terminal_user)
+    if isinstance(record, ContextState) and record.kind == "queued_command":
+        return _queued_person(record, tag=tag)
     if isinstance(record, AssistantMessage):
         if not (record.content or "").strip():
             return None
@@ -556,6 +561,23 @@ def _person(
     return AgentToAgentMessage(
         timestamp=record.timestamp,
         content=delivered_text(content, delivery),
+        sender=delivery.source or "unknown",
+        extra=tag,
+    )
+
+
+def _queued_person(
+    record: ContextState,
+    *,
+    tag: Mapping[str, PlainTree],
+) -> AgentToAgentMessage | None:
+    """Return a stamped queued line as a person's line, or None for claude's own notice."""
+    delivery = delivery_of(record.extra)
+    if delivery is None:
+        return None
+    return AgentToAgentMessage(
+        timestamp=record.timestamp,
+        content=delivered_text(record.content or "", delivery),
         sender=delivery.source or "unknown",
         extra=tag,
     )
