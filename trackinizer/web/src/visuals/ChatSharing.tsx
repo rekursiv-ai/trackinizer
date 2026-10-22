@@ -1,9 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useEffect, useRef, useState } from "react";
+import { ApiError } from "../api/client";
 import { chatRefusalMessage } from "../api/chatRefusals";
 import { type ChatHead, deleteChat, shareChat, unshareChat } from "../api/chats";
 import { newUuid } from "../api/idempotency";
-import { setSessionAudience } from "../api/sessions";
+import { endSession, setSessionAudience } from "../api/sessions";
 import { formatRoute } from "../router/route";
 import { useCopy, useToast } from "../ui/toast";
 import "../stations/stations.css";
@@ -175,6 +176,52 @@ export function DeleteChat({ head, onDeleted, disabled = "" }: { readonly head: 
         <div className="station-actions">
           <button className="btn ghost" type="button" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
           <button className="btn danger" type="button" disabled={busy} onClick={() => void remove()}>Delete chat</button>
+        </div>
+      </div>}
+    </div>
+  );
+}
+
+/**
+ * Chat's Close control, behind a confirm: it ends the chat's session, which stops the
+ * run draining it, then `onClose` takes the chat off the bar. The chat's records stay;
+ * Search all chats finds it. A session that had ended already is as closed as one just
+ * ended. `bar` draws it as the button of the strip above the box, not a menu item.
+ */
+export function CloseChat({ head, onClose, bar = false }: { readonly head: ChatHead; readonly onClose: () => Promise<void>; readonly bar?: boolean }) {
+  const toast = useToast();
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useCloseOutside(confirming, root, setConfirming);
+
+  async function close() {
+    setBusy(true);
+    try {
+      try {
+        await endSession(head.session_id);
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 409)) throw error;
+      }
+      setConfirming(false);
+      await onClose();
+    } catch (error) {
+      toast(chatRefusalMessage(error, "Could not close this chat."), { failed: true, error });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="station chat-head-pop" ref={root}>
+      <button className={bar ? "btn ghost" : "chat-menu-item"} type="button" aria-haspopup="dialog" aria-expanded={confirming}
+        title="Stop this chat's run and take it off the bar" onClick={() => setConfirming(!confirming)}>Close chat</button>
+      {confirming && <div className="station-menu" role="alertdialog" aria-label="Close chat"
+        onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setConfirming(false); } }}>
+        <p className="chat-note">Close this chat? Its run stops and it leaves the chat bar. Search all chats finds it again.</p>
+        <div className="station-actions">
+          <button className="btn ghost" type="button" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
+          <button className="btn" type="button" disabled={busy} onClick={() => void close()}>Close</button>
         </div>
       </div>}
     </div>

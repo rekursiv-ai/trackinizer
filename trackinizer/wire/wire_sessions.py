@@ -69,6 +69,7 @@ __all__ = [
     "SEND_MESSAGE_PATH",
     "SESSION_API_PATHS",
     "SESSION_AUDIENCE_PATH",
+    "SESSION_ENDED",
     "SESSION_END_PATH",
     "SESSION_INBOUND_PATH",
     "SESSION_PARTS_PATH",
@@ -862,8 +863,11 @@ CLI_REQUIRED: Final = "cli_required"
 """The chat is answered by a CLI and the drain named none, as a ``trax`` older than the
 name does: the server cannot tell which CLI polls, so it takes no lease."""
 
+SESSION_ENDED: Final = "session_ended"
+"""The chat's session ended, as when the person closed the chat, and its run still polls."""
+
 RUN_ENDING_REFUSALS: Final = frozenset(
-    {PROVIDER_IS_ASSISTANT, PROVIDER_IS_OTHER_CLI, CHAT_RUN_LIVE},
+    {PROVIDER_IS_ASSISTANT, PROVIDER_IS_OTHER_CLI, CHAT_RUN_LIVE, SESSION_ENDED},
 )
 """The refusals after which no drain of that run can succeed, so ``trax run`` stops
 the run it is polling for, instead of retrying a drain the chat will keep refusing."""

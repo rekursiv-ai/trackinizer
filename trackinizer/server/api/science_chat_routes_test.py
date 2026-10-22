@@ -1428,6 +1428,68 @@ async def test_a_post_to_a_cli_station_with_no_run_is_refused_as_offline(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_a_line_into_a_closed_cli_chat_is_refused_as_offline(
+    pglite_route_client: _Client,
+) -> None:
+    """Closing ends the run's session; the chat takes no line until a machine is picked."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    workspace_id = await _canvas(client)
+    conversation = await _on_cli(store, workspace_id=workspace_id)
+    run = await seed_session(
+        store,
+        USER_AGENT,
+        actor=f"chat-{conversation.hex[:12]}",
+        cli="claude",
+        cli_session_id=chat_session_id(conversation),
+        labels=[SCIENCE_CHAT_LABEL],
+        drained_by="claude",
+    )
+    assert (
+        await _post(client, workspace_id=workspace_id, text="open", kind="line")
+    ).status_code == 200
+    act_as_user_agent("writer")
+    closed = await client.post(f"/api/sessions/{run}/end", json={"actor": "scientist"})
+    assert closed.status_code == 200, closed.text
+
+    refused = await _post(client, workspace_id=workspace_id, text="still?", kind="line")
+
+    assert refused.status_code == 409
+    detail = from_plain(
+        json_loads(refused.content, dict[str, object])["detail"],
+        dict[str, object],
+    )
+    assert detail["code"] == "provider_offline"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_line_into_a_closed_assistant_chat_goes_to_the_assistants_service_session(
+    pglite_route_client: _Client,
+) -> None:
+    """The assistant resumes a conversation from its service session, so a new line reopens it."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    kb = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
+    workspace_id = await _canvas(client)
+    browser()
+    conversation = conversation_of(
+        await send_chat(client, workspace_id=workspace_id, text="hello"),
+    )
+    chat = await seed_science_chat(store, conversation_id=conversation)
+    act_as_assistant()
+    closed = await client.post(f"/api/sessions/{chat}/end", json={"actor": "scientist"})
+    assert closed.status_code == 200, closed.text
+
+    said = await _post(client, workspace_id=workspace_id, text="back", kind="line")
+
+    assert said.status_code == 200, said.text
+    assert ChatSent.model_validate_json(said.content).session_id != chat
+    assert [m["text"] for m in await _drained(client, session_id=kb)][-1:] == ["back"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_the_assistant_takes_a_persons_line_or_an_answer_and_nothing_else(
     pglite_route_client: _Client,
 ) -> None:

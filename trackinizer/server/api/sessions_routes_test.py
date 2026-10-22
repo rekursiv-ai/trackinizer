@@ -75,7 +75,10 @@ from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_science_chat import chat_session_id
 from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
-from trackinizer.wire.wire_sessions import WorkspaceMessageContext
+from trackinizer.wire.wire_sessions import (
+    RUN_ENDING_REFUSALS,
+    WorkspaceMessageContext,
+)
 
 
 if TYPE_CHECKING:
@@ -2490,6 +2493,49 @@ async def test_a_replaced_run_is_turned_away_and_its_successor_is_not(
     held = inbound.poller_run(chat)
     assert held is not None
     assert held.instance == new
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_run_draining_a_chat_that_was_closed_is_told_the_session_ended(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Closing a chat ends its session; the run still polling it is turned away for good."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
+
+    ended = await client.post(f"/api/sessions/{chat}/end", json={"actor": "scientist"})
+    assert ended.status_code == 200, ended.text
+    turned_away = await drain(client, session_id=chat, cli="claude")
+
+    assert (turned_away.status_code, _code(turned_away)) == (409, "session_ended")
+    assert "session_ended" in RUN_ENDING_REFUSALS
+    assert not cast("InboundQueue", app.state.inbound).has_poller(chat)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_chat_run_closed_for_silence_is_revived_by_its_drain_not_turned_away(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Only a session its own end or a close ended is refused; the reaper's close is undone."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    inbound = cast("InboundQueue", app.state.inbound)
+    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
+    assert await _reap(store, inbound=inbound, after=_WINDOW) == 1
+
+    back = await drain(client, session_id=chat, cli="claude")
+
+    assert back.status_code == 200, back.text
+    assert (await _session(store, session_id=chat)).ended is None
 
 
 async def _open_asks(store: Store, session_id: uuid.UUID) -> list[str]:
