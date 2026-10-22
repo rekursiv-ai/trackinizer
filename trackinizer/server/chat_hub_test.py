@@ -158,13 +158,13 @@ async def test_the_stream_carries_no_chat_frames_of_its_own() -> None:
 
 
 @pytest.mark.asyncio
-async def test_idle_stream_sends_keepalive_comments() -> None:
-    """A quiet stream says so, so a proxy never sees a long silence."""
+async def test_idle_stream_sends_ping_events() -> None:
+    """A quiet stream pings, so a proxy never sees a long silence and the page can tell a dead stream."""
     hub = ChatHub()
     events = _events(hub, canvas=_Canvas(), keepalive_sec=0.01)
     assert await anext(events) == b": open\n\n"
     await anext(events)
-    assert await anext(events) == b": keepalive\n\n"
+    assert await anext(events) == b"event: ping\ndata: {}\n\n"
     await events.aclose()
 
 
@@ -178,7 +178,7 @@ async def test_the_stream_ends_at_a_keepalive_once_the_owner_is_no_longer_active
     events = _events(hub, canvas=canvas, keepalive_sec=0.01)
     await anext(events)
     await anext(events)
-    assert await anext(events) == b": keepalive\n\n"
+    assert await anext(events) == b"event: ping\ndata: {}\n\n"
     canvas.is_active = False
     chunks = [chunk async for chunk in events]
     assert chunks == []
@@ -194,12 +194,12 @@ async def test_keepalive_rechecks_the_partner_and_sends_the_canvas_when_it_chang
     events = _events(hub, canvas=canvas, keepalive_sec=0.01)
     await anext(events)
     await anext(events)
-    assert await anext(events) == b": keepalive\n\n"
-    assert await anext(events) == b": keepalive\n\n"
+    assert await anext(events) == b"event: ping\ndata: {}\n\n"
+    assert await anext(events) == b"event: ping\ndata: {}\n\n"
     assert canvas.reads >= 2
     canvas.partner = _partner("unavailable")
     chunk = await anext(events)
-    while chunk == b": keepalive\n\n":
+    while chunk == b"event: ping\ndata: {}\n\n":
         chunk = await anext(events)
     changed = _frame(chunk, _WorkspaceFrame)
     assert changed["type"] == "workspace"

@@ -69,6 +69,7 @@ from trackinizer.server.chat_hub import (
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.notify import SSE_PING
 from trackinizer.server.primitives import insert_inquiry
 from trackinizer.server.store.core import Store
 from trackinizer.server.terminals import Opening
@@ -2051,10 +2052,10 @@ async def test_the_events_stream_ends_when_its_owner_is_disabled(
             TEST_USER_ID,
         )
     rest = [chunk async for chunk in stream]
-    assert all(
-        (chunk if isinstance(chunk, str) else bytes(chunk).decode()).startswith(":")
-        for chunk in rest
-    )
+    texts = [
+        chunk if isinstance(chunk, str) else bytes(chunk).decode() for chunk in rest
+    ]
+    assert all(text.startswith(":") or text == SSE_PING.decode() for text in texts)
 
 
 @pytest.mark.db_pglite

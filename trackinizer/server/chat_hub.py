@@ -23,6 +23,7 @@ import time
 
 from pydantic import BaseModel, Field
 
+from trackinizer.server.notify import SSE_PING
 from trackinizer.server.preferences import Preferences
 from trackinizer.server.visuals.workspaces import WorkspaceState
 
@@ -221,7 +222,7 @@ async def iter_workspace_events(
     after subscribing so no change falls between the read and the first frame. The
     canvas is read again, and sent when its partner differs, whenever the broker
     is nudged and every ``keepalive_sec``, even while frames arrive. An idle
-    interval also gets a comment. Inquiry ids from ``changes`` pass through as
+    interval also gets a ``ping`` event, which the page watches for. Inquiry ids from ``changes`` pass through as
     ``changed`` frames. The
     stream ends when the subscriber falls too far behind, or when its owner is no
     longer active; it reconnects only in the first case.
@@ -233,7 +234,7 @@ async def iter_workspace_events(
       is_active: Whether the canvas's owner may still use the app; asked on each
         interval, even while frames arrive, and the stream ends when it says no.
       changes: Ids of changed inquiries, or None to relay none.
-      keepalive_sec: Longest silence before a comment; must stay well under the
+      keepalive_sec: Longest silence before a ping; must stay well under the
         edge's 125 s idle cutoff.
 
     Yields:
@@ -258,7 +259,7 @@ async def iter_workspace_events(
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if not done:
-                    yield b": keepalive\n\n"
+                    yield SSE_PING
                 recheck = not done or time.monotonic() >= deadline
                 if recheck:
                     if not await is_active():

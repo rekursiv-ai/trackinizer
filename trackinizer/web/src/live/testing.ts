@@ -20,6 +20,7 @@ export class FakeEventSource implements EventSourceLike {
   onopen: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
+  readonly #pings = new Set<() => void>();
 
   constructor(url: string) {
     this.url = url;
@@ -47,6 +48,15 @@ export class FakeEventSource implements EventSourceLike {
   /** One frame, as the server writes it: `{"id": …}` unless `data` says otherwise. */
   send(id: string, data = JSON.stringify({ id })): void {
     this.onmessage?.(new MessageEvent("message", { data }));
+  }
+
+  addEventListener(_type: "ping", listener: () => void): void {
+    this.#pings.add(listener);
+  }
+
+  /** The server's keep-alive event, `event: ping`. */
+  ping(): void {
+    for (const listener of this.#pings) listener();
   }
 
   /** The connection dropped, and the browser will reconnect by itself. */

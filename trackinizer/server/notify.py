@@ -42,6 +42,7 @@ _DEAD_CONN_ERRORS = (
 __all__ = [
     "NOTIFICATION_BUFFER",
     "NOTIFY_CHANNEL",
+    "SSE_PING",
     "Hears",
     "Notification",
     "changed_id",
@@ -54,6 +55,9 @@ __all__ = [
 
 NOTIFY_CHANNEL: Final = "trackinizer"
 """Postgres ``LISTEN/NOTIFY`` channel for post-commit inquiry change fan-out."""
+
+SSE_PING: Final = b"event: ping\ndata: {}\n\n"
+"""The keep-alive: a named event, because ``EventSource`` never shows the page a comment."""
 
 type Hears = Callable[[UUID, str], Awaitable[bool]]
 """Whether a live stream's viewer hears of a write to a session's transcript, given
@@ -168,8 +172,10 @@ async def iter_sse_events(
     relayed only when ``hears`` says the viewer hears of it: a live stream would
     otherwise tell every viewer when a session they may not read is being written.
 
-    The stream opens with an SSE comment and sends another after every
-    ``keepalive_sec`` without a frame; ``EventSource`` ignores comment lines.
+    The stream opens with an SSE comment and sends a ``ping`` event after every
+    ``keepalive_sec`` without a frame. ``EventSource`` never shows a comment to
+    the page, so the page hears the event and treats a stream silent for 2.5
+    times ``keepalive_sec`` as dead; an older page ignores it.
     A proxy in front of production holds the response headers until the first
     body byte, and the Cloudflare edge answers 524 after 125 s without one and
     cuts a stream idle for 125 s, so a quiet stream never opened in the browser.
@@ -181,11 +187,11 @@ async def iter_sse_events(
     Args:
       engine: Database connection to listen on.
       hears: Whether the viewer hears of a write to a transcript.
-      keepalive_sec: Longest silence before a keep-alive comment; must stay
+      keepalive_sec: Longest silence before a ping; must stay
         well under the edge's 125 s idle cutoff.
 
     Yields:
-      item: SSE-formatted frames (bytes with id and newline) and comments.
+      item: SSE-formatted frames (bytes with id and newline), comments and pings.
 
     """
     payloads = engine.listen(NOTIFY_CHANNEL)
@@ -203,7 +209,7 @@ async def iter_sse_events(
         while True:
             done, _ = await asyncio.wait({pending}, timeout=keepalive_sec)
             if not done:
-                yield b": keepalive\n\n"
+                yield SSE_PING
                 continue
             try:
                 payload = pending.result()

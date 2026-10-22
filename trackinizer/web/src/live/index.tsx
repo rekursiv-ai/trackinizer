@@ -48,12 +48,15 @@ export function LiveProvider({ canvas = false, children }: { canvas?: boolean; c
     else close = attachStream(hub);
     const onVisibility = () => (document.hidden ? hub.hide() : hub.show());
     const onInput = () => hub.input();
+    const onOnline = () => hub.online();
     onVisibility();
     document.addEventListener("visibilitychange", onVisibility);
+    addEventListener("online", onOnline);
     for (const type of INPUT_EVENTS) addEventListener(type, onInput, { capture: true, passive: true });
     return () => {
       close();
       document.removeEventListener("visibilitychange", onVisibility);
+      removeEventListener("online", onOnline);
       for (const type of INPUT_EVENTS) removeEventListener(type, onInput, { capture: true });
       hub.stop();
     };

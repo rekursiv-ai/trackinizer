@@ -19,8 +19,9 @@ export type Registration = {
  * holds. No query skips an id because another holds it: a row one view shows
  * can still newly match another.
  *
- * Gap recovery: the stream has no resume, so when it opens after a drop, and
- * when a tab hidden for more than 30 s comes back, every query catches up on
+ * Gap recovery: the stream has no resume, so when it opens after a drop (a stream
+ * that goes silent is dropped and reopened), when the browser comes back online,
+ * and when a tab hidden for more than 30 s comes back, every query catches up on
  * what the gap may have missed. On the first open only the queries whose reads
  * started before it catch up: the server listens before it says open, so a read
  * started after that misses nothing. A query that registers later, holding a
@@ -136,6 +137,14 @@ export class LiveHub implements StreamListener {
     this.#gapWaiting = false;
     this.#deliver(this.#batcher.release(), gap);
     for (const serial of this.#serials.keys()) serial.resume();
+  }
+
+  /**
+   * The browser came back online: the stream may have died while it was off, so
+   * every query catches up. A hidden tab waits for its return.
+   */
+  online(): void {
+    this.#recover([...this.#serials.keys()]);
   }
 
   /** The user did something: a key, a click, a scroll. */
