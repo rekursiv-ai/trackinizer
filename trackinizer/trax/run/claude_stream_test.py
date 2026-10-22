@@ -465,6 +465,95 @@ def test_a_question_is_answered_in_updated_input() -> None:
     assert reply.resolved.decision == "answered"
 
 
+def test_an_answer_keyed_by_header_is_keyed_by_question_text() -> None:
+    wire = ClaudeWire(cwd=_CWD)
+    _ = _bash(wire, tool="AskUserQuestion", input={"questions": _QUESTIONS})
+    reply = wire.answer(
+        Answer(
+            ask_id="r1",
+            option="allow_once",
+            updated_input={"answers": {"Color": "Blue"}},
+        ),
+    )
+    assert reply is not None
+    assert reply.frame == _response(
+        "r1",
+        behavior="allow",
+        updatedInput={
+            "questions": _QUESTIONS,
+            "answers": {"Do you prefer red or blue?": "Blue"},
+        },
+    )
+
+
+def test_a_free_text_answer_survives_the_rekeying() -> None:
+    wire = ClaudeWire(cwd=_CWD)
+    _ = _bash(wire, tool="AskUserQuestion", input={"questions": _QUESTIONS})
+    words = "discuss, do you find previous best practice on this?"
+    reply = wire.answer(
+        Answer(
+            ask_id="r1",
+            option="allow_once",
+            updated_input={"answers": {"Color": words}},
+        ),
+    )
+    assert reply is not None
+    assert reply.frame == _response(
+        "r1",
+        behavior="allow",
+        updatedInput={
+            "questions": _QUESTIONS,
+            "answers": {"Do you prefer red or blue?": words},
+        },
+    )
+
+
+def test_every_question_of_an_ask_is_keyed_by_its_text() -> None:
+    wire = ClaudeWire(cwd=_CWD)
+    questions: list[PlainTree] = [
+        {"question": "Which color?", "header": "Color", "options": []},
+        {"question": "Which size?", "header": "Size", "id": "size_id", "options": []},
+        {"question": "Which shape?", "header": "Shape", "options": []},
+    ]
+    _ = _bash(wire, tool="AskUserQuestion", input={"questions": questions})
+    reply = wire.answer(
+        Answer(
+            ask_id="r1",
+            option="allow_once",
+            updated_input={
+                "answers": {"Color": "Red", "size_id": "Big", "Which shape?": "Round"},
+            },
+        ),
+    )
+    assert reply is not None
+    assert reply.frame == _response(
+        "r1",
+        behavior="allow",
+        updatedInput={
+            "questions": questions,
+            "answers": {
+                "Which color?": "Red",
+                "Which size?": "Big",
+                "Which shape?": "Round",
+            },
+        },
+    )
+
+
+def test_an_answer_naming_no_question_is_refused() -> None:
+    wire = ClaudeWire(cwd=_CWD)
+    _ = _bash(wire, tool="AskUserQuestion", input={"questions": _QUESTIONS})
+    with pytest.raises(ValueError, match=r"^the ask has no question named 'Size'$"):
+        _ = wire.answer(
+            Answer(
+                ask_id="r1",
+                option="allow_once",
+                updated_input={"answers": {"Size": "Big"}},
+            ),
+        )
+    assert wire.answer(Answer(ask_id="r1", option="deny")) is not None
+
+
 def test_a_question_cannot_be_submitted_without_answers() -> None:
     wire = ClaudeWire(cwd=_CWD)
     _ = _bash(wire, tool="AskUserQuestion", input={"questions": _QUESTIONS})
