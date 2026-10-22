@@ -116,8 +116,8 @@ export type ToolExchange = { readonly call: SessionRecord; readonly result: Sess
 /**
  * One line of the transcript: a person's, an answer, a relay of what they told agents,
  * a prompt a run asked, a slash command typed into a run, a goal the run's log reports,
- * what a CLI printed for a command, a compaction of the agent's context, a tool call,
- * or one still being sent. A `command` line is its sender's, and its text is what was
+ * what a CLI printed for a command, a compaction of the agent's context, an interrupt
+ * the CLI logged, a tool call, or one still being sent. A `command` line is its sender's, and its text is what was
  * typed, or `refused: <reason>` when the run refused it. A `tool` line's text is the
  * tool's name.
  */
@@ -125,7 +125,7 @@ export type Line = {
   readonly key: string;
   /** The record the line is, which a fork starts from; null for a line not yet stored. */
   readonly at: LineAt | null;
-  readonly role: "user" | "assistant" | "relay" | "interaction" | "command" | "goal" | "reply" | "compaction" | "tool";
+  readonly role: "user" | "assistant" | "relay" | "interaction" | "command" | "goal" | "reply" | "compaction" | "interrupt" | "tool";
   /** The poster's attested email for a person's or a command's line; null for an answer. */
   readonly author: string | null;
   readonly text: string;
@@ -182,7 +182,8 @@ export type Transcript = {
  * by the agent its part's format says wrote it. A prompt a run asked is a line, which its
  * resolution record closes. A slash command a run typed is a `command` line, and the goal its
  * CLI logs is a `goal` line (see `goalStep`). A `ContextCompaction` is a `compaction` line,
- * one for the records that name one act. Other tool calls and results are not lines, unless
+ * one for the records that name one act. An interrupted turn, as the CLI logs it (see
+ * `interrupted`), is an `interrupt` line, and no answer is owed after it. Other tool calls and results are not lines, unless
  * `tools` asks for them: each call is then a `tool` line, in time order, which the first
  * record after it with its `call_id` answers. Either way the last call since the last
  * person's line says what the agent is doing.
@@ -245,6 +246,9 @@ export function readTranscript(parts: readonly ChatPart[], { tools = false }: { 
       lines.push({ key, at, role: "user", author: person.author, text: person.text, sentAt, pending: false });
       working = "";
       pointing = false;
+    } else if (interrupted(record.kind, payload)) {
+      lines.push({ key, at, role: "interrupt", author: null, text: "Interrupted", sentAt, pending: false });
+      working = null;
     } else if (record.kind === "AssistantMessage" && text(payload.content)) {
       if (pointing) pointed.add(key);
       const agent = AGENTS.get(format);
@@ -632,6 +636,18 @@ function momentOf(record: SessionRecord): number | null {
   const zoned = /(Z|[+-]\d{2}:?\d{2})$/i.test(stamp) ? stamp : `${stamp}Z`;
   const at = Date.parse(zoned);
   return Number.isNaN(at) ? null : at;
+}
+
+/**
+ * Whether a record is the CLI's own log of a turn it stopped on an interrupt: claude's
+ * `[Request interrupted by user]` user turn (`… for tool use]` mid-tool), or the
+ * `<turn_aborted>` developer message codex adds. A person's line is read before this, so
+ * one in the same words stays theirs.
+ */
+function interrupted(kind: string, payload: Readonly<Record<string, unknown>>): boolean {
+  const content = text(payload.content);
+  return (kind === "UserMessage" && content.startsWith("[Request interrupted by user"))
+    || (kind === "SystemMessage" && payload.subtype === "developer" && content.startsWith("<turn_aborted>"));
 }
 
 /** A JSON object's fields, or none when the value is not an object. */

@@ -61,6 +61,7 @@ __all__ = [
     "connect",
     "host_facts",
     "is_sandbox",
+    "server_dir",
     "set_sandbox",
 ]
 
@@ -224,6 +225,30 @@ def host_facts(*, terminal: bool = False) -> Facts:
     }
 
 
+def server_dir(url: str) -> str:
+    """Return the directory name of the server at ``url``: its host, and port if set.
+
+    A credential belongs to the server that issued it: the same name on another
+    server is another machine, which would refuse it. Results of a GPU job are kept
+    the same way.
+
+    Args:
+      url: The server's URL.
+
+    Returns:
+      name: The lowercase host, then ``_`` and the port when the URL has one.
+
+    Raises:
+      ClientError: The URL names no host.
+
+    """
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if not host:
+        raise ClientError(f"{url!r} names no server host")
+    return host if parts.port is None else f"{host}_{parts.port}"
+
+
 def is_sandbox() -> bool:
     """Return whether the last connect on this computer declared it a sandbox."""
     return (state_dir() / "rekursiv-ai" / "trax" / "machines" / ".sandbox").exists()
@@ -316,7 +341,7 @@ def _saved_credential(name: str, *, server: str) -> JoinResponse | None:
         / "rekursiv-ai"
         / "trax"
         / "machines"
-        / _server_dir(server)
+        / server_dir(server)
         / f"{name}.credential"
     )
     try:
@@ -341,7 +366,7 @@ def _save_credential(name: str, *, joined: JoinResponse, server: str) -> None:
         / "rekursiv-ai"
         / "trax"
         / "machines"
-        / _server_dir(server)
+        / server_dir(server)
         / f"{name}.credential"
     )
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -350,14 +375,3 @@ def _save_credential(name: str, *, joined: JoinResponse, server: str) -> None:
         file.write(joined.model_dump_json())
         file.flush()
         os.fsync(file.fileno())
-
-
-# A credential belongs to the server that issued it: the same name on another server is
-# another machine, which would refuse it. The host and port name the server's directory.
-def _server_dir(url: str) -> str:
-    """Return the directory of the server at ``url``: its host, and its port if set."""
-    parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
-    if not host:
-        raise ClientError(f"{url!r} names no server host")
-    return host if parts.port is None else f"{host}_{parts.port}"

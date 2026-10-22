@@ -7,7 +7,7 @@ import type { OrgMode } from "../api/me";
 import { getWorkspace } from "../api/workspaces";
 import type { WorkspacePartner, WorkspaceState } from "../api/workspaces";
 import { type Provider, providerName, stationProvider } from "../api/providers";
-import { takenOver, waitingOf } from "../api/runState";
+import { runStateOf, takenOver, waitingOf } from "../api/runState";
 import { MetaContext, useProfile, useWriteMode } from "../app/boot";
 import { Composer } from "../composer/Composer";
 import { detailQueries } from "../detail/queries";
@@ -109,6 +109,7 @@ export function Chat({ workspace, onWaiting }: {
   // Retry keeps the first submission's confirmation boundary even if capture arrived after a lost receipt.
   const attempts = useRef(new Map<string, { readonly baseline: number; readonly submittedAt: number }>());
   const [sending, setSending] = useState<ReadonlySet<string>>(new Set());
+  const [stopping, setStopping] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   // The line "Fork from here" picked: the next message starts a fork of this chat after it.
   const [forkAt, setForkAt] = useState<(LineAt & { readonly quote: string }) | null>(null);
@@ -417,6 +418,22 @@ export function Chat({ workspace, onWaiting }: {
     }
   }
 
+  /**
+   * Stop the turn the run is on: an `interrupt` post, under a key of its own each press, since a second press is
+   * a second ask to stop. A refusal is shown.
+   */
+  async function stop() {
+    if (!workspace || !conversationId || stopping) return;
+    setStopping(true);
+    try {
+      await sendChatLine({ workspaceId: workspace.id, text: "interrupt", conversationId, kind: "interrupt", page: null, trail: [] }, newUuid());
+    } catch (error) {
+      if (mounted.current) setNotice(failureText(error));
+    } finally {
+      if (mounted.current) setStopping(false);
+    }
+  }
+
   sendRef.current = send;
   answerRef.current = answerPrompt;
   targetRef.current = target;
@@ -425,6 +442,10 @@ export function Chat({ workspace, onWaiting }: {
   const followUpKey = live && !reading && !loading && !outsider && sending.size === 0 && last && !last.pending && last.role === "assistant" ? last.key : null;
   // A prompt's card answers where a line could be posted now: the same gate as the composer's.
   const answerable = live && !reading && !outsider;
+  // A claude or codex run on a turn, an ask open or not, stops on Stop or Esc; the assistant takes no interrupt.
+  const turn = runStateOf(partner);
+  const stoppable = answerable && (partner?.provider === "claude" || partner?.provider === "codex")
+    && (turn === "running" || turn === "requires_action");
   // The goal the run is working toward, which the strip above the box says until it is met or cleared.
   const goal = goalOf(transcript);
   // Whether an agent waits on the person: the server says so, or a card in the log is still open and Chat can answer
@@ -484,8 +505,17 @@ export function Chat({ workspace, onWaiting }: {
     <p className="chat-notice">{chatNotice(head.data?.audience ?? "open", orgMode)}</p>
     {draft.problem && <p role="status" className="chat-note">{draft.problem}</p>}
     {goal && <p className="chat-note chat-goal">{goalStrip(goal)}</p>}
+    {stoppable && <div className="chat-stop">
+      <button className="btn ghost" type="button" disabled={stopping} title="Interrupt the turn (Esc)" onClick={() => void stop()}>Stop</button>
+    </div>}
     {role === "viewer" ? <p className="chat-note chat-read-only" role="note">Viewers can read this chat but not post.</p>
-      : <Composer send={send} target={target} draft={draft} field={(props, edit) => <RecordField field={props} edit={edit} />}
+      : <Composer send={send} target={target} draft={draft}
+      field={(props, edit) => <RecordField field={stoppable ? { ...props, onKeyDown: (event) => {
+        // Esc stops the turn, as in the CLI's own terminal; the box's draft stays.
+        if (event.key !== "Escape" || event.defaultPrevented || event.nativeEvent.isComposing) return props.onKeyDown(event);
+        event.preventDefault();
+        void stop();
+      } } : props} edit={edit} />}
       history={{ key: JSON.stringify([me, workspaceId, conversationId]), entries: lines
         .filter((line) => line.role === "user" && line.author === me && (!line.pending || !sending.has(line.key.slice(PENDING.length))))
         .map((line) => line.text) }}
@@ -601,8 +631,8 @@ const ChatLine = memo(function ChatLine({ line, me, kinds, assistant, onFork, on
     const who = line.author === null || line.author === me ? "you" : line.author.split("@")[0];
     return <article className="chat-line chat-line-relay" title={when}><p className="chat-line-body">{who} {line.text}</p></article>;
   }
-  // A goal, what a CLI printed for a command, and a compaction are notes in the log, not anyone's words.
-  if (line.role === "goal" || line.role === "reply" || line.role === "compaction") return <article className="chat-line chat-line-note" title={when}><p className="chat-line-body">{line.text}</p></article>;
+  // A goal, what a CLI printed for a command, a compaction and an interrupt are notes in the log, not anyone's words.
+  if (line.role === "goal" || line.role === "reply" || line.role === "compaction" || line.role === "interrupt") return <article className="chat-line chat-line-note" title={when}><p className="chat-line-body">{line.text}</p></article>;
   // A command is its sender's line, set on the sender's side in monospace.
   const side = line.role === "command" ? "user chat-line-command" : line.role;
   return <article className={`chat-line chat-line-${side}${other ? " chat-line-other" : ""}${line.pending ? " chat-line-pending" : ""}`} title={when}>

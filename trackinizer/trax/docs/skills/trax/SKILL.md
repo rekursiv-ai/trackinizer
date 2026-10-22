@@ -2,7 +2,7 @@
 name: trax
 description: >
   ALWAYS invoke this skill for Trackinizer/trax work tracking, inquiry records, and visual workspaces: issues, beliefs, papers, experiments, codechanges, web results/searches, sessions, costs, board, workspace. Do not hand-write trax records directly -- invoke this skill first.
-argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|env|machine|workspace|<kind>] ..."
+argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|env|machine|job|workspace|<kind>] ..."
 user-invocable: true
 tools: Bash, Read, Write, Edit, Glob, Grep
 ---
@@ -520,6 +520,24 @@ terminal in the web app. A shell the web app opens sets `TRAX_WORKSTREAM` and
 `TRAX_WORKSPACE`, and `LC_TRAX_*` copies that survive `ssh`; `trax` reads
 `TRAX_X`, else `LC_TRAX_X`, and uses the saved profile whose URL is
 `LC_TRAX_SERVER`.
+
+## GPU jobs
+
+`trax job submit [--gpus N] [--minutes M] [--label TEXT] [--follow]
+[--include-untracked] -- CMD...`
+runs CMD on a GPU node from the repository you are in, and prints the job id.
+Everything after the first `--` is the job's command, even `--help`. It
+snapshots the worktree (uncommitted and untracked files included, and it says
+which untracked ones; an untracked `.env*`, `*.pem`, `id_*`, `*credentials*`,
+`.netrc` or `*.key` is refused unless `.gitignore` covers it or
+`--include-untracked` is given) without touching it and uploads the code
+straight to the node; no code or result bytes
+pass through the server, and no credential is kept on this computer. `trax job
+status [JOB]`, `logs JOB [-f]`, `results JOB [--to DIR]` and `cancel JOB` read
+and stop the job; `results` fills `out/` and keeps `src.bundle`, the exact code
+that ran, beside it. `--to` inside the repository is refused. Set a job's
+Hugging Face or Weights & Biases token with `trax job secret NAME set` and the
+value on stdin; the job never holds it. Never put a secret on a command line.
 
 ## Recovery
 

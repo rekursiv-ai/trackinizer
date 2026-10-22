@@ -74,6 +74,7 @@ if TYPE_CHECKING:
 
     from trackinizer.wire import (
         wire_code,
+        wire_job,
         wire_machine_host,
         wire_machines,
         wire_metrics,
@@ -85,6 +86,16 @@ if TYPE_CHECKING:
     )
     from trackinizer.wire.filters import Filter
     from trackinizer.wire.wire_code import CodeSnapshot, CodeSnapshotHead
+    from trackinizer.wire.wire_job import (
+        GrantStatus,
+        GrantTicket,
+        JobList,
+        JobView,
+        ReadGrantBody,
+        SecretNames,
+        StartBody,
+        SubmitBody,
+    )
     from trackinizer.wire.wire_machine_host import (
         Claim,
         EnrollResponse,
@@ -145,6 +156,8 @@ else:
     wire_variables = lazy_import("trackinizer.wire.wire_variables")
     # Same lazy-bind for ``wire_code``: only the code-store methods touch it.
     wire_code = lazy_import("trackinizer.wire.wire_code")
+    # Same lazy-bind for ``wire_job``: only the ``job_*`` methods touch it.
+    wire_job = lazy_import("trackinizer.wire.wire_job")
     pydantic = lazy_import("pydantic")
 
 
@@ -2449,6 +2462,149 @@ class Client:
                 return None
             raise
         return _validate_model(wire_code.CodeSnapshot, response, where)
+
+    # -- Direct GPU jobs. The server only brokers control messages; code and results
+    # travel between the dev box and the node over ssh.
+
+    def job_submit(self, body: SubmitBody) -> JobView:
+        """Ask for a GPU job; the server answers 402 without credit, 429 over a cap.
+
+        The request is sent once: a retry after a lost answer could hold the
+        credit twice.
+
+        Args:
+          body: The command, its limits, the snapshot commit and a one-time key.
+
+        Returns:
+          job: The job as recorded, in state ``requested``.
+
+        """
+        where = wire_job.JOBS_PATH
+        response = self._request(
+            "POST",
+            where,
+            body=body.model_dump(mode="json"),
+            retry_attempts=1,
+        )
+        return _validate_model(wire_job.JobView, response, where)
+
+    def job_list(self) -> JobList:
+        """Return the caller's GPU jobs, newest first."""
+        where = wire_job.JOBS_PATH
+        return _validate_model(wire_job.JobList, self._request("GET", where), where)
+
+    def job_view(self, job_id: int) -> JobView:
+        """Return one GPU job of the caller's."""
+        where = wire_job.JOB_PATH.format(job_id=job_id)
+        return _validate_model(wire_job.JobView, self._request("GET", where), where)
+
+    def job_grant(self, job_id: int, *, wait: float) -> GrantStatus:
+        """Hold up to ``wait`` seconds for the job's upload certificate.
+
+        Args:
+          job_id: The job.
+          wait: How long the server may hold the request; the read timeout
+            exceeds it, or the client would abort the very wait it asked for.
+
+        Returns:
+          status: ``pending``, ``refused`` with a reason, or ``ready`` with the grant.
+
+        """
+        where = wire_job.JOB_GRANT_PATH.format(job_id=job_id)
+        response = self._request(
+            "GET",
+            where,
+            params={"wait": wait},
+            timeout=wait + 10,
+        )
+        return _validate_secret_model(wire_job.GrantStatus, response, where)
+
+    def job_read_grant(self, job_id: int, body: ReadGrantBody) -> GrantTicket:
+        """Ask for a read certificate for the job's logs and results.
+
+        Args:
+          job_id: The job.
+          body: A new one-time key.
+
+        Returns:
+          ticket: The serial to poll with :meth:`job_grant_serial`.
+
+        """
+        where = wire_job.JOB_GRANTS_PATH.format(job_id=job_id)
+        response = self._request(
+            "POST",
+            where,
+            body=body.model_dump(mode="json"),
+            retry_attempts=1,
+        )
+        return _validate_model(wire_job.GrantTicket, response, where)
+
+    def job_grant_serial(self, job_id: int, serial: int, *, wait: float) -> GrantStatus:
+        """Hold up to ``wait`` seconds for a requested read certificate.
+
+        Args:
+          job_id: The job.
+          serial: From :meth:`job_read_grant`.
+          wait: How long the server may hold the request.
+
+        Returns:
+          status: ``pending``, ``refused`` with a reason, or ``ready`` with the grant.
+
+        """
+        where = wire_job.JOB_GRANT_SERIAL_PATH.format(job_id=job_id, serial=serial)
+        response = self._request(
+            "GET",
+            where,
+            params={"wait": wait},
+            timeout=wait + 10,
+        )
+        return _validate_secret_model(wire_job.GrantStatus, response, where)
+
+    def job_start(self, job_id: int, body: StartBody) -> JobView:
+        """Tell the server the code is on the node, so it queues the job."""
+        where = wire_job.JOB_START_PATH.format(job_id=job_id)
+        response = self._request("POST", where, body=body.model_dump(mode="json"))
+        return _validate_model(wire_job.JobView, response, where)
+
+    def job_cancel(self, job_id: int) -> JobView:
+        """Cancel a GPU job; minutes that already ran are charged."""
+        where = wire_job.JOB_CANCEL_PATH.format(job_id=job_id)
+        return _validate_model(wire_job.JobView, self._request("POST", where), where)
+
+    def job_secret_names(self) -> SecretNames:
+        """Return the names of the caller's job secrets; values are never returned."""
+        where = wire_job.JOB_SECRETS_PATH
+        return _validate_model(wire_job.SecretNames, self._request("GET", where), where)
+
+    def job_put_secret(self, name: str, value: str) -> None:
+        """Set one of the caller's job secrets.
+
+        Args:
+          name: ``HF_TOKEN`` or ``WANDB_API_KEY``.
+          value: The secret; never shown in an error.
+
+        """
+        body = _build_body(wire_job.SecretPut, f"secret {name!r}", value=value)
+        try:
+            self._request(
+                "PUT",
+                wire_job.JOB_SECRET_PATH.format(name=quote(name, safe="")),
+                body=body.model_dump(mode="json"),
+            )
+        except ClientError as err:
+            # A server may echo a rejected body back in its error text.
+            raise ClientError(
+                str(err).replace(value, "[redacted]"),
+                status_code=err.status_code,
+                code=err.code,
+            ) from None
+
+    def job_delete_secret(self, name: str) -> None:
+        """Remove one of the caller's job secrets."""
+        self._request(
+            "DELETE",
+            wire_job.JOB_SECRET_PATH.format(name=quote(name, safe="")),
+        )
 
     def _patch_field(
         self,
