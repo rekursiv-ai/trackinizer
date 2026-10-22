@@ -132,6 +132,10 @@ class _World:
         host, browser = _Socket(), _Socket()
         assert await self.hub.host_connected(term, host)
         await self.hub.attach_browser(term, browser, offset=0)
+        assert host.sent == [
+            (Frame.ROUTE, wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, 0)),
+        ]
+        host.sent.clear()
         return term, host, browser
 
 
@@ -451,6 +455,86 @@ async def test_a_second_host_claim_is_refused() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_unconfirmed_startup_releases_its_claim_without_losing_input() -> None:
+    world = _World()
+    term = world.open()
+    await world.hub.from_browser(term, Frame.INPUT, b"continue\n")
+    first, second = _Socket(), _Socket()
+    assert await world.hub.host_connected(term, first, ready=True)
+    assert first.sent == [(Frame.ACK, b"")]
+
+    await world.hub.host_lost(term, first)
+    assert world.hub.terminal(term.id) is term
+    assert await world.hub.host_connected(term, second, ready=True)
+    await world.hub.from_host(term, Frame.ACK, b"")
+
+    assert second.sent == [(Frame.ACK, b""), (Frame.INPUT, b"continue\n")]
+    await world.hub.host_lost(term, second)
+    assert term.ended
+
+
+@pytest.mark.asyncio
+async def test_a_failed_startup_acknowledgement_leaves_the_terminal_retryable() -> None:
+    world = _World()
+    term = world.open()
+
+    assert not await world.hub.host_connected(term, _Socket(gone=True), ready=True)
+    assert world.hub.terminal(term.id) is term
+    assert await world.hub.host_connected(term, _Socket(), ready=True)
+
+
+@pytest.mark.asyncio
+async def test_a_retry_can_replace_a_claim_whose_acknowledgement_is_still_blocked() -> (
+    None
+):
+    world = _World()
+    term = world.open()
+    first, second = _BlockedSocket(), _Socket()
+    claiming = asyncio.create_task(world.hub.host_connected(term, first, ready=True))
+    try:
+        await asyncio.wait_for(first.sending.wait(), 1)
+        accepted = await world.hub.host_connected(term, second, ready=True)
+        first.release.set()
+        await claiming
+
+        assert accepted
+        assert term.host is second
+        assert not term.ended
+        assert second.sent == [(Frame.ACK, b"")]
+        await world.hub.host_lost(term, first)
+        assert term.host is second
+    finally:
+        first.release.set()
+        await claiming
+
+
+@pytest.mark.asyncio
+async def test_typing_during_startup_cannot_overtake_the_buffered_input() -> None:
+    world = _World()
+    term = world.open()
+    await world.hub.from_browser(term, Frame.RESIZE, encode_winsize(24, 80))
+    await world.hub.from_browser(term, Frame.INPUT, b"first\n")
+    host = _BlockedSocket()
+    connecting = asyncio.create_task(world.hub.host_connected(term, host))
+    try:
+        await asyncio.wait_for(host.sending.wait(), 1)
+        typing = asyncio.create_task(
+            world.hub.from_browser(term, Frame.INPUT, b"second\n"),
+        )
+        await asyncio.sleep(0)
+        host.release.set()
+        await asyncio.gather(connecting, typing)
+
+        assert [payload for kind, payload in host.sent if kind is Frame.INPUT] == [
+            b"first\n",
+            b"second\n",
+        ]
+    finally:
+        host.release.set()
+        await connecting
+
+
+@pytest.mark.asyncio
 async def test_resize_is_clamped_and_a_bad_frame_is_refused() -> None:
     world = _World()
     term, host, _ = await world.live()
@@ -489,6 +573,20 @@ async def test_stop_asks_the_host_and_ends_at_once_without_one() -> None:
     await world.hub.attach_browser(waiting, browser, offset=0)
     await world.hub.stop(waiting)
     assert browser.closed == [wire_terminals.CLOSE_ENDED]
+
+
+@pytest.mark.asyncio
+async def test_stop_ends_a_host_that_has_not_confirmed_startup() -> None:
+    world = _World()
+    term = world.open()
+    host = _Socket()
+    assert await world.hub.host_connected(term, host, ready=True)
+
+    await world.hub.stop(term)
+
+    assert term.ended
+    assert host.closed == [wire_terminals.CLOSE_ENDED]
+    assert not await world.hub.host_connected(term, _Socket(), ready=True)
 
 
 @pytest.mark.asyncio
@@ -877,9 +975,7 @@ async def test_a_browser_attaching_to_a_direct_terminal_asks_the_host_back_to_th
 
 
 @pytest.mark.asyncio
-async def test_a_browser_attaching_to_a_relayed_terminal_asks_the_host_nothing() -> (
-    None
-):
+async def test_a_browser_attaching_to_a_relayed_terminal_resets_negotiation() -> None:
     world = _World()
     term, host, first = await world.live()
     await world.hub.from_host(term, Frame.KEEPALIVE, wire_terminals.encode_keepalive(0))
@@ -889,7 +985,9 @@ async def test_a_browser_attaching_to_a_relayed_terminal_asks_the_host_nothing()
 
     await world.hub.attach_browser(term, _Socket(), offset=0)
 
-    assert host.sent == []
+    assert host.sent == [
+        (Frame.ROUTE, wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, 0)),
+    ]
 
 
 @pytest.mark.asyncio
@@ -935,7 +1033,9 @@ async def test_a_keepalive_dates_the_last_input_and_holds_the_direct_mark_for_th
     del host.sent[:]
     world.clock.now += 3 * wire_terminals.KEEPALIVE_SEC
     await world.hub.attach_browser(term, _Socket(), offset=0)
-    assert host.sent == []
+    assert host.sent == [
+        (Frame.ROUTE, wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, 0)),
+    ]
 
 
 @pytest.mark.asyncio

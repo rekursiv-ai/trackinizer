@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import asyncio
 import contextlib
+import logging
 import os
 import pwd
 import shutil
@@ -28,7 +29,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict
 from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.posix.host import Frame, decode_frame, encode_frame
@@ -47,6 +48,8 @@ if TYPE_CHECKING:
 
 
 __all__ = ["TerminalClient", "TerminalHost"]
+
+_logger = logging.getLogger(__name__)
 
 
 class TerminalClient(Protocol):
@@ -138,7 +141,8 @@ class TerminalHost:
             loops = list(self._loops.values())
             bridges = list(self._bridges.values())
         for loop, ended in loops:
-            loop.call_soon_threadsafe(ended.set)
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(ended.set)
         for bridge in bridges:
             bridge.join(timeout=10)
 
@@ -182,7 +186,7 @@ class TerminalHost:
                 daemon=True,
             )
             self._bridges[opened.terminal_id] = thread
-        thread.start()
+            thread.start()
 
     def _run(
         self,
@@ -223,26 +227,126 @@ class TerminalHost:
         machine_id: uuid.UUID,
         instance: uuid.UUID,
     ) -> None:
-        """Dial the server, run the shell, and relay until either side ends."""
+        """Register cancellation before dialing, then serve one shell at most."""
+        ended = asyncio.Event()
+        with self._lock:
+            self._loops[opened.terminal_id] = (asyncio.get_running_loop(), ended)
+        if self._stop.is_set():
+            ended.set()
+        work = asyncio.create_task(
+            self._serve(opened, machine_id=machine_id, instance=instance, ended=ended),
+        )
+        stopped = asyncio.create_task(ended.wait())
+        try:
+            await asyncio.wait({work, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            if work.done():
+                await work
+        finally:
+            work.cancel()
+            stopped.cancel()
+            await asyncio.gather(work, stopped, return_exceptions=True)
+            with self._lock:
+                self._loops.pop(opened.terminal_id, None)
+
+    async def _connect(
+        self,
+        opened: TerminalWait,
+        *,
+        machine_id: uuid.UUID,
+        instance: uuid.UUID,
+        open_timeout_sec: float = 10.0,
+        startup_timeout_sec: float = 45.0,
+        retry_sec: float = 1.0,
+    ) -> ClientConnection | None:
+        """Retry startup before any process starts; return only an acknowledged leg."""
         path = wire_terminals.MACHINE_TERMINAL_WS_PATH.format(
             machine_id=machine_id,
             terminal_id=opened.terminal_id,
         )
-        async with connect(
-            f"{self._url}{path}?instance={instance}",
-            additional_headers={"Authorization": f"Bearer {self._credential}"},
-            ping_interval=20,
-        ) as socket:
-            self._log("open", opened)
+        deadline = asyncio.get_running_loop().time() + startup_timeout_sec
+        reason = "connection deadline exceeded"
+        while (remaining := deadline - asyncio.get_running_loop().time()) > 0:
+            socket: ClientConnection | None = None
+            try:
+                async with asyncio.timeout(min(open_timeout_sec, remaining)):
+                    socket = await connect(
+                        f"{self._url}{path}?instance={instance}&ready=true",
+                        additional_headers={
+                            "Authorization": f"Bearer {self._credential}",
+                        },
+                        ping_interval=20,
+                        open_timeout=min(open_timeout_sec, remaining),
+                        close_timeout=1,
+                    )
+                    await socket.send(encode_frame(Frame.ACK))
+                    if await socket.recv() != encode_frame(Frame.ACK):
+                        await socket.close()
+                        reason = "invalid startup acknowledgement"
+                        break
+                return socket
+            except asyncio.CancelledError:
+                if socket is not None:
+                    await socket.close()
+                raise
+            except (OSError, InvalidHandshake, ConnectionClosed) as error:
+                if socket is not None:
+                    await socket.close()
+                reason = str(error) or type(error).__name__
+                if (
+                    isinstance(error, ConnectionClosed)
+                    and error.rcvd is not None
+                    and error.rcvd.code
+                    in {
+                        wire_terminals.CLOSE_REFUSED,
+                        wire_terminals.CLOSE_MACHINE_REVOKED,
+                        wire_terminals.CLOSE_ENDED,
+                    }
+                ):
+                    break
+                if isinstance(error, InvalidStatus) and (
+                    error.response.status_code < 500
+                    and error.response.status_code != 429
+                ):
+                    break
+                _logger.debug(
+                    "terminal %s: startup retry: %s",
+                    opened.terminal_id,
+                    reason,
+                )
+            await asyncio.sleep(
+                min(retry_sec, max(0, deadline - asyncio.get_running_loop().time())),
+            )
+        echo(
+            f"trax: terminal startup failed ({opened.terminal_id}): {reason}",
+            err=True,
+        )
+        self._log("startup_failed", opened, status=1)
+        return None
+
+    async def _serve(
+        self,
+        opened: TerminalWait,
+        *,
+        machine_id: uuid.UUID,
+        instance: uuid.UUID,
+        ended: asyncio.Event,
+    ) -> None:
+        """Start the shell once its relay is ready; never retry a launched shell."""
+        socket = await self._connect(opened, machine_id=machine_id, instance=instance)
+        if socket is None:
+            return
+        self._log("open", opened)
+        status: int | None = None
+        try:
+            await socket.send(encode_frame(Frame.ACK))
             folder = await asyncio.to_thread(_start_folder, opened.cwd)
             if folder is None:
                 await _end_with_line(
                     socket,
                     f"trax: {opened.cwd} is not a folder on this machine",
                 )
-                self._log("close", opened, status=1)
+                status = 1
                 return
-            status: int | None = None
             async with Terminal(
                 self._argv(opened),
                 cwd=folder,
@@ -251,32 +355,23 @@ class TerminalHost:
                 terminate_grace_sec=2.0,
                 winsize=(opened.rows, opened.cols),
             ) as terminal:
-                ended = asyncio.Event()
-                with self._lock:
-                    self._loops[opened.terminal_id] = (
-                        asyncio.get_running_loop(),
-                        ended,
-                    )
-                # A stop that came before this bridge registered did not see it: the
-                # flag it set first is what tells this one to end at once.
-                if self._stop.is_set():
-                    ended.set()
+                router = DirectRouter(
+                    relay=socket.send,
+                    shell=terminal,
+                    factory=self.direct,
+                    ice_servers=tuple(opened.ice_servers),
+                )
                 try:
-                    router = DirectRouter(
-                        relay=socket.send,
-                        shell=terminal,
-                        factory=self.direct,
-                        ice_servers=tuple(opened.ice_servers),
-                    )
-                    # Before the relay pumps, so this line precedes the run's output: the
-                    # pty holds that output until then.
                     if opened.command is not None:
                         await router.output(f"trax: started in {folder}\r\n".encode())
                     status = await self._relay(terminal, socket, ended, router)
                 finally:
-                    with self._lock:
-                        self._loops.pop(opened.terminal_id, None)
+                    await router.close()
+        except ConnectionClosed:
+            status = 1
+        finally:
             self._log("close", opened, status=status)
+            await socket.close()
 
     async def _relay(
         self,
@@ -292,20 +387,22 @@ class TerminalHost:
         # The shell's own exit counts, not only the pty closing: a job it left running
         # keeps the pty open, and would otherwise hide that the shell is gone.
         exited = asyncio.create_task(terminal.wait())
-        await asyncio.wait(
-            {pump, reader, stopped, exited},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        await terminal.terminate()
-        # The one reaper of the child: a second ``wait`` running beside it would find
-        # the child gone and report status 0.
-        status = await exited
-        await asyncio.wait({pump}, timeout=self._drain_sec)
-        for task in (pump, reader, stopped, exited):
-            task.cancel()
+        try:
+            await asyncio.wait(
+                {pump, reader, stopped, exited},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            await terminal.terminate()
+            # Reap through the existing waiter, even during cancellation; two
+            # concurrent wait calls can steal the child's status from each other.
+            status = await exited
+            await asyncio.wait({pump}, timeout=self._drain_sec)
+            for task in (pump, reader, stopped):
+                task.cancel()
+            await asyncio.gather(pump, reader, stopped, return_exceptions=True)
         with contextlib.suppress(ConnectionClosed):
             await router.exit(status)
-        await router.close()
         return status
 
     def _argv(self, opened: TerminalWait) -> list[str]:

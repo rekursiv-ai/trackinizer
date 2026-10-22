@@ -20,6 +20,14 @@ const KEY = "trackinizer.station.tab";
  * switches.
  */
 let current: CurrentStation = { id: readTab(), landing: null };
+let navigation = 0;
+
+/** An asynchronous navigation may select its result only while this intent is current. */
+export function beginStationNavigation(): () => boolean {
+  const intent = ++navigation;
+  const route = window.location.hash;
+  return () => intent === navigation && window.location.hash === route;
+}
 
 // The browser no longer keeps the last station opened for every tab: forget what an older build left.
 try {
@@ -50,6 +58,7 @@ export function setStation(id: string | null, landing: string | null = null): vo
     else sessionStorage.removeItem(KEY);
   } catch { /* Private storage can be unavailable. */ }
   if (id === current.id && landing === current.landing) return;
+  if (id !== current.id) navigation += 1;
   current = { id, landing };
   listeners.forEach((listener) => listener());
 }

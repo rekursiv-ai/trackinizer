@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import asyncio
+import functools
 import os
 import pwd
 import shutil
@@ -22,7 +23,7 @@ import pytest
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.posix.host import Frame, decode_frame, encode_frame, encode_winsize
 from trackinizer.lib.userdirs import state_dir
-from trackinizer.trax.terminal_host import TerminalHost, _end_with_line
+from trackinizer.trax.terminal_host import TerminalHost, _end_with_line, _LogLine
 from trackinizer.wire import wire_terminals
 from trackinizer.wire.wire_terminals import TerminalWait
 
@@ -103,8 +104,15 @@ def _host(
 
 
 async def _listening(handler: _Handler) -> tuple[Server, str]:
-    server = await serve(handler, "127.0.0.1", 0)
+    server = await serve(functools.partial(_ready_handler, handler), "127.0.0.1", 0)
     return server, f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+
+
+async def _ready_handler(handler: _Handler, ws: ServerConnection) -> None:
+    assert await ws.recv() == encode_frame(Frame.ACK)
+    await ws.send(encode_frame(Frame.ACK))
+    assert await ws.recv() == encode_frame(Frame.ACK)
+    await handler(ws)
 
 
 async def _until_exit(ws: ServerConnection) -> tuple[bytes, int]:
@@ -162,9 +170,114 @@ async def test_a_shell_runs_on_a_real_pty_and_its_output_and_exit_status_arrive(
         machine_id=_MACHINE,
         terminal_id=opened.terminal_id,
     )
-    assert seen["path"] == f"{path}?instance={_INSTANCE}"
+    assert seen["path"] == f"{path}?instance={_INSTANCE}&ready=true"
     assert seen["auth"] == f"Bearer {_CREDENTIAL}"
     assert seen["result"] == (b"ok", 3)
+
+
+async def test_startup_retries_handshake_timeouts_and_launches_the_cli_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        TerminalHost,
+        "_connect",
+        functools.partialmethod(
+            TerminalHost._connect,
+            open_timeout_sec=0.02,
+            retry_sec=0.001,
+        ),
+    )
+    launches = tmp_path / "launches"
+    trax = _trax(tmp_path, f"echo started >> '{launches}'\nprintf ready\n")
+    monkeypatch.setattr(sys, "argv", [str(trax)])
+    attempts: list[str] = []
+    output: list[tuple[bytes, int]] = []
+
+    async def handshake(ws: ServerConnection) -> None:
+        assert await ws.recv() == encode_frame(Frame.ACK)
+        attempts.append("connected")
+        if len(attempts) < 3:
+            await ws.wait_closed()
+            return
+        await ws.send(encode_frame(Frame.ACK))
+        assert await ws.recv() == encode_frame(Frame.ACK)
+        output.append(await _until_exit(ws))
+
+    server = await serve(handshake, "127.0.0.1", 0)
+    url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    try:
+        await asyncio.wait_for(
+            _run(_host(url), _opened(command="claude", run_name="chat-retry")),
+            3,
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert attempts == ["connected"] * 3
+    assert launches.read_text().splitlines() == ["started"]
+    assert output[0][0].endswith(b"ready")
+    assert output[0][1] == 0
+
+
+async def test_a_refused_startup_never_launches_the_cli_and_reports_one_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    launches = tmp_path / "launches"
+    trax = _trax(tmp_path, f"echo started >> '{launches}'\n")
+    monkeypatch.setattr(sys, "argv", [str(trax)])
+
+    async def refuse(ws: ServerConnection) -> None:
+        await ws.close(wire_terminals.CLOSE_REFUSED)
+
+    server = await serve(refuse, "127.0.0.1", 0)
+    url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    try:
+        await _run(_host(url), _opened(command="claude", run_name="chat-refused"))
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert not launches.exists()
+    error = capsys.readouterr().err
+    assert "terminal startup failed" in error
+    assert "Traceback" not in error
+
+
+async def test_stop_cancels_startup_while_waiting_for_the_server_acknowledgement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launches = tmp_path / "launches"
+    trax = _trax(tmp_path, f"echo started >> '{launches}'\n")
+    monkeypatch.setattr(sys, "argv", [str(trax)])
+    arrived = asyncio.Event()
+    requests: list[str | bytes] = []
+
+    async def stall(ws: ServerConnection) -> None:
+        requests.append(await ws.recv())
+        arrived.set()
+        await ws.wait_closed()
+
+    server = await serve(stall, "127.0.0.1", 0)
+    url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    host = _host(url)
+    running = asyncio.create_task(
+        _run(host, _opened(command="claude", run_name="chat-stopped")),
+    )
+    try:
+        await asyncio.wait_for(arrived.wait(), 2)
+        await asyncio.to_thread(host.stop)
+        await asyncio.wait_for(running, 1)
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert requests == [encode_frame(Frame.ACK)]
+    assert not launches.exists()
 
 
 async def test_input_reaches_the_shell_and_a_resize_is_clamped() -> None:
@@ -470,6 +583,76 @@ async def test_stop_ends_every_bridge_and_the_listener_lets_go_of_its_client() -
     assert all(ws.close_code is not None for ws in conns)
     # The listener's held request ends by itself, then it lets go of its client.
     assert await asyncio.to_thread(client.closed.wait, 10)
+    path = state_dir() / "rekursiv-ai" / "trax" / "machines" / "box.terminals.log"
+    records = [
+        _LogLine.model_validate_json(line) for line in path.read_text().splitlines()
+    ]
+    opened = [record.terminal_id for record in records if record.event == "open"]
+    closed = [record.terminal_id for record in records if record.event == "close"]
+    assert len(opened) == 5
+    assert sorted(opened) == sorted(closed)
+
+
+def _pause_bridge_start(
+    thread: threading.Thread,
+    *,
+    start: Callable[[threading.Thread], None],
+    arrived: threading.Event,
+    resume: threading.Event,
+) -> None:
+    if thread.name.startswith("terminal-"):
+        arrived.set()
+        assert resume.wait(2)
+    start(thread)
+
+
+async def test_shutdown_cannot_join_a_bridge_before_its_thread_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arrived, resume = threading.Event(), threading.Event()
+    monkeypatch.setattr(
+        threading.Thread,
+        "start",
+        functools.partialmethod(
+            _pause_bridge_start,
+            start=threading.Thread.start,
+            arrived=arrived,
+            resume=resume,
+        ),
+    )
+    host = _host("http://127.0.0.1:1")
+    opening = asyncio.create_task(
+        asyncio.to_thread(
+            host._start_bridge,
+            _opened(),
+            machine_id=_MACHINE,
+            instance=_INSTANCE,
+        ),
+    )
+    try:
+        assert await asyncio.to_thread(arrived.wait, 2)
+        stopping = asyncio.create_task(asyncio.to_thread(host.stop))
+        await asyncio.sleep(0.01)
+        resume.set()
+        await asyncio.wait_for(asyncio.gather(opening, stopping), 2)
+    finally:
+        resume.set()
+        await opening
+        await asyncio.to_thread(host.stop)
+
+
+async def test_a_closed_loop_in_the_shutdown_snapshot_does_not_skip_other_bridges() -> (
+    None
+):
+    host = _host("http://127.0.0.1:1")
+    closed = asyncio.new_event_loop()
+    closed.close()
+    ended = asyncio.Event()
+    host._loops[uuid.uuid4()] = (closed, asyncio.Event())
+    host._loops[uuid.uuid4()] = (asyncio.get_running_loop(), ended)
+
+    await asyncio.to_thread(host.stop)
+    await asyncio.wait_for(ended.wait(), 1)
 
 
 async def test_the_exit_is_reported_though_a_job_the_shell_left_still_holds_the_pty() -> (

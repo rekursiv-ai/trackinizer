@@ -19,9 +19,11 @@ import { useHash, validHash, visited } from "../router/trail";
 import { stationForChat, type StationSummary } from "../api/stations";
 import { clearChat as clearStationChat, hideStation, STATIONS_KEY } from "../stations/actions";
 import { showStation } from "../stations/useStation";
-import { type ChatPart, type Goal, goalOf, type Line, type LineAt, linesThrough, openPrompts, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
+import { beginStationNavigation } from "../stations/store";
+import { acceptWorkspace } from "../stations/cache";
+import { type ChatPart, type Goal, goalOf, type Line, type LineAt, linesThrough, openPrompts, PENDING, readTranscript, sentBefore, withPending } from "./chatLines";
 import { chatRecordsKey, OPENING, readChatParts, useLiveChat } from "./chatRecords";
-import { useChatFeed } from "./chatFeed";
+import { type PendingPost, useChatFeed } from "./chatFeed";
 import { FOLLOW_UP_ASK, followUpSuggested } from "./chatFollowUp";
 import { useAnswerHighlights } from "./chatHighlights";
 import { useChatPartial } from "./chatPartial";
@@ -102,20 +104,24 @@ export function Chat({ workspace, onWaiting }: {
   const partner = workspace?.partner ?? null;
   // The station's chat: bound by its first line, and the same however Chat is mounted again.
   const conversationId = workspace?.conversation_id ?? null;
-  const [pending, setPending] = useState<readonly PendingLine[]>([]);
+  const pending = state.pending.filter((post) => post.sender === me && post.workspaceId === workspaceId);
+  const setPending = useCallback((change: (held: readonly PendingPost[]) => readonly PendingPost[]) => feed.updatePending(me, change), [feed, me]);
+  // Retry keeps the first submission's confirmation boundary even if capture arrived after a lost receipt.
+  const attempts = useRef(new Map<string, { readonly baseline: number; readonly submittedAt: number }>());
   const [sending, setSending] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
   // The line "Fork from here" picked: the next message starts a fork of this chat after it.
   const [forkAt, setForkAt] = useState<(LineAt & { readonly quote: string }) | null>(null);
   // When the last line was sent into the open conversation, while its session may still be on its way.
   const [sentAt, setSentAt] = useState<number | null>(null);
+  const waitSince = sentAt ?? pending.filter((line) => line.conversationId === conversationId).at(-1)?.submittedAt ?? null;
 
   // The conversation's session: absent until the assistant has opened it.
   const head = useQuery({
     queryKey: ["chat", "head", conversationId],
     queryFn: ({ signal }) => getChatHead(conversationId!, { signal }),
     enabled: conversationId !== null,
-    refetchInterval: (query) => (query.state.data === null && sentAt !== null && Date.now() - sentAt < OPENING.giveUpMs ? OPENING.everyMs : false),
+    refetchInterval: (query) => (query.state.data === null && waitSince !== null && Date.now() - waitSince < OPENING.giveUpMs ? OPENING.everyMs : false),
   });
   const session = head.data?.session_id ?? null;
   // I do not read the chat: the server refuses its records and my lines alike.
@@ -143,14 +149,23 @@ export function Chat({ workspace, onWaiting }: {
   const lines = withPending(transcript, pending.filter((line) => line.conversationId === conversationId), { me });
   const loading = readable !== null && records.data === undefined && !records.isError;
   const unopened = conversationId !== null && head.data === null && !head.isFetching;
-  const stale = unopened && sentAt !== null && Date.now() - sentAt >= OPENING.giveUpMs;
+  const stale = unopened && waitSince !== null && Date.now() - waitSince >= OPENING.giveUpMs;
   // The give-up time is not a render of its own: the last look may come just before it.
   const [, tick] = useState(0);
   useEffect(() => {
-    if (sentAt === null) return;
-    const timer = setTimeout(() => tick((n) => n + 1), Math.max(0, sentAt + OPENING.giveUpMs - Date.now()) + 1);
+    if (waitSince === null) return;
+    const timer = setTimeout(() => tick((n) => n + 1), Math.max(0, waitSince + OPENING.giveUpMs - Date.now()) + 1);
     return () => clearTimeout(timer);
-  }, [sentAt]);
+  }, [waitSince]);
+
+  useEffect(() => {
+    if (parts === undefined || conversationId === null) return;
+    const stored = sentBefore(transcript.lines, { me });
+    setPending((held) => {
+      const remaining = held.filter((line) => line.conversationId !== conversationId || stored < line.baseline + 1);
+      return remaining.length === held.length ? held : remaining;
+    });
+  }, [parts, transcript, conversationId, me, setPending, state.pending]);
 
   const pickFork = useCallback((at: LineAt, quote: string) => setForkAt({ ...at, quote }), []);
   // "Launch the follow-up" on a recap sends the canned ask as any typed line would, through the latest
@@ -185,7 +200,9 @@ export function Chat({ workspace, onWaiting }: {
 
   const last = lines.at(-1);
   const sendingLast = last?.pending === true && sending.has(last.key.slice(PENDING.length));
-  const waiting = last?.pending ? (sendingLast ? "Sending…" : "Waiting for the assistant…") : "";
+  const unconfirmed = waitSince !== null && Date.now() - waitSince >= OPENING.giveUpMs;
+  const waiting = last?.pending ? (sendingLast ? "Sending…" : unconfirmed
+    ? "Delivery is unconfirmed. Check the session before resending." : "Waiting for the assistant…") : "";
   const busyText = waiting || (transcript.working === null || last?.pending ? "" : transcript.working ? `Working: ${transcript.working}…` : "Working…");
   // A partner that has gone away answers no more: the wait for it gives way to that.
   const statusText = busyText && partner && partner.status !== "live" ? partnerGone(partner) : busyText;
@@ -231,11 +248,13 @@ export function Chat({ workspace, onWaiting }: {
   }, [workspaceId]);
 
   /** Switch to the user's station that holds `conversation`, which the server makes if there is none. */
-  async function openConversation(conversation: string) {
+  async function openConversation(conversation: string, current = beginStationNavigation()) {
     try {
-      showStation(queryClient, await stationForChat(conversation));
+      const state = await stationForChat(conversation);
+      acceptWorkspace(queryClient, state);
+      if (mounted.current && current()) showStation(queryClient, state);
     } catch (error) {
-      if (mounted.current) setNotice(error instanceof ApiError && error.code === CHAT_DELETED ? error.detail : "Could not open that chat.");
+      if (mounted.current && current()) setNotice(error instanceof ApiError && error.code === CHAT_DELETED ? error.detail : "Could not open that chat.");
     }
   }
 
@@ -249,14 +268,15 @@ export function Chat({ workspace, onWaiting }: {
   useEffect(() => {
     const request = state.request;
     if (!request || !workspaceId) return;
+    const current = beginStationNavigation();
     feed.taken(request.n);
     void queryClient.fetchQuery(detailQueries.detail(request.sessionId)).then((detail) => {
-      if (!mounted.current) return;
+      if (!mounted.current || !current()) return;
       const conversation = conversationOf(typeof detail.self.cli_session_id === "string" ? detail.self.cli_session_id : null);
       const labels = Array.isArray(detail.self.labels) ? detail.self.labels : [];
-      if (conversation && labels.includes(SCIENCE_CHAT_LABEL)) void openConversation(conversation);
+      if (conversation && labels.includes(SCIENCE_CHAT_LABEL)) void openConversation(conversation, current);
       else setNotice("That session is not a science chat.");
-    }, () => mounted.current && setNotice("Could not open that chat."));
+    }, () => mounted.current && current() && setNotice("Could not open that chat."));
     // `openConversation` is the same function every render, but for what it closes over.
   }, [state.request, workspaceId]);
 
@@ -289,15 +309,15 @@ export function Chat({ workspace, onWaiting }: {
 
   // A station that loses its conversation (deleted here or, by the stream, in another tab) shows an
   // empty chat: what belonged to the conversation goes with it.
-  const heldConversation = useRef(conversationId);
+  const heldConversation = useRef({ workspaceId, conversationId });
   useEffect(() => {
     const lost = heldConversation.current;
-    heldConversation.current = conversationId;
-    if (lost === null || conversationId !== null) return;
-    setPending((held) => held.filter((line) => line.conversationId !== lost));
+    heldConversation.current = { workspaceId, conversationId };
+    if (lost.workspaceId !== workspaceId || lost.conversationId === null || conversationId !== null) return;
+    setPending((held) => held.filter((line) => line.conversationId !== lost.conversationId));
     setForkAt(null);
     setSentAt(null);
-  }, [conversationId]);
+  }, [workspaceId, conversationId]);
 
   // A chat deleted under this tab is let go, wherever the tab learns of it: its head read says 410.
   const goneHead = head.error instanceof ApiError && head.error.code === CHAT_DELETED;
@@ -335,29 +355,41 @@ export function Chat({ workspace, onWaiting }: {
     const forkOf: ChatFork | null = session && after ? { sessionId: session, part: after.part, idx: after.idx } : null;
     const joined = fresh ? null : conversationId;
     const sentTo = forkOf ? key : joined;
-    const baseline = sentBefore(fresh ? [] : after && forkOf ? linesThrough(lines, after) : lines, { me });
-    setPending((held) => [...held.filter((line) => line.key !== key), { key, text, conversationId: sentTo, baseline }]);
+    const attempt = attempts.current.get(key) ?? {
+      baseline: sentBefore(fresh ? [] : after && forkOf ? linesThrough(lines, after) : lines, { me }), submittedAt: Date.now(),
+    };
+    attempts.current.set(key, attempt);
+    const current = forkOf ? beginStationNavigation() : null;
+    setPending((held) => [...held.filter((line) => line.key !== key), { key, text, workspaceId: workspace!.id, conversationId: sentTo, ...attempt }]);
     setSending((held) => new Set(held).add(key));
     try {
       const { page, trail } = whereFrom(location.hash);
       const sent = await sendChatLine({ workspaceId: workspace!.id, text, conversationId: forkOf ? null : sentTo,
         ...(forkOf && { fork: forkOf }), page, trail }, key);
-      setPending((held) => held.map((line) => (line.key === key ? { ...line, conversationId: sent.conversation_id } : line)));
+      setPending((held) => held.map((line) => (line.key === key ? { ...line, workspaceId: sent.workspace_id, conversationId: sent.conversation_id } : line)));
       if (sent.workspace_id === workspace!.id) {
         // The first line binds the conversation to the station; the station's state says so from here.
         queryClient.setQueryData<WorkspaceState>(["workspace", sent.workspace_id], (held) => held && { ...held, conversation_id: sent.conversation_id });
-        setForkAt(null);
-        setSentAt(Date.now());
+        if (mounted.current && shownStation.current === workspaceId) {
+          setForkAt(null);
+          setSentAt(Date.now());
+        }
       } else {
         // A fork is a station of its own, which this tab now shows, on the page it is on.
-        forkLanding.current = sent.workspace_id;
-        showStation(queryClient, await getWorkspace(sent.workspace_id), window.location.hash);
+        const state = await getWorkspace(sent.workspace_id);
+        acceptWorkspace(queryClient, state);
+        if (mounted.current && current?.()) {
+          forkLanding.current = sent.workspace_id;
+          showStation(queryClient, state, window.location.hash);
+        }
       }
       void queryClient.invalidateQueries({ queryKey: ["stations"] });
       void queryClient.invalidateQueries({ queryKey: ["chat", "head", sent.conversation_id] });
+      attempts.current.delete(key);
       return "";
     } catch (error) {
       setPending((held) => held.filter((line) => line.key !== key));
+      if (!(error instanceof Error && resendable(error))) attempts.current.delete(key);
       throw error;
     } finally {
       setSending((held) => {
@@ -557,6 +589,13 @@ const ChatLine = memo(function ChatLine({ line, me, kinds, assistant, onFork, on
   const when = line.sentAt ? sentWhen(line.sentAt) : undefined;
   if (line.prompt) return <PromptCard prompt={line.prompt} kinds={kinds} onAnswer={onAnswer} assistant={assistant} attached={line.attached === true} />;
   if (line.tool) return <ChatToolCard step={line.tool} kinds={kinds} />;
+  if (line.delivery) return <article className="chat-line chat-line-note" title={when}>
+    {other && <span className="chat-line-author">{line.author}</span>}
+    <p className="chat-line-body">{line.text}</p>
+    <p className="chat-note" role="status">{line.delivery.refused
+      ? `Not delivered: ${line.delivery.reason}. Reattach and send it again.`
+      : `Delivery is unconfirmed: ${line.delivery.reason}. Check the session before resending.`}</p>
+  </article>;
   if (line.role === "relay") {
     // What the person told agents from the Console: "you → lead-2: text", neither a message to the partner nor an answer.
     const who = line.author === null || line.author === me ? "you" : line.author.split("@")[0];

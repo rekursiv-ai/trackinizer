@@ -12,10 +12,9 @@ import { decodeFrame, decodeOffset, encodeFrame, encodeRoute, Frame, Route } fro
 const GATHER_MS = 1_500;
 /** How long the channel has to open (`DIRECT_OPEN_TIMEOUT_SEC`). */
 const OPEN_MS = 8_000;
-/** The wait before the one retry, after a channel that was up dropped and after one that never opened. */
-const RETRY_AFTER_DROP_MS = 5_000;
-const RETRY_AFTER_FAILURE_MS = 10_000;
-const MAX_TRIES = 2;
+/** Keep offers below the server's six-per-minute limit, backing off failures to one per minute. */
+const RETRY_MS = 10_000;
+const RETRY_MAX_MS = 60_000;
 /** The most one frame carries on the channel (`DIRECT_FRAME_BYTES`). */
 const FRAME_BYTES = 16_384;
 
@@ -48,7 +47,7 @@ export class DirectChannel {
   private dc: RTCDataChannel | null = null;
   private phase: "idle" | "offering" | "open" | "off" = "idle";
   private gen = 0;
-  private tries = 0;
+  private failures = 0;
   /** Output goes by the channel: the relay's is ignored. */
   private routed = false;
   /** The host answered the fence: input may use the channel. */
@@ -67,9 +66,10 @@ export class DirectChannel {
     return this.routed;
   }
 
-  /** Offer a channel, unless one is being offered, is up, or two have failed. */
+  /** Offer a channel unless one is being offered, is up, or was disposed. */
   begin(): void {
-    if (this.phase !== "idle" || this.tries >= MAX_TRIES) return;
+    if (this.phase !== "idle") return;
+    clearTimeout(this.retryTimer);
     void this.offer();
   }
 
@@ -84,9 +84,7 @@ export class DirectChannel {
     }
     if (pc === null || signal.gen !== this.gen) return;
     if (signal.type === "abandon") {
-      this.closePeer();
-      clearTimeout(this.retryTimer);
-      this.phase = "off";
+      this.lost(pc);
     } else if (signal.type === "answer") {
       pc.setRemoteDescription({ type: "answer", sdp: signal.sdp }).catch(() => this.lost(pc));
     }
@@ -111,7 +109,7 @@ export class DirectChannel {
     const wasRouted = this.routed;
     this.closePeer();
     clearTimeout(this.retryTimer);
-    this.tries = 0;
+    this.failures = 0;
     if (this.phase !== "off") this.phase = "idle";
     if (wasRouted) this.options.onPath("relay");
   }
@@ -132,7 +130,6 @@ export class DirectChannel {
       this.phase = "off";
       return;
     }
-    this.tries += 1;
     this.phase = "offering";
     const gen = ++this.gen;
     const servers = this.options.iceServers;
@@ -164,6 +161,7 @@ export class DirectChannel {
     if (pc !== this.pc) return;
     clearTimeout(this.openTimer);
     this.phase = "open";
+    this.failures = 0;
     this.routed = true;
     this.fenced = false;
     const route = encodeFrame(Frame.ROUTE, encodeRoute(Route.DIRECT, this.options.stream.offset));
@@ -208,7 +206,9 @@ export class DirectChannel {
       this.options.relay(encodeFrame(Frame.ROUTE, encodeRoute(Route.RELAY, this.options.stream.offset)));
       this.options.onPath("relay", "Direct link lost; using the server.");
     }
-    if (this.tries < MAX_TRIES) this.retryTimer = setTimeout(() => this.begin(), wasOpen ? RETRY_AFTER_DROP_MS : RETRY_AFTER_FAILURE_MS);
+    if (!wasOpen) this.failures += 1;
+    const wait = Math.min(RETRY_MAX_MS, RETRY_MS * 2 ** Math.min(Math.max(0, this.failures - 1), 3));
+    this.retryTimer = setTimeout(() => this.begin(), wait);
   }
 
   private closePeer(): void {

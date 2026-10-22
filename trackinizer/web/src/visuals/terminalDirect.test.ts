@@ -139,7 +139,23 @@ test("an answer is applied, one for another generation is not, and begin twice m
   expect(FakePeer.all).toHaveLength(1);
 });
 
-test("an abandon closes the peer and the browser stays on the relay for good", async () => {
+test("successful links can recover after more than two drops", async () => {
+  const world = setup();
+  await opened(world);
+  for (let drop = 0; drop < 4; drop++) {
+    world.peer().channel.onclose?.();
+    await vi.advanceTimersByTimeAsync(10_000);
+    world.peer().gathered();
+    await vi.advanceTimersByTimeAsync(0);
+    world.peer().channel.onopen?.();
+  }
+
+  expect(world.signals()).toHaveLength(5);
+  expect(world.direct.muted).toBe(true);
+  world.direct.dispose();
+});
+
+test("an abandon closes the peer and retries while the browser stays on the relay", async () => {
   const world = setup();
   world.direct.begin();
   world.peer().gathered();
@@ -147,9 +163,10 @@ test("an abandon closes the peer and the browser stays on the relay for good", a
   world.direct.signal(new TextEncoder().encode(JSON.stringify({ gen: 1, type: "abandon", sdp: "" })));
   await vi.advanceTimersByTimeAsync(60_000);
 
-  expect(world.peer().closed).toBe(true);
-  expect(FakePeer.all).toHaveLength(1);
+  expect(FakePeer.all[0]!.closed).toBe(true);
+  expect(FakePeer.all.length).toBeGreaterThan(1);
   expect(world.paths).toEqual([]);
+  world.direct.dispose();
 });
 
 test("when the channel opens the browser asks for the route on the channel, then fences on the relay", async () => {
@@ -223,7 +240,7 @@ test("input stays on the relay until the host answers the fence, then goes on th
   ]);
 });
 
-test("a channel that does not open in 8 s is closed, the browser stays on the relay, and tries again once after 10 s", async () => {
+test("a channel that does not open in 8 s retries with backoff while output stays on the relay", async () => {
   const world = setup();
   world.direct.begin();
   world.peer().gathered();
@@ -241,10 +258,11 @@ test("a channel that does not open in 8 s is closed, the browser stays on the re
   await vi.advanceTimersByTimeAsync(0);
   expect(world.signals().map((signal) => signal.gen)).toEqual([1, 2]);
   await vi.advanceTimersByTimeAsync(8_000 + 60_000);
-  expect(FakePeer.all).toHaveLength(2);
+  expect(FakePeer.all.length).toBeGreaterThan(2);
+  world.direct.dispose();
 });
 
-test("a peer that cannot make an offer is closed, says nothing on the relay, and is tried again once", async () => {
+test("a peer that cannot make an offer is closed, says nothing on the relay, and is retried", async () => {
   const world = setup();
   FakePeer.failNext = true;
   world.direct.begin();
@@ -283,11 +301,11 @@ test("a failed connection is a lost one, a closed one after that is not reported
   expect(world.kinds().filter((kind) => kind === Frame.ROUTE)).toHaveLength(2);
 });
 
-test("after a drop it tries again once, 5 s later, from a clean state", async () => {
+test("after a drop it retries after 10 s, from a clean state", async () => {
   const world = setup();
   await opened(world);
   world.peer().channel.onclose?.();
-  await vi.advanceTimersByTimeAsync(4_999);
+  await vi.advanceTimersByTimeAsync(9_999);
   expect(FakePeer.all).toHaveLength(1);
   await vi.advanceTimersByTimeAsync(1);
 

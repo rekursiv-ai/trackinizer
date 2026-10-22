@@ -133,6 +133,8 @@ export type Line = {
   readonly sentAt: string | null;
   /** Sent from this browser and not yet a record of the session. */
   readonly pending: boolean;
+  /** A failed delivery, distinguished from a captured user turn. */
+  readonly delivery?: { readonly refused: boolean; readonly reason: string };
   /** The prompt an interaction line shows, which Chat answers; absent on every other line. */
   readonly prompt?: Prompt;
   /**
@@ -154,6 +156,8 @@ export type PendingLine = {
   readonly conversationId: string | null;
   /** How many lines by the sender showed, stored or sending, when it was sent. */
   readonly baseline: number;
+  /** When the browser submitted this post, for confirmation waits across reloads. */
+  readonly submittedAt?: number;
 };
 
 /** What a chat's records say: its lines, and what the agent is doing about the last one. */
@@ -201,7 +205,17 @@ export function readTranscript(parts: readonly ChatPart[], { tools = false }: { 
     const person = personOf(record.kind, payload);
     const step = goalStep(record.kind, payload, goal);
     const printed = printedOf(payload, lines.at(-1));
-    if (extra.$interaction !== undefined) {
+    if (extra.$delivery !== undefined) {
+      const delivery = objectOf(extra.$delivery);
+      const kind = text(delivery.kind);
+      const content = text(delivery.text);
+      const reason = text(delivery.reason);
+      if (content && reason && typeof delivery.refused === "boolean") {
+        const role = kind === "line" ? "user" : kind === "command" ? "command" : "reply";
+        lines.push({ key, at, role, author: typeof delivery.source === "string" ? delivery.source : null,
+          text: content, sentAt, pending: false, delivery: { refused: delivery.refused, reason } });
+      }
+    } else if (extra.$interaction !== undefined) {
       const prompt = promptOf(extra.$interaction);
       if (prompt) lines.push({ key, at, role: "interaction", author: null, text: "", sentAt, pending: false, prompt: { ...prompt, resolution: null } });
     } else if (extra.$interaction_resolved !== undefined) {

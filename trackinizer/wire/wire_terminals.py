@@ -195,7 +195,7 @@ RING_BYTES: Final = 262_144
 """Output the server keeps for a browser that re-attaches."""
 
 TICKET_TTL_SEC: Final = 30
-OPEN_TTL_SEC: Final = 20
+OPEN_TTL_SEC: Final = 60
 WAIT_MAX_SEC: Final = 25
 WAIT_LEASE_SEC: Final = 45
 """A machine that waited within this long can take an open."""

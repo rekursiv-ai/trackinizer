@@ -267,8 +267,8 @@ class DirectRouter:
             _logger.warning("direct link: could not answer an offer", exc_info=True)
             if self._peer is peer:
                 self._peer = None
+                await self._signal_out(DirectSignal(gen=signal.gen, type="abandon"))
             await peer.close()
-            await self._signal_out(DirectSignal(gen=signal.gen, type="abandon"))
             return
         if self._peer is peer:
             await self._signal_out(DirectSignal(gen=signal.gen, type="answer", sdp=sdp))
@@ -365,12 +365,14 @@ class DirectRouter:
     async def _return_to_relay(self, offset: int) -> None:
         """Replay the ring from ``offset`` on the relay and send output there again."""
         async with self._send_lock:
+            self._gen = 0
+            self._fenced = False
+            await self._drop_peer()
             if self._route != wire_terminals.ROUTE_DIRECT:
                 return
             self._route = wire_terminals.ROUTE_RELAY
             data, resume, _ = self._ring.since(offset)
             self._sent = self._ring.end
-            await self._drop_peer()
             await self._relay(encode_frame(Frame.ACK, resume.to_bytes(8)))
             if data:
                 await self._relay(encode_frame(Frame.OUTPUT, data))

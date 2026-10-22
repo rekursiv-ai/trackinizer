@@ -6799,7 +6799,7 @@ class TestChatCommands:
 
         assert relay.submitted == ["/goal b"]
 
-    def test_a_command_that_cannot_be_typed_is_logged_not_recorded(
+    def test_a_command_that_cannot_be_typed_reports_an_unconfirmed_delivery(
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
@@ -6813,7 +6813,11 @@ class TestChatCommands:
                 record=records.append,
             )
 
-        assert records == []
+        [record] = records
+        delivery = from_plain(record.extra["$delivery"], dict[str, object])
+        assert delivery["text"] == "/goal x"
+        assert delivery["refused"] is False
+        assert delivery["reason"] == "pty write failed"
         (logged,) = caplog.records
         assert logged.getMessage() == (
             "trax run: could not type a command; continuing with the rest"
@@ -7323,7 +7327,7 @@ class TestWhatDrivesAChatRun:
     @pytest.mark.parametrize(
         ("cli_args", "sandboxed", "mode"),
         [
-            ((), False, ""),
+            ((), False, "auto"),
             ((), True, "bypassPermissions"),
             (("--permission-mode", "plan"), False, "plan"),
             (("--permission-mode", "plan"), True, "plan"),
@@ -7331,7 +7335,7 @@ class TestWhatDrivesAChatRun:
             (("--dangerously-skip-permissions",), False, "bypassPermissions"),
         ],
     )
-    def test_claude_asks_unless_the_computer_is_a_sandbox(
+    def test_claude_defaults_to_auto_and_keeps_explicit_permission_modes(
         self,
         cli_args: tuple[str, ...],
         sandboxed: bool,
@@ -7578,7 +7582,7 @@ class TestTheDriversAreBuiltAsTheRunIsConfigured:
         asyncio.run(start())
         return from_plain(json_loads(log.read_text()), dict[str, object])
 
-    def test_claude_gets_its_environment_and_leaves_the_persons_mode_alone(
+    def test_claude_gets_its_environment_and_defaults_to_auto(
         self,
         tmp_path: Path,
     ) -> None:
@@ -7590,7 +7594,7 @@ class TestTheDriversAreBuiltAsTheRunIsConfigured:
 
         argv = from_plain(started["argv"], list[str])
         assert argv[0] == "--given"
-        assert "--permission-mode" not in argv
+        assert argv[argv.index("--permission-mode") + 1] == "auto"
         assert started["actor"] == "scout#2"
 
     # The terminal run drops the same names (``_dropped_env``).
@@ -7633,19 +7637,36 @@ class TestTheDriversAreBuiltAsTheRunIsConfigured:
         assert argv[argv.index("--permission-mode") + 1] == "plan"
 
     @pytest.mark.parametrize(
-        ("sandboxed", "policy", "sandbox"),
+        ("sandboxed", "policy", "sandbox", "cli_args", "reviewer"),
         [
-            (False, "on-request", "workspace-write"),
-            (True, "never", "danger-full-access"),
+            (False, "on-request", "workspace-write", (), "auto_review"),
+            (True, "never", "danger-full-access", (), "auto_review"),
+            (
+                False,
+                "on-request",
+                "workspace-write",
+                ("-c", 'approvals_reviewer="user"'),
+                "user",
+            ),
+            (
+                False,
+                "on-request",
+                "workspace-write",
+                ("--approve-for-me",),
+                "auto_review",
+            ),
         ],
     )
     def test_codex_is_told_when_to_ask_and_what_it_may_touch(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        *,
         sandboxed: bool,
         policy: str,
         sandbox: str,
+        cli_args: tuple[str, ...],
+        reviewer: str,
     ) -> None:
         # The launching session's rooms are not the run's.
         monkeypatch.setenv("TRAX_ROOMS", "launcher")
@@ -7665,7 +7686,7 @@ class TestTheDriversAreBuiltAsTheRunIsConfigured:
         _ = wrapper.write_text(_CODEX_ENV_WRAPPER)
         fake = _THIS.with_name("codex_app_fake.py")
         driver = session._make_driver(
-            RunConfig(cli_name="codex"),
+            RunConfig(cli_name="codex", cli_args=cli_args),
             CodexAdapter(),
             argv=[sys.executable, "-I", "-S", str(wrapper), str(plan), str(fake)],
             env={"TRAX_ACTOR": "scout"},
@@ -7685,6 +7706,7 @@ class TestTheDriversAreBuiltAsTheRunIsConfigured:
         [started] = [each for each in frames if each.get("method") == "thread/start"]
         params = from_plain(started["params"], dict[str, object])
         assert (params["approvalPolicy"], params["sandbox"]) == (policy, sandbox)
+        assert params["approvalsReviewer"] == reviewer
         # The run's environment reaches the app-server, which has no way to be given it.
         assert Path(f"{plan}.env").read_text() == "scout|"
 
@@ -7734,6 +7756,34 @@ def _deliver(
 
 class TestDeliveringToAHeadlessRun:
     """Each kind of message goes where the driver takes it."""
+
+    @pytest.mark.parametrize(
+        ("error", "refused"),
+        [(RunEndedError("run ended"), True), (OSError("connection lost"), False)],
+    )
+    def test_a_failed_line_is_recorded_for_chat_instead_of_waiting_forever(
+        self,
+        error: Exception,
+        refused: bool,
+    ) -> None:
+        run = _FakeRun()
+        run.fail = error
+        records: list[SystemMessage] = []
+
+        _deliver(
+            InboundDrainItem(text="continue", source="alice@x"),
+            run,
+            records=records,
+        )
+
+        [record] = records
+        assert record.extra["$delivery"] == {
+            "text": "continue",
+            "kind": "line",
+            "source": "alice@x",
+            "refused": refused,
+            "reason": str(error),
+        }
 
     def test_a_line_goes_with_its_sender_and_its_record_is_stamped_with_it(
         self,
@@ -7962,10 +8012,7 @@ class TestDeliveringToAHeadlessRun:
         assert command["state"] == "refused"
         assert "taken over in a terminal" in str(command["reason"])
 
-    def test_a_command_the_run_cannot_take_is_neither_recorded_nor_fatal(
-        self,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
+    def test_a_command_the_run_cannot_take_is_recorded_as_refused(self) -> None:
         run = _FakeRun()
         run.fail = RunEndedError("the codex run ended")
         records: list[SystemMessage] = []
@@ -7976,10 +8023,10 @@ class TestDeliveringToAHeadlessRun:
             records=records,
         )
 
-        assert records == []
-        assert [each.getMessage() for each in caplog.records] == [
-            "trax run: could not run a command; the run has ended",
-        ]
+        [record] = records
+        command = from_plain(record.extra["$command"], dict[str, object])
+        assert command["state"] == "refused"
+        assert command["reason"] == "the codex run ended"
 
     def test_a_command_with_no_stamping_state_is_still_run_and_recorded(self) -> None:
         run = _FakeRun()
