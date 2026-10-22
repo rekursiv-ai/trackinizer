@@ -16,6 +16,7 @@ from collections.abc import (
     Iterator,
     Mapping,
     Sequence,
+    Sized,
 )
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
@@ -6293,7 +6294,8 @@ class _OpenPrompt:
         )
         self.bridge.start()
         self.reply = _held_hook(bridge_path=tmp_path / "bridge.sock")
-        assert self.inbound.prompt_pending.wait(2.0)
+        _wait_for_records(records, 1)
+        assert self.inbound.prompt_pending.is_set()
         card = from_plain(records[0].extra["$interaction"], dict[str, object])
         self.prompt_id = from_plain(card["id"], str)
 
@@ -6320,6 +6322,16 @@ def _held_hook(*, bridge_path: Path) -> Callable[[], str]:
         return replies[0]
 
     return reply
+
+
+# The bridge sets ``prompt_pending`` on the hook's thread before it writes the prompt's
+# record, so a test that sees the flag may not see the record yet. Wait on the record:
+# once it is written the flag is set too.
+def _wait_for_records(records: Sized, count: int) -> None:
+    """Block until ``records`` holds ``count`` records, or give up after 3s."""
+    deadline = time.monotonic() + 3.0
+    while len(records) < count and time.monotonic() < deadline:
+        time.sleep(0.005)
 
 
 class _PermissionHook:
@@ -6350,7 +6362,8 @@ class _PermissionHook:
         inbound = drained["inbound"]
         assert isinstance(inbound, InboundState)
         records = cast(deque[Event], drained["run_records"])
-        self.held.append(inbound.prompt_pending.wait(2.0) and len(records) == 1)
+        _wait_for_records(records, 1)
+        self.held.append(len(records) == 1 and inbound.prompt_pending.is_set())
 
     def reply(self) -> str:
         """Return what the hook printed once let go."""
