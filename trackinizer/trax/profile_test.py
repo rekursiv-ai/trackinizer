@@ -10,6 +10,7 @@ from trackinizer.lib.userdirs import config_dir
 from trackinizer.trax import profile
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.context import trax_env
+from trackinizer.trax.login import LoginResult
 from trackinizer.trax.profile import Profile
 
 
@@ -655,6 +656,84 @@ def test_trax_env_prefers_the_plain_name_over_the_ssh_forwarded_one(
     assert trax_env("WORKSPACE") == "from-ssh"
     monkeypatch.setenv("TRAX_WORKSPACE", "plain")
     assert trax_env("WORKSPACE") == "plain"
+
+
+def test_profile_login_runs_the_device_login_and_names_the_result(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[tuple[str, str]] = []
+
+    def fake_login(url: str, *, profile: str) -> LoginResult:
+        asked.append((url, profile))
+        return LoginResult(profile=profile, role="writer")
+
+    monkeypatch.setattr("trackinizer.trax.login.login", fake_login)
+
+    run(["profile", "work", "login", "https://trackinizer.example"], client)
+
+    assert asked == [("https://trackinizer.example", "work")]
+    assert capsys.readouterr().out == "logged in: profile work (writer)\n"
+    assert not client.calls
+
+
+def test_profile_help_lists_the_login_form(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["profile", "help"], client)
+
+    assert (
+        "trax profile foo login https://trackinizer.example" in capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["work", "login"], ["work", "login", "a", "b"], ["login", "work", "x"]],
+)
+def test_profile_login_needs_a_name_and_one_url(
+    client: FakeClient,
+    argv: list[str],
+) -> None:
+    with pytest.raises(ClientError):
+        run(["profile", *argv], client)
+
+
+def test_a_usable_profile_is_a_pinned_one_or_a_saved_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+    assert not profile.has_usable_profile()
+
+    profile.save_profile("work", Profile(url="http://work:9000"))
+    assert not profile.has_usable_profile()
+
+    profile.switch_profile("work")
+    assert profile.has_usable_profile()
+
+
+def test_a_saved_default_profile_is_usable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+
+    profile.save_profile("default", Profile(url="http://work:9000"))
+
+    assert profile.has_usable_profile()
+
+
+def test_a_profile_set_in_the_environment_is_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRACKINIZER_PROFILE", "lab")
+
+    assert profile.has_usable_profile()
+
+
+@pytest.mark.parametrize("name", ["", ".", "..", "a/b", "a b"])
+def test_a_profile_name_that_could_leave_the_directory_is_refused(name: str) -> None:
+    with pytest.raises(ClientError, match="invalid profile name"):
+        profile.validate_profile_name(name)
 
 
 def test_profile_repr_and_str_hold_no_key_text() -> None:

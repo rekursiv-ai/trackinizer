@@ -269,6 +269,37 @@ class TestMachineHostCommands:
         assert should_delegate(argv)
 
 
+class TestProfileLogin:
+    """``profile NAME login URL`` waits for a person, so it runs in-process."""
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["profile", "work", "login", "https://trackinizer.example"],
+            ["PROFILE", "work", "LOGIN", "https://trackinizer.example"],
+            ["--port=9", "profile", "work", "login", "https://trackinizer.example"],
+        ],
+    )
+    def test_refuses_the_login(self, argv: list[str]) -> None:
+        assert not should_delegate(argv)
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["profile"],
+            ["profile", "work"],
+            ["profile", "work", "url", "to", "login"],
+            ["issue", "7", "title", "to", "login"],
+            ["issue", "work", "login"],
+        ],
+    )
+    def test_delegates_the_other_profile_commands_and_values(
+        self,
+        argv: list[str],
+    ) -> None:
+        assert should_delegate(argv)
+
+
 class TestJobCommands:
     """``trax job`` ssh-es to a node and reads secrets from stdin: it runs in-process."""
 

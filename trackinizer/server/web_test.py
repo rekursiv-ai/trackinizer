@@ -1821,6 +1821,83 @@ class TestAttachedRoutes:
         assert seen == [False]
 
 
+class TestDevicePage:
+    """The page where a signed-in person approves a program's device login."""
+
+    def _page_app(self, tmp_path: Path, *, manifest: str | None = None) -> FastAPI:
+        pages = tmp_path / "pages"
+        pages.mkdir()
+        (pages / "device.html").write_text("<title>{{app_name}}</title>DEVICE")
+        build = _write_build(tmp_path / "b", marker="a")
+        if manifest is not None:
+            (build / "manifest.webmanifest").write_text(manifest)
+        app = FastAPI()
+        web.attach(app, assets_dir=pages, app_dir=build)
+        return app
+
+    def test_a_signed_out_visitor_is_sent_to_sign_in_and_back_with_the_code(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        app = self._page_app(tmp_path)
+        _install_identity(app, None)
+
+        r = TestClient(app, follow_redirects=False).get(
+            "/auth/device",
+            params={"user_code": "BCDF-GHJK"},
+        )
+
+        assert r.status_code == 302
+        location = urlparse(r.headers["location"])
+        assert location.path == "/auth/login_page"
+        assert parse_qs(location.query)["next"] == ["/auth/device?user_code=BCDF-GHJK"]
+        assert "DEVICE" not in r.text
+
+    def test_a_signed_in_visitor_gets_the_page_named_for_the_app(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        app = self._page_app(tmp_path, manifest='{"name": "<b>Acme&"}')
+        _install_identity(app, _TEST_IDENTITY)
+
+        r = TestClient(app, follow_redirects=False).get("/auth/device")
+
+        assert r.status_code == 200
+        assert r.text == "<title>&lt;b&gt;Acme&amp;</title>DEVICE"
+        assert r.headers["cache-control"] == "private, no-cache"
+
+    def test_the_route_is_get_only_and_off_the_schema(self, tmp_path: Path) -> None:
+        app = self._page_app(tmp_path)
+
+        (route,) = (
+            r
+            for r in app.routes
+            if isinstance(r, APIRoute) and r.path == "/auth/device"
+        )
+
+        assert route.methods == {"GET"}
+        assert route.include_in_schema is False
+
+    def test_without_the_asset_no_route_is_mounted(self, tmp_path: Path) -> None:
+        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
+
+        assert TestClient(app).get("/auth/device").status_code == 404
+
+    def test_the_shipped_page_has_no_name_of_its_own_and_sets_only_text(self) -> None:
+        page = (Path(web.__file__).parent / "assets" / "device.html").read_text()
+        assert page.count("{{app_name}}") == 2
+        assert "Trackinizer" not in page
+        # What the page shows came from a stranger's request, so it is never markup.
+        assert "innerHTML" not in page
+        assert "insertAdjacentHTML" not in page
+        # A code in the link only fills the field: a stranger's link must not reach the
+        # review step before the person has checked the code against their terminal.
+        assert "look(given)" not in page
+        assert page.count("look(") == 2  # The definition, and the form's submit.
+        for path in ("lookup", "approve", "deny"):
+            assert f'"/auth/device/{path}"' in page
+
+
 class TestAppDir:
     def test_signed_out_page_redirects_to_login_with_next(
         self,

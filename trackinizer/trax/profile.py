@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Final, cast, override
+from typing import TYPE_CHECKING, ClassVar, Final, cast, override
 from urllib.parse import urlsplit
 
 import argparse
@@ -21,6 +21,16 @@ from trackinizer.trax.client_cache import close_clients
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import env, trax_env
 from trackinizer.trax.render import echo
+
+
+if TYPE_CHECKING:
+    from trackinizer.trax import login
+else:
+    from wrapt import lazy_import
+
+    # Only ``trax profile NAME login URL`` polls a server, so the device-login models
+    # stay off the cold-start path of every other verb.
+    login = lazy_import("trackinizer.trax.login")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -52,6 +62,9 @@ Examples:
   trax profile foo token to trax__...              set profile foo token
   trax profile current foo                         select profile foo
   trax profile foo del                             delete profile foo
+  trax profile foo login https://trackinizer.example
+                                                   log in with a code you approve
+                                                   in a browser; saves profile foo
 
 Fields: url actor token
 """
@@ -98,6 +111,9 @@ Fields: url actor token
             return
         if tokens[0] == "current":
             cls.run_current(tokens[1:])
+            return
+        if len(tokens) == 3 and tokens[1] == "login":
+            cls.run_login(tokens[0], url=tokens[2])
             return
         if tokens[0] in cls.fields:
             cls.run_field_or_set(current_profile(), tokens)
@@ -255,6 +271,18 @@ Fields: url actor token
         echo(f"set: profile current {tokens[0]}")
 
     @classmethod
+    def run_login(cls, name: str, *, url: str) -> None:
+        """Log in to ``url`` by a code approved in a browser; save the key as ``name``.
+
+        Args:
+          name: Profile name to save the key under.
+          url: The server's URL.
+
+        """
+        result = login.login(url, profile=name)
+        echo(f"logged in: profile {result.profile} ({result.role})")
+
+    @classmethod
     def run_del(cls, tokens: Sequence[str]) -> None:
         """Run del."""
         if len(tokens) != 1:
@@ -382,6 +410,20 @@ def current_profile() -> str:
     return _explicit_profile() or "default"
 
 
+def has_usable_profile() -> bool:
+    """Return whether trax already knows which profile to use.
+
+    Returns:
+      usable: True when a profile is pinned (``$TRACKINIZER_PROFILE`` or the
+        ``current`` file) or a ``default`` profile is saved.
+
+    """
+    return (
+        _explicit_profile() is not None
+        or (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "default").exists()
+    )
+
+
 def save_profile(name: str, profile: Profile) -> None:
     """Persist ``profile`` under ``name`` atomically.
 
@@ -394,7 +436,7 @@ def save_profile(name: str, profile: Profile) -> None:
       profile: Profile object with URL, author, and optional API key.
 
     """
-    _validate_profile_name(name)
+    validate_profile_name(name)
     url = server_url(profile.url, f"profile {name!r}")
     lines = [f"url={url}"]
     if profile.author:
@@ -419,7 +461,7 @@ def switch_profile(name: str) -> None:
       name: Name.
 
     """
-    _validate_profile_name(name)
+    validate_profile_name(name)
     _write_atomic(
         config_dir() / "rekursiv-ai" / "trax" / "current",
         name + "\n",
@@ -449,7 +491,7 @@ def del_profile(name: str) -> bool:
       deleted: True if the profile existed and was removed; False if not found.
 
     """
-    _validate_profile_name(name)
+    validate_profile_name(name)
     if name == _explicit_profile():
         raise ClientError(f"cannot delete active profile {name!r}; switch first")
     path = config_dir() / "rekursiv-ai" / "trax" / "profiles" / name
@@ -476,7 +518,7 @@ def read_profile(name: str) -> Profile:
       ClientError: If the file is absent or has no ``url=`` line.
 
     """
-    _validate_profile_name(name)
+    validate_profile_name(name)
     path = config_dir() / "rekursiv-ai" / "trax" / "profiles" / name
     try:
         text = path.read_text()
@@ -497,6 +539,25 @@ def read_profile(name: str) -> Profile:
         author=fields.get("author", ""),
         api_key=fields.get("api_key", ""),
     )
+
+
+# A name is a single path segment, so anything outside ``[A-Za-z0-9._-]`` (path
+# separators, ``..`` traversal) is refused before it reaches ``config_dir() / "rekursiv-
+# ai" / "trax" / "profiles" / name``. ``.`` and ``..`` match the character class but are
+# still directory references, so they are rejected explicitly.
+def validate_profile_name(name: str) -> None:
+    """Reject a profile name that could escape the profiles directory.
+
+    Args:
+      name: A profile name, as typed or derived.
+
+    Raises:
+      ClientError: The name is empty, a directory reference, or holds a character
+        outside ``[A-Za-z0-9._-]``.
+
+    """
+    if name in {".", ".."} or not re.match(r"\A[A-Za-z0-9._-]+\Z", name):
+        raise ClientError(f"invalid profile name {name!r}")
 
 
 # A single malformed profile must not block bare ``trax profile`` (the listing), so
@@ -547,16 +608,6 @@ def _write_atomic(path: Path, content: str, *, mode: int) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
-
-
-# A name is a single path segment, so anything outside ``[A-Za-z0-9._-]`` (path
-# separators, ``..`` traversal) is refused before it reaches ``config_dir() / "rekursiv-
-# ai" / "trax" / "profiles" / name``. ``.`` and ``..`` match the character class but are
-# still directory references, so they are rejected explicitly.
-def _validate_profile_name(name: str) -> None:
-    """Reject a profile name that could escape the profiles directory."""
-    if name in {".", ".."} or not re.match(r"\A[A-Za-z0-9._-]+\Z", name):
-        raise ClientError(f"invalid profile name {name!r}")
 
 
 def _explicit_profile() -> str | None:

@@ -10,18 +10,25 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+import asyncio
 import uuid
 
+from fastapi import HTTPException
 from treekle import from_plain
 
 import pytest
 
-from trackinizer.conftest import executed_sql, set_field_row
+from trackinizer.conftest import executed_sql, make_conn, set_field_row
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
+)
+from trackinizer.server.api.machine_host_routes import (
+    MachineOwnedError,
+    claim_machine,
+    issue_enrollment,
 )
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.machine_auth import (
@@ -97,6 +104,140 @@ def test_enroll_supersedes_open_tokens_then_stores_only_the_digest(
     ]
     assert "used_at IS NULL" in sent[1]
     assert token not in " ".join(sent)
+
+
+_CLAIM_SQL = (
+    "INSERT INTO machines (name, updated_by, owner, role, confirmed_at) "
+    "VALUES ($1, $2, $2, $3, CASE WHEN $4 THEN now() END) "
+    "ON CONFLICT (name) DO UPDATE SET "
+    "owner = CASE WHEN $4 AND $3 = '' "
+    "THEN COALESCE(machines.owner, EXCLUDED.owner) "
+    "ELSE machines.owner END, "
+    "confirmed_at = CASE WHEN $4 THEN COALESCE(machines.confirmed_at, now()) "
+    "ELSE machines.confirmed_at END RETURNING id, owner"
+)
+
+
+@pytest.mark.parametrize(("admin", "role"), [(True, ""), (False, "personal")])
+def test_claim_machine_registers_or_locks_the_machine_in_one_statement(
+    admin: bool,
+    role: str,
+) -> None:
+    conn = make_conn()
+    conn.fetchrow.side_effect = None
+    conn.fetchrow.return_value = {"id": str(_MACHINE_ID), "owner": TEST_USER_EMAIL}
+
+    claimed = asyncio.run(
+        claim_machine(conn, name="dev-1", email=TEST_USER_EMAIL, admin=admin),
+    )
+
+    assert claimed == _MACHINE_ID
+    conn.fetchrow.assert_awaited_once_with(
+        _CLAIM_SQL,
+        "dev-1",
+        TEST_USER_EMAIL,
+        role,
+        admin,
+    )
+
+
+def test_claim_machine_confirms_a_personal_machine_when_asked() -> None:
+    conn = make_conn()
+    conn.fetchrow.side_effect = None
+    conn.fetchrow.return_value = {"id": str(_MACHINE_ID), "owner": TEST_USER_EMAIL}
+
+    asyncio.run(
+        claim_machine(
+            conn,
+            name="dev-1",
+            email=TEST_USER_EMAIL,
+            admin=False,
+            confirmed=True,
+        ),
+    )
+
+    conn.fetchrow.assert_awaited_once_with(
+        _CLAIM_SQL,
+        "dev-1",
+        TEST_USER_EMAIL,
+        "personal",
+        True,
+    )
+
+
+def test_claim_machine_expects_the_statement_to_return_a_row() -> None:
+    conn = make_conn()
+    conn.fetchrow.side_effect = None
+    conn.fetchrow.return_value = None
+
+    with pytest.raises(ValueError, match=r"^Expected machine is not None\.$"):
+        asyncio.run(
+            claim_machine(conn, name="dev-1", email=TEST_USER_EMAIL, admin=True),
+        )
+
+
+def test_claim_machine_refuses_an_admin_a_name_another_person_owns() -> None:
+    conn = make_conn()
+    conn.fetchrow.side_effect = None
+    conn.fetchrow.return_value = {"id": _MACHINE_ID, "owner": "mal@x.y"}
+
+    with pytest.raises(MachineOwnedError) as refused:
+        asyncio.run(
+            claim_machine(conn, name="dev-1", email=TEST_USER_EMAIL, admin=True),
+        )
+
+    assert str(refused.value) == (
+        "machine 'dev-1' is owned by mal@x.y; "
+        "choose another name, or have them revoke it first"
+    )
+
+
+@pytest.mark.parametrize("owner", ["mal@x.y", None])
+def test_claim_machine_refuses_anyone_else_a_machine_that_is_not_theirs(
+    owner: str | None,
+) -> None:
+    conn = make_conn()
+    conn.fetchrow.side_effect = None
+    conn.fetchrow.return_value = {"id": _MACHINE_ID, "owner": owner}
+
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(
+            claim_machine(conn, name="dev-1", email=TEST_USER_EMAIL, admin=False),
+        )
+
+    assert (refused.value.status_code, refused.value.detail) == (
+        403,
+        "machine belongs to another user",
+    )
+
+
+def test_issue_enrollment_supersedes_the_open_token_and_returns_the_new_one() -> None:
+    conn = make_conn()
+    conn.fetchval.return_value = _BEAT
+
+    minted, expires_at = asyncio.run(
+        issue_enrollment(conn, machine_id=_MACHINE_ID, created_by=TEST_USER_EMAIL),
+    )
+
+    parsed = parse_enrollment(minted.token)
+    assert parsed is not None
+    assert expires_at == _BEAT
+    conn.execute.assert_awaited_once_with(
+        "UPDATE machine_enrollments SET used_at = now() "
+        "WHERE machine_id = $1 AND used_at IS NULL",
+        _MACHINE_ID,
+    )
+    conn.fetchval.assert_awaited_once_with(
+        "INSERT INTO machine_enrollments "
+        "(id, machine_id, secret_sha256, created_by, expires_at) "
+        "VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5)) "
+        "RETURNING expires_at",
+        parsed.id,
+        _MACHINE_ID,
+        parsed.digest,
+        TEST_USER_EMAIL,
+        ENROLL_TTL_SEC,
+    )
 
 
 def test_enroll_by_a_viewer_sends_nothing(

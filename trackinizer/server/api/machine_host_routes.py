@@ -31,6 +31,7 @@ from trackinizer.server.api.session_access import resolve_asker
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.machine_auth import (
     MachineIdentity,
+    MintedSecret,
     ParsedSecret,
     current_machine,
     machine_revoked,
@@ -65,8 +66,10 @@ if TYPE_CHECKING:
 __all__ = [
     "AnotherHostConnectedError",
     "MachineOwnedError",
+    "claim_machine",
     "enroll_machine_route",
     "heartbeat_machine_route",
+    "issue_enrollment",
     "join_machine_route",
     "revoke_machine_route",
     "router",
@@ -126,66 +129,24 @@ async def enroll_machine_route(
     refuse_reserved(body.name)
     asker = await _asker_of(request, identity, asker=body.asker)
     who = identity.email if asker is None else asker
-    minted = mint_secret(ENROLLMENT_PREFIX)
+    admin = asker is None and identity.role == "admin"
     async with engine_of(request).acquire() as conn, tx(conn):
-        # One statement registers the machine or, through the no-op update, locks its
-        # existing row. A DO NOTHING insert followed by a separate lock leaves a gap in
-        # which a delete commits: the lock then finds no row, the enrollment is
-        # inserted with a NULL machine, and the route answers 500. The lock also
-        # serialises two enrollments of one machine, so the later one always
-        # supersedes the earlier.
-        admin = asker is None and identity.role == "admin"
-        machine = await conn.fetchrow(
-            "INSERT INTO machines (name, updated_by, owner, role, confirmed_at) "
-            "VALUES ($1, $2, $2, $3, CASE WHEN $4 THEN now() END) "
-            "ON CONFLICT (name) DO UPDATE SET "
-            "owner = CASE WHEN $4 AND $3 = '' "
-            "THEN COALESCE(machines.owner, EXCLUDED.owner) "
-            "ELSE machines.owner END, "
-            "confirmed_at = CASE WHEN $4 THEN COALESCE(machines.confirmed_at, now()) "
-            "ELSE machines.confirmed_at END RETURNING id, owner",
-            body.name,
-            who,
-            "" if admin else PERSONAL_ROLE,
-            asker is not None or admin,
+        machine_id = await claim_machine(
+            conn,
+            name=body.name,
+            email=who,
+            admin=admin,
+            confirmed=asker is not None or admin,
         )
-        if machine is None:
-            raise ValueError("Expected machine is not None.")
-        machine_id = machine["id"]
-        owner = from_plain(machine["owner"], str | None)
-        if owner != who:
-            # Nobody adopts a name another person holds: the machine under it, and any
-            # shell opened on it, stay that person's. Raised inside the transaction, so
-            # nothing is kept.
-            if admin:
-                raise MachineOwnedError(
-                    f"machine {body.name!r} is owned by {owner}; "
-                    "choose another name, or have them revoke it first",
-                )
-            raise HTTPException(
-                status_code=403,
-                detail="machine belongs to another user",
-            )
-        await conn.execute(
-            "UPDATE machine_enrollments SET used_at = now() "
-            "WHERE machine_id = $1 AND used_at IS NULL",
-            machine_id,
-        )
-        expires_at = await conn.fetchval(
-            "INSERT INTO machine_enrollments "
-            "(id, machine_id, secret_sha256, created_by, expires_at) "
-            "VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5)) "
-            "RETURNING expires_at",
-            minted.id,
-            machine_id,
-            minted.digest,
-            who,
-            ENROLL_TTL_SEC,
+        minted, expires_at = await issue_enrollment(
+            conn,
+            machine_id=machine_id,
+            created_by=who,
         )
     response.headers["Cache-Control"] = "no-store"
     return EnrollResponse(
         token=minted.token,
-        expires_at=from_plain(expires_at, datetime),
+        expires_at=expires_at,
         owner=who,
     )
 
@@ -409,6 +370,114 @@ async def revoke_machine_route(
         )
     await get_terminal_hub(request).close_machine(from_plain(machine_id, UUID))
     return Response(status_code=204)
+
+
+async def claim_machine(
+    conn: Conn,
+    *,
+    name: str,
+    email: str,
+    admin: bool,
+    confirmed: bool | None = None,
+) -> UUID:
+    """Register the machine if it is new, or find it, for ``email`` to enroll.
+
+    An admin takes a machine that is new, unowned or already theirs, registers a new
+    one with no role, and confirms it. Anyone else registers a new one as their own
+    ``personal`` machine, and may enroll only one that is already theirs. It is
+    confirmed when ``confirmed`` is true, which defaults to ``admin``: a person who has
+    seen the machine's name approve it, or the assistant enrolling for its asker.
+    The caller opens the transaction, so a refusal keeps nothing.
+
+    Args:
+      conn: A connection inside a transaction.
+      name: The machine's name; a reserved name is the caller's to refuse.
+      email: Who enrolls the machine, and owns it when it is new.
+      admin: Whether ``email`` enrolls as an admin.
+      confirmed: Whether the machine is confirmed now; ``None`` means ``admin``.
+
+    Returns:
+      machine_id: The machine's id.
+
+    Raises:
+      MachineOwnedError: An admin names a machine another person owns.
+      HTTPException: 403 when a non-admin names a machine that is not theirs.
+
+    """
+    # One statement registers the machine or, through the no-op update, locks its
+    # existing row. A DO NOTHING insert followed by a separate lock leaves a gap in
+    # which a delete commits: the lock then finds no row, the enrollment is
+    # inserted with a NULL machine, and the route answers 500. The lock also
+    # serialises two enrollments of one machine, so the later one always
+    # supersedes the earlier.
+    machine = await conn.fetchrow(
+        "INSERT INTO machines (name, updated_by, owner, role, confirmed_at) "
+        "VALUES ($1, $2, $2, $3, CASE WHEN $4 THEN now() END) "
+        "ON CONFLICT (name) DO UPDATE SET "
+        "owner = CASE WHEN $4 AND $3 = '' "
+        "THEN COALESCE(machines.owner, EXCLUDED.owner) "
+        "ELSE machines.owner END, "
+        "confirmed_at = CASE WHEN $4 THEN COALESCE(machines.confirmed_at, now()) "
+        "ELSE machines.confirmed_at END RETURNING id, owner",
+        name,
+        email,
+        "" if admin else PERSONAL_ROLE,
+        admin if confirmed is None else confirmed,
+    )
+    if machine is None:
+        raise ValueError("Expected machine is not None.")
+    owner = from_plain(machine["owner"], str | None)
+    if owner != email:
+        # Nobody adopts a name another person holds: the machine under it, and any
+        # shell opened on it, stay that person's. Raised inside the transaction, so
+        # nothing is kept.
+        if admin:
+            raise MachineOwnedError(
+                f"machine {name!r} is owned by {owner}; "
+                "choose another name, or have them revoke it first",
+            )
+        raise HTTPException(
+            status_code=403,
+            detail="machine belongs to another user",
+        )
+    return from_plain(machine["id"], UUID)
+
+
+async def issue_enrollment(
+    conn: Conn,
+    *,
+    machine_id: UUID,
+    created_by: str,
+) -> tuple[MintedSecret, datetime]:
+    """Issue a one-use enrollment token for the machine, superseding any open one.
+
+    Args:
+      conn: A connection inside a transaction.
+      machine_id: The machine the token lets a host join as.
+      created_by: Who enrolls it; the join checks they still may.
+
+    Returns:
+      issued: The token, shown once, and when it stops working.
+
+    """
+    minted = mint_secret(ENROLLMENT_PREFIX)
+    await conn.execute(
+        "UPDATE machine_enrollments SET used_at = now() "
+        "WHERE machine_id = $1 AND used_at IS NULL",
+        machine_id,
+    )
+    expires_at = await conn.fetchval(
+        "INSERT INTO machine_enrollments "
+        "(id, machine_id, secret_sha256, created_by, expires_at) "
+        "VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5)) "
+        "RETURNING expires_at",
+        minted.id,
+        machine_id,
+        minted.digest,
+        created_by,
+        ENROLL_TTL_SEC,
+    )
+    return minted, from_plain(expires_at, datetime)
 
 
 # The assistant is trusted to say whom it answers, as for a chat's settings, and the
