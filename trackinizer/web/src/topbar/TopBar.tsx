@@ -14,16 +14,35 @@ import { useDismiss } from "./useDismiss";
 import { useHoverOpen } from "../visuals/hoverOpen";
 import "./topbar.css";
 
+/** The `localStorage` key of whether this browser keeps the bar open. */
+const PINNED_KEY = "trackinizer.topbar.pinned";
+
+function readPinned(): boolean {
+  try {
+    return localStorage.getItem(PINNED_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function writePinned(pinned: boolean) {
+  try {
+    localStorage.setItem(PINNED_KEY, pinned ? "1" : "0");
+  } catch {
+    // Storage blocked: the choice lasts for this page only.
+  }
+}
+
 /**
  * The app's one bar, along the top: the logo (home, the graph), Go (the pages),
- * Search, New, then the user's workstreams, the pin, Machines (where commands
+ * Search, New, the pin, then the user's workstreams, Machines (where commands
  * run), the Workbench's visuals while a canvas is mounted, and the account at
  * the end.
  */
 export function TopBar({ stations }: { readonly stations: boolean }) {
   const palette = usePalette();
   const [goOpen, setGoOpen] = useState(false);
-  const [pinned, setPinned] = useState(false);
+  const [pinned, setPinned] = useState(readPinned);
   const header = useRef<HTMLElement>(null);
   const peek = useHoverOpen(header);
   const shown = pinned || peek.open;
@@ -52,9 +71,10 @@ export function TopBar({ stations }: { readonly stations: boolean }) {
       </button>
       <ComposeButton onNavigate={closeGo} />
       <span className="topbar-rule" aria-hidden="true" />
-      <div className="topbar-stations">{stations && <WorkstreamBar />}</div>
       <button type="button" className="icon-btn topbar-pin" aria-label={pinned ? "Unpin app bar" : "Keep app bar open"}
-        title="Keep the bar open" aria-pressed={pinned} onClick={() => setPinned((value) => !value)}><span aria-hidden="true">📌</span></button>
+        title={pinned ? "Unpin app bar" : "Keep app bar open"} aria-pressed={pinned}
+        onClick={() => { writePinned(!pinned); setPinned(!pinned); }}><span aria-hidden="true">📌</span></button>
+      <div className="topbar-stations">{stations && <WorkstreamBar />}</div>
       <MachinesMenu shown={shown} />
       <WorkbenchMenu />
       <AccountMenu onNavigate={closeGo} />

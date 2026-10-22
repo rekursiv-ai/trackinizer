@@ -117,8 +117,9 @@ async def post_chat_line_route(
     A ``line`` that starts with a known slash command of claude or codex is judged
     by the chat's provider, not the poster's station. One the provider runs from
     Chat (``/goal``, and claude's ``/compact``) is queued as a ``command``, typed
-    bare, with no page, trail or marks; any other is 422 ``command_refused`` with
-    the reason in ``message``, and nothing is queued. Every other ``/`` line stays a
+    bare, with no page, trail or marks; ``/model <name>`` and ``/effort <level>``
+    are queued as a ``settings`` post the same way (bare, they are refused); any
+    other is 422 ``command_refused`` with the reason in ``message``, and nothing is queued. Every other ``/`` line stays a
     line. An ``answer`` for ``claude`` or ``codex`` is the chat's starter's alone, the
     run's owner, since it runs a tool or grants trust on their machine. An ``answer``
     to the assistant's card is the person's the card asked (``input.asker``, else the

@@ -2949,6 +2949,7 @@ def _deliver_headless(
             case "settings":
                 model, effort = settings_from_payload(item.payload)
                 run.settings(model=model, effort=effort)
+                _record_settings(item, model=model, effort=effort, record=record)
             case "command":
                 _deliver_headless_command(run, item, inbound=inbound, record=record)
             case "line":
@@ -2963,6 +2964,30 @@ def _deliver_headless(
             "continuing with the rest of the batch",
             exc_info=True,
         )
+
+
+# Settled as a typed command is, so Chat shows ``/model opus`` and settles the line it
+# sent. Only a change the driver took is recorded; a refused one is a delivery failure.
+def _record_settings(
+    item: InboundDrainItem,
+    *,
+    model: str,
+    effort: str,
+    record: Callable[[SystemMessage], None] | None,
+) -> None:
+    """Record each setting a driver took as a typed command, if a record is kept."""
+    if record is None:
+        return
+    for verb, value in (("model", model), ("effort", effort)):
+        if value:
+            record(
+                command_record(
+                    f"/{verb} {value}",
+                    source=item.source,
+                    room=item.room,
+                    state="typed",
+                ),
+            )
 
 
 def _deliver_headless_line(

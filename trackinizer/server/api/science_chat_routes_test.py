@@ -1340,7 +1340,7 @@ async def test_a_post_to_a_claude_station_reaches_its_run_with_kind_and_payload(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_claude_station_queues_goal_as_a_command_and_refuses_model(
+async def test_a_claude_station_queues_goal_as_a_command_and_model_as_settings(
     pglite_route_client: _Client,
 ) -> None:
     """The browser posts a line; the server tells the command from it."""
@@ -1364,6 +1364,12 @@ async def test_a_claude_station_queues_goal_as_a_command_and_refuses_model(
         text="/goal ship it",
         kind="line",
     )
+    resume = await _post(
+        client,
+        workspace_id=workspace_id,
+        text="/resume",
+        kind="line",
+    )
     model = await _post(
         client,
         workspace_id=workspace_id,
@@ -1372,26 +1378,26 @@ async def test_a_claude_station_queues_goal_as_a_command_and_refuses_model(
     )
 
     assert goal.status_code == 200, goal.text
-    assert model.status_code == 422
-    assert json_loads(model.content) == {
+    assert model.status_code == 200, model.text
+    assert resume.status_code == 422
+    assert json_loads(resume.content) == {
         "detail": {
             "code": "command_refused",
-            "message": "Chat cannot run /model: it opens a menu, changes settings or "
+            "message": "Chat cannot run /resume: it opens a menu, changes settings or "
             "switches the session. Use the terminal: trax run attach <run>",
         },
     }
     act_as_user_agent("writer")
     taken = await drain(client, session_id=run, cli="claude")
     assert taken.status_code == 200
-    [heard] = from_plain(
+    heard = from_plain(
         json_loads(taken.content, dict[str, object])["messages"],
         list[dict[str, object]],
     )
-    assert (heard["text"], heard["kind"], heard["context"]) == (
-        "/goal ship it",
-        "command",
-        None,
-    )
+    assert [(m["text"], m["kind"], m["payload"], m["context"]) for m in heard] == [
+        ("/goal ship it", "command", None, None),
+        ("/model opus", "settings", {"model": "opus", "effort": None}, None),
+    ]
 
 
 @pytest.mark.db_pglite

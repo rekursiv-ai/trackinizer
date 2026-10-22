@@ -1165,7 +1165,10 @@ the starter's station's in a chat someone else began, never the poster's.
 `/goal <condition>`, `/goal clear` (also typed as `stop`, `off`, `reset`, `none`
 or `cancel`), codex's `/goal pause` and `/goal resume`, and claude's `/compact`
 are queued as kind `command`, verb lowercased, with no canvas context and no
-marks, and the run types them bare. Any other built-in, a command of more than
+marks, and the run types them bare. `/model <name>` and `/effort <level>` (one
+token; the level lowercased) are queued as kind `settings` with a `{"model", "effort"}`
+payload, likewise bare of context and marks; without the argument they are refused.
+Any other built-in, a command of more than
 one line or over 800 characters, and every command to `assistant` are 422
 `{"detail": {"code": "command_refused", "message": "<why>"}}`, before anything
 is queued or a station bound. Any other text, `/etc/hosts is broken` or a custom
