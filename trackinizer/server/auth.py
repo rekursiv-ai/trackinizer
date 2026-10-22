@@ -43,6 +43,7 @@ from trackinizer.server.audience import audiences_for, key_audiences
 from trackinizer.server.notify import tx
 from trackinizer.server.session import read_session_cookie
 from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE
+from trackinizer.wire.wire_job import BOX_CREDENTIAL_PREFIX
 from trackinizer.wire.wire_machine_host import (
     CREDENTIAL_PREFIX,
     ENROLLMENT_PREFIX,
@@ -305,9 +306,10 @@ def generate_token() -> tuple[str, str]:
 
     """
     secret = "trax_" + secrets.token_urlsafe(_TOKEN_BYTES)
-    # A machine credential starts ``trax_machine_``; an API key that did would be
-    # mistaken for one by ``current_user``'s early 401. Odds 2^-48 per mint.
-    while secret.startswith(CREDENTIAL_PREFIX):
+    # A machine or campaign-box credential starts ``trax_machine_`` or
+    # ``trax_gpubox_``; an API key that did would be mistaken for one by
+    # ``current_user``'s early 401. Odds 2^-48 per mint.
+    while secret.startswith((CREDENTIAL_PREFIX, BOX_CREDENTIAL_PREFIX)):
         secret = "trax_" + secrets.token_urlsafe(_TOKEN_BYTES)
     return secret, secret[:TOKEN_PREFIX_LEN]
 
@@ -361,9 +363,11 @@ async def user_of(request: HTTPConnection) -> AuthIdentity:
     # The Store carries the per-process ``last_used_at`` throttle.
     store = state.store
     bearer = extract_bearer(request)
-    # A machine credential or enrollment token is not a user credential: refuse it
-    # before any lookup, with the answer an unknown bearer gets.
-    if bearer is not None and bearer.startswith((CREDENTIAL_PREFIX, ENROLLMENT_PREFIX)):
+    # A machine credential, enrollment token or campaign-box credential is not a user
+    # credential: refuse it before any lookup, with the answer an unknown bearer gets.
+    if bearer is not None and bearer.startswith(
+        (CREDENTIAL_PREFIX, ENROLLMENT_PREFIX, BOX_CREDENTIAL_PREFIX),
+    ):
         raise HTTPException(status_code=401, detail="invalid bearer token")
     if bearer is not None:
         identity = await _resolve_identity(

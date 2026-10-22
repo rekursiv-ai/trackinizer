@@ -126,6 +126,26 @@ class TestHashSecret:
         secret2, _ = generate_token()
         assert secret != secret2
 
+    def test_no_api_key_starts_with_the_box_credential_prefix(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        draws = iter(("gpubox_" + "A" * 36, "C" * 43))
+
+        def token_urlsafe(nbytes: int) -> str:
+            del nbytes
+            return next(draws)
+
+        monkeypatch.setattr(
+            auth,
+            "secrets",
+            SimpleNamespace(token_urlsafe=token_urlsafe),
+        )
+
+        secret, _ = generate_token()
+
+        assert secret == "trax_" + "C" * 43
+
     def test_no_api_key_starts_with_machine_prefix(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -225,8 +245,9 @@ class TestCurrentUser:
         [
             "trax_machine_" + "0" * 32 + "_" + "A" * 43,
             "enr_" + "0" * 32 + "_" + "A" * 43,
+            "trax_gpubox_" + "0" * 32 + "_" + "A" * 43,
         ],
-        ids=["credential", "enrollment"],
+        ids=["credential", "enrollment", "gpu-box"],
     )
     async def test_a_machine_secret_is_401_before_any_lookup(
         self,
@@ -1723,6 +1744,7 @@ class TestUserOf:
         [
             "trax_machine_" + "0" * 32 + "_" + "A" * 43,
             "enr_" + "0" * 32 + "_" + "A" * 43,
+            "trax_gpubox_" + "0" * 32 + "_" + "A" * 43,
         ],
     )
     async def test_a_machine_secret_gets_the_unknown_bearer_answer(

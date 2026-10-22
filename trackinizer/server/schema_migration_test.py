@@ -1304,6 +1304,8 @@ async def test_migration_054_matches_the_baseline_gpu_tables(
 
         await conn.execute("DROP TABLE gpu_issuances, gpu_jobs, gpu_owners")
         await conn.execute(load_sql("schema.054"))
+        # 056 adds the column the baseline's ``gpu_jobs`` ends with.
+        await conn.execute(load_sql("schema.056"))
         migrated = {t: await _table_shape(conn, t) for t in _GPU_TABLES}
         # Replaying it over the existing tables is a no-op, not an error.
         await conn.execute(load_sql("schema.054"))
@@ -1344,6 +1346,33 @@ async def test_migration_055_matches_the_baseline_device_logins_table(
                 "expires_at) VALUES (decode(repeat('00', 32), 'hex'), 'abcdefgh', "
                 "'rai-shell', now())",
             )
+
+    assert migrated == baseline
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_056_matches_the_baseline_box_credentials(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """The box-credential table and the job column 056 adds equal the baseline's.
+
+    Drops the column and the table (as a pre-056 database lacks them), replays
+    ``schema.056`` alone, and compares both tables' shapes against the baseline.
+    """
+    await reset_schema(pglite_engine)
+    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
+    tables = ("gpu_box_credentials", "gpu_jobs")
+    async with pglite_engine.acquire() as conn:
+        baseline = {t: await _table_shape(conn, t) for t in tables}
+        assert baseline["gpu_box_credentials"][0], "the baseline lacks the table"
+
+        await conn.execute("ALTER TABLE gpu_jobs DROP COLUMN box_credential_id")
+        await conn.execute("DROP TABLE gpu_box_credentials")
+        await conn.execute(load_sql("schema.056"))
+        migrated = {t: await _table_shape(conn, t) for t in tables}
+        # Replaying it over the existing table is a no-op, not an error.
+        await conn.execute(load_sql("schema.056"))
 
     assert migrated == baseline
 

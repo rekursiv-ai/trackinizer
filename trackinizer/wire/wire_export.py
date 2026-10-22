@@ -140,9 +140,10 @@ Left out on purpose, and why:
 * ``code_blobs``, ``code_snapshots`` -- each record's code, kept per owner, a
   private snapshot read by its owner alone, which a graph export would show to
   everyone who can read it.
-* ``gpu_owners``, ``gpu_jobs``, ``gpu_issuances`` -- direct GPU jobs and the
-  audit of every certificate and job token issued for them: what each person
-  ran and was charged, and hashes that open a node, which the database's own
+* ``gpu_owners``, ``gpu_jobs``, ``gpu_issuances``, ``gpu_box_credentials`` --
+  direct GPU jobs, the audit of every certificate and job token issued for
+  them, and the hashes of the campaign-box credentials that submit them: what
+  each person ran and was charged, and hashes that open a node, which the database's own
   backups keep and a graph export would show to everyone who can read it.
 * ``applied_migrations`` -- carried in the header instead.
 """

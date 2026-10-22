@@ -1159,6 +1159,26 @@ CREATE TABLE IF NOT EXISTS gpu_owners (
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
+-- Campaign-box credentials: a campaign's box bills its asker's GPU jobs through one
+-- of these. See ``schema.056.sql``. Added in 056.
+CREATE TABLE IF NOT EXISTS gpu_box_credentials (
+    id            UUID PRIMARY KEY,
+    email         TEXT NOT NULL,
+    campaign      TEXT NOT NULL,
+    box           TEXT NOT NULL,
+    secret_sha256 BYTEA NOT NULL,
+    minted_by     UUID,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    expires_at    TIMESTAMPTZ NOT NULL,
+    revoked_at    TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS gpu_box_credentials_live
+    ON gpu_box_credentials (email, box) WHERE revoked_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS gpu_box_credentials_campaign
+    ON gpu_box_credentials (campaign);
+
 CREATE TABLE IF NOT EXISTS gpu_jobs (
     id                 BIGSERIAL PRIMARY KEY,
     email              TEXT NOT NULL,
@@ -1201,7 +1221,8 @@ CREATE TABLE IF NOT EXISTS gpu_jobs (
     manifest_sha256    TEXT,
     manifest           JSONB,
     reason             TEXT NOT NULL DEFAULT '',
-    claimed_until      TIMESTAMPTZ
+    claimed_until      TIMESTAMPTZ,
+    box_credential_id  UUID REFERENCES gpu_box_credentials(id)
 );
 
 CREATE INDEX IF NOT EXISTS gpu_jobs_email_created
@@ -1213,6 +1234,9 @@ CREATE INDEX IF NOT EXISTS gpu_jobs_live
 
 CREATE UNIQUE INDEX IF NOT EXISTS gpu_jobs_token
     ON gpu_jobs (token_sha256) WHERE token_sha256 IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS gpu_jobs_box
+    ON gpu_jobs (box_credential_id) WHERE box_credential_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS gpu_issuances (
     id           BIGSERIAL PRIMARY KEY,
