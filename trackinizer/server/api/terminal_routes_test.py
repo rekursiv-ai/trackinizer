@@ -7,8 +7,12 @@ may open, and which CLIs its machine offers.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from functools import partial
+from typing import TYPE_CHECKING, override
 from unittest.mock import AsyncMock
 
+import asyncio
 import uuid
 
 from fastapi import HTTPException
@@ -21,8 +25,14 @@ from trackinizer.conftest import FakeEngine
 from trackinizer.server.api import terminal_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import make_test_identity
+from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.terminals import Opening, Terminal, TerminalHub
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire.wire_machine_host import OFFLINE_AFTER_SEC
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 pytestmark = pytest.mark.asyncio
@@ -166,6 +176,61 @@ async def test_facts_whose_cli_list_is_not_a_list_offer_no_cli(
     )
 
     assert clis == []
+
+
+async def _alive(term: Terminal) -> bool:
+    del term
+    return True
+
+
+async def _barrier_update(barrier: asyncio.Barrier, *args: object) -> str:
+    del args
+    await barrier.wait()
+    return "UPDATE 1"
+
+
+class _ConcurrentEngine(FakeEngine):
+    @override
+    @asynccontextmanager
+    async def acquire(self) -> AsyncGenerator[AsyncMock]:
+        """Model independent connections in the production pool."""
+        yield self.conn
+
+
+async def test_concurrent_opens_reserve_one_run_for_a_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = AsyncMock()
+    conn.execute.side_effect = partial(_barrier_update, asyncio.Barrier(2))
+    request = _request(conn, monkeypatch)
+    monkeypatch.setattr(app.state, "engine", _ConcurrentEngine(conn))
+    monkeypatch.setattr(
+        app.state,
+        "terminals",
+        TerminalHub(alive=_alive),
+        raising=False,
+    )
+    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
+    opening = Opening(
+        user=_IDENTITY.email,
+        machine_id=_MACHINE,
+        machine="gx10",
+        rows=24,
+        cols=80,
+        command="claude",
+        attach=uuid.uuid4(),
+    )
+
+    answers = await asyncio.gather(
+        terminal_routes._open_terminal(request, opening=opening),
+        terminal_routes._open_terminal(request, opening=opening),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(answer, uuid.UUID) for answer in answers) == 1
+    [refused] = [answer for answer in answers if isinstance(answer, HTTPException)]
+    assert refused.status_code == 409
+    assert from_plain(refused.detail, dict[str, str])["code"] == "chat_run_live"
 
 
 if __name__ == "__main__":

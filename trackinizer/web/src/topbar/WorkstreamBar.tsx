@@ -5,6 +5,8 @@ import { waitingOf } from "../api/runState";
 import type { StationSummary } from "../api/stations";
 import { openStation, stationsQuery } from "../stations/actions";
 import { showStation, useStation } from "../stations/useStation";
+import { beginStationNavigation } from "../stations/store";
+import { acceptWorkspace } from "../stations/cache";
 import { Icon } from "../ui/icons";
 
 const WORKSTREAMS_KEY = ["workstreams"] as const;
@@ -22,7 +24,7 @@ export function WorkstreamBar() {
   const [problem, setProblem] = useState<string | null>(null);
   const [naming, setNaming] = useState<{ readonly id: string; readonly value: string } | null>(null);
   const [creating, setCreating] = useState(false);
-  const picking = useRef(new Set<string>());
+  const picking = useRef(new Map<string, { current: () => boolean }>());
   const info = useQuery({
     queryKey: ["workstream-info", infoId], queryFn: () => workstreamInfo(infoId!), enabled: infoId !== null, staleTime: 30_000,
   });
@@ -60,16 +62,22 @@ export function WorkstreamBar() {
     ]);
   }
 
-  async function pick(stream: Workstream): Promise<void> {
-    if (picking.current.has(stream.id)) return;
-    picking.current.add(stream.id);
+  async function pick(stream: Workstream, current = beginStationNavigation()): Promise<void> {
+    const pending = picking.current.get(stream.id);
+    if (pending) { pending.current = current; return; }
+    const intent = { current };
+    picking.current.set(stream.id, intent);
     const inStream = stations.filter((each) => belongs(each, stream) && !each.hidden);
     const pinned = inStream.filter((each) => each.pinned).sort(byRecent)[0];
     const chosen = pinned ?? [...inStream].sort(byRecent)[0];
     try {
       setProblem(null);
       if (chosen) await openStation(queryClient, chosen.id);
-      else showStation(queryClient, await createStation(stream.id));
+      else {
+        const state = await createStation(stream.id);
+        acceptWorkspace(queryClient, state);
+        if (intent.current()) showStation(queryClient, state);
+      }
       await refresh();
     } catch {
       setProblem("Could not open that workstream.");
@@ -128,6 +136,7 @@ export function WorkstreamBar() {
 
   async function create(): Promise<void> {
     if (creating) return;
+    const current = beginStationNavigation();
     setCreating(true);
     setProblem(null);
     try {
@@ -137,8 +146,10 @@ export function WorkstreamBar() {
       const stream = await createWorkstream(`Workstream ${number}`);
       await queryClient.cancelQueries({ queryKey: WORKSTREAMS_KEY });
       queryClient.setQueryData<Workstream[]>(WORKSTREAMS_KEY, (previous = []) => [...previous, stream]);
-      setNaming({ id: stream.id, value: stream.title });
-      await pick(stream);
+      if (current()) {
+        setNaming({ id: stream.id, value: stream.title });
+        await pick(stream, current);
+      }
     } catch {
       setProblem("Could not create that workstream.");
     } finally {

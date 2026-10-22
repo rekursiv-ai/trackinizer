@@ -54,7 +54,8 @@ export function ChatColumn({
   const phone = usePhone();
   const view = usePhoneView();
   const queryClient = useQueryClient();
-  const workspace = useStation().data ?? null;
+  const station = useStation();
+  const workspace = station.data ?? null;
   usePageSync();
   // Whether an agent waits on the person: the server says so, or Chat reads a card still open in its log.
   const [reported, setReported] = useState(false);
@@ -173,6 +174,7 @@ export function ChatColumn({
       // the capture would turn the Pin button under the pointer into Hide before its own click came.
       onClick={peeking ? () => setChatHidden(false) : undefined}
       onKeyDown={(event) => { if (event.key === "Escape" && fullscreen && !event.defaultPrevented) setChatFullscreen(false); }}>
+      {station.isPending && <p className="chat-note" role="status">Loading chat…</p>}
       <Chat workspace={workspace} onWaiting={setReported} />
     </div>,
     shown && !fullscreen && !peeking && !phone && (

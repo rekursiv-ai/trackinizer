@@ -164,6 +164,24 @@ async def test_an_offer_is_answered_with_the_peers_description_and_the_stun_list
     )
 
 
+async def test_each_browser_attachment_can_restart_its_offer_generations() -> None:
+    world = _World(peers=4)
+    try:
+        await world.offer(gen=2)
+        for _ in range(3):
+            await world.router.from_relay(
+                Frame.ROUTE,
+                wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, 0),
+            )
+            await world.offer(gen=1)
+
+        assert world.made == 4
+        assert [answer.gen for answer in world.answers()] == [2, 1, 1, 1]
+        assert all(peer.closed for peer in world.peers[:-1])
+    finally:
+        await world.router.close()
+
+
 async def test_a_peer_that_cannot_answer_is_closed_logged_and_never_heard_again(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

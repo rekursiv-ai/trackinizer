@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { listStations, setStationLayout, setStationPage } from "../api/stations";
-import { createDefaultWorkspace, type WorkspacePartner, type WorkspaceState } from "../api/workspaces";
+import { createDefaultWorkspace, getWorkspace, type WorkspacePartner, type WorkspaceState } from "../api/workspaces";
 import { CommandRegistry, CommandRegistryContext, Shortcuts, useCommandList } from "../commands/registry";
 import { setStation } from "../stations/store";
 import { ChatColumn } from "./ChatColumn";
@@ -90,6 +90,17 @@ test("Chat is a column beside the workbench, on the left, and has the user's wor
   expect(workbench.contains(screen.getByText("Workbench"))).toBe(true);
   // Never set by the user: the stylesheet's `min(33.333vw, 80ch + padding)` stands.
   expect(column.style.getPropertyValue("--chat-width")).toBe("");
+});
+
+test("selecting an uncached chat shows loading until its workspace arrives", async () => {
+  let finish!: (value: WorkspaceState) => void;
+  vi.mocked(getWorkspace).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+  await show();
+  act(() => setStation("uncached"));
+  expect(screen.getByText("Loading chat…").getAttribute("role")).toBe("status");
+  await act(async () => finish({ ...workspace, id: "uncached" }));
+  expect(await screen.findByText("uncached")).toBeTruthy();
+  expect(screen.queryByText("Loading chat…")).toBeNull();
 });
 
 test("on the right Chat stands after the workbench, with the divider between them", async () => {

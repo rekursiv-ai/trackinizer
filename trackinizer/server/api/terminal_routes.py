@@ -578,6 +578,8 @@ async def terminal_web_socket(websocket: WebSocket, terminal_id: UUID) -> None:
     await hub.attach_browser(term, leg, offset=attach[1])
     try:
         while (frame := await _read_frame(leg)) is not None:
+            if term.browser is not leg:
+                break
             if not await hub.from_browser(term, *frame):
                 break
     finally:
@@ -591,6 +593,7 @@ async def terminal_host_socket(
     machine_id: UUID,
     terminal_id: UUID,
     instance: UUID,
+    ready: bool = False,
 ) -> None:
     """Relay a terminal's shell: the host dials here with its machine credential.
 
@@ -599,6 +602,7 @@ async def terminal_host_socket(
       machine_id: The machine.
       terminal_id: The terminal the host was asked to open.
       instance: The host's instance, which must be the machine's current one.
+      ready: Require an application acknowledgement before claiming the terminal.
 
     """
     await websocket.accept()
@@ -617,16 +621,23 @@ async def terminal_host_socket(
         )
         return
     hub = get_terminal_hub(websocket)
+    # A timed-out HTTP upgrade must leave the terminal pending: that host never
+    # received the upgrade and cannot have started its CLI.
+    if ready and await _first_frame(leg) != (Frame.ACK, b""):
+        await leg.close(wire_terminals.CLOSE_REFUSED)
+        return
     term = hub.terminal(terminal_id)
     if (
         term is None
         or term.machine_id != machine_id
-        or not await hub.host_connected(term, leg)
+        or not await hub.host_connected(term, leg, ready=ready)
     ):
         await leg.close(wire_terminals.CLOSE_REFUSED)
         return
     try:
         while (frame := await _read_frame(leg)) is not None:
+            if term.host is not leg:
+                break
             await hub.from_host(term, *frame)
     finally:
         await hub.host_lost(term, socket=leg)
@@ -937,18 +948,20 @@ async def _reopen_run(request: Request, *, opening: Opening) -> UUID:
 async def _open_terminal(request: Request, *, opening: Opening) -> UUID:
     """Queue one terminal unless a run is live on its session; return only its id."""
     if opening.command is not None:
-        if _is_attached_to_a_live_run(request, session_id=opening.attach):
-            raise _refused(
-                409,
-                code=CHAT_RUN_LIVE,
-                message="another run is attached to this session; stop it first",
-            )
         async with engine_of(request).acquire() as conn:
             await conn.execute(
                 "UPDATE machines SET last_run_cwd = $1 WHERE id = $2 AND owner = $3",
                 opening.cwd,
                 opening.machine_id,
                 opening.user,
+            )
+        # Checking and reserving must share one event-loop turn: another open
+        # can pass the check while this request is awaiting its database update.
+        if _is_attached_to_a_live_run(request, session_id=opening.attach):
+            raise _refused(
+                409,
+                code=CHAT_RUN_LIVE,
+                message="another run is attached to this session; stop it first",
             )
     return get_terminal_hub(request).open(opening).id
 

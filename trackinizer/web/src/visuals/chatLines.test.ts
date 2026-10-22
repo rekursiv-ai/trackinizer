@@ -298,6 +298,23 @@ test("a command a run recorded settles the line sent for it, and counts as the s
   expect(sentBefore(stored.lines, { me: ME })).toBe(1);
 });
 
+test("a refused delivery settles its pending line and reports why without starting work", () => {
+  const stored = readTranscript(parts(record(0, "SystemMessage", { extra: { $delivery: {
+    text: "continue", source: "ada", kind: "line", refused: true, reason: "run ended",
+  } } })));
+  const shown = withPending(stored, [{ key: "k", text: "continue", conversationId: "c", baseline: 0 }], { me: "ada" });
+  expect(shown).toHaveLength(1);
+  expect(shown[0]).toMatchObject({ text: "continue", author: "ada", pending: false, delivery: { refused: true, reason: "run ended" } });
+  expect(stored.working).toBeNull();
+});
+
+test("an unconfirmed delivery is distinct from a refusal", () => {
+  const stored = readTranscript(parts(record(0, "SystemMessage", { extra: { $delivery: {
+    text: "continue", source: "ada", kind: "line", refused: false, reason: "connection lost",
+  } } })));
+  expect(stored.lines[0]).toMatchObject({ delivery: { refused: false, reason: "connection lost" } });
+});
+
 test("a trust prompt a CLI waits on is a line with its folder, machine and remembered flag, and its resolution closes it", () => {
   const trust = (idx: number, body: { [field: string]: unknown }) => interaction(idx, { id: "t1", type: "trust", tool: "claude", input: { folder: "~/proj" },
     questions: null, plan: null, state: "pending", cli: "claude", folder: "~/proj", machine: "gx10", remembered: false, ...body });

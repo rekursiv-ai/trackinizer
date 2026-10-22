@@ -10,6 +10,8 @@ import { hasAssistant, PROVIDERS, partnerLabel, type Provider, providerName, sta
 import { Command } from "../settings/ChatPartner";
 import { hideStation, nameStation, openStation, STATIONS_KEY } from "../stations/actions";
 import { showStation } from "../stations/useStation";
+import { beginStationNavigation } from "../stations/store";
+import { acceptWorkspace } from "../stations/cache";
 import { setChatHidden, setChatSide, useChatColumn } from "./chatColumnState";
 import { DeleteChat, PrivacySwitch, ShareChat } from "./ChatSharing";
 import { ProviderPicker, reasonText, useChatDefault, useProviderStatuses } from "./ProviderPicker";
@@ -117,13 +119,15 @@ export function ChatWorkstreamHeader({ workspace, head, waiting = false, onHide,
   }
 
   async function openChat(station: StationSummary): Promise<void> {
+    closeMenu("name");
     try {
       if (station.hidden) {
+        const current = beginStationNavigation();
         const restored = await setStationHidden(station.id, false);
-        showStation(queryClient, restored);
+        acceptWorkspace(queryClient, restored);
+        if (current()) showStation(queryClient, restored);
         void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
       } else await openStation(queryClient, station.id);
-      closeMenu("name");
     } catch {
       setNameProblem("Could not open this chat.");
     }
@@ -142,16 +146,19 @@ export function ChatWorkstreamHeader({ workspace, head, waiting = false, onHide,
 
   async function createChat(chosen: Provider): Promise<void> {
     if (!workspace) return;
+    const current = beginStationNavigation();
     const state = await createStationInWorkstream(currentGroupId, chosen);
-    showStation(queryClient, state);
+    acceptWorkspace(queryClient, state);
+    if (current()) showStation(queryClient, state);
     void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
     closeMenu("name");
   }
 
-  async function placeIn(group: Workstream): Promise<void> {
+  async function placeIn(group: Workstream, current = beginStationNavigation()): Promise<void> {
     if (!workspace) return;
     const state = await moveStation(workspace.id, group.id);
-    showStation(queryClient, state);
+    acceptWorkspace(queryClient, state);
+    if (current()) showStation(queryClient, state);
     void queryClient.invalidateQueries({ queryKey: STATIONS_KEY });
     closeMenu("workstream");
     setDismissedSuggestion(true);
@@ -164,19 +171,21 @@ export function ChatWorkstreamHeader({ workspace, head, waiting = false, onHide,
       : workstreamMatches[0];
     if (exact) await placeIn(exact);
     else if (query) {
+      const current = beginStationNavigation();
       const created = await createWorkstream(query);
       void queryClient.invalidateQueries({ queryKey: ["workstreams"] });
-      await placeIn(created);
+      await placeIn(created, current);
     }
   }
 
   async function followSuggestion(): Promise<void> {
     if (!suggestion) return;
+    const current = beginStationNavigation();
     const available = await queryClient.fetchQuery({ queryKey: ["workstreams"],
       queryFn: ({ signal }) => listWorkstreams({}, { signal }), staleTime: 0 });
     const target = available.find((each) => each.id === suggestion.workstream_id);
-    if (target) await placeIn(target);
-    else {
+    if (target) await placeIn(target, current);
+    else if (current()) {
       setWorkstreamQuery(suggestion.title);
       setMenu("workstream");
     }
@@ -189,6 +198,7 @@ export function ChatWorkstreamHeader({ workspace, head, waiting = false, onHide,
   };
 
   return <header className="chat-head" ref={root}>
+    {nameProblem && !nameOpen && <p className="station-problem" role="status">{nameProblem}</p>}
     <div className="chat-partner" role="group" aria-label="Chat partner">
       <span className="chat-partner-context" aria-hidden="true">
         {workspace && <strong>Chat</strong>}

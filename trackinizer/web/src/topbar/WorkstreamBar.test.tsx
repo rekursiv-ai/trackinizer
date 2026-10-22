@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { StationSummary } from "../api/stations";
 import type { Workstream } from "../api/workstreams";
+import { setStation } from "../stations/store";
 import { WorkstreamBar } from "./WorkstreamBar";
 
 const mocks = vi.hoisted(() => ({
@@ -44,6 +45,7 @@ const stations: StationSummary[] = [
 let client: QueryClient;
 
 beforeEach(() => {
+  setStation("current");
   client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   mocks.listWorkstreams.mockResolvedValue(workstreams);
   mocks.listStations.mockResolvedValue(stations);
@@ -59,7 +61,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); setStation(null); });
 
 async function show(stationRows: readonly StationSummary[] = stations) {
   client.setQueryData(["workstreams"], workstreams);
@@ -96,6 +98,24 @@ test("an empty workstream creates a chat in that workstream and shows the return
   fireEvent.click(workstream("Beta"));
   await waitFor(() => expect(mocks.createStation).toHaveBeenCalledWith("ws-b"));
   expect(mocks.showStation).toHaveBeenCalledWith(client, { id: "new", name: "New", revision: 1, visuals: [] });
+});
+
+test.each(["station", "workstream"] as const)("delayed %s creation cannot replace a later station selection", async (stage) => {
+  let finish!: () => void;
+  const waiting = new Promise<void>((resolve) => { finish = resolve; });
+  if (stage === "station") mocks.createStation.mockImplementationOnce(async () => {
+    await waiting;
+    return { id: "old-selection", name: "New", revision: 1, visuals: [] };
+  });
+  else mocks.createWorkstream.mockImplementationOnce(async () => {
+    await waiting;
+    return { ...workstreams[2]!, id: "ws-new", title: "New workstream" };
+  });
+  await show([]);
+  fireEvent.click(stage === "station" ? workstream("Beta") : screen.getByRole("button", { name: "New workstream" }));
+  act(() => setStation("latest-chat"));
+  await act(async () => { finish(); await waiting; });
+  expect(mocks.showStation).not.toHaveBeenCalled();
 });
 
 test("Info shows the Issue link and each chat session from the info route", async () => {

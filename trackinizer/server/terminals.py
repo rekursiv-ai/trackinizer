@@ -126,6 +126,9 @@ class Terminal:
     """Whether a host's wait already returned this open."""
 
     host: Socket | None = None
+    starting: bool = False
+    """The host has not yet confirmed receiving its startup acknowledgement."""
+
     browser: Socket | None = None
     ended: bool = False
     stopping: bool = False
@@ -139,6 +142,9 @@ class Terminal:
 
     pre_resize: bytes | None = None
     """The latest geometry sent before the host dialled in."""
+
+    host_sending: asyncio.Lock = field(default_factory=asyncio.Lock)
+    """Serialize buffered input with typing that arrives while startup flushes it."""
 
     ring: Ring = field(default_factory=lambda: Ring(capacity=wire_terminals.RING_BYTES))
     direct_until: float = 0.0
@@ -452,15 +458,20 @@ class TerminalHub:
         previous, term.browser = term.browser, socket
         term.detached_at = None
         data, resume, lost = term.ring.since(offset)
-        # The host sent KEEPALIVE, so it has been sending output direct, and this ring
-        # is behind it. It resumes on the relay from where the ring ends.
-        relay_from = term.ring.end if self._clock() < term.direct_until else None
+        # Each browser starts its offer generations at one. Reset the host's
+        # negotiation even when its previous browser never reached direct mode.
+        relay_from = term.ring.end
         term.direct_until = 0.0
         replayed = asyncio.Event()
         term.replaying = replayed
         try:
             if previous is not None:
                 await self._close(previous, wire_terminals.CLOSE_TAKEN_OVER)
+            await self._to_host(
+                term,
+                Frame.ROUTE,
+                wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, relay_from),
+            )
             if lost:
                 await self._to_browser(
                     term,
@@ -471,12 +482,6 @@ class TerminalHub:
             await self._to_browser(term, socket, Frame.ACK, resume.to_bytes(8))
             if data:
                 await self._to_browser(term, socket, Frame.OUTPUT, data)
-            if relay_from is not None:
-                await self._to_host(
-                    term,
-                    Frame.ROUTE,
-                    wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, relay_from),
-                )
         finally:
             if term.replaying is replayed:
                 term.replaying = None
@@ -488,27 +493,41 @@ class TerminalHub:
             term.browser = None
             term.detached_at = self._clock()
 
-    async def host_connected(self, term: Terminal, socket: Socket) -> bool:
+    async def host_connected(
+        self,
+        term: Terminal,
+        socket: Socket,
+        *,
+        ready: bool = False,
+    ) -> bool:
         """Claim the terminal for its host, handing it what was typed before it came.
 
         Args:
           term: The terminal.
           socket: The host's socket.
+          ready: Acknowledge startup before handing over buffered input.
 
         Returns:
           claimed: False when another host already holds the terminal or it ended.
 
         """
-        if term.host is not None or term.ended:
+        if term.ended or (term.host is not None and not term.starting):
             return False
+        previous = term.host
         term.host = socket
-        resize, term.pre_resize = term.pre_resize, None
-        typed = bytes(term.pre_input)
-        term.pre_input.clear()
-        if resize is not None:
-            await self._to_host(term, Frame.RESIZE, resize)
-        if typed:
-            await self._to_host(term, Frame.INPUT, typed)
+        term.starting = ready
+        if previous is not None:
+            await self._close(previous, wire_terminals.CLOSE_TAKEN_OVER)
+        if ready:
+            try:
+                await socket.send_bytes(encode_frame(Frame.ACK))
+            except SocketClosedError:
+                if term.host is socket:
+                    term.host = None
+                    term.starting = False
+                return False
+            return True
+        await self._start_host(term)
         return True
 
     async def host_lost(self, term: Terminal, socket: Socket) -> None:
@@ -520,7 +539,11 @@ class TerminalHub:
 
         """
         if term.host is socket and not term.ended:
-            await self.end(term, code=wire_terminals.CLOSE_HOST_LOST)
+            if term.starting:
+                term.host = None
+                term.starting = False
+            else:
+                await self.end(term, code=wire_terminals.CLOSE_HOST_LOST)
 
     async def from_host(self, term: Terminal, kind: Frame, payload: bytes) -> None:
         """Take one frame from the host: output, the shell's exit, or a link frame.
@@ -532,6 +555,9 @@ class TerminalHub:
 
         """
         if term.id not in self._terminals:
+            return
+        if kind is Frame.ACK and payload == b"" and term.starting:
+            await self._start_host(term)
             return
         if kind is Frame.KEEPALIVE:
             self._keepalive(term, payload)
@@ -612,7 +638,7 @@ class TerminalHub:
     async def stop(self, term: Terminal) -> None:
         """Tell the shell to stop; the host's ``EXIT`` then ends the terminal."""
         term.stopping = True
-        if term.host is None:
+        if term.host is None or term.starting:
             await self.end(term, code=wire_terminals.CLOSE_ENDED)
         else:
             await self._to_host(term, Frame.STOP, b"")
@@ -708,7 +734,9 @@ class TerminalHub:
 
     def _expired(self, term: Terminal, *, now: float) -> int | None:
         """Return the close code for a terminal past a time limit, else ``None``."""
-        if term.host is None and now - term.opened_at > wire_terminals.OPEN_TTL_SEC:
+        if (
+            term.host is None or term.starting
+        ) and now - term.opened_at > wire_terminals.OPEN_TTL_SEC:
             return wire_terminals.CLOSE_HOST_LOST
         if now - term.opened_at > wire_terminals.LIFETIME_SEC:
             return wire_terminals.CLOSE_LIFETIME
@@ -735,16 +763,33 @@ class TerminalHub:
 
     async def _to_host(self, term: Terminal, kind: Frame, payload: bytes) -> None:
         """Send a frame to the host; a vanished host ends the terminal."""
-        if term.host is None:
-            # The host has not dialled in yet: keep the geometry and a frame of typing.
-            if kind is Frame.RESIZE:
-                term.pre_resize = payload
-            elif (
-                kind is Frame.INPUT
-                and len(term.pre_input) + len(payload)
-                <= wire_terminals.MAX_INPUT_FRAME_BYTES
-            ):
-                term.pre_input.extend(payload)
+        async with term.host_sending:
+            if term.host is None or term.starting:
+                if kind is Frame.RESIZE:
+                    term.pre_resize = payload
+                elif (
+                    kind is Frame.INPUT
+                    and len(term.pre_input) + len(payload)
+                    <= wire_terminals.MAX_INPUT_FRAME_BYTES
+                ):
+                    term.pre_input.extend(payload)
+                return
+            await self._send_to_host(term, kind, payload)
+
+    async def _start_host(self, term: Terminal) -> None:
+        """Flush startup input before allowing subsequent frames to reach the host."""
+        async with term.host_sending:
+            term.starting = False
+            resize, term.pre_resize = term.pre_resize, None
+            typed = bytes(term.pre_input)
+            term.pre_input.clear()
+            if resize is not None:
+                await self._send_to_host(term, Frame.RESIZE, resize)
+            if typed:
+                await self._send_to_host(term, Frame.INPUT, typed)
+
+    async def _send_to_host(self, term: Terminal, kind: Frame, payload: bytes) -> None:
+        if term.host is None or term.ended:
             return
         try:
             await term.host.send_bytes(encode_frame(kind, payload))

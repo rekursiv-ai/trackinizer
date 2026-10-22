@@ -39,6 +39,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, Protocol, cast
@@ -81,6 +82,7 @@ from trackinizer.trax.run.claude_stream import ClaudeStreamDriver
 from trackinizer.trax.run.codex_app import (
     ApprovalPolicy,
     CodexAppDriver,
+    Reviewer,
     SandboxMode,
 )
 from trackinizer.trax.run.commands import (
@@ -132,7 +134,6 @@ if TYPE_CHECKING:
         Sequence,
         Set as AbstractSet,
     )
-    from datetime import datetime
 
     from trackinizer.trax import machine_host
     from trackinizer.trax.run.asks import Driver
@@ -1826,17 +1827,33 @@ def _make_driver(
         ),
         approval_policy=approval_policy,
         sandbox=sandbox,
+        reviewer=_codex_reviewer(config.cli_args),
     )
 
 
 def _claude_mode(cli_args: tuple[str, ...], *, sandboxed: bool) -> str:
-    """Return the permission mode claude starts in; empty keeps the person's own."""
+    """Default to automatic permission review, preserving explicit modes."""
     given = _cli_arg_value(cli_args, "--permission-mode")
     if given is not None:
         return given
     if sandboxed or "--dangerously-skip-permissions" in cli_args:
         return "bypassPermissions"
-    return ""
+    return "auto"
+
+
+def _codex_reviewer(cli_args: tuple[str, ...]) -> Reviewer:
+    """Default to Approve for me, preserving an explicit reviewer."""
+    if "--approve-for-me" in cli_args:
+        return "auto_review"
+    configured = _codex_config_pairs(cli_args)
+    match configured.get("approvals_reviewer", "auto_review").strip("\"' "):
+        case "user" | "auto_review" as reviewer:
+            return reviewer
+        case value:
+            raise SystemExit(
+                f"trax run codex: unknown approvals reviewer {value!r}; "
+                "use user or auto_review",
+            )
 
 
 # The person's own permission rules reach a Chat run of claude as they reach a terminal
@@ -2670,9 +2687,10 @@ def _deliver_one(
         if inbound is not None:
             inbound.typed(rendered, source=item.source, room=item.room, kind=item.kind)
         relay.submit(rendered)
-    except Exception:
+    except Exception as error:
         if inbound is not None and isinstance(rendered, str):
             inbound.withdraw(rendered)
+        _record_delivery_failure(item, error, record=record)
         _logger.warning(
             "trax run: could not deliver an inbound message; "
             "continuing with the rest of the batch",
@@ -2708,7 +2726,8 @@ def _deliver_command(
     else:
         try:
             relay.submit(item.text)
-        except Exception:
+        except Exception as error:
+            _record_delivery_failure(item, error, record=record)
             _logger.warning(
                 "trax run: could not type a command; continuing with the rest",
                 exc_info=True,
@@ -2755,8 +2774,10 @@ def _deliver_headless(
             case "line":
                 _deliver_headless_line(run, item, inbound=inbound)
     except (TakenOverError, RunEndedError) as error:
+        _record_delivery_failure(item, error, record=record, refused=True)
         _logger.info("trax run: a %s message was not taken: %s", item.kind, error)
-    except Exception:
+    except Exception as error:
+        _record_delivery_failure(item, error, record=record)
         _logger.warning(
             "trax run: could not deliver an inbound message; "
             "continuing with the rest of the batch",
@@ -2799,10 +2820,7 @@ def _deliver_headless_command(
     state: Literal["typed", "refused"] = "typed"
     try:
         run.command(command.command, command.args)
-    except RunEndedError:
-        _logger.warning("trax run: could not run a command; the run has ended")
-        return
-    except (TakenOverError, ValueError) as error:
+    except (TakenOverError, RunEndedError, ValueError) as error:
         state = "refused"
         reason = str(error)
     else:
@@ -2818,6 +2836,36 @@ def _deliver_headless_command(
                 reason=reason,
             ),
         )
+
+
+def _record_delivery_failure(
+    item: InboundDrainItem,
+    error: Exception,
+    *,
+    record: Callable[[SystemMessage], None] | None,
+    refused: bool = False,
+) -> None:
+    """Report a drained message's failure without claiming an uncertain send was refused."""
+    if record is None:
+        return
+    record(
+        SystemMessage(
+            timestamp=datetime.now(UTC).isoformat(),
+            subtype="delivery_failed",
+            content=item.text,
+            extra={
+                "$delivery": {
+                    "text": item.text,
+                    "kind": item.kind,
+                    "source": item.source,
+                    "refused": refused,
+                    "reason": (str(error).splitlines() or [type(error).__name__])[0][
+                        :500
+                    ],
+                },
+            },
+        ),
+    )
 
 
 # ``TRAX_ACTOR`` is the session's granted routing handle and ``TRAX_ROOMS`` its comma-

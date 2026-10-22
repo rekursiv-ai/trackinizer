@@ -144,6 +144,7 @@ afterEach(async () => {
   sessions.clear();
   registered = [];
   localStorage.clear();
+  sessionStorage.clear();
   // A save still on its way (a flip of Chat's side, a style) would make the page ignore the next test's preferences.
   await sendWaiting();
   receivePreferences({ ...preferences(), drafts: {}, highlight_mentions: true, chat_tool_calls: false });
@@ -497,6 +498,20 @@ test("global chat search includes hidden chats and restores one when opened", as
   fireEvent.keyDown(search, { key: "Enter" });
   await waitFor(() => expect(currentStation().id).toBe("w-hidden"));
   expect(restoreStation).toHaveBeenCalledWith("w-hidden", false);
+});
+
+test("selecting a cached chat closes the picker before its refresh completes", async () => {
+  let finish!: (value: WorkspaceState) => void;
+  vi.mocked(getWorkspace).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  const { client } = shell();
+  const next = { ...workspace, id: "cached-chat", name: "Cached chat" };
+  client.setQueryData(["workspace", next.id], next);
+  client.setQueryData(["stations"], [{ ...next, created_at: "2026-10-01T00:00:00Z", modified_at: "2026-10-01T00:00:00Z" }]);
+  fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
+  fireEvent.click(within(screen.getByRole("list", { name: "Chats in this workstream" })).getByRole("button", { name: next.name }));
+  expect(currentStation().id).toBe(next.id);
+  expect(screen.queryByRole("dialog", { name: "Chats" })).toBeNull();
+  await act(async () => finish(next));
 });
 
 test("the workstream chip moves this chat to the selected workstream", async () => {
@@ -974,6 +989,84 @@ test("a refused delete says why in a toast and keeps the chat", async () => {
   expect(screen.getByText("a2")).toBeTruthy();
 });
 
+test("an unconfirmed post survives Chat remounting without sending it again", async () => {
+  hold("c1");
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  const shown = shell({ ...workspace, conversation_id: "c1" });
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", false));
+  await type("continue");
+  await screen.findByText("Waiting for the assistant…");
+
+  shown.mount();
+
+  expect(await within(screen.getByRole("log")).findByText("continue")).toBeTruthy();
+  expect(sendChatLine).toHaveBeenCalledOnce();
+});
+
+test("a post with no captured acknowledgement stops claiming an indefinite wait", async () => {
+  hold("c1");
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  shell({ ...workspace, conversation_id: "c1" });
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", false));
+  await type("continue");
+
+  expect(await screen.findByText(/Delivery is unconfirmed/)).toBeTruthy();
+  expect(sendChatLine).toHaveBeenCalledOnce();
+});
+
+test("switching to an empty station preserves the previous chat's unconfirmed post", async () => {
+  hold("c1");
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  const original = { ...workspace, conversation_id: "c1" };
+  const shown = shell(original);
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", false));
+  await type("continue");
+  await screen.findByText("Waiting for the assistant…");
+  shown.again({ ...workspace, id: "other-station", conversation_id: null });
+  expect(within(screen.getByRole("log")).queryByText("continue")).toBeNull();
+  shown.again(original);
+  expect(await within(screen.getByRole("log")).findByText("continue")).toBeTruthy();
+});
+
+test("an in-flight first post belongs only to the station it was sent from", async () => {
+  vi.mocked(sendChatLine).mockReturnValue(new Promise(() => {}));
+  const shown = shell();
+  await type("for station A");
+  await screen.findByText("Sending…");
+  shown.again({ ...workspace, id: "station-B" });
+  expect(within(screen.getByRole("log")).queryByText("for station A")).toBeNull();
+});
+
+test("retrying a captured post after a lost receipt keeps its original confirmation baseline", async () => {
+  open("c1");
+  hold("c1", said(0, ME, "first"), answered(1, "answer"));
+  vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
+    .mockResolvedValueOnce({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  const shown = shell();
+  await screen.findByText("answer");
+  await type("captured already");
+  await screen.findByRole("button", { name: "Retry message" });
+  hold("c1", said(0, ME, "first"), answered(1, "answer"), said(2, ME, "captured already"));
+  await changed("s-c1");
+  await within(screen.getByRole("log")).findByText("captured already");
+  fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
+  await waitFor(() => expect(sendChatLine).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(screen.queryByText("Sending…")).toBeNull());
+  expect(within(screen.getByRole("log")).getAllByText("captured already")).toHaveLength(1);
+  expect(shown.feed.snapshot().pending).toEqual([]);
+});
+
+test("a refused line shows its failure and keeps the original text", async () => {
+  hold("c1", record(0, "SystemMessage", { extra: { $delivery: {
+    text: "continue", source: ME, kind: "line", refused: true, reason: "run ended",
+  } } }));
+  shell({ ...workspace, conversation_id: "c1" });
+
+  expect(await screen.findByText("continue")).toBeTruthy();
+  expect(await screen.findByText(/Not delivered: run ended/)).toBeTruthy();
+  expect(screen.queryByText("Waiting for the assistant…")).toBeNull();
+});
+
 test("a line shows pending, then the conversation's id at once, then its record once the assistant has opened the session", async () => {
   let finish: (value: { conversation_id: string; session_id: string | null; workspace_id: string }) => void = () => {};
   vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
@@ -1354,6 +1447,23 @@ test("a request to continue a session that is no science chat says so and opens 
   expect((await screen.findByRole("status")).textContent).toBe("That session is not a science chat.");
   expect(stationForChat).not.toHaveBeenCalled();
   expect(getChatHead).not.toHaveBeenCalled();
+});
+
+test("a delayed continuation lookup cannot replace the chat requested last", async () => {
+  let first!: (value: Awaited<ReturnType<typeof getDetail>>) => void;
+  vi.mocked(getDetail).mockReturnValueOnce(new Promise((resolve) => { first = resolve; }))
+    .mockResolvedValueOnce({ self: { id: "second-session", kind: "AgentSession", seq: 2, title: "second", cli_session_id: "chat:c2", labels: ["science-chat"] },
+      edges: {}, backlinks: {}, changes: [] } as never);
+  vi.mocked(stationForChat).mockImplementation(async (id) => ({ ...workspace, id: `w-${id}`, conversation_id: id }));
+  const { feed } = shell();
+  act(() => feed.continueIn("first-session"));
+  await waitFor(() => expect(getDetail).toHaveBeenCalledWith("first-session", expect.any(Object)));
+  act(() => feed.continueIn("second-session"));
+  await waitFor(() => expect(currentStation().id).toBe("w-c2"));
+  await act(async () => first({ self: { id: "first-session", kind: "AgentSession", seq: 1, title: "first", cli_session_id: "chat:c1", labels: ["science-chat"] },
+    edges: {}, backlinks: {}, changes: [] } as never));
+  expect(currentStation().id).toBe("w-c2");
+  expect(stationForChat).not.toHaveBeenCalledWith("c1");
 });
 
 test("a request whose session cannot be read says so", async () => {

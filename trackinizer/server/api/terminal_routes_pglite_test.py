@@ -509,6 +509,52 @@ async def test_an_abrupt_host_drop_closes_the_browser_and_raises_nothing(
     assert terminal_hub(app).terminal(terminal_id) is None
 
 
+async def test_startup_negotiation_retries_without_losing_browser_input(
+    world: _World,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie)
+    await world.wait()
+    terminal_id, ticket = _opened(await world.open(cookie))
+    browser = _browser_peer(world, cookie, terminal_id)
+    browser_task = asyncio.create_task(_run_browser(browser, terminal_id))
+    browser.push(Frame.ATTACH, _attach(ticket))
+    assert (await browser.frame())[0] is Frame.ACK
+    browser.push(Frame.INPUT, b"continue\n")
+
+    async def connect(peer: _Peer) -> None:
+        await terminal_routes.terminal_host_socket(
+            peer.websocket,
+            world.machine_id,
+            terminal_id,
+            _INSTANCE,
+            ready=True,
+        )
+
+    first = _host_peer(world, terminal_id)
+    first_task = asyncio.create_task(connect(first))
+    first.push(Frame.ACK)
+    assert await first.frame() == (Frame.ACK, b"")
+    first.leave()
+    await first_task
+    assert terminal_hub(app).terminal(terminal_id) is not None
+
+    second = _host_peer(world, terminal_id)
+    second_task = asyncio.create_task(connect(second))
+    try:
+        second.push(Frame.ACK)
+        assert await second.frame() == (Frame.ACK, b"")
+        second.push(Frame.ACK)
+        assert await second.frame() == (Frame.INPUT, b"continue\n")
+        second.push(Frame.EXIT, (0).to_bytes(4))
+        assert await browser.frame() == (Frame.EXIT, (0).to_bytes(4))
+    finally:
+        second.leave()
+        browser.leave()
+        await asyncio.gather(browser_task, second_task)
+
+
 async def test_a_browser_that_reconnects_with_an_offset_gets_only_what_it_missed(
     world: _World,
 ) -> None:
