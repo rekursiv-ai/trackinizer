@@ -1249,7 +1249,12 @@ class TestARunSaysWhereItIs:
 
     @pytest.mark.parametrize(
         "code",
-        ["provider_is_other_cli", "provider_is_assistant", "chat_run_live"],
+        [
+            "provider_is_other_cli",
+            "provider_is_assistant",
+            "chat_run_live",
+            "session_ended",
+        ],
     )
     def test_a_run_the_chat_refuses_stops_instead_of_retrying(
         self,
@@ -1320,6 +1325,33 @@ class TestARunSaysWhereItIs:
 
         assert (client.drains, relay.terminated) == (3, 0)
         assert not sink.kept_open
+
+    def test_a_refusal_code_this_trax_does_not_know_is_retried_no_faster_than_the_poll(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An older trax meets ``session_ended`` as an unknown 409: it warns once and waits."""
+        stop = threading.Event()
+        client = _RefusingClient(
+            ClientError("409", status_code=409, code="a_future_refusal"),
+            stop_after=3,
+            stop=stop,
+        )
+        relay = _RecordingRelay()
+        started = time.monotonic()
+
+        _inbound_poll_loop(
+            cast(Client, client),
+            cast(Sink, _SessionSink()),
+            cast(ThreadedRelay, relay),
+            stop,
+            poll_interval=0.03,
+            cli="claude",
+        )
+
+        assert time.monotonic() - started >= 2 * 0.03
+        assert (client.drains, relay.terminated) == (3, 0)
+        assert capsys.readouterr().err.count("inbound delivery failed") == 1
 
     @pytest.mark.parametrize(
         ("hostname", "machine"),

@@ -15,6 +15,13 @@ const PAGE = 1_000;
  */
 export const OPENING = { everyMs: 1_500, giveUpMs: 30_000 };
 
+/**
+ * How long a chat with nothing in flight and no new record waits before the strip above the box offers to close it.
+ * Five minutes: past the pauses of a turn between tool calls and of a person reading an answer, so the button does
+ * not flicker in mid-conversation, yet soon enough that a finished chat does not keep its run for the day.
+ */
+export const IDLE_CLOSE_MS = 5 * 60_000;
+
 /** The cache key of a science chat session's records, held part by part. */
 export const chatRecordsKey = (sessionId: string | null) => ["chat", "records", sessionId] as const;
 

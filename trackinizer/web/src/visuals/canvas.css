@@ -51,7 +51,6 @@
 .chat-name-row-actions .btn { padding: 2px 5px; font-size: 11px; }
 .chat-name-search { padding-top: 4px; border-top: 1px solid var(--line); }
 .chat-workstream-pick { position: relative; display: flex; align-items: center; min-width: 0; flex: 1; gap: 5px; }
-.chat-workstream-chip { max-width: 150px; overflow: hidden; padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-raised); color: var(--ink-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .chat-workstream-menu { position: absolute; z-index: 42; top: calc(100% + 4px); left: 0; display: flex; flex-direction: column; gap: 5px; width: min(280px, 90vw); padding: 8px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
 .chat-workstream-menu input { width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
 .chat-suggestion-chip { display: inline-flex; flex: none; align-items: center; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent-soft); font-size: 12px; }

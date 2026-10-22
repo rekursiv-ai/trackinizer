@@ -72,6 +72,7 @@ from trackinizer.wire.wire_sessions import (
     PROVIDER_IS_ASSISTANT,
     PROVIDER_IS_CLI,
     PROVIDER_IS_OTHER_CLI,
+    SESSION_ENDED,
     DrainInboundResponse,
     InboundDrainItem,
     InboundEnqueueRequest,
@@ -474,6 +475,10 @@ async def session_inbound_drain_route(
     ``chat_run_live``, so one chat never has two runs draining it. So is a drain by
     a run the server replaced when it reattached the chat (``POST .../reattach``).
 
+    A drain of a CLI chat's session that has ended, as when the person closed the chat,
+    is 409 ``session_ended`` and the run stops; a session the reaper closed for silence
+    is reopened by the drain instead.
+
     ``run``, ``machine`` and ``cwd`` say where the draining run is, and the lease the
     drain takes keeps them for Chat to show (a malformed one is 422). They are the
     caller's own word about its own run, shown and never trusted; a run that names
@@ -516,6 +521,17 @@ async def session_inbound_drain_route(
         session_id=session_id,
     ):
         session = await require_session(store, session_id)
+    # A CLI chat's session that stays ended -- the person closed the chat -- is no
+    # session to wait on: the run polling it stops, where an empty answer would leave
+    # it polling a chat no line can reach.
+    if session.ended is not None and provider not in {None, "assistant"}:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": SESSION_ENDED,
+                "message": "This chat was closed; its run stops",
+            },
+        )
     polling = session.status == "active" and session.ended is None
     if polling:
         # No await between this test and the lease it protects: two runs that start

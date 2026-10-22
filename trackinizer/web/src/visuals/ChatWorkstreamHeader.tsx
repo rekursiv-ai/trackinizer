@@ -13,7 +13,7 @@ import { showStation } from "../stations/useStation";
 import { beginStationNavigation } from "../stations/store";
 import { acceptWorkspace } from "../stations/cache";
 import { setChatHidden, setChatSide, useChatColumn } from "./chatColumnState";
-import { DeleteChat, PrivacySwitch, ShareChat } from "./ChatSharing";
+import { CloseChat, DeleteChat, PrivacySwitch, ShareChat } from "./ChatSharing";
 import { ProviderPicker, reasonText, useChatDefault, useProviderStatuses } from "./ProviderPicker";
 
 type Props = {
@@ -259,7 +259,8 @@ export function ChatWorkstreamHeader({ workspace, head, waiting = false, onHide,
       </div>
     </div>
     <div className="chat-workstream-pick">
-      {workstreamOpen ? <div className="chat-workstream-menu">
+      {workstreamOpen && <div className="chat-workstream-menu">
+        <p className="chat-menu-label">Move this chat to a workstream</p>
         <input ref={workstreamInput} aria-label="Workstream" placeholder="Move to workstream…" value={workstreamQuery}
           onChange={(event) => setWorkstreamQuery(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void chooseWorkstream(); } if (event.key === "Escape") setMenu(null); }} />
@@ -268,11 +269,9 @@ export function ChatWorkstreamHeader({ workspace, head, waiting = false, onHide,
           {workstreamQuery.trim() && !workstreamMatches.some((each) => each.title.toLocaleLowerCase() === workstreamQuery.trim().toLocaleLowerCase())
             && <li><button type="button" className="station-option" onClick={() => void chooseWorkstream()}>Create “{workstreamQuery.trim()}”</button></li>}
         </ul>
-      </div>
-        : <button type="button" className="chat-workstream-chip hover-only" aria-label={`Workstream: ${currentGroup?.title ?? "Scratch"}`}
-          onClick={() => { setWorkstreamQuery(""); setMenu("workstream"); }}>{currentGroup?.title ?? "Scratch"} ▾</button>}
+      </div>}
       {suggestion && <span className="chat-suggestion-chip">
-        <button type="button" aria-label={`Move to suggested workstream ${suggestion.title}`} onClick={() => void followSuggestion()}>{suggestion.title}?</button>
+        <button type="button" aria-label={`Move to suggested workstream ${suggestion.title}`} onClick={() => void followSuggestion()}>Move to {suggestion.title}?</button>
         <button type="button" aria-label="Dismiss workstream suggestion" onClick={() => setDismissedSuggestion(true)}>×</button>
       </span>}
     </div>
@@ -282,9 +281,12 @@ export function ChatWorkstreamHeader({ workspace, head, waiting = false, onHide,
       <button className="btn ghost hover-only" type="button" aria-label="More chat actions" aria-expanded={moreOpen} onClick={() => setMenu(moreOpen ? null : "more")}>⋯</button>
       {moreOpen && <div className="chat-more-menu" aria-label="Chat actions">
         <button className="chat-menu-item" type="button" title="New chat, same canvas" onClick={() => { setMenu(null); void onClear(); }}>Clear chat</button>
+        <button className="chat-menu-item" type="button" title="Move this chat to a workstream"
+          onClick={() => { setWorkstreamQuery(""); setMenu("workstream"); }}>Move to…</button>
         {hidden
           ? <button className="chat-menu-item" type="button" aria-label="Pin Chat beside the page" title="Pin Chat beside the page" onClick={() => { setMenu(null); setChatHidden(false); }}>Pin panel</button>
           : <button className="chat-menu-item" type="button" aria-label="Hide Chat" title="Hide the chat panel" onClick={() => { setMenu(null); setChatHidden(true); }}>Hide panel</button>}
+        {workspace && head && <CloseChat head={head} onClose={() => hideStation(queryClient, workspace.id)} />}
         {head?.may_delete && <DeleteChat head={head} onDeleted={onDelete} />}
         <button className="chat-menu-item" type="button" onClick={() => setMenu("info")}>Info</button>
         {head?.may_hide && <PrivacySwitch head={head} />}

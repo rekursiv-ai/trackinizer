@@ -22,7 +22,8 @@ import { showStation } from "../stations/useStation";
 import { beginStationNavigation } from "../stations/store";
 import { acceptWorkspace } from "../stations/cache";
 import { type ChatPart, type Goal, goalOf, type Line, type LineAt, linesThrough, openPrompts, PENDING, readTranscript, sentBefore, withPending } from "./chatLines";
-import { chatRecordsKey, OPENING, readChatParts, useLiveChat } from "./chatRecords";
+import { chatRecordsKey, IDLE_CLOSE_MS, OPENING, readChatParts, useLiveChat } from "./chatRecords";
+import { CloseChat } from "./ChatSharing";
 import { type PendingPost, useChatFeed } from "./chatFeed";
 import { FOLLOW_UP_ASK, followUpSuggested } from "./chatFollowUp";
 import { useAnswerHighlights } from "./chatHighlights";
@@ -446,6 +447,32 @@ export function Chat({ workspace, onWaiting }: {
   const turn = runStateOf(partner);
   const stoppable = answerable && (partner?.provider === "claude" || partner?.provider === "codex")
     && (turn === "running" || turn === "requires_action");
+  // Nothing in flight -- no turn, no line on its way, no card open, no reply being written -- and quiet for
+  // IDLE_CLOSE_MS since the last record or the last change Chat saw: the strip offers Close in place of Stop.
+  const lastRecordMs = useMemo(() => {
+    let latest = 0;
+    for (const { records } of parts ?? []) for (const each of records) latest = Math.max(latest, each.timestamp ? Date.parse(each.timestamp) || 0 : 0);
+    return latest;
+  }, [parts]);
+  const inFlight = turn === "running" || turn === "requires_action" || lines.some((line) => line.pending) || sending.size > 0
+    || openPrompts(transcript) > 0 || !!reply;
+  const changeKey = `${turn}|${inFlight}`;
+  const [changedAt, setChangedAt] = useState(0);
+  const seenChange = useRef(changeKey);
+  useEffect(() => {
+    if (seenChange.current === changeKey) return;
+    seenChange.current = changeKey;
+    setChangedAt(Date.now());
+  }, [changeKey]);
+  const quietSince = Math.max(lastRecordMs, changedAt);
+  const idleAt = quietSince > 0 && !inFlight ? quietSince + IDLE_CLOSE_MS : null;
+  const closable = idleAt !== null && Date.now() >= idleAt && answerable && role !== "viewer" && head.data != null;
+  // The threshold is not an event of its own: the strip must appear when it passes, not on the next record.
+  useEffect(() => {
+    if (idleAt === null || Date.now() >= idleAt) return;
+    const timer = setTimeout(() => tick((n) => n + 1), idleAt - Date.now() + 1);
+    return () => clearTimeout(timer);
+  }, [idleAt]);
   // The goal the run is working toward, which the strip above the box says until it is met or cleared.
   const goal = goalOf(transcript);
   // Whether an agent waits on the person: the server says so, or a card in the log is still open and Chat can answer
@@ -505,9 +532,12 @@ export function Chat({ workspace, onWaiting }: {
     <p className="chat-notice">{chatNotice(head.data?.audience ?? "open", orgMode)}</p>
     {draft.problem && <p role="status" className="chat-note">{draft.problem}</p>}
     {goal && <p className="chat-note chat-goal">{goalStrip(goal)}</p>}
-    {stoppable && <div className="chat-stop">
-      <button className="btn ghost" type="button" disabled={stopping} title="Interrupt the turn (Esc)" onClick={() => void stop()}>Stop</button>
-    </div>}
+    {stoppable ? <div className="chat-stop">
+      <button className="btn ghost" type="button" disabled={stopping} aria-label="Stop" title="Interrupt the turn (Esc)" onClick={() => void stop()}>■</button>
+    </div>
+      : closable && workspace && head.data && <div className="chat-stop">
+        <CloseChat head={head.data} bar onClose={() => hideStation(queryClient, workspace.id)} />
+      </div>}
     {role === "viewer" ? <p className="chat-note chat-read-only" role="note">Viewers can read this chat but not post.</p>
       : <Composer send={send} target={target} draft={draft}
       field={(props, edit) => <RecordField field={stoppable ? { ...props, onKeyDown: (event) => {
