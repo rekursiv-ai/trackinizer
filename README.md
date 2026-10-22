@@ -31,7 +31,8 @@ message to an agent in the console, answered live.
 #   PG_MAJOR="$(apt-cache depends postgresql | grep -m1 -oP 'postgresql-\K\d+')"
 #   sudo apt-get install -y postgresql "postgresql-$PG_MAJOR-pgvector"
 
-uv tool install trackinizer
+# `trackinizer` alone installs `trax`, the client; the server is the `server` extra.
+uv tool install 'trackinizer[server]'
 
 # Optional: install authoring guidance for your agent (claude, codex, or cursor).
 trax doctor --fix --target codex --offline

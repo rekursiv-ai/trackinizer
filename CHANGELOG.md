@@ -5,6 +5,20 @@ All notable trackinizer changes are documented here. This project follows
 
 ## Unreleased
 
+### Changed
+
+- **Breaking for anyone who runs the server from PyPI.** A bare `pip install
+  trackinizer` now installs the client side only: `trax`, `Client` and the wire
+  and type models, with none of the database driver, web framework or torch.
+  The server, its web app and the embedders moved to the `server` extra:
+  install it with `pip install 'trackinizer[server]'` (`uv tool install
+  'trackinizer[server]'`). The `trackinizer` command on a bare install prints
+  that line and exits 2 instead of a traceback. The extra holds `asyncpg`,
+  `py-pglite`, `fastapi`, `starlette`, `uvicorn`, `itsdangerous`, `configgle`,
+  `zstandard`, `torch`, `transformers`, `huggingface-hub` and `peft`. `bashlex`
+  and `watchdog` (macOS) stay in the base: `trax run` session capture needs
+  them. A source checkout is unaffected.
+
 ### Removed
 
 - `trackinizer.lib.worker_count` is no longer part of the package. It moved,
