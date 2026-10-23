@@ -3,7 +3,7 @@
 All notable trackinizer changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## 0.1.10 - Unreleased
+## 0.1.10 - 2026-10-23
 
 ### Changed
 
