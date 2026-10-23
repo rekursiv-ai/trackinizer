@@ -10,9 +10,10 @@ answered at once and nothing is queued, and any other text stays a line.
 Only a known built-in of either CLI (:data:`KNOWN_VERBS`) at the very start of the
 text is a command, so ``/etc/hosts is broken`` and ``/tmp is full`` stay lines. Of
 those, Chat runs only the ones that need no terminal: ``/goal``, claude's
-``/compact``, and ``/model <name>`` or ``/effort <level>``, which are queued as a
-``settings`` post rather than typed. Every other one opens a menu, changes settings
-or switches the session, which the person does at the terminal.
+``/compact``, ``/rename``, claude's ``/rc`` (``/remote-control``), and ``/model
+<name>`` or ``/effort <level>``, which are queued as a ``settings`` post rather than
+typed. Every other one opens a menu, changes settings or switches the session, which
+the person does at the terminal.
 
 This package is part of the publishable client distribution, so it must not
 import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
@@ -70,6 +71,8 @@ KNOWN_VERBS: Final = frozenset(
         "plan",
         "fork",
         "rename",
+        "rc",
+        "remote-control",
         "diff",
         "mcp",
         "agents",
@@ -164,6 +167,13 @@ _GOAL_BARE: Final = "Chat shows the goal above the box; /goal clear stops it"
 _GOAL_EDIT: Final = (
     "Chat cannot run /goal edit: it opens an editor. Use it in the run's own terminal."
 )
+_RENAME_BARE: Final = "codex asks for the name in a dialog; type /rename <name>"
+# A chat's run drives its own ``codex app-server`` on stdio, which offers no request
+# that turns remote control on.
+_NO_RC: Final = (
+    "codex has no remote control for a chat's run: codex remote-control serves "
+    "codex's background daemon, not this run"
+)
 
 _TABLE: Final[Mapping[str, Mapping[ChatProvider, str | None]]] = {
     "goal": {"claude": None, "codex": None},
@@ -181,6 +191,12 @@ _TABLE: Final[Mapping[str, Mapping[ChatProvider, str | None]]] = {
         "claude": None,
         "codex": "codex runs /compact only between turns; attach to run it",
     },
+    "rename": {"claude": None, "codex": None},
+    # Claude names the session from the conversation; codex opens a dialog.
+    "rename bare": {"claude": None, "codex": _RENAME_BARE},
+    # Claude's run starts Remote Control by a control request, as a line cannot.
+    "rc": {"claude": None, "codex": _NO_RC},
+    "remote-control": {"claude": None, "codex": _NO_RC},
 }
 """What each CLI does with each form of a command Chat may run: ``None`` types it, and
 text refuses it. A known verb with no row is refused as :data:`_MENU`."""
@@ -265,6 +281,8 @@ def classify(text: str, provider: ChatProvider) -> Classified:
 
 def _row(verb: str, *, args: str) -> tuple[str, str]:
     """Return a command's row of the table, and its arguments as they are typed."""
+    if verb == "rename" and not args:
+        return "rename bare", args
     if verb != "goal":
         return verb, args
     word = args.lower()

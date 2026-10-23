@@ -270,8 +270,18 @@ class Driver(Protocol):
         """Send the person's line to the agent."""
         ...
 
-    async def command(self, verb: str, args: str) -> None:
-        """Run a slash command such as ``/compact`` or ``/goal`` with ``args``."""
+    async def command(self, verb: str, args: str) -> str:
+        """Run a slash command such as ``/compact`` or ``/goal`` with ``args``.
+
+        Args:
+          verb: The command, with or without its slash.
+          args: What follows it.
+
+        Returns:
+          printed: What the agent said of it that its own log does not hold, for the
+            person to read; empty when its log holds it or it said nothing.
+
+        """
         ...
 
     async def answer(self, answer: Answer) -> None:
