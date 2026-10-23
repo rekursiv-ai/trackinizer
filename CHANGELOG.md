@@ -27,8 +27,8 @@ All notable trackinizer changes are documented here. This project follows
   that line and exits 2 instead of a traceback. The extra holds `asyncpg`,
   `py-pglite`, `fastapi`, `starlette`, `uvicorn`, `itsdangerous`, `configgle`,
   `zstandard`, `torch`, `transformers`, `huggingface-hub` and `peft`. `bashlex`
-  and `watchdog` (macOS) stay in the base: `trax run` session capture needs
-  them. A source checkout is unaffected.
+  and `watchdog` (macOS) stay in the base: the agent runner's session capture
+  uses them through `trackinizer.lib`. A source checkout is unaffected.
 
 ### Removed
 
