@@ -56,7 +56,7 @@
   color-scheme: light;
 }
 :root[data-skin="retro"] .topbar { margin-bottom: 9px; box-shadow: 0 3px 0 #d49a16, 0 6px 0 #b4461a, 0 9px 0 #7a3f1d; }
-:root[data-skin="retro"] :is(.workstream-title, .canvas-tab, .skin-option) { border-radius: 999px; }
+:root[data-skin="retro"] :is(.workspace-title, .canvas-tab, .skin-option) { border-radius: 999px; }
 
 /* Sci-fi: a starship console. Deep navy, cyan hairlines, square corners, uppercase spaced labels. */
 :root[data-skin="scifi"] {
@@ -108,8 +108,8 @@
   color-scheme: dark;
 }
 :root[data-skin="scifi"] .topbar { border-bottom: 1px solid var(--accent-hover); box-shadow: 0 1px 14px #38d6ff40; }
-:root[data-skin="scifi"] :is(.workstream-title, .view-h .ttl, .topbar-pop-label) { letter-spacing: .1em; text-transform: uppercase; }
-:root[data-skin="scifi"] .workstream-title { font-size: 11px; border: 1px solid var(--group); }
+:root[data-skin="scifi"] :is(.workspace-title, .view-h .ttl, .topbar-pop-label) { letter-spacing: .1em; text-transform: uppercase; }
+:root[data-skin="scifi"] .workspace-title { font-size: 11px; border: 1px solid var(--group); }
 
 /* DOS: an 80s text-mode program. Blue panels, a grey menu bar and dialogs, bright CGA colours, hard black shadows, no curves. */
 :root[data-skin="dos"] {
@@ -167,8 +167,8 @@
   --line: #000000; --line-strong: #000000; --accent-soft: #00aaaa; --error-text: #600000;
   background: #aaaaaa; color: #000000;
 }
-:root[data-skin="dos"] .workstream-title { background: color-mix(in srgb, var(--group) 55%, #aaaaaa); color: #000000; }
-:root[data-skin="dos"] .workstream-title.is-current { background: #000000; color: var(--group); }
+:root[data-skin="dos"] .workspace-title { background: color-mix(in srgb, var(--group) 55%, #aaaaaa); color: #000000; }
+:root[data-skin="dos"] .workspace-title.is-current { background: #000000; color: var(--group); }
 :root[data-skin="dos"] .topbar-pop { border: 3px double #000000; box-shadow: 8px 8px 0 #000000; }
 
 /* 8-bit console: a late-80s home console. Grey plastic, a charcoal bar with a red stripe, thick black outlines, hard pixel shadows. */
@@ -226,9 +226,9 @@
   border-bottom: 4px solid #c8102e; margin-bottom: 8px;
 }
 :root[data-skin="console"] .topbar-pop { --text: #111111; --ink-muted: #2b2b2b; --muted: #4a4a4a; --surface-hover: #c8c8c8; --line: #8a8a8a; --line-strong: #111111; --error-text: #a9001f; border: 3px solid #111111; box-shadow: 4px 4px 0 #111111; }
-:root[data-skin="console"] .workstream-title { border: 2px solid #111111; background: color-mix(in srgb, var(--group) 70%, #111111); color: #ffffff; box-shadow: 2px 2px 0 #000000; }
-:root[data-skin="console"] .workstream-title:active { transform: translate(2px, 2px); box-shadow: none; }
-:root[data-skin="console"] :is(.view-h .ttl, .workstream-title) { text-transform: uppercase; }
+:root[data-skin="console"] .workspace-title { border: 2px solid #111111; background: color-mix(in srgb, var(--group) 70%, #111111); color: #ffffff; box-shadow: 2px 2px 0 #000000; }
+:root[data-skin="console"] .workspace-title:active { transform: translate(2px, 2px); box-shadow: none; }
+:root[data-skin="console"] :is(.view-h .ttl, .workspace-title) { text-transform: uppercase; }
 
 /* Matrix: black glass and code green. */
 :root[data-skin="matrix"] {
@@ -280,8 +280,8 @@
   color-scheme: dark;
 }
 :root[data-skin="matrix"] .topbar { border-bottom: 1px solid var(--line-strong); }
-:root[data-skin="matrix"] .workstream-title { border: 1px solid var(--group); background: #000000; text-shadow: 0 0 6px var(--group); }
-:root[data-skin="matrix"] .workstream-title.is-current { background: var(--group); text-shadow: none; }
+:root[data-skin="matrix"] .workspace-title { border: 1px solid var(--group); background: #000000; text-shadow: 0 0 6px var(--group); }
+:root[data-skin="matrix"] .workspace-title.is-current { background: var(--group); text-shadow: none; }
 :root[data-skin="matrix"] .view-h .ttl { text-shadow: 0 0 8px #00ff4180; }
 
 /* Hacker: a tmux and vim session in Tomorrow Night. Groups are numbered powerline segments. */
@@ -334,11 +334,11 @@
   color-scheme: dark;
 }
 :root[data-skin="hacker"] .topbar { background: #282a2e; }
-:root[data-skin="hacker"] .workstream-bar { counter-reset: window; gap: 0; }
-:root[data-skin="hacker"] .workstream-title { padding: 0 18px 0 10px; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%); }
-:root[data-skin="hacker"] .workstream-title::before { counter-increment: window; content: counter(window) ":"; opacity: .7; }
-:root[data-skin="hacker"] .workstream-pin { display: none; }
-:root[data-skin="hacker"] .workstream-title.is-current::after { content: "*"; }
+:root[data-skin="hacker"] .workspace-bar { counter-reset: window; gap: 0; }
+:root[data-skin="hacker"] .workspace-title { padding: 0 18px 0 10px; clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 50%, calc(100% - 10px) 100%, 0 100%); }
+:root[data-skin="hacker"] .workspace-title::before { counter-increment: window; content: counter(window) ":"; opacity: .7; }
+:root[data-skin="hacker"] .workspace-pin { display: none; }
+:root[data-skin="hacker"] .workspace-title.is-current::after { content: "*"; }
 
 /* Minimalist: paper and ink, greys alone, groups set as text with an underline. */
 :root[data-skin="minimal"] {
@@ -390,9 +390,9 @@
   color-scheme: light;
 }
 :root[data-skin="minimal"] .topbar { border-bottom: 1px solid var(--line); }
-:root[data-skin="minimal"] .workstream-title { background: transparent; color: var(--muted); font-weight: 500; border-radius: 0; }
-:root[data-skin="minimal"] .workstream-title.is-current { background: transparent; color: var(--text); box-shadow: inset 0 -2px 0 var(--text); }
-:root[data-skin="minimal"] .workstream-pin { width: 5px; height: 5px; }
+:root[data-skin="minimal"] .workspace-title { background: transparent; color: var(--muted); font-weight: 500; border-radius: 0; }
+:root[data-skin="minimal"] .workspace-title.is-current { background: transparent; color: var(--text); box-shadow: inset 0 -2px 0 var(--text); }
+:root[data-skin="minimal"] .workspace-pin { width: 5px; height: 5px; }
 :root[data-skin="minimal"] .topbar-rule { background: transparent; }
 
 /* Brutalist: the raw web. White, black rules, a yellow frame, blue links, hard offset shadows, no curves. */
@@ -445,7 +445,7 @@
   color-scheme: light;
 }
 :root[data-skin="brutal"] .main { border: 3px solid #000000; }
-:root[data-skin="brutal"] .workstream-title { border: 3px solid var(--group); background: #ffffff; text-transform: uppercase; }
-:root[data-skin="brutal"] .workstream-title.is-current { background: var(--group); }
+:root[data-skin="brutal"] .workspace-title { border: 3px solid var(--group); background: #ffffff; text-transform: uppercase; }
+:root[data-skin="brutal"] .workspace-title.is-current { background: var(--group); }
 :root[data-skin="brutal"] .topbar-pop { border: 3px solid #000000; box-shadow: 6px 6px 0 #000000; }
 :root[data-skin="brutal"] .view-h .ttl { font-family: "Arial Black", Impact, sans-serif; text-transform: uppercase; }

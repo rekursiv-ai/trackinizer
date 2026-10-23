@@ -22,7 +22,7 @@
   --red: #d14545;
   --urgent: #f2994a;
   --violet: #9d8cf0;
-  /* The top bar's station groups take these in turn; --on-group is text on one. */
+  /* The top bar's canvas groups take these in turn; --on-group is text on one. */
   --group-1: #6ea8ee;
   --group-2: #4cb782;
   --group-3: #c99d55;

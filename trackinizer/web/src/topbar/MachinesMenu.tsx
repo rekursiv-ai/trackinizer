@@ -13,7 +13,7 @@ const MachinesPanel = lazyView(() => import("./MachinesPanel"), (module) => modu
  * The Machines menu in the top bar, where commands run: the signed-in person's
  * own machines, how to connect one, and what this server provides, as its
  * deployment notes it. A dot on the button says one of the machines is online.
- * The machines are the terminal's read, under the key it uses with no station,
+ * The machines are the terminal's read, under the key it uses with no canvas,
  * so the two caches agree. They are read only while the bar is `shown`, and
  * again each minute it stays so: a page's first reads stay its own, and a
  * folded bar shows no dot to keep current. A server without sign-in, and a

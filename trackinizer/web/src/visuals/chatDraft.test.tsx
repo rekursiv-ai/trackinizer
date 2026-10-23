@@ -37,17 +37,17 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-function mount(workspaceId: string | null, { email = ADA, session = page } = {}) {
+function mount(canvasId: string | null, { email = ADA, session = page } = {}) {
   const profile = { email } as Profile;
   const wrapper = ({ children }: { children: ReactNode }) => (
     <SessionContext value={session}>
       <ProfileContext value={profile}>{children}</ProfileContext>
     </SessionContext>
   );
-  return renderHook(({ id }: { id: string | null }) => useChatDraft(id), { wrapper, initialProps: { id: workspaceId } });
+  return renderHook(({ id }: { id: string | null }) => useChatDraft(id), { wrapper, initialProps: { id: canvasId } });
 }
 
-test("a draft is kept per station and comes back on switch and remount", () => {
+test("a draft is kept per canvas and comes back on switch and remount", () => {
   const view = mount(A);
   act(() => view.result.current.edit("hello a"));
   expect(preferences().drafts[`chat:${A}`]).toEqual({ text: "hello a", base: null });
@@ -60,7 +60,7 @@ test("a draft is kept per station and comes back on switch and remount", () => {
   expect(mount(B).result.current.text).toBe("hello b");
 });
 
-test("a station's kept draft opens from preferences that arrive later", () => {
+test("a canvas's kept draft opens from preferences that arrive later", () => {
   const view = mount(A);
   act(() => receivePreferences({ ...DEFAULT_PREFERENCES, drafts: { [`chat:${A}`]: { text: "from server", base: null } } }));
   expect(view.result.current.text).toBe("from server");
@@ -88,7 +88,7 @@ test("a clear taken before a remote edit leaves the newer remote draft", async (
   expect(preferences().drafts[`chat:${A}`]).toEqual({ text: "remote", base: null });
 });
 
-test("text typed with no station does not follow into a station", () => {
+test("text typed with no canvas does not follow into a canvas", () => {
   const view = mount(null);
   act(() => view.result.current.edit("loose"));
   view.rerender({ id: A });
@@ -104,7 +104,7 @@ test("clearing to empty forgets the draft", () => {
   expect(`chat:${A}` in preferences().drafts).toBe(false);
 });
 
-test("clear captured at send clears its own station after a switch, never the other", () => {
+test("clear captured at send clears its own canvas after a switch, never the other", () => {
   const view = mount(A);
   act(() => view.result.current.edit("to a"));
   const clear = view.result.current.clear;
@@ -197,7 +197,7 @@ test("an old send cannot clear the same text kept for another user", () => {
   expect(preferences().drafts[`chat:${A}`]).toEqual({ text: "same", base: null });
 });
 
-test("leaving for login keeps every station's unsaved text, not only the shown one", async () => {
+test("leaving for login keeps every canvas's unsaved text, not only the shown one", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => Response.json({ detail: "down" }, { status: 503 })));
   vi.spyOn(console, "error").mockImplementation(() => {});
   const session = new Session(vi.fn());
@@ -345,7 +345,7 @@ test("a failed adoption still brings back untouched held text on the next boot",
   expect(preferences().drafts[`chat:${A}`]).toEqual({ text: "held", base: null });
 });
 
-test("typing writes this browser's held drafts only when it holds this station's", () => {
+test("typing writes this browser's held drafts only when it holds this canvas's", () => {
   const held = `trackinizer.v2.drafts.${ADA}`;
   localStorage.setItem(held, JSON.stringify({ "other:x": { text: "held", base: null } }));
   const view = mount(A);
@@ -376,7 +376,7 @@ test("an unchanged draft sends nothing", async () => {
   expect(sent).toHaveLength(count);
 });
 
-test("no station: a stale clear does nothing after an edit away and back", () => {
+test("no canvas: a stale clear does nothing after an edit away and back", () => {
   const view = mount(null);
   act(() => view.result.current.edit("same"));
   const stale = view.result.current.clear;
@@ -388,7 +388,7 @@ test("no station: a stale clear does nothing after an edit away and back", () =>
   expect(view.result.current.text).toBe("");
 });
 
-test("no station: text is local and nothing is kept", () => {
+test("no canvas: text is local and nothing is kept", () => {
   const view = mount(null);
   act(() => view.result.current.edit("loose"));
   expect(view.result.current.text).toBe("loose");

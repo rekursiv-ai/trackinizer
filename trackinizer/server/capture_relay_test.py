@@ -20,7 +20,7 @@ from trackinizer.server.capture_relay import (
 )
 
 
-_WORKSPACE: Final = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+_CANVAS: Final = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 _PNG: Final = base64.b64encode(b"\x89PNG\r\n\x1a\n-").decode()
 _JPEG: Final = base64.b64encode(b"\xff\xd8\xff-").decode()
 
@@ -36,7 +36,7 @@ def _answer(note: str) -> CaptureAnswer:
 async def _ask(relay: CaptureRelay) -> tuple[asyncio.Task[CaptureAnswer], uuid.UUID]:
     """Start a request and return it with the id the pages were sent."""
     sent: list[uuid.UUID] = []
-    task = asyncio.create_task(relay.ask(_WORKSPACE, publish=sent.append))
+    task = asyncio.create_task(relay.ask(_CANVAS, publish=sent.append))
     await asyncio.sleep(0)
     return task, sent[0]
 
@@ -46,7 +46,7 @@ async def test_an_answer_reaches_the_request_it_belongs_to() -> None:
     relay = CaptureRelay()
     task, request = await _ask(relay)
 
-    taken = relay.answer(_WORKSPACE, request=request, answer=_answer("from a page"))
+    taken = relay.answer(_CANVAS, request=request, answer=_answer("from a page"))
 
     assert taken
     assert (await task).error == "from a page"
@@ -57,8 +57,8 @@ async def test_the_first_answer_wins_and_a_second_is_refused() -> None:
     relay = CaptureRelay()
     task, request = await _ask(relay)
 
-    first = relay.answer(_WORKSPACE, request=request, answer=_answer("first"))
-    second = relay.answer(_WORKSPACE, request=request, answer=_answer("second"))
+    first = relay.answer(_CANVAS, request=request, answer=_answer("first"))
+    second = relay.answer(_CANVAS, request=request, answer=_answer("second"))
 
     assert (first, second) == (True, False)
     assert (await task).error == "first"
@@ -70,10 +70,10 @@ async def test_an_answer_for_another_canvas_or_an_unknown_request_is_refused() -
     task, request = await _ask(relay)
 
     elsewhere = relay.answer(uuid.uuid4(), request=request, answer=_answer("x"))
-    unknown = relay.answer(_WORKSPACE, request=uuid.uuid4(), answer=_answer("x"))
+    unknown = relay.answer(_CANVAS, request=uuid.uuid4(), answer=_answer("x"))
 
     assert (elsewhere, unknown) == (False, False)
-    relay.answer(_WORKSPACE, request=request, answer=_answer("done"))
+    relay.answer(_CANVAS, request=request, answer=_answer("done"))
     await task
 
 
@@ -85,17 +85,17 @@ async def test_a_request_nobody_answers_times_out_and_is_forgotten() -> None:
     with pytest.raises(TimeoutError):
         await task
 
-    assert not relay.answer(_WORKSPACE, request=request, answer=_answer("late"))
+    assert not relay.answer(_CANVAS, request=request, answer=_answer("late"))
 
 
 @pytest.mark.asyncio
 async def test_a_finished_request_leaves_nothing_waiting() -> None:
     relay = CaptureRelay()
     task, request = await _ask(relay)
-    relay.answer(_WORKSPACE, request=request, answer=_answer("done"))
+    relay.answer(_CANVAS, request=request, answer=_answer("done"))
     await task
 
-    assert not relay.answer(_WORKSPACE, request=request, answer=_answer("again"))
+    assert not relay.answer(_CANVAS, request=request, answer=_answer("again"))
 
 
 def test_an_answer_is_a_picture_or_a_reason_and_never_both_or_neither() -> None:
@@ -133,7 +133,7 @@ _TILE_BODY = {"left": 0.1, "top": 0.2, "right": 0.6, "bottom": 0.9}
 )
 def test_a_tile_is_an_id_and_edges_that_are_fractions(bad: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
-        CaptureTile.model_validate({"id": str(_WORKSPACE), **bad})
+        CaptureTile.model_validate({"id": str(_CANVAS), **bad})
 
 
 def test_an_image_keeps_its_tiles_in_order_and_at_most_fifty() -> None:

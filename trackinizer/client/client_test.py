@@ -1446,7 +1446,7 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
     | {"machine_job_file", "wait_machine_work", "report_machine_job"}
     | {"post_machine_read"}
     | {"code_missing", "code_put_blobs", "code_put_snapshot", "code_snapshot"}
-    | {"capture_workspace"},
+    | {"capture_canvas"},
 )
 
 
@@ -1603,9 +1603,9 @@ def test_request_wraps_malformed_json_on_2xx() -> None:
             client.get("/x")
 
 
-def test_a_stale_workspace_operation_is_retried_once_on_the_live_revision() -> None:
+def test_a_stale_canvas_operation_is_retried_once_on_the_live_revision() -> None:
     """A 409 re-reads the revision and resends with a fresh ``Idempotency-Key``."""
-    workspace = uuid.uuid4()
+    canvas = uuid.uuid4()
     revisions = iter([3, 5])
     sent: list[tuple[int, str]] = []
 
@@ -1613,7 +1613,7 @@ def test_a_stale_workspace_operation_is_retried_once_on_the_live_revision() -> N
         if request.method == "GET":
             return httpx2.Response(
                 200,
-                json={"id": str(workspace), "revision": next(revisions)},
+                json={"id": str(canvas), "revision": next(revisions)},
             )
         revision = from_plain(
             json_loads(request.content, dict[str, object])["revision"],
@@ -1621,38 +1621,38 @@ def test_a_stale_workspace_operation_is_retried_once_on_the_live_revision() -> N
         )
         sent.append((revision, request.headers["Idempotency-Key"]))
         if revision == 3:
-            return httpx2.Response(409, json={"detail": "stale workspace revision"})
-        return httpx2.Response(200, json={"id": str(workspace), "revision": 6})
+            return httpx2.Response(409, json={"detail": "stale canvas revision"})
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 6})
 
     with Client("http://server") as client:
         _install_mock_transport(client, handler)
-        state = client.apply_workspace_operation(workspace, operation={"kind": "hide"})
+        state = client.apply_canvas_operation(canvas, operation={"kind": "hide"})
 
     assert state["revision"] == 6
     assert [revision for revision, _ in sent] == [3, 5]
     assert sent[0][1] != sent[1][1]
 
 
-def test_a_workspace_operation_refused_for_another_reason_is_not_retried() -> None:
-    workspace = uuid.uuid4()
+def test_a_canvas_operation_refused_for_another_reason_is_not_retried() -> None:
+    canvas = uuid.uuid4()
     posts: list[int] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "GET":
-            return httpx2.Response(200, json={"id": str(workspace), "revision": 3})
+            return httpx2.Response(200, json={"id": str(canvas), "revision": 3})
         posts.append(1)
         return httpx2.Response(422, json={"detail": "Visual instance not found."})
 
     with Client("http://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match="422"):
-            _ = client.apply_workspace_operation(workspace, operation={"kind": "hide"})
+            _ = client.apply_canvas_operation(canvas, operation={"kind": "hide"})
 
     assert posts == [1]
 
 
 def test_a_navigation_reads_no_revision_and_names_the_route() -> None:
-    workspace = uuid.uuid4()
+    canvas = uuid.uuid4()
     seen: list[tuple[str, str, dict[str, object]]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -1663,24 +1663,24 @@ def test_a_navigation_reads_no_revision_and_names_the_route() -> None:
                 json_loads(request.content, dict[str, object]),
             ),
         )
-        return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
 
     with Client("http://server") as client:
         _install_mock_transport(client, handler)
-        state = client.navigate(workspace, route="#/lookup/abc")
+        state = client.navigate(canvas, route="#/lookup/abc")
 
     assert state["revision"] == 4
     assert seen == [
         (
             "POST",
-            f"/api/workspaces/{workspace}/operations",
+            f"/api/canvases/{canvas}/operations",
             {"revision": 0, "operation": {"kind": "navigate", "route": "#/lookup/abc"}},
         ),
     ]
 
 
 def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
-    workspace = uuid.uuid4()
+    canvas = uuid.uuid4()
     ids = [uuid.uuid4(), uuid.uuid4()]
     seen: list[tuple[str, str, dict[str, object]]] = []
 
@@ -1692,17 +1692,17 @@ def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
                 json_loads(request.content, dict[str, object]),
             ),
         )
-        return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
 
     with Client("http://server") as client:
         _install_mock_transport(client, handler)
-        state = client.highlight(workspace, ids=ids)
+        state = client.highlight(canvas, ids=ids)
 
     assert state["revision"] == 4
     assert seen == [
         (
             "POST",
-            f"/api/workspaces/{workspace}/operations",
+            f"/api/canvases/{canvas}/operations",
             {
                 "revision": 0,
                 "operation": {"kind": "highlight", "ids": [str(i) for i in ids]},
@@ -1712,7 +1712,7 @@ def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
 
 
 def test_a_chat_window_reads_no_revision_and_names_the_flag() -> None:
-    workspace = uuid.uuid4()
+    canvas = uuid.uuid4()
     seen: list[tuple[str, str, dict[str, object]]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -1723,24 +1723,24 @@ def test_a_chat_window_reads_no_revision_and_names_the_flag() -> None:
                 json_loads(request.content, dict[str, object]),
             ),
         )
-        return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
 
     with Client("http://server") as client:
         _install_mock_transport(client, handler)
-        state = client.chat_window(workspace, hidden=True)
+        state = client.chat_window(canvas, hidden=True)
 
     assert state["revision"] == 4
     assert seen == [
         (
             "POST",
-            f"/api/workspaces/{workspace}/operations",
+            f"/api/canvases/{canvas}/operations",
             {"revision": 0, "operation": {"kind": "chat", "hidden": True}},
         ),
     ]
 
 
 def test_a_capture_posts_once_and_returns_the_picture() -> None:
-    workspace = uuid.uuid4()
+    canvas = uuid.uuid4()
     seen: list[tuple[str, str]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -1752,10 +1752,10 @@ def test_a_capture_posts_once_and_returns_the_picture() -> None:
 
     with Client("http://server") as client:
         _install_mock_transport(client, handler)
-        picture = client.capture_workspace(workspace)
+        picture = client.capture_canvas(canvas)
 
     assert picture == {"width": 4, "mime": "image/png", "tiles": [{"id": "t"}]}
-    assert seen == [("POST", f"/api/workspaces/{workspace}/captures")]
+    assert seen == [("POST", f"/api/canvases/{canvas}/captures")]
 
 
 def test_a_capture_no_page_answered_is_a_424_that_is_not_retried() -> None:
@@ -1768,7 +1768,7 @@ def test_a_capture_no_page_answered_is_a_424_that_is_not_retried() -> None:
     with Client("http://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError) as raised:
-            client.capture_workspace(uuid.uuid4())
+            client.capture_canvas(uuid.uuid4())
 
     assert raised.value.status_code == 424
     assert "No open page answered" in str(raised.value)
@@ -1776,7 +1776,7 @@ def test_a_capture_no_page_answered_is_a_424_that_is_not_retried() -> None:
 
 
 def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:
-    workspace = uuid.uuid4()
+    canvas = uuid.uuid4()
     seen: list[tuple[str, str, dict[str, object]]] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:
@@ -1787,12 +1787,12 @@ def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:
                 json_loads(request.content, dict[str, object]),
             ),
         )
-        return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
 
     with Client("http://server") as client:
         _install_mock_transport(client, handler)
         state = client.set_preferences(
-            workspace,
+            canvas,
             change={"theme": "light", "chat_side": None},
         )
 
@@ -1800,7 +1800,7 @@ def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:
     assert seen == [
         (
             "POST",
-            f"/api/workspaces/{workspace}/operations",
+            f"/api/canvases/{canvas}/operations",
             {
                 "revision": 0,
                 "operation": {
@@ -2290,9 +2290,9 @@ class TestSessionMethods:
         assert seen["path"] == f"/api/sessions/{sid}/end"
         assert resp.id == sid
 
-    def test_inbound_drain_preserves_workspace_context(self) -> None:
+    def test_inbound_drain_preserves_canvas_context(self) -> None:
         session_id = uuid.uuid4()
-        workspace_id = uuid.uuid4()
+        canvas_id = uuid.uuid4()
         record_id = uuid.uuid4()
         visual_id = uuid.uuid4()
 
@@ -2306,7 +2306,7 @@ class TestSessionMethods:
                             "text": "What led here?",
                             "source": "viewer@example.com",
                             "context": {
-                                "workspace_id": str(workspace_id),
+                                "canvas_id": str(canvas_id),
                                 "agent_instructions": "Trace the evidence.",
                                 "continuation_record_id": str(record_id),
                                 "page": {
@@ -2341,7 +2341,7 @@ class TestSessionMethods:
         context = item.context
         assert context is not None
         assert context.model_dump(mode="json") == {
-            "workspace_id": str(workspace_id),
+            "canvas_id": str(canvas_id),
             "agent_instructions": "Trace the evidence.",
             "continuation_record_id": str(record_id),
             "visible_visuals": [
@@ -2380,7 +2380,7 @@ class TestSessionMethods:
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
             context: dict[str, object] = {
-                "workspace_id": str(uuid.uuid4()),
+                "canvas_id": str(uuid.uuid4()),
                 "visible_visuals": [],
                 "relay": relay,
             }
@@ -3191,7 +3191,7 @@ class TestMachineHostMethods:
 
         assert none is None
         assert found is not None
-        assert (found.opener, found.rows, found.workspace) == ("ada@x.y", 24, None)
+        assert (found.opener, found.rows, found.canvas) == ("ada@x.y", 24, None)
         assert seen[0].url.path == (f"/api/machines/{_MACHINE_ID}/terminals/wait")
         assert seen[0].url.params["instance"] == str(_INSTANCE)
         assert seen[0].url.params["wait_sec"] == "25"
@@ -3250,9 +3250,9 @@ class TestMachineHostMethods:
 class TestTerminalMethods:
     """The terminal methods build the right requests and parse the answers."""
 
-    def test_terminal_machines_asks_for_a_station_only_when_named(self) -> None:
+    def test_terminal_machines_asks_for_a_canvas_only_when_named(self) -> None:
         seen: list[httpx2.Request] = []
-        station = uuid.UUID("22222222-2222-2222-2222-222222222222")
+        canvas = uuid.UUID("22222222-2222-2222-2222-222222222222")
         listing = {
             "machines": [
                 {
@@ -3272,14 +3272,14 @@ class TestTerminalMethods:
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
-            named = client.terminal_machines(workspace=station)
+            named = client.terminal_machines(canvas=canvas)
             bare = client.terminal_machines()
 
         assert [(r.method, r.url.path) for r in seen] == [
             ("GET", TERMINAL_MACHINES_PATH),
         ] * 2
-        assert seen[0].url.params["workspace"] == str(station)
-        assert "workspace" not in seen[1].url.params
+        assert seen[0].url.params["canvas"] == str(canvas)
+        assert "canvas" not in seen[1].url.params
         assert [(m.name, m.terminal_ready, m.clis) for m in named.machines] == [
             ("gx10", True, ["claude", "codex"]),
         ]
@@ -3297,7 +3297,7 @@ class TestTerminalMethods:
 
     def test_open_terminal_sends_the_run_fields_and_reads_the_ticket(self) -> None:
         seen: list[httpx2.Request] = []
-        station = uuid.UUID("22222222-2222-2222-2222-222222222222")
+        canvas = uuid.UUID("22222222-2222-2222-2222-222222222222")
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
@@ -3313,7 +3313,7 @@ class TestTerminalMethods:
                     machine="gx10",
                     rows=40,
                     cols=120,
-                    workspace=station,
+                    canvas=canvas,
                     command="claude",
                     attach=_INSTANCE,
                     run_name="campaign-issue-7",
@@ -3326,7 +3326,7 @@ class TestTerminalMethods:
             "machine": "gx10",
             "rows": 40,
             "cols": 120,
-            "workspace": str(station),
+            "canvas": str(canvas),
             "requested_by": None,
             "surface": None,
             "command": "claude",

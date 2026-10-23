@@ -84,7 +84,7 @@ def production() -> Production:
 ```
 
 `Deployment.Config` itself holds only `visuals`, the visual catalog config
-(`Workspace.Config`). A site subclasses it and adds one field per addon, typed
+(`Canvas.Config`). A site subclasses it and adds one field per addon, typed
 with that addon's own config, so a factory sets addon fields with full type
 checking. The field name is the addon's name: it appears in
 `/api/addons/<name>` and in `--addon <name>`. A field that is `None` is

@@ -79,7 +79,7 @@ export const test = base.extend<{
   canvas: [false, { option: true }],
   canvasPreference: [
     async ({ request, canvas }, use) => {
-      const put = await request.put("/api/me/visual-workspace", { data: { enabled: canvas } });
+      const put = await request.put("/api/me/visual-canvas", { data: { enabled: canvas } });
       if (!put.ok()) throw new Error(`Could not set the canvas preference: ${put.status()}`);
       await use(undefined);
     },
@@ -135,10 +135,10 @@ export function failedResource(path: string, status: number | string): RegExp {
 
 /**
  * The tab's live stream, whichever the app uses: the canvas's events stream
- * (`/api/workspaces/{id}/events`, which carries the inquiry ids) for a user with
+ * (`/api/canvases/{id}/events`, which carries the inquiry ids) for a user with
  * the canvas on, the default, and `/api/web/subscribe` for one who opted out.
  */
-export const STREAM_URL = /\/api\/(?:web\/subscribe(?:$|\?(?!probe))|workspaces\/[^/]+\/events)/;
+export const STREAM_URL = /\/api\/(?:web\/subscribe(?:$|\?(?!probe))|canvases\/[^/]+\/events)/;
 
 /** Resolves when the page's live stream has answered. */
 export function streamOpened(page: Page, ok = false) {
@@ -146,7 +146,7 @@ export function streamOpened(page: Page, ok = false) {
 }
 
 /** The globs `page.route` matches the live stream by, either of the two. */
-export const STREAM_ROUTES = ["**/api/web/subscribe", "**/api/workspaces/*/events"] as const;
+export const STREAM_ROUTES = ["**/api/web/subscribe", "**/api/canvases/*/events"] as const;
 
 /** Refuse the page's live stream connections, whichever stream it uses, until `page.unroute`. */
 export async function abortStream(page: Page) {
@@ -156,5 +156,5 @@ export async function abortStream(page: Page) {
 /** Allow the browser's error line for each stream route a test refused. */
 export function allowStreamErrors(allowErrors: (pattern: RegExp) => void, status: number | string = "ERR_FAILED") {
   allowErrors(failedResource("/api/web/subscribe", status));
-  allowErrors(failedResource("/api/workspaces/", status));
+  allowErrors(failedResource("/api/canvases/", status));
 }

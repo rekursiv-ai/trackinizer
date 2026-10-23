@@ -19,28 +19,28 @@ export type RunLaunch = { readonly command: "claude" | "codex"; readonly attach:
 /** A terminal that is open now, the machine it runs on, and the view that opened it. */
 export type LiveTerminal = { readonly terminal_id: string; readonly machine: string; readonly surface?: string | null };
 
-/** The caller's machines, newest ready first, and their live terminals opened from the asked station, oldest first. */
+/** The caller's machines, newest ready first, and their live terminals opened from the asked canvas, oldest first. */
 export type TerminalMachines = { readonly machines: readonly TerminalMachine[]; readonly terminals?: readonly LiveTerminal[] };
 
 /** What opening a terminal returns: its id, the one-use ticket, and the STUN servers a direct link may use. */
 export type OpenedTerminal = { readonly terminal_id: string; readonly ticket: string; readonly ice_servers?: readonly string[] };
 
-/** The caller's machines, newest first; `workspace` asks for that station's live terminals too. */
-export async function listTerminalMachines(workspace?: string, { signal }: CallOptions = {}): Promise<TerminalMachines> {
+/** The caller's machines, newest first; `canvas` asks for that canvas's live terminals too. */
+export async function listTerminalMachines(canvas?: string, { signal }: CallOptions = {}): Promise<TerminalMachines> {
   return send(TIMEOUT_MS.read, signal, (signal) => client.GET("/api/terminals/machines", {
-    params: { query: { workspace } }, signal,
+    params: { query: { canvas } }, signal,
   }));
 }
 
 /**
- * Open a terminal on `machine`, from `workspace`'s station, for the view named `surface`. Only a click calls it.
+ * Open a terminal on `machine`, from `canvas`'s canvas, for the view named `surface`. Only a click calls it.
  * With `launch`, the machine starts that CLI's run in place of a login shell, re-opening the chat session it names,
  * in `launch.cwd` when given (else the home directory); the server derives the run's name.
  */
-export async function openTerminal(machine: string, workspace: string | null, rows: number, cols: number, surface: string | null,
+export async function openTerminal(machine: string, canvas: string | null, rows: number, cols: number, surface: string | null,
   launch?: RunLaunch): Promise<OpenedTerminal> {
   return send(TIMEOUT_MS.write, undefined, (signal) => client.POST("/api/terminals", {
-    body: { machine, workspace, rows, cols, surface, ...launch }, signal,
+    body: { machine, canvas, rows, cols, surface, ...launch }, signal,
   }));
 }
 

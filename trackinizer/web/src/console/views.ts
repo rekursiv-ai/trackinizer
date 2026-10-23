@@ -4,7 +4,7 @@ import { choosePreferences, preferences, receivePreferences, usePreferences } fr
 import type { KeptView } from "./legacyViews";
 import type { Selection } from "./facets";
 import type { Range } from "./feed";
-import { useLayout } from "../visuals/stationLayout";
+import { useLayout } from "../visuals/canvasLayout";
 import type { Level } from "./levels";
 
 /**
@@ -35,10 +35,10 @@ export function orderViews(views: readonly View[]): View[] {
  * (`src/preferences.ts`) so any browser finds them, and every hook showing them
  * follows a change made in any tab. The open view is the stored one with this
  * tab's id, so another tab's edit shows here and its delete opens the first view
- * left. That id lives in the station's layout, so a reload, or another browser,
- * opens it again; a station with none opens the first view, or a fresh one. A tab
+ * left. That id lives in the canvas's layout, so a reload, or another browser,
+ * opens it again; a canvas with none opens the first view, or a fresh one. A tab
  * that kept the id in its `sessionStorage`, as an older build did, hands it to the
- * station once and forgets it. A fresh view ("Untitled view", every agent's
+ * canvas once and forgets it. A fresh view ("Untitled view", every agent's
  * messages, live) is stored on its first change, as a new conversation is. When
  * the server refuses a change, the open view still shows it, unsaved.
  */
@@ -123,7 +123,7 @@ function readOpenId(): string | null {
   }
 }
 
-/** The id the open view was kept under in a tab's `sessionStorage` before the station held it. */
+/** The id the open view was kept under in a tab's `sessionStorage` before the canvas held it. */
 const OPEN_KEY = "trackinizer.v2.console.open";
 
 function freshView(): View {

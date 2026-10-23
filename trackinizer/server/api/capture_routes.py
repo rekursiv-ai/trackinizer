@@ -23,10 +23,10 @@ from trackinizer.server.capture_relay import (
     CaptureImage,
 )
 from trackinizer.server.chat_hub import CaptureFrame
-from trackinizer.server.visuals.workspace_store import (
-    WorkspaceKeyRefusedError,
+from trackinizer.server.visuals.canvas_store import (
+    CanvasKeyRefusedError,
     agent_may_operate,
-    owns_workspace,
+    owns_canvas,
 )
 
 
@@ -34,12 +34,12 @@ router = APIRouter()
 
 
 @router.post(
-    "/api/workspaces/{workspace_id}/captures",
+    "/api/canvases/{canvas_id}/captures",
     response_model=CaptureImage,
     responses={424: {"description": "No open page of the canvas gave a picture."}},
 )
 async def request_capture_route(
-    workspace_id: uuid.UUID,
+    canvas_id: uuid.UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> CaptureImage:
@@ -51,7 +51,7 @@ async def request_capture_route(
     draw, the answer is 424 with the reason.
 
     Args:
-      workspace_id: Canvas to look at.
+      canvas_id: Canvas to look at.
       request: Request carrying the database engine, the hub and the relay.
       identity: The assistant's agent key.
 
@@ -66,23 +66,23 @@ async def request_capture_route(
         allowed = await agent_may_operate(
             engine_of(request),
             user_id=identity.user_id,
-            workspace_id=workspace_id,
+            canvas_id=canvas_id,
             agent_api_key_id=identity.api_key_id,
             inbound=get_inbound(request),
             assistant=get_assistant(request),
         )
-    except WorkspaceKeyRefusedError as error:
+    except CanvasKeyRefusedError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
     if not allowed:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+        raise HTTPException(status_code=404, detail="Canvas not found")
     hub = get_hub(request)
-    if not hub.listening(workspace_id):
+    if not hub.listening(canvas_id):
         raise HTTPException(status_code=424, detail="No open page answered.")
     try:
         answer = await get_relay(request).ask(
-            workspace_id,
+            canvas_id,
             publish=lambda asked: hub.publish(
-                workspace_id,
+                canvas_id,
                 frame=CaptureFrame(request=asked),
             ),
         )
@@ -114,12 +114,12 @@ _ANSWER_BODY: Final = {
 
 
 @router.put(
-    "/api/workspaces/{workspace_id}/captures/{capture_id}",
+    "/api/canvases/{canvas_id}/captures/{capture_id}",
     status_code=204,
     openapi_extra={"requestBody": _ANSWER_BODY},
 )
 async def answer_capture_route(
-    workspace_id: uuid.UUID,
+    canvas_id: uuid.UUID,
     capture_id: uuid.UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
@@ -130,7 +130,7 @@ async def answer_capture_route(
     request is taken; a later one, or one for a request that is over, is 404.
 
     Args:
-      workspace_id: The canvas the page shows.
+      canvas_id: The canvas the page shows.
       capture_id: The request id the page was sent.
       request: Request carrying the body.
       identity: Authenticated browser account, which must own the canvas.
@@ -140,12 +140,12 @@ async def answer_capture_route(
 
     """
     require_browser(identity)
-    if not await owns_workspace(
+    if not await owns_canvas(
         engine_of(request),
         user_id=identity.user_id,
-        workspace_id=workspace_id,
+        canvas_id=canvas_id,
     ):
-        raise HTTPException(status_code=404, detail="Workspace not found")
+        raise HTTPException(status_code=404, detail="Canvas not found")
     body = bytearray()
     async for chunk in request.stream():
         body += chunk
@@ -160,7 +160,7 @@ async def answer_capture_route(
             detail=[each["msg"] for each in error.errors(include_input=False)],
         ) from error
     if not get_relay(request).answer(
-        workspace_id,
+        canvas_id,
         request=capture_id,
         answer=answer,
     ):

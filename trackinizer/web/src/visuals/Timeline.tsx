@@ -9,7 +9,7 @@ import {
   DEFAULT_WIDTH, ROW_H, TOP, BOTTOM, heightOf, nodeAt, resultXs, rowY, ticks, timeAxis, timelineRows,
   type Axis, type RowRole, type TimelineRow,
 } from "./timelineLayout";
-import { useWorkspaceActions } from "./workspaceActions";
+import { useCanvasActions } from "./canvasActions";
 import "../graph/tokens.css";
 import "./Timeline.css";
 
@@ -24,7 +24,7 @@ const MARKS_SHOWN = 4;
  * evidence marked for or against. A card or square moves the page to that
  * record and re-centres this window on it.
  */
-export function Timeline({ instance, workspace, width }: RendererProps & { readonly width?: number }) {
+export function Timeline({ instance, canvas, width }: RendererProps & { readonly width?: number }) {
   const recordId = instance.record_id;
   const directionLimit = bounded(instance.params?.direction_limit, 8, 12);
   const resultsPerDirection = bounded(instance.params?.results_per_direction, 3, 5);
@@ -36,8 +36,8 @@ export function Timeline({ instance, workspace, width }: RendererProps & { reado
     enabled: !!recordId,
     retry: false,
   });
-  useVisualMark(instance, workspace, "data", query.isSuccess);
-  const actions = useWorkspaceActions();
+  useVisualMark(instance, canvas, "data", query.isSuccess);
+  const actions = useCanvasActions();
   const [host, setHost] = useState<HTMLElement | null>(null);
   const measured = useWidth(host);
   if (!recordId) return <div className="visual-unsupported">Choose a record to show its lineage and timeline.</div>;

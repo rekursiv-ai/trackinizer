@@ -2,24 +2,24 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { setStationLayout } from "../api/stations";
+import { setCanvasLayout } from "../api/canvasManagement";
 import { stubFetch } from "../api/testing";
 import { ProfileContext } from "../app/boot";
 import { PROFILE } from "../detail/testing";
 import { DEFAULT_PREFERENCES, type Preferences, preferences, receivePreferences } from "../preferences";
-import { setStation } from "../stations/store";
-import { flushLayouts, forgetLayouts } from "../visuals/stationLayout";
+import { setCanvas } from "../canvases/store";
+import { flushLayouts, forgetLayouts } from "../visuals/canvasLayout";
 import type { KeptView } from "./legacyViews";
 import { orderViews, useViews } from "./views";
 
-vi.mock("../api/stations", () => ({ setStationLayout: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../api/canvasManagement", () => ({ setCanvasLayout: vi.fn().mockResolvedValue(undefined) }));
 
-/** The station the hook keeps its open view in. */
+/** The canvas the hook keeps its open view in. */
 const client = new QueryClient();
 
-function station(layout: unknown = null) {
-  setStation("s1");
-  client.setQueryData(["workspace", "s1"], { id: "s1", layout });
+function canvas(layout: unknown = null) {
+  setCanvas("s1");
+  client.setQueryData(["canvas", "s1"], { id: "s1", layout });
 }
 
 /** A server that merges what it is sent over the preferences, as `PATCH /api/me/preferences` does, or refuses every write. */
@@ -32,7 +32,7 @@ function server({ refuse = false } = {}) {
   });
 }
 
-beforeEach(() => station());
+beforeEach(() => canvas());
 
 afterEach(async () => {
   // The test's own sends answer first, or their answers would put its data back.
@@ -40,7 +40,7 @@ afterEach(async () => {
   receivePreferences(DEFAULT_PREFERENCES);
   vi.unstubAllGlobals();
   client.clear();
-  setStation(null);
+  setCanvas(null);
   forgetLayouts();
   cleanup();
   vi.restoreAllMocks();
@@ -179,30 +179,30 @@ test("a view another tab edits or deletes is neither overwritten nor brought bac
   expect(preferences().console_views.map((one) => one.id)).not.toContain(id);
 });
 
-test("the open view is kept in the station's layout, so another browser opens the same one", () => {
+test("the open view is kept in the canvas's layout, so another browser opens the same one", () => {
   server();
   const { result } = load();
   act(() => result.current.change({ ...result.current.open, clis: ["claude"] }));
   const id = result.current.open.id;
   flushLayouts();
-  expect(setStationLayout).toHaveBeenLastCalledWith("s1", { console: id });
-  // A browser that never saw the id reads it from the station.
+  expect(setCanvasLayout).toHaveBeenLastCalledWith("s1", { console: id });
+  // A browser that never saw the id reads it from the canvas.
   forgetLayouts();
-  station({ console: id });
+  canvas({ console: id });
   expect(load().result.current.open.id).toBe(id);
 });
 
-test("a tab that kept its open view in sessionStorage hands it to the station once, and forgets it", () => {
+test("a tab that kept its open view in sessionStorage hands it to the canvas once, and forgets it", () => {
   sessionStorage.setItem("trackinizer.v2.console.open", "old-view");
   load();
-  expect(setStationLayout).toHaveBeenCalledWith("s1", { console: "old-view" });
+  expect(setCanvasLayout).toHaveBeenCalledWith("s1", { console: "old-view" });
   expect(sessionStorage.getItem("trackinizer.v2.console.open")).toBeNull();
 });
 
-test("a station that holds an open view keeps it over the one a tab kept", () => {
-  station({ console: "kept" });
+test("a canvas that holds an open view keeps it over the one a tab kept", () => {
+  canvas({ console: "kept" });
   sessionStorage.setItem("trackinizer.v2.console.open", "old-view");
   load();
-  expect(setStationLayout).not.toHaveBeenCalled();
+  expect(setCanvasLayout).not.toHaveBeenCalled();
   expect(sessionStorage.getItem("trackinizer.v2.console.open")).toBeNull();
 });

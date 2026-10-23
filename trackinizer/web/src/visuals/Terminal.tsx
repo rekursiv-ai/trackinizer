@@ -10,7 +10,7 @@ import { ApiError } from "../api/client";
 import { attachTerminal, closeTerminal, connectTerminal, listTerminalMachines, openTerminal, type LinkStatus, type TerminalLink } from "../api/terminals";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ProfileContext } from "../app/boot";
-import type { WorkspaceState } from "../api/workspaces";
+import type { CanvasState } from "../api/canvases";
 import { usePreferences } from "../preferences";
 import type { RendererProps } from "./registry";
 import { takeNewTerminalRequest, useNewTerminalRequested } from "./newTerminal";
@@ -33,8 +33,8 @@ const encoder = new TextEncoder();
 export type TerminalViewProps = {
   /** The machine **Start terminal** opens on; none leaves the button off. */
   readonly machine: string | null;
-  /** The station the terminal is opened from; its workstream receives the sessions started in it. */
-  readonly workspace: string | null;
+  /** The canvas the terminal is opened from; its workspace receives the sessions started in it. */
+  readonly canvas: string | null;
   /** The view that opens it, so a reload re-attaches this view to its own terminal. */
   readonly surface?: string | null;
   /** A terminal already live, to re-attach to once. */
@@ -63,7 +63,7 @@ function canvasRect(): CSSProperties {
 }
 
 /** A terminal on `machine`. */
-export function TerminalView({ machine, workspace, surface = null, resume = null, onOpened, shown = true, autoStart = null, requestedBy, onChord, keyboard = 0 }: TerminalViewProps) {
+export function TerminalView({ machine, canvas, surface = null, resume = null, onOpened, shown = true, autoStart = null, requestedBy, onChord, keyboard = 0 }: TerminalViewProps) {
   const prefs = usePreferences();
   const host = useRef<HTMLDivElement>(null);
   const live = useRef<{ term: Xterm; fit: FitAddon; link: TerminalLink | null; typeahead: TypeaheadLink } | null>(null);
@@ -181,7 +181,7 @@ export function TerminalView({ machine, workspace, surface = null, resume = null
   }, [fontSize, onOpened, release, fitNow]);
 
   const attach = (id: LiveTerminal, focus: boolean) => begin(async () => ({ ...id, ...await attachTerminal(id.terminal_id) }), focus);
-  const open = async (rows: number, cols: number): Promise<Opened> => ({ ...await openTerminal(machine!, workspace, rows, cols, surface), created: true });
+  const open = async (rows: number, cols: number): Promise<Opened> => ({ ...await openTerminal(machine!, canvas, rows, cols, surface), created: true });
   const start = (focus: boolean) => {
     if (machine) void begin(open, focus);
   };
@@ -284,12 +284,12 @@ type Tab = { readonly key: string; readonly resume: LiveTerminal | null; readonl
  * The `trax.terminal` tile: tabs, one shell each on its own machine, placed by a person or an agent. Every
  * terminal it opens carries the tile's id as its surface, so a reload re-attaches the tile's own tabs.
  */
-export function TerminalTile({ instance, workspace }: RendererProps) {
+export function TerminalTile({ instance, canvas }: RendererProps) {
   const viewer = useContext(ProfileContext)?.email ?? null;
   const params = instance.params ?? {};
   const given = typeof params.machine === "string" && params.machine ? params.machine : null;
   const [choosing, setChoosing] = useState(false);
-  const machines = useQuery({ queryKey: ["terminal-machines", workspace?.id ?? null], queryFn: ({ signal }) => listTerminalMachines(workspace?.id, { signal }), staleTime: 5_000 });
+  const machines = useQuery({ queryKey: ["terminal-machines", canvas?.id ?? null], queryFn: ({ signal }) => listTerminalMachines(canvas?.id, { signal }), staleTime: 5_000 });
   const ready = (machines.data?.machines ?? []).filter((each) => each.terminal_ready && each.confirmed);
   const first = given ?? ready[0]?.name ?? null;
   // An agent's `start`: only for the machine it names, one of the user's that is ready, and never once a terminal is live.
@@ -361,13 +361,13 @@ export function TerminalTile({ instance, workspace }: RendererProps) {
         {choosing && ready.map((each) => <button key={each.name} type="button" className="btn ghost" onClick={() => add(each.name)}>{each.name}</button>)}
       </div>
       {tabs.map((tab) => <div key={tab.key} className="terminal-pane" hidden={tab.key !== active}>
-        <TerminalView machine={machineOf(tab)} workspace={workspace?.id ?? null} surface={instance.id} resume={tab.resume} shown={tab.key === active}
+        <TerminalView machine={machineOf(tab)} canvas={canvas?.id ?? null} surface={instance.id} resume={tab.resume} shown={tab.key === active}
           onChord={chord} keyboard={summon[tab.key] ?? 0}
           autoStart={tab.auto ? `${instance.id}:${tab.key}` : asked && tab === tabs[0] ? instance.id : null}
-          requestedBy={tab.auto ? undefined : requester(instance.placed_by, viewer, workspace)}
+          requestedBy={tab.auto ? undefined : requester(instance.placed_by, viewer, canvas)}
           onOpened={(opened) => {
             setTabs((held) => held?.map((each) => each.key === tab.key ? { ...each, id: opened.terminal_id } : each) ?? null);
-            void queryClient.invalidateQueries({ queryKey: ["terminal-machines", workspace?.id ?? null] });
+            void queryClient.invalidateQueries({ queryKey: ["terminal-machines", canvas?.id ?? null] });
           }} />
       </div>)}
     </div>
@@ -387,9 +387,9 @@ function refusal(error: unknown): string {
 
 /**
  * Who asked for a terminal started by an agent: the user whose key placed the tile, when that is not the viewer; for
- * the viewer's own agent, the station's shared assistant by name, else "your agent". Display only.
+ * the viewer's own agent, the canvas's shared assistant by name, else "your agent". Display only.
  */
-function requester(placedBy: string | null | undefined, viewer: string | null, workspace: WorkspaceState | null): string {
+function requester(placedBy: string | null | undefined, viewer: string | null, canvas: CanvasState | null): string {
   if (placedBy && placedBy !== viewer) return placedBy;
-  return workspace?.partner?.provider === "assistant" && workspace.partner.actor ? workspace.partner.actor : "your agent";
+  return canvas?.partner?.provider === "assistant" && canvas.partner.actor ? canvas.partner.actor : "your agent";
 }

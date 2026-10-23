@@ -51,7 +51,7 @@ from trackinizer.server.preferences import (
     stored_preferences,
     write_preferences,
 )
-from trackinizer.server.visuals.workspace_store import station_ids
+from trackinizer.server.visuals.canvas_store import canvas_ids
 from trackinizer.wire.audience import AudienceName
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 from trackinizer.wire.wire_service_accounts import is_service_address
@@ -67,14 +67,14 @@ __all__ = [
     "AcknowledgeResult",
     "CreateTokenBody",
     "TokenRoleChangeBody",
-    "VisualWorkspacePreference",
+    "VisualCanvasPreference",
     "acknowledge_route",
     "create_token_route",
     "list_tokens_route",
     "profile_route",
     "revoke_token_route",
     "set_token_role_route",
-    "set_visual_workspace_preference",
+    "set_visual_canvas_preference",
 ]
 
 
@@ -111,7 +111,7 @@ class TokenRoleChangeBody(BaseModel):
     role: RoleLiteral
 
 
-class VisualWorkspacePreference(BaseModel):
+class VisualCanvasPreference(BaseModel):
     """The user's opt-in for the agent-guided canvas."""
 
     enabled: bool
@@ -162,7 +162,7 @@ async def profile_route(
     engine = engine_of(request)
     async with engine.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT name, last_login, visual_workspace_enabled, acknowledged_at, "
+            "SELECT name, last_login, visual_canvas_enabled, acknowledged_at, "
             "acknowledged_rules_version, preferences FROM users WHERE id = $1",
             identity.user_id,
         )
@@ -170,8 +170,8 @@ async def profile_route(
     name = identity.email if row is None else row["name"]
     assert isinstance(name, str)
     last_login = None if row is None else row["last_login"]
-    workspace_enabled = False if row is None else row["visual_workspace_enabled"]
-    assert isinstance(workspace_enabled, bool)
+    canvas_enabled = False if row is None else row["visual_canvas_enabled"]
+    assert isinstance(canvas_enabled, bool)
     acknowledged_version = (
         None
         if row is None
@@ -183,7 +183,7 @@ async def profile_route(
         "name": name,
         "role": identity.role,
         "last_login": iso_format(last_login),
-        "visual_workspace_enabled": workspace_enabled,
+        "visual_canvas_enabled": canvas_enabled,
         "preferences": stored_preferences(
             None if row is None else row["preferences"],
         ).model_dump(
@@ -261,14 +261,14 @@ async def acknowledge_route(
 
 
 @router.put(
-    "/api/me/visual-workspace",
-    response_model=VisualWorkspacePreference,
+    "/api/me/visual-canvas",
+    response_model=VisualCanvasPreference,
 )
-async def set_visual_workspace_preference(
-    body: VisualWorkspacePreference,
+async def set_visual_canvas_preference(
+    body: VisualCanvasPreference,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(current_user)],
-) -> VisualWorkspacePreference:
+) -> VisualCanvasPreference:
     """Set the caller's opt-in for the visual canvas.
 
     Args:
@@ -283,19 +283,19 @@ async def set_visual_workspace_preference(
     if identity.api_key_id is not None:
         raise HTTPException(
             status_code=403,
-            detail="Visual workspace opt-in requires an interactive session",
+            detail="Visual canvas opt-in requires an interactive session",
         )
     async with engine_of(request).acquire() as conn:
         enabled = await conn.fetchval(
-            "UPDATE users SET visual_workspace_enabled = $1 "
-            "WHERE id = $2 RETURNING visual_workspace_enabled",
+            "UPDATE users SET visual_canvas_enabled = $1 "
+            "WHERE id = $2 RETURNING visual_canvas_enabled",
             body.enabled,
             identity.user_id,
         )
     if enabled is None:
         raise HTTPException(status_code=404, detail="User not found")
     assert isinstance(enabled, bool)
-    return VisualWorkspacePreference(enabled=enabled)
+    return VisualCanvasPreference(enabled=enabled)
 
 
 @router.patch("/api/me/preferences", response_model=Preferences)
@@ -307,7 +307,7 @@ async def set_preferences_route(
     """Set some of the caller's preferences, and put others back to their defaults.
 
     The keys the body leaves out keep their values. The change is one statement, so
-    two tabs changing different keys at once both keep theirs. Every station of
+    two tabs changing different keys at once both keep theirs. Every canvas of
     the caller is sent the result, so each of their tabs shows it.
 
     Args:
@@ -333,13 +333,13 @@ async def set_preferences_route(
             )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        stations = await station_ids(conn, user_id=identity.user_id)
+        canvases = await canvas_ids(conn, user_id=identity.user_id)
     if preferences is None:
         raise HTTPException(status_code=404, detail="User not found")
-    # Every tab of the user, whichever station it shows, takes the change at once.
+    # Every tab of the user, whichever canvas it shows, takes the change at once.
     hub = get_hub(request)
-    for station in stations:
-        hub.publish(station, frame=PreferencesFrame(preferences=preferences))
+    for canvas in canvases:
+        hub.publish(canvas, frame=PreferencesFrame(preferences=preferences))
     return preferences
 
 

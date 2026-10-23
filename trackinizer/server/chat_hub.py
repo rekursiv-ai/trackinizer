@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from trackinizer.server.notify import SSE_PING
 from trackinizer.server.preferences import Preferences
-from trackinizer.server.visuals.workspaces import WorkspaceState
+from trackinizer.server.visuals.canvases import CanvasState
 
 
 if TYPE_CHECKING:
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "CanvasFrame",
     "CaptureFrame",
     "ChangedFrame",
     "ChatFrame",
@@ -42,8 +43,7 @@ __all__ = [
     "NavigateFrame",
     "PreferencesFrame",
     "Subscription",
-    "WorkspaceFrame",
-    "iter_workspace_events",
+    "iter_canvas_events",
 ]
 
 
@@ -57,11 +57,11 @@ class _Stamped(BaseModel):
     t: int = Field(default_factory=lambda: time.time_ns() // 1_000_000)
 
 
-class WorkspaceFrame(_Stamped):
+class CanvasFrame(_Stamped):
     """The canvas as it stands: on open, after every change, and on a new partner."""
 
-    type: Literal["workspace"] = "workspace"
-    state: WorkspaceState
+    type: Literal["canvas"] = "canvas"
+    state: CanvasState
 
 
 class NavigateFrame(_Stamped):
@@ -93,9 +93,9 @@ class CaptureFrame(_Stamped):
 
 
 class PreferencesFrame(_Stamped):
-    """The station owner's preferences changed: by them, or by the station's agent.
+    """The canvas owner's preferences changed: by them, or by the canvas's agent.
 
-    Sent to every station of theirs, so each of their tabs shows the change. Not
+    Sent to every canvas of theirs, so each of their tabs shows the change. Not
     replayed: a tab that opens reads them from the profile.
     """
 
@@ -111,7 +111,7 @@ class ChangedFrame(_Stamped):
 
 
 type Frame = (
-    WorkspaceFrame
+    CanvasFrame
     | NavigateFrame
     | HighlightFrame
     | ChatFrame
@@ -133,59 +133,59 @@ class Subscription:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ChatHub:
-    """Per-workspace subscribers."""
+    """Per-canvas subscribers."""
 
     queue_size: int = SUBSCRIBER_QUEUE_SIZE
 
     _subscribers: dict[UUID, set[Subscription]] = field(default_factory=dict)
 
     @contextmanager
-    def subscribe(self, workspace_id: UUID) -> Generator[Subscription]:
-        """Receive every frame published for a workspace until the block ends.
+    def subscribe(self, canvas_id: UUID) -> Generator[Subscription]:
+        """Receive every frame published for a canvas until the block ends.
 
         Args:
-          workspace_id: Canvas whose frames to receive.
+          canvas_id: Canvas whose frames to receive.
 
         Yields:
           subscription: The queue frames arrive on.
 
         """
         subscription = Subscription(queue=asyncio.Queue(maxsize=self.queue_size))
-        self._subscribers.setdefault(workspace_id, set()).add(subscription)
+        self._subscribers.setdefault(canvas_id, set()).add(subscription)
         try:
             yield subscription
         finally:
-            self._drop(workspace_id, subscription=subscription)
+            self._drop(canvas_id, subscription=subscription)
 
-    def publish(self, workspace_id: UUID, *, frame: Frame) -> None:
+    def publish(self, canvas_id: UUID, *, frame: Frame) -> None:
         """Queue a frame for every subscriber, dropping any that is too far behind.
 
         Args:
-          workspace_id: Canvas the frame is about.
+          canvas_id: Canvas the frame is about.
           frame: What happened.
 
         """
-        for subscription in tuple(self._subscribers.get(workspace_id, ())):
+        for subscription in tuple(self._subscribers.get(canvas_id, ())):
             try:
                 subscription.queue.put_nowait(frame)
             except asyncio.QueueFull:
                 # It reconnects, and starts again from the canvas frame.
-                self._drop(workspace_id, subscription=subscription)
+                self._drop(canvas_id, subscription=subscription)
                 while not subscription.queue.empty():
                     subscription.queue.get_nowait()
                 subscription.queue.put_nowait(None)
 
-    def listening(self, workspace_id: UUID) -> bool:
-        """Say whether any open stream follows a workspace.
+    def listening(self, canvas_id: UUID) -> bool:
+        """Say whether any open stream follows a canvas.
 
         Args:
-          workspace_id: Canvas to ask about.
+          canvas_id: Canvas to ask about.
 
         Returns:
           listening: True while at least one stream is subscribed.
 
         """
-        return workspace_id in self._subscribers
+        return canvas_id in self._subscribers
 
     def nudge(self) -> None:
         """Ask every open stream to recheck its canvas's partner.
@@ -196,21 +196,21 @@ class ChatHub:
             for subscription in subscribers:
                 subscription.nudged.set()
 
-    def _drop(self, workspace_id: UUID, *, subscription: Subscription) -> None:
-        """Remove a subscriber, and its workspace's entry once it is the last."""
-        subscribers = self._subscribers.get(workspace_id)
+    def _drop(self, canvas_id: UUID, *, subscription: Subscription) -> None:
+        """Remove a subscriber, and its canvas's entry once it is the last."""
+        subscribers = self._subscribers.get(canvas_id)
         if subscribers is None:
             return
         subscribers.discard(subscription)
         if not subscribers:
-            del self._subscribers[workspace_id]
+            del self._subscribers[canvas_id]
 
 
-async def iter_workspace_events(
+async def iter_canvas_events(
     hub: ChatHub,
     *,
-    workspace_id: UUID,
-    read_state: Callable[[], Awaitable[WorkspaceState]],
+    canvas_id: UUID,
+    read_state: Callable[[], Awaitable[CanvasState]],
     is_active: Callable[[], Awaitable[bool]],
     changes: AsyncGenerator[str] | None = None,
     keepalive_sec: float = 25.0,
@@ -229,7 +229,7 @@ async def iter_workspace_events(
 
     Args:
       hub: Broker to subscribe on.
-      workspace_id: Canvas to follow.
+      canvas_id: Canvas to follow.
       read_state: Reads the canvas, with its partner.
       is_active: Whether the canvas's owner may still use the app; asked on each
         interval, even while frames arrive, and the stream ends when it says no.
@@ -241,10 +241,10 @@ async def iter_workspace_events(
       item: SSE comments and ``data:`` frames.
 
     """
-    with hub.subscribe(workspace_id) as stream:
+    with hub.subscribe(canvas_id) as stream:
         yield b": open\n\n"
         state = await read_state()
-        yield _sse(WorkspaceFrame(state=state))
+        yield _sse(CanvasFrame(state=state))
         partner = state.partner
         frame_wait = asyncio.ensure_future(stream.queue.get())
         nudge_wait = asyncio.ensure_future(stream.nudged.wait())
@@ -273,13 +273,13 @@ async def iter_workspace_events(
                     state = await read_state()
                     if state.partner != partner:
                         partner = state.partner
-                        yield _sse(WorkspaceFrame(state=state))
+                        yield _sse(CanvasFrame(state=state))
                 if frame_wait in done:
                     frame = frame_wait.result()
                     frame_wait = asyncio.ensure_future(stream.queue.get())
                     if frame is None:
                         return
-                    if isinstance(frame, WorkspaceFrame):
+                    if isinstance(frame, CanvasFrame):
                         partner = frame.state.partner
                     yield _sse(frame)
                 if changes is not None and change_wait in done:

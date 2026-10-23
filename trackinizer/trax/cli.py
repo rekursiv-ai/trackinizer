@@ -28,6 +28,7 @@ from trackinizer.trax.verbs import (
     Authority,
     Blocked,
     Board,
+    Canvas,
     Confidence,
     Cost,
     Export,
@@ -39,7 +40,6 @@ from trackinizer.trax.verbs import (
     Search,
     Send,
     Version,
-    Workspace,
     run_list_query,
 )
 
@@ -119,7 +119,7 @@ DISPATCHERS: tuple[type[Command], ...] = (
     Send,
     Version,
     Export,
-    Workspace,
+    Canvas,
     Doctor,
     Help,
     Profiles,

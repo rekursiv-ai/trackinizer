@@ -53,8 +53,8 @@ developer's Mac.
 # request, so the daemon resolves the INVOKING user's identity and profile
 # rather than whichever shell happened to spawn it: ``USER``/``USERNAME``
 # back ``resolve_actor``; ``TRACKINIZER_PROFILE`` and ``TRACKINIZER_URL``
-# back the connection chain in ``connection.connect``; ``TRAX_WORKSPACE`` and its
-# ``LC_`` twin back ``trax workspace`` with no id; ``TRAX_SERVER`` and
+# back the connection chain in ``connection.connect``; ``TRAX_CANVAS`` and its
+# ``LC_`` twin back ``trax canvas`` with no id; ``TRAX_SERVER`` and
 # ``LC_TRAX_SERVER`` name the server a terminal's shell came from.
 #
 # The XDG variables are deliberately ABSENT; these should only be accessed
@@ -64,8 +64,8 @@ FORWARDED_ENV: Final[tuple[str, ...]] = (
     "USERNAME",
     "TRACKINIZER_PROFILE",
     "TRACKINIZER_URL",
-    "TRAX_WORKSPACE",
-    "LC_TRAX_WORKSPACE",
+    "TRAX_CANVAS",
+    "LC_TRAX_CANVAS",
     "TRAX_SERVER",
     "LC_TRAX_SERVER",
 )

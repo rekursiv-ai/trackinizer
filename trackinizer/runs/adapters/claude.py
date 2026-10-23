@@ -87,7 +87,7 @@ class ClaudeAdapter:
         #
         # The projects ROOT, not the per-project subdirectories under it.
         # Claude shards sessions by hashed cwd and mints that directory when
-        # it first runs in a workspace -- which, for the run being captured,
+        # it first runs in a canvas -- which, for the run being captured,
         # is after the watch is already armed. A watch on the subdirectories
         # existing at arming time cannot adopt a new sibling (recursion only
         # descends INTO a watched tree), so the run would capture nothing and

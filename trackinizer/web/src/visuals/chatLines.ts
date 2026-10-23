@@ -16,7 +16,7 @@ export type LineAt = { readonly part: number; readonly idx: number };
 
 /**
  * What starts a line the person's Console sent to agents directly, which the
- * station's chat records as theirs: `→ lead-2, tiles-a:ops: text`.
+ * canvas's chat records as theirs: `→ lead-2, tiles-a:ops: text`.
  */
 export const RELAY_MARK = "→ ";
 

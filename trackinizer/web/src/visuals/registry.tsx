@@ -1,14 +1,14 @@
 import { Component, Suspense, type ComponentType, type ReactNode } from "react";
-import type { WorkspaceState } from "../api/workspaces";
+import type { CanvasState } from "../api/canvases";
 import { lazyView, type LazyView } from "../router/lazy";
 import { DetailView } from "../router/views";
 import { useVisualMark } from "./marks";
 import rendererVersions from "./renderer-versions.json";
 
 export type RendererProps = {
-  readonly instance: WorkspaceState["visuals"][number];
-  readonly workspace: WorkspaceState | null;
-  readonly onWorkspaceChanged: (state: WorkspaceState) => void;
+  readonly instance: CanvasState["visuals"][number];
+  readonly canvas: CanvasState | null;
+  readonly onCanvasChanged: (state: CanvasState) => void;
   readonly focused: boolean;
   readonly children?: ReactNode;
 };
@@ -66,7 +66,7 @@ export function VisualPane(props: RendererProps) {
     <VisualErrorBoundary key={`${instance.type}:${instance.version}`} visualType={instance.type}>
       <Suspense fallback={<div className="visual-loading" aria-busy="true">Loading visual…</div>}>
         <Component {...props} />
-        <PaintMark instance={instance} workspace={props.workspace} />
+        <PaintMark instance={instance} canvas={props.canvas} />
       </Suspense>
     </VisualErrorBoundary>
   );
@@ -76,8 +76,8 @@ export function VisualPane(props: RendererProps) {
  * Marks when the pane's content painted. It sits in the pane's Suspense
  * boundary, so a lazy renderer's mark waits for the renderer, not its fallback.
  */
-function PaintMark({ instance, workspace }: Pick<RendererProps, "instance" | "workspace">) {
-  useVisualMark(instance, workspace, "paint");
+function PaintMark({ instance, canvas }: Pick<RendererProps, "instance" | "canvas">) {
+  useVisualMark(instance, canvas, "paint");
   return null;
 }
 

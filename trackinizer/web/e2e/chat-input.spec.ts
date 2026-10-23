@@ -4,14 +4,14 @@ import { expect, streamOpened, test } from "./fixtures";
 
 test.use({ canvas: true });
 
-type Station = { id: string; name: string };
+type Canvas = { id: string; name: string };
 
 test.beforeEach(async ({ page, request }) => {
   await resetCanvas(request);
   await page.addInitScript(exposeEventSources);
 });
 
-async function conversation(page: Page): Promise<Station> {
+async function conversation(page: Page): Promise<Canvas> {
   const { request } = page;
   const { email } = await (await request.get("/api/me/profile")).json();
   const started = await request.post("/api/sessions/start", { data: { cli: "claude", title: "E2E chat input" } });
@@ -35,26 +35,26 @@ async function conversation(page: Page): Promise<Station> {
     forked_from: null, forks_on_typing: false, audience: "open", may_hide: false,
     shared_with: [], may_share: false, may_delete: false,
   } }));
-  const station = await request.post(`/api/workspaces/for-chat/${id}`);
-  expect(station.ok(), await station.text()).toBe(true);
-  return await station.json() as Station;
+  const canvas = await request.post(`/api/canvases/for-chat/${id}`);
+  expect(canvas.ok(), await canvas.text()).toBe(true);
+  return await canvas.json() as Canvas;
 }
 
-async function enableInput(page: Page, station: Station): Promise<Locator> {
-  const response = await page.request.get(`/api/workspaces/${station.id}`);
+async function enableInput(page: Page, canvas: Canvas): Promise<Locator> {
+  const response = await page.request.get(`/api/canvases/${canvas.id}`);
   expect(response.ok(), await response.text()).toBe(true);
   const state = await response.json();
-  // The harness has no assistant. Only its availability is supplied; records, drafts and stations use the server.
-  await expect.poll(() => page.evaluate((id) => (window as unknown as { heldEventSources: EventSource[] }).heldEventSources.some((source) => source.url.includes(`/workspaces/${id}/events`)), state.id)).toBe(true);
+  // The harness has no assistant. Only its availability is supplied; records, drafts and canvases use the server.
+  await expect.poll(() => page.evaluate((id) => (window as unknown as { heldEventSources: EventSource[] }).heldEventSources.some((source) => source.url.includes(`/canvases/${id}/events`)), state.id)).toBe(true);
   const input = page.locator(".chat-panel textarea");
-  // The station's own stream sends its state, assistant-less, once as it connects. That frame may land after ours and
+  // The canvas's own stream sends its state, assistant-less, once as it connects. That frame may land after ours and
   // put the input off again, so ours goes again until the input is on, which it stays once the stream's has come.
   await expect.poll(async () => {
     await page.evaluate((state) => {
       const sources = (window as unknown as { heldEventSources: EventSource[] }).heldEventSources;
-      const stream = sources.findLast((source) => source.url.includes(`/workspaces/${state.id}/events`));
-      if (!stream) throw new Error(`workspace stream missing: ${state.id}`);
-      stream.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "workspace", t: Date.now(), state: {
+      const stream = sources.findLast((source) => source.url.includes(`/canvases/${state.id}/events`));
+      if (!stream) throw new Error(`canvas stream missing: ${state.id}`);
+      stream.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "canvas", t: Date.now(), state: {
         ...state, partner: { session_id: null, actor: "input-test", cli: "claude", status: "live", kind: "shared" },
       } }) }));
     }, state);
@@ -63,12 +63,12 @@ async function enableInput(page: Page, station: Station): Promise<Locator> {
   return input;
 }
 
-async function open(page: Page, station: Station): Promise<Locator> {
+async function open(page: Page, canvas: Canvas): Promise<Locator> {
   const subscribed = streamOpened(page);
   await page.goto("/app/#/list/Issue");
   await subscribed;
   await expect(page.locator(".chat-panel").getByText("Latest answer", { exact: true })).toBeVisible();
-  return enableInput(page, station);
+  return enableInput(page, canvas);
 }
 
 async function switchChat(page: Page, name: string): Promise<void> {
@@ -243,23 +243,23 @@ test("an edited recall goes back to the unfinished draft on Down", async ({ page
   await expect(input).toHaveValue("Unfinished draft");
 });
 
-test("station drafts remain independent across switching and reload", async ({ page, request }) => {
+test("canvas drafts remain independent across switching and reload", async ({ page, request }) => {
   const first = await conversation(page);
   const second = await conversation(page);
   const input = await open(page, second);
-  await input.fill("Second station draft");
+  await input.fill("Second canvas draft");
   await switchChat(page, first.name);
   await enableInput(page, first);
   await expect(input).toHaveValue("");
-  await input.fill("First station draft\nStill unfinished");
+  await input.fill("First canvas draft\nStill unfinished");
   await switchChat(page, second.name);
-  await expect(input).toHaveValue("Second station draft");
+  await expect(input).toHaveValue("Second canvas draft");
   await expect.poll(async () => {
     const { preferences } = await (await request.get("/api/me/profile")).json();
     return [preferences.drafts[`chat:${first.id}`]?.text, preferences.drafts[`chat:${second.id}`]?.text];
-  }).toEqual(["First station draft\nStill unfinished", "Second station draft"]);
+  }).toEqual(["First canvas draft\nStill unfinished", "Second canvas draft"]);
   await page.reload();
-  await expect(input).toHaveValue("Second station draft");
+  await expect(input).toHaveValue("Second canvas draft");
   await switchChat(page, first.name);
-  await expect(input).toHaveValue("First station draft\nStill unfinished");
+  await expect(input).toHaveValue("First canvas draft\nStill unfinished");
 });

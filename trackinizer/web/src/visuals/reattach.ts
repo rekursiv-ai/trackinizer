@@ -26,8 +26,8 @@ export function useReattach(report: (message: string) => void): { readonly reatt
     try {
       await reattachChat(session, key);
       keys.current.delete(session);
-      // The chat's partner, the station list and the console's agents all say whether it is taken over.
-      for (const queryKey of [["workspace"], ["stations"], ["console"], ["chat", "head"]]) void queryClient.invalidateQueries({ queryKey });
+      // The chat's partner, the canvas list and the console's agents all say whether it is taken over.
+      for (const queryKey of [["canvas"], ["canvases"], ["console"], ["chat", "head"]]) void queryClient.invalidateQueries({ queryKey });
       return true;
     } catch (error) {
       // A refusal would be refused again under its key; only a send that got no answer is repeated.

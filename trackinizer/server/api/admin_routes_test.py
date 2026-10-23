@@ -1221,7 +1221,7 @@ class TestProfileRoute:
                 {
                     "name": "Alice",
                     "last_login": datetime(2026, 1, 1, tzinfo=UTC),
-                    "visual_workspace_enabled": False,
+                    "visual_canvas_enabled": False,
                     "acknowledged_at": datetime(2026, 2, 1, tzinfo=UTC),
                     "acknowledged_rules_version": "v1",
                     "preferences": None,
@@ -1235,7 +1235,7 @@ class TestProfileRoute:
         assert body["email"]
         assert body["role"] == "admin"
         assert body["name"] == "Alice"
-        assert body["visual_workspace_enabled"] is False
+        assert body["visual_canvas_enabled"] is False
         assert body["acknowledged_rules_version"] == "v1"
         assert body["rules_version"] is None
         assert body["rules_issue_id"] is None
@@ -1256,7 +1256,7 @@ class TestProfileRoute:
                 {
                     "name": "Alice",
                     "last_login": None,
-                    "visual_workspace_enabled": False,
+                    "visual_canvas_enabled": False,
                     "acknowledged_at": None,
                     "acknowledged_rules_version": None,
                     "preferences": None,
@@ -1300,7 +1300,7 @@ class TestProfileRoute:
                 {
                     "name": "Alice",
                     "last_login": None,
-                    "visual_workspace_enabled": False,
+                    "visual_canvas_enabled": False,
                     "acknowledged_at": None,
                     "acknowledged_rules_version": None,
                     "preferences": None,
@@ -1325,7 +1325,7 @@ class TestProfileRoute:
                 {
                     "name": "Alice",
                     "last_login": None,
-                    "visual_workspace_enabled": False,
+                    "visual_canvas_enabled": False,
                     "acknowledged_at": None,
                     "preferences": None,
                     "acknowledged_rules_version": None,

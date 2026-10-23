@@ -21,7 +21,7 @@ import { useVisualMark } from "./marks";
 import { type DiffMode, DiffModeToggle, FileDiff, useDiffMode } from "./SplitDiff.tsx";
 import { patchFiles } from "./splitDiff";
 import type { RendererProps } from "./registry";
-import { useWorkspaceActions } from "./workspaceActions";
+import { useCanvasActions } from "./canvasActions";
 import "../detail/transcript/transcript.css";
 import "./Files.css";
 
@@ -48,13 +48,13 @@ export type FilesNotes = { readonly empty?: string; readonly tree?: string };
  * control shows the visual again with all three, so whoever reads the canvas
  * sees what the reader sees; outside one, the controls narrow this pane alone.
  */
-export function Files({ instance, workspace }: RendererProps): ReactNode {
+export function Files({ instance, canvas }: RendererProps): ReactNode {
   const record = instance.record_id ?? null;
   const read = useFiles(record);
-  const actions = useWorkspaceActions();
+  const actions = useCanvasActions();
   const given = filesParams(instance.params ?? {});
   const [local, setLocal] = useState(given);
-  useVisualMark(instance, workspace, "data", read.isSuccess);
+  useVisualMark(instance, canvas, "data", read.isSuccess);
   if (record === null) return <div className="visual-unsupported">Open a record to see its files.</div>;
   const show = actions
     ? ({ path, changed, file }: FilesParams) =>

@@ -393,8 +393,8 @@ test("opening a terminal sends only the fields it has, and a run adds its CLI an
   await openTerminal("gx10", "w1", 24, 80, null);
   await openTerminal("gx10", "w1", 24, 80, null, { command: "claude", attach: session });
   expect(sent.map((each) => [each.path, each.body])).toEqual([
-    ["/api/terminals", { machine: "gx10", workspace: "w1", rows: 24, cols: 80, surface: null }],
-    ["/api/terminals", { machine: "gx10", workspace: "w1", rows: 24, cols: 80, surface: null, command: "claude", attach: session }],
+    ["/api/terminals", { machine: "gx10", canvas: "w1", rows: 24, cols: 80, surface: null }],
+    ["/api/terminals", { machine: "gx10", canvas: "w1", rows: 24, cols: 80, surface: null, command: "claude", attach: session }],
   ]);
 });
 
@@ -404,8 +404,8 @@ test("a run sends the folder it starts in, and a run without one sends none", as
   await openTerminal("gx10", "w1", 24, 80, null, { command: "codex", attach: session, cwd: "~/project" });
   await openTerminal("gx10", "w1", 24, 80, null, { command: "codex", attach: session });
   expect(sent.map((each) => each.body)).toEqual([
-    { machine: "gx10", workspace: "w1", rows: 24, cols: 80, surface: null, command: "codex", attach: session, cwd: "~/project" },
-    { machine: "gx10", workspace: "w1", rows: 24, cols: 80, surface: null, command: "codex", attach: session },
+    { machine: "gx10", canvas: "w1", rows: 24, cols: 80, surface: null, command: "codex", attach: session, cwd: "~/project" },
+    { machine: "gx10", canvas: "w1", rows: 24, cols: 80, surface: null, command: "codex", attach: session },
   ]);
 });
 

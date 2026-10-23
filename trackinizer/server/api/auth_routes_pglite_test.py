@@ -277,7 +277,7 @@ _DEFAULTS: dict[str, object] = {
     "lens": None,
     "drafts": {},
     "create_draft": None,
-    "workstreams": {"order": [], "pinned": [], "hidden": []},
+    "workspaces": {"order": [], "pinned": [], "hidden": []},
     "settings_artifact_id": None,
 }
 

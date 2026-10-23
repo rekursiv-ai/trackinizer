@@ -1,8 +1,8 @@
 # Visual modules
 
 The server chooses which visuals exist. `server/visuals/catalog.py` composes
-their trusted configgle `Fig` configurations into a `Workspace`. A deployment
-supplies its own `Workspace`; the default is `default_workspace()`. Every
+their trusted configgle `Fig` configurations into a `Canvas`. A deployment
+supplies its own `Canvas`; the default is `default_canvas()`. Every
 route reads that one catalog and returns safe descriptions through
 `GET /api/visuals`. The default visual must not require a record. The
 browser selects a renderer by visual type and version. It loads a renderer's
@@ -16,7 +16,7 @@ own beside the canvas.
    render correctly.
 2. Add a `StaticVisual.Config` entry for a visual without parameters, or a
    provider with a nested `Config(Fig[...])` and a cheap `describe()`. Put its
-   config in `Workspace.Config.visuals`. Catalog reads must not query
+   config in `Canvas.Config.visuals`. Catalog reads must not query
    the graph or start a session.
 3. Describe accepted parameters in `parameter_schema`. Each parameter needs
    a valid default. Integers need minimum and maximum; strings need
@@ -52,14 +52,14 @@ that answers 404 for `/api/visuals`. A deployed server reads the route.
 
 ## Change a canvas
 
-The canvas is on by default (Settings turns it off). `POST /api/workspaces` with the
-user's browser session. It returns the default workspace id and revision.
+The canvas is on by default (Settings turns it off). `POST /api/canvases` with the
+user's browser session. It returns the default canvas id and revision.
 Besides the browser, only the server's Chat assistant may change a canvas, and
 only one whose owner has talked to it there. Its key shows a visual through the
 same operation the top bar's Workbench menu uses:
 
 ```http
-POST /api/workspaces/<workspace-id>/operations
+POST /api/canvases/<canvas-id>/operations
 Authorization: Bearer <user-token>
 Idempotency-Key: 4d5a0dc1-a916-4d4b-9c23-a58b654c4376
 Content-Type: application/json
@@ -75,20 +75,20 @@ Content-Type: application/json
 }
 ```
 
-The response is the full workspace at revision 2. The caller may retry that
+The response is the full canvas at revision 2. The caller may retry that
 exact request with the same key while its receipt is retained. If another tab
 or agent changed the canvas,
 the server returns 409 and the current state; read it before retrying with a
 new revision and key. Reusing a key with different content also returns 409
 and the current state. An ended session or revoked key loses control,
 including idempotent replay. `hide`, `focus`, and `place` take an `instance_id` from
-the workspace response. A `show` can also include `record_id` and bounded
+the canvas response. A `show` can also include `record_id` and bounded
 `params`. Showing an existing visual type focuses and updates that instance.
 
 ## Chat with the assistant
 
-Chat talks to the canvas's partner, which `WorkspaceState.partner` names on
-every read and the events stream pushes when it changes. It follows the station's
+Chat talks to the canvas's partner, which `CanvasState.partner` names on
+every read and the events stream pushes when it changes. It follows the canvas's
 `provider`: the server's shared assistant (`assistant`), or the owner's own
 The runner attached to the chat's session on one of their machines. The
 header's provider card chooses it (`{"kind": "provider"}`), stars the default for
@@ -112,11 +112,11 @@ instance and a line pins no record. To send, the browser calls `POST /api/chats`
 with a fresh `Idempotency-Key`:
 
 ```json
-{"workspace_id":"<workspace-id>","text":"What led to this experiment?"}
+{"canvas_id":"<canvas-id>","text":"What led to this experiment?"}
 ```
 
 The server checks the signed-in writer and a live partner. It adds the
-workspace UUID and the visible visual identities to a typed inbound context.
+canvas UUID and the visible visual identities to a typed inbound context.
 The browser also sends
 `page`, the `#/...` address it is on, and `trail`, the addresses before it,
 oldest first and at most 8; a malformed address, or a longer trail, returns
@@ -135,7 +135,7 @@ same key.
 A conversation is an AgentSession (label `science-chat`). Chat reads its
 records and refreshes when the canvas event stream says the session changed;
 a line by another poster shows its sender. Chat's header lists the chats of the
-station's workstream, each a station holding one chat; the composer says who
+canvas's workspace, each a canvas holding one chat; the composer says who
 reads the chat, by its audience and the server's org mode. A science
 chat's session in the Console or on its detail page offers Continue in Chat.
 Subgraph, timeline, Artifact and files visuals use the same catalog and
@@ -144,7 +144,7 @@ operation path.
 ## Lineage and timeline
 
 `trax.timeline` is one view, off in a new canvas; the Workbench menu shows or
-hides it and `trax workspace W show trax.timeline --record R` or the Chat
+hides it and `trax canvas W show trax.timeline --record R` or the Chat
 assistant opens it. Time runs across; lineage runs down: up to three lead issues pinned
 at the axis's left edge with their own dates, the record, then its directions
 as rows. Each row's results sit on it by date, and their signed evidence is
@@ -237,21 +237,21 @@ Three bounded params narrow it, applied in order:
 
 As with `trax.subgraph`, a show naming only a new record keeps the params, and a
 show with any param sets all three. The server refuses a param outside its bound
-with the sentence `refuse_params` (`server/visuals/workspaces.py`) writes, which the
+with the sentence `refuse_params` (`server/visuals/canvases.py`) writes, which the
 Chat assistant's `ShowFiles` also checks before it asks. `trax.campaign` embeds
 the same panel under the campaign's lineage, reading the brief's document with
 the extra label `campaign:<slug>`.
 
-## Stations
+## Canvases
 
-A canvas is a station: a named canvas that holds at most one science chat. The
-signed-in browser lists its stations with `GET /api/workspaces`, makes one with
-`POST /api/workspaces/new`, renames it with `PATCH /api/workspaces/<id>`, and
-returns to it with `POST /api/workspaces/<id>/open`; `POST /api/workspaces` opens
-the one used last. A station keeps its visual instances, agent instructions and
+A canvas is a canvas: a named canvas that holds at most one science chat. The
+signed-in browser lists its canvases with `GET /api/canvases`, makes one with
+`POST /api/canvases/new`, renames it with `PATCH /api/canvases/<id>`, and
+returns to it with `POST /api/canvases/<id>/open`; `POST /api/canvases` opens
+the one used last. A canvas keeps its visual instances, agent instructions and
 continuation record as its canvas state, and the page it was last on
-(`PUT /api/workspaces/<id>/page`). The next chat message carries the station's
-guidance and continuation record in its typed context. A station never stores
+(`PUT /api/canvases/<id>/page`). The next chat message carries the canvas's
+guidance and continuation record in its typed context. A canvas never stores
 session credentials. Existing browser-only saved inquiry queries remain a separate
 feature.
 

@@ -1,7 +1,7 @@
 """A deleted science chat's id: the lock its delete holds, and the refusal to reopen it.
 
 Deleting a chat leaves a row in ``science_chat_tombstones``, and nothing may start the
-chat again under its id: not a session, not a line, not a station. Each of those, and
+chat again under its id: not a session, not a line, not a canvas. Each of those, and
 the delete, holds the conversation's lock for its whole transaction, so a start that
 found no tombstone has written its row before the delete reads what it takes, and one
 that comes after finds the tombstone.

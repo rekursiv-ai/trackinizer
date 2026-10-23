@@ -105,8 +105,8 @@ export type FeedFilters = {
   readonly room?: readonly string[];
   readonly cli?: readonly string[];
   readonly kind?: readonly string[];
-  /** A station's id: only the sessions its chat started agents in, and not the chat itself. */
-  readonly station?: string;
+  /** A canvas's id: only the sessions its chat started agents in, and not the chat itself. */
+  readonly canvas?: string;
   /** Whose sessions; absent, every one the caller reads. */
   readonly whose?: Whose;
   /** Keep the sessions their owners hid (audience `private`) that the caller reads; listings leave them out otherwise. */
@@ -190,13 +190,13 @@ export async function readFeedFacets({ since, until, ...filters }: FacetsRead, {
 }
 
 /** The filters as query parameters, each value repeated and empty ones left out; the histogram takes them too. */
-export function filterQuery({ actor, room, cli, kind, station, whose, hidden }: FeedFilters) {
+export function filterQuery({ actor, room, cli, kind, canvas, whose, hidden }: FeedFilters) {
   return {
     ...(actor?.length ? { actor: [...actor] } : {}),
     ...(room?.length ? { room: [...room] } : {}),
     ...(cli?.length ? { cli: [...cli] } : {}),
     ...(kind?.length ? { kind: [...kind] } : {}),
-    ...(station ? { station } : {}),
+    ...(canvas ? { canvas } : {}),
     ...(whose ? { whose } : {}),
     ...(hidden ? { hidden } : {}),
   };

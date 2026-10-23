@@ -16,7 +16,7 @@ with a ``produced_by`` edge to the original, labelled :data:`FORK_EDGE_LABEL` an
 :func:`fork_point_label`, and it opens with copies of the original's lines up to and
 including the fork point, a record named by its part and position.
 
-A line goes to ``POST /api/chats``. Who answers it is the station's provider
+A line goes to ``POST /api/chats``. Who answers it is the canvas's provider
 (:data:`ChatProvider`). For ``assistant`` the server queues it for the
 conversation's own session while the assistant keeps one open, and for the
 assistant's service session otherwise, which opens or resumes the conversation's
@@ -123,7 +123,7 @@ _ROUTE: Final = r"^#/[^\s\x00-\x1f\x7f]*$"
 
 
 type ChatProvider = Literal["assistant", "claude", "codex"]
-"""Who answers a station's Chat.
+"""Who answers a canvas's Chat.
 
 Values:
   assistant: The server's shared assistant.
@@ -282,13 +282,13 @@ class ChatSend(BaseModel):
 
     kind: ChatLineKind = "line"
     """What the post is; a person's line unless the client names another kind. Only a
-    ``claude`` or ``codex`` station takes a kind other than ``line``."""
+    ``claude`` or ``codex`` canvas takes a kind other than ``line``."""
 
     payload: dict[str, object] | None = None
     """The kind's structured data: a :class:`ChatAnswer` for ``answer``, a
     :class:`ChatSettings` for ``settings``, ``None`` for the other kinds."""
 
-    workspace_id: uuid.UUID
+    canvas_id: uuid.UUID
     """The poster's own canvas, which the line is sent from."""
 
     text: str = Field(pattern=r"\S", max_length=16_384)
@@ -374,13 +374,13 @@ class ChatSent(BaseModel):
     """What a posted line was queued for."""
 
     conversation_id: uuid.UUID
-    workspace_id: uuid.UUID
-    """The station the line went to: the one it was sent from, or for a fork the new
+    canvas_id: uuid.UUID
+    """The canvas the line went to: the one it was sent from, or for a fork the new
     one made for it."""
 
     session_id: uuid.UUID | None
     """The conversation's session when the line was queued on it: the assistant had it
-    open, or the station's provider is a CLI; otherwise ``None``, and the session
+    open, or the canvas's provider is a CLI; otherwise ``None``, and the session
     appears when the assistant opens it."""
 
 

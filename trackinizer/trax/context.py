@@ -96,7 +96,7 @@ def trax_env(name: str) -> str | None:
 
     The ``LC_`` spelling is the one that survives ``ssh``: stock clients send ``LC_*``
     and stock servers accept it, so a shell that came through ``ssh`` from a trax
-    terminal still knows its station and server.
+    terminal still knows its canvas and server.
 
     Args:
       name: The variable name without its ``TRAX_`` prefix.
@@ -114,17 +114,17 @@ def cwd() -> Path:
     return Path(bound) if (bound := CWD.get()) else Path.cwd()
 
 
-def workspace_from_env(environ: Mapping[str, str]) -> uuid.UUID | None:
-    """Return the station a run started from: ``TRAX_WORKSPACE``, else its ``LC_`` twin.
+def canvas_from_env(environ: Mapping[str, str]) -> uuid.UUID | None:
+    """Return the canvas a run started from: ``TRAX_CANVAS``, else its ``LC_`` twin.
 
     Args:
       environ: The process environment.
 
     Returns:
-      workspace: The station id; ``None`` when neither names a valid one.
+      canvas: The canvas id; ``None`` when neither names a valid one.
 
     """
-    for name in ("TRAX_WORKSPACE", "LC_TRAX_WORKSPACE"):
+    for name in ("TRAX_CANVAS", "LC_TRAX_CANVAS"):
         value = environ.get(name, "").strip()
         if value:
             try:

@@ -5,34 +5,34 @@ import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { getVisualCatalog } from "../api/visuals";
 import { findRef } from "../api/detail";
 import {
-  applyWorkspaceOperation,
-  createDefaultWorkspace,
-  getWorkspace,
-  type WorkspaceState,
-} from "../api/workspaces";
+  applyCanvasOperation,
+  createDefaultCanvas,
+  getCanvas,
+  type CanvasState,
+} from "../api/canvases";
 import { CommandRegistry, CommandRegistryContext } from "../commands/registry";
 import { ProfileContext } from "../app/boot";
 import { WorkbenchSlot } from "../app/workbenchSlot";
 import { PROFILE } from "../detail/testing";
 import { createQueryClient } from "../app/queryClient";
-import { newerWorkspace } from "../stations/cache";
-import { setStation } from "../stations/store";
-import { setStationLayout } from "../api/stations";
+import { newerCanvas } from "../canvases/cache";
+import { setCanvas } from "../canvases/store";
+import { setCanvasLayout } from "../api/canvasManagement";
 import { CaptureContext, CaptureRegistry } from "../canvasCapture/stageRegistry";
 import { Canvas } from "./Canvas";
 import { forgetHistories } from "./canvasHistory";
 import { currentChatColumn, setChatHidden } from "./chatColumnState";
 import { CLICK_SLOP, rememberedTile, SNAP_SIDE, SNAP_TOP, TEAR_SLOP } from "./floatingTile";
-import { flushLayouts, forgetLayouts, LAYOUT_EVERY_MS, type Layout } from "./stationLayout";
-import { useWorkspaceActions } from "./workspaceActions";
+import { flushLayouts, forgetLayouts, LAYOUT_EVERY_MS, type Layout } from "./canvasLayout";
+import { useCanvasActions } from "./canvasActions";
 
 vi.mock("../api/visuals", () => ({ getVisualCatalog: vi.fn() }));
-vi.mock("../api/stations", () => ({ setStationLayout: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("../api/workspaces", () => ({
-  createDefaultWorkspace: vi.fn(),
-  getWorkspace: vi.fn(),
-  applyWorkspaceOperation: vi.fn(),
-  sendWorkspaceMessage: vi.fn(),
+vi.mock("../api/canvasManagement", () => ({ setCanvasLayout: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../api/canvases", () => ({
+  createDefaultCanvas: vi.fn(),
+  getCanvas: vi.fn(),
+  applyCanvasOperation: vi.fn(),
+  sendCanvasMessage: vi.fn(),
 }));
 vi.mock("../api/detail", () => ({
   findRef: vi.fn(),
@@ -54,9 +54,9 @@ function render(ui: ReactElement) {
   return renderBare(ui, { wrapper: ({ children }: { children: ReactNode }) => <CommandRegistryContext value={commands}><ProfileContext value={PROFILE}>{children}<WorkbenchSlot /></ProfileContext></CommandRegistryContext> });
 }
 
-const workspace: WorkspaceState = {
+const canvas: CanvasState = {
   id: "c5286865-67b6-4bd8-ab51-e06e10c326c5",
-  name: "unnamed-workstream#1",
+  name: "unnamed-canvas#1",
   conversation_id: null,
   page: null,
   revision: 3,
@@ -66,12 +66,12 @@ const workspace: WorkspaceState = {
 };
 
 afterEach(() => {
-  setStation(null);
+  setCanvas(null);
   forgetLayouts();
   forgetHistories();
   cleanup();
   vi.clearAllMocks();
-  vi.mocked(setStationLayout).mockResolvedValue(undefined);
+  vi.mocked(setCanvasLayout).mockResolvedValue(undefined);
   vi.useRealTimers();
   focusManager.setFocused(undefined);
   window.innerWidth = 1024;
@@ -80,10 +80,10 @@ afterEach(() => {
   localStorage.clear();
 });
 
-/** The layout keys the canvas has written to its station so far, later writes over earlier ones. */
+/** The layout keys the canvas has written to its canvas so far, later writes over earlier ones. */
 function written(): Layout {
   flushLayouts();
-  return Object.assign({}, ...vi.mocked(setStationLayout).mock.calls.map(([, patch]) => patch)) as Layout;
+  return Object.assign({}, ...vi.mocked(setCanvasLayout).mock.calls.map(([, patch]) => patch)) as Layout;
 }
 
 /** The Browse visual alone, as the server's catalog describes it. */
@@ -97,11 +97,11 @@ function browseOnly() {
 
 test.each(["main", "floating"] as const)("the browse pane keeps its content mounted while the server's %s canvas arrives", async (placement) => {
   browseOnly();
-  let open: (state: WorkspaceState) => void = () => { throw new Error("No canvas pending"); };
-  vi.mocked(createDefaultWorkspace).mockImplementation(() => new Promise((resolve) => { open = resolve; }));
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
+  let open: (state: CanvasState) => void = () => { throw new Error("No canvas pending"); };
+  vi.mocked(createDefaultCanvas).mockImplementation(() => new Promise((resolve) => { open = resolve; }));
+  vi.mocked(getCanvas).mockResolvedValue(canvas);
   // A saved canvas may move the page out of the initial main strip.
-  const inStrip: WorkspaceState = { ...workspace, visuals: [{ ...workspace.visuals[0]!, placement }] };
+  const inStrip: CanvasState = { ...canvas, visuals: [{ ...canvas.visuals[0]!, placement }] };
   // The catalog is slow too: the page is in the strip before it arrives.
   vi.mocked(getVisualCatalog).mockImplementation(() => new Promise(() => {}));
   const mounted = vi.fn();
@@ -116,9 +116,9 @@ test.each(["main", "floating"] as const)("the browse pane keeps its content moun
   expect(mounted).toHaveBeenCalledTimes(1);
 });
 
-test("Browse's initial children mount connected and can autofocus before a saved station arrives", () => {
+test("Browse's initial children mount connected and can autofocus before a saved canvas arrives", () => {
   browseOnly();
-  vi.mocked(createDefaultWorkspace).mockImplementation(() => new Promise(() => {}));
+  vi.mocked(createDefaultCanvas).mockImplementation(() => new Promise(() => {}));
   const connected = vi.fn();
   function Content() {
     const input = useRef<HTMLInputElement>(null);
@@ -132,11 +132,11 @@ test("Browse's initial children mount connected and can autofocus before a saved
 
 test("the canvas offers its stage, with the boxes standing on it, to an agent's request for a picture, until it unmounts", async () => {
   browseOnly();
-  const boxed: WorkspaceState = { ...workspace, marks: [
+  const boxed: CanvasState = { ...canvas, marks: [
     { id: "b1", seq: 1, author: "jp@example.com", at: "2026-10-17T10:00:00Z", points: [{ x: 0.1, y: 0.1 }, { x: 0.4, y: 0.4 }] },
     { id: "b2", seq: 2, author: "agent", at: "2026-10-17T10:01:00Z", points: [{ x: 0.5, y: 0.5 }, { x: 0.9, y: 0.9 }] },
   ] };
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(boxed);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(boxed);
   const registry = new CaptureRegistry();
   const view = render(<QueryClientProvider client={createQueryClient(() => {})}><CaptureContext value={registry}><Canvas><p>Page</p></Canvas></CaptureContext></QueryClientProvider>);
   await screen.findByText("Page");
@@ -154,9 +154,9 @@ test("the canvas offers its stage, with the boxes standing on it, to an agent's 
 
 test("a box pinned to a tile stands in that tile's body, below its bar, and one pinned to a tile that is not there does not show", async () => {
   browseOnly();
-  const [browse] = workspace.visuals;
+  const [browse] = canvas.visuals;
   const mark = (id: string, tile: string) => ({ id, seq: 1, author: "jp@example.com", at: "2026-10-17T10:00:00Z", points: [{ x: 0.1, y: 0.1 }, { x: 0.4, y: 0.4 }], tile });
-  vi.mocked(createDefaultWorkspace).mockResolvedValue({ ...workspace, marks: [mark("here", browse!.id), mark("gone", "00000000-0000-4000-8000-000000000000")] });
+  vi.mocked(createDefaultCanvas).mockResolvedValue({ ...canvas, marks: [mark("here", browse!.id), mark("gone", "00000000-0000-4000-8000-000000000000")] });
   render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><p>Page</p></Canvas></QueryClientProvider>);
   await screen.findByText("Page");
 
@@ -168,8 +168,8 @@ test("a box pinned to a tile stands in that tile's body, below its bar, and one 
 
 test("Browse keeps focus when an unrelated Canvas stage measurement renders", async () => {
   browseOnly();
-  const initial: WorkspaceState = { ...workspace, visuals: [{ ...workspace.visuals[0]!, placement: "main" }] };
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(initial);
+  const initial: CanvasState = { ...canvas, visuals: [{ ...canvas.visuals[0]!, placement: "main" }] };
+  vi.mocked(createDefaultCanvas).mockResolvedValue(initial);
   render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><input aria-label="Focused Browse draft" /></Canvas></QueryClientProvider>);
   const input = await screen.findByRole<HTMLInputElement>("textbox", { name: "Focused Browse draft" });
   await waitFor(() => expect(document.querySelector(`[data-visual-instance="${initial.visuals[0]!.id}"]`)).not.toBeNull(), { interval: 1 });
@@ -182,8 +182,8 @@ test("Browse keeps focus when an unrelated Canvas stage measurement renders", as
 
 test("docked Browse fits its flow slot and scroll clipping without moving focus or DOM", async () => {
   browseOnly();
-  const initial: WorkspaceState = { ...workspace, visuals: [{ ...workspace.visuals[0]!, placement: "main" }] };
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(initial);
+  const initial: CanvasState = { ...canvas, visuals: [{ ...canvas.visuals[0]!, placement: "main" }] };
+  vi.mocked(createDefaultCanvas).mockResolvedValue(initial);
   render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><input aria-label="Clipped Browse draft" /></Canvas></QueryClientProvider>);
   const input = await screen.findByRole<HTMLInputElement>("textbox", { name: "Clipped Browse draft" });
   await waitFor(() => expect(document.querySelector(`[data-visual-instance="${initial.visuals[0]!.id}"]`)).not.toBeNull(), { interval: 1 });
@@ -209,8 +209,8 @@ test("docked Browse fits its flow slot and scroll clipping without moving focus 
 
 test("Browse keeps its input state and DOM identity when live placement changes between strip and floating", async () => {
   browseOnly();
-  const initial: WorkspaceState = { ...workspace, visuals: [{ ...workspace.visuals[0]!, placement: "main" }] };
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(initial);
+  const initial: CanvasState = { ...canvas, visuals: [{ ...canvas.visuals[0]!, placement: "main" }] };
+  vi.mocked(createDefaultCanvas).mockResolvedValue(initial);
   const mounted = vi.fn();
   function Content() {
     useEffect(() => mounted(), []);
@@ -224,7 +224,7 @@ test("Browse keeps its input state and DOM identity when live placement changes 
   input.focus();
   const parent = input.closest(".visual-tile")?.parentNode;
   for (const [revision, placement] of [[4, "floating"], [5, "main"]] as const) {
-    await act(async () => client.setQueryData(["workspace", workspace.id], { ...initial, revision, visuals: [{ ...initial.visuals[0]!, placement }] }));
+    await act(async () => client.setQueryData(["canvas", canvas.id], { ...initial, revision, visuals: [{ ...initial.visuals[0]!, placement }] }));
     await waitFor(() => expect(input.closest(".visual-tile")?.classList.contains(`visual-tile-${placement}`)).toBe(true), { interval: 1 });
     expect(screen.getByRole("textbox", { name: "Browse draft" })).toBe(input);
     expect(input.value).toBe("unfinished draft");
@@ -238,8 +238,8 @@ test("Browse keeps its input state and DOM identity when live placement changes 
 test("the canvas does not read at mount, nor on a timer, nor when its tab comes back: the shell's stream carries it", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   browseOnly();
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(getCanvas).mockResolvedValue(canvas);
   render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   await screen.findByRole("group", { name: "Workbench visuals" });
   await waitFor(() => expect(document.querySelector("[data-visual-instance]")).not.toBeNull(), { interval: 1 });
@@ -248,7 +248,7 @@ test("the canvas does not read at mount, nor on a timer, nor when its tab comes 
     focusManager.setFocused(false);
     focusManager.setFocused(true);
   });
-  expect(getWorkspace).not.toHaveBeenCalled();
+  expect(getCanvas).not.toHaveBeenCalled();
 });
 
 const CATALOG_WITH_NOTE = {
@@ -260,17 +260,17 @@ const CATALOG_WITH_NOTE = {
 };
 
 /** The page and a note, or the note alone once the page is closed. */
-function pageAndNote(withPage: boolean): WorkspaceState {
+function pageAndNote(withPage: boolean): CanvasState {
   const note = { id: "note-instance", type: "test.note", version: 1, placement: "side" as const, record_id: null, params: {} };
-  return { ...workspace, visuals: withPage ? [{ ...workspace.visuals[0]!, placement: "main" }, note] : [note] };
+  return { ...canvas, visuals: withPage ? [{ ...canvas.visuals[0]!, placement: "main" }, note] : [note] };
 }
 
 test("the page has the close control the other tiles have, and closing it hides the page", async () => {
   vi.mocked(getVisualCatalog).mockResolvedValue(CATALOG_WITH_NOTE);
   const withNote = pageAndNote(true);
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(withNote);
-  vi.mocked(getWorkspace).mockResolvedValue(withNote);
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...withNote, revision: 4, visuals: [withNote.visuals[1]!] });
+  vi.mocked(createDefaultCanvas).mockResolvedValue(withNote);
+  vi.mocked(getCanvas).mockResolvedValue(withNote);
+  vi.mocked(applyCanvasOperation).mockResolvedValue({ ...withNote, revision: 4, visuals: [withNote.visuals[1]!] });
   render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   await screen.findAllByTitle("Dismiss visual");
   const tiles = [...document.querySelectorAll<HTMLElement>(".visual-tile[data-visual-instance]")];
@@ -282,19 +282,19 @@ test("the page has the close control the other tiles have, and closing it hides 
 
   fireEvent.click(within(document.querySelector<HTMLElement>(BROWSE_TILE)!).getByTitle("Dismiss visual"));
 
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledWith(
     withNote.id, withNote.revision, { kind: "hide", instance_id: withNote.visuals[0]!.id }, expect.any(String)), { interval: 1 });
   await waitFor(() => expect(document.querySelector(".visual-main-strip")).toBeNull(), { interval: 1 });
   // The press on the close button is not also a click on the bar, which would focus a tile that is gone.
-  expect(applyWorkspaceOperation).toHaveBeenCalledTimes(1);
+  expect(applyCanvasOperation).toHaveBeenCalledTimes(1);
 });
 
 test("with the page closed, the Workbench section offers it unchecked and checking it shows the page in the main strip", async () => {
   vi.mocked(getVisualCatalog).mockResolvedValue(CATALOG_WITH_NOTE);
   const closed = pageAndNote(false);
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(closed);
-  vi.mocked(getWorkspace).mockResolvedValue(closed);
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...pageAndNote(true), revision: 4 });
+  vi.mocked(createDefaultCanvas).mockResolvedValue(closed);
+  vi.mocked(getCanvas).mockResolvedValue(closed);
+  vi.mocked(applyCanvasOperation).mockResolvedValue({ ...pageAndNote(true), revision: 4 });
   render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   const option = await screen.findByRole("checkbox", { name: /Browse/ });
   await waitFor(() => expect(option).toHaveProperty("disabled", false), { interval: 1 });
@@ -303,7 +303,7 @@ test("with the page closed, the Workbench section offers it unchecked and checki
 
   fireEvent.click(option);
 
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledWith(
     closed.id, closed.revision, { kind: "show", visual_type: "trax.browse", placement: "main" }, expect.any(String)), { interval: 1 });
   expect(await screen.findByText("Browse content")).toBeTruthy();
 });
@@ -319,27 +319,27 @@ function userNavigates(hash: string) {
 test("with the page closed, the user's own navigation shows it again; with it open, a navigation writes nothing", async () => {
   vi.mocked(getVisualCatalog).mockResolvedValue(CATALOG_WITH_NOTE);
   const closed = pageAndNote(false);
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(closed);
-  vi.mocked(getWorkspace).mockResolvedValue(closed);
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...pageAndNote(true), revision: 4 });
+  vi.mocked(createDefaultCanvas).mockResolvedValue(closed);
+  vi.mocked(getCanvas).mockResolvedValue(closed);
+  vi.mocked(applyCanvasOperation).mockResolvedValue({ ...pageAndNote(true), revision: 4 });
   render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   await waitFor(() => expect(document.querySelector('[data-visual-type="test.note"]')).not.toBeNull(), { interval: 1 });
-  expect(applyWorkspaceOperation).not.toHaveBeenCalled();
+  expect(applyCanvasOperation).not.toHaveBeenCalled();
 
   userNavigates("#/list/Issue");
 
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledWith(
     closed.id, closed.revision, { kind: "show", visual_type: "trax.browse", placement: "main" }, expect.any(String)), { interval: 1 });
   await waitFor(() => expect(document.querySelector(".visual-main-strip")).not.toBeNull(), { interval: 1 });
   userNavigates("#/list/Belief");
-  expect(applyWorkspaceOperation).toHaveBeenCalledTimes(1);
+  expect(applyCanvasOperation).toHaveBeenCalledTimes(1);
 });
 
 test("a view that crashes inside the canvas gets the crash screen with Copy details and Reload, and clears when the page moves", async () => {
   browseOnly();
   vi.spyOn(console, "error").mockImplementation(() => {});
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(getCanvas).mockResolvedValue(canvas);
   function Broken(): never {
     throw new Error("the view broke");
   }
@@ -358,8 +358,8 @@ test("a view that crashes inside the canvas gets the crash screen with Copy deta
 
 test("the controls stand in the sidebar's slot, and the canvas has no toolbar, Canvas label or Configure button of its own", async () => {
   browseOnly();
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(getCanvas).mockResolvedValue(canvas);
   const view = render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   const controls = await screen.findByRole("group", { name: "Workbench visuals" });
   expect(view.container.querySelector(".workbench-slot")!.contains(controls)).toBe(true);
@@ -373,59 +373,59 @@ test("the controls stand in the sidebar's slot, and the canvas has no toolbar, C
 
 test("a canvas with no sidebar to stand in draws its page all the same", async () => {
   browseOnly();
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(getCanvas).mockResolvedValue(canvas);
   renderBare(<QueryClientProvider client={createQueryClient(() => {})}><CommandRegistryContext value={commands}><ProfileContext value={PROFILE}><Canvas><div>Browse content</div></Canvas></ProfileContext></CommandRegistryContext></QueryClientProvider>);
   expect(await screen.findByText("Browse content")).toBeTruthy();
   expect(screen.queryByRole("group", { name: "Workbench visuals" })).toBeNull();
 });
 
 test("older reads and replay receipts cannot replace a newer canvas revision", () => {
-  const older = { ...workspace, revision: 2 };
-  expect(newerWorkspace(workspace, older)).toBe(workspace);
-  expect(newerWorkspace(older, workspace)).toBe(workspace);
-  expect(newerWorkspace(undefined, workspace)).toBe(workspace);
+  const older = { ...canvas, revision: 2 };
+  expect(newerCanvas(canvas, older)).toBe(canvas);
+  expect(newerCanvas(older, canvas)).toBe(canvas);
+  expect(newerCanvas(undefined, canvas)).toBe(canvas);
 });
 
-test.each([false, true])("queued operations keep their originating station while another writes independently (replaced=%s)", async (replaced) => {
+test.each([false, true])("queued operations keep their originating canvas while another writes independently (replaced=%s)", async (replaced) => {
   vi.mocked(getVisualCatalog).mockResolvedValue(CATALOG_WITH_NOTE);
   const a = pageAndNote(true);
-  const b: WorkspaceState = { ...a, id: "station-b", revision: 100, visuals: a.visuals.map((visual) => ({ ...visual, id: `${visual.id}-b` })) };
+  const b: CanvasState = { ...a, id: "canvas-b", revision: 100, visuals: a.visuals.map((visual) => ({ ...visual, id: `${visual.id}-b` })) };
   const client = createQueryClient(() => {});
-  client.setQueryData(["workspace", a.id], a);
-  client.setQueryData(["workspace", b.id], b);
-  setStation(a.id);
-  let release: (state: WorkspaceState) => void = () => { throw new Error("No held operation"); };
-  vi.mocked(applyWorkspaceOperation).mockImplementationOnce(() => new Promise<WorkspaceState>((resolve) => { release = resolve; }))
+  client.setQueryData(["canvas", a.id], a);
+  client.setQueryData(["canvas", b.id], b);
+  setCanvas(a.id);
+  let release: (state: CanvasState) => void = () => { throw new Error("No held operation"); };
+  vi.mocked(applyCanvasOperation).mockImplementationOnce(() => new Promise<CanvasState>((resolve) => { release = resolve; }))
     .mockImplementation(async (id, revision) => ({ ...(id === a.id ? a : b), revision: revision + 1 }));
   function Content() {
-    const actions = useWorkspaceActions();
+    const actions = useCanvasActions();
     return <>{[a, b].map((state) => <button key={state.id} onClick={() => actions?.operate({ kind: "focus", instance_id: state.visuals[0]!.id })}>Focus {state.id}</button>)}</>;
   }
   render(<QueryClientProvider client={client}><Canvas><Content /></Canvas></QueryClientProvider>);
   await screen.findAllByTitle("Dismiss visual");
   fireEvent.click(within(document.querySelector<HTMLElement>(NOTE_TILE)!).getByTitle("Dismiss visual"));
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledTimes(1), { interval: 1 });
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledTimes(1), { interval: 1 });
   fireEvent.click(screen.getByRole("button", { name: `Focus ${a.id}` }));
-  await act(async () => { setStation(b.id); history.replaceState(null, "", "#/b"); });
+  await act(async () => { setCanvas(b.id); history.replaceState(null, "", "#/b"); });
   await waitFor(() => expect(document.querySelector('[data-visual-instance="note-instance-b"]')).not.toBeNull(), { interval: 1 });
   fireEvent.click(screen.getByRole("button", { name: `Focus ${b.id}` }));
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledTimes(2), { interval: 1 });
-  expect(vi.mocked(applyWorkspaceOperation).mock.calls[1]!.slice(0, 2)).toEqual([b.id, 100]);
-  // A 404 read may cache the default replacement under the unavailable station's query key.
-  if (replaced) client.setQueryData(["workspace", a.id], b);
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledTimes(2), { interval: 1 });
+  expect(vi.mocked(applyCanvasOperation).mock.calls[1]!.slice(0, 2)).toEqual([b.id, 100]);
+  // A 404 read may cache the default replacement under the unavailable canvas's query key.
+  if (replaced) client.setQueryData(["canvas", a.id], b);
   await act(async () => release({ ...a, revision: 4, visuals: [a.visuals[0]!] }));
   if (replaced) {
     await waitFor(() => expect(client.getMutationCache().getAll().some((mutation) => mutation.state.status === "pending")).toBe(false), { interval: 1 });
-    expect(applyWorkspaceOperation).toHaveBeenCalledTimes(2);
+    expect(applyCanvasOperation).toHaveBeenCalledTimes(2);
     expect(document.querySelector(".visual-write-error")).toBeNull();
-    expect(getWorkspace).not.toHaveBeenCalled();
+    expect(getCanvas).not.toHaveBeenCalled();
   } else {
-    await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledTimes(3), { interval: 1 });
-    expect(vi.mocked(applyWorkspaceOperation).mock.calls[2]!.slice(0, 3)).toEqual([a.id, 4, { kind: "focus", instance_id: a.visuals[0]!.id }]);
-    expect(client.getQueryData<WorkspaceState>(["workspace", a.id])?.revision).toBe(5);
+    await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledTimes(3), { interval: 1 });
+    expect(vi.mocked(applyCanvasOperation).mock.calls[2]!.slice(0, 3)).toEqual([a.id, 4, { kind: "focus", instance_id: a.visuals[0]!.id }]);
+    expect(client.getQueryData<CanvasState>(["canvas", a.id])?.revision).toBe(5);
   }
-  expect(client.getQueryData<WorkspaceState>(["workspace", b.id])?.revision).toBe(101);
+  expect(client.getQueryData<CanvasState>(["canvas", b.id])?.revision).toBe(101);
   expect(document.querySelector('[data-visual-instance="note-instance-b"]')).not.toBeNull();
 });
 
@@ -435,8 +435,8 @@ test("a single floating visual keeps its bar", async () => {
     visuals: [{ type: "trax.browse", version: 1, title: "Browse", description: "Browse records",
       default_size: "wide", requires: [], parameter_schema: {} }],
   });
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(getCanvas).mockResolvedValue(canvas);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   expect(await screen.findByText("Browse content")).toBeTruthy();
@@ -447,7 +447,7 @@ test("a single floating visual keeps its bar", async () => {
   expect(screen.getByRole("button", { name: "Collapse" }).getAttribute("aria-expanded")).toBe("true");
 
   const dragHandle = screen.getByRole("button", { name: "Move Browse" });
-  const tile = document.querySelector<HTMLElement>(`[data-visual-instance="${workspace.visuals[0]!.id}"]`);
+  const tile = document.querySelector<HTMLElement>(`[data-visual-instance="${canvas.visuals[0]!.id}"]`);
   const stage = document.querySelector<HTMLElement>(".visual-stage");
   Object.defineProperty(stage, "clientWidth", { configurable: true, value: 800 });
   Object.defineProperty(stage, "clientHeight", { configurable: true, value: 600 });
@@ -464,8 +464,8 @@ test("a drag moves a floating visual without rendering the canvas, and it keeps 
     visuals: [{ type: "trax.browse", version: 1, title: "Browse", description: "Browse records",
       default_size: "wide", requires: [], parameter_schema: {} }],
   });
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(getCanvas).mockResolvedValue(canvas);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   let commits = 0;
   render(<QueryClientProvider client={client}><Profiler id="canvas" onRender={() => { commits += 1; }}>
@@ -474,7 +474,7 @@ test("a drag moves a floating visual without rendering the canvas, and it keeps 
   const dragHandle = await screen.findByRole("button", { name: "Move Browse" });
   // jsdom has no pointer capture.
   dragHandle.setPointerCapture = vi.fn();
-  const tile = document.querySelector<HTMLElement>(`[data-visual-instance="${workspace.visuals[0]!.id}"]`)!;
+  const tile = document.querySelector<HTMLElement>(`[data-visual-instance="${canvas.visuals[0]!.id}"]`)!;
   const stage = document.querySelector<HTMLElement>(".visual-stage")!;
   Object.defineProperty(stage, "clientWidth", { configurable: true, value: 800 });
   Object.defineProperty(stage, "clientHeight", { configurable: true, value: 600 });
@@ -511,13 +511,13 @@ test("the Workbench section resolves the current ref route before showing a reco
     ],
   });
   vi.mocked(findRef).mockResolvedValue(recordId);
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
-  const changed = { ...workspace, revision: 4, visuals: [...workspace.visuals, {
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(getCanvas).mockResolvedValue(canvas);
+  const changed = { ...canvas, revision: 4, visuals: [...canvas.visuals, {
     id: "graph-instance", type: "trax.subgraph", version: 1,
     placement: "side" as const, record_id: recordId, params: {},
   }] };
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue(changed);
+  vi.mocked(applyCanvasOperation).mockResolvedValue(changed);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Record detail</div></Canvas></QueryClientProvider>);
 
@@ -526,9 +526,9 @@ test("the Workbench section resolves the current ref route before showing a reco
   await waitFor(() => expect(graphToggle).toHaveProperty("disabled", false), { interval: 1 });
   fireEvent.click(graphToggle);
 
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
-    workspace.id,
-    workspace.revision,
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledWith(
+    canvas.id,
+    canvas.revision,
     { kind: "show", visual_type: "trax.subgraph", record_id: recordId },
     expect.any(String),
   ));
@@ -544,25 +544,25 @@ test("a delayed read cannot undo an operation's newer canvas revision", async ()
         default_size: "compact", requires: [], parameter_schema: {} },
     ],
   });
-  const initial = { ...workspace, revision: 1, visuals: [{ ...workspace.visuals[0]!, placement: "main" as const }] };
+  const initial = { ...canvas, revision: 1, visuals: [{ ...canvas.visuals[0]!, placement: "main" as const }] };
   const changed = { ...initial, revision: 2, visuals: [...initial.visuals, {
     id: "440b0d37-76f3-478c-acb5-20a40cecc10d", type: "trax.timeline", version: 1,
     placement: "side" as const, record_id: null, params: {},
   }] };
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(initial);
-  let releaseRead: (value: WorkspaceState) => void = () => { throw new Error("Read not pending"); };
-  vi.mocked(getWorkspace).mockImplementation(() => new Promise((resolve) => { releaseRead = resolve; }));
+  vi.mocked(createDefaultCanvas).mockResolvedValue(initial);
+  let releaseRead: (value: CanvasState) => void = () => { throw new Error("Read not pending"); };
+  vi.mocked(getCanvas).mockImplementation(() => new Promise((resolve) => { releaseRead = resolve; }));
   // The canvas reads only after a refused write; that read is the delayed one.
-  vi.mocked(applyWorkspaceOperation).mockRejectedValueOnce(new Error("refused")).mockResolvedValue(changed);
+  vi.mocked(applyCanvasOperation).mockRejectedValueOnce(new Error("refused")).mockResolvedValue(changed);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   await screen.findByRole("group", { name: "Workbench visuals" });
   fireEvent.click(await screen.findByRole("checkbox", { name: /Timeline/ }));
-  await waitFor(() => expect(getWorkspace).toHaveBeenCalledTimes(1), { interval: 1 });
+  await waitFor(() => expect(getCanvas).toHaveBeenCalledTimes(1), { interval: 1 });
   fireEvent.click(await screen.findByRole("checkbox", { name: /Timeline/ }));
-  await waitFor(() => expect(client.getQueryData<WorkspaceState>(["workspace", workspace.id])?.revision).toBe(2), { interval: 1 });
+  await waitFor(() => expect(client.getQueryData<CanvasState>(["canvas", canvas.id])?.revision).toBe(2), { interval: 1 });
   await act(async () => { releaseRead(initial); });
-  expect(client.getQueryData<WorkspaceState>(["workspace", workspace.id])?.revision).toBe(2);
+  expect(client.getQueryData<CanvasState>(["canvas", canvas.id])?.revision).toBe(2);
   expect((screen.getByRole("checkbox", { name: /Timeline/ }) as HTMLInputElement).checked).toBe(true);
 });
 
@@ -579,12 +579,12 @@ async function mountNote() {
         default_size: "compact", requires: [], parameter_schema: {} },
     ],
   });
-  const state: WorkspaceState = { ...workspace, visuals: [
-    { ...workspace.visuals[0]!, placement: "main" },
+  const state: CanvasState = { ...canvas, visuals: [
+    { ...canvas.visuals[0]!, placement: "main" },
     { id: "note-instance", type: "test.note", version: 1, placement: "side", record_id: null, params: {} }] };
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
-  vi.mocked(getWorkspace).mockResolvedValue(state);
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...state, revision: 4, focused_instance: "note-instance" });
+  vi.mocked(createDefaultCanvas).mockResolvedValue(state);
+  vi.mocked(getCanvas).mockResolvedValue(state);
+  vi.mocked(applyCanvasOperation).mockResolvedValue({ ...state, revision: 4, focused_instance: "note-instance" });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   await waitFor(() => expect(document.querySelector(NOTE_TILE)).not.toBeNull(), { interval: 1 });
@@ -595,24 +595,24 @@ test("a workbench of three columns hides Chat, and gives it back when a column g
   setChatHidden(false);
   const { state } = await mountNote();
   expect(currentChatColumn().hidden).toBe(false);
-  const three: WorkspaceState = { ...state, revision: 4, visuals: [...state.visuals,
+  const three: CanvasState = { ...state, revision: 4, visuals: [...state.visuals,
     { id: "left-note", type: "test.note", version: 1, placement: "left", record_id: null, params: {} }] };
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue(three);
+  vi.mocked(applyCanvasOperation).mockResolvedValue(three);
   fireEvent.click(within(document.querySelector<HTMLElement>(NOTE_TILE)!).getByRole("button", { name: "Dock Note at the left" }));
   await waitFor(() => expect(currentChatColumn().hidden).toBe(true), { interval: 1 });
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...state, revision: 5 });
+  vi.mocked(applyCanvasOperation).mockResolvedValue({ ...state, revision: 5 });
   fireEvent.click(within(document.querySelector<HTMLElement>(".visual-side-column-left")!).getByTitle("Dismiss visual"));
   await waitFor(() => expect(currentChatColumn().hidden).toBe(false), { interval: 1 });
 });
 
 test("a dock button moves a tile to that side of the page at once; the page itself has none", async () => {
   const { state, tile } = await mountNote();
-  const moved: WorkspaceState = { ...state, revision: 4, visuals: [state.visuals[0]!, { ...state.visuals[1]!, placement: "left" }] };
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue(moved);
+  const moved: CanvasState = { ...state, revision: 4, visuals: [state.visuals[0]!, { ...state.visuals[1]!, placement: "left" }] };
+  vi.mocked(applyCanvasOperation).mockResolvedValue(moved);
   expect(within(document.querySelector<HTMLElement>(BROWSE_TILE)!).queryByRole("button", { name: /^Dock / })).toBeNull();
 
   fireEvent.click(within(tile).getByRole("button", { name: "Dock Note at the left" }));
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledWith(
     state.id, state.revision, { kind: "place", instance_id: "note-instance", placement: "left" }, expect.any(String)), { interval: 1 });
   await waitFor(() => expect(document.querySelector(`.visual-side-column-left > ${NOTE_TILE}`)).not.toBeNull(), { interval: 1 });
   // The left column stands before the page's strip, and its button has nowhere left to go.
@@ -642,7 +642,7 @@ test("a press on a docked tile's bar that only slips focuses it: the tile leaves
   fireEvent.pointerMove(title, { pointerId: 1, clientX: 600 - TEAR_SLOP, clientY: 16 });
   expect(ghost.style.display).not.toBe("block");
   fireEvent.pointerUp(title, { pointerId: 1, clientX: 600 - TEAR_SLOP, clientY: 16 });
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledWith(
     state.id, state.revision, { kind: "focus", instance_id: "note-instance" }, expect.any(String)), { interval: 1 });
 });
 
@@ -662,9 +662,9 @@ test("a docked tile dragged to the other edge docks there, and to the top edge j
   expect(drop(2, 400, 4)).toBe("main");
   // Back at the edge it stands at already: nothing to write.
   expect(drop(3, 790, 300)).toBe("side");
-  await waitFor(() => expect(vi.mocked(applyWorkspaceOperation).mock.calls.map((call) => call[2])).toEqual(
+  await waitFor(() => expect(vi.mocked(applyCanvasOperation).mock.calls.map((call) => call[2])).toEqual(
     ["left", "main"].map((placement) => ({ kind: "place", instance_id: "note-instance", placement }))), { interval: 1 });
-  expect(vi.mocked(applyWorkspaceOperation).mock.calls[0]!.slice(0, 2)).toEqual([state.id, state.revision]);
+  expect(vi.mocked(applyCanvasOperation).mock.calls[0]!.slice(0, 2)).toEqual([state.id, state.revision]);
 });
 
 test("a docked visual floats by its placement when dragged out", async () => {
@@ -677,12 +677,12 @@ test("a docked visual floats by its placement when dragged out", async () => {
         default_size: "compact", requires: [], parameter_schema: {} },
     ],
   });
-  const state: WorkspaceState = { ...workspace, visuals: [
-    { ...workspace.visuals[0]!, placement: "main" },
+  const state: CanvasState = { ...canvas, visuals: [
+    { ...canvas.visuals[0]!, placement: "main" },
     { id: "note-instance", type: "test.note", version: 1, placement: "side", record_id: null, params: {} }] };
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
-  vi.mocked(getWorkspace).mockResolvedValue(state);
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...state, revision: 4 });
+  vi.mocked(createDefaultCanvas).mockResolvedValue(state);
+  vi.mocked(getCanvas).mockResolvedValue(state);
+  vi.mocked(applyCanvasOperation).mockResolvedValue({ ...state, revision: 4 });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   const title = await screen.findByText("Note", { selector: ".visual-tile-toolbar span" });
@@ -690,7 +690,7 @@ test("a docked visual floats by its placement when dragged out", async () => {
   fireEvent.pointerDown(title, { pointerId: 1, clientX: 600, clientY: 16 });
   fireEvent.pointerMove(title, { pointerId: 1, clientX: 400, clientY: 300 });
   fireEvent.pointerUp(title, { pointerId: 1, clientX: 400, clientY: 300 });
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledWith(
     state.id, state.revision, { kind: "place", instance_id: "note-instance", placement: "floating" }, expect.any(String)), { interval: 1 });
   // Kept as fractions of the 800 by 600 stage.
   expect(written().tiles?.["test.note"]?.place).toEqual({ left: 0.425, top: 0.4733 });
@@ -735,11 +735,11 @@ test("two tiles that share the main strip trade room by the divider between them
         default_size: "wide", requires: [], parameter_schema: {} },
     ],
   });
-  const state: WorkspaceState = { ...workspace, visuals: [
-    { ...workspace.visuals[0]!, placement: "main" },
+  const state: CanvasState = { ...canvas, visuals: [
+    { ...canvas.visuals[0]!, placement: "main" },
     { id: "note-instance", type: "test.note", version: 1, placement: "main", record_id: null, params: {} }] };
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
-  vi.mocked(getWorkspace).mockResolvedValue(state);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(state);
+  vi.mocked(getCanvas).mockResolvedValue(state);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   await screen.findByText("Note", { selector: ".visual-tile-toolbar span" });
@@ -792,11 +792,11 @@ test("a floating window resizes by any edge or corner, inside the stage, and kee
 });
 
 test("a canvas write waits for a pending one and uses its new revision", async () => {
-  const timeline: WorkspaceState["visuals"][number] = {
+  const timeline: CanvasState["visuals"][number] = {
     id: "timeline-instance", type: "trax.timeline", version: 1, placement: "side",
     record_id: null, params: {},
   };
-  const afterShow: WorkspaceState = { ...workspace, revision: 4, visuals: [...workspace.visuals, timeline] };
+  const afterShow: CanvasState = { ...canvas, revision: 4, visuals: [...canvas.visuals, timeline] };
   vi.mocked(getVisualCatalog).mockResolvedValue({
     default_visual: "trax.browse",
     visuals: [
@@ -806,11 +806,11 @@ test("a canvas write waits for a pending one and uses its new revision", async (
         default_size: "compact", requires: [], parameter_schema: {} },
     ],
   });
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
-  let finishOperation: (state: WorkspaceState) => void = () => { throw new Error("Write not pending"); };
-  vi.mocked(applyWorkspaceOperation).mockImplementationOnce(() => new Promise((resolve) => { finishOperation = resolve; }))
-    .mockResolvedValue({ ...workspace, revision: 5 });
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(getCanvas).mockResolvedValue(canvas);
+  let finishOperation: (state: CanvasState) => void = () => { throw new Error("Write not pending"); };
+  vi.mocked(applyCanvasOperation).mockImplementationOnce(() => new Promise((resolve) => { finishOperation = resolve; }))
+    .mockResolvedValue({ ...canvas, revision: 5 });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Record detail</div></Canvas></QueryClientProvider>);
 
@@ -818,15 +818,15 @@ test("a canvas write waits for a pending one and uses its new revision", async (
   const option = await screen.findByRole("checkbox", { name: /Timeline/ });
   fireEvent.click(option);
   // A mock's call changes nothing on screen, so only the interval checks again.
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledOnce(), { interval: 1 });
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledOnce(), { interval: 1 });
   expect((option as HTMLInputElement).disabled).toBe(true);
 
   await act(async () => { finishOperation(afterShow); });
   await waitFor(() => expect((option as HTMLInputElement).disabled).toBe(false));
   fireEvent.click(option);
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenLastCalledWith(
-    workspace.id, 4, { kind: "hide", instance_id: "timeline-instance" }, expect.any(String)), { interval: 1 });
-  expect(client.getQueryData<WorkspaceState>(["workspace", workspace.id])?.revision).toBe(5);
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenLastCalledWith(
+    canvas.id, 4, { kind: "hide", instance_id: "timeline-instance" }, expect.any(String)), { interval: 1 });
+  expect(client.getQueryData<CanvasState>(["canvas", canvas.id])?.revision).toBe(5);
 });
 
 test("a rejected canvas write reports how to recover", async () => {
@@ -839,9 +839,9 @@ test("a rejected canvas write reports how to recover", async () => {
         default_size: "compact", requires: [], parameter_schema: {} },
     ],
   });
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
-  vi.mocked(applyWorkspaceOperation).mockRejectedValue(new Error("revision conflict"));
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(getCanvas).mockResolvedValue(canvas);
+  vi.mocked(applyCanvasOperation).mockRejectedValue(new Error("revision conflict"));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Record detail</div></Canvas></QueryClientProvider>);
 
@@ -862,9 +862,9 @@ test("the Workbench section opens Artifact content from its canonical link", asy
         default_size: "wide", requires: [], parameter_schema: {} },
     ],
   });
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...workspace, revision: 4 });
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(getCanvas).mockResolvedValue(canvas);
+  vi.mocked(applyCanvasOperation).mockResolvedValue({ ...canvas, revision: 4 });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
 
@@ -872,28 +872,28 @@ test("the Workbench section opens Artifact content from its canonical link", asy
   fireEvent.change(screen.getByRole("textbox", { name: "Artifact link" }),
     { target: { value: `https://trackinizer.example.com/app/#/lookup/${artifactId}` } });
   fireEvent.click(screen.getByRole("button", { name: "Open Artifact" }));
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
-    workspace.id, workspace.revision,
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledWith(
+    canvas.id, canvas.revision,
     { kind: "show", visual_type: "trax.artifact", placement: "main", record_id: artifactId },
     expect.any(String),
   ));
 });
 
-const BROWSE_TILE = `[data-visual-instance="${workspace.visuals[0]!.id}"]`;
+const BROWSE_TILE = `[data-visual-instance="${canvas.visuals[0]!.id}"]`;
 
 function storedTile() {
   return rememberedTile(written(), "trax.browse", { width: 800, height: 600 });
 }
 
 /** The floating page of `state`, 800 x 600 stage and a 300 x 400 tile, with its top bar. */
-async function mountFloating(state: WorkspaceState = workspace) {
+async function mountFloating(state: CanvasState = canvas) {
   vi.mocked(getVisualCatalog).mockResolvedValue({
     default_visual: "trax.browse",
     visuals: [{ type: "trax.browse", version: 1, title: "Browse", description: "Browse records",
       default_size: "wide", requires: [], parameter_schema: {} }],
   });
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
-  vi.mocked(getWorkspace).mockResolvedValue(state);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(state);
+  vi.mocked(getCanvas).mockResolvedValue(state);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   const handle = await screen.findByRole("button", { name: "Move Browse" });
@@ -930,8 +930,8 @@ test("a drag by the title bar follows every move with a transform alone: the can
     visuals: [{ type: "trax.browse", version: 1, title: "Browse", description: "Browse records",
       default_size: "wide", requires: [], parameter_schema: {} }],
   });
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(getCanvas).mockResolvedValue(canvas);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Profiler id="canvas" onRender={() => { commits += 1; }}>
     <Canvas><div>Browse content</div></Canvas>
@@ -961,7 +961,7 @@ test("a drag by the title bar follows every move with a transform alone: the can
 
 test("a press on the title bar that does not move focuses the tile, and neither moves nor collapses it", async () => {
   const { tile, title } = await mountFloating();
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...workspace, revision: 4, focused_instance: workspace.visuals[0]!.id });
+  vi.mocked(applyCanvasOperation).mockResolvedValue({ ...canvas, revision: 4, focused_instance: canvas.visuals[0]!.id });
   fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
   fireEvent.pointerMove(title, { pointerId: 1, clientX: 100 + CLICK_SLOP, clientY: 100 });
   fireEvent.pointerUp(title, { pointerId: 1, clientX: 100 + CLICK_SLOP, clientY: 100 });
@@ -970,19 +970,19 @@ test("a press on the title bar that does not move focuses the tile, and neither 
   expect(tile.style.left).toBe("");
   expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
   expect(written()).toEqual({});
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
-    workspace.id, workspace.revision, { kind: "focus", instance_id: workspace.visuals[0]!.id }, expect.any(String)), { interval: 1 });
+  await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledWith(
+    canvas.id, canvas.revision, { kind: "focus", instance_id: canvas.visuals[0]!.id }, expect.any(String)), { interval: 1 });
   await waitFor(() => expect(tile.classList.contains("visual-tile-focused")).toBe(true), { interval: 1 });
 
   // Focused already, a second click writes nothing.
   fireEvent.pointerDown(title, { pointerId: 2, clientX: 100, clientY: 100 });
   fireEvent.pointerUp(title, { pointerId: 2, clientX: 100, clientY: 100 });
-  expect(applyWorkspaceOperation).toHaveBeenCalledOnce();
+  expect(applyCanvasOperation).toHaveBeenCalledOnce();
 });
 
 test("a floating tile dropped at an edge of the stage docks there, and the stage shows where while it is dragged", async () => {
   const { tile, title } = await mountFloating();
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...workspace, revision: 4 });
+  vi.mocked(applyCanvasOperation).mockResolvedValue({ ...canvas, revision: 4 });
   const snap = document.querySelector<HTMLElement>(".visual-snap")!;
   const drop = (pointerId: number, x: number, y: number) => {
     fireEvent.pointerDown(title, { pointerId, clientX: 300, clientY: 200 });
@@ -993,14 +993,14 @@ test("a floating tile dropped at an edge of the stage docks there, and the stage
   };
   // In the open the tile only moves; its bar's move handle never docks it.
   expect(drop(1, 400, 300)).toBe("");
-  expect(applyWorkspaceOperation).not.toHaveBeenCalled();
+  expect(applyCanvasOperation).not.toHaveBeenCalled();
   expect(drop(2, SNAP_SIDE, 300)).toBe("left");
   expect(drop(3, 800 - SNAP_SIDE, 300)).toBe("side");
   expect(drop(4, 400, SNAP_TOP)).toBe("main");
   expect(snap.dataset.zone).toBe("");
   expect(tile.style.transform).toBe("");
-  await waitFor(() => expect(vi.mocked(applyWorkspaceOperation).mock.calls.map((call) => call[2])).toEqual(
-    ["left", "side", "main"].map((placement) => ({ kind: "place", instance_id: workspace.visuals[0]!.id, placement }))), { interval: 1 });
+  await waitFor(() => expect(vi.mocked(applyCanvasOperation).mock.calls.map((call) => call[2])).toEqual(
+    ["left", "side", "main"].map((placement) => ({ kind: "place", instance_id: canvas.visuals[0]!.id, placement }))), { interval: 1 });
 });
 
 test("a collapsed tile can be dragged by its bar, and stays collapsed", async () => {
@@ -1021,7 +1021,7 @@ test("the bar's buttons keep their own presses: pressing one starts no drag and 
   fireEvent.pointerUp(fold, { pointerId: 1, clientX: 180, clientY: 100 });
   expect(tile.style.transform).toBe("");
   expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
-  expect(applyWorkspaceOperation).not.toHaveBeenCalled();
+  expect(applyCanvasOperation).not.toHaveBeenCalled();
   expect(written()).toEqual({});
   fireEvent.click(fold);
   expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
@@ -1073,12 +1073,12 @@ test("the collapse button does what a click on the bar does, for the keyboard", 
   expect(storedTile().collapsed).toBe(false);
 });
 
-/** The floating page with `layout` as its station holds it. */
-function withLayout(layout: Layout): WorkspaceState {
-  return { ...workspace, layout };
+/** The floating page with `layout` as its canvas holds it. */
+function withLayout(layout: Layout): CanvasState {
+  return { ...canvas, layout };
 }
 
-test("a place and a collapse stored for the station show on the next load, on any browser", async () => {
+test("a place and a collapse stored for the canvas show on the next load, on any browser", async () => {
   const { tile } = await mountFloating(withLayout({ tiles: { "trax.browse": { collapsed: true, place: { left: 0.15, top: 0.1167 } } } }));
   expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
   expect([tile.style.left, tile.style.top]).toEqual(["120px", "70px"]);
@@ -1090,8 +1090,8 @@ test("a stored place the stage has since shrunk below is held inside it", async 
   expect([tile.style.left, tile.style.top]).toEqual(["500px", "200px"]);
 });
 
-test("a station that refuses the layout still lets the tile move and collapse", async () => {
-  vi.mocked(setStationLayout).mockRejectedValue(new Error("offline"));
+test("a canvas that refuses the layout still lets the tile move and collapse", async () => {
+  vi.mocked(setCanvasLayout).mockRejectedValue(new Error("offline"));
   const { tile, title } = await mountFloating();
   fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
   fireEvent.pointerMove(title, { pointerId: 1, clientX: 110, clientY: 120 });
@@ -1110,7 +1110,7 @@ test("a stage narrower than the stored place shows the tile pulled inside and wr
   fireEvent(window, new Event("resize"));
   expect(tile.style.left).toBe("100px");
   await act(async () => { await vi.advanceTimersByTimeAsync(LAYOUT_EVERY_MS + 100); });
-  expect(setStationLayout).not.toHaveBeenCalled();
+  expect(setCanvasLayout).not.toHaveBeenCalled();
 });
 
 /** The browser state an older build left in this browser for the user. */
@@ -1126,7 +1126,7 @@ test("legacy layout survives a refused migration and is forgotten only after a s
   const sizes = { side: 400, chat: 512, floating: {}, share: {} };
   localStorage.setItem("trackinizer.v2.canvas.sizes", JSON.stringify(sizes));
   let reject: (error: Error) => void = () => { throw new Error("No held migration"); };
-  vi.mocked(setStationLayout).mockImplementationOnce(() => new Promise<void>((_resolve, refuse) => { reject = refuse; }));
+  vi.mocked(setCanvasLayout).mockImplementationOnce(() => new Promise<void>((_resolve, refuse) => { reject = refuse; }));
   await mountFloating();
   expect(JSON.parse(localStorage.getItem("trackinizer.v2.canvas.sizes")!)).toEqual(sizes);
   expect(JSON.parse(localStorage.getItem(key)!).ui.tiles).toEqual(tiles);
@@ -1135,14 +1135,14 @@ test("legacy layout survives a refused migration and is forgotten only after a s
   expect(JSON.parse(localStorage.getItem(key)!).ui.tiles).toEqual(tiles);
   cleanup();
   forgetLayouts();
-  setStation(null);
+  setCanvas(null);
   await mountFloating();
   await waitFor(() => expect(JSON.parse(localStorage.getItem("trackinizer.v2.canvas.sizes")!)).toEqual({ chat: 512 }), { interval: 1 });
   expect(JSON.parse(localStorage.getItem(key)!).ui.tiles).toEqual({});
-  expect(setStationLayout).toHaveBeenCalledTimes(2);
+  expect(setCanvasLayout).toHaveBeenCalledTimes(2);
 });
 
-test("the first station a browser opens takes the places and sizes it kept before, as fractions, and the browser forgets them", async () => {
+test("the first canvas a browser opens takes the places and sizes it kept before, as fractions, and the browser forgets them", async () => {
   const key = legacyBrowserState({ "trax.browse": { collapsed: true, place: { left: 160, top: 60 } } });
   localStorage.setItem("trackinizer.v2.canvas.sizes", JSON.stringify({ side: 400, chat: 512, floating: { "trax.browse": { width: 400, height: 300 } }, share: {} }));
   await mountFloating();
@@ -1156,7 +1156,7 @@ test("the first station a browser opens takes the places and sizes it kept befor
   expect(JSON.parse(localStorage.getItem(key)!).ui.tiles).toEqual({});
 });
 
-test("a station that already has a layout keeps it: what the browser kept is forgotten, not written over", async () => {
+test("a canvas that already has a layout keeps it: what the browser kept is forgotten, not written over", async () => {
   const key = legacyBrowserState({ "trax.browse": { collapsed: true, place: { left: 160, top: 60 } } });
   localStorage.setItem("trackinizer.v2.canvas.sizes", JSON.stringify({ side: 400, floating: {}, share: {} }));
   await mountFloating(withLayout({ columns: { side: 0.3 } }));

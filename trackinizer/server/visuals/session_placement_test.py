@@ -1,4 +1,4 @@
-"""Which sessions a run places on a station, and the workstream edge a move leaves."""
+"""Which sessions a run places on a canvas, and the workspace edge a move leaves."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import pytest
 from trackinizer.conftest import FakeEngine
 from trackinizer.server.visuals.session_placement import (
     is_placed,
-    move_station_sessions,
+    move_canvas_sessions,
 )
 from trackinizer.types.inquiries import AgentSession
 
@@ -80,7 +80,7 @@ def test_a_persons_run_is_placed_and_a_chat_or_service_account_is_not(
     assert is_placed(session) is placed
 
 
-def test_a_station_move_leaves_each_session_one_edge_to_the_new_workstream() -> None:
+def test_a_canvas_move_leaves_each_session_one_edge_to_the_new_workspace() -> None:
     session, old, new, key = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     engine = FakeEngine()
     engine.conn.fetch.side_effect = [
@@ -90,13 +90,13 @@ def test_a_station_move_leaves_each_session_one_edge_to_the_new_workstream() -> 
     store = _EdgeStore(engine)
 
     asyncio.run(
-        move_station_sessions(
+        move_canvas_sessions(
             cast("DatabaseEngine", engine),
             store=cast("Store", store),
-            workspace_id=uuid.uuid4(),
+            canvas_id=uuid.uuid4(),
             email="ada@example.com",
             api_key_id=key,
-            workstream_id=new,
+            workspace_id=new,
         ),
     )
 

@@ -13,9 +13,9 @@ import pytest
 
 from trackinizer.server.api.app import app
 from trackinizer.server.visuals.catalog import (
+    Canvas,
     StaticVisual,
     TimelineVisual,
-    Workspace,
 )
 
 
@@ -529,7 +529,7 @@ async def test_timeline_limits_come_from_the_configured_catalog(
     monkeypatch.setattr(
         app.state,
         "visual_catalog",
-        Workspace.Config(
+        Canvas.Config(
             visuals=[
                 StaticVisual.Config(type="x.notes", title="Notes"),
                 TimelineVisual.Config(direction_limit=20),

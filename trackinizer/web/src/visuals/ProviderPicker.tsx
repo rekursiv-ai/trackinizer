@@ -3,12 +3,12 @@ import { useEffect, useState } from "react";
 import { type BalanceBody, balanceQuery, creditLine, lowCredit } from "../api/billing";
 import { ApiError } from "../api/client";
 import { newUuid } from "../api/idempotency";
-import { PROVIDERS, type Provider, type ProviderStatus, partnerLabel, profileChatProvider, providerName, providerStatuses, setChatProviderPreference, stationProvider } from "../api/providers";
+import { PROVIDERS, type Provider, type ProviderStatus, partnerLabel, profileChatProvider, providerName, providerStatuses, setChatProviderPreference, canvasProvider } from "../api/providers";
 import { confirmTerminalMachine, listTerminalMachines, openTerminal, type RunLaunch, type TerminalMachine } from "../api/terminals";
-import { chooseProvider, getWorkspace, type WorkspaceState } from "../api/workspaces";
+import { chooseProvider, getCanvas, type CanvasState } from "../api/canvases";
 import { useProfile } from "../app/boot";
 import { Command, setupCommand } from "../settings/ChatPartner";
-import { acceptWorkspace } from "../stations/cache";
+import { acceptCanvas } from "../canvases/cache";
 import "./ProviderPicker.css";
 
 /** The default for new chats, as the query cache holds it for this page. */
@@ -69,26 +69,26 @@ export function useBalance(): BalanceBody | null {
 
 /**
  * Whether each provider can take a chat now. The assistant's availability is the server's verdict on the caller, which
- * the site's billing addon answers (a 404 when it has none), so it is read here; a CLI's is the station read's.
+ * the site's billing addon answers (a 404 when it has none), so it is read here; a CLI's is the canvas read's.
  */
-export function useProviderStatuses(station: WorkspaceState | null): Record<Provider, ProviderStatus> {
-  return providerStatuses(station, useBalance());
+export function useProviderStatuses(canvas: CanvasState | null): Record<Provider, ProviderStatus> {
+  return providerStatuses(canvas, useBalance());
 }
 
 type Props = {
-  /** The station whose chat's provider is shown and chosen. */
-  readonly station: WorkspaceState;
+  /** The canvas whose chat's provider is shown and chosen. */
+  readonly canvas: CanvasState;
 };
 
 /**
- * The provider card: the station's chat talks to one of the assistant, claude or codex, and the default for new
+ * The provider card: the canvas's chat talks to one of the assistant, claude or codex, and the default for new
  * chats is starred. A CLI that no live run holds offers the caller's machines that have it installed, and starts
  * its run on the one picked.
  */
-export function ProviderPicker({ station }: Props) {
+export function ProviderPicker({ canvas }: Props) {
   const queryClient = useQueryClient();
   const balance = useBalance();
-  const statuses = providerStatuses(station, balance);
+  const statuses = providerStatuses(canvas, balance);
   const chatDefault = useChatDefault();
   const [busy, setBusy] = useState<Provider | null>(null);
   const [starting, setStarting] = useState<Provider | null>(null);
@@ -96,51 +96,51 @@ export function ProviderPicker({ station }: Props) {
   const [allowing, setAllowing] = useState<string | null>(null);
   // The folder each machine's run starts in, as typed here; a machine not typed in starts at its last folder.
   const [folders, setFolders] = useState<Readonly<Record<string, string>>>({});
-  const current = stationProvider(station);
-  const partner = station.partner ?? null;
+  const current = canvasProvider(canvas);
+  const partner = canvas.partner ?? null;
   const live = partner?.status === "live";
   // The folder a run starts in changes its behavior (its CLAUDE.md, AGENTS.md), so a live run's line names it.
-  const label = partnerLabel(partner, providerName(current, station));
+  const label = partnerLabel(partner, providerName(current, canvas));
   const liveLabel = partner?.cwd && current !== "assistant" ? `${label} · ${partner.cwd}` : label;
   // A CLI's chat with no live run needs a machine to start one on; the assistant's run is the server's.
   const cli: "claude" | "codex" | null = current === "assistant" ? null : current;
   const needsMachine = cli !== null && !live;
-  // The chat's session a run re-opens: the station read names it on the CLI's partner, live or offline.
+  // The chat's session a run re-opens: the canvas read names it on the CLI's partner, live or offline.
   const session = cli !== null && partner?.provider === cli ? partner.session_id ?? null : null;
   // A CLI is out while no machine of the caller's that has it is allowed terminals, so the machines are listed
   // then too: a machine just connected waits for its owner's Allow here, the one place a browser gives it.
-  const machines = useQuery({ queryKey: ["terminal-machines", station.id], queryFn: ({ signal }) => listTerminalMachines(station.id, { signal }),
+  const machines = useQuery({ queryKey: ["terminal-machines", canvas.id], queryFn: ({ signal }) => listTerminalMachines(canvas.id, { signal }),
     enabled: needsMachine || !statuses.claude.ok || !statuses.codex.ok, staleTime: 5_000 });
   const capable = (machines.data?.machines ?? []).filter((each) => each.confirmed && each.terminal_ready && cli !== null && (each.clis ?? []).includes(cli));
   const unconfirmed = (machines.data?.machines ?? []).filter((each) => !each.confirmed);
 
-  // A run that is live has started; until then the station is read again, as the partner is read today.
+  // A run that is live has started; until then the canvas is read again, as the partner is read today.
   useEffect(() => {
     if (live) setStarting(null);
   }, [live]);
   useEffect(() => {
     if (starting === null || live) return;
     const poll = setInterval(() => {
-      void getWorkspace(station.id).then((state) => acceptWorkspace(queryClient, state), () => undefined);
+      void getCanvas(canvas.id).then((state) => acceptCanvas(queryClient, state), () => undefined);
     }, START_POLL_MS);
     const giveUp = setTimeout(() => {
       setStarting(null);
-      setNotice(`${providerName(starting, station)} did not start. Try again, or pick another machine.`);
+      setNotice(`${providerName(starting, canvas)} did not start. Try again, or pick another machine.`);
     }, START_GIVE_UP_MS);
     return () => {
       clearInterval(poll);
       clearTimeout(giveUp);
     };
-  }, [starting, live, station.id, queryClient]);
+  }, [starting, live, canvas.id, queryClient]);
 
   async function choose(provider: Provider) {
     if (provider === current || busy !== null) return;
     setNotice(null);
     setBusy(provider);
     try {
-      acceptWorkspace(queryClient, await chooseProvider(station.id, station.revision, provider, newUuid()));
+      acceptCanvas(queryClient, await chooseProvider(canvas.id, canvas.revision, provider, newUuid()));
       // The choice may have opened the chat's session: the chat's head is read again, so Chat reads its lines.
-      void queryClient.invalidateQueries({ queryKey: ["chat", "head", station.conversation_id] });
+      void queryClient.invalidateQueries({ queryKey: ["chat", "head", canvas.conversation_id] });
     } catch (error) {
       setNotice(error instanceof ApiError && error.detail ? error.detail : "Could not choose this provider.");
     } finally {
@@ -163,9 +163,9 @@ export function ProviderPicker({ station }: Props) {
     setAllowing(name);
     try {
       await confirmTerminalMachine(name);
-      await queryClient.invalidateQueries({ queryKey: ["terminal-machines", station.id] });
-      // The station read says which providers a machine of the caller's can run: allowing one may add a CLI.
-      acceptWorkspace(queryClient, await getWorkspace(station.id));
+      await queryClient.invalidateQueries({ queryKey: ["terminal-machines", canvas.id] });
+      // The canvas read says which providers a machine of the caller's can run: allowing one may add a CLI.
+      acceptCanvas(queryClient, await getCanvas(canvas.id));
     } catch {
       setNotice(`Could not allow ${name}.`);
     } finally {
@@ -182,7 +182,7 @@ export function ProviderPicker({ station }: Props) {
     setStarting(command);
     const launch: RunLaunch = { command, attach: session, ...(cwd ? { cwd } : {}) };
     try {
-      await openTerminal(machine.name, station.id, START_ROWS, START_COLS, null, launch);
+      await openTerminal(machine.name, canvas.id, START_ROWS, START_COLS, null, launch);
       keepFolder(machine.name, cwd);
     } catch (error) {
       setStarting(null);
@@ -199,7 +199,7 @@ export function ProviderPicker({ station }: Props) {
           <label className="provider-choice">
             <input type="radio" name="chat-provider" value={provider} checked={shown} disabled={!status.ok || busy !== null}
               onChange={() => void choose(provider)} />
-            <span className="provider-name">{providerName(provider, station)}</span>
+            <span className="provider-name">{providerName(provider, canvas)}</span>
           </label>
           <span className="provider-live">
             {shown && <>
@@ -207,7 +207,7 @@ export function ProviderPicker({ station }: Props) {
               <span className="provider-live-text">{starting === provider ? "starting…" : liveLabel}</span>
             </>}
           </span>
-          <button type="button" className="provider-star" aria-pressed={chatDefault.provider === provider} aria-label={`New chats start on ${providerName(provider, station)}`}
+          <button type="button" className="provider-star" aria-pressed={chatDefault.provider === provider} aria-label={`New chats start on ${providerName(provider, canvas)}`}
             disabled={!status.ok} onClick={() => void star(provider)}>{chatDefault.provider === provider ? "★" : "☆"}</button>
           {provider === "assistant" && balance !== null && <CreditLine balance={balance} />}
           {!status.ok && <p className="provider-reason muted">{reasonText(status)}</p>}

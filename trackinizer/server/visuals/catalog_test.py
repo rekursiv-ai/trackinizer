@@ -8,22 +8,22 @@ import pytest
 
 from trackinizer.server.visuals.catalog import (
     RECORD_VISUAL,
+    Canvas,
     ContextGraphVisual,
     FilesVisual,
     ParameterDescription,
     StaticVisual,
     TerminalVisual,
     TimelineVisual,
-    Workspace,
+    default_canvas,
     default_catalog,
-    default_workspace,
     offer_record_visual,
 )
 
 
-def test_default_workspace_builds_the_default_catalog() -> None:
-    """The built workspace is the one place the default catalog comes from."""
-    assert default_workspace().catalog() == default_catalog()
+def test_default_canvas_builds_the_default_catalog() -> None:
+    """The built canvas is the one place the default catalog comes from."""
+    assert default_canvas().catalog() == default_catalog()
     assert [visual.type for visual in default_catalog().visuals] == [
         "trax.browse",
         "trax.subgraph",
@@ -37,9 +37,9 @@ def test_default_workspace_builds_the_default_catalog() -> None:
 
 def test_a_type_that_is_not_registered_has_no_description() -> None:
     """A show of an unknown type is refused by the lookup, not by an exception."""
-    workspace = default_workspace()
-    assert workspace.visual("x.unknown") is None
-    summary = workspace.visual("trax.summary")
+    canvas = default_canvas()
+    assert canvas.visual("x.unknown") is None
+    summary = canvas.visual("trax.summary")
     assert summary is not None
     assert (summary.requires, summary.record_kinds) == (
         ["record"],
@@ -68,7 +68,7 @@ def test_static_visual_is_configured_by_data() -> None:
 
 def test_browse_is_the_page_and_takes_no_record_or_parameter() -> None:
     """Browse draws the page: no record, no parameters, version unchanged."""
-    browse = default_workspace().visual("trax.browse")
+    browse = default_canvas().visual("trax.browse")
     assert browse is not None
     assert browse.version == 1
     assert browse.record_kinds == []
@@ -91,7 +91,7 @@ def test_record_visuals_name_the_kinds_they_accept() -> None:
 
 def test_the_record_tile_is_offered_once_and_is_no_default_visual() -> None:
     """A site whose app draws record tiles offers them; the default catalog does not."""
-    visuals = Workspace.Config()
+    visuals = Canvas.Config()
     offer_record_visual(visuals)
     offer_record_visual(visuals)
     offered = [
@@ -114,7 +114,7 @@ def test_the_record_tile_is_offered_once_and_is_no_default_visual() -> None:
 def test_default_visual_requiring_a_record_is_rejected() -> None:
     """A new canvas cannot open on a tile that has no record to render."""
     with pytest.raises(ValueError, match="record"):
-        Workspace.Config(default_visual="trax.subgraph").make()
+        Canvas.Config(default_visual="trax.subgraph").make()
 
 
 def test_context_graph_bounds_its_reach_and_its_highlight() -> None:
@@ -194,7 +194,7 @@ def test_files_takes_any_record_and_bounds_its_narrowing() -> None:
         },
         "record_kinds": None,
     }
-    assert default_workspace().visual("trax.files") == described
+    assert default_canvas().visual("trax.files") == described
 
 
 def test_context_graph_default_reach_past_three_hops_is_a_config_error() -> None:
@@ -217,11 +217,11 @@ def test_timeline_config_raises_the_descriptor_bound_instead_of_failing() -> Non
         schema["results_per_direction"].default,
         schema["results_per_direction"].maximum,
     ) == (3, 9)
-    workspace = Workspace.Config(
+    canvas = Canvas.Config(
         visuals=[StaticVisual.Config(type="x.notes", title="Notes"), timeline],
         default_visual="x.notes",
     ).make()
-    registered = workspace.visual("trax.timeline")
+    registered = canvas.visual("trax.timeline")
     assert registered is not None
     assert registered.parameter_schema["direction_limit"].maximum == 20
 

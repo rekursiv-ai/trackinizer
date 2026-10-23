@@ -52,7 +52,7 @@ function serve(enabled: boolean, { email = "ada@example.com", role = "writer", l
     "/api/meta/enums": { inquiry_kind_all: ["Issue"], status: ["active"] },
     "/api/meta/fields": {},
     "/api/meta/edges": {},
-    "/api/me/profile": { user_id: "u", email, name: "Ada", role, last_login: null, visual_workspace_enabled: enabled, ...AGREED },
+    "/api/me/profile": { user_id: "u", email, name: "Ada", role, last_login: null, visual_canvas_enabled: enabled, ...AGREED },
     "/api/inquiries": [],
   };
   return stubFetch(async (request) => {
@@ -139,7 +139,7 @@ test("Settings opens as a sheet over the page, which stays in its canvas under i
   expect(screen.getByRole("region", { name: "Canvas" })).toBe(canvas);
 });
 
-test("the top bar holds the logo, Go, Search, New, its pin, Machines and the account in order; with no canvas or workstreams", async () => {
+test("the top bar holds the logo, Go, Search, New, its pin, Machines and the account in order; with no canvas or workspaces", async () => {
   serve(false);
   render(<App assign={vi.fn()} />);
   await screen.findByRole("heading", { level: 1 });
@@ -147,7 +147,7 @@ test("the top bar holds the logo, Go, Search, New, its pin, Machines and the acc
   const named = [...bar.querySelectorAll<HTMLElement>("a, button")].filter((each) => !each.closest("[hidden]"))
     .map((each) => each.getAttribute("aria-label"));
   expect(named).toEqual(["Trackinizer, the graph", "Go to", "Search", "New issue", "Unpin app bar", "Machines", "Account: ada@example.com, writer"]);
-  expect(within(bar).queryByRole("navigation", { name: "Workstreams" })).toBeNull();
+  expect(within(bar).queryByRole("navigation", { name: "Workspaces" })).toBeNull();
   expect(document.querySelector(".app")!.classList).not.toContain("with-canvas");
 });
 

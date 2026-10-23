@@ -33,9 +33,9 @@ import time
 
 from trackinizer.server.auth import Role
 from trackinizer.wire.wire_sessions import (
+    CanvasMessageContext,
     InboundKind,
     RunState,
-    WorkspaceMessageContext,
 )
 
 
@@ -64,7 +64,7 @@ class Inbound:
     """The room a routed send was scoped to; threads into the ``[room]
     sender:`` injection prefix. ``None`` for a direct (session-id) enqueue."""
 
-    context: WorkspaceMessageContext | None = None
+    context: CanvasMessageContext | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

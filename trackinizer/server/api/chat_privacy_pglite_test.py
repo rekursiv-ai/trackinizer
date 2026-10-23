@@ -27,7 +27,7 @@ from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     Agent,
     chat_labels,
-    open_workspace,
+    open_canvas,
     seed_session,
     send_chat,
 )
@@ -364,7 +364,7 @@ async def test_a_member_without_staff_neither_reads_nor_posts_in_a_staff_chat(
     for name in ("ann", "olu", "stu"):
         read[name] = await world.status(name, read="records", session=world.chat)
         person = world.people[name]
-        workspace_id = await open_workspace(
+        canvas_id = await open_canvas(
             world.client,
             user_id=person.user_id,
             email=person.email,
@@ -372,7 +372,7 @@ async def test_a_member_without_staff_neither_reads_nor_posts_in_a_staff_chat(
         world.act_as(name, browser=True)
         response = await send_chat(
             world.client,
-            workspace_id=workspace_id,
+            canvas_id=canvas_id,
             text="hi",
             conversation_id=world.conversation,
         )
@@ -567,16 +567,16 @@ def _answer(response: httpx2.Response) -> tuple[int, bool]:
 
 
 async def _fork(world: _World, *, name: str, session: UUID) -> int:
-    """Fork the first line of ``session`` from ``name``'s own station; return the status."""
+    """Fork the first line of ``session`` from ``name``'s own canvas; return the status."""
     person = world.people[name]
-    workspace_id = await open_workspace(
+    canvas_id = await open_canvas(
         world.client,
         user_id=person.user_id,
         email=person.email,
     )
     response = await send_chat(
         world.client,
-        workspace_id=workspace_id,
+        canvas_id=canvas_id,
         text="what if?",
         fork={"session_id": str(session), "part": 0, "idx": 0},
     )

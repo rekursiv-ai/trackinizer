@@ -116,7 +116,7 @@ test("the hook says whether Back and Forward go anywhere, and whether a step is 
   expect(result.current).toEqual({ back: false, forward: true, moving: false });
 });
 
-test("a restore a station was left in the middle of is taken once, on coming back; closing its tab forgets it", () => {
+test("a restore a canvas was left in the middle of is taken once, on coming back; closing its tab forgets it", () => {
   interrupt("s", "s/1", at("#/a"));
   expect(takeInterrupted("t")).toBeNull();
   expect(takeInterrupted("s")).toEqual({ key: "s/1", target: at("#/a") });

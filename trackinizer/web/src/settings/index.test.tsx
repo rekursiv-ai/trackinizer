@@ -55,15 +55,15 @@ test("Close goes back to the last page before Settings, or to the graph when the
   history.replaceState(null, "", "#/");
 });
 
-test("agent workspace opt-in updates the account preference", async () => {
+test("agent canvas opt-in updates the account preference", async () => {
   const server = serveAccount(ADA);
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  const workspace = within(screen.getByRole("region", { name: "Agent workspace" }));
-  const toggle = workspace.getByRole("checkbox", { name: "Enable agent-guided workbench" });
+  const canvas = within(screen.getByRole("region", { name: "Agent canvas" }));
+  const toggle = canvas.getByRole("checkbox", { name: "Enable agent-guided workbench" });
   expect((toggle as HTMLInputElement).checked).toBe(false);
   fireEvent.click(toggle);
   await waitFor(() => expect(server.writes()).toContainEqual({
-    call: "PUT /api/me/visual-workspace", body: { enabled: true },
+    call: "PUT /api/me/visual-canvas", body: { enabled: true },
   }), FAST);
   await waitFor(() => expect((toggle as HTMLInputElement).checked).toBe(true), FAST);
 });
@@ -75,8 +75,8 @@ const preferenceWrites = (server: ReturnType<typeof serveAccount>) =>
 test("the switch for highlighting what the assistant mentions is on, and turns off at once, kept in the user's preferences", async () => {
   const server = serveAccount(ADA);
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  const workspace = within(screen.getByRole("region", { name: "Agent workspace" }));
-  const toggle = workspace.getByRole("checkbox", { name: "Highlight rows the assistant mentions" }) as HTMLInputElement;
+  const canvas = within(screen.getByRole("region", { name: "Agent canvas" }));
+  const toggle = canvas.getByRole("checkbox", { name: "Highlight rows the assistant mentions" }) as HTMLInputElement;
   expect(toggle.checked).toBe(true);
   fireEvent.click(toggle);
   expect(toggle.checked).toBe(false);
@@ -92,8 +92,8 @@ test("the switch for highlighting what the assistant mentions is on, and turns o
 test("the switch for showing tool calls in Chat is off, and turning it on is kept in the user's preferences", async () => {
   const server = serveAccount(ADA);
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  const workspace = within(screen.getByRole("region", { name: "Agent workspace" }));
-  const toggle = workspace.getByRole<HTMLInputElement>("checkbox", { name: "Show tool calls in Chat" });
+  const canvas = within(screen.getByRole("region", { name: "Agent canvas" }));
+  const toggle = canvas.getByRole<HTMLInputElement>("checkbox", { name: "Show tool calls in Chat" });
   expect(toggle.checked).toBe(false);
   fireEvent.click(toggle);
   expect(toggle.checked).toBe(true);

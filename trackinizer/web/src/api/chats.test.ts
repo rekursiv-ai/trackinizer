@@ -29,37 +29,37 @@ test("finds a conversation's session, and says nothing until the assistant has o
 });
 
 test("a line goes to /api/chats under its key, with its canvas, and the answer is the conversation", async () => {
-  const sent = stubFetch(() => Response.json({ conversation_id: "k1", session_id: null, workspace_id: "w1" }));
+  const sent = stubFetch(() => Response.json({ conversation_id: "k1", session_id: null, canvas_id: "w1" }));
   await expect(sendChatLine(
-    { workspaceId: "w1", text: "hi", conversationId: null,
+    { canvasId: "w1", text: "hi", conversationId: null,
       page: "#/ref/Issue/9", trail: ["#/graph", "#/lookup/x"] },
     "k1",
-  )).resolves.toEqual({ conversation_id: "k1", session_id: null, workspace_id: "w1" });
+  )).resolves.toEqual({ conversation_id: "k1", session_id: null, canvas_id: "w1" });
   expect(sent).toMatchObject([{ method: "POST", path: "/api/chats", headers: { "idempotency-key": "k1" },
-    body: { workspace_id: "w1", text: "hi", conversation_id: null,
+    body: { canvas_id: "w1", text: "hi", conversation_id: null,
       page: "#/ref/Issue/9", trail: ["#/graph", "#/lookup/x"] } }]);
 });
 
 test("a line that forks names the line it starts from, and a line that does not names none", async () => {
-  const sent = stubFetch(() => Response.json({ conversation_id: "k3", session_id: null, workspace_id: "w1" }));
-  await sendChatLine({ workspaceId: "w", text: "hi", conversationId: null, page: null, trail: [],
+  const sent = stubFetch(() => Response.json({ conversation_id: "k3", session_id: null, canvas_id: "w1" }));
+  await sendChatLine({ canvasId: "w", text: "hi", conversationId: null, page: null, trail: [],
     fork: { sessionId: "s1", part: 1, idx: 4 } }, "k3");
-  await sendChatLine({ workspaceId: "w", text: "hi", conversationId: "c1", page: null, trail: [] }, "k4");
+  await sendChatLine({ canvasId: "w", text: "hi", conversationId: "c1", page: null, trail: [] }, "k4");
   expect(sent[0]!.body).toMatchObject({ conversation_id: null, fork: { session_id: "s1", part: 1, idx: 4 } });
   expect(sent[1]!.body).not.toHaveProperty("fork");
 });
 
 test("a line sent from no page carries a null page and an empty trail", async () => {
-  const sent = stubFetch(() => Response.json({ conversation_id: "k2", session_id: null, workspace_id: "w1" }));
-  await sendChatLine({ workspaceId: "w", text: "hi", conversationId: null, page: null, trail: [] }, "k2");
+  const sent = stubFetch(() => Response.json({ conversation_id: "k2", session_id: null, canvas_id: "w1" }));
+  await sendChatLine({ canvasId: "w", text: "hi", conversationId: null, page: null, trail: [] }, "k2");
   expect(sent).toMatchObject([{ body: { page: null, trail: [] } }]);
 });
 
 test("an answer to a prompt goes as the chat's answer line, with its decision and its answers, and a person's line carries neither", async () => {
-  const sent = stubFetch(() => Response.json({ conversation_id: "c1", session_id: "s1", workspace_id: "w1" }));
+  const sent = stubFetch(() => Response.json({ conversation_id: "c1", session_id: "s1", canvas_id: "w1" }));
   const payload = { prompt_id: "p1", decision: "allow", updated_input: { answers: { Color: "red, blue" } }, message: "" } as const;
-  await sendChatLine({ workspaceId: "w1", text: "Color: red, blue", conversationId: "c1", kind: "answer", payload, page: null, trail: [] }, "k5");
-  await sendChatLine({ workspaceId: "w1", text: "hi", conversationId: "c1", page: null, trail: [] }, "k6");
+  await sendChatLine({ canvasId: "w1", text: "Color: red, blue", conversationId: "c1", kind: "answer", payload, page: null, trail: [] }, "k5");
+  await sendChatLine({ canvasId: "w1", text: "hi", conversationId: "c1", page: null, trail: [] }, "k6");
   expect(sent[0]!.body).toMatchObject({ kind: "answer", conversation_id: "c1", text: "Color: red, blue", payload });
   // The server reads a post that names no kind as a person's line.
   expect(sent[1]!.body).not.toHaveProperty("kind");
@@ -121,8 +121,8 @@ test("a reply being written that is none and an answer that is no partial are to
 });
 
 test("an answer names the agent's own option, and the older form names a decision", async () => {
-  const sent = stubFetch(() => Response.json({ conversation_id: "c1", session_id: "s1", workspace_id: "w1" }));
-  const line = { workspaceId: "w1", text: "Allow", conversationId: "c1", kind: "answer", page: null, trail: [] } as const;
+  const sent = stubFetch(() => Response.json({ conversation_id: "c1", session_id: "s1", canvas_id: "w1" }));
+  const line = { canvasId: "w1", text: "Allow", conversationId: "c1", kind: "answer", page: null, trail: [] } as const;
   await sendChatLine({ ...line, payload: { prompt_id: "p1", option: "allow_session", updated_input: null, message: "" } }, "k7");
   await sendChatLine({ ...line, payload: { prompt_id: "p1", decision: "deny", updated_input: null, message: "no" } }, "k8");
   expect(sent[0]!.body).toMatchObject({ payload: { prompt_id: "p1", option: "allow_session" } });

@@ -1,5 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
-import type { WorkspaceState } from "../src/api/workspaces";
+import type { CanvasState } from "../src/api/canvases";
 import { resetCanvas } from "./canvasState";
 import { expect, test } from "./fixtures";
 
@@ -56,8 +56,8 @@ test("a box drawn over a tile stays on it, at the same fractions, when a second 
   const before = within(await boxOf(red), await boxOf(body));
   expect(before.x).toBeCloseTo(0.45, 1);
 
-  const state = await (await request.get(`/api/workspaces/${id}`)).json() as WorkspaceState;
-  const shown = await request.post(`/api/workspaces/${id}/operations`, {
+  const state = await (await request.get(`/api/canvases/${id}`)).json() as CanvasState;
+  const shown = await request.post(`/api/canvases/${id}/operations`, {
     headers: { "Idempotency-Key": crypto.randomUUID() },
     data: { revision: state.revision, operation: { kind: "show", visual_type: "trax.timeline", placement: "main", record_id: ids[0] } },
   });

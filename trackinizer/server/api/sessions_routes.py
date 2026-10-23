@@ -48,6 +48,7 @@ from trackinizer.server.auth import (
 )
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.session_reaper import revive_if_reaped
+from trackinizer.server.visuals.canvas_store import read_chat_provider
 from trackinizer.server.visuals.partners import (
     is_assistant_session,
     is_chat_session,
@@ -55,7 +56,6 @@ from trackinizer.server.visuals.partners import (
     shared_partner,
 )
 from trackinizer.server.visuals.science_chats import read_first_session
-from trackinizer.server.visuals.workspace_store import read_chat_provider
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.audience import OPEN
 from trackinizer.wire.bodies import SubmitAgentSession
@@ -308,14 +308,14 @@ async def send_message_route(
     reads. The configured assistant may message one it does not read only for an
     ``asker`` it names, who is that session's account or a writer who holds its
     audience: it relays a user's line and passes on that user's rights, not its own.
-    Sessions are a shared workspace and cross-agent messaging is the feature, so there
+    Sessions are a shared canvas and cross-agent messaging is the feature, so there
     is no per-opener ownership gate here (or on the direct ``/inbound`` route). The
     sender is always truthfully attested. When any live session the name resolves to
     is one the sender may not message, the whole send is 403 ``session_audience`` and
     nothing is queued, so a send never reports a delivery that did not happen.
 
-    A science chat is reached through its station, so a browser's send to one is
-    refused with 409 ("Open its station to talk to this chat"), whether or not the
+    A science chat is reached through its canvas, so a browser's send to one is
+    refused with 409 ("Open its canvas to talk to this chat"), whether or not the
     chat is being drained; an agent key's send to a chat being drained is refused
     with 409 too.
 
@@ -379,7 +379,7 @@ async def send_message_route(
             )
         if session is None or cast(AgentSession, session).ended is not None:
             continue
-        # A browser reaches a chat through its station, whether or not anything is
+        # A browser reaches a chat through its canvas, whether or not anything is
         # draining the chat now; an agent key's send to an idle chat is dropped, as
         # it is to any session no one drains.
         if identity.api_key_id is None and is_a_science_chat(
@@ -387,7 +387,7 @@ async def send_message_route(
         ):
             raise HTTPException(
                 status_code=409,
-                detail="Open its station to talk to this chat",
+                detail="Open its canvas to talk to this chat",
             )
         if not inbound.has_poller(session_id):
             continue
@@ -454,17 +454,17 @@ async def session_inbound_drain_route(
     (403 otherwise). Viewer access is scoped to the opening API key so reading chat
     does not grant graph-write permission.
 
-    A science chat's queue has one drainer, the provider its starter's station names,
+    A science chat's queue has one drainer, the provider its starter's canvas names,
     and one live run. For ``claude`` or ``codex`` a drain by the configured assistant's
     key is 409 ``provider_is_cli``, and the run that drains it may be under any key a
     chat takes a run from (its opening key or its starter's; 403 otherwise). For
     ``assistant`` a drain by its opening key that is not the assistant's is 409
-    ``provider_is_assistant``. Either holds from the moment the station switches.
+    ``provider_is_assistant``. Either holds from the moment the canvas switches.
 
     A chat answered by a CLI is drained by a run that names its ``cli``: a drain that
     names none, as a ``trax`` older than the name sends, is 426 ``cli_required`` and
     takes no lease, since the server cannot tell which CLI polls. A drain by the other
-    CLI than the station's is 409 ``provider_is_other_cli``. The lease records the
+    CLI than the canvas's is 409 ``provider_is_other_cli``. The lease records the
     named CLI, and the chat is live for a provider only while a poller that named it
     holds the lease. ``instance`` is an id the run minted for itself; a drain whose
     ``instance`` differs from that of the unexpired lease of the same CLI is 409
@@ -660,7 +660,7 @@ async def session_end_route(
     close it from a browser, which has no key. An end that names
     a ``cli`` other than the chat's provider is a 200 that changes nothing: it is the
     exit of a run a switch stopped, and the session is the chat's, now drained by the
-    provider its station chose. An end that names a ``cli`` and an ``instance`` is
+    provider its canvas chose. An end that names a ``cli`` and an ``instance`` is
     the same 200 that changes nothing when the run it names was replaced, or another
     run of that CLI holds the session's lease: it is the exit of a run a reattach
     took over, and the run holding the chat goes on. Any other end first releases
@@ -856,7 +856,7 @@ def _refuse_the_other_provider(
     *,
     provider: ChatProvider | None,
 ) -> None:
-    """Refuse a chat's drain by a key its station's provider is not."""
+    """Refuse a chat's drain by a key its canvas's provider is not."""
     assistant = get_assistant(request)
     if provider is None or assistant is None:
         return
@@ -866,7 +866,7 @@ def _refuse_the_other_provider(
             status_code=409,
             detail={
                 "code": PROVIDER_IS_CLI,
-                "message": f"This chat's station answers it with {provider}",
+                "message": f"This chat's canvas answers it with {provider}",
             },
         )
     if provider == "assistant" and not by_assistant:
@@ -874,7 +874,7 @@ def _refuse_the_other_provider(
             status_code=409,
             detail={
                 "code": PROVIDER_IS_ASSISTANT,
-                "message": "This chat's station answers it with the assistant",
+                "message": "This chat's canvas answers it with the assistant",
             },
         )
 
@@ -883,7 +883,7 @@ def _refuse_the_other_provider(
 # happened to write: the runner's own part has no format, and the newest part after a
 # ``/compact`` is that one. A drain that names none is refused rather than guessed at.
 def _require_the_providers_cli(provider: ChatProvider, *, cli: str | None) -> None:
-    """Refuse a chat's drain by a run that is not the CLI its station chose."""
+    """Refuse a chat's drain by a run that is not the CLI its canvas chose."""
     if cli is None:
         raise HTTPException(
             status_code=426,
@@ -897,7 +897,7 @@ def _require_the_providers_cli(provider: ChatProvider, *, cli: str | None) -> No
             status_code=409,
             detail={
                 "code": PROVIDER_IS_OTHER_CLI,
-                "message": f"This chat's station answers it with {provider}, not {cli}",
+                "message": f"This chat's canvas answers it with {provider}, not {cli}",
             },
         )
 

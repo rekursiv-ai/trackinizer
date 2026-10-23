@@ -84,9 +84,9 @@ async def test_a_start_that_found_no_tombstone_is_taken_by_the_delete_it_raced(
             conn=starting,
         )
         await starting.execute("COMMIT")
-    stations = await deleting
+    canvases = await deleting
 
-    assert stations == []
+    assert canvases == []
     assert await _sessions_under(integ_store, conversation) == 0
 
 

@@ -65,7 +65,7 @@ class TestClaudeProjectsDir:
         """The projects ROOT is returned, not the per-project subdirectories.
 
         Claude mints ``projects/<hashed-cwd>/`` the first time it runs in a
-        workspace, which for the run being captured is after the watch was
+        canvas, which for the run being captured is after the watch was
         armed. Returning today's leaves leaves tomorrow's sibling unwatched
         and the run captures nothing silently.
         """

@@ -9,7 +9,7 @@ import { useWorkbenchPresent, WorkbenchSlot } from "../app/workbenchSlot";
 import { AccountMenu } from "./AccountMenu";
 import { GoMenu } from "./GoMenu";
 import { MachinesMenu } from "./MachinesMenu";
-import { WorkstreamBar } from "./WorkstreamBar";
+import { WorkspaceBar } from "./WorkspaceBar";
 import { useDismiss } from "./useDismiss";
 import { useHoverOpen } from "../visuals/hoverOpen";
 import "./topbar.css";
@@ -35,11 +35,11 @@ function writePinned(pinned: boolean) {
 
 /**
  * The app's one bar, along the top: the logo (home, the graph), Go (the pages),
- * Search, New, the pin, then the user's workstreams, Machines (where commands
+ * Search, New, the pin, then the user's workspaces, Machines (where commands
  * run), the Workbench's visuals while a canvas is mounted, and the account at
  * the end.
  */
-export function TopBar({ stations }: { readonly stations: boolean }) {
+export function TopBar({ canvases }: { readonly canvases: boolean }) {
   const palette = usePalette();
   const [goOpen, setGoOpen] = useState(false);
   const [pinned, setPinned] = useState(readPinned);
@@ -74,7 +74,7 @@ export function TopBar({ stations }: { readonly stations: boolean }) {
       <button type="button" className="icon-btn topbar-pin" aria-label={pinned ? "Unpin app bar" : "Keep app bar open"}
         title={pinned ? "Unpin app bar" : "Keep app bar open"} aria-pressed={pinned}
         onClick={() => { writePinned(!pinned); setPinned(!pinned); }}><span aria-hidden="true">📌</span></button>
-      <div className="topbar-stations">{stations && <WorkstreamBar />}</div>
+      <div className="topbar-canvases">{canvases && <WorkspaceBar />}</div>
       <MachinesMenu shown={shown} />
       <WorkbenchMenu />
       <AccountMenu onNavigate={closeGo} />

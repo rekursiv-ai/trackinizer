@@ -12,7 +12,7 @@ An API key narrows its owner and never widens it: ``open_into`` pins the one aud
 it opens sessions into. It reads what its owner reads.
 
 The server's organisation mode (``TRACKINIZER_CHAT_ORGS``) says who reads what, as a
-chat workspace does. ``single``: the server is one organisation, so every caller reads
+chat canvas does. ``single``: the server is one organisation, so every caller reads
 every ``open`` session and every person every open chat. ``domain``: a person's
 organisation is their email's domain when Google's ``hd`` claim names it, as a staff
 domain pattern asks, and they read the open sessions and chats of their

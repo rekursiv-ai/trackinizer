@@ -1,4 +1,4 @@
-import type { WorkspaceState } from "../src/api/workspaces";
+import type { CanvasState } from "../src/api/canvases";
 import { expect, test } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
@@ -10,9 +10,9 @@ test.afterEach(async ({ request }) => {
 
 test("floating Browse's stable content host folds to its bar and opens again", async ({ page, request }) => {
   const id = await resetCanvas(request);
-  const state = await (await request.get(`/api/workspaces/${id}`)).json() as WorkspaceState;
+  const state = await (await request.get(`/api/canvases/${id}`)).json() as CanvasState;
   const browse = state.visuals.find((visual) => visual.type === "trax.browse")!;
-  const placed = await request.post(`/api/workspaces/${id}/operations`, {
+  const placed = await request.post(`/api/canvases/${id}/operations`, {
     headers: { "Idempotency-Key": crypto.randomUUID() },
     data: { revision: state.revision, operation: { kind: "place", instance_id: browse.id, placement: "floating" } },
   });
@@ -64,9 +64,9 @@ test("an HTML Artifact in Browse keeps its document, edit and focus through rere
   expect.soft(reads, "resize does not reload the iframe").toBe(1);
   for (const placement of ["floating", "main", "floating"] as const) {
     await draft.fill("unsaved iframe edit");
-    const state = await (await request.get(`/api/workspaces/${id}`)).json() as WorkspaceState;
+    const state = await (await request.get(`/api/canvases/${id}`)).json() as CanvasState;
     const browse = state.visuals.find((visual) => visual.type === "trax.browse")!;
-    const changed = await request.post(`/api/workspaces/${id}/operations`, {
+    const changed = await request.post(`/api/canvases/${id}/operations`, {
       headers: { "Idempotency-Key": crypto.randomUUID() },
       data: { revision: state.revision, operation: { kind: "place", instance_id: browse.id, placement } },
     });
@@ -85,20 +85,20 @@ test("an HTML Artifact in Browse keeps its document, edit and focus through rere
   }
   const others: string[] = [];
   for (const type of ["trax.timeline", "trax.subgraph"]) {
-    const state = await (await request.get(`/api/workspaces/${id}`)).json() as WorkspaceState;
-    const changed = await request.post(`/api/workspaces/${id}/operations`, {
+    const state = await (await request.get(`/api/canvases/${id}`)).json() as CanvasState;
+    const changed = await request.post(`/api/canvases/${id}/operations`, {
       headers: { "Idempotency-Key": crypto.randomUUID() },
       data: { revision: state.revision, operation: { kind: "show", visual_type: type, placement: "floating", record_id: ids[0] } },
     });
     expect(changed.ok(), await changed.text()).toBe(true);
-    const next = await changed.json() as WorkspaceState;
+    const next = await changed.json() as CanvasState;
     others.push(next.visuals.find((visual) => visual.type === type)!.id);
     await expect(page.locator(`[data-visual-instance="${others.at(-1)}"]`)).toBeVisible();
     expect(await draft.inputValue(), "adding a floating visual keeps the iframe edit").toBe("unsaved iframe edit");
     expect(await draft.evaluate(() => Reflect.get(window, "documentToken") as string)).toBe(token);
   }
-  const state = await (await request.get(`/api/workspaces/${id}`)).json() as WorkspaceState;
-  const focused = await request.post(`/api/workspaces/${id}/operations`, {
+  const state = await (await request.get(`/api/canvases/${id}`)).json() as CanvasState;
+  const focused = await request.post(`/api/canvases/${id}/operations`, {
     headers: { "Idempotency-Key": crypto.randomUUID() },
     data: { revision: state.revision, operation: { kind: "focus", instance_id: others[0] } },
   });
@@ -118,7 +118,7 @@ test("Browse in the last main slot keeps overflow inside its strip", async ({ pa
   });
   expect(made.ok(), await made.text()).toBe(true);
   const { ids } = await made.json() as { ids: string[] };
-  let state = await (await request.get(`/api/workspaces/${id}`)).json() as WorkspaceState;
+  let state = await (await request.get(`/api/canvases/${id}`)).json() as CanvasState;
   const browse = state.visuals.find((visual) => visual.type === "trax.browse")!;
   for (const operation of [
     { kind: "show", visual_type: "trax.timeline", placement: "main", record_id: ids[0] },
@@ -126,11 +126,11 @@ test("Browse in the last main slot keeps overflow inside its strip", async ({ pa
     { kind: "hide", instance_id: browse.id },
     { kind: "show", visual_type: "trax.browse", placement: "main" },
   ]) {
-    const changed = await request.post(`/api/workspaces/${id}/operations`, {
+    const changed = await request.post(`/api/canvases/${id}/operations`, {
       headers: { "Idempotency-Key": crypto.randomUUID() }, data: { revision: state.revision, operation },
     });
     expect(changed.ok(), await changed.text()).toBe(true);
-    state = await changed.json() as WorkspaceState;
+    state = await changed.json() as CanvasState;
   }
   await page.setViewportSize({ width: 1000, height: 900 });
   await page.goto("/app/#/list/Issue");

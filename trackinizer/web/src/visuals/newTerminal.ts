@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
-import { applyWorkspaceOperation, type WorkspaceState } from "../api/workspaces";
-import { acceptWorkspace } from "../stations/cache";
+import { applyCanvasOperation, type CanvasState } from "../api/canvases";
+import { acceptCanvas } from "../canvases/cache";
 
 const TERMINAL = "trax.terminal";
 
@@ -38,16 +38,16 @@ export function useNewTerminalRequested(): boolean {
 }
 
 /**
- * The palette's "New terminal": show the station's Terminal tile (focus it when it is on the canvas) and ask it
+ * The palette's "New terminal": show the canvas's Terminal tile (focus it when it is on the canvas) and ask it
  * for a tab. A show names no params, so the tile's machine is left as it is.
  */
-export async function showNewTerminal(queryClient: QueryClient, station: WorkspaceState | null): Promise<void> {
-  if (!station) return;
-  const existing = station.visuals.find((visual) => visual.type === TERMINAL);
+export async function showNewTerminal(queryClient: QueryClient, canvas: CanvasState | null): Promise<void> {
+  if (!canvas) return;
+  const existing = canvas.visuals.find((visual) => visual.type === TERMINAL);
   requestNewTerminal();
   const operation = existing ? { kind: "focus", instance_id: existing.id } as const : { kind: "show", visual_type: TERMINAL, placement: "main" } as const;
   try {
-    acceptWorkspace(queryClient, await applyWorkspaceOperation(station.id, station.revision, operation, crypto.randomUUID()));
+    acceptCanvas(queryClient, await applyCanvasOperation(canvas.id, canvas.revision, operation, crypto.randomUUID()));
   } catch (error) {
     takeNewTerminalRequest();
     throw error;

@@ -7,14 +7,14 @@ import { forgetFieldDraftHere, keepFieldDraftHere } from "../state/local";
 /** The most drafts the server keeps (`Preferences.drafts` in `server/preferences.py`). */
 const MAX_DRAFTS = 200;
 
-/** A station's Chat prompt: its text, how to change it, and why it is not kept, if it is not. */
+/** A canvas's Chat prompt: its text, how to change it, and why it is not kept, if it is not. */
 export type ChatDraft = {
   readonly text: string;
   readonly edit: (text: string) => void;
   /**
    * Clear the draft as it stands now. Take it when a send starts and call it once
-   * the send succeeds: it clears this station's draft, for this user, only if
-   * nothing was typed there since; another station's, another user's, or a later
+   * the send succeeds: it clears this canvas's draft, for this user, only if
+   * nothing was typed there since; another canvas's, another user's, or a later
    * draft, typed here or elsewhere, stays.
    */
   readonly clear: () => void;
@@ -22,15 +22,15 @@ export type ChatDraft = {
 };
 
 /**
- * The unsent prompt of the Chat of station `workspaceId`, kept in the user's
- * preferences under `chat:<workspaceId>` so it reopens in any browser.
+ * The unsent prompt of the Chat of canvas `canvasId`, kept in the user's
+ * preferences under `chat:<canvasId>` so it reopens in any browser.
  *
  * What was typed in this session wins over the preferences the server answers, so
  * a send that failed, or a store already at its 200 drafts, loses nothing shown;
- * `problem` says when the text is not kept. With no station the text is the
- * component's alone, nothing is kept, and it does not follow into a station.
+ * `problem` says when the text is not kept. With no canvas the text is the
+ * component's alone, nothing is kept, and it does not follow into a canvas.
  */
-export function useChatDraft(workspaceId: string | null): ChatDraft {
+export function useChatDraft(canvasId: string | null): ChatDraft {
   const { email } = useProfile();
   const session = useContext(SessionContext);
   if (!session) throw new Error("useChatDraft needs a SessionContext above it.");
@@ -38,13 +38,13 @@ export function useChatDraft(workspaceId: string | null): ChatDraft {
   useLayoutEffect(() => {
     store.email = email;
   }, [store, email]);
-  const key = workspaceId === null ? null : `chat:${workspaceId}`;
+  const key = canvasId === null ? null : `chat:${canvasId}`;
   const slot = `${email}\u0000${key}`;
   const local = useSyncExternalStore(store.subscribe, () => store.typed.get(slot));
   const drafts = useSyncExternalStore(subscribePreferences, () => preferences().drafts);
   const failed = useSyncExternalStore(subscribePreferences, () => unsavedKeys().has("drafts"));
-  const [loose, setLoose] = useState({ id: workspaceId, text: "", serial: 0 });
-  if (loose.id !== workspaceId) setLoose({ id: workspaceId, text: "", serial: 0 });
+  const [loose, setLoose] = useState({ id: canvasId, text: "", serial: 0 });
+  if (loose.id !== canvasId) setLoose({ id: canvasId, text: "", serial: 0 });
   const text = key === null ? loose.text : (local?.text ?? drafts[key]?.text ?? "");
   useDraftSaver(() => {
     for (const [typedSlot, { text: typedText, key: typedKey }] of store.typed) {
@@ -53,14 +53,14 @@ export function useChatDraft(workspaceId: string | null): ChatDraft {
   });
   const edit = useCallback(
     (next: string) =>
-      key === null ? setLoose((now) => ({ id: workspaceId, text: next, serial: now.serial + 1 })) : write(store, email, key, next),
-    [store, email, key, workspaceId],
+      key === null ? setLoose((now) => ({ id: canvasId, text: next, serial: now.serial + 1 })) : write(store, email, key, next),
+    [store, email, key, canvasId],
   );
   const serial = key === null ? loose.serial : (local?.serial ?? 0);
   const clear = useCallback(() => {
-    if (key === null) setLoose((now) => (now.id === workspaceId && now.serial === serial ? { ...now, text: "", serial: now.serial + 1 } : now));
+    if (key === null) setLoose((now) => (now.id === canvasId && now.serial === serial ? { ...now, text: "", serial: now.serial + 1 } : now));
     else forget(store, email, key, serial, text);
-  }, [store, email, key, serial, text, workspaceId]);
+  }, [store, email, key, serial, text, canvasId]);
   return { text, edit, clear, problem: key === null || text === "" ? null : problemOf(drafts, key, local?.text != null && (failed || drafts[key]?.text !== local.text)) };
 }
 
@@ -72,7 +72,7 @@ function problemOf(drafts: { readonly [key: string]: unknown }, key: string, fai
 }
 
 /**
- * What one signed-in session typed, per user and station: the text, or null to
+ * What one signed-in session typed, per user and canvas: the text, or null to
  * show the preferences' again, and the slot's edit count a stale `clear` checks.
  */
 type Store = {

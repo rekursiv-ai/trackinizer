@@ -24,7 +24,7 @@ async function ok<T>(response: { ok(): boolean; text(): Promise<string>; json():
 
 /** A canvas holding exactly the visuals `operations` show, over a fresh Issue. */
 async function arrange(request: APIRequestContext, operations: (issue: string, artifact: string) => Operation[]): Promise<void> {
-  await ok(await request.put("/api/me/visual-workspace", { data: { enabled: true } }));
+  await ok(await request.put("/api/me/visual-canvas", { data: { enabled: true } }));
   const { ids } = await ok<{ ids: string[] }>(await request.post("/api/inquiries/batch", {
     data: { items: [{ kind: "Issue", title: `Layout ${crypto.randomUUID().slice(0, 8)}`, idempotency_key: crypto.randomUUID() }], edges: [] },
   }));
@@ -36,15 +36,15 @@ async function arrange(request: APIRequestContext, operations: (issue: string, a
       citations: [{ record_id: ids[0] }],
     },
   }));
-  let state = await ok<{ id: string; revision: number; visuals: { id: string; type: string }[] }>(await request.post("/api/workspaces"));
+  let state = await ok<{ id: string; revision: number; visuals: { id: string; type: string }[] }>(await request.post("/api/canvases"));
   // Drop every visual but the page, so each case starts from the same canvas.
   for (const visual of state.visuals.filter((held) => held.type !== "trax.browse")) {
-    state = await ok(await request.post(`/api/workspaces/${state.id}/operations`, {
+    state = await ok(await request.post(`/api/canvases/${state.id}/operations`, {
       headers: { "Idempotency-Key": crypto.randomUUID() }, data: { revision: state.revision, operation: { kind: "hide", instance_id: visual.id } },
     }));
   }
   for (const operation of operations(ids[0]!, published.artifact_id)) {
-    state = await ok(await request.post(`/api/workspaces/${state.id}/operations`, {
+    state = await ok(await request.post(`/api/canvases/${state.id}/operations`, {
       headers: { "Idempotency-Key": crypto.randomUUID() }, data: { revision: state.revision, operation },
     }));
   }

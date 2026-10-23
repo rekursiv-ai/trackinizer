@@ -7,20 +7,20 @@ from typing import Protocol, cast
 from fastapi import APIRouter, Depends, Request
 
 from trackinizer.server.auth import require_role
-from trackinizer.server.visuals.catalog import VisualCatalogBody, Workspace
+from trackinizer.server.visuals.catalog import Canvas, VisualCatalogBody
 
 
 router = APIRouter()
 
 
-def visual_catalog(request: Request) -> Workspace:
+def visual_catalog(request: Request) -> Canvas:
     """Return the deployment's visual catalog held on the FastAPI app state.
 
     Args:
       request: Request.
 
     Returns:
-      workspace: The built visual workspace.
+      canvas: The built visual canvas.
 
     """
     return cast(_App, request.app).state.visual_catalog
@@ -37,4 +37,4 @@ class _App(Protocol):
 
 
 class _State(Protocol):
-    visual_catalog: Workspace
+    visual_catalog: Canvas

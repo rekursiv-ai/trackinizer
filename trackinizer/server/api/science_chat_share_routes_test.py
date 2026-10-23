@@ -37,7 +37,7 @@ from trackinizer.server.api.canvas_test_support import (
     act_as_user_agent,
     browser,
     drain,
-    open_workspace,
+    open_canvas,
     seed_accounts,
     seed_converse,
     seed_science_chat,
@@ -50,7 +50,7 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.asks_test_support import write_records
-from trackinizer.server.chat_hub import ChatHub, WorkspaceFrame
+from trackinizer.server.chat_hub import CanvasFrame, ChatHub
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.audience import OPEN, STAFF
@@ -93,27 +93,27 @@ def individual_chats_served(monkeypatch: pytest.MonkeyPatch) -> ChatHub:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Chat:
-    """Ada's chat, the assistant's service session, and Ada's station that holds it."""
+    """Ada's chat, the assistant's service session, and Ada's canvas that holds it."""
 
     conversation: uuid.UUID
     session: uuid.UUID
     service: uuid.UUID
-    station: uuid.UUID
+    canvas: uuid.UUID
 
 
 async def _ada_chat(client: httpx2.AsyncClient, store: Store) -> _Chat:
-    """Have Ada start a chat from her station, and the assistant open and record it."""
+    """Have Ada start a chat from her canvas, and the assistant open and record it."""
     await seed_accounts(store)
     service = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
-    station = await open_workspace(client)
-    session = await seed_converse(client, store, workspace_id=station)
+    canvas = await open_canvas(client)
+    session = await seed_converse(client, store, canvas_id=canvas)
     conversation = await _conversation_of(store, session)
     await _record(store, session, ADA)
     return _Chat(
         conversation=conversation,
         session=session,
         service=service,
-        station=station,
+        canvas=canvas,
     )
 
 
@@ -124,15 +124,15 @@ async def test_a_colleagues_line_is_refused_until_the_chat_is_shared_with_them(
 ) -> None:
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
+    bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
     before = await _head(client, chat.conversation, as_bob=True)
 
-    refused = await _bob_says(client, chat, station=bob_station, text="may I?")
+    refused = await _bob_says(client, chat, canvas=bob_canvas, text="may I?")
     browser()
     shared = await client.put(_share_path(chat, "Other-User@Example.com"))
     ada_head = await _head(client, chat.conversation)
     after = await _head(client, chat.conversation, as_bob=True)
-    posted = await _bob_says(client, chat, station=bob_station, text="thanks")
+    posted = await _bob_says(client, chat, canvas=bob_canvas, text="thanks")
 
     # Bob shares Ada's domain, which counts for nothing on an individual server.
     assert (before["forks_on_typing"], before["shared_with"]) == (True, [])
@@ -151,18 +151,18 @@ async def test_a_colleagues_line_is_refused_until_the_chat_is_shared_with_them(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_sharers_post_goes_by_the_chats_provider_not_their_stations(
+async def test_a_sharers_post_goes_by_the_chats_provider_not_their_canvases(
     pglite_route_client: _Client,
 ) -> None:
-    """Bob's station is on claude, but Ada's chat is the assistant's: it drains it."""
+    """Bob's canvas is on claude, but Ada's chat is the assistant's: it drains it."""
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
+    bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "UPDATE visual_workspaces SET state = state || "
+            "UPDATE visual_canvases SET state = state || "
             "jsonb_build_object('provider', 'claude') WHERE id = $1",
-            bob_station,
+            bob_canvas,
         )
     browser()
     _ = await client.put(_share_path(chat, BOB))
@@ -171,14 +171,14 @@ async def test_a_sharers_post_goes_by_the_chats_provider_not_their_stations(
     command = await client.post(
         "/api/chats",
         json={
-            "workspace_id": str(bob_station),
+            "canvas_id": str(bob_canvas),
             "conversation_id": str(chat.conversation),
             "text": "/compact",
             "kind": "command",
         },
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
-    posted = await _bob_says(client, chat, station=bob_station, text="thanks")
+    posted = await _bob_says(client, chat, canvas=bob_canvas, text="thanks")
 
     assert command.status_code == 422, command.text
     assert "The assistant takes a person's line or an answer, not a command" in (
@@ -197,14 +197,14 @@ async def test_only_the_starter_answers_a_question_card_of_the_assistants_chat(
     """A sharer reads and posts, but the chat's cards are its starter's, as a run's."""
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
+    bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
     browser()
     _ = await client.put(_share_path(chat, BOB))
     answer: dict[str, object] = {"prompt_id": "q1", "option": "1"}
 
-    def post(station: uuid.UUID) -> dict[str, object]:
+    def post(canvas: uuid.UUID) -> dict[str, object]:
         return {
-            "workspace_id": str(station),
+            "canvas_id": str(canvas),
             "conversation_id": str(chat.conversation),
             "text": "Blue",
             "kind": "answer",
@@ -214,13 +214,13 @@ async def test_only_the_starter_answers_a_question_card_of_the_assistants_chat(
     browser(OTHER_USER_ID, email=BOB)
     refused = await client.post(
         "/api/chats",
-        json=post(bob_station),
+        json=post(bob_canvas),
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     browser()
     answered = await client.post(
         "/api/chats",
-        json=post(chat.station),
+        json=post(chat.canvas),
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
 
@@ -244,7 +244,7 @@ async def test_a_card_the_assistant_asked_a_sharer_is_theirs_to_answer(
     """The card lists the asker's own choices, so their click alone is heard."""
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
+    bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
     browser()
     _ = await client.put(_share_path(chat, BOB))
     asked = Ask(
@@ -262,9 +262,9 @@ async def test_a_card_the_assistant_asked_a_sharer_is_theirs_to_answer(
     )
     answer: dict[str, object] = {"prompt_id": "q2", "option": "1"}
 
-    def post(station: uuid.UUID) -> dict[str, object]:
+    def post(canvas: uuid.UUID) -> dict[str, object]:
         return {
-            "workspace_id": str(station),
+            "canvas_id": str(canvas),
             "conversation_id": str(chat.conversation),
             "text": "gx10",
             "kind": "answer",
@@ -273,13 +273,13 @@ async def test_a_card_the_assistant_asked_a_sharer_is_theirs_to_answer(
 
     refused = await client.post(
         "/api/chats",
-        json=post(chat.station),
+        json=post(chat.canvas),
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     browser(OTHER_USER_ID, email=BOB)
     answered = await client.post(
         "/api/chats",
-        json=post(bob_station),
+        json=post(bob_canvas),
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
 
@@ -300,13 +300,13 @@ async def test_unsharing_stops_the_next_line_and_keeps_the_ones_before(
 ) -> None:
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
+    bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
     browser()
     _ = await client.put(_share_path(chat, BOB))
     await _record(store, chat.session, BOB)
 
     unshared = await client.delete(_share_path(chat, BOB))
-    refused = await _bob_says(client, chat, station=bob_station, text="still here?")
+    refused = await _bob_says(client, chat, canvas=bob_canvas, text="still here?")
 
     assert json_loads(unshared.content, list[str]) == []
     assert _code(refused) == "chat_not_shared"
@@ -370,15 +370,15 @@ async def test_the_starter_deletes_a_chat_only_they_posted_in_and_nothing_of_it_
     browser()
     _ = await client.put(_share_path(chat, BOB))
     browser(OTHER_USER_ID, email=BOB)
-    bound = await client.post(f"/api/workspaces/for-chat/{chat.conversation}")
-    bob_station = uuid.UUID(
+    bound = await client.post(f"/api/canvases/for-chat/{chat.conversation}")
+    bob_canvas = uuid.UUID(
         from_plain(json_loads(bound.content, dict[str, object])["id"], str),
     )
     head = await _head(client, chat.conversation)
 
     with (
-        individual_chats_served.subscribe(chat.station) as ada_tab,
-        individual_chats_served.subscribe(bob_station) as bob_tab,
+        individual_chats_served.subscribe(chat.canvas) as ada_tab,
+        individual_chats_served.subscribe(bob_canvas) as bob_tab,
     ):
         browser()
         deleted = await client.delete(f"/api/chats/{chat.conversation}")
@@ -392,8 +392,8 @@ async def test_the_starter_deletes_a_chat_only_they_posted_in_and_nothing_of_it_
     assert [
         (f.state.id, f.state.conversation_id)
         for f in frames
-        if isinstance(f, WorkspaceFrame)
-    ] == [(chat.station, None), (bob_station, None)]
+        if isinstance(f, CanvasFrame)
+    ] == [(chat.canvas, None), (bob_canvas, None)]
     # The assistant's service session is no part of the chat.
     async with store.engine.acquire() as conn:
         assert await conn.fetchval(
@@ -404,24 +404,24 @@ async def test_the_starter_deletes_a_chat_only_they_posted_in_and_nothing_of_it_
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_each_station_a_deleted_chat_leaves_moves_to_a_new_revision(
+async def test_each_canvas_a_deleted_chat_leaves_moves_to_a_new_revision(
     pglite_route_client: _Client,
     individual_chats_served: ChatHub,
 ) -> None:
     """A tab orders canvas frames by revision, so an unchanged one would be ignored."""
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
-    other = await open_workspace(client, new=True)
-    before = await _revisions(store, chat.station, other)
+    other = await open_canvas(client, new=True)
+    before = await _revisions(store, chat.canvas, other)
 
-    with individual_chats_served.subscribe(chat.station) as tab:
+    with individual_chats_served.subscribe(chat.canvas) as tab:
         browser()
         deleted = await client.delete(f"/api/chats/{chat.conversation}")
         frame = tab.queue.get_nowait()
-    after = await _revisions(store, chat.station, other)
+    after = await _revisions(store, chat.canvas, other)
 
     assert deleted.status_code == 204
-    assert isinstance(frame, WorkspaceFrame)
+    assert isinstance(frame, CanvasFrame)
     assert after == [before[0] + 1, before[1]]
     assert frame.state.revision == after[0]
 
@@ -728,12 +728,12 @@ async def test_a_deleted_chats_id_loses_every_session_and_starts_no_chat_again(
     inbound = InboundQueue()
     inbound.mark_poller(chat.service)
     monkeypatch.setattr(app.state, "inbound", inbound)
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
+    bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
 
-    squat = await _bob_says(client, chat, station=bob_station, text="mine now")
+    squat = await _bob_says(client, chat, canvas=bob_canvas, text="mine now")
     fork = await send_chat(
         client,
-        workspace_id=bob_station,
+        canvas_id=bob_canvas,
         text="from mine",
         key=chat.conversation,
         fork={"session_id": str(bobs), "part": 0, "idx": 0},
@@ -741,7 +741,7 @@ async def test_a_deleted_chats_id_loses_every_session_and_starts_no_chat_again(
     browser()
     again = await send_chat(
         client,
-        workspace_id=await open_workspace(client, new=True),
+        canvas_id=await open_canvas(client, new=True),
         text="back",
         conversation_id=chat.conversation,
     )
@@ -764,15 +764,15 @@ async def test_a_line_on_its_way_into_a_chat_counts_as_posted_and_goes_with_it(
     chat = await _ada_chat(client, store)
     browser()
     _ = await client.put(_share_path(chat, BOB))
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
-    bobs = await _bob_says(client, chat, station=bob_station, text="on its way")
+    bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
+    bobs = await _bob_says(client, chat, canvas=bob_canvas, text="on its way")
     browser()
     refused = await client.delete(f"/api/chats/{chat.conversation}")
     _ = inbound.drain(chat.session)
     _ = inbound.drain(chat.service)
     adas = await send_chat(
         client,
-        workspace_id=chat.station,
+        canvas_id=chat.canvas,
         text="never mind",
         conversation_id=chat.conversation,
     )
@@ -825,8 +825,8 @@ async def test_a_line_the_assistant_took_counts_as_posted_until_it_is_recorded(
     chat = await _ada_chat(client, store)
     browser()
     _ = await client.put(_share_path(chat, BOB))
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
-    bobs = await _bob_says(client, chat, station=bob_station, text="taken")
+    bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
+    bobs = await _bob_says(client, chat, canvas=bob_canvas, text="taken")
     taken = [*await _heard(client, chat.session), *await _heard(client, chat.service)]
 
     browser()
@@ -863,8 +863,8 @@ async def test_only_a_session_the_chat_counts_records_a_line_the_assistant_took(
     chat = await _ada_chat(client, store)
     browser()
     _ = await client.put(_share_path(chat, BOB))
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
-    _ = await _bob_says(client, chat, station=bob_station, text="taken")
+    bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
+    _ = await _bob_says(client, chat, canvas=bob_canvas, text="taken")
     _ = [*await _heard(client, chat.session), *await _heard(client, chat.service)]
     squat, helper = [
         await seed_session(
@@ -898,20 +898,20 @@ async def test_only_a_session_the_chat_counts_records_a_line_the_assistant_took(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_deleted_chats_id_and_lines_open_no_session_station_or_fork(
+async def test_a_deleted_chats_id_and_lines_open_no_session_canvas_or_fork(
     pglite_route_client: _Client,
 ) -> None:
-    """Its head, a station for it, a session under its id, a fork from its line."""
+    """Its head, a canvas for it, a session under its id, a fork from its line."""
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
     browser()
     deleted = await client.delete(f"/api/chats/{chat.conversation}")
 
     head = await client.get(f"/api/chats/{chat.conversation}")
-    station = await client.post(f"/api/workspaces/for-chat/{chat.conversation}")
+    canvas = await client.post(f"/api/canvases/for-chat/{chat.conversation}")
     fork = await send_chat(
         client,
-        workspace_id=chat.station,
+        canvas_id=chat.canvas,
         text="from a deleted line",
         fork={"session_id": str(chat.session), "part": 0, "idx": 0},
     )
@@ -931,7 +931,7 @@ async def test_a_deleted_chats_id_and_lines_open_no_session_station_or_fork(
     )
 
     assert deleted.status_code == 204
-    assert [_code(r, status=410) for r in (head, station, fork, reopened)] == [
+    assert [_code(r, status=410) for r in (head, canvas, fork, reopened)] == [
         "chat_deleted",
     ] * 4
     assert appended.status_code == 404
@@ -1034,12 +1034,12 @@ async def test_a_share_lets_another_organisation_continue_a_domain_servers_chat(
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
     jan = "jan@other.org"
-    station = await open_workspace(client, user_id=OTHER_USER_ID, email=jan)
+    canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=jan)
 
-    refused = await _bob_says(client, chat, station=station, text="hi", email=jan)
+    refused = await _bob_says(client, chat, canvas=canvas, text="hi", email=jan)
     browser()
     _ = await client.put(_share_path(chat, jan))
-    posted = await _bob_says(client, chat, station=station, text="hi", email=jan)
+    posted = await _bob_says(client, chat, canvas=canvas, text="hi", email=jan)
 
     assert (refused.status_code, posted.status_code) == (403, 200)
 
@@ -1052,7 +1052,7 @@ async def test_a_session_a_writers_own_key_opens_under_a_chats_id_gives_them_not
     """Any writer's key may open a session under a ``chat:`` id; it starts nothing."""
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
+    bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
     _ = await seed_session(
         store,
         OTHER_AGENT,
@@ -1064,7 +1064,7 @@ async def test_a_session_a_writers_own_key_opens_under_a_chats_id_gives_them_not
     bobs = await _head(client, chat.conversation, as_bob=True)
     share = await client.put(_share_path(chat, BOB))
     delete = await client.delete(f"/api/chats/{chat.conversation}")
-    post = await _bob_says(client, chat, station=bob_station, text="mine now")
+    post = await _bob_says(client, chat, canvas=bob_canvas, text="mine now")
     adas = await _head(client, chat.conversation)
 
     assert {key: bobs[key] for key in ("account", "may_share", "may_delete")} == {
@@ -1256,13 +1256,13 @@ async def test_a_labelled_squat_does_not_start_a_chat_whose_first_session_is_not
         labels=[SCIENCE_CHAT_LABEL],
         polled=False,
     )
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
+    bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
 
     browser(OTHER_USER_ID, email=BOB)
     shared = await client.put(f"/api/chats/{conversation}/shares/{BOB}")
     posted = await send_chat(
         client,
-        workspace_id=bob_station,
+        canvas_id=bob_canvas,
         text="mine now",
         conversation_id=conversation,
     )
@@ -1345,7 +1345,7 @@ async def test_a_planted_idempotency_key_does_not_make_a_stranger_the_starter(
     """After a restart the key map is empty, so any send can claim a chat's id."""
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
-    bob_station = await open_workspace(client, user_id=OTHER_USER_ID, email=BOB)
+    bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
     inbound = InboundQueue()
     monkeypatch.setattr(app.state, "inbound", inbound)
     for session in (chat.service, chat.session):
@@ -1358,11 +1358,11 @@ async def test_a_planted_idempotency_key_does_not_make_a_stranger_the_starter(
         headers={"Idempotency-Key": str(chat.conversation)},
     )
 
-    bob = await _bob_says(client, chat, station=bob_station, text="mine now")
+    bob = await _bob_says(client, chat, canvas=bob_canvas, text="mine now")
     browser()
     ada = await send_chat(
         client,
-        workspace_id=chat.station,
+        canvas_id=chat.canvas,
         text="still mine",
         conversation_id=chat.conversation,
     )
@@ -1377,15 +1377,15 @@ async def _bob_says(
     client: httpx2.AsyncClient,
     chat: _Chat,
     *,
-    station: uuid.UUID,
+    canvas: uuid.UUID,
     text: str,
     email: str = BOB,
 ) -> httpx2.Response:
-    """Post a line into Ada's chat from the second user's station, as ``email``."""
+    """Post a line into Ada's chat from the second user's canvas, as ``email``."""
     browser(OTHER_USER_ID, email=email)
     return await send_chat(
         client,
-        workspace_id=station,
+        canvas_id=canvas,
         text=text,
         conversation_id=chat.conversation,
     )
@@ -1531,7 +1531,7 @@ async def _senders(store: Store, session: uuid.UUID) -> list[str]:
 
 
 async def _remains(store: Store, chat: _Chat) -> tuple[int, int, int, int]:
-    """Count what a chat left: sessions, records, shares, and stations holding it."""
+    """Count what a chat left: sessions, records, shares, and canvases holding it."""
     async with store.engine.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT (SELECT count(*) FROM inquiries "
@@ -1539,8 +1539,8 @@ async def _remains(store: Store, chat: _Chat) -> tuple[int, int, int, int]:
             "(SELECT count(*) FROM session_records WHERE session_id = $2) AS records, "
             "(SELECT count(*) FROM science_chat_shares "
             "WHERE conversation_id = $3) AS shares, "
-            "(SELECT count(*) FROM visual_workspaces "
-            "WHERE station->>'conversation_id' = $3::text) AS stations",
+            "(SELECT count(*) FROM visual_canvases "
+            "WHERE metadata->>'conversation_id' = $3::text) AS canvases",
             chat_session_id(chat.conversation),
             chat.session,
             chat.conversation,
@@ -1550,7 +1550,7 @@ async def _remains(store: Store, chat: _Chat) -> tuple[int, int, int, int]:
         from_plain(row["sessions"], int),
         from_plain(row["records"], int),
         from_plain(row["shares"], int),
-        from_plain(row["stations"], int),
+        from_plain(row["canvases"], int),
     )
 
 
@@ -1608,18 +1608,18 @@ async def _indexed(store: Store, session: uuid.UUID) -> dict[str, int]:
     return {key: from_plain(value, int) for key, value in dict(row).items()}
 
 
-async def _revisions(store: Store, *stations: uuid.UUID) -> list[int]:
-    """Read each station's revision, in the order named."""
+async def _revisions(store: Store, *canvases: uuid.UUID) -> list[int]:
+    """Read each canvas's revision, in the order named."""
     async with store.engine.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, revision FROM visual_workspaces WHERE id = ANY($1::uuid[])",
-            list(stations),
+            "SELECT id, revision FROM visual_canvases WHERE id = ANY($1::uuid[])",
+            list(canvases),
         )
     held = {
         from_plain(row["id"], uuid.UUID): from_plain(row["revision"], int)
         for row in rows
     }
-    return [held[station] for station in stations]
+    return [held[canvas] for canvas in canvases]
 
 
 async def _conversation_of(store: Store, session: uuid.UUID) -> uuid.UUID:

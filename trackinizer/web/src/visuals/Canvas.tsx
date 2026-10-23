@@ -6,13 +6,13 @@ import { findRef } from "../api/detail";
 import { newUuid } from "../api/idempotency";
 import { getVisualCatalog, type VisualDescription } from "../api/visuals";
 import {
-  applyWorkspaceOperation,
-  type WorkspaceOperation,
-  type WorkspaceState,
-} from "../api/workspaces";
-import { acceptWorkspace as cacheWorkspace, newerWorkspace } from "../stations/cache";
-import { setStation } from "../stations/store";
-import { useStation } from "../stations/useStation";
+  applyCanvasOperation,
+  type CanvasOperation,
+  type CanvasState,
+} from "../api/canvases";
+import { acceptCanvas as cacheCanvas, newerCanvas } from "../canvases/cache";
+import { setCanvas } from "../canvases/store";
+import { useCanvas } from "../canvases/useCanvas";
 import { CrashBoundary } from "../app/CrashBoundary";
 import { useWorkbenchMounted, useWorkbenchSlot } from "../app/workbenchSlot";
 import { usePreferences } from "../preferences";
@@ -31,9 +31,9 @@ import { type CanvasTab, leftTab, MAX_TABS, neighbourOf, newTabName, openTabOf, 
 import { followColumns } from "./chatColumnState";
 import { CLICK_SLOP, EDGES, finishGesture, moveGesture, rememberedTile, resizeRect, slideDivider, snapZone, startGesture, TEAR_SLOP, withTile, type Edge, type TileMemory, type Gesture, type Rect, type Zone } from "./floatingTile";
 import { orderVisuals, SIDES } from "./layout";
-import { holds, layoutOf, useLayout, type Layout } from "./stationLayout";
+import { holds, layoutOf, useLayout, type Layout } from "./canvasLayout";
 import { preloadRenderers, RENDERERS, VisualPane } from "./registry";
-import { WorkspaceActionsProvider } from "./workspaceActions";
+import { CanvasActionsProvider } from "./canvasActions";
 import "./canvas.css";
 
 /** The route view inside a revisioned canvas shared with agent clients. */
@@ -48,14 +48,14 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   // The canvas is what the shell's stream last said (its opening frame is the
   // first state) and what this canvas's own writes returned. A read happens
   // only when asked for, after a refused write.
-  const station = useStation();
-  const workspace = station.data;
-  const workspaceId = workspace?.id;
-  const boxes = useBoxes(workspace);
+  const canvasQuery = useCanvas();
+  const canvas = canvasQuery.data;
+  const canvasId = canvas?.id;
+  const boxes = useBoxes(canvas);
   const { bodies, bodyRef } = useTileBodies();
-  const latestWorkspace = useRef(workspace);
-  latestWorkspace.current = workspace;
-  const legacyPreview = import.meta.env.DEV && station.error instanceof ApiError && station.error.status === 404;
+  const latestCanvas = useRef(canvas);
+  latestCanvas.current = canvas;
+  const legacyPreview = import.meta.env.DEV && canvasQuery.error instanceof ApiError && canvasQuery.error.status === 404;
   const [previewSelected, setPreviewSelected] = useState<string[] | null>(null);
   const controlsSlot = useWorkbenchSlot();
   useWorkbenchMounted();
@@ -66,19 +66,19 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   // and focus even when React keeps their components mounted.
   const browseRef = useRef<HTMLDivElement>(null);
   const browseSlotRef = useRef<HTMLDivElement>(null);
-  // How the station's tiles and columns were left, as fractions of the stage,
-  // and the stage they are fitted to. The station keeps the layout; the stage is
+  // How the canvas's tiles and columns were left, as fractions of the stage,
+  // and the stage they are fitted to. The canvas keeps the layout; the stage is
   // measured as it resizes, and nothing is written for a fit.
   const [layout, changeLayout] = useLayout();
   // The open canvas tab, and what it shows: the steps Back and Forward walk are
-  // its own, as a browser tab's history is. Chat's agent changes the station's
+  // its own, as a browser tab's history is. Chat's agent changes the canvas's
   // canvas, which is always the open tab.
   const home = usePreferences().home;
   const hash = useHash();
   const tabs = tabsOf(layout);
   const openTab = openTabOf(layout);
-  const historyKey = workspaceId ? tabKey(workspaceId, openTab) : null;
-  const snapshot = workspace ? snapshotOf(workspace.visuals, hash) : null;
+  const historyKey = canvasId ? tabKey(canvasId, openTab) : null;
+  const snapshot = canvas ? snapshotOf(canvas.visuals, hash) : null;
   const history = useCanvasHistory(historyKey, snapshot);
   const [browser, updateBrowser] = useBrowserState();
   const [stage, setStage] = useState<Size>({ width: 0, height: 0 });
@@ -103,9 +103,9 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const dividerRef = useRef<DividerDrag | null>(null);
   const sizes = fitSizes(layout, stage);
   const [writeError, setWriteError] = useState<string | null>(null);
-  const active = workspace?.visuals.map((visual) => visual.type)
+  const active = canvas?.visuals.map((visual) => visual.type)
     ?? previewSelected ?? [catalog.data?.default_visual ?? "trax.browse"];
-  const visible: WorkspaceState["visuals"] = workspace?.visuals ?? (active.length ? active : ["trax.browse"]).map((type) => ({
+  const visible: CanvasState["visuals"] = canvas?.visuals ?? (active.length ? active : ["trax.browse"]).map((type) => ({
     id: type,
     type,
     version: catalog.data?.visuals.find((visual) => visual.type === type)?.version ?? 1,
@@ -116,7 +116,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     params: {},
   }));
   const visualTypes = useMemo(() => new Set(catalog.data?.visuals.map((visual) => visual.type)), [catalog.data]);
-  const panes = orderVisuals(visible, workspace?.focused_instance ?? null);
+  const panes = orderVisuals(visible, canvas?.focused_instance ?? null);
   const browse = panes.find((pane) => pane.type === PAGE);
   /** Whether `pane` is drawn floating over the stage. */
   const floats = (pane: (typeof panes)[number]) => pane.placement === "floating";
@@ -131,7 +131,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const refKind = refRoute?.[1] ?? null;
   const refSeq = refRoute?.[2] ? Number(refRoute[2]) : null;
   const refId = useQuery({
-    queryKey: ["workspace", "current-record", refKind, refSeq],
+    queryKey: ["canvas", "current-record", refKind, refSeq],
     queryFn: ({ signal }) => findRef(refKind!, refSeq!, { signal }),
     enabled: refKind !== null && refSeq !== null && Number.isSafeInteger(refSeq),
     staleTime: Infinity,
@@ -169,11 +169,11 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     if (stageRef.current) projectBrowse(stageRef.current, browseRef.current, browseSlotRef.current);
   });
 
-  // A browser that kept column widths, window sizes and places before the station
-  // did: the first station it shows takes them, as fractions of its stage, unless
+  // A browser that kept column widths, window sizes and places before the canvas
+  // did: the first canvas it shows takes them, as fractions of its stage, unless
   // it already holds a layout of its own, and the browser forgets them either way.
   useEffect(() => {
-    if (!workspaceId || stage.width === 0 || stage.height === 0) return;
+    if (!canvasId || stage.width === 0 || stage.height === 0) return;
     const forget = () => {
       dropLegacySizes("canvas");
       if (Object.keys(browser.ui.tiles).length) {
@@ -184,7 +184,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         }
       }
     };
-    if (!holds(layoutOf(workspace?.layout), "columns", "floating", "tiles", "share")) {
+    if (!holds(layoutOf(canvas?.layout), "columns", "floating", "tiles", "share")) {
       const patch = legacyLayout(readLegacySizes(), browser.ui.tiles, stage);
       if (Object.keys(patch).length) {
         changeLayout(patch, { now: true, onSaved: forget });
@@ -192,7 +192,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       }
     }
     forget();
-  }, [workspaceId, stage.width > 0 && stage.height > 0]);
+  }, [canvasId, stage.width > 0 && stage.height > 0]);
 
   // What decides a floating tile's size and place; the tiles are held inside the
   // stage again when it changes, or when the stage itself does. Each is held from
@@ -232,25 +232,25 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     };
   }, [floatingLayoutKey, stage.width, stage.height]);
 
-  function acceptWorkspace(state: WorkspaceState) {
-    cacheWorkspace(queryClient, state);
-    if (latestWorkspace.current?.id === state.id) latestWorkspace.current = newerWorkspace(latestWorkspace.current, state);
+  function acceptCanvas(state: CanvasState) {
+    cacheCanvas(queryClient, state);
+    if (latestCanvas.current?.id === state.id) latestCanvas.current = newerCanvas(latestCanvas.current, state);
   }
 
   useEffect(() => {
-    if (!workspaceId) return;
+    if (!canvasId) return;
     const timer = setTimeout(preloadRenderers, 0);
     return () => clearTimeout(timer);
-  }, [workspaceId]);
+  }, [canvasId]);
 
   // The page, once closed, comes back with the user's own navigation: a link, an app
   // route, a changed hash. The server shows it again for an agent's.
-  const pageClosed = workspace !== undefined && !workspace.visuals.some((visual) => visual.type === PAGE);
+  const pageClosed = canvas !== undefined && !canvas.visuals.some((visual) => visual.type === PAGE);
   const reopening = useRef(false);
   useEffect(() => {
     if (!pageClosed) return;
     const reopen = () => {
-      if (reopening.current || latestWorkspace.current?.visuals.some((visual) => visual.type === PAGE)) return;
+      if (reopening.current || latestCanvas.current?.visuals.some((visual) => visual.type === PAGE)) return;
       reopening.current = true;
       void write({ kind: "show", visual_type: PAGE, placement: "main" }).finally(() => { reopening.current = false; });
     };
@@ -263,25 +263,25 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }, [pageClosed]);
 
   const change = useMutation({
-    // A station change resets the observer, preserving queued mutations' scopes.
-    mutationKey: ["workspace", workspaceId, "operation"],
-    scope: { id: `workspace:${workspaceId ?? "default"}` },
-    mutationFn: async ({ id, operation }: { readonly id: string; readonly operation: WorkspaceOperation }) => {
-      const current = queryClient.getQueryData<WorkspaceState>(["workspace", id]);
-      if (!current || current.id !== id) throw new Error("The workspace is not ready.");
-      return applyWorkspaceOperation(id, current.revision, operation, newUuid());
+    // A canvas change resets the observer, preserving queued mutations' scopes.
+    mutationKey: ["canvas", canvasId, "operation"],
+    scope: { id: `canvas:${canvasId ?? "default"}` },
+    mutationFn: async ({ id, operation }: { readonly id: string; readonly operation: CanvasOperation }) => {
+      const current = queryClient.getQueryData<CanvasState>(["canvas", id]);
+      if (!current || current.id !== id) throw new Error("The canvas is not ready.");
+      return applyCanvasOperation(id, current.revision, operation, newUuid());
     },
     onMutate: () => setWriteError(null),
-    onSuccess: acceptWorkspace,
+    onSuccess: acceptCanvas,
     onError: (_error, { id }) => {
-      if (latestWorkspace.current?.id !== id) return;
+      if (latestCanvas.current?.id !== id) return;
       setWriteError("Could not update the workbench. Its revision may have changed; try again.");
-      void station.refetch();
+      void canvasQuery.refetch();
     },
   });
 
-  /** Apply `operation` to station `id`, the one on show unless named. */
-  async function write(operation: WorkspaceOperation, id = latestWorkspace.current?.id): Promise<boolean> {
+  /** Apply `operation` to canvas `id`, the one on show unless named. */
+  async function write(operation: CanvasOperation, id = latestCanvas.current?.id): Promise<boolean> {
     if (!id) return false;
     try {
       await change.mutateAsync({ id, operation });
@@ -295,24 +295,24 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
    * Show `target` on the canvas, a step tab `key` has already taken: its
    * visuals by the canvas's own operations, one after another, then its page.
    * The tab then stands where the canvas got to, there or short of it. Every
-   * step is the station's it began on: one opened while they are on their way
-   * (the top bar puts every station a click away) is not this tab's, so the
+   * step is the canvas's it began on: one opened while they are on their way
+   * (the top bar puts every canvas a click away) is not this tab's, so the
    * rest are dropped and its page left alone, and the restore is finished when
-   * the station is on show again (`interrupt`).
+   * the canvas is on show again (`interrupt`).
    */
   async function restore(key: string, target: Snapshot): Promise<void> {
-    const station = latestWorkspace.current?.id;
-    const here = () => latestWorkspace.current?.id === station;
-    for (const operation of planRestore(latestWorkspace.current?.visuals ?? [], target)) {
-      if (!here() || !(await write(operation, station))) break;
+    const canvas = latestCanvas.current?.id;
+    const here = () => latestCanvas.current?.id === canvas;
+    for (const operation of planRestore(latestCanvas.current?.visuals ?? [], target)) {
+      if (!here() || !(await write(operation, canvas))) break;
     }
     if (!here()) {
       settle(key, target, null);
-      if (station) interrupt(station, key, target);
+      if (canvas) interrupt(canvas, key, target);
       return;
     }
     if (target.page !== null && window.location.hash !== target.page) window.location.hash = target.page;
-    settle(key, target, snapshotOf(latestWorkspace.current?.visuals ?? [], window.location.hash));
+    settle(key, target, snapshotOf(latestCanvas.current?.visuals ?? [], window.location.hash));
   }
 
   function stepBy(by: -1 | 1) {
@@ -329,7 +329,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
 
   // Only the open tab is cleared: the other tabs keep what they show and their history.
   function clearCanvas() {
-    if (!workspaceId || !historyKey) return;
+    if (!canvasId || !historyKey) return;
     const target = { page: null, visuals: [] } as const;
     go(historyKey, target);
     void restore(historyKey, target);
@@ -337,17 +337,17 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
 
   /** The tabs with the open one as it is left now: what it shows, under a sheet the graph, and its sizes. */
   function leaving(): CanvasTab[] {
-    const visuals = latestWorkspace.current?.visuals ?? [];
+    const visuals = latestCanvas.current?.visuals ?? [];
     const now = snapshotOf(visuals, window.location.hash) ?? snapshotOf(visuals, HOME_ROUTE)!;
     return tabs.map((tab) => (tab.id === openTab ? leftTab(tab, now, layout) : tab));
   }
 
-  /** Open tab `id` of `kept`, the tabs the station keeps from now: its sizes at once, then what it shows. */
+  /** Open tab `id` of `kept`, the tabs the canvas keeps from now: its sizes at once, then what it shows. */
   function switchTab(id: string, kept: CanvasTab[]) {
     const tab = kept.find((each) => each.id === id);
-    if (!workspaceId || !tab) return;
+    if (!canvasId || !tab) return;
     changeLayout({ ...sizesOf(tab), tabs: kept, tab: id }, { now: true });
-    const key = tabKey(workspaceId, id);
+    const key = tabKey(canvasId, id);
     const target = tabSnapshot(tab);
     go(key, target);
     void restore(key, target);
@@ -360,24 +360,24 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }
 
   function closeTab(id: string) {
-    if (!workspaceId || tabs.length < 2) return;
+    if (!canvasId || tabs.length < 2) return;
     const kept = tabs.filter((tab) => tab.id !== id);
     if (id === openTab) switchTab(neighbourOf(tabs, id)!.id, kept);
     else changeLayout({ tabs: kept });
-    forget(tabKey(workspaceId, id));
+    forget(tabKey(canvasId, id));
   }
 
-  // A restore this station was left in the middle of: finish it as the station comes back, before
+  // A restore this canvas was left in the middle of: finish it as the canvas comes back, before
   // a tab switch or a step takes the half-restored canvas for the open tab's own. It moves the page,
-  // so the switch that brought the station here is over.
+  // so the switch that brought the canvas here is over.
   useEffect(() => {
-    if (!workspaceId) return;
-    const left = takeInterrupted(workspaceId);
-    if (!left || left.key !== tabKey(workspaceId, openTab)) return;
-    setStation(workspaceId, null);
+    if (!canvasId) return;
+    const left = takeInterrupted(canvasId);
+    if (!left || left.key !== tabKey(canvasId, openTab)) return;
+    setCanvas(canvasId, null);
     go(left.key, left.target);
     void restore(left.key, left.target);
-  }, [workspaceId]);
+  }, [canvasId]);
 
   function openArtifact(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -396,7 +396,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     void write({ kind: "show", visual_type: "trax.artifact", placement: "main", record_id: parsed.id });
   }
 
-  /** Remember how the floating tile of visual type `type` was left, in the station's layout. */
+  /** Remember how the floating tile of visual type `type` was left, in the canvas's layout. */
   function rememberTile(type: string, change: Partial<TileMemory>) {
     const measured = { width: stageRef.current?.clientWidth ?? 0, height: stageRef.current?.clientHeight ?? 0 };
     changeLayout((now) => withTile(now, type, change, measured) ?? {});
@@ -424,7 +424,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }
 
   function focusTile(pane: Pane) {
-    if (workspace?.focused_instance !== pane.id) operate({ kind: "focus", instance_id: pane.id });
+    if (canvas?.focused_instance !== pane.id) operate({ kind: "focus", instance_id: pane.id });
   }
 
   function foldFloatingPane(type: string, collapsed: boolean) {
@@ -552,7 +552,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     return stageRef.current?.querySelector<HTMLElement>(side === "left" ? ".visual-side-column-left" : ".visual-side-column:not(.visual-side-column-left)") ?? null;
   }
 
-  /** Keep a column's width as a fraction of the stage, in the station's layout. */
+  /** Keep a column's width as a fraction of the stage, in the canvas's layout. */
   function keepColumnWidth(side: Side, width: number) {
     const fraction = toFraction(width, stageRef.current?.clientWidth ?? 0);
     if (fraction !== null) changeLayout((now) => ({ columns: { ...now.columns, [side]: fraction } }));
@@ -697,19 +697,19 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     moveFloatingPane(paneId, type, position.left + direction[0] * step, position.top + direction[1] * step);
   }
 
-  function operate(operation: WorkspaceOperation) {
+  function operate(operation: CanvasOperation) {
     void write(operation);
   }
 
   function toggle(type: string) {
-    if (workspace) {
-      const existing = workspace.visuals.find((visual) => visual.type === type);
+    if (canvas) {
+      const existing = canvas.visuals.find((visual) => visual.type === type);
       if (type === "trax.artifact" && !existing) {
         document.querySelector<HTMLInputElement>("#visual-artifact-link")?.focus();
         return;
       }
       const descriptor = catalog.data?.visuals.find((visual) => visual.type === type);
-      const operation: WorkspaceOperation = existing
+      const operation: CanvasOperation = existing
         ? { kind: "hide", instance_id: existing.id }
         : {
           kind: "show", visual_type: type,
@@ -731,7 +731,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     const size = sizes.floating[pane.type] ?? pane.floating_rect;
     const share = sizes.share[pane.type];
     return (
-    <div className={`visual-tile visual-tile-${floating ? "floating" : pane.placement ?? "main"}${pane.type === "trax.browse" ? " visual-tile-browse" : ""}${workspace?.focused_instance === pane.id ? " visual-tile-focused" : ""}${expandedMobileFloat === pane.id ? " visual-tile-mobile-expanded" : ""}${collapsed ? " visual-tile-collapsed" : ""}`}
+    <div className={`visual-tile visual-tile-${floating ? "floating" : pane.placement ?? "main"}${pane.type === "trax.browse" ? " visual-tile-browse" : ""}${canvas?.focused_instance === pane.id ? " visual-tile-focused" : ""}${expandedMobileFloat === pane.id ? " visual-tile-mobile-expanded" : ""}${collapsed ? " visual-tile-collapsed" : ""}`}
       key={pane.type === "trax.browse" ? pane.type : pane.id}
       ref={isPage ? browseRef : undefined}
       data-visual-instance={pane.id}
@@ -749,7 +749,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         onPointerDown={(event) => startWindowResize(event, pane, edge)} onPointerMove={updateWindowResize}
         onPointerUp={stopWindowResize} onPointerCancel={stopWindowResize} />)}
       {/* A press on the bar focuses the tile; a drag floats it, or docks it at the edge it is dropped on. The page stays the page: docked, its bar only focuses. */}
-      {workspace && (panes.length > 1 || floating) && <div
+      {canvas && (panes.length > 1 || floating) && <div
         className={`visual-tile-toolbar${floating || !isPage ? " visual-tile-toolbar-draggable" : ""}`}
         {...(floating || !isPage ? {
           onPointerDown: (event: PointerEvent<HTMLElement>) => startTileDrag(event, pane, floating),
@@ -779,8 +779,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       </div>}
       {/* The body is the tile below its bar; the red boxes pinned to the tile stand in it. */}
       <div className="visual-tile-body" ref={bodyRef(pane.id)}>
-        <VisualPane instance={pane} workspace={workspace ?? null} onWorkspaceChanged={acceptWorkspace}
-          focused={workspace?.focused_instance === pane.id}>
+        <VisualPane instance={pane} canvas={canvas ?? null} onCanvasChanged={acceptCanvas}
+          focused={canvas?.focused_instance === pane.id}>
           {isPage && <div className="visual-browse-content">
             <CrashBoundary reload={() => window.location.reload()} resetKey={window.location.hash}
               frame={(crash) => <div className="view">{crash}</div>}>{children}</CrashBoundary>
@@ -840,14 +840,14 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   };
 
   return (
-    <WorkspaceActionsProvider value={workspace ? {
+    <CanvasActionsProvider value={canvas ? {
       busy: change.isPending,
       writeError,
       operate,
       visualTypes,
     } : null}>
     <div className="visual-canvas">
-      {workspace && <CanvasBar tabs={tabs} open={openTab} back={history.back} forward={history.forward}
+      {canvas && <CanvasBar tabs={tabs} open={openTab} back={history.back} forward={history.forward}
         moving={history.moving} home={home} canAdd={tabs.length < MAX_TABS} boxes={boxes}
         actions={{ back: () => stepBy(-1), forward: () => stepBy(1), home: goHome, clear: clearCanvas,
           open: (id) => { if (id !== openTab) switchTab(id, leaving()); }, add: addTab, close: closeTab,
@@ -857,10 +857,10 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         <div className="workbench-controls" role="group" aria-label="Workbench visuals">
           {catalog.isPending && <p className="muted">Loading available visuals…</p>}
           {catalog.isError && <p role="alert">Could not load visuals. <button className="btn" type="button" onClick={() => void catalog.refetch()}>Retry</button></p>}
-          {station.isError && !legacyPreview && <p role="alert">Could not open your workbench. <button className="btn" type="button" onClick={() => void station.refetch()}>Retry</button></p>}
+          {canvasQuery.isError && !legacyPreview && <p role="alert">Could not open your workbench. <button className="btn" type="button" onClick={() => void canvasQuery.refetch()}>Retry</button></p>}
           {catalog.data?.visuals.map((visual) => (
             <VisualOption key={visual.type} visual={visual} checked={active.includes(visual.type)}
-              disabled={(!workspace && !legacyPreview) || change.isPending
+              disabled={(!canvas && !legacyPreview) || change.isPending
                 || (!active.includes(visual.type) && visual.requires.includes("record") && !currentRecordId)}
               missingRecord={visual.requires.includes("record") && !currentRecordId}
               onToggle={() => toggle(visual.type)} />
@@ -870,7 +870,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
               <input id="visual-artifact-link" aria-label="Artifact link" value={artifactLink}
                 placeholder="Paste an Artifact link"
                 onChange={(event) => { setArtifactLink(event.target.value); setArtifactLinkError(null); }} />
-              <button className="btn" type="submit" disabled={!workspace || !artifactLink.trim() || change.isPending}>
+              <button className="btn" type="submit" disabled={!canvas || !artifactLink.trim() || change.isPending}>
                 Open Artifact
               </button>
               {artifactLinkError && <p role="alert">{artifactLinkError}</p>}
@@ -887,17 +887,17 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           </div>
         )}
         {sideColumn("side")}
-        {workspace && panes.length === 0 && <p className="visual-empty">
+        {canvas && panes.length === 0 && <p className="visual-empty">
           Nothing on this canvas. Go to a page, or open a visual from the Workbench menu in the top bar.
         </p>}
         {panes.map((pane, index) => pane.placement === "floating" && pane.type !== PAGE ? renderTile(pane, index) : null)}
         {browse && renderTile(browse, panes.indexOf(browse))}
         <div ref={snapRef} className="visual-snap" aria-hidden="true" />
         <div ref={ghostRef} className="visual-drag-ghost" aria-hidden="true" />
-        {workspace && <MarkLayer boxes={boxes} bodies={bodies} />}
+        {canvas && <MarkLayer boxes={boxes} bodies={bodies} />}
       </div>
     </div>
-    </WorkspaceActionsProvider>
+    </CanvasActionsProvider>
   );
 }
 
@@ -1003,9 +1003,9 @@ type DividerDrag = {
   now: readonly number[];
 };
 
-/** Where tab `tab` of station `station` keeps its Back and Forward steps. */
-function tabKey(station: string, tab: string): string {
-  return `${station}/${tab}`;
+/** Where tab `tab` of canvas `canvas` keeps its Back and Forward steps. */
+function tabKey(canvas: string, tab: string): string {
+  return `${canvas}/${tab}`;
 }
 
 /** Where on the card that stands for a docked tile the pointer holds it, and so where the floating tile lands under it. */

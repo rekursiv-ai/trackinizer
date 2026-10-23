@@ -50,7 +50,7 @@ test.each(fixed)("in the %s skin, text, text that steps back and error text meet
   }
 });
 
-test.each(fixed)("in the %s skin, a station group's title and a primary button's white text read at 4.5:1", (skin) => {
+test.each(fixed)("in the %s skin, a canvas group's title and a primary button's white text read at 4.5:1", (skin) => {
   const own = tokens(skins, `:root[data-skin="${skin}"]`);
   for (const group of ["--group-1", "--group-2", "--group-3", "--group-4"]) {
     expect(contrast(own.get("--on-group")!, own.get(group)!), group).toBeGreaterThanOrEqual(4.5);

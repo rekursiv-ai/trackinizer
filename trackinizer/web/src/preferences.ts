@@ -35,7 +35,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   lens: null,
   drafts: {},
   create_draft: null,
-  workstreams: { order: [], pinned: [], hidden: [] },
+  workspaces: { order: [], pinned: [], hidden: [] },
   settings_artifact_id: null,
 };
 

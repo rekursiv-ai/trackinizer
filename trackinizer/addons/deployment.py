@@ -19,7 +19,7 @@ from trackinizer.addons.addon import (
     AddonDescription,
     AddonManifest,
 )
-from trackinizer.server.visuals.catalog import Workspace
+from trackinizer.server.visuals.catalog import Canvas
 
 
 if TYPE_CHECKING:
@@ -53,7 +53,7 @@ class Deployment:
     """
 
     class Config(Fig["Deployment"]):
-        visuals: Workspace.Config = field(default_factory=Workspace.Config)
+        visuals: Canvas.Config = field(default_factory=Canvas.Config)
         """The visual modules the browser offers, and the one a new canvas opens."""
 
     def __init__(self, config: Config) -> None:

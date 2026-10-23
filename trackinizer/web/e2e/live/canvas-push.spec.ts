@@ -8,7 +8,7 @@ import { exposeEventSources, pushNavigate, resetCanvas } from "../canvasState";
 // painted in the browser, under 100 ms at p50 and p90 for every visual type, and
 // from a navigation to the page drawn with its data. A
 // script holding no special rights (the e2e server runs --no-auth) applies 20
-// operations per visual type through POST /api/workspaces/{id}/operations; the
+// operations per visual type through POST /api/canvases/{id}/operations; the
 // page records when each pushed frame arrived and when the visuals it changed painted
 // (`trackinizer.timings()`, src/debug/timings.ts). Both clocks are the one
 // machine's, so `paint wall time - frame t` is exact.
@@ -32,7 +32,7 @@ const BAR_MS = 100;
 const OUT = "/opt/scratch/artifacts/trackinizer-web/canvas-chat/timings";
 
 type Mark = { type: string; kind: "paint" | "data" | "page"; wall: number };
-type Frame = { frame: "workspace" | "navigate"; revision: number | null; route: string | null; t: number; receivedWall: number; marks: Mark[] };
+type Frame = { frame: "canvas" | "navigate"; revision: number | null; route: string | null; t: number; receivedWall: number; marks: Mark[] };
 type Placement = "main" | "side" | "floating";
 type Operation =
   | { kind: "show"; visual_type: string; record_id?: string; placement?: Placement }
@@ -83,7 +83,7 @@ async function frameWith(page: Page, pick: { revision: number } | { route: strin
   const find = ({ pick, type, kinds }: { pick: { revision?: number; route?: string }; type: string; kinds: readonly string[] }) => {
     const timings = (window as unknown as { trackinizer: { timings(): Frame[] } }).trackinizer.timings();
     const frame = timings.findLast((entry) => (pick.route !== undefined ? entry.frame === "navigate" && entry.route === pick.route
-      : entry.frame === "workspace" && entry.revision === pick.revision));
+      : entry.frame === "canvas" && entry.revision === pick.revision));
     return frame && kinds.every((kind) => frame.marks.some((mark) => mark.type === type && mark.kind === kind)) ? frame : null;
   };
   const handle = await page.waitForFunction(find, { pick, type, kinds }, { timeout: 15_000 });
@@ -91,36 +91,36 @@ async function frameWith(page: Page, pick: { revision: number } | { route: strin
 }
 
 test("with the canvas on the tab holds one stream, the canvas's, through Settings and back", async ({ page, request }) => {
-  // Open on a station of its own: the last one an earlier spec left may hold a chat the page then asks for.
+  // Open on a canvas of its own: the last one an earlier spec left may hold a chat the page then asks for.
   await resetCanvas(request);
   await page.addInitScript(exposeEventSources);
-  await ok(await request.put("/api/me/visual-workspace", { data: { enabled: true } }));
+  await ok(await request.put("/api/me/visual-canvas", { data: { enabled: true } }));
   const open = () => page.evaluate(() => (window as unknown as { heldEventSources: EventSource[] }).heldEventSources
     .filter((source) => source.readyState !== 2).map((source) => new URL(source.url).pathname.replace(/[0-9a-f-]{36}/, "<id>")));
   await page.goto("/app/#/list/Issue");
   await expect(page.locator(".visual-canvas")).toBeVisible();
   await page.waitForFunction(() => (window as unknown as { trackinizer: { timings(): unknown[] } }).trackinizer.timings().length > 0);
-  expect(await open()).toEqual(["/api/workspaces/<id>/events"]);
+  expect(await open()).toEqual(["/api/canvases/<id>/events"]);
   await page.goto("/app/#/settings");
   await expect(page.getByRole("heading", { name: /settings/i }).first()).toBeVisible();
-  expect(await open()).toEqual(["/api/workspaces/<id>/events"]);
+  expect(await open()).toEqual(["/api/canvases/<id>/events"]);
   await page.goto("/app/#/list/Issue");
   await expect(page.locator(".visual-canvas")).toBeVisible();
-  expect(await open()).toEqual(["/api/workspaces/<id>/events"]);
+  expect(await open()).toEqual(["/api/canvases/<id>/events"]);
 });
 
 test("a visual of every type paints within 100 ms of the server accepting its operation (p50 and p90)", async ({ page, request }) => {
   test.setTimeout(180_000);
   await page.addInitScript(exposeEventSources);
   const { issues, artifacts } = await seed(request);
-  await ok(await request.put("/api/me/visual-workspace", { data: { enabled: true } }));
-  let workspace = await ok<{ id: string; revision: number; visuals: { id: string; type: string }[] }>(await request.post("/api/workspaces"));
+  await ok(await request.put("/api/me/visual-canvas", { data: { enabled: true } }));
+  let canvas = await ok<{ id: string; revision: number; visuals: { id: string; type: string }[] }>(await request.post("/api/canvases"));
   // Start from the page alone, whatever an earlier spec left on the canvas: an
   // operation that changes nothing pushes no frame to time.
-  for (const visual of workspace.visuals.filter((held) => held.type !== "trax.browse")) {
-    workspace = await ok(await request.post(`/api/workspaces/${workspace.id}/operations`, {
+  for (const visual of canvas.visuals.filter((held) => held.type !== "trax.browse")) {
+    canvas = await ok(await request.post(`/api/canvases/${canvas.id}/operations`, {
       headers: { "Idempotency-Key": crypto.randomUUID() },
-      data: { revision: workspace.revision, operation: { kind: "hide", instance_id: visual.id } },
+      data: { revision: canvas.revision, operation: { kind: "hide", instance_id: visual.id } },
     }));
   }
   // The page must not see a stale browse pane from a previous run's canvas.
@@ -128,11 +128,11 @@ test("a visual of every type paints within 100 ms of the server accepting its op
   await expect(page.locator(".visual-canvas")).toBeVisible();
   // The stream's first frame is the canvas as it stands: the page is listening.
   await page.waitForFunction(() => (window as unknown as { trackinizer: { timings(): unknown[] } }).trackinizer.timings().length > 0);
-  let revision = (await ok<{ revision: number }>(await request.get(`/api/workspaces/${workspace.id}`))).revision;
+  let revision = (await ok<{ revision: number }>(await request.get(`/api/canvases/${canvas.id}`))).revision;
 
   /** Apply one operation to the server; the canvas's revision after it. */
   const apply = async (operation: Operation): Promise<number> => {
-    const state = await ok<{ revision: number }>(await request.post(`/api/workspaces/${workspace.id}/operations`, {
+    const state = await ok<{ revision: number }>(await request.post(`/api/canvases/${canvas.id}/operations`, {
       headers: { "Idempotency-Key": crypto.randomUUID() },
       data: { revision, operation },
     }));

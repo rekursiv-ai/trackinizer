@@ -20,7 +20,7 @@ import { TopBar } from "../topbar/TopBar";
 
 /**
  * The agent canvas around the views, for users who have not opted out
- * (`visual_workspace_enabled`, on by default): a chunk of its own, so that a
+ * (`visual_canvas_enabled`, on by default): a chunk of its own, so that a
  * first load without it does not carry it, loaded only for a user who has it on,
  * with Chat's column and the registry of the renderers it shows.
  */
@@ -52,7 +52,7 @@ type SheetRoute = Extract<Route, { name: "settings" | "admin" }>;
 export function Shell() {
   const { route, navigate } = useRouter();
   const { kinds } = useMeta();
-  const { role, visual_workspace_enabled: visualWorkspaceEnabled } = useProfile();
+  const { role, visual_canvas_enabled: visualCanvasEnabled } = useProfile();
   const writable = useWriteMode() === "enabled";
   const creatable = creatableKinds(kinds);
   // The page under a `#/new/<Kind>` route or a sheet: the one before it, or home,
@@ -63,7 +63,7 @@ export function Shell() {
   if (view && view !== background) setBackground(view);
   // No route opens the palette: a search link opens the search page.
   const palette = usePaletteState(null, () => {});
-  const canvasLoaded = useLoaded(Canvas, visualWorkspaceEnabled);
+  const canvasLoaded = useLoaded(Canvas, visualCanvasEnabled);
 
   useCommands([
     {
@@ -106,7 +106,7 @@ export function Shell() {
       : []),
   ]);
 
-  const withCanvas = visualWorkspaceEnabled && canvasLoaded;
+  const withCanvas = visualCanvasEnabled && canvasLoaded;
   // With the canvas, the sheet opens over the canvas's page (ChatColumn); without it, over the main area.
   const sheetView = sheet ? (
     <aside className="sheet" aria-label={sheet.name === "settings" ? "Your settings" : "Admin"}>
@@ -119,7 +119,7 @@ export function Shell() {
   return (
     <PaletteContext value={palette}>
         <div className={withCanvas ? "app with-canvas" : "app"}>
-          <TopBar stations={withCanvas} />
+          <TopBar canvases={withCanvas} />
           <main className="main">
             <BarStack>
               <OfflineBar />
@@ -127,7 +127,7 @@ export function Shell() {
               {/* A view whose chunk is still loading (src/router/views.ts) holds an empty, busy frame. */}
               <Suspense fallback={<div className="view" aria-busy="true" />}>
                 {/* The canvas holds the shell's busy frame until its chunk is in, then mounts the page once, inside it. */}
-                {visualWorkspaceEnabled ? (
+                {visualCanvasEnabled ? (
                   canvasLoaded ? (
                     <ChatColumn sheet={sheetView}><Canvas><RouteView route={view ?? background} /></Canvas></ChatColumn>
                   ) : (
@@ -137,7 +137,7 @@ export function Shell() {
                   <RouteView route={view ?? background} />
                 )}
               </Suspense>
-              {visualWorkspaceEnabled ? null : sheetView}
+              {visualCanvasEnabled ? null : sheetView}
             </BarStack>
           </main>
         </div>

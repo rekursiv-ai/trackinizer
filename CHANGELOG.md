@@ -3,6 +3,17 @@
 All notable trackinizer changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.1.10 - Unreleased
+
+### Changed
+
+- **Breaking:** Canvas names a chat and its visual surface; Workspace names
+  the macro effort. The CLI uses `trax canvas`; canvas APIs use `/api/canvases`
+  and macro APIs use `/api/workspaces`. Placement uses `TRAX_CANVAS` and
+  `TRAX_WORKSPACE`, including their `LC_` forms. AgentSession is unchanged.
+- Migration 058 preserves existing IDs, canvas data, preferences and operation
+  receipts. Upgrade clients, server and web assets in one maintenance window.
+
 ## 0.1.9 - 2026-10-23
 
 ### Added
@@ -94,8 +105,8 @@ All notable trackinizer changes are documented here. This project follows
   uses the short hostname, enrolls it as a personal machine only its owner and
   admins see, and serves terminals. Machines gain an `owner`; the owner (or an
   admin) can revoke it.
-- A shell opened from a terminal carries the trax context (`TRAX_WORKSTREAM`,
-  `TRAX_WORKSPACE`, `TRACKINIZER_PROFILE`, and `LC_TRAX_*` copies that survive
+- A shell opened from a terminal carries the trax context (`TRAX_WORKSPACE`,
+  `TRAX_CANVAS`, `TRACKINIZER_PROFILE`, and `LC_TRAX_*` copies that survive
   `ssh`). `trax` reads `TRAX_X`, else `LC_TRAX_X`, and uses the saved profile
   whose URL is `LC_TRAX_SERVER` when none is selected; with none saved it prints
   how to log in.
@@ -290,10 +301,10 @@ All notable trackinizer changes are documented here. This project follows
   default) puts visuals beside lists and details: chat, a record's context
   graph, an evidence timeline and Artifact content. Paired with one of your
   live `trax run` sessions, it lets you chat about a record, and the agent
-  shows, hides, focuses or places visuals with `trax workspace`. A canvas
+  shows, hides, focuses or places visuals with `trax canvas`. A canvas
   saves and reopens as a named workflow. Routes: `GET /api/visuals`,
-  `/api/workspaces/...`, `/api/workspace-presets/...` and `PUT
-  /api/me/visual-workspace`.
+  `/api/canvases/...`, `/api/canvas-presets/...` and `PUT
+  /api/me/visual-canvas`.
 - Shared Artifact content: `POST /api/artifacts/content` publishes structured
   findings, with graph citations frozen at publication, or HTML, as an
   Artifact an Issue produced; `previous_artifact_id` publishes a revision that

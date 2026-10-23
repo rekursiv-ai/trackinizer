@@ -4,7 +4,7 @@ import { type CanvasTab, leftTab, neighbourOf, newTabName, openTabOf, sizesOf, t
 
 const tabs: CanvasTab[] = [{ id: "a", name: "Tab 1" }, { id: "b", name: "Review" }, { id: "c", name: "Tab 3" }];
 
-test("a station keeping no tabs has one, open", () => {
+test("a canvas keeping no tabs has one, open", () => {
   expect(tabsOf({})).toEqual([{ id: "1", name: "Tab 1" }]);
   expect(openTabOf({})).toBe("1");
   expect(openTabOf({ tab: "gone" })).toBe("1");

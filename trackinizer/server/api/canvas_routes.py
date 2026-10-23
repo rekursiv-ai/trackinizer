@@ -1,0 +1,984 @@
+"""Shared canvas operations for browser and authorized agent clients."""
+
+from __future__ import annotations
+
+from functools import partial
+from typing import Annotated
+
+import uuid
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
+from treekle import from_plain
+
+from trackinizer.server.api._deps import (
+    get_assistant,
+    get_hub,
+    get_inbound,
+    get_store,
+    get_terminal_hub,
+)
+from trackinizer.server.api._routes_shared import engine_of, require_browser
+from trackinizer.server.api.session_access import resolve_asker, session_reader
+from trackinizer.server.api.visuals_routes import visual_catalog
+from trackinizer.server.audience import SessionReader, TranscriptPings
+from trackinizer.server.auth import AuthIdentity, require_role
+from trackinizer.server.chat_hub import (
+    CanvasFrame,
+    ChatFrame,
+    HighlightFrame,
+    NavigateFrame,
+    PreferencesFrame,
+    iter_canvas_events,
+)
+from trackinizer.server.notify import iter_changed_ids
+from trackinizer.server.visuals.canvas_store import (
+    CanvasKeyRefusedError,
+    CanvasNameTakenError,
+    ProviderUnavailableError,
+    ReplayConflictError,
+    RevisionConflictError,
+    apply_canvas_operation,
+    canvas_for_chat,
+    clear_chat_canvas,
+    list_canvases,
+    name_unnamed_canvas,
+    new_canvas,
+    open_chat_session,
+    open_latest_canvas,
+    open_personal_settings,
+    read_canvas,
+    rename_canvas,
+    set_canvas_flags,
+    set_canvas_layout,
+    set_canvas_page,
+    set_canvas_workspace,
+    set_session_campaign,
+    settings_refs_for_chat,
+    suggest_workspace_for_chat,
+)
+from trackinizer.server.visuals.canvases import (
+    ApplyCanvasOperation,
+    CanvasConflict,
+    CanvasLayout,
+    CanvasSettingsRefs,
+    CanvasState,
+    CanvasSummary,
+    ChatWindow,
+    ChooseProvider,
+    Highlight,
+    NameChat,
+    Navigate,
+    NewCanvas,
+    SessionCampaign,
+    SetPage,
+    SetPreferences,
+    SettingsArtifact,
+    UpdateCanvas,
+    WorkspaceSuggestion,
+)
+from trackinizer.server.visuals.partners import live_chat_session
+from trackinizer.server.visuals.science_chats import read_head
+from trackinizer.server.visuals.session_placement import move_canvas_sessions
+from trackinizer.server.visuals.workspaces import (
+    SetCanvasWorkspace,
+    check_workspace,
+    open_scratch,
+)
+from trackinizer.wire.wire_science_chat import chat_session_id
+
+
+router = APIRouter()
+
+
+@router.get("/api/canvases/{canvas_id}/events")
+async def canvas_events_route(
+    canvas_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> StreamingResponse:
+    """Stream a canvas's changes to its owner's browser as server-sent events.
+
+    Each frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:
+    ``canvas`` carries the whole canvas on open, after every change by a
+    browser or an agent, and when its partner changes; ``navigate`` an agent's
+    move of the page; ``highlight`` the inquiries it points at; ``chat`` whether it
+    hid (``hidden``) the tab's Chat window; and ``changed`` an
+    inquiry id, as ``/api/web/subscribe`` relays it, so a tab needs this one stream.
+    A Chat conversation is an AgentSession, so a line added to it reaches every
+    viewer who reads the session as the session's ``changed`` id; no frame is Chat's
+    own. The stream opens with a comment and sends another after 25 s without
+    a frame. A subscriber more than 256 frames behind is dropped; it reconnects from
+    the ``canvas`` frame.
+
+    Args:
+      canvas_id: Canvas to follow.
+      request: Request carrying the database engine and the event hub.
+      identity: Authenticated browser account, which must own the canvas.
+
+    Returns:
+      stream: Server-sent frames.
+
+    """
+    require_browser(identity)
+    read_state = partial(
+        _current_state,
+        request,
+        user_id=identity.user_id,
+        canvas_id=canvas_id,
+        reader=session_reader(request, identity),
+    )
+    await read_state()
+    return StreamingResponse(
+        iter_canvas_events(
+            get_hub(request),
+            canvas_id=canvas_id,
+            read_state=read_state,
+            is_active=partial(_owner_is_active, request, user_id=identity.user_id),
+            changes=iter_changed_ids(
+                engine_of(request),
+                hears=TranscriptPings(
+                    engine=engine_of(request),
+                    reader=session_reader(request, identity),
+                ).hears,
+            ),
+        ),
+        media_type="text/event-stream",
+    )
+
+
+@router.post("/api/canvases", response_model=CanvasState)
+async def create_canvas_route(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> CanvasState:
+    """Open the canvas the principal changed last, making the first if none.
+
+    Args:
+      request: Request carrying the database engine.
+      identity: Authenticated browser account.
+
+    Returns:
+      state: The principal's canvas changed last.
+
+    """
+    require_browser(identity)
+    workspace_id = await open_scratch(
+        engine_of(request),
+        store=get_store(request),
+        user_id=identity.user_id,
+        email=identity.email,
+    )
+    return await open_latest_canvas(
+        engine_of(request),
+        user_id=identity.user_id,
+        catalog=visual_catalog(request).catalog(),
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+        workspace_id=workspace_id,
+    )
+
+
+@router.get("/api/canvases", response_model=list[CanvasSummary])
+async def list_canvases_route(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> list[CanvasSummary]:
+    """List the principal's canvases, the one changed last first.
+
+    Args:
+      request: Request carrying the database engine.
+      identity: Authenticated browser account.
+
+    Returns:
+      canvases: Their ids, names, chats, pages and times, and in ``state`` what each
+        chat needs of them: ``requires_action`` while an ask is open, ``taken_over``
+        after its CLI was opened in a terminal.
+
+    """
+    require_browser(identity)
+    return await list_canvases(
+        engine_of(request),
+        user_id=identity.user_id,
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+    )
+
+
+@router.post("/api/canvases/new", response_model=CanvasState)
+async def new_canvas_route(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    body: NewCanvas | None = None,
+) -> CanvasState:
+    """Make a canvas named with the lowest free ``unnamed-canvas#N``.
+
+    It starts on the ``provider`` the body names, else on the caller's
+    ``chat_provider`` preference. A provider with no machine to run on is taken all
+    the same: nothing runs until a machine is picked. A ``claude`` or ``codex``
+    canvas is given its chat and the chat's session at once, which its partner
+    names, so a run can be started attached to it before any line.
+
+    Args:
+      request: Request carrying the database engine.
+      identity: Authenticated browser account.
+      body: Optional workspace and provider; an unset workspace selects Scratch.
+
+    Returns:
+      state: The new canvas.
+
+    """
+    require_browser(identity)
+    engine = engine_of(request)
+    scratch_id = await open_scratch(
+        engine,
+        store=get_store(request),
+        user_id=identity.user_id,
+        email=identity.email,
+    )
+    workspace_id = body.workspace_id if body is not None else None
+    if workspace_id is None:
+        workspace_id = scratch_id
+    elif not await check_workspace(
+        engine,
+        email=identity.email,
+        workspace_id=workspace_id,
+    ):
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    state = await new_canvas(
+        engine,
+        user_id=identity.user_id,
+        catalog=visual_catalog(request).catalog(),
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+        workspace_id=workspace_id,
+        provider=None if body is None else body.provider,
+    )
+    return await _with_chat_session(request, identity, state=state)
+
+
+@router.post("/api/canvases/{canvas_id}/clear-chat", response_model=CanvasState)
+async def clear_chat_route(
+    canvas_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    key: Annotated[uuid.UUID, Header(alias="Idempotency-Key")],
+) -> CanvasState:
+    """Copy a canvas's canvas into a fresh, chatless canvas.
+
+    Args:
+      canvas_id: Canvas to clear.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account, which must own the canvas.
+      key: Retry-safe idempotency key.
+
+    Returns:
+      state: The new canvas, or the same canvas for a retry.
+
+    """
+    require_browser(identity)
+    state = await clear_chat_canvas(
+        engine_of(request),
+        user_id=identity.user_id,
+        canvas_id=canvas_id,
+        key=key,
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+    )
+    if state is None:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    return state
+
+
+@router.post(
+    "/api/canvases/for-chat/{conversation_id}",
+    response_model=CanvasState,
+)
+async def canvas_for_chat_route(
+    conversation_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> CanvasState:
+    """Find the principal's canvas that holds a chat, or make one bound to it.
+
+    A chat that was deleted is 410 ``chat_deleted``, and no canvas is bound to it.
+
+    Args:
+      conversation_id: The science chat to continue.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account.
+
+    Returns:
+      state: The canvas that holds the chat.
+
+    """
+    require_browser(identity)
+    workspace_id = await open_scratch(
+        engine_of(request),
+        store=get_store(request),
+        user_id=identity.user_id,
+        email=identity.email,
+    )
+    return await canvas_for_chat(
+        engine_of(request),
+        user_id=identity.user_id,
+        conversation_id=conversation_id,
+        catalog=visual_catalog(request).catalog(),
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+        workspace_id=workspace_id,
+    )
+
+
+@router.post(
+    "/api/canvases/for-chat/{conversation_id}/name",
+    response_model=CanvasState,
+)
+async def name_for_chat_route(
+    conversation_id: uuid.UUID,
+    body: NameChat,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    asker: str | None = None,
+) -> CanvasState:
+    """Name an unnamed canvas, or return its existing name unchanged.
+
+    Only the configured assistant may name for an ``asker``. A user's name wins
+    over a late suggestion; the server returns that canvas unchanged.
+
+    Args:
+      conversation_id: The science chat the canvas holds.
+      body: Suggested name, trimmed and bounded to 120 characters.
+      request: Request carrying the database engine and event hub.
+      identity: The assistant's agent key.
+      asker: The account the assistant names for.
+
+    Returns:
+      state: The named canvas, or its unchanged state when already named.
+
+    """
+    found = await resolve_asker(request, identity=identity, email=asker)
+    if found is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assistant may name a canvas for an asker.",
+        )
+    state = await name_unnamed_canvas(
+        engine_of(request),
+        email=found.email,
+        conversation_id=conversation_id,
+        name=body.name,
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+    )
+    if state is None:
+        raise HTTPException(status_code=404, detail="Canvas for chat not found")
+    get_hub(request).publish(state.id, frame=CanvasFrame(state=state))
+    return state
+
+
+@router.post(
+    "/api/canvases/for-chat/{conversation_id}/suggestion",
+    response_model=CanvasState,
+)
+async def suggest_workspace_for_chat_route(
+    conversation_id: uuid.UUID,
+    body: WorkspaceSuggestion,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    asker: str | None = None,
+) -> CanvasState:
+    """Store the assistant's workspace suggestion on the asker's chat canvas.
+
+    Args:
+      conversation_id: The science chat the canvas holds.
+      body: Suggested title and optional owned workspace id.
+      request: Request carrying the database engine and event hub.
+      identity: The assistant's agent key.
+      asker: The account the assistant suggests for.
+
+    Returns:
+      state: The updated canvas.
+
+    """
+    found = await resolve_asker(request, identity=identity, email=asker)
+    if found is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assistant may suggest a workspace for an asker.",
+        )
+    state = await suggest_workspace_for_chat(
+        engine_of(request),
+        user_id=await _user_id_for_email(request, email=found.email),
+        email=found.email,
+        conversation_id=conversation_id,
+        suggestion=body,
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+    )
+    if state is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Canvas or workspace for chat not found",
+        )
+    get_hub(request).publish(state.id, frame=CanvasFrame(state=state))
+    return state
+
+
+@router.put(
+    "/api/canvases/{canvas_id}/workspace",
+    response_model=CanvasState,
+)
+async def set_canvas_workspace_route(
+    canvas_id: uuid.UUID,
+    body: SetCanvasWorkspace,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> CanvasState:
+    """Move an owned canvas to one of the caller's workspaces.
+
+    Args:
+      canvas_id: Canvas to move.
+      body: Destination workspace Issue id.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account.
+
+    Returns:
+      state: The canvas after it moves.
+
+    """
+    require_browser(identity)
+    state = await set_canvas_workspace(
+        engine_of(request),
+        user_id=identity.user_id,
+        email=identity.email,
+        canvas_id=canvas_id,
+        workspace_id=body.workspace_id,
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+    )
+    if state is None:
+        raise HTTPException(status_code=404, detail="Canvas or workspace not found")
+    await move_canvas_sessions(
+        engine_of(request),
+        store=get_store(request),
+        canvas_id=canvas_id,
+        email=identity.email,
+        api_key_id=identity.api_key_id,
+        workspace_id=body.workspace_id,
+    )
+    return state
+
+
+@router.get(
+    "/api/canvases/for-chat/{conversation_id}/settings",
+    response_model=CanvasSettingsRefs,
+)
+async def settings_refs_for_chat_route(
+    conversation_id: uuid.UUID,
+    *,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    asker: str | None = None,
+) -> CanvasSettingsRefs:
+    """Resolve the asker's settings rows and head session for a chat.
+
+    Only the configured assistant may read for an ``asker``, and it reads the asker's
+    own canvas, so one writer's setup never governs another's launch from a shared
+    chat. A launch takes this setup where the asker's line leaves a field unset.
+
+    Args:
+      conversation_id: The science chat the canvas holds.
+      request: Request carrying the database engine and the configuration.
+      identity: The assistant's agent key.
+      asker: The account the assistant reads for.
+
+    Returns:
+      setup: The canvas's setup, or a null ``campaign`` when there is none.
+
+    """
+    found = await resolve_asker(request, identity=identity, email=asker)
+    if found is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assistant may read a campaign setup for an asker.",
+        )
+    head = await read_head(
+        engine_of(request),
+        assistant=get_assistant(request),
+        caller=identity,
+        conversation_id=conversation_id,
+        reader=session_reader(request, identity),
+    )
+    return await settings_refs_for_chat(
+        get_store(request),
+        user_id=await _user_id_for_email(request, email=found.email),
+        email=found.email,
+        conversation_id=conversation_id,
+        session_id=None if head is None else head.session_id,
+    )
+
+
+@router.patch(
+    "/api/canvases/{canvas_id}",
+    response_model=CanvasState,
+    responses={409: {"description": "The principal has a canvas of that name."}},
+)
+async def rename_canvas_route(
+    canvas_id: uuid.UUID,
+    body: UpdateCanvas,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> CanvasState:
+    """Rename or change flags on one of the principal's canvases.
+
+    Args:
+      canvas_id: The canvas.
+      body: A new name and/or the hidden and pinned flags.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account, which must own the canvas.
+
+    Returns:
+      state: The updated canvas.
+
+    """
+    require_browser(identity)
+    inbound = get_inbound(request)
+    assistant = get_assistant(request)
+    try:
+        state = None
+        if body.name is not None:
+            state = await rename_canvas(
+                engine_of(request),
+                user_id=identity.user_id,
+                canvas_id=canvas_id,
+                name=body.name,
+                inbound=inbound,
+                assistant=assistant,
+            )
+            if state is None:
+                raise HTTPException(status_code=404, detail="Canvas not found")
+        if body.hidden is not None or body.pinned is not None:
+            state = await set_canvas_flags(
+                engine_of(request),
+                user_id=identity.user_id,
+                canvas_id=canvas_id,
+                hidden=body.hidden,
+                pinned=body.pinned,
+                inbound=inbound,
+                assistant=assistant,
+            )
+            if state is None:
+                raise HTTPException(status_code=404, detail="Canvas not found")
+        if state is None:
+            raise HTTPException(status_code=404, detail="Canvas not found")
+    except CanvasNameTakenError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return state
+
+
+@router.put("/api/canvases/{canvas_id}/page", status_code=204)
+async def set_canvas_page_route(
+    canvas_id: uuid.UUID,
+    body: SetPage,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> Response:
+    """Remember the page a canvas is on, so switching back can restore it.
+
+    No revision changes and nothing is published.
+
+    Args:
+      canvas_id: The canvas.
+      body: The `#/...` page.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account, which must own the canvas.
+
+    Returns:
+      response: Empty.
+
+    """
+    require_browser(identity)
+    if not await set_canvas_page(
+        engine_of(request),
+        user_id=identity.user_id,
+        canvas_id=canvas_id,
+        route=body.route,
+    ):
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    return Response(status_code=204)
+
+
+@router.put("/api/canvases/{canvas_id}/layout", status_code=204)
+async def set_canvas_layout_route(
+    canvas_id: uuid.UUID,
+    body: CanvasLayout,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> Response:
+    """Remember how a canvas's columns and windows were left.
+
+    Each key in the body replaces the stored key; the rest stay. No revision
+    changes and nothing is published.
+
+    Args:
+      canvas_id: The canvas.
+      body: The layout keys to store, as fractions of the stage.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account, which must own the canvas.
+
+    Returns:
+      response: Empty.
+
+    """
+    require_browser(identity)
+    if not await set_canvas_layout(
+        engine_of(request),
+        user_id=identity.user_id,
+        canvas_id=canvas_id,
+        layout=body,
+    ):
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    return Response(status_code=204)
+
+
+@router.put(
+    "/api/canvases/{canvas_id}/session-settings",
+    response_model=SessionCampaign,
+)
+async def set_session_settings_route(
+    canvas_id: uuid.UUID,
+    *,
+    body: SessionCampaign,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> SessionCampaign:
+    """Store campaign settings on the current head session of an owned canvas.
+
+    Only the canvas owner may write. Other session app keys survive this update.
+
+    Args:
+      canvas_id: The canvas.
+      body: The campaign setup to store, or ``None`` to clear it.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account, which must own the canvas.
+
+    Returns:
+      settings: The stored session campaign.
+
+    """
+    require_browser(identity)
+    async with engine_of(request).acquire() as conn:
+        conversation_id = await conn.fetchval(
+            "SELECT metadata->>'conversation_id' FROM visual_canvases "
+            "WHERE id = $1 AND user_id = $2",
+            canvas_id,
+            identity.user_id,
+        )
+    if conversation_id is None:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    chat_id = uuid.UUID(from_plain(conversation_id, str))
+    head = await read_head(
+        engine_of(request),
+        assistant=get_assistant(request),
+        caller=identity,
+        conversation_id=chat_id,
+        reader=session_reader(request, identity),
+    )
+    if head is None:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    if not await set_session_campaign(
+        get_store(request),
+        session_id=head.session_id,
+        email=identity.email,
+        campaign=(
+            None
+            if body.campaign is None
+            else body.campaign.model_dump(mode="json", exclude_none=True)
+        ),
+    ):
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    return body
+
+
+@router.post("/api/me/settings-artifact", response_model=SettingsArtifact)
+async def open_personal_settings_route(
+    request: Request,
+    *,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> SettingsArtifact:
+    """Get or create the principal's pinned personal settings Artifact."""
+    require_browser(identity)
+    artifact_id = await open_personal_settings(get_store(request), email=identity.email)
+    if artifact_id is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return SettingsArtifact(artifact_id=artifact_id)
+
+
+@router.get("/api/canvases/{canvas_id}", response_model=CanvasState)
+async def read_canvas_route(
+    canvas_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> CanvasState:
+    """Read the principal's own canvas, or an assistant's partner canvas.
+
+    Args:
+      canvas_id: Requested canvas.
+      request: FastAPI request with a database engine.
+      identity: Authenticated canvas owner, or the assistant's agent key.
+
+    Returns:
+      state: The canvas and its current revision.
+
+    """
+    try:
+        state = await read_canvas(
+            engine_of(request),
+            user_id=identity.user_id,
+            canvas_id=canvas_id,
+            inbound=get_inbound(request),
+            assistant=get_assistant(request),
+            agent_api_key_id=identity.api_key_id,
+            reader=session_reader(request, identity),
+        )
+    except CanvasKeyRefusedError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    if state is None:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    return state
+
+
+@router.post(
+    "/api/canvases/{canvas_id}/operations",
+    response_model=CanvasState,
+    responses={409: {"model": CanvasConflict}},
+)
+async def canvas_operation_route(
+    canvas_id: uuid.UUID,
+    body: ApplyCanvasOperation,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    key: Annotated[uuid.UUID, Header(alias="Idempotency-Key")],
+) -> CanvasState | JSONResponse:
+    """Apply one revisioned operation and return the updated canvas.
+
+    A ``navigate``, ``highlight``, ``chat`` or ``preferences`` operation, which only an
+    agent key may send, changes neither a visual nor the revision: it pushes a
+    ``navigate``, ``highlight`` or ``chat`` frame to this canvas, or, for
+    ``preferences``, which changes the owner's preferences, a ``preferences`` frame
+    to every canvas of the owner. A ``mark``, ``remove_mark`` or
+    ``clear_marks`` operation (red boxes) commutes with every other write, so it
+    takes the next revision whatever revision it expects; ``remove_mark`` takes any
+    one box, ``clear_marks`` every box or one page's, and one already gone is no
+    change. A replay of an applied key returns the original state and publishes
+    nothing.
+
+    A ``provider`` operation, which only the owner's browser sends, chooses who
+    answers the canvas's Chat: ``assistant``, ``claude`` or ``codex``. A provider
+    the owner cannot run now (no confirmed online machine of theirs lists the CLI) is
+    409 ``provider_unavailable`` with the reason. Choosing ``claude`` or ``codex``
+    gives the canvas a chat, and the chat a session, when it has none, so the
+    partner names a session for a run to attach to.
+
+    Args:
+      canvas_id: Canvas to change.
+      body: Expected revision and visual operation.
+      request: Request carrying the database engine.
+      identity: Authenticated canvas owner.
+      key: Retry-safe idempotency key.
+
+    Returns:
+      state: Updated canvas, or a conflict with the current revision.
+
+    """
+    try:
+        applied = await apply_canvas_operation(
+            get_store(request),
+            user_id=identity.user_id,
+            canvas_id=canvas_id,
+            key=key,
+            body=body,
+            catalog=visual_catalog(request).catalog(),
+            inbound=get_inbound(request),
+            assistant=get_assistant(request),
+            agent_api_key_id=identity.api_key_id,
+            placed_by=None if identity.api_key_id is None else identity.email,
+            author=identity.email,
+            reader=session_reader(request, identity),
+        )
+    except RevisionConflictError as error:
+        return JSONResponse(
+            status_code=409,
+            content=CanvasConflict(
+                detail="stale canvas revision",
+                current=error.current,
+            ).model_dump(mode="json"),
+        )
+    except ReplayConflictError as error:
+        return JSONResponse(
+            status_code=409,
+            content=CanvasConflict(
+                detail=str(error),
+                current=error.current,
+            ).model_dump(mode="json"),
+        )
+    except ProviderUnavailableError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "provider_unavailable", "message": str(error)},
+        ) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except CanvasKeyRefusedError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    if applied is None:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    state = applied.state
+    if isinstance(body.operation, ChooseProvider):
+        # Also on a replay: a retry finishes a choice whose session was not opened.
+        state = await _with_chat_session(request, identity, state=state)
+    if not applied.replayed:
+        hub = get_hub(request)
+        if isinstance(body.operation, Navigate):
+            if applied.restored_page:
+                hub.publish(canvas_id, frame=CanvasFrame(state=applied.state))
+            hub.publish(canvas_id, frame=NavigateFrame(route=body.operation.route))
+        elif isinstance(body.operation, Highlight):
+            hub.publish(canvas_id, frame=HighlightFrame(ids=body.operation.ids))
+        elif isinstance(body.operation, ChatWindow):
+            hub.publish(canvas_id, frame=ChatFrame(hidden=body.operation.hidden))
+        elif isinstance(body.operation, SetPreferences):
+            # The stream is the owner's browser alone, so their tabs get every key.
+            if applied.preferences is not None:
+                for canvas in applied.canvases:
+                    hub.publish(
+                        canvas,
+                        frame=PreferencesFrame(preferences=applied.preferences),
+                    )
+        else:
+            hub.publish(canvas_id, frame=CanvasFrame(state=state))
+    return state
+
+
+# Its own transaction after the canvas's: the canvas's provider is stored first, so a
+# session that could not be opened is opened by the next choice, or its retry. The
+# assistant's lease on the chat outlives the drains refused it from now on, and would
+# read as the run's: revoked once the provider is stored, it does not come back, and a
+# drain it held from before returns without the run's lines.
+async def _with_chat_session(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    state: CanvasState,
+) -> CanvasState:
+    """Give a CLI canvas's chat its session, and return the canvas as it is then."""
+    await _end_other_runs(request, identity, state=state)
+    if state.provider == "assistant":
+        return state
+    assistant = get_assistant(request)
+    released = False
+    if assistant is not None and state.conversation_id is not None:
+        inbound = get_inbound(request)
+        async with engine_of(request).acquire() as conn:
+            while held := await live_chat_session(
+                conn,
+                inbound=inbound,
+                opener=assistant.email,
+                conversation_id=state.conversation_id,
+            ):
+                inbound.forget_poller(held)
+                released = True
+    if state.partner is None or state.partner.session_id is None:
+        _ = await open_chat_session(
+            get_store(request),
+            user_id=identity.user_id,
+            canvas_id=state.id,
+            assistant=assistant,
+        )
+    elif not released:
+        return state
+    return await _current_state(
+        request,
+        user_id=identity.user_id,
+        canvas_id=state.id,
+        reader=session_reader(request, identity),
+    )
+
+
+# A chat has one live run at a time, and a switch is where a second would begin: the new
+# provider's run may start the moment the canvas answers. The old run's lease is
+# revoked, which ends the poll it is parked in, and a run the server opened for the
+# owner is told to stop; one the owner started by hand is stopped by the refusal its
+# next drain gets (``provider_is_other_cli``), since the server cannot reach its process.
+async def _end_other_runs(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    state: CanvasState,
+) -> None:
+    """Stop the chat's runs of any CLI its canvas no longer chooses."""
+    if state.conversation_id is None:
+        return
+    inbound = get_inbound(request)
+    hub = get_terminal_hub(request)
+    async with engine_of(request).acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id FROM inquiries WHERE kind = 'AgentSession' "
+            "AND agentsession_cli_session_id = $1",
+            chat_session_id(state.conversation_id),
+        )
+    for row in rows:
+        session_id = from_plain(row["id"], uuid.UUID)
+        held = inbound.poller_run(session_id)
+        if held is not None and held.cli is not None and held.cli != state.provider:
+            inbound.forget_poller(session_id)
+        for term in hub.attached_to(session_id):
+            if (
+                term.user.lower() == identity.email.lower()
+                and term.command != state.provider
+            ):
+                await hub.stop(term)
+
+
+async def _current_state(
+    request: Request,
+    *,
+    user_id: uuid.UUID,
+    canvas_id: uuid.UUID,
+    reader: SessionReader,
+) -> CanvasState:
+    """Read the owner's canvas with its partner, or 404."""
+    state = await read_canvas(
+        engine_of(request),
+        user_id=user_id,
+        canvas_id=canvas_id,
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+        reader=reader,
+    )
+    if state is None:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    return state
+
+
+async def _user_id_for_email(request: Request, *, email: str) -> uuid.UUID:
+    """Look up an active user's id after ``resolve_asker`` validated the account."""
+    async with engine_of(request).acquire() as conn:
+        user_id = await conn.fetchval(
+            "SELECT id FROM users WHERE email = $1 AND status = 'active'",
+            email.lower(),
+        )
+    if user_id is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return from_plain(user_id, uuid.UUID)
+
+
+async def _owner_is_active(request: Request, *, user_id: uuid.UUID) -> bool:
+    """Say whether the canvas's owner is still an active user."""
+    async with engine_of(request).acquire() as conn:
+        active = await conn.fetchval(
+            "SELECT 1 FROM users WHERE id = $1 AND status = 'active'",
+            user_id,
+        )
+    return active is not None

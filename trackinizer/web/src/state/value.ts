@@ -46,7 +46,7 @@ export type ReadState = components["schemas"]["ReadState"];
 
 /**
  * Collapsed sections, by key, the detail lens last used, and the floating tiles
- * an older build left here. A station holds its tiles in its own layout now: the
+ * an older build left here. A canvas holds its tiles in its own layout now: the
  * canvas moves these there once and empties them.
  */
 export type UiState = {

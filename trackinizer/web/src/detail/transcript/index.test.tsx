@@ -580,9 +580,9 @@ test("a file edit counts its lines added and removed, and shows each line number
 });
 test("a canvas message shows what was said, its injected context folded and linked to its record (B12)", async () => {
   const context =
-    '{"workspace_id":"1f3b8a52-6a4c-4a11-9d0f-0d2a1a7e9b10","record_id":"6d0f9b7e-1c2d-4f3a-8b9c-2e1d0c3b4a59",' +
+    '{"canvas_id":"1f3b8a52-6a4c-4a11-9d0f-0d2a1a7e9b10","record_id":"6d0f9b7e-1c2d-4f3a-8b9c-2e1d0c3b4a59",' +
     '"record":{"id":"6d0f9b7e-1c2d-4f3a-8b9c-2e1d0c3b4a59","kind":"Issue","seq":1,"title":"Web app preview: seeded root"},"artifact_content":null}';
-  const commands = "Canvas commands: trax workspace 1f3b8a52-6a4c-4a11-9d0f-0d2a1a7e9b10";
+  const commands = "Canvas commands: trax canvas 1f3b8a52-6a4c-4a11-9d0f-0d2a1a7e9b10";
   const content = `no-auth@localhost: What changed in Issue#1 since yesterday?\nTrackinizer context (verify with trax): ${context}\n${commands}`;
   const line = await renderRecords([captured(0, "UserMessage", { content, attachments: [] }, content)]);
   expect(line.querySelector(".turn-body")!.textContent).toBe("no-auth@localhost: What changed in Issue#1 since yesterday?");

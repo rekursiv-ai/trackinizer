@@ -58,7 +58,7 @@ class GeminiAdapter:
         #
         # The tmp ROOT, not each project's ``chats`` leaf. Gemini shards by
         # project sha and mints ``<sha>/chats`` when it first runs in a
-        # workspace -- after the watch is armed for the run being captured. A
+        # canvas -- after the watch is armed for the run being captured. A
         # watch on the leaves existing at arming time cannot adopt a new
         # sibling, so the run would capture nothing silently.
         # ``matches_session_file`` still requires a ``chats/session-*.json``,
@@ -78,7 +78,7 @@ class GeminiAdapter:
 
         Gemini shards ``tmp/`` by the sha256 of the working directory, so the
         run's own subtree is derivable and a concurrent run in another
-        workspace lands under a different hash. The path is RESOLVED first:
+        canvas lands under a different hash. The path is RESOLVED first:
         the CLI hashes what it resolved at startup, so a symlinked cwd would
         name a directory that never receives a write.
 

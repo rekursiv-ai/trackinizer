@@ -22,7 +22,7 @@ from trackinizer.server.api.app import _build_app, lifespan
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
-from trackinizer.server.visuals.catalog import StaticVisual, Workspace
+from trackinizer.server.visuals.catalog import Canvas, StaticVisual
 
 
 if TYPE_CHECKING:
@@ -140,9 +140,9 @@ def test_an_open_router_mounts_without_a_sign_in_and_a_viewer_router_still_needs
     assert client.get("/api/addons/hooked/ping").status_code == 401
 
 
-def _notes_visuals() -> Workspace.Config:
+def _notes_visuals() -> Canvas.Config:
     """Return a catalog of one visual, which is not the default catalog's."""
-    return Workspace.Config(
+    return Canvas.Config(
         visuals=[
             StaticVisual.Config(type="x.notes", title="Notes", description="Notes."),
         ],
@@ -229,10 +229,10 @@ def _running_service(app: FastAPI) -> _ProbeService:
     return service
 
 
-def _visual_catalog(app: FastAPI) -> Workspace:
+def _visual_catalog(app: FastAPI) -> Canvas:
     """Return the visual catalog the visual routes would read from ``app.state``."""
     catalog: object = getattr(app.state, "visual_catalog", None)
-    assert isinstance(catalog, Workspace)
+    assert isinstance(catalog, Canvas)
     return catalog
 
 

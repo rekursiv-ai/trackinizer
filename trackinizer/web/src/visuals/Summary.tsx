@@ -22,7 +22,7 @@ const REFRESH_MS = 60_000;
  * and claims they share. A reader the server lets read the transcript also gets it beside the steps,
  * and the item numbers open it; for any other reader those are numbers only.
  */
-export function Summary({ instance, workspace }: RendererProps) {
+export function Summary({ instance, canvas }: RendererProps) {
   const recordId = instance.record_id;
   const trust = useQuery({ ...trustQuery, retry: false });
   const accounts = trust.data?.accounts;
@@ -33,7 +33,7 @@ export function Summary({ instance, workspace }: RendererProps) {
     retry: false,
     refetchInterval: (q) => (q.state.data?.corpus?.state === "closed" ? false : REFRESH_MS),
   });
-  useVisualMark(instance, workspace, "data", query.isSuccess);
+  useVisualMark(instance, canvas, "data", query.isSuccess);
   const [tab, setTab] = useState<Tab>("sessions");
   const [selected, setSelected] = useState<string | null>(null);
   if (!recordId) return <div className="visual-unsupported">Choose a campaign or one of its sessions to read its summary.</div>;

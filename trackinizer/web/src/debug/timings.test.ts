@@ -17,7 +17,7 @@ function paint() {
 test("a frame is recorded on receipt with its revision, server time and the page's clocks", () => {
   recordFrame(7, 1_700_000_000_000);
   const [frame] = recentTimings();
-  expect(frame).toMatchObject({ frame: "workspace", revision: 7, route: null, t: 1_700_000_000_000, marks: [] });
+  expect(frame).toMatchObject({ frame: "canvas", revision: 7, route: null, t: 1_700_000_000_000, marks: [] });
   expect(frame!.receivedWall - performance.timeOrigin).toBeCloseTo(frame!.received, 3);
 });
 

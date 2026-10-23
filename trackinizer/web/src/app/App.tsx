@@ -92,8 +92,8 @@ function Boot() {
       <MetaContext value={boot.meta}>
         <ProfileContext value={boot.profile}>
           <RouterProvider kinds={boot.meta.kinds}>
-            <LiveProvider canvas={boot.profile.visual_workspace_enabled}>
-              <CanvasStream enabled={boot.profile.visual_workspace_enabled}>
+            <LiveProvider canvas={boot.profile.visual_canvas_enabled}>
+              <CanvasStream enabled={boot.profile.visual_canvas_enabled}>
                   <Shell />
               </CanvasStream>
             </LiveProvider>

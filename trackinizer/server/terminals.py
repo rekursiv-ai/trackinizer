@@ -102,8 +102,8 @@ class Terminal:
     rows: int
     cols: int
     opened_at: float
+    canvas: UUID | None = None
     workspace: UUID | None = None
-    workstream: UUID | None = None
     requested_by: str | None = None
     surface: str | None = None
     command: wire_terminals.TerminalCommand | None = None
@@ -132,7 +132,7 @@ class Terminal:
     browser: Socket | None = None
     ended: bool = False
     stopping: bool = False
-    """Whether the shell was told to stop; the station no longer lists it."""
+    """Whether the shell was told to stop; the canvas no longer lists it."""
 
     replaying: asyncio.Event | None = None
     """Set when the current replay finishes; the host waits rather than buffering."""
@@ -170,8 +170,8 @@ class Opening:
     machine: str
     rows: int
     cols: int
+    canvas: UUID | None = None
     workspace: UUID | None = None
-    workstream: UUID | None = None
     requested_by: str | None = None
     surface: str | None = None
     command: wire_terminals.TerminalCommand | None = None
@@ -253,12 +253,12 @@ class TerminalHub:
         """Return the live terminal with this id, or ``None``."""
         return self._terminals.get(terminal_id)
 
-    def live_in(self, user: str, *, workspace: UUID) -> list[Terminal]:
-        """Return the user's live terminals opened from this station, oldest first.
+    def live_in(self, user: str, *, canvas: UUID) -> list[Terminal]:
+        """Return the user's live terminals opened from this canvas, oldest first.
 
         Args:
           user: The opener's email.
-          workspace: The station.
+          canvas: The canvas.
 
         Returns:
           terminals: Those not told to stop.
@@ -267,7 +267,7 @@ class TerminalHub:
         return [
             term
             for term in self._terminals.values()
-            if term.user == user and term.workspace == workspace and not term.stopping
+            if term.user == user and term.canvas == canvas and not term.stopping
         ]
 
     def attached_to(self, session_id: UUID) -> list[Terminal]:
@@ -337,8 +337,8 @@ class TerminalHub:
             rows=opening.rows,
             cols=opening.cols,
             opened_at=now,
+            canvas=opening.canvas,
             workspace=opening.workspace,
-            workstream=opening.workstream,
             requested_by=opening.requested_by,
             surface=opening.surface,
             command=opening.command,

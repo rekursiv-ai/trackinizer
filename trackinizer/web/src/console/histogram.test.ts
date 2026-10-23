@@ -119,13 +119,13 @@ test("a batch while the band's first read is under way waits for it, since that 
   answer(Response.json({ start: iso(T0), end: iso(T0), bucket_seconds: 30, counts: [] }));
 });
 
-test("the band's read carries the station when the console is scoped to one, and none when it is widened", async () => {
+test("the band's read carries the canvas when the console is scoped to one, and none when it is widened", async () => {
   const bucketing = { since: T0, until: T0 + 4 * BUCKET, seconds: 30, count: 4 };
-  const stationOf = async (filters: { actor: string[]; station?: string }) => {
+  const canvasOf = async (filters: { actor: string[]; canvas?: string }) => {
     sent.length = 0;
     await readHistogram(spanRead(filters, bucketing, T0));
-    return new URLSearchParams(sent.at(-1)!.query).get("station");
+    return new URLSearchParams(sent.at(-1)!.query).get("canvas");
   };
-  expect(await stationOf({ actor: ["a"], station: "w1" })).toBe("w1");
-  expect(await stationOf({ actor: ["a"] })).toBeNull();
+  expect(await canvasOf({ actor: ["a"], canvas: "w1" })).toBe("w1");
+  expect(await canvasOf({ actor: ["a"] })).toBeNull();
 });

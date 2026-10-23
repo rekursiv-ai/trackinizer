@@ -1,11 +1,11 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { ApiError } from "../api/client";
-import { answerCapture } from "../api/workspaces";
+import { answerCapture } from "../api/canvases";
 import { answerRequest, HIDDEN_WAIT_MS } from "./answer";
 import { captureStage } from "./captureStage";
 import { CaptureRegistry, type CaptureSource } from "./stageRegistry";
 
-vi.mock("../api/workspaces", () => ({ answerCapture: vi.fn() }));
+vi.mock("../api/canvases", () => ({ answerCapture: vi.fn() }));
 vi.mock("./captureStage", () => ({ captureStage: vi.fn() }));
 
 const source: CaptureSource = { stage: document.createElement("div") };

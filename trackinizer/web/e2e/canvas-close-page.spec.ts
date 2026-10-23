@@ -17,11 +17,11 @@ async function pageAndGraph(request: APIRequestContext): Promise<void> {
     expect(response.ok(), await response.text()).toBe(true);
     return (await response.json()) as T;
   };
-  const state = await ok<{ id: string; revision: number }>(await request.post("/api/workspaces/new"));
+  const state = await ok<{ id: string; revision: number }>(await request.post("/api/canvases/new"));
   const { ids } = await ok<{ ids: string[] }>(await request.post("/api/inquiries/batch", {
     data: { items: [{ kind: "Issue", title: `Close ${crypto.randomUUID().slice(0, 8)}`, idempotency_key: crypto.randomUUID() }], edges: [] },
   }));
-  await ok(await request.post(`/api/workspaces/${state.id}/operations`, {
+  await ok(await request.post(`/api/canvases/${state.id}/operations`, {
     headers: { "Idempotency-Key": crypto.randomUUID() },
     data: { revision: state.revision, operation: { kind: "show", visual_type: "trax.subgraph", placement: "side", record_id: ids[0] } },
   }));

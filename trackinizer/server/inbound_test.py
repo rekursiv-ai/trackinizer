@@ -13,7 +13,7 @@ import uuid
 import pytest
 
 from trackinizer.server.inbound import Inbound, InboundQueue, PollerRun
-from trackinizer.wire.wire_sessions import WorkspaceMessageContext
+from trackinizer.wire.wire_sessions import CanvasMessageContext
 
 
 class TestInboundQueue:
@@ -684,8 +684,8 @@ class TestAChatsLinesOnTheirWay:
         return Inbound(
             text="q",
             source=sender,
-            context=WorkspaceMessageContext(
-                workspace_id=uuid.UUID(int=9),
+            context=CanvasMessageContext(
+                canvas_id=uuid.UUID(int=9),
                 visible_visuals=[],
                 conversation_id=chat,
             ),
@@ -776,8 +776,8 @@ class TestTheKeyThatTookALine:
     _BOB = "bob@example.com"
 
     def _line(self, sender: str, *, chat: uuid.UUID | None = _CHAT) -> Inbound:
-        context = WorkspaceMessageContext(
-            workspace_id=uuid.UUID(int=9),
+        context = CanvasMessageContext(
+            canvas_id=uuid.UUID(int=9),
             visible_visuals=[],
             conversation_id=chat,
         )

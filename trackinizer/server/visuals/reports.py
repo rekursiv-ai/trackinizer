@@ -142,7 +142,7 @@ class ArtifactOutcomeDraft(ArtifactOutcome):
 
 
 class PublishArtifactContent(BaseModel):
-    """A bounded publication request, separate from workspace mutations."""
+    """A bounded publication request, separate from canvas mutations."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -388,7 +388,7 @@ async def read_artifact_content_on_conn(
     """Resolve one published Artifact on the caller's transaction connection.
 
     Args:
-      conn: Connection holding the caller's workspace transaction.
+      conn: Connection holding the caller's canvas transaction.
       artifact_id: Canonical Artifact identity for this revision.
 
     Returns:

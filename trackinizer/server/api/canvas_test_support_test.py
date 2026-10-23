@@ -29,8 +29,8 @@ from trackinizer.server.api.canvas_test_support import (
     conversation_of,
     converse,
     drain,
+    open_canvas,
     open_science_chat,
-    open_workspace,
     revision_of,
     seed_accounts,
     send_chat,
@@ -129,7 +129,7 @@ def test_each_agent_acts_through_its_own_key_as_a_viewer_unless_told(
 def test_seeding_makes_three_active_writers_each_with_one_writer_key() -> None:
     store, engine = make_store()
     users = (
-        "INSERT INTO users (id, email, name, role, status, visual_workspace_enabled) "
+        "INSERT INTO users (id, email, name, role, status, visual_canvas_enabled) "
         "VALUES ($1, $2, 'Test', 'writer', 'active', TRUE)"
     )
     keys = (
@@ -206,21 +206,21 @@ def test_a_session_that_does_not_open_and_poll_is_an_error(
 def test_a_canvas_is_opened_by_its_user_as_a_browser(
     installed: list[AuthIdentity],
 ) -> None:
-    workspace_id = uuid.uuid4()
+    canvas_id = uuid.uuid4()
     server = _Server(
-        answers={("POST", "/api/workspaces"): (200, {"id": str(workspace_id)})},
+        answers={("POST", "/api/canvases"): (200, {"id": str(canvas_id)})},
     )
 
     opened = _run(
         server,
-        call=lambda client: open_workspace(
+        call=lambda client: open_canvas(
             client,
             user_id=OTHER_USER_ID,
             email=OTHER_EMAIL,
         ),
     )
 
-    assert opened == workspace_id
+    assert opened == canvas_id
     assert installed == [
         AuthIdentity(
             user_id=OTHER_USER_ID,
@@ -230,32 +230,32 @@ def test_a_canvas_is_opened_by_its_user_as_a_browser(
             hosted_domain="example.com",
         ),
     ]
-    server.answers[("POST", "/api/workspaces")] = (403, {})
-    with pytest.raises(ValueError, match="workspace create answered 403"):
-        _run(server, call=open_workspace)
+    server.answers[("POST", "/api/canvases")] = (403, {})
+    with pytest.raises(ValueError, match="canvas create answered 403"):
+        _run(server, call=open_canvas)
 
 
-def test_a_station_is_the_one_used_last_or_a_new_one() -> None:
+def test_a_canvas_is_the_one_used_last_or_a_new_one() -> None:
     used, made = uuid.uuid4(), uuid.uuid4()
     server = _Server(
         answers={
-            ("POST", "/api/workspaces"): (200, {"id": str(used)}),
-            ("POST", "/api/workspaces/new"): (200, {"id": str(made)}),
+            ("POST", "/api/canvases"): (200, {"id": str(used)}),
+            ("POST", "/api/canvases/new"): (200, {"id": str(made)}),
         },
     )
 
-    opened = _run(server, call=open_workspace)
-    another = _run(server, call=lambda client: open_workspace(client, new=True))
+    opened = _run(server, call=open_canvas)
+    another = _run(server, call=lambda client: open_canvas(client, new=True))
 
     assert (opened, another) == (used, made)
     assert [(each.method, each.url.path) for each in server.asked] == [
-        ("POST", "/api/workspaces"),
-        ("POST", "/api/workspaces/new"),
+        ("POST", "/api/canvases"),
+        ("POST", "/api/canvases/new"),
     ]
 
 
 def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
-    workspace_id, conversation, key = (uuid.uuid4() for _ in range(3))
+    canvas_id, conversation, key = (uuid.uuid4() for _ in range(3))
     server = _Server(
         answers={
             ("POST", "/api/chats"): (200, {"conversation_id": str(conversation)}),
@@ -266,7 +266,7 @@ def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
         server,
         call=lambda client: send_chat(
             client,
-            workspace_id=workspace_id,
+            canvas_id=canvas_id,
             text="hi",
             conversation_id=conversation,
             key=key,
@@ -276,7 +276,7 @@ def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
         server,
         call=lambda client: send_chat(
             client,
-            workspace_id=workspace_id,
+            canvas_id=canvas_id,
             text="new",
         ),
     )
@@ -284,7 +284,7 @@ def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
     assert conversation_of(sent) == conversation
     continued, started = server.asked
     assert json_loads(continued.content) == {
-        "workspace_id": str(workspace_id),
+        "canvas_id": str(canvas_id),
         "text": "hi",
         "conversation_id": str(conversation),
     }
@@ -294,7 +294,7 @@ def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
 
 
 def test_a_posted_line_names_the_line_it_forks_when_given_one() -> None:
-    workspace_id, conversation, session = (uuid.uuid4() for _ in range(3))
+    canvas_id, conversation, session = (uuid.uuid4() for _ in range(3))
     server = _Server(
         answers={("POST", "/api/chats"): (200, {"conversation_id": str(conversation)})},
     )
@@ -304,7 +304,7 @@ def test_a_posted_line_names_the_line_it_forks_when_given_one() -> None:
         server,
         call=lambda client: send_chat(
             client,
-            workspace_id=workspace_id,
+            canvas_id=canvas_id,
             text="hi",
             fork=fork,
         ),
@@ -352,7 +352,7 @@ def test_the_assistant_opens_a_conversation_as_its_science_chat() -> None:
 
 
 def test_conversing_posts_a_line_then_has_the_assistant_open_its_session() -> None:
-    workspace_id, conversation, session_id = (uuid.uuid4() for _ in range(3))
+    canvas_id, conversation, session_id = (uuid.uuid4() for _ in range(3))
     store, _ = make_store()
     server = _Server(
         answers={
@@ -367,7 +367,7 @@ def test_conversing_posts_a_line_then_has_the_assistant_open_its_session() -> No
         call=lambda client: converse(
             client,
             store,
-            workspace_id=workspace_id,
+            canvas_id=canvas_id,
             text="hello there",
         ),
     )
@@ -386,14 +386,13 @@ def test_a_refused_send_names_no_conversation() -> None:
 
 
 def test_the_revision_is_read_off_the_canvas() -> None:
-    workspace_id = uuid.uuid4()
+    canvas_id = uuid.uuid4()
     server = _Server(
-        answers={("GET", f"/api/workspaces/{workspace_id}"): (200, {"revision": 12})},
+        answers={("GET", f"/api/canvases/{canvas_id}"): (200, {"revision": 12})},
     )
 
     assert (
-        _run(server, call=lambda client: revision_of(client, workspace_id=workspace_id))
-        == 12
+        _run(server, call=lambda client: revision_of(client, canvas_id=canvas_id)) == 12
     )
 
 

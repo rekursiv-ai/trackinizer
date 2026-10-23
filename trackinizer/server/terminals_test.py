@@ -25,7 +25,7 @@ from trackinizer.wire import wire_terminals
 
 
 _MACHINE = uuid.UUID(int=1)
-_STATION = uuid.UUID(int=2)
+_CANVAS = uuid.UUID(int=2)
 
 
 @dataclass(slots=True, kw_only=True)
@@ -109,7 +109,7 @@ class _World:
         *,
         user: str = "a@x.y",
         machine_id: uuid.UUID = _MACHINE,
-        workspace: uuid.UUID | None = None,
+        canvas: uuid.UUID | None = None,
         surface: str | None = None,
         attach: uuid.UUID | None = None,
     ) -> Terminal:
@@ -120,7 +120,7 @@ class _World:
                 machine="gx10",
                 rows=24,
                 cols=80,
-                workspace=workspace,
+                canvas=canvas,
                 surface=surface,
                 command=None if attach is None else "claude",
                 attach=attach,
@@ -288,10 +288,10 @@ async def test_input_resets_the_idle_clock() -> None:
 async def test_no_count_of_live_terminals_refuses_an_open() -> None:
     world = _World()
     for _ in range(70):
-        world.open(workspace=_STATION)
+        world.open(canvas=_CANVAS)
         world.clock.now += 7
 
-    assert len(world.hub.live_in("a@x.y", workspace=_STATION)) == 70
+    assert len(world.hub.live_in("a@x.y", canvas=_CANVAS)) == 70
 
 
 @pytest.mark.asyncio
@@ -308,34 +308,34 @@ async def test_opens_per_minute_are_limited_and_the_window_slides() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_station_lists_each_of_the_users_live_terminals_oldest_first() -> None:
+async def test_a_canvas_lists_each_of_the_users_live_terminals_oldest_first() -> None:
     world = _World()
-    first = world.open(workspace=_STATION, surface="chat")
-    second = world.open(workspace=_STATION, surface="tile")
-    world.open(workspace=uuid.UUID(int=3))
-    world.open(user="b@x.y", workspace=_STATION)
+    first = world.open(canvas=_CANVAS, surface="chat")
+    second = world.open(canvas=_CANVAS, surface="tile")
+    world.open(canvas=uuid.UUID(int=3))
+    world.open(user="b@x.y", canvas=_CANVAS)
 
-    assert world.hub.live_in("a@x.y", workspace=_STATION) == [first, second]
-    assert [t.surface for t in world.hub.live_in("a@x.y", workspace=_STATION)] == [
+    assert world.hub.live_in("a@x.y", canvas=_CANVAS) == [first, second]
+    assert [t.surface for t in world.hub.live_in("a@x.y", canvas=_CANVAS)] == [
         "chat",
         "tile",
     ]
     await world.hub.end(first, code=wire_terminals.CLOSE_ENDED)
-    assert world.hub.live_in("a@x.y", workspace=_STATION) == [second]
+    assert world.hub.live_in("a@x.y", canvas=_CANVAS) == [second]
 
 
 @pytest.mark.asyncio
-async def test_a_terminal_told_to_stop_is_no_longer_listed_for_its_station() -> None:
+async def test_a_terminal_told_to_stop_is_no_longer_listed_for_its_canvas() -> None:
     world = _World()
     closing, host, _ = await world.live()
-    closing.workspace = _STATION
-    other = world.open(workspace=_STATION)
+    closing.canvas = _CANVAS
+    other = world.open(canvas=_CANVAS)
 
     await world.hub.stop(closing)
 
     assert host.sent == [(Frame.STOP, b"")]
     assert not closing.ended
-    assert world.hub.live_in("a@x.y", workspace=_STATION) == [other]
+    assert world.hub.live_in("a@x.y", canvas=_CANVAS) == [other]
 
 
 @pytest.mark.asyncio

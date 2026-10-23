@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
-import type { WorkspaceState } from "../api/workspaces";
+import type { CanvasState } from "../api/canvases";
 import { HOME_ROUTE, homeSnapshot, PAGE, planRestore, type Snapshot, snapshotKey, snapshotOf } from "./canvasSnapshot";
 
-type Visual = WorkspaceState["visuals"][number];
+type Visual = CanvasState["visuals"][number];
 
 const page: Visual = { id: "p", type: PAGE, version: 1, placement: "main", record_id: null, params: {} };
 const graph: Visual = { id: "g", type: "trax.subgraph", version: 1, placement: "side", record_id: "r1", params: { hops: 2 } };

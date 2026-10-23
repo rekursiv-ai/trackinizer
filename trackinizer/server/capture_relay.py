@@ -133,14 +133,14 @@ class CaptureRelay:
 
     async def ask(
         self,
-        workspace_id: UUID,
+        canvas_id: UUID,
         *,
         publish: Callable[[UUID], None],
     ) -> CaptureAnswer:
         """Send a request to the canvas's open pages and wait for the first answer.
 
         Args:
-          workspace_id: Canvas whose pages are asked.
+          canvas_id: Canvas whose pages are asked.
           publish: Tells the pages the request id.
 
         Returns:
@@ -152,7 +152,7 @@ class CaptureRelay:
         """
         request = uuid4()
         answered = asyncio.Future[CaptureAnswer]()
-        self._waiting[request] = (workspace_id, answered)
+        self._waiting[request] = (canvas_id, answered)
         try:
             publish(request)
             return await asyncio.wait_for(answered, self.timeout_sec)
@@ -161,7 +161,7 @@ class CaptureRelay:
 
     def answer(
         self,
-        workspace_id: UUID,
+        canvas_id: UUID,
         *,
         request: UUID,
         answer: CaptureAnswer,
@@ -169,7 +169,7 @@ class CaptureRelay:
         """Give a request its answer; only the first for a request is taken.
 
         Args:
-          workspace_id: Canvas the answering page belongs to.
+          canvas_id: Canvas the answering page belongs to.
           request: The id the page was sent.
           answer: What the page sent.
 
@@ -178,7 +178,7 @@ class CaptureRelay:
 
         """
         waiting = self._waiting.get(request)
-        if waiting is None or waiting[0] != workspace_id or waiting[1].done():
+        if waiting is None or waiting[0] != canvas_id or waiting[1].done():
             return False
         waiting[1].set_result(answer)
         return True

@@ -43,7 +43,7 @@ function Machines({ read }: { readonly read: UseQueryResult<TerminalMachines> })
     setProblem(null);
     try {
       await confirmTerminalMachine(name);
-      // Every read of the machines, the terminal's for each station too.
+      // Every read of the machines, the terminal's for each canvas too.
       await queryClient.invalidateQueries({ queryKey: ["terminal-machines"] });
     } catch {
       setProblem(`Could not allow ${name}.`);

@@ -54,8 +54,8 @@ from trackinizer.server.terminals import (
     TerminalLimitError,
     decode_attach,
 )
+from trackinizer.server.visuals.canvas_store import read_chat_provider
 from trackinizer.server.visuals.science_chats import read_starter
-from trackinizer.server.visuals.workspace_store import read_chat_provider
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire import wire_terminals
 from trackinizer.wire.wire_machine_host import OFFLINE_AFTER_SEC
@@ -122,7 +122,7 @@ async def open_terminal_route(
     (the machine host does by default). Attach with the ticket within 30 seconds.
 
     Args:
-      body: The machine, the terminal's size, and the station it opens from.
+      body: The machine, the terminal's size, and the canvas it opens from.
       request: Request carrying the store and the terminal hub.
       identity: The signed-in owner.
       asker: The person the configured assistant starts a campaign for.
@@ -132,7 +132,7 @@ async def open_terminal_route(
 
     Raises:
       HTTPException: 403 for an untrusted key, a service account or a foreign origin;
-        404 for no such machine of the asker, or station; 409 ``terminal_unconfirmed`` until the
+        404 for no such machine of the asker, or canvas; 409 ``terminal_unconfirmed`` until the
         owner confirms a machine a key enrolled, ``cli_not_installed`` when the machine's
         facts do not list the CLI asked for, ``terminal_not_enabled`` when the host is
         not asking, ``chat_run_live`` when a run is already attached to the ``attach``
@@ -153,10 +153,10 @@ async def open_terminal_route(
             code="cli_not_installed",
             message=f"the host reports no {body.command} on its PATH",
         )
-    workstream = await _station_workstream(
+    workspace = await _canvas_workspace(
         request,
         owner=owner,
-        workspace=body.workspace,
+        canvas=body.canvas,
     )
     hub = get_terminal_hub(request)
     if not hub.ready(machine_id):
@@ -179,8 +179,8 @@ async def open_terminal_route(
                     machine=body.machine,
                     rows=body.rows,
                     cols=body.cols,
-                    workspace=body.workspace,
-                    workstream=workstream,
+                    canvas=body.canvas,
+                    workspace=workspace,
                     requested_by=body.requested_by,
                     surface=body.surface,
                     command=body.command,
@@ -268,10 +268,10 @@ async def reattach_session_route(
             assistant=get_assistant(request),
             conversation_id=conversation,
         )
-        station = await conn.fetchrow(
-            "SELECT id, station ->> 'workstream_id' AS workstream "
-            "FROM visual_workspaces WHERE user_id = $1 "
-            "AND station ->> 'conversation_id' = $2",
+        canvas = await conn.fetchrow(
+            "SELECT id, metadata ->> 'workspace_id' AS workspace "
+            "FROM visual_canvases WHERE user_id = $1 "
+            "AND metadata ->> 'conversation_id' = $2",
             identity.user_id,
             str(conversation),
         )
@@ -285,7 +285,7 @@ async def reattach_session_route(
         raise _refused(
             409,
             code=PROVIDER_IS_ASSISTANT,
-            message="this chat's station answers it with the assistant",
+            message="this chat's canvas answers it with the assistant",
         )
     inbound = get_inbound(request)
     places = [
@@ -319,7 +319,7 @@ async def reattach_session_route(
             code="terminal_not_enabled",
             message="start this machine's host first",
         )
-    named = None if station is None else from_plain(station["workstream"], str | None)
+    named = None if canvas is None else from_plain(canvas["workspace"], str | None)
     try:
         _ = await get_replays(request).terminal_opens.run(
             (identity.user_id, identity.api_key_id, key),
@@ -333,10 +333,8 @@ async def reattach_session_route(
                     machine=machine,
                     rows=24,
                     cols=80,
-                    workspace=None
-                    if station is None
-                    else from_plain(station["id"], UUID),
-                    workstream=UUID(named) if isinstance(named, str) else None,
+                    canvas=None if canvas is None else from_plain(canvas["id"], UUID),
+                    workspace=UUID(named) if isinstance(named, str) else None,
                     command=provider,
                     attach=session_id,
                     run_name=host or f"chat-{session_id.hex[:8]}",
@@ -358,10 +356,10 @@ async def reattach_session_route(
 async def list_terminal_machines_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
-    workspace: UUID | None = None,
+    canvas: UUID | None = None,
     owner: str | None = None,
 ) -> TerminalMachines:
-    """List the caller's own machines, and their live terminals for a station.
+    """List the caller's own machines, and their live terminals for a canvas.
 
     The configured assistant names the person it answers as ``owner`` and lists that
     person's machines, so it offers a terminal only on one they have. It opens none:
@@ -370,14 +368,14 @@ async def list_terminal_machines_route(
     Args:
       request: Request carrying the store and the terminal hub.
       identity: The signed-in owner, or the assistant's agent key.
-      workspace: The station whose live terminals to list.
+      canvas: The canvas whose live terminals to list.
       owner: The person the assistant lists for, a writer or admin; only the
         assistant may name one.
 
     Returns:
       machines: The owner's machines, newest first, each with whether it can take a
         terminal now; and ``terminals``, the owner's live terminals opened from
-        ``workspace``.
+        ``canvas``.
 
     Raises:
       HTTPException: 403 ``terminal_forbidden`` for a key, a service account, anyone
@@ -411,9 +409,7 @@ async def list_terminal_machines_route(
             reverse=True,
         )
     ]
-    live: list[Terminal] = (
-        [] if workspace is None else hub.live_in(email, workspace=workspace)
-    )
+    live: list[Terminal] = [] if canvas is None else hub.live_in(email, canvas=canvas)
     return TerminalMachines(
         machines=machines,
         terminals=[
@@ -730,7 +726,7 @@ async def _terminal_owner(
         or found.role not in {"writer", "admin"}
         or body.command is None
         or body.attach is None
-        or body.workspace is None
+        or body.canvas is None
         or body.cwd is None
         or body.run_name is None
         or not body.run_name.startswith("campaign-")
@@ -851,27 +847,27 @@ def _clis_of(facts: object) -> list[str]:
         return []
 
 
-async def _station_workstream(
+async def _canvas_workspace(
     request: Request,
     *,
     owner: str,
-    workspace: UUID | None,
+    canvas: UUID | None,
 ) -> UUID | None:
-    """Return the workstream of the owner's station; refuse another user's."""
-    if workspace is None:
+    """Return the workspace of the owner's canvas; refuse another user's."""
+    if canvas is None:
         return None
     async with engine_of(request).acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT w.station->>'workstream_id' AS workstream "
-            "FROM visual_workspaces w JOIN users u ON u.id = w.user_id "
+            "SELECT w.metadata->>'workspace_id' AS workspace "
+            "FROM visual_canvases w JOIN users u ON u.id = w.user_id "
             "WHERE w.id = $1 AND u.email = $2 AND u.status = 'active'",
-            workspace,
+            canvas,
             owner,
         )
     if row is None:
-        raise NotFoundError("no such station")
-    workstream = from_plain(row["workstream"], str, default="")
-    return UUID(workstream) if workstream else None
+        raise NotFoundError("no such canvas")
+    workspace = from_plain(row["workspace"], str, default="")
+    return UUID(workspace) if workspace else None
 
 
 # A session has one live run at a time. A run the server opened is in the hub from the
@@ -984,8 +980,8 @@ async def _next_terminal(
         opener=term.user,
         rows=term.rows,
         cols=term.cols,
+        canvas=term.canvas,
         workspace=term.workspace,
-        workstream=term.workstream,
         requested_by=term.requested_by,
         command=term.command,
         attach=term.attach,

@@ -1,5 +1,5 @@
 import { newUuid } from "../api/idempotency";
-import type { CaptureAnswer } from "../api/workspaces";
+import type { CaptureAnswer } from "../api/canvases";
 import { tilesInPaintOrder } from "../canvasMarks/tiles";
 import { loadImage, rasterize } from "./raster";
 import type { CaptureSource } from "./stageRegistry";

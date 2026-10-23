@@ -1,15 +1,15 @@
 import { type APIRequestContext, expect, type Page } from "@playwright/test";
 
-/** A new station, then the one changed last, which holds the page alone and no chat; its id. */
+/** A new canvas, then the one changed last, which holds the page alone and no chat; its id. */
 export async function resetCanvas(request: APIRequestContext): Promise<string> {
   const read = async <T>(response: { ok(): boolean; text(): Promise<string>; json(): Promise<unknown> }) => {
     expect(response.ok(), await response.text()).toBe(true);
     return (await response.json()) as T;
   };
   type State = { id: string; revision: number; visuals: { id: string; type: string }[] };
-  let state = await read<State>(await request.post("/api/workspaces/new"));
+  let state = await read<State>(await request.post("/api/canvases/new"));
   const apply = async (operation: object) => {
-    state = await read<State>(await request.post(`/api/workspaces/${state.id}/operations`, {
+    state = await read<State>(await request.post(`/api/canvases/${state.id}/operations`, {
       headers: { "Idempotency-Key": crypto.randomUUID() }, data: { revision: state.revision, operation },
     }));
   };
@@ -32,7 +32,7 @@ export function exposeEventSources() {
   };
 }
 
-/** Hand the page's workspace stream a `navigate` frame to `route`, stamped now. */
+/** Hand the page's canvas stream a `navigate` frame to `route`, stamped now. */
 export async function pushNavigate(page: Page, route: string): Promise<void> {
   await page.evaluate((route) => {
     const sources = (window as unknown as { heldEventSources: EventSource[] }).heldEventSources;
@@ -41,7 +41,7 @@ export async function pushNavigate(page: Page, route: string): Promise<void> {
   }, route);
 }
 
-/** Hand the page's workspace stream a `chat` frame that hides (`true`) or shows (`false`) Chat's column. */
+/** Hand the page's canvas stream a `chat` frame that hides (`true`) or shows (`false`) Chat's column. */
 export async function pushChat(page: Page, hidden: boolean): Promise<void> {
   await page.evaluate((hidden) => {
     const sources = (window as unknown as { heldEventSources: EventSource[] }).heldEventSources;

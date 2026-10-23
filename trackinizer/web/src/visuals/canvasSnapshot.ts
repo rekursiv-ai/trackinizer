@@ -1,4 +1,4 @@
-import type { WorkspaceOperation, WorkspaceState } from "../api/workspaces";
+import type { CanvasOperation, CanvasState } from "../api/canvases";
 import { SHEET, validHash } from "../router/trail";
 import type { Placement } from "./layout";
 
@@ -30,7 +30,7 @@ const OVERLAY = /^#\/new(?:[/?]|$)/;
  * while the address is not a page of its own (a sheet or the create form over
  * the page, or no route yet): that is not a place to come back to.
  */
-export function snapshotOf(visuals: WorkspaceState["visuals"], hash: string): Snapshot | null {
+export function snapshotOf(visuals: CanvasState["visuals"], hash: string): Snapshot | null {
   const paged = visuals.some((visual) => visual.type === PAGE);
   if (paged && (!validHash(hash) || SHEET.test(hash) || OVERLAY.test(hash))) return null;
   return {
@@ -64,9 +64,9 @@ export function snapshotKey(snapshot: Snapshot): string {
  * elsewhere or on another record or with other params shown again or placed,
  * the ones missing shown. The page's route is the caller's to set.
  */
-export function planRestore(live: WorkspaceState["visuals"], target: Snapshot): WorkspaceOperation[] {
+export function planRestore(live: CanvasState["visuals"], target: Snapshot): CanvasOperation[] {
   const wanted = new Set(target.visuals.map((visual) => visual.type));
-  const operations: WorkspaceOperation[] = live
+  const operations: CanvasOperation[] = live
     .filter((visual) => !wanted.has(visual.type))
     .map((visual) => ({ kind: "hide", instance_id: visual.id }));
   for (const want of target.visuals) {

@@ -462,7 +462,7 @@ test("a 401 ends the session through the query cache; a 403 marks the profile fo
     () => Response.json({ detail: "writer role required" }, { status: 403 }),
   );
   const queryClient = createQueryClient(onUnauthorized);
-  queryClient.setQueryData(bootQueries.profile.queryKey, { user_id: "u", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED });
+  queryClient.setQueryData(bootQueries.profile.queryKey, { user_id: "u", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_canvas_enabled: false, ...AGREED });
   await renderControl(server, "title", setTitle("New"), queryClient);
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await screen.findByRole("alert");

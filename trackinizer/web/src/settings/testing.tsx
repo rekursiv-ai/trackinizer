@@ -7,9 +7,9 @@ import { onTestFinished } from "vitest";
 import type { AllowlistEntry, User } from "../api/admin";
 import type { Profile, Role, Token } from "../api/me";
 import { AGREED, type Sent, stubFetch } from "../api/testing";
-import type { WorkspaceOperation, WorkspaceState } from "../api/workspaces";
+import type { CanvasOperation, CanvasState } from "../api/canvases";
 import { DEFAULT_PREFERENCES, type Preferences } from "../preferences";
-import { setStation } from "../stations/store";
+import { setCanvas } from "../canvases/store";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { Session, SessionContext } from "../app/session";
 import { ToastProvider } from "../ui/toast";
@@ -21,7 +21,7 @@ const META: Meta = { kinds: KINDS, enums: { inquiry_kind_all: KINDS }, fieldOwne
 
 /** A signed-in user of `role`: Ada, whose id is `u-ada`. */
 export function profile(role: Role): Profile {
-  return { user_id: "u-ada", email: "ada@example.com", name: "Ada", role, last_login: "2026-09-26T10:00:00+00:00", visual_workspace_enabled: false, ...AGREED };
+  return { user_id: "u-ada", email: "ada@example.com", name: "Ada", role, last_login: "2026-09-26T10:00:00+00:00", visual_canvas_enabled: false, ...AGREED };
 }
 
 /** Render `ui` with the app's providers for `who`; `queryClient` is its cache. */
@@ -126,18 +126,18 @@ export function user(id: string, email: string, fields: Partial<User> = {}): Use
  * the words of the server's unique-violation handler), a blank one (422), and a
  * missing or revoked token (404). `answers` take the next writes over; `hold`
  * holds the next write until released; reads of a path in `failing` answer
- * 503; `rows` are what the owner-names list request returns. `workspace` is
+ * 503; `rows` are what the owner-names list request returns. `canvas` is
  * the user's default canvas, which an operation of a stale revision is refused
  * for (409) and a `provider` operation changes.
  */
 export function serveAccount(
   caller: Profile,
-  seed: { tokens?: Token[]; users?: User[]; allowlist?: AllowlistEntry[]; workspace?: Partial<WorkspaceState> } = {},
+  seed: { tokens?: Token[]; users?: User[]; allowlist?: AllowlistEntry[]; canvas?: Partial<CanvasState> } = {},
 ) {
-  // A tab starts without a station, so a test never opens the one an earlier test left.
-  setStation(null);
+  // A tab starts without a canvas, so a test never opens the one an earlier test left.
+  setCanvas(null);
   const server = {
-    workspace: { id: "w-ada", name: "unnamed-workstream#1", conversation_id: null, page: null, revision: 4, visuals: [], partner: null, assistant: "scout", provider: "assistant", ...seed.workspace } as WorkspaceState,
+    canvas: { id: "w-ada", name: "unnamed-canvas#1", conversation_id: null, page: null, revision: 4, visuals: [], partner: null, assistant: "scout", provider: "assistant", ...seed.canvas } as CanvasState,
     tokens: seed.tokens ?? [],
     users: seed.users ?? [],
     allowlist: seed.allowlist ?? [],
@@ -181,23 +181,23 @@ export function serveAccount(
   return server;
 }
 
-const CANVAS = "/api/workspaces";
+const CANVAS = "/api/canvases";
 
 type Server = ReturnType<typeof serveAccount>;
 
-type AccountBody = { name?: string; role?: Role; email_or_pattern?: string; enabled?: boolean; revision?: number; operation?: WorkspaceOperation };
+type AccountBody = { name?: string; role?: Role; email_or_pattern?: string; enabled?: boolean; revision?: number; operation?: CanvasOperation };
 
 function answer(server: Server, caller: Profile, call: string, body: AccountBody): Response {
   const [method, path] = call.split(" ") as [string, string];
   const parts = path.split("/").slice(1);
   if (call === "GET /api/me/profile") return Response.json(caller);
-  if (call === "PUT /api/me/visual-workspace") {
-    caller.visual_workspace_enabled = body.enabled ?? false;
-    return Response.json({ enabled: caller.visual_workspace_enabled });
+  if (call === "PUT /api/me/visual-canvas") {
+    caller.visual_canvas_enabled = body.enabled ?? false;
+    return Response.json({ enabled: caller.visual_canvas_enabled });
   }
   if (call === "POST /api/me/settings-artifact") return Response.json({ artifact_id: "fixture-settings-artifact" });
-  if (call === `POST ${CANVAS}` || call === `GET ${CANVAS}/${server.workspace.id}`) return Response.json(server.workspace);
-  if (call === `POST /api/workspaces/${server.workspace.id}/operations`) return operate(server, body);
+  if (call === `POST ${CANVAS}` || call === `GET ${CANVAS}/${server.canvas.id}`) return Response.json(server.canvas);
+  if (call === `POST /api/canvases/${server.canvas.id}/operations`) return operate(server, body);
   if (call === "GET /api/me/tokens") return Response.json({ tokens: server.tokens });
   if (call === "GET /api/admin/users") return Response.json({ users: server.users });
   if (call === "GET /api/admin/allowlist") return Response.json({ entries: server.allowlist });
@@ -244,10 +244,10 @@ function answer(server: Server, caller: Profile, call: string, body: AccountBody
 }
 
 function operate(server: Server, { revision, operation }: AccountBody): Response {
-  if (revision !== server.workspace.revision) return refuse(409, "revision conflict");
+  if (revision !== server.canvas.revision) return refuse(409, "revision conflict");
   if (operation?.kind !== "provider") return refuse(422, "unsupported operation");
-  server.workspace = { ...server.workspace, revision: revision + 1, provider: operation.provider, partner: null };
-  return Response.json(server.workspace);
+  server.canvas = { ...server.canvas, revision: revision + 1, provider: operation.provider, partner: null };
+  return Response.json(server.canvas);
 }
 
 function userWrite(server: Server, caller: Profile, method: string, id: string, action: string | undefined, role: Role | undefined): Response {

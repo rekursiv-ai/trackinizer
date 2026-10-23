@@ -1,7 +1,7 @@
-"""Tell a station's chat partner what its owner sent agents directly from the Console.
+"""Tell a canvas's chat partner what its owner sent agents directly from the Console.
 
 The Console lets a person steer any agent. The agents get the message from
-``POST /api/messages``; the station's chat partner gets it here, so the chat
+``POST /api/messages``; the canvas's chat partner gets it here, so the chat
 transcript records it and the partner's next prompt holds it, and the partner never
 contradicts what the person told the agents.
 """
@@ -13,14 +13,14 @@ from typing import TYPE_CHECKING
 from trackinizer.server.inbound import Inbound
 from trackinizer.server.notify import tx
 from trackinizer.server.store.deleted_chats import chat_was_deleted, lock_chat_id
-from trackinizer.server.visuals.science_chats import may_post
-from trackinizer.server.visuals.workspace_store import (
-    WorkspaceSessionUnavailableError,
+from trackinizer.server.visuals.canvas_store import (
+    CanvasSessionUnavailableError,
     chat_answerer,
     chat_line_target,
-    read_workspace,
+    read_canvas,
 )
-from trackinizer.wire.wire_sessions import ConsoleRelay, WorkspaceMessageContext
+from trackinizer.server.visuals.science_chats import may_post
+from trackinizer.wire.wire_sessions import CanvasMessageContext, ConsoleRelay
 
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ async def relay_console_line(
     engine: DatabaseEngine,
     *,
     user_id: uuid.UUID,
-    workspace_id: uuid.UUID,
+    canvas_id: uuid.UUID,
     relay: ConsoleRelay,
     key: uuid.UUID,
     source: str,
@@ -46,9 +46,9 @@ async def relay_console_line(
     assistant: Assistant | None,
     reader: SessionReader,
 ) -> bool | None:
-    """Queue one Console relay for the partner of the owner's station.
+    """Queue one Console relay for the partner of the owner's canvas.
 
-    It joins the queue a Chat line of that station joins, as :func:`chat_line_target`
+    It joins the queue a Chat line of that canvas joins, as :func:`chat_line_target`
     says, for the provider that answers the chat (:func:`chat_answerer`): the chat's
     own session when the assistant has it open, else the partner's service session,
     which opens the conversation's session before it records the relay; for
@@ -56,13 +56,13 @@ async def relay_console_line(
     that line would be. A retry under the same key
     queues nothing again. The partner answers a relay with nothing; it records the
     line and reads it with its next prompt. A relay is a line of its sender's in the
-    station's chat, so only a sender who may post into that chat relays into it: any
-    station may be bound to a chat to read it, and that is no leave to write there.
+    canvas's chat, so only a sender who may post into that chat relays into it: any
+    canvas may be bound to a chat to read it, and that is no leave to write there.
 
     Args:
       engine: Database connection source.
       user_id: The signed-in owner.
-      workspace_id: The station the Console is in.
+      canvas_id: The canvas the Console is in.
       relay: The agents the owner sent to, and what they sent.
       key: Idempotency key of the relay.
       source: Attested principal email.
@@ -73,15 +73,15 @@ async def relay_console_line(
         they read.
 
     Returns:
-      delivered: None when the station is not the owner's; False when it has no chat,
+      delivered: None when the canvas is not the owner's; False when it has no chat,
         the chat was deleted, the sender may not post into it, its partner is not
         running or would not read it there, or the queue is full; else True.
 
     """
-    state = await read_workspace(
+    state = await read_canvas(
         engine,
         user_id=user_id,
-        workspace_id=workspace_id,
+        canvas_id=canvas_id,
         inbound=inbound,
         assistant=assistant,
     )
@@ -127,7 +127,7 @@ async def relay_console_line(
                 provider=provider,
                 conversation_id=state.conversation_id,
             )
-        except WorkspaceSessionUnavailableError:
+        except CanvasSessionUnavailableError:
             return False
         target = chat or target
         if inbound.is_full(target):
@@ -141,8 +141,8 @@ async def relay_console_line(
                         text=relay.text,
                         source=source,
                         source_role=source_role,
-                        context=WorkspaceMessageContext(
-                            workspace_id=workspace_id,
+                        context=CanvasMessageContext(
+                            canvas_id=canvas_id,
                             visible_visuals=[],
                             conversation_id=state.conversation_id,
                             relay=relay,

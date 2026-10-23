@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import type { WorkspaceState } from "../src/api/workspaces";
+import type { CanvasState } from "../src/api/canvases";
 import { expect, test } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
@@ -17,8 +17,8 @@ const frame = (kind: number, payload: Buffer) => Buffer.concat([Buffer.from([kin
 
 async function startedTile(page: Page, request: Parameters<typeof resetCanvas>[0]) {
   const id = await resetCanvas(request);
-  const state = await (await request.get(`/api/workspaces/${id}`)).json() as WorkspaceState;
-  const shown = await request.post(`/api/workspaces/${id}/operations`, {
+  const state = await (await request.get(`/api/canvases/${id}`)).json() as CanvasState;
+  const shown = await request.post(`/api/canvases/${id}/operations`, {
     headers: { "Idempotency-Key": crypto.randomUUID() },
     data: { revision: state.revision, operation: { kind: "show", visual_type: "trax.terminal", placement: "main", params: { machine: "gx10" } } },
   });

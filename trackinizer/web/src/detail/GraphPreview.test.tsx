@@ -7,7 +7,7 @@ import { type Sent, stubFetch } from "../api/testing";
 import { edge, node } from "../graph/testing";
 import { LiveHub } from "../live/hub";
 import { canvasActions } from "../visuals/testing";
-import type { WorkspaceActions } from "../visuals/workspaceActions";
+import type { CanvasActions } from "../visuals/canvasActions";
 import { detail, peer, renderDetail, row, uuid } from "./testing";
 
 // Issue 1 narrows Issue 3 and is narrowed by Issue 2, which Issue 4 narrows.
@@ -159,22 +159,22 @@ test("a change to the inquiry, as adding or removing a relation writes on both e
 });
 
 /** The canvas's operations, as a canvas provides them to the page inside it. */
-function canvas(fields: Partial<WorkspaceActions> = {}): WorkspaceActions {
+function actions(fields: Partial<CanvasActions> = {}): CanvasActions {
   return canvasActions({ visualTypes: new Set(["trax.subgraph"]), ...fields });
 }
 
 test("inside a canvas, Expand opens the context graph window on the inquiry, beside the page", async () => {
-  const workspace = canvas();
-  renderDetail({ kind: "Issue", seq: 1 }, undefined, { workspace });
+  const canvas = actions();
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, { canvas });
   const expand = await screen.findByRole("button", { name: "Expand Issue#1 into a context graph window" });
   // Beside the link, never inside it: a button in a link is two controls in one.
   expect(screen.getByRole("link", { name: "Open in graph: Issue#1, 2 hops" }).contains(expand)).toBe(false);
   expand.click();
-  expect(workspace.operate).toHaveBeenCalledWith({ kind: "show", visual_type: "trax.subgraph", record_id: uuid(1), placement: "main" });
+  expect(canvas.operate).toHaveBeenCalledWith({ kind: "show", visual_type: "trax.subgraph", record_id: uuid(1), placement: "main" });
 });
 
 test("Expand waits while the canvas is writing", async () => {
-  renderDetail({ kind: "Issue", seq: 1 }, undefined, { workspace: canvas({ busy: true }) });
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, { canvas: actions({ busy: true }) });
   const expand = await screen.findByRole("button", { name: "Expand Issue#1 into a context graph window" });
   expect((expand as HTMLButtonElement).disabled).toBe(true);
 });
@@ -184,7 +184,7 @@ test("outside a canvas, or in one without the context graph, there is no Expand"
   await screen.findByRole("link", { name: "Open in graph: Issue#1, 2 hops" });
   expect(screen.queryByRole("button", { name: /^Expand/ })).toBeNull();
   cleanup();
-  renderDetail({ kind: "Issue", seq: 1 }, undefined, { workspace: canvas({ visualTypes: new Set(["trax.timeline"]) }) });
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, { canvas: actions({ visualTypes: new Set(["trax.timeline"]) }) });
   await screen.findByRole("link", { name: "Open in graph: Issue#1, 2 hops" });
   expect(screen.queryByRole("button", { name: /^Expand/ })).toBeNull();
 });

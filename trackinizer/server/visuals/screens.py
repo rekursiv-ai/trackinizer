@@ -17,10 +17,10 @@ from trackinizer.server.audience import visible_sql
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.inquiries import KIND_TO_CLASS
 from trackinizer.wire.wire_sessions import (
-    WorkspaceMark,
-    WorkspacePage,
-    WorkspaceRecordContext,
-    WorkspaceVisibleVisual,
+    CanvasMark,
+    CanvasPage,
+    CanvasRecordContext,
+    CanvasVisibleVisual,
 )
 
 
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
     from trackinizer.lib.postgres import Conn
     from trackinizer.server.audience import SessionReader
-    from trackinizer.server.visuals.workspaces import Mark, VisualInstance
+    from trackinizer.server.visuals.canvases import Mark, VisualInstance
 
 
 type Seq = tuple[str, int]
@@ -42,9 +42,9 @@ type Named = uuid.UUID | Seq
 class Screen:
     """The sender's pages and visuals, each with the record it shows."""
 
-    page: WorkspacePage | None
-    trail: list[WorkspacePage]
-    visuals: list[WorkspaceVisibleVisual]
+    page: CanvasPage | None
+    trail: list[CanvasPage]
+    visuals: list[CanvasVisibleVisual]
 
 
 async def read_screen(
@@ -77,7 +77,7 @@ async def read_screen(
     ]
     ids = [ref for ref in wanted if isinstance(ref, uuid.UUID)]
     seqs = [ref for ref in wanted if not isinstance(ref, uuid.UUID)]
-    found: dict[Named, WorkspaceRecordContext] = {}
+    found: dict[Named, CanvasRecordContext] = {}
     for row in (
         await conn.fetch(
             "SELECT id, kind, seq, title FROM inquiries WHERE id = ANY($1::uuid[]) "
@@ -89,12 +89,12 @@ async def read_screen(
         if wanted
         else []
     ):
-        record = WorkspaceRecordContext.model_validate(
+        record = CanvasRecordContext.model_validate(
             {**dict(row), "title": str(row["title"])[:512]},
         )
         found[record.id] = found[record.kind, record.seq] = record
     pages = {
-        route: WorkspacePage(
+        route: CanvasPage(
             route=route,
             record=None if ref is None else found.get(ref),
         )
@@ -104,7 +104,7 @@ async def read_screen(
         page=None if page is None else pages[page],
         trail=[pages[route] for route in trail],
         visuals=[
-            WorkspaceVisibleVisual(
+            CanvasVisibleVisual(
                 id=v.id,
                 type=v.type,
                 record=None if v.record_id is None else found.get(v.record_id),
@@ -120,7 +120,7 @@ async def read_covered_records(
     *,
     marks: Sequence[Mark],
     reader: SessionReader,
-) -> dict[uuid.UUID, WorkspaceRecordContext]:
+) -> dict[uuid.UUID, CanvasRecordContext]:
     """Resolve the records ``marks`` cover, in one query.
 
     A mark's covers are what its drawer's browser said, so a session among them is
@@ -151,7 +151,7 @@ async def read_covered_records(
         *params,
     )
     records = (
-        WorkspaceRecordContext.model_validate(
+        CanvasRecordContext.model_validate(
             {**dict(row), "title": str(row["title"])[:512]},
         )
         for row in rows
@@ -162,9 +162,9 @@ async def read_covered_records(
 def wire_marks(
     marks: Sequence[Mark],
     *,
-    records: dict[uuid.UUID, WorkspaceRecordContext],
-    visuals: Sequence[WorkspaceVisibleVisual],
-) -> list[WorkspaceMark]:
+    records: dict[uuid.UUID, CanvasRecordContext],
+    visuals: Sequence[CanvasVisibleVisual],
+) -> list[CanvasMark]:
     """Say what ``marks`` cover in the form an agent's line carries.
 
     Args:
@@ -179,7 +179,7 @@ def wire_marks(
     """
     on_canvas = {visual.id: visual for visual in visuals}
     return [
-        WorkspaceMark(
+        CanvasMark(
             id=mark.id,
             author=mark.author,
             page=mark.page,

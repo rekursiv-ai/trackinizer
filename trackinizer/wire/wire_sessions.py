@@ -53,6 +53,7 @@ def _reject_blank(value: str | None) -> str | None:
 
 __all__ = [
     "CAMPAIGN_ASKER_INFIX",
+    "CANVAS_LABEL_PREFIX",
     "CHAT_RUN_LIVE",
     "CHAT_TAKEN_OVER",
     "CHAT_TAKEN_OVER_MESSAGE",
@@ -79,9 +80,12 @@ __all__ = [
     "SESSION_RECORDS_PATH",
     "SESSION_RUN_STATE_PATH",
     "SESSION_START_PATH",
-    "SESSION_WORKSTREAM_PATH",
-    "STATION_LABEL_PREFIX",
+    "SESSION_WORKSPACE_PATH",
     "VERSION_PATH",
+    "CanvasMark",
+    "CanvasMessageContext",
+    "CanvasRecordContext",
+    "CanvasVisibleVisual",
     "ConsoleRelay",
     "ConsoleRelayReceipt",
     "ConsoleTarget",
@@ -114,10 +118,6 @@ __all__ = [
     "SessionRunState",
     "SessionStart",
     "SessionStartResponse",
-    "WorkspaceMark",
-    "WorkspaceMessageContext",
-    "WorkspaceRecordContext",
-    "WorkspaceVisibleVisual",
     "campaign_asker_label",
     "session_audience_path",
     "session_place_path",
@@ -246,8 +246,8 @@ class SessionStartResponse(BaseModel):
     server that predates the field."""
 
 
-STATION_LABEL_PREFIX: Final = "station:"
-"""A placed session's label naming its station: ``station:<workspace uuid>``."""
+CANVAS_LABEL_PREFIX: Final = "canvas:"
+"""A placed session's label naming its canvas: ``canvas:<canvas uuid>``."""
 
 GIT_LABEL_PREFIX: Final = "git:"
 """A placed session's label naming its checkout: ``git:<origin url>@<branch>``."""
@@ -265,12 +265,12 @@ class GitRef(BaseModel):
 
 
 class PlaceSession(BaseModel):
-    """Ask the server to place a session in a workstream and a station."""
+    """Ask the server to place a session in a workspace and a canvas."""
 
     model_config = ConfigDict(extra="forbid")
 
-    workspace: uuid.UUID | None = None
-    """The station the run was started from (``TRAX_WORKSPACE``), if any."""
+    canvas: uuid.UUID | None = None
+    """The canvas the run was started from (``TRAX_CANVAS``), if any."""
 
     git: GitRef | None = None
     """The run's checkout, when it is on a branch of a git work tree."""
@@ -279,16 +279,16 @@ class PlaceSession(BaseModel):
 class SessionPlacement(BaseModel):
     """Where a session was placed; both ids are ``None`` for a session not placed."""
 
-    workstream_id: uuid.UUID | None = None
     workspace_id: uuid.UUID | None = None
+    canvas_id: uuid.UUID | None = None
 
 
 class MoveSession(BaseModel):
-    """The workstream a session is moved to."""
+    """The workspace a session is moved to."""
 
     model_config = ConfigDict(extra="forbid")
 
-    workstream_id: uuid.UUID
+    workspace_id: uuid.UUID
 
 
 class FeedEvent(BaseModel):
@@ -547,7 +547,7 @@ class InboundEnqueueRequest(BaseModel):
     )
 
 
-class WorkspaceRecordContext(BaseModel):
+class CanvasRecordContext(BaseModel):
     """A graph record the sender sees on screen, with a bounded title preview."""
 
     id: uuid.UUID
@@ -556,12 +556,12 @@ class WorkspaceRecordContext(BaseModel):
     title: str = Field(max_length=512)
 
 
-class WorkspaceVisibleVisual(BaseModel):
+class CanvasVisibleVisual(BaseModel):
     """A visual present on the canvas when a message was sent."""
 
     id: uuid.UUID
     type: str
-    record: WorkspaceRecordContext | None = None
+    record: CanvasRecordContext | None = None
     """The record the visual shows, when it shows one that exists."""
 
     params: dict[str, str | int | bool] = Field(default_factory=dict)
@@ -569,20 +569,20 @@ class WorkspaceVisibleVisual(BaseModel):
     reader set in the pane, so an agent that shows it again can keep them."""
 
 
-class WorkspacePage(BaseModel):
+class CanvasPage(BaseModel):
     """A page the sender was on, with the record it shows when it names one."""
 
     route: str
     """The `#/...` address."""
 
-    record: WorkspaceRecordContext | None = None
+    record: CanvasRecordContext | None = None
 
 
-class WorkspaceMark(BaseModel):
+class CanvasMark(BaseModel):
     """A red box drawn on the canvas since the sender's last line, with what it covers."""
 
     id: uuid.UUID
-    """What ``trax workspace ID mark remove`` takes."""
+    """What ``trax canvas ID mark remove`` takes."""
 
     author: str
     page: str | None = None
@@ -595,13 +595,13 @@ class WorkspaceMark(BaseModel):
     """Where it stands, as fractions of the width and height of the ``tile``'s body,
     or of the stage when there is no tile."""
 
-    tile: WorkspaceVisibleVisual | None = None
+    tile: CanvasVisibleVisual | None = None
     """The visual it was drawn on, when it was drawn on one."""
 
-    instances: list[WorkspaceVisibleVisual] = Field(default_factory=list)
+    instances: list[CanvasVisibleVisual] = Field(default_factory=list)
     """The visuals under it that are still on the canvas."""
 
-    records: list[WorkspaceRecordContext] = Field(default_factory=list)
+    records: list[CanvasRecordContext] = Field(default_factory=list)
     """The records under it that exist."""
 
 
@@ -617,13 +617,13 @@ class ConsoleTarget(BaseModel):
 
 
 CONSOLE_RELAY_MARK: Final = "→ "
-"""What a Console relay line starts with in a station's chat: an arrow, then a space.
+"""What a Console relay line starts with in a canvas's chat: an arrow, then a space.
 The web draws a line that starts with it as a relay, neither the person's nor the
 partner's."""
 
 
 class ConsoleRelay(BaseModel):
-    """What a person sent agents directly from the Console, told to their station's chat.
+    """What a person sent agents directly from the Console, told to their canvas's chat.
 
     Posted by the browser after the per-agent sends, and carried in the context of
     the message the chat's partner then receives. The partner records it in the
@@ -650,18 +650,18 @@ class ConsoleRelay(BaseModel):
 
 
 class ConsoleRelayReceipt(BaseModel):
-    """Whether the station's chat partner took a Console relay."""
+    """Whether the canvas's chat partner took a Console relay."""
 
     delivered: bool
-    """False when the station has no chat, or its partner is not running or is full.
+    """False when the canvas has no chat, or its partner is not running or is full.
     The agents already have the message, so this is not an error."""
 
 
-class WorkspaceMessageContext(BaseModel):
+class CanvasMessageContext(BaseModel):
     """Server-derived canvas context attached to an inbound message."""
 
-    workspace_id: uuid.UUID
-    visible_visuals: list[WorkspaceVisibleVisual]
+    canvas_id: uuid.UUID
+    visible_visuals: list[CanvasVisibleVisual]
     agent_instructions: str | None = Field(default=None, max_length=8_192)
     continuation_record_id: uuid.UUID | None = None
     conversation_id: uuid.UUID | None = None
@@ -671,14 +671,14 @@ class WorkspaceMessageContext(BaseModel):
     """Set on the first line of a fork: the line of another conversation's session it
     starts from. The assistant opens the conversation with the lines up to it."""
 
-    page: WorkspacePage | None = None
+    page: CanvasPage | None = None
     """The page the sender is on as they send: what "this" means to them."""
 
-    trail: list[WorkspacePage] = Field(default_factory=list)
+    trail: list[CanvasPage] = Field(default_factory=list)
     """The pages they came through before it, oldest first."""
 
-    marks: list[WorkspaceMark] = Field(default_factory=list)
-    """The boxes drawn on the station since its last line, oldest first."""
+    marks: list[CanvasMark] = Field(default_factory=list)
+    """The boxes drawn on the canvas since its last line, oldest first."""
 
     relay: ConsoleRelay | None = None
     """Set when the message is not a question for the partner but a note of what the
@@ -714,7 +714,7 @@ class InboundDrainItem(BaseModel):
     """The room a routed message was scoped to, for the ``[room] sender:``
     injection prefix; ``None`` for a direct (session-id) enqueue."""
 
-    context: WorkspaceMessageContext | None = None
+    context: CanvasMessageContext | None = None
 
     _validate_room = field_validator("room", mode="after")(staticmethod(_reject_blank))
 
@@ -839,7 +839,7 @@ SESSION_INBOUND_PATH: Final = "/api/sessions/{session_id}/inbound"
 SESSION_RUN_STATE_PATH: Final = "/api/sessions/{session_id}/run-state"
 SESSION_REATTACH_PATH: Final = "/api/sessions/{session_id}/reattach"
 SESSION_PLACE_PATH: Final = "/api/sessions/{session_id}/place"
-SESSION_WORKSTREAM_PATH: Final = "/api/sessions/{session_id}/workstream"
+SESSION_WORKSPACE_PATH: Final = "/api/sessions/{session_id}/workspace"
 SEND_MESSAGE_PATH: Final = "/api/messages"
 VERSION_PATH: Final = "/api/version"
 FEED_PATH: Final = "/api/web/feed"
@@ -847,15 +847,15 @@ FEED_FACETS_PATH: Final = "/api/web/feed/facets"
 FEED_HISTOGRAM_PATH: Final = "/api/web/feed/histogram"
 
 # The ``code`` of a science chat's refused drain (``GET /api/sessions/{id}/inbound``).
-# The chat's station names who answers it, and its queue has one drainer and one run.
+# The chat's canvas names who answers it, and its queue has one drainer and one run.
 PROVIDER_IS_CLI: Final = "provider_is_cli"
-"""The station answers the chat with a CLI, and the assistant's key drained it."""
+"""The canvas answers the chat with a CLI, and the assistant's key drained it."""
 
 PROVIDER_IS_ASSISTANT: Final = "provider_is_assistant"
-"""The station answers the chat with the assistant, and a run drained it."""
+"""The canvas answers the chat with the assistant, and a run drained it."""
 
 PROVIDER_IS_OTHER_CLI: Final = "provider_is_other_cli"
-"""The station answers the chat with one CLI, and a run of the other drained it."""
+"""The canvas answers the chat with one CLI, and a run of the other drained it."""
 
 CHAT_RUN_LIVE: Final = "chat_run_live"
 """Another run of the chat's CLI holds its lease: a chat has one live run at a time."""
@@ -903,7 +903,7 @@ SESSION_API_PATHS: tuple[str, ...] = (
     SESSION_RUN_STATE_PATH,
     SESSION_REATTACH_PATH,
     SESSION_PLACE_PATH,
-    SESSION_WORKSTREAM_PATH,
+    SESSION_WORKSPACE_PATH,
     SEND_MESSAGE_PATH,
     VERSION_PATH,
     FEED_PATH,
@@ -923,7 +923,7 @@ def session_end_path(session_id: uuid.UUID) -> str:
 
 
 def session_place_path(session_id: uuid.UUID) -> str:
-    """Return the path that places one session in a workstream and station."""
+    """Return the path that places one session in a workspace and canvas."""
     return SESSION_PLACE_PATH.format(session_id=session_id)
 
 

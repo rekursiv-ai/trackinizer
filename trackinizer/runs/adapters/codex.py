@@ -101,7 +101,7 @@ class CodexAdapter:
           result: The Path | None.
 
         """
-        # Codex shards by DATE, not workspace, so concurrent runs share this
+        # Codex shards by DATE, not canvas, so concurrent runs share this
         # directory. The runner claims the child-held rollout's session ID.
         return None
 

@@ -199,7 +199,7 @@ test("the canvas Artifact visual accepts a real record id", async () => {
   const id = "0b6f7c1e-2f7a-4c55-9d7e-1f0e6b1d2a33";
   stubFetch(() => Response.json({ ...structuredArtifact, artifact_id: id, html: null, citations: [], scope: "team" }));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={queryClient}><Artifact workspace={null} focused={false} onWorkspaceChanged={vi.fn()}
+  render(<QueryClientProvider client={queryClient}><Artifact canvas={null} focused={false} onCanvasChanged={vi.fn()}
     instance={{ id: "artifact", type: "trax.artifact", version: 1, placement: "main", record_id: id, params: {} }} /></QueryClientProvider>);
   expect(await screen.findByRole("heading", { name: "Scaling directions" })).toBeTruthy();
   expect(screen.queryByText(/Open an Artifact/)).toBeNull();

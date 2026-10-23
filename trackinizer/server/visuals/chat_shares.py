@@ -7,8 +7,8 @@ them. A ``staff`` chat is shared only with a person who holds ``staff``: its
 assistant read a staff session into it.
 
 Deleting a conversation takes every session under its id, whoever opened it, with
-their records, its shares, and its binding to any station, whose next line then
-starts a new chat. Each such station moves to a new revision, as any station write
+their records, its shares, and its binding to any canvas, whose next line then
+starts a new chat. Each such canvas moves to a new revision, as any canvas write
 does: a browser orders canvas frames by revision, and an open tab would otherwise keep
 the deleted chat. Its forks keep their copies of its lines; their edge to it goes with
 its sessions, so their ``forked_from`` reads as none. A tombstone keeps its id, under
@@ -55,17 +55,17 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "UnboundStation",
+    "UnboundCanvas",
     "delete_chat",
     "set_share",
 ]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class UnboundStation:
-    """A station that held a deleted chat and now holds none, and its owner."""
+class UnboundCanvas:
+    """A canvas that held a deleted chat and now holds none, and its owner."""
 
-    workspace_id: uuid.UUID
+    canvas_id: uuid.UUID
     user_id: uuid.UUID
 
 
@@ -149,8 +149,8 @@ async def delete_chat(
     caller: AuthIdentity,
     conversation_id: uuid.UUID,
     inbound: InboundQueue,
-) -> list[UnboundStation] | None:
-    """Delete a chat: its sessions and their records, its shares, its stations' hold.
+) -> list[UnboundCanvas] | None:
+    """Delete a chat: its sessions and their records, its shares, its canvases' hold.
 
     Each session under its id is purged as ``DELETE /api/inquiries/<uuid>`` purges a
     row, with its audit and its edges' audits, in one transaction with the rest.
@@ -168,7 +168,7 @@ async def delete_chat(
       inbound: Session message queue, which holds the chat's lines not yet read.
 
     Returns:
-      stations: The stations that held the chat, none of which holds it now; None
+      canvases: The canvases that held the chat, none of which holds it now; None
         when the caller finds no such chat.
 
     Raises:
@@ -176,7 +176,7 @@ async def delete_chat(
 
     """
     async with notify_after_commit(), store.engine.acquire() as conn, tx(conn):
-        # The id is held first: a session start, a line or a station bound under it
+        # The id is held first: a session start, a line or a canvas bound under it
         # finishes before this reads what it takes, or waits and finds the tombstone.
         await lock_chat_id(conn, conversation_id=conversation_id)
         # Locked before they are read: a line recorded meanwhile, which locks its
@@ -233,9 +233,9 @@ async def delete_chat(
             caller.email,
         )
         rows = await conn.fetch(
-            "UPDATE visual_workspaces SET station = station - 'conversation_id', "
+            "UPDATE visual_canvases SET metadata = metadata - 'conversation_id', "
             "revision = revision + 1 "
-            "WHERE station->>'conversation_id' = $1 RETURNING id, user_id",
+            "WHERE metadata->>'conversation_id' = $1 RETURNING id, user_id",
             str(conversation_id),
         )
         # Under the lock still, so no line can be queued for it after this. A drain
@@ -245,8 +245,8 @@ async def delete_chat(
         for session_id in found.sessions:
             inbound.forget_poller(session_id)
     return [
-        UnboundStation(
-            workspace_id=from_plain(row["id"], uuid.UUID),
+        UnboundCanvas(
+            canvas_id=from_plain(row["id"], uuid.UUID),
             user_id=from_plain(row["user_id"], uuid.UUID),
         )
         for row in rows

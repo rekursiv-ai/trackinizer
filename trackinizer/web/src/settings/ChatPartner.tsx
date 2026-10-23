@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useStation } from "../stations/useStation";
+import { useCanvas } from "../canvases/useCanvas";
 import { Icon } from "../ui/icons";
 import { KeyValue, ReadError, Section } from "./account";
 import "./settings.css";
@@ -10,7 +10,7 @@ import "./settings.css";
  * entry the live stream keeps.
  */
 export function ChatPartnerSection() {
-  const canvas = useStation();
+  const canvas = useCanvas();
   const state = canvas.data;
   return (
     <Section title="Chat partner">
