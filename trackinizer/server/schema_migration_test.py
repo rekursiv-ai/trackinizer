@@ -629,8 +629,10 @@ async def test_migration_035_matches_the_baseline_machines_table(
         baseline_idx = {str(r["indexdef"]) for r in await conn.fetch(indexes)}
         assert baseline_cols, "the baseline did not create machines"
 
+        # ``machine_jobs`` (057) refers to ``machines``, so it goes first and comes back.
         await conn.execute(
-            "DROP TABLE machine_credentials, machine_enrollments, machines",
+            "DROP TABLE machine_jobs, machine_credentials, machine_enrollments, "
+            "machines",
         )
         await conn.execute(load_sql("schema.035"))
         # The baseline holds later migrations' columns too, so they are added before
@@ -638,6 +640,7 @@ async def test_migration_035_matches_the_baseline_machines_table(
         await conn.execute(load_sql("schema.036"))
         await conn.execute(load_sql("schema.049"))
         await conn.execute(load_sql("schema.052"))
+        await conn.execute(load_sql("schema.057"))
         migrated_cols = [dict(r) for r in await conn.fetch(columns)]
         migrated_cons = {
             (r["conname"], r["def"]) for r in await conn.fetch(constraints)
@@ -706,13 +709,16 @@ async def test_migration_036_matches_the_baseline_machine_host_tables(
         baseline = {t: await _table_shape(conn, t) for t in _MACHINE_HOST_TABLES}
         assert baseline["machine_credentials"][0], "the baseline lacks the tables"
 
+        # ``machine_jobs`` (057) refers to ``machines``, so it goes first and comes back.
         await conn.execute(
-            "DROP TABLE machine_credentials, machine_enrollments, machines",
+            "DROP TABLE machine_jobs, machine_credentials, machine_enrollments, "
+            "machines",
         )
         await conn.execute(load_sql("schema.035"))
         await conn.execute(load_sql("schema.036"))
         await conn.execute(load_sql("schema.049"))
         await conn.execute(load_sql("schema.052"))
+        await conn.execute(load_sql("schema.057"))
         migrated = {t: await _table_shape(conn, t) for t in _MACHINE_HOST_TABLES}
         # Replaying it over the existing tables is a no-op, not an error.
         await conn.execute(load_sql("schema.036"))
@@ -1302,10 +1308,15 @@ async def test_migration_054_matches_the_baseline_gpu_tables(
         baseline = {t: await _table_shape(conn, t) for t in _GPU_TABLES}
         assert baseline["gpu_jobs"][0], "the baseline lacks the tables"
 
-        await conn.execute("DROP TABLE gpu_issuances, gpu_jobs, gpu_owners")
+        # ``machine_jobs`` (057) takes its ids from ``gpu_jobs``' sequence, so it goes
+        # first and comes back after.
+        await conn.execute(
+            "DROP TABLE machine_jobs, gpu_issuances, gpu_jobs, gpu_owners",
+        )
         await conn.execute(load_sql("schema.054"))
         # 056 adds the column the baseline's ``gpu_jobs`` ends with.
         await conn.execute(load_sql("schema.056"))
+        await conn.execute(load_sql("schema.057"))
         migrated = {t: await _table_shape(conn, t) for t in _GPU_TABLES}
         # Replaying it over the existing tables is a no-op, not an error.
         await conn.execute(load_sql("schema.054"))
@@ -1375,6 +1386,45 @@ async def test_migration_056_matches_the_baseline_box_credentials(
         await conn.execute(load_sql("schema.056"))
 
     assert migrated == baseline
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_057_matches_the_baseline_machine_jobs_table(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """The machine-job table 057 builds equals the fresh-install one.
+
+    Drops the table (as a pre-057 database lacks it), replays ``schema.057`` alone, and
+    compares its shape against the baseline. Its ids come from the GPU jobs' sequence,
+    so one number never names two jobs.
+    """
+    await reset_schema(pglite_engine)
+    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
+    async with pglite_engine.acquire() as conn:
+        baseline = await _table_shape(conn, "machine_jobs")
+        assert baseline[0], "the baseline lacks the table"
+
+        await conn.execute("DROP TABLE machine_jobs")
+        await conn.execute(load_sql("schema.057"))
+        migrated = await _table_shape(conn, "machine_jobs")
+        # Replaying it over the existing table is a no-op, not an error.
+        await conn.execute(load_sql("schema.057"))
+        gpu = from_plain(await conn.fetchval("SELECT nextval('gpu_jobs_id_seq')"), int)
+        machine = await conn.fetchval(
+            "INSERT INTO machine_jobs (email, machine, state, gpus, memory_mb, "
+            "minutes, argv, remote, ref, commit) VALUES ('jan@example.com', 'gx10', "
+            "'requested', 0, 1024, 5, '[\"true\"]', 'https://github.com/o/r.git', "
+            "'refs/heads/main', repeat('a', 40)) RETURNING id",
+        )
+        with pytest.raises(asyncpg.CheckViolationError):
+            await conn.execute(
+                "UPDATE machine_jobs SET state = 'placed' WHERE id = $1",
+                machine,
+            )
+
+    assert migrated == baseline
+    assert machine == gpu + 1
 
 
 async def _catalog_names_aside(conn: Conn) -> list[tuple[str, str, str]]:

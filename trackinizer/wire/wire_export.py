@@ -145,5 +145,8 @@ Left out on purpose, and why:
   them, and the hashes of the campaign-box credentials that submit them: what
   each person ran and was charged, and hashes that open a node, which the database's own
   backups keep and a graph export would show to everyone who can read it.
+* ``machine_jobs`` -- the jobs each person ran on their own machines: what ran where,
+  and from which repository, which the database's own backups keep and a graph export
+  would show to everyone who can read it.
 * ``applied_migrations`` -- carried in the header instead.
 """

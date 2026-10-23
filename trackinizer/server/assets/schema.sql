@@ -1280,3 +1280,39 @@ CREATE TABLE IF NOT EXISTS device_logins (
 
 CREATE INDEX IF NOT EXISTS idx_device_logins_expires
     ON device_logins (expires_at);
+
+-- Jobs on a person's own machine: see ``schema.057.sql`` for what the table keeps. Its
+-- ids come from ``gpu_jobs_id_seq``. Added in 057.
+CREATE TABLE IF NOT EXISTS machine_jobs (
+    id               BIGINT PRIMARY KEY DEFAULT nextval('gpu_jobs_id_seq'),
+    email            TEXT NOT NULL,
+    machine_id       UUID REFERENCES machines(id) ON DELETE SET NULL,
+    machine          TEXT NOT NULL,
+    state            TEXT NOT NULL
+                     CHECK (state IN ('requested', 'queued', 'running', 'completed',
+                                      'failed', 'cancelled', 'timeout')),
+    cancel_requested BOOLEAN NOT NULL DEFAULT false,
+    gpus             INT NOT NULL,
+    memory_mb        INT NOT NULL,
+    minutes          INT NOT NULL,
+    label            TEXT NOT NULL DEFAULT '',
+    argv             JSONB NOT NULL,
+    remote           TEXT NOT NULL,
+    ref              TEXT NOT NULL,
+    commit           TEXT NOT NULL,
+    exit_code        INT,
+    reason           TEXT NOT NULL DEFAULT '',
+    requested_by     UUID,
+    claimed_until    TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    queued_at        TIMESTAMPTZ,
+    started_at       TIMESTAMPTZ,
+    ended_at         TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS machine_jobs_email_created
+    ON machine_jobs (email, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS machine_jobs_live
+    ON machine_jobs (machine_id)
+    WHERE state NOT IN ('completed', 'failed', 'cancelled', 'timeout');
