@@ -18,6 +18,7 @@ from pydantic import (
     model_validator,
 )
 
+from trackinizer.server.visuals.catalog import RECORD_VISUAL
 from trackinizer.wire.wire_science_chat import ChatProvider
 from trackinizer.wire.wire_sessions import RunState
 
@@ -1111,8 +1112,20 @@ def apply_operation(
             name: schema.default for name, schema in descriptor.parameter_schema.items()
         }
         params.update(operation.params)
+        # A record tile has one instance per record, so its existing instance is the
+        # one on this record; any other type has one in all. The rule is not in
+        # ShowVisual's docstring: that is the schema's description, which both web
+        # apps' committed openapi.json pin.
         existing = next(
-            (visual for visual in updated.visuals if visual.type == descriptor.type),
+            (
+                visual
+                for visual in updated.visuals
+                if visual.type == descriptor.type
+                and (
+                    descriptor.type != RECORD_VISUAL
+                    or visual.record_id == operation.record_id
+                )
+            ),
             None,
         )
         if existing is not None:

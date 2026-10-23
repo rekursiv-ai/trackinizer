@@ -13,11 +13,14 @@ from pydantic import ValidationError
 import pytest
 
 from trackinizer.server.visuals.catalog import (
+    RECORD_VISUAL,
     ParameterDescription,
     VisualCatalogBody,
     VisualDescription,
+    Workspace,
     default_catalog,
     default_workspace,
+    offer_record_visual,
 )
 from trackinizer.server.visuals.workspaces import (
     MAX_MARKS,
@@ -167,6 +170,32 @@ def test_show_reuses_visual_type_and_updates_its_context() -> None:
     assert reopened.visuals[1].id == graph_id
     assert reopened.visuals[1].record_id == record_id
     assert reopened.focused_instance == graph_id
+
+
+def test_a_canvas_holds_one_record_tile_per_record_and_reshowing_one_focuses_it() -> (
+    None
+):
+    """Record tiles stand side by side; a show of a record on show focuses its tile."""
+    visuals = Workspace.Config()
+    offer_record_visual(visuals)
+    catalog = visuals.make().catalog()
+    first, second = uuid.uuid4(), uuid.uuid4()
+    data = initial_data(catalog)
+    for record in (first, second, first):
+        data = apply_operation(
+            data,
+            ShowVisual(
+                kind="show",
+                visual_type=RECORD_VISUAL,
+                placement="left",
+                record_id=record,
+                params={"kind": "Issue"},
+            ),
+            catalog,
+        )
+    tiles = [visual for visual in data.visuals if visual.type == RECORD_VISUAL]
+    assert [tile.record_id for tile in tiles] == [first, second]
+    assert data.focused_instance == tiles[0].id
 
 
 def test_recentring_the_context_graph_keeps_its_reach_and_highlight() -> None:

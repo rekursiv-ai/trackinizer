@@ -7,6 +7,7 @@ from pydantic import ValidationError
 import pytest
 
 from trackinizer.server.visuals.catalog import (
+    RECORD_VISUAL,
     ContextGraphVisual,
     FilesVisual,
     ParameterDescription,
@@ -16,6 +17,7 @@ from trackinizer.server.visuals.catalog import (
     Workspace,
     default_catalog,
     default_workspace,
+    offer_record_visual,
 )
 
 
@@ -85,6 +87,28 @@ def test_record_visuals_name_the_kinds_they_accept() -> None:
         "trax.files": None,
         "trax.terminal": None,
     }
+
+
+def test_the_record_tile_is_offered_once_and_is_no_default_visual() -> None:
+    """A site whose app draws record tiles offers them; the default catalog does not."""
+    visuals = Workspace.Config()
+    offer_record_visual(visuals)
+    offer_record_visual(visuals)
+    offered = [
+        visual
+        for visual in visuals.make().catalog().visuals
+        if visual.type == RECORD_VISUAL
+    ]
+    assert RECORD_VISUAL not in {visual.type for visual in default_catalog().visuals}
+    assert len(offered) == 1
+    record = offered[0]
+    assert (record.requires, record.record_kinds, record.default_size) == (
+        ["record"],
+        None,
+        "compact",
+    )
+    assert sorted(record.parameter_schema) == ["kind"]
+    assert record.parameter_schema["kind"].max_length == 64
 
 
 def test_default_visual_requiring_a_record_is_rejected() -> None:
