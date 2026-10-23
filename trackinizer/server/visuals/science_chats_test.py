@@ -114,7 +114,7 @@ def test_a_user_turn_that_names_its_sender_is_a_persons_line() -> None:
     """A CLI user turn counts as a line only when its stamp or an author names a sender.
 
     The predicate is read from the SQL, which the database runs; the stamp is what
-    ``trax run`` writes into ``extra`` for a line it delivered.
+    the agent runner writes into ``extra`` for a line it delivered.
     """
     conn: AsyncMock = make_conn()
     conn.fetchval.return_value = True

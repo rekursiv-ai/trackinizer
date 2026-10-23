@@ -89,7 +89,7 @@ def browser(user_id: uuid.UUID = TEST_USER_ID, *, email: str = TEST_USER_EMAIL) 
 
 
 def act_as_user_agent(role: Role = "viewer") -> None:
-    """Act as the browser user's own `trax run` key, as a viewer or a writer."""
+    """Act as the browser user's own agent run's key, as a viewer or a writer."""
     _agent(TEST_API_KEY_ID, user_id=TEST_USER_ID, email=TEST_USER_EMAIL, role=role)
 
 
@@ -203,7 +203,7 @@ async def seed_session(
       account: The person the session is attributed to; the key's owner by default.
       labels: The labels the row carries.
       polled: Whether the session's runner polls its inbound queue.
-      drained_by: The CLI its poller names, as a ``trax run`` does; none, as the
+      drained_by: The CLI its poller names, as an agent run does; none, as the
         assistant's does.
 
     Returns:

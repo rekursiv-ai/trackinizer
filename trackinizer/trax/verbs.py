@@ -30,6 +30,7 @@ from trackinizer.lib.agent.types.sessions import (
 from trackinizer.trax import render
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import cwd, env, workspace_from_env
+from trackinizer.trax.forward import RUN_CLIS, moved
 from trackinizer.trax.grammar import (
     COST_FIELDS,
     EDGE_ALIASES,
@@ -78,18 +79,6 @@ from trackinizer.trax.render import (
     table_cell,
     table_width,
 )
-
-# EAGER, unlike the functions below: an exception must be a real class to be
-# caught, and a proxy in an ``except`` raises ``TypeError: catching classes
-# that do not inherit from BaseException`` -- on the error path only, so the
-# handler's diagnostic becomes a traceback exactly when a user made an
-# ordinary mistake. ``run.errors`` imports nothing, so this costs no PTY,
-# tail, or adapter machinery.
-from trackinizer.trax.run.errors import (
-    CiphertextDroppedError,
-    LossyConversionError,
-    NotResumableError,
-)
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
@@ -101,17 +90,7 @@ from trackinizer.wire.routes import (
 
 if TYPE_CHECKING:
     from trackinizer.client.client import Client
-    from trackinizer.trax.run import session
-    from trackinizer.trax.run.resume import prepare_resume
     from trackinizer.wire.wire_session_ir import PartBody, RecordBody
-else:
-    from wrapt import lazy_import
-
-    # The resume tail is the only path needing the PTY/tail/adapter machinery
-    # (importing ``trax.run.session`` costs ~324ms), so the WORK is bound
-    # lazily -- mirroring ``cli.py``, which does the same for ``run``.
-    prepare_resume = lazy_import("trackinizer.trax.run.resume", "prepare_resume")
-    session = lazy_import("trackinizer.trax.run.session")
 
 if TYPE_CHECKING:
     from trackinizer.wire.wire_metrics import MetricPoint
@@ -417,65 +396,41 @@ class Kind(Command):
         args: argparse.Namespace,
         client_factory: Callable[[], Client],
     ) -> None:
-        """Dispatch ``agentsession 42 run claude [--lossy] [runner args]``.
+        """Refuse ``agentsession 42 run claude [--lossy] [runner args]``: it moved.
 
-        ``before`` names the session; ``tail`` is the target CLI followed by
-        whatever the runner should receive. The target is chosen HERE rather
-        than by whatever captured the session -- that is what lets a
-        codex-captured session resume as claude.
-
-        The tail takes its own ``--lossy`` (it gates the CONVERSION, which
-        happens before any runner exists) and passes everything else through:
-        ``run claude --as bob -- --model opus`` re-emits as
-        ``session.main(["claude", "--as", "bob", "--", "--model", "opus"])``.
-
-        The run writes into the session it resumes, as a new part, and uploads only
-        what the CLI writes after the history it was loaded with.
+        Resuming a stored session runs an agent CLI, which moved out of trax. A
+        malformed request is still named as such first, so the refusal is about the
+        one thing that changed.
 
         Args:
           before: Session identifier.
           tail: Target CLI followed by runner args.
           args: CLI namespace (lossy conversion flag).
-          client_factory: Callable that creates a client.
+          client_factory: Callable that creates a client; never called.
+
+        Raises:
+          ClientError: The tail names no resumable CLI, or the session is not one.
+          SystemExit: The request was well formed; it says it moved, with status 2.
 
         """
+        del client_factory
         _require_creation(args)
         if not tail:
             raise ClientError("run needs a target CLI: trax agentsession 42 run claude")
         if not starts_with_ref(before):
             raise ClientError("run needs one session: trax agentsession 42 run claude")
-        target, *runner_args = tail
-        boundary = runner_args.index("--") if "--" in runner_args else len(runner_args)
-        options, native = runner_args[:boundary], runner_args[boundary:]
-        lossy = bool(_arg_values(args).get("lossy", False)) or "--lossy" in options
-        forwarded = [arg for arg in options if arg != "--lossy"] + native
-        ref, consumed = consume_ref(before, 0, kind_hint="AgentSession")
+        if tail[0] not in RUN_CLIS:
+            raise ClientError(
+                f"{tail[0]!r} cannot resume a stored session: it has no stable "
+                "per-session id to re-enter with. "
+                f"Resumable: {', '.join(sorted(RUN_CLIS))}.",
+            )
+        _ref, consumed = consume_ref(before, 0, kind_hint="AgentSession")
         if before[consumed:]:
             raise ClientError(
                 f"unexpected tokens before 'run': {list(before[consumed:])}",
             )
-        client = client_factory()
-        _kind, session_id = client.resolve_id(ref)
-        try:
-            written = prepare_resume(client, session_id, target, lossy=lossy)
-        except NotResumableError as err:
-            raise ClientError(str(err)) from err
-        except LossyConversionError as err:
-            raise ClientError(str(err)) from err
-        except CiphertextDroppedError as err:
-            raise ClientError(
-                f"{err} (its records remain searchable; only the replay is lost)",
-            ) from err
-        del args
-        echo(f"resuming {ref} as {target} from {written.path}")
-        session.main(
-            [target, *forwarded],
-            client_factory=client_factory,
-            resume_path=written.path,
-            cli_session_id=str(written.cli_session_id),
-            attach=written.attach,
-            prefix_bytes=written.prefix_bytes,
-        )
+        moved("agentsession run")
 
     @classmethod
     def run_records(
@@ -3330,7 +3285,7 @@ class _WorkspaceArgs(Protocol):
 # UUID and ``$TRAX_WORKSPACE`` (or ``$LC_TRAX_WORKSPACE``) names a station, the words
 # shift right by one and the station is the id.
 def _with_default_workspace(args: _WorkspaceArgs) -> _WorkspaceArgs:
-    """Fill in the id a `trax run` session was placed on when the command names none."""
+    """Fill in the id an agent run's session was placed on when the command names none."""
     named = args.workspace_id
     if named is not None:
         try:
@@ -3349,7 +3304,7 @@ def _with_default_workspace(args: _WorkspaceArgs) -> _WorkspaceArgs:
     if station is None:
         if named is None:
             raise ClientError(
-                "no workspace: give its UUID, or run inside a `trax run` session "
+                "no workspace: give its UUID, or run inside a recorded agent run "
                 "placed on a station ($TRAX_WORKSPACE)",
             )
         return args

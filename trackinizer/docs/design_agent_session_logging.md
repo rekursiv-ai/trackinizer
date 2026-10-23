@@ -14,7 +14,7 @@ four are recoverable from both priority CLIs (claude, codex); see
 
 This doc covers **capture** (agent -> log). The reverse direction --
 **messaging** a live session (world -> agent: web UI / another agent
-sends a message into a running `trax run`) -- is designed in
+sends a message into a running agent run) -- is designed in
 [`design_session_messaging.md`](design_session_messaging.md), which
 reuses this subsystem's session row and transport.
 
@@ -22,8 +22,8 @@ reuses this subsystem's session row and transport.
 
 A live-capture spike settled the two gates that block the build:
 
-1. **Can we drive + scrape both CLIs?** Yes. `trax run claude` and
-   `trax run codex` each ran a prompt non-interactively and the harness
+1. **Can we drive + scrape both CLIs?** Yes. The runner, as
+   claude and as codex, each ran a prompt non-interactively and the harness
    captured their output.
 2. **What can we scrape?** All four required fields from both CLIs,
    including **codex reasoning** -- recoverable straight from the rollout
@@ -100,8 +100,8 @@ measurements are unaffected by the storage change and remain current.
 with a `message JSONB` holding one `Message` member; see [Superseded]
 (#superseded-the-message-union-2026-09).)
 
-**`trax run sh` -- the IO-stream adapter.** Besides the model CLIs, `sh`
-wraps ANY binary in a live, addressable session (`trax run --as alice sh
+**The runner's `sh` -- the IO-stream adapter.** Besides the model CLIs, `sh`
+wraps ANY binary in a live, addressable session (the runner's `--as alice sh
 -- CMD [ARGS...]`): the child's own stdin/stdout are the whole interface.
 
 - **Capture**: no session log exists to tail, so the PTY stream is the
@@ -112,8 +112,8 @@ wraps ANY binary in a live, addressable session (`trax run --as alice sh
   stdin lines -- no bracketed paste. The pump silences slave echo so
   injections are not re-captured as output.
 - **Parsing**: semantic parsing belongs to the wrapped program, not trax
-  (`trax/run/adapters/iostream.py`; reference client in
-  `examples/trax_run_sh_demo.sh`).
+  (`runs/adapters/iostream.py`; reference client in the agent
+  runner's `sh` demo).
 - **Extending**: a new stream dialect (say JSON-lines to richer events)
   is one `StreamAdapter` subclass overriding `parse` plus a registry
   entry.
@@ -135,13 +135,13 @@ Two layers, one DB today:
 
 Spike against live binaries: **claude 2.1.158**, **codex 0.135.0** (both
 newer than the `cli-scraping-investigation.md` versions, and the schemas
-shifted). Method: drive each CLI through `trax run` with a real prompt,
+shifted). Method: drive each CLI through the runner with a real prompt,
 then inspect the captured `Event`s and the CLI's native logs.
 
 ### Gate 1 -- capture works for both
 
 Both CLIs ran the prompt and the harness saw their output. Remote
-control via `trax run` is proven for claude and codex.
+control via the runner is proven for claude and codex.
 
 ### Gate 2 -- all four fields recover from both
 
@@ -323,7 +323,7 @@ rollups that need the firehose independent of storage. Not before.
 
 Per-CLI shim wraps the binary, spawns it in its native verbose/streaming
 mode, and forwards the structured event stream to trackinizer's ingest
-API. User runs `trax run <cli> <args>` instead of `<cli> <args>`; shim is
+API. User runs the runner's `<cli> <args>` instead of `<cli> <args>`; shim is
 a thin process boundary, not a daemon.
 
 |                                  | trax-claude     | trax-gemini    | trax-codex     | trax-cursor   |
@@ -397,8 +397,8 @@ rollout/session-log tailers; no JSON-RPC driver is needed for Phase 0.
 side).** Rewrite claude `_classify` for the real `type` +
 `message.content[].type` schema; bind the harness to the single session
 file of the current run (no dir-wide rescan). Touches
-`trax/run/adapters/claude.py` (+ test, real-log fixtures),
-`trax/run/session.py`. Tested: real-log fixtures → correct `kind`s;
+`runs/adapters/claude.py` (+ test, real-log fixtures),
+The runner's `session.py`. Tested: real-log fixtures → correct `kind`s;
 harness emits only the wrapped session's events.
 
 **0.5b. Fix codex adapter + reasoning flag + scope harness (Bug B +
@@ -408,8 +408,8 @@ codex thinking).** Keep the rollout-JSONL tailer; classify the
 `turn_context.model`. Spawn codex with `-c model_reasoning_summary=detailed`
 so the summary is populated. Scope the tailer to the single rollout file
 of the current run (no dir-wide rescan). Touches
-`trax/run/adapters/codex.py` (+ test, real-rollout fixtures),
-`trax/run/session.py`. Small fix, not a rewrite -- the app-server driver
+`runs/adapters/codex.py` (+ test, real-rollout fixtures),
+The runner's `session.py`. Small fix, not a rewrite -- the app-server driver
 is deferred to Step 7.
 
 **1. `AgentSession` artifact kind.** `AgentSession(Artifact)` with `cli`,
@@ -449,8 +449,8 @@ duplicate batch no-ops; 401/403; unknown session 404.
 `client.session_start/append_events/session_end`; a `TrackinizerSink`
 replacing the local-file sink (batch + retry + idempotency); `--sync`
 flag (local-file default until validated). Both adapters feed it. Touches
-`client/client.py` (+ test), `trax/run/session.py`, new
-`trax/run/sink.py`. Tested: sink batches/retries; full start→events→end
+`client/client.py` (+ test), the runner's `session.py`, new
+The runner's `sink.py`. Tested: sink batches/retries; full start→events→end
 against an in-process server; CLI-exit closes the session; thinking
 events survive the round-trip for both CLIs. + `integration_test.py`.
 
@@ -459,7 +459,7 @@ events survive the round-trip for both CLIs. + `integration_test.py`.
 deltas (`item/reasoning/summaryTextDelta`) and live tool events. Same
 content as the Step-0.5b rollout tailer, finer grain. Build against the
 version-pinned schema from `codex app-server generate-json-schema --out`.
-Touches `trax/run/adapters/codex.py`, `trax/run/session.py`. Pure
+Touches `runs/adapters/codex.py`, the runner's `session.py`. Pure
 fidelity upgrade; raw (non-summary) CoT stays unrecoverable (encrypted).
 
 **8. (Optional) Timescale deploy.** Blocked on an idempotency redesign --
@@ -522,7 +522,7 @@ layer on the existing seam.
 
 ## Addendum: the drain timer, its discovery scan, and the inbound poll
 
-`trax run` waits on timers in **two** loops: the filesystem drain
+The runner waits on timers in **two** loops: the filesystem drain
 (`_drain_filesystem_loop`, `run/session.py`) and the inbound message poll
 (`_inbound_poll_loop`, same file). Neither was chosen over an alternative
 -- the CLI-agnostic file tailer was the Phase-0 decision, and a timer is
@@ -621,7 +621,7 @@ Claude compaction does not append -- it writes the pre-compaction
 transcript aside (`pre_compact_N.jsonl`) and leaves a `session.jsonl` that
 can be SMALLER than before. `_drain_appended_lines` handles the shrink by
 resetting the byte offset to 0 AND discarding the partial-line buffer for
-that path (`trax/run/session.py`, the `size < last` branch) -- without the
+that path (the runner's `session.py`, the `size < last` branch) -- without the
 buffer drop, stale bytes from the old file would prepend to the first line
 of the new one. Any alternative reader needs the same guard.
 

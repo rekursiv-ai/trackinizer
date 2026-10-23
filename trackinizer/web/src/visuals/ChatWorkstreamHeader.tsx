@@ -7,7 +7,6 @@ import type { ChatHead } from "../api/chats";
 import { getInquiry } from "../api/inquiries";
 import type { WorkspacePartner, WorkspaceState } from "../api/workspaces";
 import { hasAssistant, PROVIDERS, partnerLabel, type Provider, providerName, stationProvider } from "../api/providers";
-import { Command } from "../settings/ChatPartner";
 import { hideStation, nameStation, openStation, STATIONS_KEY } from "../stations/actions";
 import { showStation } from "../stations/useStation";
 import { beginStationNavigation } from "../stations/store";
@@ -300,7 +299,6 @@ export function ChatWorkstreamHeader({ workspace, head, waiting = false, onHide,
         <span>Session: {head?.session_id ?? "—"}</span>
         {run && <div className="chat-info-run">
           <span>{run.text}</span>
-          {run.command && <Command command={run.command} />}
         </div>}
         {madeFor !== null && <span>Made for: <a href={`#/lookup/${madeFor}`}>{`${madeCli}${madeActor}`}</a>
           {made ? (made.ended ? " · ended" : " · live") : ""}</span>}
@@ -310,15 +308,15 @@ export function ChatWorkstreamHeader({ workspace, head, waiting = false, onHide,
 }
 
 /**
- * What the Info dialog says of a CLI chat's run: the command that attaches to a trax run, where it is one, else where
- * it runs. None for the assistant, which runs on the server.
+ * What the Info dialog says of a CLI chat's run: the detached run's name and folder, where it is one, else where it
+ * runs. None for the assistant, which runs on the server.
  */
-function runInfo(provider: Provider, partner: WorkspacePartner | null): { readonly text: string; readonly command?: string } | null {
+function runInfo(provider: Provider, partner: WorkspacePartner | null): { readonly text: string } | null {
   if (provider === "assistant") return null;
   if (partner?.status !== "live") return { text: "No run: pick a machine in the provider card" };
   const machine = partner.machine ?? "your machine";
   if (partner.run_name) {
-    return { text: `Attach on ${machine}${partner.cwd ? ` (in ${partner.cwd})` : ""}:`, command: `trax run attach ${partner.run_name}` };
+    return { text: `Detached run ${partner.run_name} on ${machine}${partner.cwd ? ` (in ${partner.cwd})` : ""}` };
   }
   return { text: `Runs in a terminal on ${machine}` };
 }

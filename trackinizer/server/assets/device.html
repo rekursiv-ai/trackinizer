@@ -92,9 +92,10 @@
   </section>
 
   <section id="review" hidden>
-    <p class="lede">Approve only if you started this yourself. It gives the program below a key that acts as you.</p>
+    <p class="lede">Approve only if you started this yourself. It gives the program below a key that acts as <strong id="r-as"></strong>.</p>
     <dl>
       <dt>Code</dt><dd id="r-code" class="code"></dd>
+      <dt>Account</dt><dd id="r-account"></dd>
       <dt>Program</dt><dd id="r-client"></dd>
       <dt>Computer</dt><dd id="r-host"></dd>
       <dt>Machine</dt><dd id="r-machine"></dd>
@@ -156,6 +157,9 @@
     const view = result.body;
     current = view.user_code;
     el("r-code").textContent = view.user_code;
+    // The signed-in account is the one the key and the machine become, so a person signed
+    // in as someone else sees it before they click.
+    el("r-as").textContent = el("r-account").textContent = view.account;
     el("r-client").textContent = view.client;
     el("r-host").textContent = view.host || "not given";
     el("r-machine").textContent = view.machine ? `${view.machine} (becomes your machine)` : "none";

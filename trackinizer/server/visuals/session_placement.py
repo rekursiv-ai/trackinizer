@@ -1,4 +1,4 @@
-"""Place a ``trax run`` session in a workstream and a station.
+"""Place an agent run's session in a workstream and a station.
 
 A placed session has exactly one ``produced_by`` edge to a workstream Issue, one
 ``station:<workspace uuid>`` label and, on a git branch, one ``git:<origin>@<branch>``
@@ -64,7 +64,7 @@ def git_label(git: GitRef) -> str:
 
 
 def is_placed(session: AgentSession) -> bool:
-    """Say whether a session is one a run places: a person's own ``trax run``.
+    """Say whether a session is one a run places: a person's own agent run.
 
     Args:
       session: The session.

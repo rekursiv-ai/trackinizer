@@ -2,7 +2,7 @@
 
 The routes are driven through the whole app with the real sign-in and machine
 credentials. The host is played by the test: it holds the wait route, answers a command
-and posts the result, as ``rai-shell`` does.
+and posts the result, as the machine host does.
 """
 
 from __future__ import annotations

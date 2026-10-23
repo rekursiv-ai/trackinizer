@@ -173,7 +173,7 @@ PRIMARY KEY (session_id, seq)
 
 A slash command (`/exit`, `/model gpt-5`) is handled inside the CLI's TUI and
 never written to its session log, so it is captured by observing the human's
-keystrokes on the PTY (`trax/run/slash.py`). It is **not a record**: a record
+keystrokes on the PTY (the runner's `slash.py`). It is **not a record**: a record
 has an `idx`, its position in a file's normalized stream, and a command that
 was never written to any file has none. Consuming an `idx` for one would
 renumber every record after it, and a replay -- which re-derives positions
@@ -314,7 +314,7 @@ SessionEnd       ended?, cli_session_id?, actor?
 
 Every scalar string field rejects whitespace-only values: each is matched or
 stored verbatim, so `"   "` can never match and is a client bug. A `rooms`
-element additionally rejects a comma -- `trax run` exports rooms comma-joined
+element additionally rejects a comma -- the runner exports rooms comma-joined
 into `TRAX_ROOMS`, so a room `'a,b'` is indistinguishable from two rooms.
 
 ### 4.5 Response types
@@ -489,12 +489,12 @@ projection can be non-empty (`wire/session_record_fields.py`), so a filter on
 `TurnContext` -- which indexes nothing -- does not exist rather than silently
 never matching.
 
-## 9. Capture and resume (`trax/run/`)
+## 9. Capture and resume (the agent runner)
 
 ### 9.1 Capture
 
 ```
-trax run <cli> [--no-sync] [--out PATH] -- <cli args>
+RUNNER <cli> [--no-sync] [--out PATH] -- <cli args>
 ```
 
 ```
@@ -510,7 +510,7 @@ sink (--no-sync) FileSink -> local JSONL (also --out PATH, --dry-run)
 ```
 
 A record too large for one upload is cut at capture, after redaction and
-before either sink sees it (`trax/run/truncate.py`): a tool result over
+before either sink sees it (the runner's `truncate.py`): a tool result over
 256 KiB on the wire, search text included, and any other record over 1 MiB.
 Each long string keeps its beginning and end around the marker
 

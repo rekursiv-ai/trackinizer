@@ -19,6 +19,7 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedToolResult,
     UserMessage,
 )
+from trackinizer.runs.asks import Ask, Option, opened_record
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,
@@ -51,7 +52,6 @@ from trackinizer.server.api.conftest import (
 from trackinizer.server.asks_test_support import write_records
 from trackinizer.server.chat_hub import ChatHub, WorkspaceFrame
 from trackinizer.server.inbound import InboundQueue
-from trackinizer.trax.run.asks import Ask, Option, opened_record
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.audience import OPEN, STAFF
 from trackinizer.wire.wire_science_chat import (
@@ -470,7 +470,7 @@ async def test_a_cli_user_turn_naming_another_sender_is_their_post(
     extra: dict[str, object],
     may_delete: bool,
 ) -> None:
-    """A CLI part's user turn names its sender by ``trax run``'s stamp or an author."""
+    """A CLI part's user turn names its sender by the agent runner's stamp or an author."""
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
     turn = UserMessage(

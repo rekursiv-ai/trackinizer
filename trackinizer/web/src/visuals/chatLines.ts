@@ -6,7 +6,7 @@ export const PENDING = "pending:";
 
 /**
  * One part of a science chat's session: its file's number, the format its writer logs in
- * (`sagent` for the assistant, `claude` or `codex` for a CLI run, `""` for trax run's own part),
+ * (`sagent` for the assistant, `claude` or `codex` for a CLI run, `""` for the runner's own part),
  * and the records read from it.
  */
 export type ChatPart = { readonly part: number; readonly format: string; readonly records: readonly SessionRecord[] };
@@ -355,7 +355,7 @@ type Person = { readonly author: string | null; readonly text: string };
  * The person a record speaks for, or null when it is no person's line. An
  * `AgentToAgentMessage` is one from its sender. A `UserMessage`, or a claude `queued_command`
  * (a line sent mid-turn, which claude queues instead of recording as a user turn), is one when a CLI run
- * recorded it for a person: the bot delivered it, so `trax run` stamped `$inbound` with the
+ * recorded it for a person: the bot delivered it, so the agent runner stamped `$inbound` with the
  * attested sender, or (a `UserMessage` only) it carries an `author`. A CLI-written user turn and
  * claude's own queued notices carry neither. The
  * sender is read from the stamp and never from the text, which anyone can type. This is
@@ -378,7 +378,7 @@ function personOf(kind: string, payload: Readonly<Record<string, unknown>>): Per
 }
 
 /**
- * What a delivery said: its text without the `[room] sender: ` prefix `trax run` wrote,
+ * What a delivery said: its text without the `[room] sender: ` prefix the agent runner wrote,
  * and the context trailer after it. Mirrors `client/conversation.py::delivered_text`.
  */
 function delivered(content: string, stamp: Readonly<Record<string, unknown>>): string {
@@ -432,7 +432,7 @@ type GoalStep = { readonly goal: Goal | null; readonly text: string | null };
 /**
  * The goal a record reports, from the CLI's own log: claude's `goal_status` attachment, or
  * codex's `thread_goal_updated` event. Null when the record is no goal record. The fields
- * are the ones `trax run` normalises (`GoalWatch` in `trax/run/commands.py`).
+ * are the ones the agent runner normalises (`GoalWatch` in the runner's `commands.py`).
  */
 function goalStep(kind: string, payload: Readonly<Record<string, unknown>>, goal: Goal | null): GoalStep | null {
   if (kind === "ContextState" && payload.kind === "goal_status") return claudeGoal(objectOf(objectOf(payload.extra).attachment), goal);

@@ -1,6 +1,6 @@
 """The three standard streams, as records a scrape can carry.
 
-``trax run sh -- CMD`` wraps a command that writes no session file, so the
+The runner's ``sh -- CMD`` wraps a command that writes no session file, so the
 process's own IO IS the session. A line is not merely text: WHICH stream it
 crossed is the only structure a scrape has, and it is what tells an answer from
 a question. Recording every line as one kind lost that -- a captured session
@@ -12,7 +12,7 @@ performed. Every other IR record answers "what did the agent do"; these answer
 "which fd did these bytes cross", which no other adapter can ever emit.
 
 Which streams are distinguishable is decided by the capture mode, not by these
-types -- see :mod:`~trackinizer.trax.run.adapters.iostream`. A pty merges
+types -- see :mod:`~trackinizer.runs.adapters.iostream`. A pty merges
 the child's stdout and stderr onto one tty before trax sees a byte, so a pty
 run emits no :class:`Stderr` at all.
 """
@@ -68,7 +68,7 @@ class Stderr:
 
 
 type TraxRecord = SessionRecord | Stdin | Stdout | Stderr
-"""Everything ``trax run`` can capture: the shared IR, plus the scrape streams.
+"""Everything the agent runner can capture: the shared IR, plus the scrape streams.
 
 A WIDENING of :data:`~trackinizer.lib.agent.types.sessions.SessionRecord`, not a
 replacement. Every CLI adapter still yields the shared IR unchanged; only the

@@ -3,7 +3,7 @@
 ## Goal
 
 Let a human (via web UI) or another agent **send a message into a live
-`trax run` session** while the human keeps using that session's native
+The runner session** while the human keeps using that session's native
 terminal. Trackinizer already logs every session
 ([`design_agent_session_logging.md`](design_agent_session_logging.md));
 this makes it also the **router** for messages flowing the other way --
@@ -27,21 +27,21 @@ The injection primitive is proven on both priority CLIs; the routing and
 naming model is settled; nothing is built yet. This doc is the design to
 implement against. Implementation order is in the
 [Roadmap](#roadmap): a read-only viewer ships first (Phase 1a) as the
-instrument that proves `trax run` scrapes correctly, then single-session
+instrument that proves the runner scrapes correctly, then single-session
 injection (Phase 2a), then the full chat system (Phase 2).
 
 ```
   web UI chat ─┐                                    ┌─▶ human's terminal (native TUI)
                ├─ trax send ─▶ trackinizer ─push──┤
-  other agent ─┘   (resolve @actor:room,           │   trax run claude --as scientist
+  other agent ─┘   (resolve @actor:room,           │   the runner --as scientist
                     route to live session)          │     owns PTY master
-       trax run ◀── subscribe (pull) ───────────────┘     │
+       the runner ◀─ subscribe (pull) ───────────────┘     │
           │  receives routed message                      ▼
           ▼                                          claude / codex (PTY slave)
    bracketed-paste(text) + delayed Enter ───────────▶ sees injection AND human keystrokes
 ```
 
-The server never dials the client: `trax run` **pulls** (a subscribe /
+The server never dials the client: The runner **pulls** (a subscribe /
 long-poll on its own outbound connection), exactly as the SPA's
 `/api/web/subscribe` SSE relay already does
 (`server/notify.py:85`). There is no inbound endpoint on the client.
@@ -62,8 +62,8 @@ So the asymmetry is irreducible:
 | agent -> world (output) | the captured log | ✅ fully built |
 | world -> agent (input) | the CLI's stdin / PTY | ❌ nothing writes there today |
 
-`trax run` today is **write-only into trackinizer** (the drain thread
-produces events, `trax/run/session.py`) and **out of the agent's input
+The runner today is **write-only into trackinizer** (the drain thread
+produces events, the runner's `session.py`) and **out of the agent's input
 path** (bare `subprocess.Popen(argv)`, inheriting fds, holding no
 injectable handle). The messaging channel is the wire that did not
 exist. It is **not** built by extracting sends from the log -- see
@@ -137,17 +137,17 @@ out of the capture firehose, or carry it on an explicit channel.
 | send decoupled from logging  | ❌ | ✅ |
 | "send but don't log" possible| ❌ | ✅ |
 | network: only sends on wire  | ❌ (whole transcript) | ✅ |
-| `trax run` limits its chatter| ❌ | ✅ |
+| The runner limits its chatter| ❌ | ✅ |
 
 **Additional channel.** Extraction fuses send with capture -- you could
 never have one without the other, and you would process the entire
 transcript to find the few sends. The channel keeps them orthogonal:
-`trax run` recognizes a send locally and talks to the server **only on
+The runner recognizes a send locally and talks to the server **only on
 sends**, not every turn.
 
-### `trax run` is the edge detector
+### The runner is the edge detector
 
-Because the send is recognized at the edge, `trax run` owns both
+Because the send is recognized at the edge, the runner owns both
 directions: the inject-in (PTY write) and the send-out (recognize +
 forward). The server is a pure router in the middle -- it resolves the
 target name to a live session and pushes. This mirrors an internal hub's
@@ -184,7 +184,7 @@ already set by `--as` via `resolve_actor` (`trax/verbs.py:703`), already
 landing on every `change_log` row as an agent label
 (`types/change_log.py:230`). No separate `friendly_name` is introduced.
 
-- `trax run claude --as scientist`; default
+- the runner's `--as scientist`; default
   `os.getenv("AGENTNAME", "Agent")` (matches the existing `resolve_actor`
   precedence).
 - **`session/start` renegotiates** the actor when it collides with a
@@ -215,7 +215,7 @@ membership is mutable session state, reassignable via the existing
 
 ### Delivery: drop-if-absent + synchronous receipt
 
-If the target's `trax run` is not connected when a message arrives:
+If the target's run is not connected when a message arrives:
 
 |                        | drop-if-absent | durable hold |
 |------------------------|:-:|:-:|
@@ -235,9 +235,9 @@ want.
 
 ### Transport: HTTP polling (kept -- the NOTIFY upgrade was tried and cut)
 
-**As built: `trax run` polls.** The inbound poll loop calls
+**As built: The runner polls.** The inbound poll loop calls
 `GET /api/sessions/<id>/inbound` (drain) on a fixed interval and injects
-whatever it drains (`trax/run/session.py` `_inbound_poll_loop`). Server
+whatever it drains (the runner's `session.py` `_inbound_poll_loop`). Server
 state is the process-local `InboundQueue` (`server/inbound.py`). This is
 the simplest thing that closes the loop and is fully testable without a
 streaming primitive; the cost is up-to-`poll_interval` latency and idle
@@ -262,7 +262,7 @@ in `design_subscriber.md`.
 ┌──────────────┐  trax send @actor:room "…"   ┌──────────────────┐
 │  web UI      │ ───────────────────────────▶ │   Trackinizer    │
 │  other agent │   (POST; sender = caller)    │  resolve name,   │
-│  trax run    │                              │  route to live   │
+│  the runner  │                              │  route to live   │
 └──────────────┘ ◀── subscribe (pull/SSE) ─── │  session, push   │
        ▲            routed message              └──────────────────┘
        │                                                 │
@@ -282,14 +282,14 @@ The roadmap is history. Its UI steps were built in the old web UI's pages
 
 Three phases, each delivering a usable artifact and a verification gate.
 The order is deliberate: the viewer is built **first as the instrument
-that proves `trax run` scrapes correctly**, before any injection work.
+that proves the runner scrapes correctly**, before any injection work.
 Both CLIs ship together at each messaging step -- codex parity is a
 requirement and the injection protocol is shared.
 
 ### Phase 1a -- view sessions (the verification tool)
 
 A read-only web UI: list sessions, click one, watch its turns render as
-markdown, live via SSE. **Gate: if turns render, `trax run claude|codex`
+markdown, live via SSE. **Gate: if turns render, the runner
 is scraping to the server correctly.** No injection yet.
 
 Verified starting facts (read from the SPA, not assumed):
@@ -336,23 +336,23 @@ Inject into a single session by its `session_id` -- no naming, no rooms.
 Proves the inject loop end to end. Split so the PTY pump (the largest
 client change) retires independently of the UI.
 
-5. **`--as` + actor renegotiation on `session/start`.** `trax run --as`
+5. **`--as` + actor renegotiation on `session/start`.** The runner's `--as`
    sets the session actor; default `os.getenv("AGENTNAME", "Agent")`.
    `session/start` makes the actor unique among *live* sessions (suffix on
-   collision) and returns the granted name; `trax run` adopts it. Touches
-   `trax/run/session.py`, `server/api/sessions_routes.py`,
+   collision) and returns the granted name; the runner adopts it. Touches
+   the runner's `session.py`, `server/api/sessions_routes.py`,
    `wire/wire_sessions.py` (`SessionStartResponse` already carries
    server-minted fields). Tested: two concurrent `--as scientist` runs get
    distinct live names.
-6. **PTY pump in `trax run` (2a-i).** Replace the bare
-   `subprocess.Popen(argv)` (`trax/run/session.py`) with a PTY: allocate
+6. **PTY pump in the runner (2a-i).** Replace the bare
+   `subprocess.Popen(argv)` (the runner's `session.py`) with a PTY: allocate
    master/slave, spawn the CLI on the slave, raw-mode the real terminal,
    copy real-stdin <-> master <-> real-stdout, forward `SIGWINCH`. Capture
-   (the drain thread) is untouched. New module under `trax/run/`;
+   (the drain thread) is untouched. New module in the runner;
    `session.py` stays orchestration-only. Tested: human I/O byte-
    transparent; the CLI TUI renders natively under the pump. Retire the
    pump risk here, no UI involved.
-7. **Injection: routed message -> PTY (2a-ii).** `trax run` subscribes to
+7. **Injection: routed message -> PTY (2a-ii).** The runner subscribes to
    its session's routed-message channel (the Phase-1a notify path,
    session-scoped). On a message: write `\e[200~<text>\e[201~`, wait
    >120ms, write `\r`; gate on composer-ready (codex MCP-boot delay,
@@ -367,7 +367,7 @@ client change) retires independently of the UI.
 Name resolution, rooms, agent-to-agent, receipts.
 
 8. **`rooms` on `AgentSession`.** Add `rooms: list[str]` (field-PUT via the
-   existing `agentsession_*` machinery). `trax run --room` (repeatable)
+   existing `agentsession_*` machinery). The runner's `--room` (repeatable)
    sets initial membership. Touches `types/inquiries.py` (+ test),
    `server/assets/schema.sql` (codegen), `server/api/sessions_routes.py`.
    Tested: `from_row` round-trip; join / leave via PUT.
@@ -382,7 +382,7 @@ Name resolution, rooms, agent-to-agent, receipts.
 10. **Agent-initiated send (as built: env identity, not interception).**
     An agent inside a session sends by invoking the same `trax send @Y`
     (step 9) -- no new send mechanism. To address peers it needs to know
-    its own routing identity, so `trax run` exports `TRAX_ACTOR` /
+    its own routing identity, so the runner exports `TRAX_ACTOR` /
     `TRAX_ROOMS` into the wrapped CLI's environment (`_routing_env`,
     injected via the pump's child `env`). Sender attribution is the
     authenticated principal on the `/api/messages` route, which is
@@ -435,7 +435,7 @@ chat. Smallest first win: step 1 (one string).
 
 - The channel is **separate from the log**; sends are not extracted from
   `session_records`.
-- `trax run` owns the **PTY master**; the human and the injector are peers
+- the runner owns the **PTY master**; the human and the injector are peers
   on it.
 - Injection protocol: **bracketed paste + Enter delayed >120ms**. Each
   `inject` is synchronous through submit (paste, wait, `\r`) so back-to-back
@@ -473,7 +473,7 @@ chat. Smallest first win: step 1 (one string).
   handled inside the CLI and never written to its rollout/session log, so the
   log tailer cannot see them. *As built*, the pump tees the human's stdin
   (the `on_input` observer, `lib/posix/relay.py`) into a keystroke detector
-  (`trax/run/slash.py`); a submitted leading-`/` line becomes a
+  (the runner's `slash.py`); a submitted leading-`/` line becomes a
   `SlashCommand` capture event, emitted by the drain thread (the single sink
   writer) so it serializes with file-sourced turns. It is **best-effort**:
   raw-mode stdin carries control bytes, so the detector handles the common

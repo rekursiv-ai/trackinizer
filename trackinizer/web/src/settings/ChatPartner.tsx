@@ -20,7 +20,7 @@ export function ChatPartnerSection() {
   );
 }
 
-// The latest PyPI release has no `trax machine connect`, which the terminal side needs, so trax installs from the
+// The latest PyPI release lacks what the terminal side needs, so trax installs from the
 // public repository's main branch until the next release.
 /** Where `uv tool install` takes trax from. */
 export const TRAX_SOURCE = "git+https://github.com/rekursiv-ai/trackinizer";

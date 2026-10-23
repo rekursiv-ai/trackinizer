@@ -236,7 +236,7 @@ async def _deliver_change(
 # ride the injected line, and no ``subscribers_snapshot``, so recipients do not learn
 # the roster.
 #
-# ``agent_message`` leads: the one line a model-CLI session receives (the ``trax run``
+# ``agent_message`` leads: the one line a model-CLI session receives (the run's
 # poller injects only it there, keeping the model's context clean; IO-stream sessions
 # get this whole envelope and parse it themselves). It addresses the row the way every
 # trax verb does -- the short ``issue 42`` ref, not a 36-char UUID (a token-waste for

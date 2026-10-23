@@ -697,13 +697,13 @@ def test_publication_preserves_a_concurrent_empty_directory(
 @pytest.fixture
 def custom(tmp_path: Path) -> Skill:
     """Supply a skill that is not trax: a tree plus one loose file beside it."""
-    source = tmp_path / "custom/skills/rai-shell"
+    source = tmp_path / "custom/skills/machine-host"
     (source / "notes").mkdir(parents=True)
     (source / "SKILL.md").write_text("shell guidance")
     (source / "notes/SKILL.md").write_text("shell notes")
     extra = tmp_path / "custom/EXTRA.md"
     extra.write_text("loose file")
-    return Skill(name="rai-shell", source=source, extras=(extra,))
+    return Skill(name="machine-host", source=source, extras=(extra,))
 
 
 def test_custom_skill_installs_under_its_own_name(
@@ -711,7 +711,7 @@ def test_custom_skill_installs_under_its_own_name(
     custom: Skill,
 ) -> None:
     destination, count = install(TARGETS["claude"], skill=custom)
-    assert destination == fake_home / ".claude/skills/rai-shell"
+    assert destination == fake_home / ".claude/skills/machine-host"
     assert count == 3
     assert {
         path.relative_to(destination).as_posix(): path.read_text()

@@ -127,9 +127,9 @@ type ChatProvider = Literal["assistant", "claude", "codex"]
 
 Values:
   assistant: The server's shared assistant.
-  claude: The person's own ``trax run claude`` on a machine of theirs, attached to
+  claude: The person's own claude agent run on a machine of theirs, attached to
     the chat's session.
-  codex: The same with ``trax run codex``.
+  codex: The same with codex.
 """
 
 

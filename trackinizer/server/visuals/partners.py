@@ -148,7 +148,7 @@ async def cli_partner(
     opened under the id is not the chat's. One is live when it is open, its opening
     key is not revoked, and a poller that named ``provider`` as its CLI drains it.
     The drain names its CLI, never a part's format: a run just attached has written
-    no part yet, and ``trax run``'s own part after ``/compact`` has none.
+    no part yet, and the runner's own part after ``/compact`` has none.
 
     Args:
       conn: Connection the answer must be consistent with.
@@ -573,7 +573,7 @@ async def station_session_key_may_use(
 ) -> bool:
     """Say whether a key opened a live session placed on a station of its own user.
 
-    A ``trax run`` session is labelled ``station:<id>`` when it is placed. The label
+    An agent run's session is labelled ``station:<id>`` when it is placed. The label
     is the session's own claim, so the key must also belong to the station's owner:
     a label naming another user's station gives its key nothing.
 

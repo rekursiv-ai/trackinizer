@@ -399,7 +399,7 @@ class SubmitWebSearch(SubmitBase):
 
 
 class SubmitAgentSession(SubmitBase):
-    """Submit body for a new AgentSession (a captured ``trax run`` session)."""
+    """Submit body for a new AgentSession (a captured agent run's session)."""
 
     kind: Literal["AgentSession"] = "AgentSession"
     cli: str | None = Field(default=None, min_length=1)
@@ -446,7 +446,7 @@ class SubmitAgentSession(SubmitBase):
 
 
 # A room name must be a single clean token: non-blank (it is matched verbatim against
-# ``agentsession_rooms``) and free of ``,`` (``trax run`` exports rooms comma-joined
+# ``agentsession_rooms``) and free of ``,`` (the agent runner exports rooms comma-joined
 # into ``TRAX_ROOMS``, so a room ``'a,b'`` is indistinguishable from two rooms ``'a'``
 # and ``'b'`` to an agent inside the session). The rule lives here so
 # ``SubmitAgentSession.rooms`` -- and its ``SessionStart.rooms`` mirror in

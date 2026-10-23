@@ -269,7 +269,7 @@ async function refused(status: number, code: string, message: string): Promise<A
 }
 
 test.each([
-  ["terminal_not_enabled", 409, "Start the host with `trax machine connect`: that one command turns terminals on."],
+  ["terminal_not_enabled", 409, "Start this machine's host: it turns terminals on."],
   ["terminal_limit", 429, "Too many terminals opened just now; wait a minute."],
   ["terminal_unconfirmed", 409, "Allow terminals on this machine first: open Chat's provider card and click Allow."],
   ["terminal_forbidden", 403, "Terminals are not available on a server without sign-in."],

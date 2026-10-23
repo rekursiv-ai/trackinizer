@@ -66,6 +66,7 @@ from trackinizer.types.inquiries import (
     Paper,
 )
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.types.streams import Stdout
 from trackinizer.wire.audience import AUDIENCES
 from trackinizer.wire.bodies import (
     BatchEdge,
@@ -165,6 +166,60 @@ class TestIntegrationEndToEnd:
         assert cast(Issue, await integ_store.get_inquiry(i1)).seq == 1
         assert cast(Issue, await integ_store.get_inquiry(i2)).seq == 2
         assert cast(Belief, await integ_store.get_inquiry(c1)).seq == 1
+
+    async def test_the_parts_of_one_session_each_keep_their_own_lines(
+        self,
+        integ_store: Store,
+    ) -> None:
+        """A part is keyed by its name, so runs writing parts of their own lose nothing.
+
+        An agent runner that writes into a session it did not open gives each run a part
+        of its own; a store that merged them would drop all but the last run's lines.
+        """
+        session_id = await integ_store.submit_agentsession(
+            SubmitAgentSession(
+                title="attached",
+                cli="sh",
+                account="tester@example.com",
+            ),
+            audience="open",
+        )
+        for name, lines in (
+            ("a.jsonl", ["first\n", "second\n"]),
+            ("b.jsonl", ["third\n"]),
+        ):
+            part = await integ_store.upsert_session_manifest(
+                session_id,
+                name=name,
+                metadata=immutable({}),
+                ir_id=uuid5(NAMESPACE_URL, f"{session_id}:{name}"),
+                format="",
+                records=len(lines),
+            )
+            await integ_store.append_session_records(
+                session_id,
+                [
+                    SessionRecordRow.of(
+                        session_id=session_id,
+                        part=part,
+                        idx=idx,
+                        record=Stdout(text=line),
+                    )
+                    for idx, line in enumerate(lines)
+                ],
+            )
+
+        stored = [
+            row.text
+            for manifest in await integ_store.read_session_manifests(session_id)
+            for row in await integ_store.read_session_records(
+                session_id,
+                part=manifest.part,
+            )
+            if row.kind == "Stdout"
+        ]
+
+        assert stored == ["first\n", "second\n", "third\n"]
 
     async def test_log_metrics_append_read_and_dedup(self, integ_store: Store) -> None:
         """Metric points log, read back in (key, step) order, and dedup.
@@ -732,7 +787,7 @@ class TestIntegrationEndToEnd:
     async def test_resume_applies_new_body_fields(self, integ_store: Store) -> None:
         """A resume applies new SubmitAgentSession fields, e.g. rooms (B7).
 
-        ``trax run --resume --room workshop`` must JOIN the new room, not
+        A resume with ``--room workshop`` must JOIN the new room, not
         silently drop it. The resume tx applies the request's rooms.
         """
         sid, owner, _ = await integ_store.start_session(

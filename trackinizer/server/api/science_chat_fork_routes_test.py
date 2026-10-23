@@ -492,7 +492,7 @@ async def test_a_fork_needs_a_line_of_a_science_chat_and_names_no_conversation(
 async def test_a_cli_user_turn_is_a_line_to_fork_from_only_when_it_names_its_sender(
     pglite_route_client: _Client,
 ) -> None:
-    """A turn ``trax run`` stamped, or one with an author, is a person's line."""
+    """A turn the agent runner stamped, or one with an author, is a person's line."""
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
     workspace_id = await _canvas(client, email=OTHER_EMAIL)

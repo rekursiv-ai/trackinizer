@@ -2650,7 +2650,7 @@ async def test_the_trust_answer_chat_posts_is_queued_from_the_runs_owner_alone(
 ) -> None:
     """The answer Chat's trust card posts (``web/test/seams/trustAnswer.json``).
 
-    The web's test posts that file's body from the card ``trax run`` writes, and the
+    The web's test posts that file's body from the card the agent runner writes, and the
     run's gate takes its payload; here only its starter's post of it is queued.
     """
     seam = _CWD.parents[1] / "web" / "test" / "seams" / "trustAnswer.json"

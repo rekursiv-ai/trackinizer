@@ -36,7 +36,7 @@ _ASSISTANT: Final = (
 def _menu(verb: str) -> Refused:
     return Refused(
         reason=f"Chat cannot run /{verb}: it opens a menu, changes settings or "
-        "switches the session. Use the terminal: trax run attach <run>",
+        "switches the session. Use it in the run's own terminal.",
     )
 
 
@@ -160,7 +160,7 @@ _ONE_EFFORT: Final = (
             "claude",
             Refused(
                 reason="Chat cannot run /goal edit: it opens an editor. "
-                "Use the terminal: trax run attach <run>",
+                "Use it in the run's own terminal.",
             ),
         ),
         (
@@ -168,7 +168,7 @@ _ONE_EFFORT: Final = (
             "codex",
             Refused(
                 reason="Chat cannot run /goal edit: it opens an editor. "
-                "Use the terminal: trax run attach <run>",
+                "Use it in the run's own terminal.",
             ),
         ),
         # Claude queues /compact until its turn ends; codex refuses it mid-turn.

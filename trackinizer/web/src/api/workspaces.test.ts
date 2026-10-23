@@ -149,7 +149,7 @@ test("choosing a provider posts its operation at the station's revision, under i
 });
 
 test("a choice the server refuses as unavailable carries the server's reason", async () => {
-  const reason = "Connect a machine with `trax machine connect` and install claude on it";
+  const reason = "Connect a machine and install claude on it";
   stubFetch(() => Response.json({ detail: reason, code: "provider_unavailable" }, { status: 409 }));
   await expect(chooseProvider("w", 4, "claude", "key-2")).rejects.toMatchObject({ status: 409, detail: reason, code: "provider_unavailable" });
 });

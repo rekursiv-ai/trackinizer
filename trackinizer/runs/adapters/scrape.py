@@ -1,0 +1,59 @@
+"""Read and write a captured stream: the session with no native log.
+
+The runner's ``sh -- CMD`` wraps a command that writes no session file, so the
+process's own IO IS the session. There is nothing to parse -- the contract is
+line-delimited text -- and nothing to resume: no CLI wrote these bytes, so none
+can be handed them back.
+
+What a line DOES carry is which stream it crossed, and that is the whole
+structure a scrape has: it separates an answer from the question that caused
+it. So a line becomes a :class:`Stdin`, :class:`Stdout`, or :class:`Stderr`
+rather than a shapeless record. Normalization stays TOTAL (no line is ever
+dropped) and the rewrite exact (the records concatenate back to the bytes
+read), while ``convert`` still reports a conversion out of this format as
+lossy, because a stream cannot say which ACT produced it.
+
+Reading a scrape back from a FILE yields only :class:`Stdout`: a file holds no
+descriptors. A live capture does too, today: the child runs on a pty, where
+the kernel merges its streams before trax sees a byte (see
+:mod:`~trackinizer.runs.adapters.iostream`). The other two kinds are
+for a source that still has the descriptors apart.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from trackinizer.types.streams import Stderr, Stdin, Stdout
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from typing import TextIO
+
+    from trackinizer.types.streams import TraxRecord
+
+
+__all__ = ["denormalize"]
+
+
+def denormalize(records: Iterable[TraxRecord], stream: TextIO) -> None:
+    """Write the captured lines back, exactly as they were read.
+
+    Every stream writes, in the order captured. Which fd carried a line is not
+    recoverable from a flat file, so writing one stream and dropping the others
+    would lose bytes the capture held -- and the interleaving IS the record.
+
+    A record that is none of the three came from another provider's session
+    converted into this format. It has no line to write -- a scrape has no
+    shape for a tool call -- so it is skipped here and the conversion reports
+    lossy.
+
+    Args:
+      records: Captured records, in stream order.
+      stream: Destination text stream.
+
+    """
+    for record in records:
+        if isinstance(record, Stdin | Stdout | Stderr):
+            _ = stream.write(record.text)

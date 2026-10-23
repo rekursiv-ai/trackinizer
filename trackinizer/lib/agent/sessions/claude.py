@@ -134,8 +134,8 @@ def denormalize(
         Fills, never overrides. A line that already states ``sessionId`` keeps
         it, because replaying a captured line verbatim is what makes the
         round-trip byte-exact -- so seeding a CAPTURED claude stream writes
-        nothing at all. Renaming one is a different operation, per record:
-        :func:`trackinizer.trax.run.materialize._renamed`.
+        nothing at all. Renaming one is a different operation, per record, which
+        the resume that writes a transcript for a fresh session id performs.
 
     """
     ordered = list(records)

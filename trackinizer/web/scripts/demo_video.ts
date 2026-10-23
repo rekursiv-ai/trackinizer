@@ -4,7 +4,7 @@
 // an HTML Artifact; and a message to an agent in the console, answered.
 //
 // It starts a seeded server of its own on port 8829 (scripts/capture.ts) and a
-// stand-in for the messaged agent's `trax run`, which drains what reaches the
+// stand-in for the messaged agent's run, which drains what reaches the
 // session and appends a canned reply as the session's next records. A
 // headless Chromium plays the script at 1280 by 800 in the dark theme while
 // Playwright's screencast keeps every frame it paints, with the time it came.
@@ -224,8 +224,8 @@ async function showConsole(page: Page, seeded: Seeded, part: Mark): Promise<void
 }
 
 /**
- * The messaged session's `trax run`, played by this script: it waits on the
- * session's inbound queue, as `trax run` does, which marks the session polled
+ * The messaged session's run, played by this script: it waits on the
+ * session's inbound queue, as the agent runner does, which marks the session polled
  * so the console may message it, and answers each message as the session's
  * next two records: the message as typed into the CLI, then the reply.
  */

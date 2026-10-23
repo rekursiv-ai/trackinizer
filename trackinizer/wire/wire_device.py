@@ -111,7 +111,7 @@ class DeviceCodeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     client: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
-    """The program, such as ``rai-shell``; the page names it and the key is named for it."""
+    """The program, such as a machine host; the page names it and the key is named for it."""
 
     host: str = Field(default="", pattern=r"^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,62})?$")
     """The computer's host name, shown on the page and in the key's name."""
@@ -205,6 +205,9 @@ class DeviceLoginView(BaseModel):
 
     user_code: str
     """The code, as people read it."""
+
+    account: str
+    """The signed-in person's email: whose key it would be, and whose machine."""
 
     client: str
     """The program that asked."""

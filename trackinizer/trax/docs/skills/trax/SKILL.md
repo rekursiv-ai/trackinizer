@@ -2,7 +2,7 @@
 name: trax
 description: >
   ALWAYS invoke this skill for Trackinizer/trax work tracking, inquiry records, and visual workspaces: issues, beliefs, papers, experiments, codechanges, web results/searches, sessions, costs, board, workspace. Do not hand-write trax records directly -- invoke this skill first.
-argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|env|machine|job|workspace|<kind>] ..."
+argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|env|workspace|<kind>] ..."
 user-invocable: true
 tools: Bash, Read, Write, Edit, Glob, Grep
 ---
@@ -379,7 +379,7 @@ anchor row, and each row's `app.<app>` holds what the app knows about it
 (`trax experiment 12 app to '{"myapp": {...}}'`). To change what an app's visual
 shows inside, write its rows; the visual redraws on its next read.
 
-In a `trax run` session your canvas is `$TRAX_WORKSPACE` (your workstream is
+In a recorded agent run your canvas is `$TRAX_WORKSPACE` (your workstream is
 `$TRAX_WORKSTREAM`): show your work there, and leave the id off:
 `trax workspace show trax.subgraph --record RECORD_UUID`. Unset means the
 session was not placed; use a paired chat message's `workspace_id` instead.
@@ -415,7 +415,7 @@ X2,Y2` takes two corners as fractions (0 to 1) of the stage, and the box shows o
 the page the station is on until someone clicks it away. `--record` names the
 records it points at. `trax workspace WORKSPACE_UUID` lists every box with its id,
 page and the records and visuals under it, and a Chat line carries the boxes drawn
-since the last one. A Claude session started with `trax run` in a station hears
+since the last one. A recorded Claude run started in a station hears
 of each new box with the person's next prompt; any other agent in a station runs
 `trax workspace $TRAX_WORKSPACE` to see the boxes when the person mentions the
 canvas. `mark remove` takes one away; `mark clear` takes every box,
@@ -509,35 +509,18 @@ value. Never echo a secret into a command, a row or your own output.
 
 ## Machines
 
-`trax machine` lists the machines campaigns may run on and `trax machine NAME`
-shows one, with its role, labels, `how` line and status (writer role). `trax
-machine NAME role to ROLE` and `how to TEXT` set a field and create the machine;
-`label add|del LABEL` and `del` change or unregister it (admin role). Read
-`how` before using one. The registry only records machines; it never reaches
-one. A person's own computer is a `personal` machine, which only they and admins
-see; `trax machine connect` (no name) enrolls the computer you are on and serves a
-terminal in the web app. A shell the web app opens sets `TRAX_WORKSTREAM` and
-`TRAX_WORKSPACE`, and `LC_TRAX_*` copies that survive `ssh`; `trax` reads
-`TRAX_X`, else `LC_TRAX_X`, and uses the saved profile whose URL is
-`LC_TRAX_SERVER`.
+The registry of machines campaigns may run on, and GPU jobs, moved out of trax:
+`trax machine` and `trax job` say so. A shell the web app opens sets
+`TRAX_WORKSTREAM` and `TRAX_WORKSPACE`, and
+`LC_TRAX_*` copies that survive `ssh`; `trax` reads `TRAX_X`, else `LC_TRAX_X`, and
+uses the saved profile whose URL is `LC_TRAX_SERVER`.
 
-## GPU jobs
+## Agent runs
 
-`trax job submit [--gpus N] [--minutes M] [--label TEXT] [--follow]
-[--include-untracked] -- CMD...`
-runs CMD on a GPU node from the repository you are in, and prints the job id.
-Everything after the first `--` is the job's command, even `--help`. It
-snapshots the worktree (uncommitted and untracked files included, and it says
-which untracked ones; an untracked `.env*`, `*.pem`, `id_*`, `*credentials*`,
-`.netrc` or `*.key` is refused unless `.gitignore` covers it or
-`--include-untracked` is given) without touching it and uploads the code
-straight to the node; no code or result bytes
-pass through the server, and no credential is kept on this computer. `trax job
-status [JOB]`, `logs JOB [-f]`, `results JOB [--to DIR]` and `cancel JOB` read
-and stop the job; `results` fills `out/` and keeps `src.bundle`, the exact code
-that ran, beside it. `--to` inside the repository is refused. Set a job's
-Hugging Face or Weights & Biases token with `trax job secret NAME set` and the
-value on stdin; the job never holds it. Never put a secret on a command line.
+Running Claude Code and Codex recorded, as an AgentSession reachable from Chat,
+moved out of trax; `trax run` says so. `trax` reads the records they write
+(`trax agentsession N`, `trax agentsession N records`) and sends a message into a
+live run with `trax send @NAME TEXT`.
 
 ## Recovery
 

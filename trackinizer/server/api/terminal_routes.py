@@ -119,7 +119,7 @@ async def open_terminal_route(
     only a detached campaign run for an attested writer or admin named as ``asker``;
     every other key, service account or foreign origin is refused. The machine must
     be online and its host must have asked for terminals within 45 seconds
-    (``TRAX_MACHINE_TERMINAL=1``). Attach with the ticket within 30 seconds.
+    (the machine host does by default). Attach with the ticket within 30 seconds.
 
     Args:
       body: The machine, the terminal's size, and the station it opens from.
@@ -163,7 +163,7 @@ async def open_terminal_route(
         raise _refused(
             409,
             code="terminal_not_enabled",
-            message="start the host with TRAX_MACHINE_TERMINAL=1",
+            message="start this machine's host first",
         )
     try:
         key = idempotency_key(request)
@@ -317,7 +317,7 @@ async def reattach_session_route(
         raise _refused(
             409,
             code="terminal_not_enabled",
-            message="start the host with TRAX_MACHINE_TERMINAL=1",
+            message="start this machine's host first",
         )
     named = None if station is None else from_plain(station["workstream"], str | None)
     try:
@@ -709,7 +709,7 @@ def _parse_attach(frame: tuple[Frame, bytes] | None) -> tuple[str, int] | None:
 # A browser opens any of its own terminal forms. The configured assistant is trusted
 # to name its asker, but only for the detached campaign shape: never a login shell or
 # a freely chosen command. The wire admits only claude/codex as ``command``; the other
-# fields make the host use ``trax run --detach`` with a named attached session.
+# fields make the host start a detached agent run with a named attached session.
 async def _terminal_owner(
     request: Request,
     identity: AuthIdentity,

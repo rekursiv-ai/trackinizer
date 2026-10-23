@@ -18,7 +18,7 @@
 //
 // trax [GLOBAL-FLAG...] (VERB ... | KIND ...) [WRITE-FLAG...]      flags peeled first:
 //   --makeitso   apply a bulk write matching >1 row (else just preview)
-//   --as ACTOR   --reason TEXT     audit attribution (on a write; `run --as` differs)
+//   --as ACTOR   --reason TEXT     audit attribution (on a write; a run's `--as` differs)
 //   --format table|json|ids   --limit N   --sort priority|seq|recent|oldest|valence
 //   --show-ids   --profile/--host/--port
 //   --backfill TIMESTAMP   timezone-aware past created time; new rows only
@@ -95,7 +95,8 @@ relation_action: EDGE_KEYWORD SEQ?        // no target = list related rows
 // The target is chosen HERE, not by whatever captured the session -- that is
 // what lets a codex-captured session resume as claude. `--lossy` is the tail's
 // own (it gates the CONVERSION, before any runner exists); everything after
-// the target goes verbatim to `trax run`.
+// the target goes to the runner, which moved out of trax: a well-formed resume says
+// so and exits 2.
 //   agentsession 42 run claude
 //   agentsession 42 run claude --lossy --as bob -- --model opus
 resume_action: RUN CLI_TARGET
@@ -226,10 +227,8 @@ VERB_ARG: /\S+/
 //   recent=audit feed; cost=cost rollup; id=show row by uuid;
 //   profile=manage server profiles; send=message a live agent session;
 //   env=the org's environment variables (a secret is write-only);
-//   machine=the registry of machines campaigns may run on;
-//   job=run a command on a GPU node; its logs, results and secrets;
-//   run=wrap an agent CLI (claude/gemini/codex) and sync its session;
-//     --detach hosts it past this terminal, reached by run ls/attach/log/send/stop.
+//   run, machine, job=moved out of trax: agent runs, the machine registry and
+//     GPU jobs are no longer trax's.
 //   authority issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession SEQ [--format text|json]
 //   blocked
 //   board [--width V]
@@ -241,21 +240,14 @@ VERB_ARG: /\S+/
 //   graph [--open-only]
 //   help [TOPIC]
 //   id UUID [--format table|json] [--changes]
-//   job [ submit [--gpus N] [--minutes M] [--label TEXT] [--follow] [--include-untracked] -- CMD... | status [JOB] | logs JOB [-f] | results JOB [--to DIR] | cancel JOB | secrets | secret NAME set|del ]
-//   machine [ NAME [ role|how [to V] | label add|del L | del | connect [--sandbox] ] | connect [--sandbox] ]
+//   job [ARGS...]    (moved out of trax)
+//   machine [ARGS...]    (moved out of trax)
 //   next [CLAIM] [--format text|json|ids] [--as/--actor V] [--reason V]
 //   profile [NAME] [ url|actor|token [to V] | current NAME | login URL | del ]
 //   recent [--limit V] [--format text|json]
-//   run attach NAME
-//   run claude|gemini|codex|sh [--out V] [--verbose] [--dry-run] [--no-sync] [--as V] [--room V] [--private] [--diff] [--detach] [--name V] [--attach V]
-//   run log NAME [-f/--follow]
-//   run ls [-a/--all]
-//   run send NAME TEXT...
-//   run stop NAME
+//   run [ARGS...]    (moved out of trax)
 //   search-sessions QUERY [--limit V] [--semantic/--no-semantic] [--format text|json]
 //   send TARGET TEXT...
 //   version
 //   workspace [WORKSPACE_ID] [ACTION] [SUBJECT] [--record V] [--placement main|left|side|floating] [--param V] [--page V]
-//   ^ run --as NAME = the session's owner; doubles as its routing handle
-//     (others address it @NAME), uniquified on collision (scientist#2).
-//     send TARGET = @actor[:room] of a live session; QUERY/TEXT are free words.
+//   ^ send TARGET = @actor[:room] of a live session; QUERY/TEXT are free words.

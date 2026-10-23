@@ -90,13 +90,13 @@ the workspace response. A `show` can also include `record_id` and bounded
 Chat talks to the canvas's partner, which `WorkspaceState.partner` names on
 every read and the events stream pushes when it changes. It follows the station's
 `provider`: the server's shared assistant (`assistant`), or the owner's own
-`trax run claude|codex` attached to the chat's session on one of their machines. The
+The runner attached to the chat's session on one of their machines. The
 header's provider card chooses it (`{"kind": "provider"}`), stars the default for
 new chats (the `chat_provider` preference), allows a newly connected machine, and
 starts a run on a machine that lists the CLI, in a folder the person names. A CLI's
 partner is `offline` while no such run drains the chat, and still names the session
-to attach a run to; a live one carries its `machine`, `run_name` (for `trax run
-attach`) and `cwd`. A partner that is not `live` disables the composer.
+to attach a run to; a live one carries its `machine`, `run_name` (for an
+attach) and `cwd`. A partner that is not `live` disables the composer.
 
 A claude run's prompts reach Chat as cards: the run records a prompt with
 `extra.$interaction` (`permission`, `question`, `plan`, or `trust` for a folder the

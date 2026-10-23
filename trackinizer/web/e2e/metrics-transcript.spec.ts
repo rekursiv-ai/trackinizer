@@ -3,7 +3,7 @@ import { expect, test, streamOpened } from "./fixtures";
 import { expectControlSeen, longTasks, watchLongTasks } from "./longTasks";
 
 // An Experiment's metrics and an AgentSession's transcript on the detail page,
-// written here through the same routes a run and `trax run` use. The part -1
+// written here through the same routes a run and the agent runner use. The part -1
 // backfill cannot be written through the API (only migration 020 made one), so
 // its listing and reading are covered by the screen tests.
 
@@ -44,7 +44,7 @@ async function session(
   return { id, seq: self.seq };
 }
 
-/** Append records `from` to `to - 1` of file `name`, as `trax run` does. */
+/** Append records `from` to `to - 1` of file `name`, as the agent runner does. */
 async function append(
   request: APIRequestContext,
   id: string,

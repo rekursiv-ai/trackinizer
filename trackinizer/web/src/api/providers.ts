@@ -46,7 +46,7 @@ export const NO_ASSISTANT = "No assistant on this server";
 
 /** Why a CLI provider is out: no capable machine of the caller's. */
 export function noMachineReason(provider: Provider): string {
-  return `Connect a machine with \`trax machine connect\` and install ${provider} on it`;
+  return `Connect a machine and install ${provider} on it`;
 }
 
 /**

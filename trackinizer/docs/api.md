@@ -570,7 +570,7 @@ Without one, nothing is served at those paths.
 
 ### 1.21 Agent-session ingest
 
-The capture-and-messaging surface for `trax run <cli>`. A run opens a
+The capture-and-messaging surface for the agent runner. A run opens a
 session, streams turn-grained events, and closes it; messages route back
 into a live session by routing name.
 
@@ -608,8 +608,8 @@ an `answer` it is the one-line form, "Yes" or "No: <reason>". A drained message
 carries `kind` and `payload` beside its `text`, `source` and `room`.
 
 `GET .../inbound` (the drain) takes `run`, `machine` and `cwd`, where the draining
-run is: the `trax run --detach` host `trax run attach` reaches (absent for a run in
-a terminal of its own), the machine as `trax machine connect` names it, and the
+run is: the name of the detached run an attach reaches (absent for a run in
+a terminal of its own), the machine as the machine host names it, and the
 working directory, `~/...` under its home, at most 1,024 characters with no control
 character. A malformed one is 422. The poller lease keeps them while it holds, for
 Chat to show; they are the run's own word, shown and never a grant.
@@ -622,7 +622,7 @@ says; the run's own part after `/compact` has no format. On such a chat a drain 
 names no `cli`, as a `trax` older than the name sends, is 426 `cli_required` with a
 plain "Update trax" message and takes no lease; a drain by the other CLI is 409
 `provider_is_other_cli`; and a drain whose `instance` differs from that of the
-unexpired lease of the same CLI is 409 `chat_run_live`. `trax run` ends its run on
+unexpired lease of the same CLI is 409 `chat_run_live`. The runner ends its run on
 `provider_is_assistant`, `provider_is_other_cli` and `chat_run_live` instead of
 retrying, and leaves the chat's session open as it exits. `POST .../end` takes the
 ending run's `cli` too: on a chat whose station chose another provider it is a 200
@@ -720,7 +720,7 @@ A session opens into the audience its key is pinned to (`open_into`, see section
 1.17), else `open`; `"private": true` in the start body opens it `private` instead,
 which a key pinned to `staff` may not (403 `audience_not_held`). A session that opens
 under the `chat:<id>` of a chat that is not `open` takes the chat's audience. The
-start's answer names the session's `audience`, and `trax run --private` stops before
+start's answer names the session's `audience`, and the runner's `--private` stops before
 its CLI starts when it is not `private`, as an older server, which ignores the field,
 answers. A resume asked to be `private` hides the `open` session it re-attaches, as
 the key that opened it may, and is 409, leaving it as it was, for a `staff` one. A
@@ -1480,7 +1480,7 @@ server, which pairs and relays them; the host listens on nothing. Only the
 machine's owner opens one, with a browser session (a cookie): an API key, a
 service account, a request without this server's own `Origin`, and anyone else
 answer 403 or 404. The machine must be online and its host must have asked for
-terminals within 45 seconds (`TRAX_MACHINE_TERMINAL=1`), else 409
+terminals within 45 seconds (the machine host does by default), else 409
 `terminal_not_enabled`. A station may hold any number of terminals; a user's 11th
 open within a minute answers 429. Every terminal refusal answers
 `detail: {code, message}`: `terminal_forbidden`, `terminal_not_enabled`,
@@ -1488,9 +1488,9 @@ open within a minute answers 429. Every terminal refusal answers
 
 `POST /api/terminals` takes `{machine, rows, cols, workspace?, surface?, command?,
 attach?, run_name?, cwd?}` and returns `{terminal_id, ticket}`. `command` is `claude` or
-`codex`: the terminal starts `trax run` of that CLI in place of a login shell, and
+`codex`: the terminal starts the runner of that CLI in place of a login shell, and
 any other value is 422. `attach` (the AgentSession the run re-opens), `run_name`
-(the detached run's name, which `trax run attach NAME` reaches) and `cwd` need a
+(the detached run's name, which the runner's `attach NAME` reaches) and `cwd` need a
 `command`, else 422. A `command` the machine's facts do not list is 409
 `cli_not_installed`; one whose `attach` session already has a live terminal, or a
 run that holds its poller lease, is 409 `chat_run_live`. With no `run_name` the server
@@ -1544,7 +1544,7 @@ keeps running on the machine. The host reports the shell's exit within half a se
 even when such a job still holds the terminal open.
 
 Nothing a terminal shows or receives is stored: the server keeps the last 256 KiB
-in memory for a re-attach and drops it when the terminal ends. A `trax run` started
+in memory for a re-attach and drops it when the terminal ends. An agent run started
 inside the shell records its own session, placed in the station, as it does anywhere.
 
 ### 1.27 Code store

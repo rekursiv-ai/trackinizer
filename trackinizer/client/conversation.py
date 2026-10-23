@@ -352,7 +352,7 @@ def projected(
 ) -> list[SessionRecord]:
     """Project the conversation into records a CLI writer takes as its own.
 
-    A person's line becomes a user turn spelled ``sender: text``, as ``trax run``
+    A person's line becomes a user turn spelled ``sender: text``, as the agent runner
     types one, so a line typed live and a line loaded read alike. A switch becomes a
     user note naming who answered before. A foreign tool call and its result become
     assistant text, unless the result is typed: typed results cross as structure, and
@@ -622,7 +622,7 @@ def _projected(
     if isinstance(record, AgentToAgentMessage):
         # Spelled as ``render_inbound`` spells a sender with no room and no context,
         # which is how a line typed live reads. The client package cannot import the
-        # trax run package that owns that function.
+        # agent runner's package that owns that function.
         return [
             UserMessage(
                 timestamp=record.timestamp,

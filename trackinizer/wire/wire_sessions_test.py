@@ -247,7 +247,7 @@ class TestRoomValidation:
         assert InboundDrainItem.model_validate_json(item.model_dump_json()) == item
 
     def test_session_start_rejects_comma_in_room(self) -> None:
-        # A room name carrying ',' is ambiguous once serialized: ``trax run``
+        # A room name carrying ',' is ambiguous once serialized: the runner
         # exports rooms comma-joined into ``TRAX_ROOMS`` (session.py), so a
         # room ``'a,b'`` is indistinguishable from two rooms ``'a'`` and
         # ``'b'`` to an agent inside the session. Reject the comma at the wire

@@ -25,8 +25,8 @@ const UNAVAILABLE = { session_id: null, actor: "scout", cli: null, kind: "shared
 const GX10: TerminalMachine = { name: "gx10", status: "online", terminal_ready: true, confirmed: true, clis: ["claude", "codex"] };
 const LAPTOP: TerminalMachine = { name: "laptop", status: "online", terminal_ready: true, confirmed: true, clis: ["codex"] };
 const BOX: TerminalMachine = { name: "box", status: "online", terminal_ready: false, confirmed: true, clis: ["claude"] };
-const CODEX_REASON = "Connect a machine with `trax machine connect` and install codex on it";
-const CLAUDE_REASON = "Connect a machine with `trax machine connect` and install claude on it";
+const CODEX_REASON = "Connect a machine and install codex on it";
+const CLAUDE_REASON = "Connect a machine and install claude on it";
 const BALANCE: BalanceBody = { usd: 498.2, granted_usd: 500, purchased_usd: 0, spent_usd: 1.8, topup_usd: [10, 25], enforced: true, grace_until: null, own_login: false,
   can_run: true, reason: "You have credit left." };
 const SPENT: BalanceBody = { ...BALANCE, usd: 0, spent_usd: 500, can_run: false, reason: "You are out of credit." };
@@ -183,7 +183,7 @@ test("a run that is starting says so until the partner is live, then shows its l
 
 test("a CLI with no capable machine says how to connect one, with the setup command", async () => {
   picker(station({ provider: "codex", partner: offline("codex") }), { machines: [{ ...GX10, clis: ["claude"] }] });
-  await waitFor(() => expect(document.querySelector(".provider-machines p")?.textContent).toBe(`Connect a machine with trax machine connect and install codex on it.`));
+  await waitFor(() => expect(document.querySelector(".provider-machines p")?.textContent).toBe(`Connect a machine and install codex on it.`));
   expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
 });
 

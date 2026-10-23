@@ -246,7 +246,8 @@ async def device_lookup_route(
       identity: The signed-in person.
 
     Returns:
-      view: The program, its computer, the machine, and the role the key would hold.
+      view: The account signed in, the program, its computer, the machine, and the
+        role the key would hold.
 
     Raises:
       HTTPException: 403 ``device_forbidden`` for a key, a service account, a server
@@ -259,6 +260,7 @@ async def device_lookup_route(
         login = await _open_login(request, conn, identity=identity, body=body)
     return DeviceLoginView(
         user_code=format_user_code(login.user_code),
+        account=identity.email,
         client=login.client,
         host=login.host,
         machine=login.machine,

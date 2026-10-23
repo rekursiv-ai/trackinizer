@@ -163,12 +163,12 @@ def test_the_request_names_the_program_and_the_computer_and_carries_no_credentia
 ):
     server = _Server([_approved()])
 
-    _log_in(server, _Time(), client="rai-shell")
+    _log_in(server, _Time(), client="machine-host")
 
     first, second = server.requests
     assert "authorization" not in first.headers
     assert server.bodies() == [
-        {"client": "rai-shell", "host": "Dev_box", "machine": None},
+        {"client": "machine-host", "host": "Dev_box", "machine": None},
         {"device_code": _CODE.device_code},
     ]
     assert second.method == "POST"

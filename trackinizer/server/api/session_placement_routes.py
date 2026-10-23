@@ -1,4 +1,4 @@
-"""Place a ``trax run`` session in a workstream and a station, and move it."""
+"""Place an agent run's session in a workstream and a station, and move it."""
 
 from __future__ import annotations
 

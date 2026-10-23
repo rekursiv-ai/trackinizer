@@ -18,7 +18,7 @@ export type Offered = { readonly actor: string; readonly label: string; readonly
  *
  * A person is written as their email when they have one, since that ties to
  * their account, and otherwise as their name; an agent as its handle, which
- * `trax run --as` sessions are owned by and pushed to. A display name is never
+ * the runner's `--as` sessions are owned by and pushed to. A display name is never
  * written. An email is lowercased: the allowlist stores it so, and accounts
  * are made from it.
  */

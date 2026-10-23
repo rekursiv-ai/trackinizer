@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from treekle import immutable
 
-from trackinizer.trax.run.asks import (
+from trackinizer.runs.asks import (
     Ask,
     Option,
     Resolved,

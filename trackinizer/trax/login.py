@@ -3,7 +3,7 @@
 ``login`` asks the server for a device code, prints where to enter it, and polls until
 the person approves. The key it gets is saved as a profile named for the server, and
 made the current profile only when trax had none. ``trax profile NAME login URL`` runs
-it; ``rai-shell`` runs it with the machine it is about to connect, whose one-use
+it; a machine host runs it with the machine it is about to connect, whose one-use
 enrollment token the same approval returns.
 """
 
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
 
-__all__ = ["LoginResult", "login"]
+__all__ = ["LoginResult", "login", "secure_url"]
 
 
 _LOOPBACK: Final = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -86,8 +86,8 @@ def login(
       profile: The profile name to save under; empty names it for the server.
       machine: A machine to enroll as the approver's own, confirmed by the approval.
       client: The program asking, shown on the approval page and in the key's name:
-        ``trax`` for ``trax profile NAME login URL``, whose key trax holds; an endpoint
-        such as ``rai-shell`` passes its own name.
+        ``trax`` for ``trax profile NAME login URL``, whose key trax holds; another
+        program, such as a machine host, passes its own name.
       sleep: Waits between polls; a test replaces it.
       clock: Monotonic seconds, for the code's lifetime; a test replaces it.
 
@@ -101,7 +101,7 @@ def login(
         something unexpected, the person denies the login, or the code expires first.
 
     """
-    base = _secure_url(server_url(url, "login URL"))
+    base = secure_url(server_url(url, "login URL"), what="login URL")
     name = profile or _server_profile(base)
     validate_profile_name(name)
     request = _validated(
@@ -139,21 +139,27 @@ def login(
     )
 
 
-def _hostname() -> str:
-    """Return this computer's short host name, cut to what the server accepts."""
-    short = socket.gethostname().split(".")[0]
-    return re.sub(r"[^A-Za-z0-9._-]", "-", short).lstrip("._-")[:63]
-
-
 # A key sent over plain http is readable on the way, and so is the link it prints, which
 # a hostile hop could swap for a look-alike page.
-def _secure_url(base: str) -> str:
-    """Return ``base``, or refuse plain ``http`` to a server beyond this computer."""
+def secure_url(base: str, *, what: str) -> str:
+    """Return ``base``, or refuse plain ``http`` to a server beyond this computer.
+
+    Args:
+      base: The server's normalized URL.
+      what: What the URL is, for the refusal (``login URL``, ``--server``).
+
+    Returns:
+      base: The URL, unchanged.
+
+    Raises:
+      ClientError: ``base`` is plain ``http`` to a host that is not this computer.
+
+    """
     parts = urlsplit(base)
     if parts.scheme == "http" and parts.hostname not in _LOOPBACK:
         raise ClientError(
-            f"login URL {base!r} is plain http; a login over it can be read or "
-            "rewritten on the way. Use https.",
+            f"{what} {base!r} is plain http; a key or command sent over it can be "
+            "read or rewritten on the way. Use https.",
         )
     return base
 
@@ -208,3 +214,9 @@ def _validated[M: BaseModel](model: type[M], payload: object, *, where: str) -> 
         return model.model_validate(payload)
     except ValueError:
         raise ClientError(f"{where} returned a malformed payload") from None
+
+
+def _hostname() -> str:
+    """Return this computer's short host name, cut to what the server accepts."""
+    short = socket.gethostname().split(".")[0]
+    return re.sub(r"[^A-Za-z0-9._-]", "-", short).lstrip("._-")[:63]

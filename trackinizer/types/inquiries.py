@@ -1153,7 +1153,7 @@ class WebSearch(Artifact):
 class AgentSession(Artifact):
     """A captured agent-CLI session, citeable like any other Artifact.
 
-    Produced by ``trax run <cli>``: the harness wraps the CLI, tails its
+    Produced by the agent runner: the harness wraps the CLI, tails its
     native session log, and ingests turn-grained events. This row is the
     queryable handle -- edge-able to the Issues/CodeChanges the session bore
     on, supersede-able when a session is resumed. The per-turn events live in

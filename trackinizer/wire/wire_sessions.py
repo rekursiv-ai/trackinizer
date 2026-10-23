@@ -1,6 +1,6 @@
 """Wire contract for agent-session lifecycle, messaging, and the feed.
 
-Sessions captured by ``trax run`` flow to trackinizer through ``start``
+Sessions captured by the agent runner flow to trackinizer through ``start``
 (mint the ``AgentSession`` row) and ``end`` (mark it closed); the records
 themselves ride the separate :mod:`wire.wire_session_ir` contract. This
 module is the single source for these request/response shapes and their
@@ -66,6 +66,7 @@ __all__ = [
     "PROVIDER_IS_CLI",
     "PROVIDER_IS_OTHER_CLI",
     "RUN_ENDING_REFUSALS",
+    "RUN_NAME_PATTERN",
     "SEND_MESSAGE_PATH",
     "SESSION_API_PATHS",
     "SESSION_AUDIENCE_PATH",
@@ -179,7 +180,7 @@ class SessionStart(BaseModel):
     (validated server-side). See :attr:`Inquiry.account`."""
 
     rooms: list[str] | None = None
-    """Initial room membership (``trax run --room``); namespaces the session
+    """Initial room membership (the runner's ``--room``); namespaces the session
     can be addressed within. See :attr:`AgentSession.rooms`."""
 
     idempotency_key: uuid.UUID | None = None
@@ -201,7 +202,7 @@ class SessionStart(BaseModel):
     )(staticmethod(_reject_blank))
 
     # A room name must be a single clean token: non-blank (matched verbatim against
-    # ``agentsession_rooms``) and comma-free (``trax run`` exports rooms comma-joined
+    # ``agentsession_rooms``) and comma-free (the agent runner exports rooms comma-joined
     # into ``TRAX_ROOMS``, so a room ``'a,b'`` is indistinguishable from two rooms
     # ``'a'`` and ``'b'``). Mirrors the ``SubmitAgentSession.rooms`` rule so both create
     # paths agree.
@@ -724,7 +725,7 @@ class InboundEnqueueResponse(BaseModel):
     ``queued`` is the current count pending for the session after this enqueue,
     including on an idempotent retry. It is
     an honest receipt -- the message is queued for the session's poller, not
-    proven delivered; a session whose ``trax run`` is gone never drains it.
+    proven delivered; a session whose run is gone never drains it.
     """
 
     queued: int
@@ -773,7 +774,7 @@ class SendMessageResponse(BaseModel):
     """Receipt for a ``send``: which live sessions the message was queued to.
 
     ``delivered`` lists the session ids enqueued (drop-if-absent: a session
-    whose ``trax run`` is gone may never drain it). Empty means no live
+    whose run is gone may never drain it). Empty means no live
     session matched the target -- the honest "undelivered" signal.
     """
 
@@ -866,10 +867,14 @@ name does: the server cannot tell which CLI polls, so it takes no lease."""
 SESSION_ENDED: Final = "session_ended"
 """The chat's session ended, as when the person closed the chat, and its run still polls."""
 
+RUN_NAME_PATTERN: Final = r"^[A-Za-z0-9][A-Za-z0-9._@#+=:-]{0,127}$"
+"""A detached run's name: the server takes it on a drain, and a detached run takes it
+as a directory name. One rule, so a name the host takes never breaks its own drain."""
+
 RUN_ENDING_REFUSALS: Final = frozenset(
     {PROVIDER_IS_ASSISTANT, PROVIDER_IS_OTHER_CLI, CHAT_RUN_LIVE, SESSION_ENDED},
 )
-"""The refusals after which no drain of that run can succeed, so ``trax run`` stops
+"""The refusals after which no drain of that run can succeed, so the runner stops
 the run it is polling for, instead of retrying a drain the chat will keep refusing."""
 
 

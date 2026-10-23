@@ -13,7 +13,7 @@ import threading
 import time
 
 from trackinizer.client.errors import ClientError
-from trackinizer.trax import cli
+from trackinizer.trax import connection
 from trackinizer.trax.cli import parse_and_run
 from trackinizer.trax.client_cache import Target
 from trackinizer.trax.context import cwd, env
@@ -294,7 +294,7 @@ class TestTokenIsNeverTheDaemons:
         targets: list[Target] = []
         handle(
             make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
-            run=lambda _argv: targets.append(cli._resolve_target(Namespace())),
+            run=lambda _argv: targets.append(connection.resolve_target(Namespace())),
         )
 
         assert targets == [Target(url="http://caller:1", author="", api_key="")]

@@ -25,7 +25,7 @@ from trackinizer.client.client import (
     server_url,
 )
 from trackinizer.client.errors import ClientError
-from trackinizer.trax import cli, profile
+from trackinizer.trax import connection, profile
 from trackinizer.trax.conftest import FakeClient
 from trackinizer.trax.grammar import parse_kind, parse_ref
 from trackinizer.trax.profile import Profile
@@ -220,7 +220,7 @@ class TestFlags:
 
     def test_flags_default_to_none(self) -> None:
         parser = argparse.ArgumentParser()
-        cli.connect_flags(parser)
+        connection.connect_flags(parser)
         args = parser.parse_args([])
         profile_arg = cast(str | None, args.profile)
         host_arg = cast(str | None, args.host)
@@ -231,7 +231,7 @@ class TestFlags:
 
     def test_flags_parse_user_values(self) -> None:
         parser = argparse.ArgumentParser()
-        cli.connect_flags(parser)
+        connection.connect_flags(parser)
         args = parser.parse_args(
             ["--profile", "prod", "--host", "1.2.3.4", "--port", "9000"],
         )
@@ -244,22 +244,28 @@ class TestFlags:
 
     def test_from_args_host_port_override_profile(self) -> None:
         profile.save_profile("prod", Profile(url="http://prod:1000"))
-        client = cli.connect(argparse.Namespace(profile="prod", host="ex", port=9090))
+        client = connection.connect(
+            argparse.Namespace(profile="prod", host="ex", port=9090),
+        )
         assert client.base_url == "http://ex:9090"
 
     def test_from_args_selects_named_profile(self) -> None:
         profile.save_profile("prod", Profile(url="http://prod:9000", author="alice"))
-        client = cli.connect(argparse.Namespace(profile="prod", host=None, port=None))
+        client = connection.connect(
+            argparse.Namespace(profile="prod", host=None, port=None),
+        )
         assert client.base_url == "http://prod:9000"
         assert client.author == "alice"
 
     def test_from_args_partial_flags_fill_from_profile(self) -> None:
         profile.save_profile("default", Profile(url="http://defaulthost:8888"))
-        host_only = cli.connect(
+        host_only = connection.connect(
             argparse.Namespace(profile=None, host="other", port=None),
         )
         assert host_only.base_url == "http://other:8888"
-        port_only = cli.connect(argparse.Namespace(profile=None, host=None, port=4242))
+        port_only = connection.connect(
+            argparse.Namespace(profile=None, host=None, port=4242),
+        )
         assert port_only.base_url == "http://defaulthost:4242"
 
     def test_from_args_without_flags_uses_trackinizer_url(
@@ -267,7 +273,7 @@ class TestFlags:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_URL", "http://127.0.0.1:8766/")
-        client = cli.connect(argparse.Namespace())
+        client = connection.connect(argparse.Namespace())
         assert client.base_url == "http://127.0.0.1:8766"
         assert client.author == ""
 
@@ -277,7 +283,7 @@ class TestFlags:
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_URL", "actor")
         with pytest.raises(ClientError, match="TRACKINIZER_URL has invalid URL"):
-            cli.connect(argparse.Namespace())
+            connection.connect(argparse.Namespace())
 
     def test_constructor_rejects_invalid_base_url(self) -> None:
         with pytest.raises(ClientError, match="base_url has invalid URL"):
@@ -285,19 +291,21 @@ class TestFlags:
 
     def test_from_args_raises_when_named_profile_missing(self) -> None:
         with pytest.raises(ClientError, match="profile 'typo' not found"):
-            cli.connect(argparse.Namespace(profile="typo", host=None, port=None))
+            connection.connect(argparse.Namespace(profile="typo", host=None, port=None))
 
     def test_bare_client_reads_author_from_profile(self) -> None:
         profile.save_profile(
             "default",
             Profile(url="http://defaulthost:8888", author="alice"),
         )
-        client = cli.connect(argparse.Namespace(profile=None, host=None, port=None))
+        client = connection.connect(
+            argparse.Namespace(profile=None, host=None, port=None),
+        )
         assert client.base_url == "http://defaulthost:8888"
         assert client.author == "alice"
 
     def test_from_args_without_flags_uses_default_profile(self) -> None:
-        bare = cli.connect(argparse.Namespace())
+        bare = connection.connect(argparse.Namespace())
         assert bare.base_url == "http://127.0.0.1:8765"
         assert bare.author == ""
 
@@ -306,25 +314,31 @@ class TestFlags:
             "prod",
             Profile(url="https://example.com:443", author="alice"),
         )
-        client = cli.connect(argparse.Namespace(profile="prod", host=None, port=None))
+        client = connection.connect(
+            argparse.Namespace(profile="prod", host=None, port=None),
+        )
         assert client.base_url == "https://example.com:443"
         assert client.author == "alice"
 
     def test_from_args_preserves_portless_profile(self) -> None:
         profile.save_profile("prod", Profile(url="https://example.com"))
-        client = cli.connect(argparse.Namespace(profile="prod", host=None, port=None))
+        client = connection.connect(
+            argparse.Namespace(profile="prod", host=None, port=None),
+        )
         assert client.base_url == "https://example.com"
 
     def test_from_args_host_override_keeps_profile_scheme_and_port(self) -> None:
         profile.save_profile("prod", Profile(url="https://prod.example:8443"))
-        client = cli.connect(
+        client = connection.connect(
             argparse.Namespace(profile="prod", host="other", port=None),
         )
         assert client.base_url == "https://other:8443"
 
     def test_from_args_port_override_on_portless_profile(self) -> None:
         profile.save_profile("prod", Profile(url="https://example.com"))
-        client = cli.connect(argparse.Namespace(profile="prod", host=None, port=9000))
+        client = connection.connect(
+            argparse.Namespace(profile="prod", host=None, port=9000),
+        )
         assert client.base_url == "https://example.com:9000"
 
 
@@ -1394,10 +1408,10 @@ class TestClientMethods:
 # Members on ``Client`` that the fake intentionally does not implement:
 # argparse-flag registration, the connection-resolution factory, and the
 # raw HTTP verbs. The fake bypasses HTTP entirely, so these would be dead
-# on the fake. The variable and machine methods are driven through stub clients in
-# ``trax/variables_test.py`` and ``trax/machines_test.py``, so the shared fake does
-# not carry them. No ``trax`` command files code, so the fake carries no code-store
-# method either. The canvas capture is an agent's alone, and no command takes one.
+# on the fake. The variable methods are driven through stub clients in
+# ``trax/variables_test.py``, and no ``trax`` command reads machines or jobs, so the
+# shared fake carries none of them. No ``trax`` command files code, so it holds no
+# code-store method either. The canvas capture is an agent's alone, and no command takes one.
 # The exec calls are the assistant's and a machine host's, which no ``trax`` command is,
 # and ``client/client_exec_test.py`` drives them.
 _FAKE_EXEMPT: frozenset[str] = frozenset(

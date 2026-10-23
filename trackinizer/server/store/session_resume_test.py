@@ -1,18 +1,17 @@
-"""Resuming a stored session: read it back, write it, re-attach to its row.
+"""Resuming a stored session: read it back whole, and re-attach to its row.
 
-The claim phase 6 rests on: a session captured from ANY CLI can be handed back
-to claude as a file claude will accept, and the resumed run appends to the
-original AgentSession rather than forking a second one.
+The claim phase 6 rests on: a session captured from ANY CLI reads back from the
+store as the records it was given, with their sealed halves, and the resumed run
+appends to the original AgentSession rather than forking a second one. Writing
+the records out as a file a CLI accepts is the runner's half
+(``materialize_test.py`` in the endpoint that resumes).
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
-
-import json
 
 from treekle import immutable
 
@@ -24,16 +23,9 @@ from trackinizer.lib.agent.sessions import (
     codex,
 )
 from trackinizer.lib.agent.sessions.tail import Tail
-from trackinizer.lib.agent.types.sessions import (
-    IncompleteRecord,
-    SessionRecord,
-    Thinking,
-    UncategorizedRecord,
-)
+from trackinizer.lib.agent.types.sessions import SessionRecord, Thinking
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
-from trackinizer.trax.run.errors import CiphertextDroppedError
-from trackinizer.trax.run.materialize import materialize
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 from trackinizer.wire.bodies import SubmitAgentSession
@@ -59,17 +51,14 @@ async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
     yield built
 
 
-@pytest.fixture(autouse=True)
-def local_claude_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Materialize into a temp project root rather than the operator's."""
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-
-
 # Fed a line at a time through :class:`Tail`, which is what capture does: the reader
 # PULLS lines and the runner PUSHES them, so driving the pull side directly would
 # exercise a path the runner never takes.
-async def _captured(store: Store, name: str) -> tuple[UUID, int]:
-    """Ingest a corpus fixture as a session; return its id and part."""
+async def _captured(
+    store: Store,
+    name: str,
+) -> tuple[UUID, int, list[SessionRecordRow]]:
+    """Ingest a corpus fixture as a session; return its id, part and stored rows."""
     path = _TESTDATA / name
     reader = Tail((codex if name.startswith("codex") else claude).normalize)
     records: list[TraxRecord] = []
@@ -92,19 +81,12 @@ async def _captured(store: Store, name: str) -> tuple[UUID, int]:
         format="codex" if name.startswith("codex") else "claude",
         records=len(records),
     )
-    await store.append_session_records(
-        session_id,
-        [
-            SessionRecordRow.of(
-                session_id=session_id,
-                part=part,
-                idx=idx,
-                record=record,
-            )
-            for idx, record in enumerate(records)
-        ],
-    )
-    return session_id, part
+    rows = [
+        SessionRecordRow.of(session_id=session_id, part=part, idx=idx, record=record)
+        for idx, record in enumerate(records)
+    ]
+    await store.append_session_records(session_id, rows)
+    return session_id, part, rows
 
 
 # Narrowed to the shared IR, exactly as ``resume.py::_read_part`` narrows: these parts
@@ -128,122 +110,34 @@ async def _read_back(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_claude_session_resumes_to_its_stored_records(store: Store) -> None:
-    """Materialize, then re-normalize: the records must be the stored ones.
+@pytest.mark.parametrize("name", ["claude_sidechain.jsonl", "codex_main.jsonl"])
+async def test_a_stored_session_reads_back_the_records_and_seals_it_was_given(
+    store: Store,
+    name: str,
+) -> None:
+    """What a resume reads is what capture stored: record for record, seal for seal.
 
-    NOT byte-identical to the capture, deliberately -- the session id was
-    rewritten, which is the whole point of minting a fresh one. Every RECORD
-    survives that rewrite.
+    A resume writes these back out for a CLI, so a record the store altered, or a
+    ciphertext it attached to the wrong record, would reach the provider.
     """
-    session_id, part = await _captured(store, "claude_sidechain.jsonl")
+    session_id, part, rows = await _captured(store, name)
+
     records, sealed = await _read_back(store, session_id, part)
-    manifests = await store.read_session_manifests(session_id)
 
-    written = materialize(
-        target="claude",
-        records=records,
-        encoding=manifests[0].metadata,
-        attach=session_id,
-        sealed=sealed,
-    )
-    with written.path.open(encoding="utf-8") as handle:
-        reread = list(claude.normalize(handle))
-
-    # Compared with the session id normalized away on both sides: rewriting it
-    # is the POINT of materializing, so a record differing only there is a
-    # record that survived. Everything else must match exactly.
-    assert _without_session_id(reread) == _without_session_id(records)
-
-
-def _without_session_id(records: Sequence[TraxRecord]) -> list[TraxRecord]:
-    """Each record with any ``sessionId`` dropped from its residual."""
-    out: list[TraxRecord] = []
-    for record in records:
-        if (
-            isinstance(
-                record,
-                (IncompleteRecord, UncategorizedRecord, Stdin, Stdout, Stderr),
-            )
-            or "sessionId" not in record.extra
-        ):
-            out.append(record)
-            continue
-        out.append(
-            replace(
-                record,
-                extra=immutable(
-                    {k: v for k, v in record.extra.items() if k != "sessionId"},
-                ),
-            ),
-        )
-    return out
+    assert records == [row.record() for row in rows]
+    assert sealed == [row.ciphertext for row in rows]
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_codex_capture_resumes_as_claude(store: Store) -> None:
-    """The cross-CLI case: what captured it does not decide what resumes it.
+async def test_a_codex_capture_stores_a_seal_a_resume_must_have(store: Store) -> None:
+    """The counterpart of the read-back above: the fixture does carry ciphertext."""
+    session_id, part, _rows = await _captured(store, "codex_main.jsonl")
 
-    Codex cannot be re-entered (it has no stable per-session id), but its
-    transcript is IR records like any other, so claude can be handed them.
-    """
-    session_id, part = await _captured(store, "codex_main.jsonl")
     records, sealed = await _read_back(store, session_id, part)
-    manifests = await store.read_session_manifests(session_id)
 
-    written = materialize(
-        target="claude",
-        records=records,
-        encoding=manifests[0].metadata,
-        attach=session_id,
-        sealed=sealed,
-    )
-
-    assert written.path.exists()
-    with written.path.open(encoding="utf-8") as handle:
-        reread = list(claude.normalize(handle))
-    # A conversion across formats is lossy in the ENVELOPE, not the content:
-    # every message the model and user exchanged comes back.
-    assert reread, "a codex capture materialized to an empty transcript"
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_the_materialized_file_names_the_minted_id(store: Store) -> None:
-    """Filename, ``sessionId``, and the ``--resume`` argument all agree.
-
-    A file still declaring the CAPTURED id is one the CLI will not associate
-    with the id it was asked to resume.
-    """
-    session_id, part = await _captured(store, "claude_sidechain.jsonl")
-    records, sealed = await _read_back(store, session_id, part)
-    manifests = await store.read_session_manifests(session_id)
-
-    written = materialize(
-        target="claude",
-        records=records,
-        encoding=manifests[0].metadata,
-        attach=session_id,
-        sealed=sealed,
-    )
-
-    declared = {
-        json.loads(line)["sessionId"]
-        for line in written.path.read_text(encoding="utf-8").splitlines()
-    }
-    assert declared == {str(written.cli_session_id)}
-    assert written.path.stem == str(written.cli_session_id)
-    # The CAPTURED id is the one the fixture's own lines carry -- not the
-    # manifest's ``ir_id``, which the capturing client mints and never writes
-    # into the file, so asserting on that would pass without the rewrite.
-    captured = {
-        json.loads(line)["sessionId"]
-        for line in (_TESTDATA / "claude_sidechain.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()
-    }
-    assert captured, "the fixture declares no sessionId to leak"
-    assert not captured & declared, "the captured id leaked through"
+    assert any(isinstance(r, Thinking) for r in records), "fixture carries no thinking"
+    assert any(seal is not None for seal in sealed), "no ciphertext was stored"
 
 
 @pytest.mark.db_pglite
@@ -255,7 +149,7 @@ async def test_stamping_the_id_re_attaches_rather_than_forking(store: Store) -> 
     ``agentsession_cli_session_id`` matches. Without the stamp it mints a
     second AgentSession and the transcript splits across two rows.
     """
-    session_id, _part = await _captured(store, "claude_sidechain.jsonl")
+    session_id, _part, _rows = await _captured(store, "claude_sidechain.jsonl")
     minted = uuid4()
     await store.set_cli_session_id(session_id, str(minted), actor="agent")
 
@@ -277,7 +171,7 @@ async def test_stamping_the_id_re_attaches_rather_than_forking(store: Store) -> 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_without_the_stamp_the_run_forks(store: Store) -> None:
     """The counterpart, so the test above is not vacuously true."""
-    session_id, _part = await _captured(store, "claude_sidechain.jsonl")
+    session_id, _part, _rows = await _captured(store, "claude_sidechain.jsonl")
 
     forked, _actor, _seq = await store.start_session(
         SubmitAgentSession(
@@ -295,30 +189,26 @@ async def test_without_the_stamp_the_run_forks(store: Store) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_dropped_ciphertext_refuses_the_resume(store: Store) -> None:
-    """Retention can drop the sealed half; a replay must say so.
+async def test_dropped_ciphertext_reads_back_as_missing_beside_the_same_records(
+    store: Store,
+) -> None:
+    """Retention can drop the sealed half; a resume must be able to tell.
 
-    The record stays searchable -- that is what the split buys -- but it
-    cannot be handed back to the provider, which validates the field.
+    The records are untouched, and each seal reads back as ``None``, which is what
+    makes the runner refuse the replay instead of writing a hollow transcript.
     """
-    session_id, part = await _captured(store, "codex_main.jsonl")
+    session_id, part, rows = await _captured(store, "codex_main.jsonl")
     async with store.engine.acquire() as conn:
         await conn.execute(
             "DELETE FROM session_ciphertext WHERE session_id = $1",
             session_id,
         )
-    records, sealed = await _read_back(store, session_id, part)
-    manifests = await store.read_session_manifests(session_id)
 
-    assert any(isinstance(r, Thinking) for r in records), "fixture carries no thinking"
-    with pytest.raises(CiphertextDroppedError):
-        materialize(
-            target="claude",
-            records=records,
-            encoding=manifests[0].metadata,
-            attach=session_id,
-            sealed=sealed,
-        )
+    records, sealed = await _read_back(store, session_id, part)
+
+    assert records == [row.record() for row in rows]
+    assert any(row.ciphertext is not None for row in rows), "nothing was sealed"
+    assert sealed == [None] * len(rows)
 
 
 @pytest.mark.db_pglite
@@ -331,7 +221,7 @@ async def test_the_session_stays_searchable_without_its_ciphertext(
     This is the retention lever's whole contract: the plaintext record is
     untouched, so search still finds it.
     """
-    session_id, part = await _captured(store, "codex_main.jsonl")
+    session_id, part, _rows = await _captured(store, "codex_main.jsonl")
     async with store.engine.acquire() as conn:
         await conn.execute(
             "DELETE FROM session_ciphertext WHERE session_id = $1",

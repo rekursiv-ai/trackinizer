@@ -3,7 +3,7 @@ import { expect, failedResource, test, streamOpened } from "./fixtures";
 
 // The console (#/console): every session's captured records as one live feed,
 // narrowed by a view that saves itself, and a line that messages agents. The test
-// stands in for each session's `trax run`: a drain that returns at once
+// stands in for each session's run: a drain that returns at once
 // (`GET .../inbound?wait_sec=0`) marks the session polled and reads what reached
 // it. Other spec files write to the same feed, so each test names its own agents,
 // one name family per test, and picks that family.
@@ -34,7 +34,7 @@ async function capture(
   expect(appended.ok(), await appended.text()).toBe(true);
 }
 
-/** Take what is queued for the session, as its `trax run` does; the first take marks it polled. */
+/** Take what is queued for the session, as its run does; the first take marks it polled. */
 async function drain(request: APIRequestContext, id: string): Promise<string[]> {
   const drained = await request.get(`/api/sessions/${id}/inbound?wait_sec=0`);
   expect(drained.ok(), await drained.text()).toBe(true);

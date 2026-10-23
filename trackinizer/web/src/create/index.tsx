@@ -64,7 +64,7 @@ export function CreateView({ kind, onClose }: { kind: string; onClose: () => voi
       why={
         mode === "hidden"
           ? "Your role can read but not create. Creating needs the writer role."
-          : `${kindLook(kind).plural} are recorded by trax run, not created here.`
+          : `${kindLook(kind).plural} are recorded by agent runs, not created here.`
       }
     />
   );

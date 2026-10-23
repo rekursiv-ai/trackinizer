@@ -11,12 +11,12 @@ test.beforeEach(async ({ request }) => {
 });
 
 // Messaging a live AgentSession from the foot of its transcript. The test stands
-// in for the session's `trax run`: a drain that returns at once (`GET
+// in for the session's run: a drain that returns at once (`GET
 // .../inbound?wait_sec=0`) marks the session polled and reads what the page
 // sent, and the agent's turns are appended as its capture appends them. The
 // page itself never drains.
 
-/** Start a session as `trax run` does, with one captured turn; its id, seq, owner and file. */
+/** Start a session as the agent runner does, with one captured turn; its id, seq, owner and file. */
 async function startSession(request: APIRequestContext, title: string) {
   const started = await request.post("/api/sessions/start", { data: { cli: "claude", title } });
   expect(started.ok(), await started.text()).toBe(true);
@@ -41,7 +41,7 @@ async function capture(
   expect(appended.ok(), await appended.text()).toBe(true);
 }
 
-/** Take what is queued for the session, as its `trax run` does; the first take marks it polled. */
+/** Take what is queued for the session, as its run does; the first take marks it polled. */
 async function drain(request: APIRequestContext, id: string): Promise<{ text: string; source: string }[]> {
   const drained = await request.get(`/api/sessions/${id}/inbound?wait_sec=0`);
   expect(drained.ok(), await drained.text()).toBe(true);
@@ -56,7 +56,7 @@ async function openSession(page: Page, seq: number): Promise<Locator> {
   return page.locator('[data-section="transcript"]');
 }
 
-test("a message from a live session's transcript reaches its trax run, and the reply shows live", async ({ page }) => {
+test("a message from a live session's transcript reaches its run, and the reply shows live", async ({ page }) => {
   const { email } = await (await page.request.get("/api/me/profile")).json();
   const session = await startSession(page.request, "E2E session chat");
   expect(await drain(page.request, session.id)).toEqual([]);
@@ -69,7 +69,7 @@ test("a message from a live session's transcript reaches its trax run, and the r
   expect(await drain(page.request, session.id)).toEqual([
     expect.objectContaining({ text: "Please summarize what you changed.", source: email }),
   ]);
-  // `trax run` typed it into the CLI, which logged it and answered.
+  // the agent runner typed it into the CLI, which logged it and answered.
   await capture(page.request, session.id, session.file, 1, [
     { kind: "UserMessage", content: `${email}: Please summarize what you changed.` },
     { kind: "AssistantMessage", content: "I replaced time.time() with time.monotonic()." },
@@ -117,7 +117,7 @@ test("a send whose answer is lost, retried, reaches the agent once", async ({ pa
   expect((await drain(page.request, session.id)).map((message) => message.text)).toEqual(["Run the suite again."]);
 });
 
-test("a send to a session no trax run is polling says so, and keeps the draft", async ({ page, allowErrors }) => {
+test("a send to a session no run is polling says so, and keeps the draft", async ({ page, allowErrors }) => {
   const session = await startSession(page.request, "E2E session chat, unpolled");
   // The browser's own line for the server's 409.
   allowErrors(failedResource(`/api/sessions/${session.id}/inbound`, 409));
@@ -125,6 +125,6 @@ test("a send to a session no trax run is polling says so, and keeps the draft", 
   const box = transcript.getByRole("textbox", { name: "Message" });
   await box.fill("Anyone there?");
   await box.press("Enter");
-  await expect(transcript.getByRole("alert")).toHaveText("Not connected: trax run is not polling this session (No active inbound poller).");
+  await expect(transcript.getByRole("alert")).toHaveText("Not connected: no run is polling this session (No active inbound poller).");
   await expect(box).toHaveValue("Anyone there?");
 });

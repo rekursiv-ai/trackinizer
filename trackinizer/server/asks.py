@@ -1,7 +1,7 @@
 """The asks open in a session's records, and ending the ones nobody can answer.
 
 An agent that needs the person to choose writes an ``$interaction`` record into its
-chat's session (``trax.run.asks``), and whoever ends the ask writes an
+chat's session (``runs.asks``), and whoever ends the ask writes an
 ``$interaction_resolved`` record naming its id. The session is the one place that
 says an ask is open, so the server reads it there: for a badge, and to end the asks
 of a run that went offline, since a card with no run behind it can never be answered.
@@ -298,7 +298,7 @@ async def ask_release_loop(
             _logger.exception("ask release pass failed; retrying next cycle")
 
 
-# It has the shape ``trax.run.asks.resolved_record`` writes for a release, which the
+# It has the shape ``runs.asks.resolved_record`` writes for a release, which the
 # server may not import; ``asks_test`` holds the two equal.
 def _released(ask_id: str, *, at: datetime) -> SystemMessage:
     """Return the record that ends an ask because its run is gone."""

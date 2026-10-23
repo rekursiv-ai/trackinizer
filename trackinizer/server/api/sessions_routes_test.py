@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 
 import asyncio
+import re
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
@@ -70,13 +71,13 @@ from trackinizer.server.session_reaper import (
     reap_silent_sessions,
 )
 from trackinizer.server.store.core import Store
-from trackinizer.trax.run import detach
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_science_chat import chat_session_id
 from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
 from trackinizer.wire.wire_sessions import (
     RUN_ENDING_REFUSALS,
+    RUN_NAME_PATTERN,
     WorkspaceMessageContext,
 )
 
@@ -656,8 +657,8 @@ class TestTheDrainSaysWhereItsRunIs:
         assert r.status_code == 422, r.text
         assert not inbound.has_poller(session_id)
 
-    # The route cannot import the run's own rule, so the two are held together here:
-    # a name ``trax run --detach`` takes must never break its own drain.
+    # A detached run names its host by the same rule, so a name it takes never
+    # breaks its own drain.
     @pytest.mark.parametrize(
         "name",
         ["claude", "scientist#2", "ada@gx10", "a.b+c=d:e-f_g", "a" * 128, "a" * 129],
@@ -671,7 +672,9 @@ class TestTheDrainSaysWhereItsRunIs:
 
         r = client.get(f"/api/sessions/{uuid.uuid4()}/inbound", params={"run": name})
 
-        assert (r.status_code == 200) is (detach._NAME.fullmatch(name) is not None)
+        assert (r.status_code == 200) is (
+            re.fullmatch(RUN_NAME_PATTERN, name) is not None
+        )
 
 
 async def _seen_as_the_session_ends(
@@ -1923,7 +1926,7 @@ async def test_the_assistant_long_polls_and_a_chat_message_reaches_it_at_once(
 async def test_a_private_start_opens_a_hidden_session_and_says_so(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """``trax run --private`` reads the audience back to know it was hidden."""
+    """A ``--private`` run reads the audience back to know it was hidden."""
     client, store = pglite_route_client
     await _active_user(store)
 

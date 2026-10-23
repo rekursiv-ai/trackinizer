@@ -466,9 +466,9 @@ These are the non-row top-level verbs. Each parses its own argv with
 flags documented here.
 
 ```
-verb_name   ::= "help" | "profile" | "env" | "machine" | "job" | "next" | "recent"
-             |  "cost" | "confidence" | "authority" | "blocked" | "board"
-             |  "graph" | "id" | "version" | "export" | "send" | "run"
+verb_name   ::= "help" | "profile" | "env" | "machine" | "job" | "next"
+             |  "recent" | "cost" | "confidence" | "authority" | "blocked"
+             |  "board" | "graph" | "id" | "version" | "export" | "send" | "run"
              |  "search-sessions"
 ```
 
@@ -482,10 +482,6 @@ kinds resolve first, so a field can never shadow a command.
 - `trax profile [name] (action)` -- profile management; see section 8.
 - `trax env [secret] [NAME (action)]` -- the org's environment variables;
   see section 8a.
-- `trax machine [NAME (action)]` -- the registry of machines campaigns may
-  run on, and hosting one; see section 8b.
-- `trax job (action)` -- run a command on a GPU node straight from this
-  computer, and read its logs and results; see section 8c.
 - `trax id <uuid> [--format table|json] [--changes]` -- show one row by its
   global id, with no leading kind (the UUID is unique, so the kind is
   redundant). Unlike `trax <kind> <uuid>` it applies no kind typo-guard.
@@ -514,20 +510,11 @@ kinds resolve first, so a field can never shadow a command.
   out. (Named `search-sessions`, not `search`: the bare `search` verb was
   retired when the filter grammar subsumed inquiry search.)
 - `trax send @actor[:room] TEXT...` -- inject a message into a live agent
-  session addressed by its routing name (its `run --as` owner).
-- `trax run claude|gemini|codex|sh [--out FILE] [--verbose] [--dry-run]
-  [--no-sync] [--as NAME] [--room ROOM]... [--private] [--detach]
-  [--name NAME]` -- wrap an agent CLI, tail its session log, and sync turn
-  events. `--as NAME` is the session's owner / routing handle (others address
-  it `@NAME`), uniquified on collision. `--private` starts the session hidden,
-  or hides the one a resume re-attaches: only its owner, staff and admins read
-  it; a server that will not hide it stops the run before the CLI starts.
-  `--detach` runs it in a background host that outlives the terminal, named
-  by `--name` (else the `--as` name, else the CLI).
-- `trax run ls [--all] | attach NAME | log NAME [-f] | send NAME TEXT... | stop NAME`
-  -- reach a detached host: list the live hosts (`--all`: every host, exited
-  and lost too), drive one from this terminal (Ctrl-\ detaches), print its
-  scrollback, type a message in, or stop it.
+  session addressed by its routing name (the `--as` owner of its run).
+- `trax run|machine|job [ARGS...]` -- moved out of trax: wrapping an agent CLI,
+  the registry of machines campaigns may run on, and GPU jobs are no longer
+  trax's. Each prints `trax run moved out of trax` (or `machine`, `job`) and
+  exits 2; so does `trax help machine`.
 
 ## 8. Profile command
 
@@ -591,124 +578,6 @@ process listing: `env secret NAME to VALUE` with a literal is refused
 before any request (E010). A name outside `var_name` is refused before any
 request (E011). `secret` is a keyword only in front of `NAME to VALUE`;
 `env secret to x` sets a variable named `secret`. Examples in section 10.
-
-## 8b. Machine command
-
-```
-machine_command ::= "machine" machine_tail?
-machine_tail    ::= machine_name machine_action? | "connect" "--sandbox"?
-machine_action  ::= "del" | "connect" "--sandbox"?
-                 |  machine_field ( "to" value )?
-                 |  "label" ( "add" | "del" ) label
-machine_field   ::= "role" | "how"
-machine_name    ::= [a-z0-9][a-z0-9-]{0,62}
-value           ::= "-" | "@" path | literal
-label           ::= literal
-```
-
-The registry records where campaigns may run: a name, a `role`, one `how`
-line telling an agent how to use the machine, and labels. It only records
-machines; nothing here reaches one, and `del` unregisters a machine without
-touching it.
-
-Bare `trax machine` **lists the machines**, one line each: name, role,
-labels, and `how` cut to one line (`-` stands for an empty field).
-`machine NAME` shows one machine in full, with its status; a bare `machine_field`
-(`machine NAME role`) prints that field's value as stored, for scripts.
-Listing and showing need the writer role; `connect` uses the machine's own
-credential; every other form needs the admin role.
-
-`machine NAME connect` runs on the machine's host with the machine's own
-credential, never the profile's key, so traxd never runs it. It joins once,
-reading the one-use enrollment token from stdin (never the command line), saves
-the machine credential for this user only, then heartbeats every 15 seconds
-until the machine is revoked, and exits 0. Lost contact never stops it; it
-retries, sooner at first.
-
-`connect --sandbox` declares this computer a disposable sandbox where agents
-may act freely. The declaration is about the computer, not one machine name:
-each connect records it for this user beside the machine credential, on with
-the flag and off without it, and says `sandbox: on` when it is on. Every
-`trax run` there then gives the agent CLI liberal permissions, unless the
-person passed that CLI's own permission flags. The flag follows `connect` and
-nothing else; `trax run` has none, since codex's own `--sandbox` is its.
-
-`machine NAME role to ROLE` sets one field and creates the machine when it
-is new; a field left out keeps its value, and `to ''` clears one. A `value`
-is a literal, `-` (read stdin) or `@FILE` (read that file, relative to the
-caller's directory), as in section 8a: one trailing newline is stripped
-from stdin and file values, and an empty one is refused rather than
-clearing the field. A role is `[a-z][a-z0-9-]{0,31}`, a `how` line is at
-most 2,000 characters, and a label is any non-blank text. `label add` and
-`label del` change one label and are no-ops when it is already so.
-
-A name outside `machine_name`, or one of `enroll join init import check
-connect leave top`, is refused before any request (E012, E013).
-Examples in section 10.
-
-## 8c. Job command
-
-```
-job_command ::= "job" job_action
-job_action  ::= "submit" submit_flag* "--" word+
-             |  "status" job_id?
-             |  "logs" job_id ( "-f" )?
-             |  "results" job_id ( "--to" dir )?
-             |  "cancel" job_id
-             |  "secrets"
-             |  "secret" secret_name ( "set" | "del" )
-submit_flag ::= "--gpus" int | "--minutes" int | "--label" text | "--follow"
-             |  "--include-untracked"
-job_id      ::= int
-secret_name ::= "HF_TOKEN" | "WANDB_API_KEY"
-```
-
-`job submit` runs a command on a GPU node. It snapshots the repository the
-caller is in (uncommitted and untracked files included, ignored files left
-out) without touching its index, `HEAD`, refs or objects, and asks the server
-for a job. The server checks credit and caps, picks a node, and signs a
-certificate for one throwaway key, valid for that one job on that one node.
-The caller then uploads the code, as a git bundle cut on top of the commits the
-node already holds, directly to the node over ssh, and the server queues the
-job. It prints the job id alone on its line of stdout and exits 0 once the job is
-queued; progress goes to stderr. `--gpus` is 1 to 8 (default 1) and `--minutes`
-is 1 to 360 (default 10). `--follow` then streams the log until the job ends.
-
-An untracked file the caller did not ignore is part of the snapshot, so `submit`
-says which ones it took (to stderr, ten names at most) and refuses to send one
-whose base name looks like a credential: `.env*`, `*.pem`, `id_*`,
-`*credentials*`, `.netrc` or `*.key`, in any case. A `.gitignore` entry leaves
-such a file out; `--include-untracked` sends it anyway. A tracked file is the
-caller's own choice and is not checked.
-
-Everything after the first `--` is the job's command, run without a shell in
-the root of the snapshot, even when it contains `--help`. A `--` with nothing
-after it, or a command given to any other action, is refused.
-
-`job logs JOB` prints the job's log, and `-f` keeps streaming it until the job
-ends. `job results JOB` downloads the job's `out/` directory straight from the
-node into `OUT/out/` and writes the job's record to `OUT/job.json`; `OUT` is a
-directory of the caller's data folder named by server and job, or `--to DIR`.
-A `DIR` inside the repository the caller is in is refused. Files already held
-with the same size and digest are skipped, so an interrupted download resumes
-by running it again. `submit` keeps the exact code that ran beside the results
-as `src.bundle`, which a later pull request can fetch.
-
-`job status` lists the caller's jobs, one line each: id, state, node and
-command; `job status JOB` shows one in full. `job cancel JOB` stops a job; the
-minutes that already ran are charged.
-
-`job secrets` lists the names of the caller's job secrets, and `job secret NAME
-set` stores one. The value is read from stdin, never from the command line, so
-it stays out of shell history and process listings; one trailing newline is
-stripped and an empty value is refused. A secret is write-only: the job never
-holds it, and the node adds it to the job's requests to Hugging Face
-(`HF_TOKEN`) and Weights & Biases (`WANDB_API_KEY`).
-
-The caller holds no long-lived key: each action makes a throwaway ssh key and
-deletes it when the action ends. `job` needs `ssh`, `ssh-keygen` and `git` on
-`PATH`, runs in the calling process and never in traxd, and no code or result
-bytes pass through the server. Examples in section 10.
 
 ## 9. Token tables
 
@@ -1205,45 +1074,6 @@ trax env secret API_TOKEN to @token.txt
 trax env REGION del
 ```
 
-### Machine
-
-Machine commands read and write the server's machine registry, so these
-examples are not run against the test fake:
-
-```
-trax machine
-trax machine gpu-box
-trax machine gpu-box role
-trax machine gpu-box role to dev
-trax machine gpu-box how to "ssh gpu-box; cd /work"
-trax machine gpu-box how to @how.txt
-trax machine gpu-box label add gpu
-trax machine gpu-box label del gpu
-trax machine gpu-box del
-printf '%s\n' "$ENROLLMENT_TOKEN" | trax machine gpu-box connect
-printf '%s\n' "$ENROLLMENT_TOKEN" | trax machine gpu-box connect --sandbox
-trax machine connect --sandbox
-```
-
-### Job
-
-Job commands reach a server and a GPU node, so these examples are not run
-against the test fake:
-
-```
-trax job submit -- python train.py --steps 100
-trax job submit --gpus 2 --minutes 60 --label sweep --follow -- python train.py
-trax job status
-trax job status 7
-trax job logs 7 -f
-trax job results 7
-trax job results 7 --to ~/results/run7
-trax job cancel 7
-trax job secrets
-printf '%s' "$HF_TOKEN" | trax job secret HF_TOKEN set
-trax job secret HF_TOKEN del
-```
-
 ## 11. Counterexamples
 
 Every fenced `trax!` block must be rejected with the named error code.
@@ -1315,46 +1145,6 @@ trax env 1bad to eu-west
 Reason: a variable name is `[A-Za-z_][A-Za-z0-9_]{0,127}`, the form an
 environment accepts; the name is checked before any request.
 
-```trax! E012
-trax machine enroll role to dev
-```
-
-Reason: `enroll` and the other reserved words are, or will be, route segments
-and CLI words, so no machine may take one; the name is checked before any
-request.
-
-```trax! E013
-trax machine GPU_Box role to dev
-```
-
-Reason: a machine name is `[a-z0-9][a-z0-9-]{0,62}`, the form the server
-accepts as a path segment.
-
-```trax! E014
-trax machine gpu-box role dev
-```
-
-Reason: a machine field-set uses the `field "to" value` action, like a row
-edit. Bare adjacency is not a production.
-
-```trax! E015
-trax machine gpu-box colour to red
-```
-
-Reason: `role` and `how` are the only machine fields.
-
-```trax! E016
-trax machine gpu-box label set gpu
-```
-
-Reason: a label action is `add` or `del`, with exactly one label.
-
-```trax! E003
-trax machine gpu-box del now
-```
-
-Reason: `del` is terminal; nothing may follow it.
-
 ```trax! E007
 trax profile prod url https://trackinizer.example
 ```
@@ -1388,11 +1178,11 @@ write is rejected up front so `status` does not commit while
 | E009 | null_op on a NOT-NULL column  | list_query / bulk_apply    |
 | E010 | literal secret value          | env_value                  |
 | E011 | invalid variable name         | var_name                   |
-| E012 | reserved machine name         | machine_name               |
-| E013 | invalid machine name          | machine_name               |
-| E014 | machine set without 'to'      | machine_action             |
-| E015 | unknown machine field         | machine_field              |
-| E016 | label action not add/del      | machine_action             |
+| E012 | (retired: reserved machine name)   | moved out of trax     |
+| E013 | (retired: invalid machine name)    | moved out of trax     |
+| E014 | (retired: machine set without 'to')| moved out of trax     |
+| E015 | (retired: unknown machine field)   | moved out of trax     |
+| E016 | (retired: label action not add/del)| moved out of trax     |
 | ...  | (extend as needed)            |                            |
 
 These codes are documentation labels for the rejection, not distinct

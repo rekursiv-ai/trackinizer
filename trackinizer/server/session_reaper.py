@@ -1,6 +1,6 @@
 """Close the sessions whose agents died, and reopen any that come back.
 
-A ``trax run`` ends its session when it exits -- unless it never gets the
+An agent run ends its session when it exits -- unless it never gets the
 chance: SIGKILL, an OOM kill, a crashed host. Its ``AgentSession`` then stayed
 ``active`` with ``ended`` NULL forever, and everything that reads the row shows
 a dead agent as running. Nothing else could close it: the run was the only
@@ -61,7 +61,7 @@ window it enforces, which is many minutes."""
 STALE_AFTER: Final = timedelta(minutes=15)
 """How long a session that polls may go unheard before it counts as gone.
 
-Far past the poller lease: a ``trax run`` polls continuously whether or not its
+Far past the poller lease: an agent run polls continuously whether or not its
 CLI is busy, but a session bridge polls only when its agent is ready for input,
 and a long tool call can keep it away for minutes while the agent is alive. A
 session closed too early is reopened when it next polls or uploads, so the cost

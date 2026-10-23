@@ -114,7 +114,7 @@ test("a batch the server keeps failing is retried with the same keys, then offer
   expect(new Set(server.writes().map((write) => JSON.stringify(write.body))).size).toBe(1);
 });
 
-test("an AgentSession is not superseded by a new one, which only trax run records (CR-W03)", async () => {
+test("an AgentSession is not superseded by a new one, which only the agent runner records (CR-W03)", async () => {
   const session = row("AgentSession", 1, { title: "A session" });
   history.replaceState(null, "", "#/ref/AgentSession/1");
   serveGraph([session]);

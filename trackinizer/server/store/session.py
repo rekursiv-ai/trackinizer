@@ -96,7 +96,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         """Return a routing name reserved for the session's lifetime, never reused.
 
         The routing handle is the session ``owner`` (an :class:`Inquiry.Actor`
-        string); two ``trax run`` sessions cannot share one, or ``@actor``
+        string); two agent runs' sessions cannot share one, or ``@actor``
         addressing would be ambiguous. Handles are monotonic, like a sequence:
         when ``requested`` is already held by ANY AgentSession -- live or ended
         -- append the smallest ``#N`` suffix that is free. An ended session
@@ -292,7 +292,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
     # table it read is gone.
     #
     # ``SessionStartResponse.seq`` is the last consumer; no client reads it
-    # (``trax/run/sink.py::_ensure_session`` says so explicitly). The field goes when
+    # (the agent runner's ``sink.py::_ensure_session`` says so explicitly). The field goes when
     # the wire type can change without a coordinated client release.
     @classmethod
     async def _next_event_seq(cls, conn: Conn, session_id: UUID) -> int:
@@ -306,7 +306,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
     # Resume CORRELATION, not access control: a session re-attaches only to the
     # ``api_key_id`` that opened it, matched ``IS NOT DISTINCT FROM`` so a ``--no-auth``
     # None==None pairing still resolves. This routes the right capture log back to the
-    # right ``trax run`` -- a credentialed caller resuming another principal's
+    # right run -- a credentialed caller resuming another principal's
     # ``cli_session_id`` gets ``None`` (mints a fresh session) rather than silently
     # appending to a stranger's log. It is NOT an authorization boundary: AgentSessions
     # are a shared workspace (events/read/end/drain are writer/viewer-gated, not owner-
@@ -437,7 +437,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             reason="hidden by its owner on resume",
         )
 
-    # A ``trax run`` polls continuously, so its row is rewritten at most once a minute:
+    # An agent run polls continuously, so its row is rewritten at most once a minute:
     # the reaper's window is many minutes, and a write per poll would be one per session
     # per long-poll cycle.
     async def record_session_seen(

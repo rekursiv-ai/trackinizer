@@ -103,7 +103,7 @@ class TestShouldDelegate:
         assert should_delegate(["issue", "status", "is", "active"])
 
     def test_refuses_trax_run(self) -> None:
-        """``trax run`` owns a PTY and the terminal; it cannot run remotely."""
+        """``trax run`` replaces the process with its endpoint; a daemon cannot."""
         assert not should_delegate(["run", "claude"])
 
     def test_refuses_export_which_outgrows_a_frame(self) -> None:
@@ -234,35 +234,34 @@ class TestTokenNeverCrossesTheSocket:
         assert b"tok-SENTINEL-93f1c7" not in seen[0].to_json()
 
 
-class TestMachineHostCommands:
-    """``machine NAME enroll`` and ``machine NAME connect`` run in-process."""
-
-    @pytest.mark.parametrize(
-        "argv",
-        [
-            ["machine", "gpu-box", "enroll"],
-            ["machine", "gpu-box", "connect"],
-            ["machine", "gpu-box", "CONNECT"],
-            ["--profile", "origin", "machine", "gpu-box", "connect"],
-            ["--port=9", "machine", "gpu-box", "enroll", "--ttl", "1h"],
-        ],
-    )
-    def test_refuses_the_host_verbs(self, argv: list[str]) -> None:
-        assert not should_delegate(argv)
+class TestMachineCommands:
+    """Every ``machine`` form says it moved out of trax, in-process."""
 
     @pytest.mark.parametrize(
         "argv",
         [
             ["machine"],
             ["machine", "gpu-box"],
-            ["machine", "gpu-box", "role", "to", "connect"],
-            ["machine", "gpu-box", "how", "to", "enroll"],
-            ["machine", "gpu-box", "label", "add", "connect"],
-            ["issue", "7", "title", "to", "connect"],
-            ["issue", "gpu-box", "enroll"],
+            ["machine", "gpu-box", "role", "to", "dev"],
+            ["machine", "gpu-box", "connect"],
+            ["machine", "gpu-box", "CONNECT"],
+            ["--profile", "origin", "machine", "gpu-box", "connect"],
+            ["--port=9", "machine", "connect", "--sandbox"],
+            ["MACHINE", "gpu-box", "label", "add", "gpu"],
         ],
     )
-    def test_delegates_the_registry_commands_and_values(
+    def test_refuses_every_machine_form(self, argv: list[str]) -> None:
+        assert not should_delegate(argv)
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["issue", "7", "title", "to", "machine"],
+            ["issue", "7", "label", "add", "machine"],
+            ["issue", "machine", "connect"],
+        ],
+    )
+    def test_delegates_a_value_that_is_the_word_machine(
         self,
         argv: list[str],
     ) -> None:
@@ -301,7 +300,7 @@ class TestProfileLogin:
 
 
 class TestJobCommands:
-    """``trax job`` ssh-es to a node and reads secrets from stdin: it runs in-process."""
+    """Every ``job`` form says it moved out of trax, in-process."""
 
     @pytest.mark.parametrize(
         "argv",
@@ -321,7 +320,7 @@ class TestJobCommands:
         [
             ["issue", "title", "to", "job"],
             ["issue", "7", "label", "add", "job"],
-            ["machine", "gpu-box", "role", "to", "job"],
+            ["issue", "7", "owner", "to", "job"],
             ["issue", "job", "status"],
         ],
     )

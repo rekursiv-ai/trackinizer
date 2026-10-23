@@ -62,7 +62,7 @@ test.beforeAll(async ({ request }) => {
   ];
   ids = (await post(request, "/api/inquiries/batch", { items, edges })).ids as string[];
   // Created on their own: an Experiment names its code changes by id, and a
-  // session starts through the sessions route, as `trax run` starts one.
+  // session starts through the sessions route, as the agent runner starts one.
   experiment = (
     await post(request, "/api/inquiries/experiment", {
       title: `Experiment ${TAG}`,

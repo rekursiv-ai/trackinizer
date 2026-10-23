@@ -1,6 +1,6 @@
 """Tests for the asks open in a session's records, and releasing those nobody answers.
 
-The records are the ones a run writes (:mod:`trackinizer.trax.run.asks`), stored
+The records are the ones a run writes (:mod:`trackinizer.runs.asks`), stored
 the way the append route stores them, so the SQL that finds an open ask reads what the
 real capture path wrote.
 """
@@ -17,6 +17,7 @@ import pytest_asyncio
 
 from trackinizer.lib.agent.types.sessions import AssistantMessage, SystemMessage
 from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.runs.asks import opened_record, resolved_record
 from trackinizer.server.asks import (
     ASKS_PART,
     _released,
@@ -35,7 +36,6 @@ from trackinizer.server.asks_test_support import (
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
-from trackinizer.trax.run.asks import opened_record, resolved_record
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire.bodies import SubmitAgentSession
 
