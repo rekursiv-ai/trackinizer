@@ -504,12 +504,16 @@ test("Ctrl+Shift+PageDown and PageUp switch tabs, and the screen shown takes the
   await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(2));
   const selected = () => screen.getAllByRole("tab").map((each) => each.getAttribute("aria-selected"));
   expect(selected()).toEqual(["true", "false"]);
-  const focused = xterm.focused;
+  // The tab is selected at the commit; its screen takes the keyboard in an effect React runs a task later, which no
+  // DOM change marks, so the wait for it polls every millisecond rather than waitFor's 50.
+  let focused = xterm.focused;
   press(0, { ctrlKey: true, shiftKey: true, key: "PageDown" });
   await waitFor(() => expect(selected()).toEqual(["false", "true"]));
-  expect(xterm.focused).toBeGreaterThan(focused);
+  await waitFor(() => expect(xterm.focused).toBeGreaterThan(focused), { interval: 1 });
+  focused = xterm.focused;
   press(1, { ctrlKey: true, shiftKey: true, key: "PageUp" });
   await waitFor(() => expect(selected()).toEqual(["true", "false"]));
+  await waitFor(() => expect(xterm.focused).toBeGreaterThan(focused), { interval: 1 });
 });
 
 test("plain Ctrl+T, Ctrl+W and Ctrl+Tab reach the shell until the setting is on, then act", async () => {
