@@ -43,11 +43,12 @@ dependencies = [
     "pydantic-core",
     # trax grammar
     "lark>=1.1",
-    # filesystem watching: `trax run` follows the agent's session files through
-    # `lib/posix/follow.py`, whose macOS backend lazy-imports watchdog's fsevents.
+    # filesystem watching: the agent runner follows the agent's session files
+    # through `lib/posix/follow.py`, whose macOS backend lazy-imports watchdog's
+    # fsevents.
     "watchdog>=6.0.0 ; sys_platform == 'darwin'",
     # shell parsing: lifts a captured `cat`/`echo >` into a typed file result.
-    # Session capture (`trax run`) does this on the client, through
+    # The agent runner's session capture does this on the client, through
     # `lib/agent/sessions/shell_results.py`; without it every such command is
     # left unlifted, silently.
     "bashlex>=0.18",
