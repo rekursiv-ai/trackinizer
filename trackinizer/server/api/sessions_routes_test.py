@@ -34,6 +34,8 @@ from trackinizer.server.api.canvas_test_support import (
     ASSISTANT_CONFIG,
     KB_ACTOR,
     KB_EMAIL,
+    OTHER_EMAIL,
+    OTHER_USER_ID,
     USER_AGENT,
     act_as_assistant,
     act_as_other_agent,
@@ -1567,6 +1569,28 @@ async def test_the_exit_of_the_chats_own_run_ends_it(
     assert ended.status_code == 200, ended.text
     assert (await _session(store, session_id=chat)).ended is not None
     assert not cast("InboundQueue", app.state.inbound).has_poller(chat)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_browser_closes_only_its_own_chat(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The starter closes the chat from a browser, which has no key; a stranger cannot."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _station_with_chat(store, provider="claude")
+
+    browser(OTHER_USER_ID, email=OTHER_EMAIL)
+    from_a_stranger = await client.post(f"/api/sessions/{chat}/end", json={})
+    assert (await _session(store, session_id=chat)).ended is None
+    browser()
+    from_the_starter = await client.post(f"/api/sessions/{chat}/end", json={})
+
+    assert from_a_stranger.status_code == 403
+    assert from_the_starter.status_code == 200, from_the_starter.text
+    assert (await _session(store, session_id=chat)).ended is not None
 
 
 @pytest.mark.db_pglite

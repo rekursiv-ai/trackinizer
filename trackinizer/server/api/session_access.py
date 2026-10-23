@@ -251,18 +251,21 @@ async def require_chat_writer(
     identity: AuthIdentity,
     *,
     session: AgentSession,
+    closing: bool = False,
 ) -> None:
     """Refuse a run on a science chat from a key that may not add a part to it.
 
     A chat takes a new part, a run attaching to it and that run's close from the key
     that opened it, any key of the configured assistant's account, or any key of the
     account that started it (:func:`~trackinizer.server.visuals.science_chats.read_starter`).
-    A browser has no key to own a part by, so it adds none. Any other session passes.
+    A browser has no key to own a part by, so it adds none; it may only close the
+    chat (``closing``), and only as the chat's starter. Any other session passes.
 
     Args:
       request: The request, which carries the store and the configuration.
       identity: Authenticated caller and its API key.
       session: Target session.
+      closing: The caller closes the chat, which its starter may do without a key.
 
     Raises:
       HTTPException: 403: ``session`` is a science chat the caller may not add to.
@@ -274,8 +277,8 @@ async def require_chat_writer(
         return
     assistant = get_assistant(request)
     conversation_id = chat_conversation_id(session.cli_session_id)
-    if identity.api_key_id is not None and conversation_id is not None:
-        if _is_the_assistant(identity, assistant):
+    if conversation_id is not None and (identity.api_key_id is not None or closing):
+        if identity.api_key_id is not None and _is_the_assistant(identity, assistant):
             return
         async with get_store(request).engine.acquire() as conn:
             starter = await read_starter(

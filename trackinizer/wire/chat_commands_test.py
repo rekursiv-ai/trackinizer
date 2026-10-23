@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Final
 
 import pytest
 
+from trackinizer.lib.agent.catalog import models
 from trackinizer.wire.chat_commands import (
     COMMAND_CHARS,
     KNOWN_VERBS,
@@ -40,13 +41,19 @@ def _menu(verb: str) -> Refused:
     )
 
 
+_CLAUDE: Final = models("anthropic")
+_CODEX: Final = models("openai")
+_ROLES: Final = ("best", "default", "everyday", "utility")
+_CLAUDE_ALIASES: Final = list(
+    dict.fromkeys(_CLAUDE[role].model_id.rpartition("-")[0] for role in _ROLES),
+)
+_CODEX_IDS: Final = list(dict.fromkeys(_CODEX[role].wire_model_id for role in _ROLES))
 _BARE_MODEL: Final = {
     "claude": "Chat can't open the model menu. Type /model <name> to switch, for "
-    "example /model opus. Options: opus, sonnet, fable, or a full id such as "
-    "claude-opus-5-5.",
+    f"example /model {_CLAUDE['default'].model_id.rpartition('-')[0]}. Options: {', '.join(_CLAUDE_ALIASES)}, or "
+    f"a full id such as {_CLAUDE['default'].wire_model_id}.",
     "codex": "Chat can't open the model menu. Type /model <name> to switch, for "
-    "example /model gpt-6.1-sol. Options: gpt-6.1-sol, gpt-6-sol, gpt-6-luna, "
-    "gpt-5.6, gpt-5.5.",
+    f"example /model {_CODEX['default'].wire_model_id}. Options: {', '.join(_CODEX_IDS)}.",
 }
 _BARE_EFFORT: Final = (
     "Chat can't open the effort menu. Type /effort <level> to switch, for example "
@@ -342,6 +349,17 @@ def test_every_other_known_verb_is_refused_on_both_clis(verb: str) -> None:
             verb,
         )
     )
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_a_bare_model_lists_each_model_once_though_two_roles_name_it(
+    provider: ChatProvider,
+) -> None:
+    refused = classify("/model", provider=provider)
+    assert isinstance(refused, Refused)
+    options = refused.reason.partition("Options: ")[2].rstrip(".").split(", ")
+
+    assert len(options) == len(set(options))
 
 
 if __name__ == "__main__":

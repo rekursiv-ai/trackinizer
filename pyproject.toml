@@ -54,6 +54,9 @@ dependencies = [
     "bashlex>=0.18",
     # lazy imports
     "wrapt",
+    # the model catalog: `wire/chat_commands.py` reads its roles, and
+    # `lib/agent/catalog/loader.py` loads them from YAML.
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
