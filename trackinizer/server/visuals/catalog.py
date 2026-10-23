@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import field
-from typing import Literal, Protocol, Self
+from typing import Final, Literal, Protocol, Self
 
 from configgle import Fig, Makeable
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 __all__ = [
+    "RECORD_VISUAL",
     "ContextGraphVisual",
     "FilesVisual",
     "ParameterDescription",
+    "RecordVisual",
     "StaticVisual",
     "TerminalVisual",
     "TimelineVisual",
@@ -22,7 +24,13 @@ __all__ = [
     "Workspace",
     "default_catalog",
     "default_workspace",
+    "offer_record_visual",
 ]
+
+
+RECORD_VISUAL: Final = "trax.record"
+"""A record's page as a tile of its own. A canvas holds one per record, so several
+stand at once, where every other visual type has one instance."""
 
 
 class ParameterDescription(BaseModel):
@@ -339,6 +347,42 @@ class TerminalVisual:
         )
 
 
+class RecordVisual:
+    """One record's page as a tile; a canvas holds one per record."""
+
+    class Config(Fig["RecordVisual"]):
+        title: str = "Record"
+        """Name shown in the Configure panel."""
+
+    def __init__(self, config: Config) -> None:
+        """Keep the configured title until projection."""
+        self.config = config
+
+    def describe(self) -> VisualDescription:
+        """Describe the tile and the kind its opener names.
+
+        Returns:
+          description: Inert catalog entry; it takes a record of any kind.
+
+        """
+        return VisualDescription(
+            type=RECORD_VISUAL,
+            version=1,
+            title=self.config.title,
+            description=(
+                "One record's page as a tile of its own; several records stand "
+                "side by side."
+            ),
+            requires=["record"],
+            default_size="compact",
+            parameter_schema={
+                # The record's kind as its opener read it, which picks the column
+                # it stacks in; the policy reads it from the canvas, not the graph.
+                "kind": ParameterDescription(type="string", default="", max_length=64),
+            },
+        )
+
+
 class Workspace:
     """The trusted composition of visual configs and its initial selection."""
 
@@ -415,3 +459,17 @@ def default_workspace() -> Workspace:
 def default_catalog() -> VisualCatalogBody:
     """Project the default workspace's catalog."""
     return default_workspace().catalog()
+
+
+# The record tile is not in the default list: every web build mirrors the default
+# catalog with a renderer of its own (renderer-versions.json), and Trackinizer's app
+# draws no record tile, so only a site whose app does offers it.
+def offer_record_visual(visuals: Workspace.Config) -> None:
+    """Add the record tile to a deployment's catalog, once.
+
+    Args:
+      visuals: The deployment's visual configs, changed in place.
+
+    """
+    if not any(isinstance(each, RecordVisual.Config) for each in visuals.visuals):
+        visuals.visuals.append(RecordVisual.Config())
