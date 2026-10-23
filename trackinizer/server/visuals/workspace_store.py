@@ -17,7 +17,7 @@ from treekle import from_plain
 from trackinizer.server.asks import asked_of
 from trackinizer.server.audience import NOBODY, reads_session
 from trackinizer.server.inbound import Inbound, InboundQueue
-from trackinizer.server.notify import tx
+from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.preferences import (
     ASSISTANT_KEYS,
     Preferences,
@@ -1717,7 +1717,7 @@ async def station_ids(conn: Conn, *, user_id: uuid.UUID) -> list[uuid.UUID]:
 
 
 async def apply_workspace_operation(
-    engine: DatabaseEngine,
+    store: Store,
     *,
     user_id: uuid.UUID,
     workspace_id: uuid.UUID,
@@ -1744,7 +1744,7 @@ async def apply_workspace_operation(
     record refuses any.
 
     Args:
-      engine: Database connection source.
+      store: Persistence and session lifecycle operations.
       user_id: Authenticated principal.
       workspace_id: Target workspace.
       key: Idempotency key for this operation.
@@ -1775,7 +1775,7 @@ async def apply_workspace_operation(
         separators=(",", ":"),
     )
     request_hash = hashlib.sha256(canonical.encode()).hexdigest()
-    async with engine.acquire() as conn, tx(conn):
+    async with notify_after_commit(), store.engine.acquire() as conn, tx(conn):
         found = await _workspace_for_principal(
             conn,
             workspace_id=workspace_id,
@@ -1901,6 +1901,29 @@ async def apply_workspace_operation(
                 page=current.page,
             ),
         )
+        if (
+            isinstance(body.operation, ChooseProvider)
+            and updated.provider != current.provider
+            and current.conversation_id is not None
+            and (
+                starter := await read_starter(
+                    conn,
+                    conversation_id=current.conversation_id,
+                    assistant=assistant,
+                )
+            )
+            is not None
+            and starter.lower() == author.lower()
+        ):
+            session = await read_first_session(
+                conn,
+                conversation_id=current.conversation_id,
+                assistant=assistant,
+            )
+            if session is not None:
+                # Resume the session the loader attaches to, preserving its parts.
+                # The receipt shares this transaction: a replay cannot undo Close.
+                await store.reopen_session(session, conn=conn, actor=author)
         await _remember(
             conn,
             workspace_id=workspace_id,

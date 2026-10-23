@@ -794,7 +794,7 @@ async def workspace_operation_route(
     """
     try:
         applied = await apply_workspace_operation(
-            engine_of(request),
+            get_store(request),
             user_id=identity.user_id,
             workspace_id=workspace_id,
             key=key,

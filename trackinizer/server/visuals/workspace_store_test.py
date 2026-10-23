@@ -62,6 +62,7 @@ from trackinizer.server.visuals.workspaces import (
     StationLayout,
     WorkspaceData,
     WorkspaceSettingsRefs,
+    WorkspaceState,
     WorkstreamSuggestion,
 )
 from trackinizer.types.session_records import SessionRecordRow
@@ -87,7 +88,6 @@ if TYPE_CHECKING:
 
     from trackinizer.lib.agent.types.sessions import SessionRecord
     from trackinizer.lib.postgres import Conn, DatabaseEngine, PGliteEngine
-    from trackinizer.server.visuals.workspaces import WorkspaceState
     from trackinizer.wire.wire_science_chat import (
         ChatLineKind,
         ChatProvider,
@@ -247,7 +247,7 @@ async def _apply(
     inbound: InboundQueue,
 ) -> AppliedOperation | None:
     return await apply_workspace_operation(
-        engine,
+        Store(engine, embed=StubEmbedder()),
         user_id=_USER,
         workspace_id=_WORKSPACE,
         key=key,
@@ -256,6 +256,73 @@ async def _apply(
         inbound=inbound,
         assistant=None,
     )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_chat_run_access_requires_the_starters_key_and_a_live_cli(
+    pglite_engine: PGliteEngine,
+) -> None:
+    original = await _original(pglite_engine)
+    session, key = original.session, original.own_key
+    async with pglite_engine.acquire() as conn:
+        conversation = await workspace_store.conversation_of_session(
+            conn,
+            session_id=session,
+        )
+    assert conversation is not None
+    state = WorkspaceState(
+        id=_WORKSPACE,
+        revision=0,
+        name="Chat",
+        page=None,
+        visuals=[],
+        provider="claude",
+        conversation_id=conversation,
+    )
+    inbound = InboundQueue()
+    async with pglite_engine.acquire() as conn:
+
+        async def allowed(
+            given: WorkspaceState = state,
+            *,
+            owner: uuid.UUID = _USER,
+            credential: uuid.UUID = key,
+        ) -> bool:
+            return await workspace_store._chat_run_key_may_use(
+                conn,
+                state=given,
+                owner_id=owner,
+                api_key_id=credential,
+                inbound=inbound,
+                assistant=_KB,
+            )
+
+        assert not await allowed()
+        inbound.mark_poller(session, cli="claude")
+        assert await allowed()
+        assert not await allowed(owner=_OTHER_USER)
+        assert not await allowed(owner=_OTHER_USER, credential=original.assistant_key)
+        assert not await allowed(credential=uuid.uuid4())
+        inbound.mark_poller(session, cli="assistant")
+        assert not await allowed(state.model_copy(update={"provider": "assistant"}))
+        inbound.mark_poller(session, cli="claude")
+        assert not await allowed(state.model_copy(update={"conversation_id": None}))
+        assert not await allowed(state.model_copy(update={"provider": "codex"}))
+        inbound.mark_poller(session, cli="codex")
+        assert await allowed(state.model_copy(update={"provider": "codex"}))
+        inbound.mark_poller(session, cli="claude")
+        await conn.execute("UPDATE api_keys SET revoked_at = now() WHERE id = $1", key)
+        assert not await allowed()
+        await conn.execute("UPDATE api_keys SET revoked_at = NULL WHERE id = $1", key)
+        await conn.execute("UPDATE inquiries SET labels = '{}' WHERE id = $1", session)
+        assert not await allowed()
+        await conn.execute(
+            "UPDATE inquiries SET labels = $2, status = 'complete', "
+            "agentsession_ended = now() WHERE id = $1",
+            session,
+            [SCIENCE_CHAT_LABEL],
+        )
+        assert not await allowed()
 
 
 def _choose(*, revision: int, provider: str) -> ApplyWorkspaceOperation:
