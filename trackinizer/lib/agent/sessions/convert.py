@@ -53,7 +53,7 @@ type Format = str
 #
 # NOT ``sh``. A captured stream is not a CLI dialect -- it is whatever a
 # wrapped process printed -- and its reader lives with the tool that spawns
-# that process (``trackinizer.trax.run.adapters.scrape``). A converter in
+# that process (``trackinizer.runs.adapters.scrape``). A converter in
 # ``lib`` cannot import it, and should not: converting INTO a scrape was always
 # lossy (a stream has no shape for a tool call), and converting out of one
 # yields text no CLI will load.

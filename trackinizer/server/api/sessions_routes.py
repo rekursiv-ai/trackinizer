@@ -1,6 +1,6 @@
 """Agent-session lifecycle and messaging routes: ``start`` / ``end`` / inbound.
 
-The server side of the ``trax run`` capture-and-sync layer. A run opens a
+The server side of the agent runner's capture-and-sync layer. A run opens a
 session (minting an ``AgentSession`` inquiry row, server-assigned id) and
 later closes it; the captured records themselves flow through the separate
 ``.../records`` routes in :mod:`server.api.session_ir_routes`.
@@ -72,6 +72,7 @@ from trackinizer.wire.wire_sessions import (
     PROVIDER_IS_ASSISTANT,
     PROVIDER_IS_CLI,
     PROVIDER_IS_OTHER_CLI,
+    RUN_NAME_PATTERN,
     SESSION_ENDED,
     DrainInboundResponse,
     InboundDrainItem,
@@ -102,7 +103,7 @@ async def session_start_route(
 
     The session ``owner`` doubles as the routing name (``--as``). It is made
     unique among live sessions (suffix on collision); the granted name is the
-    owner stamped on the row and is echoed in the response so ``trax run``
+    owner stamped on the row and is echoed in the response so the run
     adopts whatever it was given.
 
     The session opens into the audience the caller's key is pinned to, else
@@ -422,12 +423,7 @@ async def session_inbound_drain_route(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
     wait_sec: float = 0.0,
-    # The rule ``trax run --detach`` names its host by, which the server cannot import:
-    # a stricter one here would refuse every drain of a host it allowed.
-    run: Annotated[
-        str | None,
-        Query(pattern=r"^[A-Za-z0-9][A-Za-z0-9._@#+=:-]{0,127}$"),
-    ] = None,
+    run: Annotated[str | None, Query(pattern=RUN_NAME_PATTERN)] = None,
     machine: Annotated[str | None, Query(pattern=NAME_PATTERN)] = None,
     cwd: Annotated[
         str | None,
@@ -438,7 +434,7 @@ async def session_inbound_drain_route(
 ) -> DrainInboundResponse:
     """Drain all pending inbound messages for a session (oldest first).
 
-    Read by the session's ``trax run`` to inject queued messages into the CLI.
+    Read by the session's run to inject queued messages into the CLI.
     A viewer key may drain only the session it opened. Unknown session -> 404.
 
     ``wait_sec`` holds the request open until a message arrives, so the caller
@@ -490,12 +486,12 @@ async def session_inbound_drain_route(
       identity: Authenticated reader and, for viewers, the opening key.
       wait_sec: Seconds to hold the request open for a message to arrive
         (clamped to [0, 30]; 0 returns queued messages immediately).
-      run: The ``trax run --detach`` host the run is, which ``trax run attach``
-        takes; absent for a run in a terminal of its own.
-      machine: The run's machine, as ``trax machine connect`` names it.
+      run: The name of the detached run, which an attach takes; absent for a run in
+        a terminal of its own.
+      machine: The run's machine, as the machine host names it.
       cwd: The run's working directory, ``~/...`` under its home: at most 1,024
         characters, none of them a control character.
-      cli: The CLI the draining run is, as ``trax run`` names it: a lowercase word of
+      cli: The CLI the draining run is, as the run names it: a lowercase word of
         at most 32 characters.
       instance: The run's own id, 32 lowercase hexadecimal digits, the same on each of
         its drains.
@@ -883,7 +879,7 @@ def _refuse_the_other_provider(
 
 
 # The drain names its CLI so that liveness and routing never rest on what a run
-# happened to write: ``trax run``'s own part has no format, and the newest part after a
+# happened to write: the runner's own part has no format, and the newest part after a
 # ``/compact`` is that one. A drain that names none is refused rather than guessed at.
 def _require_the_providers_cli(provider: ChatProvider, *, cli: str | None) -> None:
     """Refuse a chat's drain by a run that is not the CLI its station chose."""

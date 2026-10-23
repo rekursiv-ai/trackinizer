@@ -377,7 +377,7 @@ export function TerminalTile({ instance, workspace }: RendererProps) {
 /** What a refused open tells the user. */
 function refusal(error: unknown): string {
   if (!(error instanceof ApiError)) return "Could not start the terminal.";
-  if (error.code === "terminal_not_enabled") return "Start the host with `trax machine connect`: that one command turns terminals on.";
+  if (error.code === "terminal_not_enabled") return "Start this machine's host: it turns terminals on.";
   if (error.code === "terminal_limit") return "Too many terminals opened just now; wait a minute.";
   if (error.code === "terminal_unconfirmed") return "Allow terminals on this machine first: open Chat's provider card and click Allow.";
   if (error.code === "terminal_forbidden") return "Terminals are not available on a server without sign-in.";

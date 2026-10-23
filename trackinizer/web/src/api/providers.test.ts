@@ -43,7 +43,7 @@ test("a station that marks the assistant out without a reason says the credit is
 
 test("a CLI is out when the station says so, with the server's reason or the machine's", () => {
   const reason = noMachineReason("claude");
-  expect(reason).toBe("Connect a machine with `trax machine connect` and install claude on it");
+  expect(reason).toBe("Connect a machine and install claude on it");
   expect(providerStatuses({ available: { claude: false }, reasons: { claude: reason } }, null).claude).toEqual({ ok: false, reason });
   expect(providerStatuses({ available: { codex: false } }, null).codex).toEqual({ ok: false, reason: noMachineReason("codex") });
   expect(providerStatuses({ available: { claude: false }, reasons: { claude: reason } }, null).codex.ok).toBe(true);

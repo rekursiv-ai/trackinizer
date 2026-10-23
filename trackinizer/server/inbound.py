@@ -1,7 +1,7 @@
 """In-process inbound-message queue: world -> a live session's input.
 
 A message addressed to a session (web chat box, another agent) is enqueued
-here and drained by that session's ``trax run`` poller, which injects it into
+here and drained by that session's run's poller, which injects it into
 the CLI. This is the routing seam for the messaging channel; it is
 deliberately **separate from** ``session_records`` (capture): an inbound
 message is transient routing, not a recorded turn. When the agent consumes
@@ -78,17 +78,17 @@ class PollerRun:
     """
 
     run: str | None = None
-    """The detached host's name, which ``trax run attach`` takes; ``None`` for a run in
+    """The detached host's name, which an attach takes; ``None`` for a run in
     a terminal of its own."""
 
     machine: str | None = None
-    """The run's machine, named as ``trax machine connect`` names it."""
+    """The run's machine, named as the machine host names it."""
 
     cwd: str | None = None
     """The run's working directory, ``~/...`` under its home directory."""
 
     cli: str | None = None
-    """The CLI the run is, as ``trax run`` names it (``claude`` or ``codex``); ``None``
+    """The CLI the run is, as the run names it (``claude`` or ``codex``); ``None``
     for a poller that names none: the assistant's, or a ``trax`` older than the name."""
 
     instance: str | None = None
@@ -581,7 +581,7 @@ class InboundQueue:
             return len(self._queues[session_id])
 
     # Each overflow drop loses an undelivered inbound message (the session's poller is
-    # behind or gone), so WARN on it: a silent drop hides a stuck or absent ``trax run``
+    # behind or gone), so WARN on it: a silent drop hides a stuck or absent run's
     # poller. Caller holds ``self._lock``.
     def _append_capped(self, session_id: UUID, message: Inbound) -> None:
         """Append ``message``, dropping the oldest over the per-session cap."""

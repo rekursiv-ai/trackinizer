@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING, Final, Literal, cast, get_args
 import argparse
 
 from trackinizer.trax.cli import DISPATCHERS
+from trackinizer.trax.forward import MOVED_VERBS, RUN_CLIS
 from trackinizer.trax.grammar import (
     COST_FIELDS,
     EDGE_ALIASES,
@@ -58,12 +59,7 @@ from trackinizer.trax.grammar import (
     VALID_KINDS,
     WRITE_FIELDS_CLI,
 )
-from trackinizer.trax.job import JOB_WORD, Job
-from trackinizer.trax.machines import MACHINE_WORD, Machines
 from trackinizer.trax.profile import Profiles
-from trackinizer.trax.run import detach
-from trackinizer.trax.run.materialize import RESUMABLE_TARGETS
-from trackinizer.trax.run.session import build_parser
 from trackinizer.trax.variables import ENV_WORD, Variables
 from trackinizer.types.inquiries import (
     Belief,
@@ -114,7 +110,7 @@ _STRUCTURE: Final = r"""// grammar.lark -- the complete trax CLI: read this one 
 //
 // trax [GLOBAL-FLAG...] (VERB ... | KIND ...) [WRITE-FLAG...]      flags peeled first:
 //   --makeitso   apply a bulk write matching >1 row (else just preview)
-//   --as ACTOR   --reason TEXT     audit attribution (on a write; `run --as` differs)
+//   --as ACTOR   --reason TEXT     audit attribution (on a write; a run's `--as` differs)
 //   --format table|json|ids   --limit N   --sort priority|seq|recent|oldest|valence
 //   --show-ids   --profile/--host/--port
 //   --backfill TIMESTAMP   timezone-aware past created time; new rows only
@@ -191,7 +187,8 @@ relation_action: EDGE_KEYWORD SEQ?        // no target = list related rows
 // The target is chosen HERE, not by whatever captured the session -- that is
 // what lets a codex-captured session resume as claude. `--lossy` is the tail's
 // own (it gates the CONVERSION, before any runner exists); everything after
-// the target goes verbatim to `trax run`.
+// the target goes to the runner, which moved out of trax: a well-formed resume says
+// so and exits 2.
 //   agentsession 42 run claude
 //   agentsession 42 run claude --lossy --as bob -- --model opus
 resume_action: RUN CLI_TARGET
@@ -315,14 +312,14 @@ def _literal_terminal(name: str, spellings: Sequence[str], comment: str = "") ->
 
 
 # Sourced from the live ``DISPATCHERS`` table minus the kind verbs (which lead row
-# commands, not verb commands), plus ``run`` -- special-cased in ``parse_and_run``
-# rather than registered as a dispatcher.
+# commands, not verb commands), plus the verbs that moved out of trax -- special-cased
+# in ``parse_and_run`` rather than registered as dispatchers.
 # `next`, `recent`, `profile`, ....
 def _verb_spellings() -> list[str]:
     """Return the non-kind top-level verb spellings."""
     kinds = {k.lower() for k in VALID_KINDS}
     names = {name for dispatcher in DISPATCHERS for name in dispatcher.names}
-    return sorted((names - kinds) | {"run"})
+    return sorted((names - kinds) | MOVED_VERBS)
 
 
 def _terminal_block() -> str:
@@ -379,11 +376,11 @@ def _terminal_block() -> str:
         # dynamic lexer resolves each by parse position, exactly as the parser's
         # ``parse_metric_action`` dispatches on the lead word.
         _literal_terminal("METRIC", ["metric"]),
-        # The resume tail. ``CLI_TARGET`` is the RUNNABLE subset of the
-        # convert formats -- derived from ``RESUMABLE_TARGETS`` so a CLI that
-        # gains a stable session id reaches the grammar without an edit here.
+        # The resume tail. ``CLI_TARGET`` is the CLIs a stored session resumes as --
+        # derived from ``RUN_CLIS`` so a CLI it gains reaches the grammar without an
+        # edit here.
         _literal_terminal("RUN", ["run"]),
-        _literal_terminal("CLI_TARGET", sorted(RESUMABLE_TARGETS)),
+        _literal_terminal("CLI_TARGET", sorted(RUN_CLIS)),
         _literal_terminal("AT", ["at"]),
         _literal_terminal("SORT", ["sort"]),
         _literal_terminal("LIMIT", ["limit"]),
@@ -488,18 +485,8 @@ def _verb_usage(verb: str, parser: argparse.ArgumentParser) -> str:
     return f"//   {' '.join(parts)}"
 
 
-def _subcommands(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
-    """Return ``parser``'s subcommand parsers by name; empty when it has none."""
-    # Only a subparsers action maps its choices to parsers; any other's are a list.
-    actions = parser._actions  # noqa: SLF001 -- The grammar generator inspects the parser's private construction seam.
-    for action in actions:
-        if isinstance(action.choices, dict):
-            return dict(cast(dict[str, argparse.ArgumentParser], action.choices))
-    return {}
-
-
-# Covers every non-kind dispatcher plus ``run`` (special-cased in the CLI) and
-# ``profile``, ``env``, ``machine`` and ``job`` (whose ``rest`` hides a hand-parsed
+# Covers every non-kind dispatcher plus the verbs that moved out of trax (special-cased
+# in the CLI) and ``profile`` and ``env`` (whose ``rest`` hides a hand-parsed
 # sub-grammar stated inline).
 def _verb_lines() -> list[str]:
     """Return a usage line per top-level verb, from its live argparse parser."""
@@ -507,15 +494,12 @@ def _verb_lines() -> list[str]:
     lines: list[str] = []
     for dispatcher in DISPATCHERS:
         verb = next((n for n in dispatcher.names if n not in kinds), None)
-        if verb is None or dispatcher in {Profiles, Variables, Machines, Job}:
+        if verb is None or dispatcher in {Profiles, Variables}:
             continue  # `kind` dispatcher, or a hand-parsed verb (handled below)
         lines.append(_verb_usage(verb, dispatcher.make_parser()))
-    lines.append(_verb_usage("run", build_parser()))
-    # ``run``'s host commands dispatch before its own parser does, so each one is a
-    # usage line of its own, from the host parser's subcommands.
+    # A moved verb's forms are no longer trax's to state.
     lines.extend(
-        _verb_usage(f"run {name}", parser=subparser)
-        for name, subparser in _subcommands(detach.build_parser()).items()
+        f"//   {verb} [ARGS...]    (moved out of trax)" for verb in MOVED_VERBS
     )
     # Profile parses ``rest`` by hand; its sub-grammar is fixed, stated directly.
     lines.append(
@@ -524,30 +508,11 @@ def _verb_lines() -> list[str]:
     # Env parses ``rest`` by hand too. Its V is a literal, ``-`` (stdin) or ``@FILE``;
     # a secret's V is never a literal.
     lines.append(f"//   {ENV_WORD} [ [secret] NAME to V | NAME del ]")
-    # Machine parses ``rest`` by hand as well; V is a literal, ``-`` or ``@FILE``.
-    lines.append(
-        f"//   {MACHINE_WORD} [ NAME [ role|how [to V] | label add|del L | del"
-        " | connect [--sandbox] ] | connect [--sandbox] ]",
-    )
-    # Job splits its argv at the first ``--`` before parsing: what follows is the
-    # job's command, verbatim.
-    lines.append(
-        f"//   {JOB_WORD} [ submit [--gpus N] [--minutes M] [--label TEXT] [--follow] "
-        "[--include-untracked] -- CMD... "
-        "| status [JOB] | logs JOB [-f] | results JOB [--to DIR] | cancel JOB "
-        "| secrets | secret NAME set|del ]",
-    )
     lines = sorted(lines)
     # ``argparse`` positionals/--as carry meaning the bare usage can't show; gloss the
     # non-obvious ones (sourced from the verbs' own help text).
     lines.append(
-        "//   ^ run --as NAME = the session's owner; doubles as its routing handle",
-    )
-    lines.append(
-        "//     (others address it @NAME), uniquified on collision (scientist#2).",
-    )
-    lines.append(
-        "//     send TARGET = @actor[:room] of a live session; QUERY/TEXT are free words.",
+        "//   ^ send TARGET = @actor[:room] of a live session; QUERY/TEXT are free words.",
     )
     return lines
 
@@ -603,10 +568,8 @@ def _semantics_block() -> str:
         "//   recent=audit feed; cost=cost rollup; id=show row by uuid;",
         "//   profile=manage server profiles; send=message a live agent session;",
         f"//   {ENV_WORD}=the org's environment variables (a secret is write-only);",
-        f"//   {MACHINE_WORD}=the registry of machines campaigns may run on;",
-        f"//   {JOB_WORD}=run a command on a GPU node; its logs, results and secrets;",
-        "//   run=wrap an agent CLI (claude/gemini/codex) and sync its session;",
-        "//     --detach hosts it past this terminal, reached by run ls/attach/log/send/stop.",
+        "//   run, machine, job=moved out of trax: agent runs, the machine registry and",
+        "//     GPU jobs are no longer trax's.",
         *_verb_lines(),
     ]
     return "\n".join(lines)

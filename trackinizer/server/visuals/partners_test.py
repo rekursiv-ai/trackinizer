@@ -969,7 +969,7 @@ async def _machine(
     confirmed: bool = True,
     online: bool = True,
 ) -> uuid.UUID:
-    """Register a machine as ``trax machine connect`` leaves it."""
+    """Register a machine as the machine host leaves it."""
     return from_plain(
         await conn.fetchval(
             "INSERT INTO machines (name, updated_by, owner, confirmed_at, "

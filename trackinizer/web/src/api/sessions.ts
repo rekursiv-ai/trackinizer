@@ -62,9 +62,9 @@ export type InboundReceipt = components["schemas"]["InboundEnqueueResponse"];
 
 /**
  * Send `POST /api/sessions/{id}/inbound`: queue `text` for the session's
- * `trax run` to type into its terminal, under idempotency `key`, which a retry
+ * the agent runner to type into its terminal, under idempotency `key`, which a retry
  * reuses so the message lands once. The server records the signed-in user as
- * the sender, and answers 409 when the session has ended or no `trax run` is
+ * the sender, and answers 409 when the session has ended or no run is
  * polling it.
  */
 export async function sendSessionMessage(sessionId: string, text: string, key: string): Promise<InboundReceipt> {
@@ -234,7 +234,7 @@ export async function setSessionAudience(sessionId: string, audience: SessionAud
 
 /**
  * Send `POST /api/sessions/{id}/end`: close a session and release its queue and open
- * asks. The `trax run` draining a chat's session is told (409 `session_ended`) and
+ * asks. The run draining a chat's session is told (409 `session_ended`) and
  * stops. 409 when the session had ended already.
  */
 export async function endSession(sessionId: string): Promise<components["schemas"]["SessionEndResponse"]> {

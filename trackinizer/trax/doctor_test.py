@@ -10,7 +10,7 @@ import pytest
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.userdirs import config_dir
-from trackinizer.trax import cli
+from trackinizer.trax import cli, connection
 from trackinizer.trax.context import CWD
 from trackinizer.trax.install import TARGETS, install
 
@@ -287,7 +287,7 @@ def test_doctor_uses_the_existing_profile_resolution_chain(
         heard.append(target)
         return cast(Client, server)
 
-    monkeypatch.setattr(cli, "shared_client", shared)
+    monkeypatch.setattr(connection, "shared_client", shared)
     cli.parse_and_run(["--profile", "doctor-target", "doctor", "--project"])
     assert len(heard) == 1
     assert heard[0].url == "https://target.example"

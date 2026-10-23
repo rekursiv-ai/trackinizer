@@ -417,7 +417,6 @@ trax help                          # grammar and subjects
 trax doctor                        # check skills, profile, and server access
 trax issue                         # list issues
 trax env                           # list the org's environment variables
-trax machine                       # list the machines campaigns may run on
 ```
 
 From a source checkout, both are `uv run python -m trackinizer.server`

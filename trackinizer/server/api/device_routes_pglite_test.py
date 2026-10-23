@@ -129,7 +129,7 @@ async def _code(
     machine: str | None = None,
     host: str = "devbox",
 ) -> DeviceCode:
-    body = {"client": "rai-shell", "host": host}
+    body = {"client": "machine-host", "host": host}
     if machine is not None:
         body["machine"] = machine
     response = await client.post(DEVICE_CODE_PATH, json=body)
@@ -187,6 +187,20 @@ def _problem(response: httpx2.Response) -> str:
     return from_plain(response.json(), dict[str, dict[str, str]])["detail"]["code"]
 
 
+def _enrollment_secret(token: str) -> str:
+    """Return the secret of ``enr_<id>_<secret>``; the secret may itself hold ``_``."""
+    return token.split("_", 2)[2]
+
+
+async def test_the_enrollment_secret_is_read_whole_when_it_holds_an_underscore() -> (
+    None
+):
+    token = f"{ENROLLMENT_PREFIX}{uuid.uuid4().hex}_ab_c"
+
+    assert _enrollment_secret(token) == "ab_c"
+    assert token.rsplit("_", 1)[-1] == "c"
+
+
 async def _stored(store: Store, table: str) -> str:
     async with store.engine.acquire() as conn:
         rows = await conn.fetch(f"SELECT * FROM {table}")  # noqa: S608 -- Test table name.
@@ -200,7 +214,7 @@ async def test_a_code_request_returns_the_codes_and_keeps_only_a_hash(
 
     response = await client.post(
         DEVICE_CODE_PATH,
-        json={"client": "rai-shell", "host": "devbox"},
+        json={"client": "machine-host", "host": "devbox"},
     )
 
     assert response.status_code == 201
@@ -225,7 +239,7 @@ async def test_a_code_request_returns_the_codes_and_keeps_only_a_hash(
     )
     assert code.device_code not in await _stored(store, "device_logins")
     assert (row["client"], row["host"], row["machine"], row["status"]) == (
-        "rai-shell",
+        "machine-host",
         "devbox",
         None,
         "pending",
@@ -236,10 +250,10 @@ async def test_a_code_request_returns_the_codes_and_keeps_only_a_hash(
     "body",
     [
         {"client": "Rai Shell"},
-        {"client": "rai-shell", "machine": "Upper"},
-        {"client": "rai-shell", "machine": "enroll"},
-        {"client": "rai-shell", "host": "a b"},
-        {"client": "rai-shell", "surprise": 1},
+        {"client": "machine-host", "machine": "Upper"},
+        {"client": "machine-host", "machine": "enroll"},
+        {"client": "machine-host", "host": "a b"},
+        {"client": "machine-host", "surprise": 1},
     ],
     ids=["client", "machine", "reserved", "host", "extra"],
 )
@@ -303,7 +317,7 @@ async def test_an_approved_code_returns_a_key_that_signs_in_as_the_approver(
         key = await conn.fetchrow("SELECT name, role, user_id FROM api_keys")
     assert key is not None
     assert (key["name"], key["role"], key["user_id"]) == (
-        "rai-shell@devbox",
+        "machine-host@devbox",
         "writer",
         TEST_USER_ID,
     )
@@ -461,10 +475,10 @@ async def test_too_many_open_codes_are_refused(
             "INSERT INTO device_logins (device_sha256, user_code, client, expires_at) "
             "SELECT decode(md5(n::text) || md5(n::text), 'hex'), "
             "translate(lpad(n::text, 8, '0'), '0123456789', 'BCDFGHJKLM'), "
-            "'rai-shell', now() + interval '5 min' FROM generate_series(1, 1000) n",
+            "'machine-host', now() + interval '5 min' FROM generate_series(1, 1000) n",
         )
 
-    response = await client.post(DEVICE_CODE_PATH, json={"client": "rai-shell"})
+    response = await client.post(DEVICE_CODE_PATH, json={"client": "machine-host"})
 
     assert response.status_code == 429
     assert _problem(response) == "device_codes_busy"
@@ -479,7 +493,7 @@ async def test_one_address_cannot_use_up_the_open_codes_for_the_others(
     for _ in range(3):
         await _code(client)
 
-    refused = await client.post(DEVICE_CODE_PATH, json={"client": "rai-shell"})
+    refused = await client.post(DEVICE_CODE_PATH, json={"client": "machine-host"})
 
     assert refused.status_code == 429
     assert _problem(refused) == "device_rate_limited"
@@ -495,7 +509,7 @@ async def test_a_server_with_authentication_off_hands_out_no_codes(
     client, store = pglite_route_client
     app.state.config = Config(auth_disabled=True)
     try:
-        refused = await client.post(DEVICE_CODE_PATH, json={"client": "rai-shell"})
+        refused = await client.post(DEVICE_CODE_PATH, json={"client": "machine-host"})
     finally:
         del app.state.config
 
@@ -554,7 +568,7 @@ async def test_the_code_is_read_without_case_or_dash(
     assert typed.status_code == 204
 
 
-async def test_a_lookup_names_the_client_the_machine_and_the_role_of_the_key(
+async def test_a_lookup_names_the_account_the_client_the_machine_and_the_role_of_the_key(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
@@ -564,9 +578,11 @@ async def test_a_lookup_names_the_client_the_machine_and_the_role_of_the_key(
     response = await _decide(client, code, path=DEVICE_LOOKUP_PATH)
 
     assert response.status_code == 200
+    # The account signed in is the one the key and the machine become: the page names it.
     assert DeviceLoginView.model_validate_json(response.text) == DeviceLoginView(
         user_code=code.user_code,
-        client="rai-shell",
+        account=TEST_USER_EMAIL,
+        client="machine-host",
         host="devbox",
         machine="dev-box",
         role="writer",
@@ -782,7 +798,7 @@ async def test_a_named_machine_becomes_the_approvers_confirmed_personal_machine(
         True,
     )
     assert enrollments == 1
-    assert token.issued.machine_token.rsplit("_", 1)[-1] not in (
+    assert _enrollment_secret(token.issued.machine_token) not in (
         await _stored(store, "machine_enrollments")
     )
 

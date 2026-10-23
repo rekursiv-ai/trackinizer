@@ -139,7 +139,7 @@ else:
     from wrapt import lazy_import
 
     # ``wire_sessions`` builds its pydantic models at import (~200ms), paid on
-    # every ``trax`` cold start even though only ``trax run --sync`` opens a
+    # every ``trax`` cold start even though only a synced agent run opens a
     # session. Bind it as a lazy module proxy so the import fires on first
     # attribute access -- inside the session methods below, never on cold start.
     wire_sessions = lazy_import("trackinizer.wire.wire_sessions")
@@ -1819,7 +1819,7 @@ class Client:
         """Drain pending inbound messages for a session, oldest first.
 
         Each item carries its kind and payload beside the text, attested sender,
-        room and canvas context, so ``trax run`` delivers each the way its CLI
+        room and canvas context, so the agent runner delivers each the way its CLI
         expects. ``run``, ``machine`` and ``cwd`` tell the server where the draining
         run is, for Chat to show; ``cli`` and ``instance`` tell it which CLI polls and
         which run it is, by which it routes a chat's lines and refuses a second run.
@@ -1833,9 +1833,9 @@ class Client:
             one round trip per interval, and delivery on arrival rather than
             up to an interval late. The read timeout must exceed it, or the
             client aborts the very wait it asked for.
-          run: The ``trax run --detach`` host draining it, which ``trax run attach``
-            takes; None for a run in a terminal of its own.
-          machine: This computer's machine name, as ``trax machine connect`` names it.
+          run: The name of the detached run draining it, which an attach takes; None
+            for a run in a terminal of its own.
+          machine: This computer's machine name, as the machine host names it.
           cwd: The run's working directory, ``~/...`` under its home.
           cli: The CLI this run is, ``claude`` or ``codex``.
           instance: An id the run minted for itself, the same on each of its drains.
@@ -2337,7 +2337,7 @@ class Client:
         return _validate_model(wire_terminals.TerminalMachines, response, where)
 
     def open_terminal(self, body: OpenTerminal) -> TerminalOpened:
-        """Queue a terminal, or a detached ``trax run``, on one of the caller's machines.
+        """Queue a terminal, or a detached agent run, on a caller's machine.
 
         The server admits only the owner's browser here: an API key, a service
         account, or a request without the server's own ``Origin`` is refused.

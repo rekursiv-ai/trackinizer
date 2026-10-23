@@ -19,7 +19,7 @@ test.beforeEach(async ({ request }) => {
   station = await resetCanvas(request);
 });
 
-/** Start a session for agent `actor`, captured once, and polled as its `trax run` would poll it; its id. */
+/** Start a session for agent `actor`, captured once, and polled as its run would poll it; its id. */
 async function startAgent(request: APIRequestContext, actor: string, first: string): Promise<string> {
   const started = await request.post("/api/sessions/start", { data: { cli: "claude", title: `${actor} console`, actor } });
   expect(started.ok(), await started.text()).toBe(true);

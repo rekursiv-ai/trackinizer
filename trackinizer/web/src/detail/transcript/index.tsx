@@ -29,7 +29,7 @@ const RECORDS_PAGE = 200;
 
 /**
  * The synthetic part the capture writes its net worktree diff to -- the same
- * name `trax run --diff` gives it. It is lifted out of the transcript into its
+ * name the runner's `--diff` gives it. It is lifted out of the transcript into its
  * own Changes panel and left out of the transcript's record total.
  */
 const WORKTREE_DIFF_PART = "worktree-diff";
@@ -132,7 +132,7 @@ function SessionTranscript({ row }: { row: DetailRow }) {
 }
 
 /**
- * The net `git diff` of the files this session edited (`trax run --diff`), each
+ * The net `git diff` of the files this session edited (the runner's `--diff`), each
  * file drawn by the shared split/unified diff view, the one trax.files and
  * campaign lineage draw with. It reads a key OUTSIDE the `records` slot so the
  * live layer refetches it on every wake (`keyedBy` in `src/live/detail.ts`):
@@ -206,10 +206,10 @@ function ChangedFile({ record, mode }: { record: SessionRecord; mode: DiffMode }
 
 /**
  * A writer's box for messaging the session (`POST /api/sessions/{id}/inbound`):
- * its `trax run` types each message into the session's terminal, from the
+ * its run types each message into the session's terminal, from the
  * signed-in user. None once the session has ended, nor for a viewer, whose sends
  * the server refuses. It never reads the session's queue (`GET .../inbound`):
- * that read takes the agent's messages, and passes for a `trax run` polling.
+ * that read takes the agent's messages, and passes for a run polling.
  */
 function SessionComposer({ row }: { row: DetailRow }) {
   const mode = useWriteMode();
@@ -227,10 +227,10 @@ function SessionComposer({ row }: { row: DetailRow }) {
         }}
         target={row.id}
         enabled={mode === "enabled"}
-        placeholder="Message the agent: trax run types it into the session's terminal"
+        placeholder="Message the agent: its run types it into the session's terminal"
         failure={(error) =>
           error instanceof ApiError && error.status === 409
-            ? `Not connected: trax run is not polling this session (${error.detail}).`
+            ? `Not connected: no run is polling this session (${error.detail}).`
             : `Could not send: ${error.message}. Retry sends the same message once.`
         }
       />

@@ -106,7 +106,7 @@ test("with no machine the menu says so and the steps to connect one are open", a
   expect(await within(shown).findByText("No machine connected yet.")).toBeTruthy();
   expect(steps().open).toBe(true);
   expect(within(steps()).getByRole("link", { name: "Settings → API tokens" }).getAttribute("href")).toBe("#/settings");
-  expect(within(steps()).getByText("trax machine connect")).toBeTruthy();
+  expect(within(steps()).getByText(/keep it connected in tmux or as a user service/)).toBeTruthy();
 });
 
 test("once a machine exists the steps fold away", async () => {

@@ -41,9 +41,7 @@ type Placement = Literal["main", "left", "side", "floating"]
 of it (``side``), or floating over them."""
 
 
-NO_MACHINE_REASON: Final = (
-    "Connect a machine with `trax machine connect` and install {cli} on it"
-)
+NO_MACHINE_REASON: Final = "Connect a machine and install {cli} on it"
 """Why ``claude`` or ``codex`` is unavailable, ``{cli}`` the provider."""
 
 
@@ -412,7 +410,7 @@ class StationData(BaseModel):
     workstream_id: uuid.UUID | None = None
     suggestion: WorkstreamSuggestion | None = None
     session_id: uuid.UUID | None = None
-    """The session this station was made for (``trax run`` placement), if any. A
+    """The session this station was made for (an agent run's placement), if any. A
     station holds many sessions, each labelled ``station:<id>``; this one only names
     why the station exists and never changes who Chat talks to."""
 
@@ -460,7 +458,7 @@ class WorkspacePartner(BaseModel):
     """The machine a CLI's run is on, while live, when the run names it."""
 
     run_name: str | None = None
-    """The detached host to attach to on ``machine`` (``trax run attach``), while live;
+    """The detached host to attach to on ``machine``, while live;
     None for a run in a terminal of its own."""
 
     cwd: str | None = None

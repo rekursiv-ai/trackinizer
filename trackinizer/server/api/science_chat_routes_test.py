@@ -1384,7 +1384,7 @@ async def test_a_claude_station_queues_goal_as_a_command_and_model_as_settings(
         "detail": {
             "code": "command_refused",
             "message": "Chat cannot run /resume: it opens a menu, changes settings or "
-            "switches the session. Use the terminal: trax run attach <run>",
+            "switches the session. Use it in the run's own terminal.",
         },
     }
     act_as_user_agent("writer")

@@ -312,7 +312,7 @@ const RECORDS = [
   },
 ];
 
-/** Start a session titled `title` and capture `RECORDS` in it, as `trax run` does; its id. */
+/** Start a session titled `title` and capture `RECORDS` in it, as the agent runner does; its id. */
 async function session(request: APIRequestContext, title: string, extra: object = {}): Promise<string> {
   const { id } = await post(request, "/api/sessions/start", { cli: "claude", title, ...extra });
   const name = "a11y.jsonl";

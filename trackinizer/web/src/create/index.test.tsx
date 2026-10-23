@@ -236,7 +236,7 @@ test("a viewer is told creating needs a writer; offline, Create is off; AgentSes
   cleanup();
 
   open("#/new/AgentSession");
-  expect(form().getByText("Agent sessions are recorded by trax run, not created here.")).toBeTruthy();
+  expect(form().getByText("Agent sessions are recorded by agent runs, not created here.")).toBeTruthy();
   fireEvent.click(form().getByRole("button", { name: "Close" }));
   await waitFor(() => expect(screen.getByTestId("route").textContent).toBe("#/list/Issue"));
 });

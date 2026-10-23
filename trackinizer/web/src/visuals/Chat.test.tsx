@@ -351,29 +351,25 @@ test("the info pop-over names the session a station was made for, with its state
   expect(dialog.textContent).toContain("· live");
 });
 
-/** A claude run on gx10 that `trax run --detach --name chat-1a2b3c4d` holds, as the station reads it. */
+/** A claude run on gx10 that a detached run named `chat-1a2b3c4d` holds, as the station reads it. */
 const DETACHED: WorkspacePartner = { session_id: "s-chat", actor: null, cli: "claude", status: "live",
   label: "claude · gx10", provider: "claude", machine: "gx10", run_name: "chat-1a2b3c4d" };
 
-test("the info pop-over of a claude run on a trax run gives the command that attaches to it, and copies it exactly", async () => {
-  const writeText = vi.fn(async (_text: string) => {});
-  vi.stubGlobal("navigator", { clipboard: { writeText } });
+test("the info pop-over of a detached claude run names the run and its machine, with no command to copy", () => {
   shell({ ...workspace, provider: "claude", partner: DETACHED });
   openMore();
   fireEvent.click(screen.getByRole("button", { name: "Info" }));
   const dialog = screen.getByRole("dialog", { name: "Chat info" });
-  expect(within(dialog).getByText("Attach on gx10:")).toBeTruthy();
-  fireEvent.click(within(dialog).getByRole("button", { name: "Copy" }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith("trax run attach chat-1a2b3c4d"));
-  vi.unstubAllGlobals();
+  expect(within(dialog).getByText("Detached run chat-1a2b3c4d on gx10")).toBeTruthy();
+  expect(within(dialog).queryByRole("button", { name: "Copy" })).toBeNull();
 });
 
-test("the info pop-over names the folder a trax run attaches in, when the station reads it", () => {
+test("the info pop-over names the folder a detached run works in, when the station reads it", () => {
   const inLoop: WorkspacePartner = { ...DETACHED, cwd: "~/project" };
   shell({ ...workspace, provider: "claude", partner: inLoop });
   openMore();
   fireEvent.click(screen.getByRole("button", { name: "Info" }));
-  expect(within(screen.getByRole("dialog", { name: "Chat info" })).getByText("Attach on gx10 (in ~/project):")).toBeTruthy();
+  expect(within(screen.getByRole("dialog", { name: "Chat info" })).getByText("Detached run chat-1a2b3c4d on gx10 (in ~/project)")).toBeTruthy();
 });
 
 test("the info pop-over of a claude run in a terminal names its machine, with no command to attach", () => {
@@ -398,7 +394,7 @@ test("the info pop-over says where a CLI with no run is to be run, and says noth
   openMore();
   fireEvent.click(screen.getByRole("button", { name: "Info" }));
   const text = screen.getByRole("dialog", { name: "Chat info" }).textContent ?? "";
-  expect(text).not.toMatch(/No run|Attach|Runs in|trax run/);
+  expect(text).not.toMatch(/No run|Detached run|Runs in/);
 });
 
 test("the info pop-over says nothing of a session for a station that was not made for one", () => {
@@ -708,9 +704,9 @@ test("a /goal the run recorded is the sender's monospace line, its log's goal a 
   expect(document.querySelector(".chat-goal")!.textContent).toBe("Goal: ship it · last check: the tests have not run · /goal clear stops it");
 });
 
-// The records `trax run` writes, the partner the server reads, and the answer the server
+// The records the agent runner writes, the partner the server reads, and the answer the server
 // queues: `test/seams/*.json`, which the Python producers' and consumers' tests hold too.
-test("the trust card trax run writes renders, and Trust posts the answer the server queues and the run takes", async () => {
+test("the trust card the agent runner writes renders, and Trust posts the answer the server queues and the run takes", async () => {
   vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"), trustCard as unknown as SessionRecord);
@@ -723,7 +719,7 @@ test("the trust card trax run writes renders, and Trust posts the answer the ser
   expect({ kind: line.kind, text: line.text, payload: line.payload }).toEqual(trustAnswer);
 });
 
-test("the /goal command trax run records is its sender's command line", async () => {
+test("the /goal command the agent runner records is its sender's command line", async () => {
   open("c1");
   hold("c1", said(0, ME, "go"), goalCommand as unknown as SessionRecord);
   shell();
@@ -732,23 +728,18 @@ test("the /goal command trax run records is its sender's command line", async ()
   expect(command.className).toContain("chat-line-user");
 });
 
-test("the info pop-over of the partner the server reads for a detached run gives its attach command", async () => {
-  const writeText = vi.fn(async (_text: string) => {});
-  vi.stubGlobal("navigator", { clipboard: { writeText } });
+test("the info pop-over of the partner the server reads for a detached run names the run", () => {
   shell({ ...workspace, provider: "claude", partner: livePartner as WorkspacePartner });
   openMore();
   fireEvent.click(screen.getByRole("button", { name: "Info" }));
   const dialog = screen.getByRole("dialog", { name: "Chat info" });
-  expect(within(dialog).getByText("Attach on gx10 (in ~/project):")).toBeTruthy();
-  fireEvent.click(within(dialog).getByRole("button", { name: "Copy" }));
-  await waitFor(() => expect(writeText).toHaveBeenCalledWith("trax run attach chat-1a2b3c4d"));
-  vi.unstubAllGlobals();
+  expect(within(dialog).getByText("Detached run chat-1a2b3c4d on gx10 (in ~/project)")).toBeTruthy();
 });
 
 test("a command the run refuses (422) shows its reason and keeps the draft", async () => {
   open("c1");
   hold("c1", ...TALK);
-  vi.mocked(sendChatLine).mockRejectedValue(new ApiError(422, "Chat cannot run /model: it opens a menu. Use the terminal: trax run attach <run>", "command_refused"));
+  vi.mocked(sendChatLine).mockRejectedValue(new ApiError(422, "Chat cannot run /model: it opens a menu. Use it in the run's own terminal.", "command_refused"));
   shell();
   await screen.findByText("a2");
   await type("/model opus");
@@ -2449,7 +2440,7 @@ test("the header names the provider the chat talks to, with its live label and d
 test("+ New chat offers the three providers, the default first and starred, and a grayed one does nothing", async () => {
   vi.mocked(createStationInWorkstream).mockResolvedValue({ ...workspace, id: "new-chat", name: "unnamed-workstream#2" });
   const { client } = shell({ ...workspace, available: { claude: false },
-    reasons: { claude: "Connect a machine with `trax machine connect` and install claude on it" } }, {
+    reasons: { claude: "Connect a machine and install claude on it" } }, {
     // The preference a profile carries, which openapi.json does not list yet.
     profile: { preferences: { chat_provider: "codex" } as unknown as Profile["preferences"] },
   });

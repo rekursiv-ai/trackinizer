@@ -1,4 +1,4 @@
-"""Placing a `trax run` session in a workstream and a station, over the whole app."""
+"""Placing an agent run's session in a workstream and a station, over the whole app."""
 
 from __future__ import annotations
 

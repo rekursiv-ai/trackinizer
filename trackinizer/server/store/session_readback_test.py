@@ -84,7 +84,7 @@ def _adapter_for(name: str) -> _Adapter:
 
 
 # Feeds the file one line at a time through the same ``Tail`` the runner uses, so what
-# reaches the database is what a live ``trax run`` would have stored -- not a whole-file
+# reaches the database is what a live agent run would have stored -- not a whole-file
 # drain the tailer never performs.
 async def _ingest(store: Store, path: Path, session_id: UUID) -> int:
     """Drive the real capture path over ``path``; return the part it landed in."""

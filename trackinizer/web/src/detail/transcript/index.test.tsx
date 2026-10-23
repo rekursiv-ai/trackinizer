@@ -840,7 +840,7 @@ test("a record's model and time show only when they differ from the record befor
   ]);
 });
 
-test("a trax run sh session's output reads as one terminal block, its input as prompt lines (B22)", async () => {
+test("a runner `sh` session's output reads as one terminal block, its input as prompt lines (B22)", async () => {
   const line = (idx: number, kind: string, text: string) => captured(idx, kind, { text }, text);
   await renderRecords(
     [
@@ -1210,13 +1210,13 @@ test("a writer messages a live session from the foot of its transcript: one keye
   ]);
 });
 
-test("a 409 says trax run is not polling this session, and keeps the draft (SE4)", async () => {
+test("a 409 says no run is polling this session, and keeps the draft (SE4)", async () => {
   serveLive(LIVE, () => Response.json({ detail: "No active inbound poller" }, { status: 409 }));
   renderDetail({ id: LIVE.id });
   const { section, box } = await composer();
   fireEvent.change(box, { target: { value: "Are you there?" } });
   fireEvent.click(section.getByRole("button", { name: "Send message" }));
-  expect((await section.findByRole("alert")).textContent).toBe("Not connected: trax run is not polling this session (No active inbound poller).");
+  expect((await section.findByRole("alert")).textContent).toBe("Not connected: no run is polling this session (No active inbound poller).");
   expect(box).toHaveProperty("value", "Are you there?");
   expect(section.getByRole("button", { name: "Retry message" })).toBeTruthy();
 });

@@ -1,14 +1,14 @@
-# Design: ACP capture + drive mode for `trax run`
+# Design: ACP capture + drive mode for the runner
 
 Status: proposed. Owner: Agent. Date: 2026-07-02.
 Companion to `design_session_resume.md` (resume correlation) and
 `design_session_messaging.md` (send/rooms). Supersedes the deferred
-driver half of `trax/run/adapters/codex_appserver.py`.
+driver half of `runs/adapters/codex_appserver.py`.
 
 ## Problem
 
-`trax run` captures agent sessions by scraping each CLI's on-disk
-session log (`trax/run/adapters/{claude,codex,gemini}.py`) and injects
+The runner captures agent sessions by scraping each CLI's on-disk
+session log (`runs/adapters/{claude,codex,gemini}.py`) and injects
 `trax send` messages as bracketed pastes into a PTY
 (`lib/posix/relay.py`). Both halves work, but both are built on
 surfaces the vendors do not own as contracts:
@@ -59,8 +59,8 @@ generalized across CLIs.
 
 ## Requirements
 
-1. **Additive mode, not a replacement.** `trax run claude` (PTY +
-   scrape, human-interactive) is unchanged. `trax run --acp claude` is
+1. **Additive mode, not a replacement.** The runner (PTY +
+   scrape, human-interactive) is unchanged. The runner's `--acp claude` is
    a new headless mode. The PTY path remains the interactive default
    until ACP capture fidelity is proven equal or better per adapter.
 2. **Same wire protocol to the server.** ACP mode emits the same typed
@@ -92,10 +92,10 @@ Three new units, one wiring change:
 
 | Unit | Path | Job |
 |---|---|---|
-| ACP client | `trax/run/acp/client.py` | subprocess spawn + JSON-RPC 2.0 over stdio: `initialize` handshake, request/response correlation, notification dispatch, cancel, shutdown |
-| Translation | `trax/run/adapters/acp.py` | `session/update` notifications → `Event`s (the `codex_appserver.py` analog), with chunk→turn aggregation |
-| Drive loop | `trax/run/acp_runner.py` | the `_spawn_and_drain` sibling: session open → prompt loop → sink |
-| Wiring | `trax/run/session.py`, `trax/verbs.py` | `--acp` flag routes `run()` to the drive loop |
+| ACP client | The runner's `acp/client.py` | subprocess spawn + JSON-RPC 2.0 over stdio: `initialize` handshake, request/response correlation, notification dispatch, cancel, shutdown |
+| Translation | `runs/adapters/acp.py` | `session/update` notifications → `Event`s (the `codex_appserver.py` analog), with chunk→turn aggregation |
+| Drive loop | The runner's `acp_runner.py` | the `_spawn_and_drain` sibling: session open → prompt loop → sink |
+| Wiring | The runner's `session.py`, `trax/verbs.py` | `--acp` flag routes `run()` to the drive loop |
 
 ### Threading model
 
@@ -132,7 +132,7 @@ spawn adapter (pinned manifest) → initialize
 
 Adapter crash mid-turn: the reader thread observes EOF, flushes the
 partial turn, emits a `SystemMessage` recording the abnormal exit, and
-the runner exits nonzero. `ResilientSink` degrade semantics are
+The runner exits nonzero. `ResilientSink` degrade semantics are
 inherited unchanged: a server outage never loses events.
 
 ### What this deliberately does not fix
@@ -149,7 +149,7 @@ whose run went silent.
 
 | Phase | Contents | New code (impl + tests) | Estimate |
 |---|---|---|---|
-| 1 | client core, claude translation, drive loop happy path: `trax run --acp claude` captures + `trax send` injects | ~900 + ~1,200 LOC | 3–5 focused days |
+| 1 | client core, claude translation, drive loop happy path: The runner's `--acp claude` captures + `trax send` injects | ~900 + ~1,200 LOC | 3–5 focused days |
 | 2 | resume wiring (req. 4), permission policy (req. 6), codex adapter, pinned manifest (req. 5) | ~400 + ~600 LOC | 3–4 days |
 | 3 | token usage (req. 7), gemini-via-ACP, edge hardening (mid-turn crash, queue-during-turn, cancel races) | ~300 + ~500 LOC | 2–3 days |
 

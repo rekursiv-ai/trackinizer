@@ -7,7 +7,7 @@ to, while they happen**, without polling for them. Every inquiry carries a
 `subscribers` list; every mutation writes a `change_log` row snapshotting
 who was subscribed at commit time (`subscribers_snapshot`). This feature
 routes each such change -- as a small JSON envelope -- into the stdin of
-every subscriber's **live** `trax run` session
+every subscriber's **live** agent run's session
 ([`design_session_messaging.md`](design_session_messaging.md) built the
 delivery pipe; this doc is the producer that feeds it).
 
@@ -18,7 +18,7 @@ never the record.
   bob: trax issue 1 status to complete
     └─ commit writes change_log row (subscribers_snapshot=["alice"])
          └─ server sweep (0.5s) ─▶ inbound queue (per live session)
-              └─ alice's trax run poller (~0.5s) drains her mailbox
+              └─ alice's run's poller (~0.5s) drains her mailbox
                    └─ pump injects one line into her child's stdin
 ```
 
@@ -29,9 +29,9 @@ Load-bearing code:
 - [`server/store/read.py`](../server/store/read.py) --
   `what_changed_for_anyone` (cursor query; LEFT JOIN resolves the
   subject's short seq).
-- [`trax/run/inbound.py`](../trax/run/inbound.py) -- `render_inbound`
+- the runner's `inbound.py` -- `render_inbound`
   (client-side shaping: what actually reaches the child).
-- [`examples/subscriber_demo.sh`](../examples/subscriber_demo.sh) -- the
+- The subscriber demo, which ships with the agent runner -- the
   executable spec, end to end against a real server.
 
 ## The envelope
@@ -73,14 +73,14 @@ the server route (`GET /api/change_log/<uuid>`) is already there.
 ## Client-side shaping
 
 The server pushes the **same envelope to every `open` session** (the others
-get it without `actor` and `reason`, above); the `trax run` poller
+get it without `actor` and `reason`, above); the run's poller
 (`render_inbound`) decides what reaches the child's stdin, because only the
 client knows what is attached:
 
 | session child | receives |
 |---|---|
 | model CLI (claude / gemini / codex) | only the `agent_message` line -- the other fields would spend model context on metadata it can fetch on demand |
-| IO-stream (`trax run sh`) | the raw JSON line; the program parses it itself (reference jq client in the demo) |
+| IO-stream (the runner's `sh`) | the raw JSON line; the program parses it itself (reference jq client in the demo) |
 
 Only the route-attested `trackinizer` sender unwraps. `source` is stamped
 server-side from the principal, so another sender's JSON-looking text
@@ -138,6 +138,6 @@ bisects on the INFO line:
 | yes | server half worked -- suspect the client poller or the child |
 | no | sweep never delivered -- suspect the cursor or the subscription |
 
-The client side logs injection losses (`trax/run/pty_pump.py`: dead child,
+The client side logs injection losses (the runner's `pty_pump.py`: dead child,
 master died mid-write) and capture losses (`StreamEventDropped=N` in the
 end-of-run stats), so every hop that can drop a message says so.

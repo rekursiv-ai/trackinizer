@@ -38,7 +38,7 @@ test.beforeAll(async ({ request }) => {
     { from_index: 2, to_index: 1, edge_kind: "produced_by" },
   ];
   const ids = (await post(request, "/api/inquiries/batch", { items, edges })).ids as string[];
-  // A session starts through the sessions route, as `trax run` starts one.
+  // A session starts through the sessions route, as the agent runner starts one.
   const started = await post(request, "/api/sessions/start", {
     cli: "claude",
     title: `Session ${TAG}`,

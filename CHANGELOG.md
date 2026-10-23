@@ -7,6 +7,17 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Changed
 
+- **Breaking:** `trax run` moved out of the package. `trax run ARGS` and
+  `trax agentsession N run ARGS` exit 2 with one line saying the form moved out of
+  trax. The run model that the server and other readers share stays here, as
+  `trackinizer.runs`: `asks`, `redact`, `refusal` and `adapters`.
+- **Breaking:** `trax machine` and `trax job` moved out of the package, with the
+  host that serves a computer's terminals and the job runner; each exits 2 with one
+  line saying so. The server's machine and job routes, and `Client`'s methods for
+  them, stay.
+- The device-login approval page names the account signed in, whose key the
+  approval issues and whose machine it enrolls; the lookup answer carries it as
+  `account`.
 - **Breaking for anyone who runs the server from PyPI.** A bare `pip install
   trackinizer` now installs the client side only: `trax`, `Client` and the wire
   and type models, with none of the database driver, web framework or torch.
@@ -21,6 +32,15 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Removed
 
+- **Breaking:** the `trackinizer.trax.machines`, `machine_host`, `terminal_host`,
+  `terminal_direct` and `terminal_direct_aiortc` modules, with the host that serves a
+  computer's terminals.
+- **Breaking:** the `trackinizer.trax.run` package. Its runner modules (`session`,
+  `headless`, `detach`, `materialize`, `resume` and the rest) no longer ship with
+  trax; `trackinizer.trax.run.asks`, `redact`, `refusal` and `adapters` are now
+  `trackinizer.runs.asks`, `redact`, `refusal` and `adapters`.
+- **Breaking:** `trackinizer.trax.cli.connect`, `connect_flags` and their helpers
+  moved to `trackinizer.trax.connection`.
 - `trackinizer.lib.worker_count` is no longer part of the package. It moved,
   with the pre-commit gates that use it, to `tools/gate/` at the repository
   root, which the wheel does not ship.

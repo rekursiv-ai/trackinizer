@@ -107,7 +107,7 @@ class Terminal:
     requested_by: str | None = None
     surface: str | None = None
     command: wire_terminals.TerminalCommand | None = None
-    """The CLI the host runs as a detached ``trax run``, in place of a login shell."""
+    """The CLI the host runs, as a detached agent run."""
 
     attach: UUID | None = None
     """The AgentSession the detached run re-opens."""

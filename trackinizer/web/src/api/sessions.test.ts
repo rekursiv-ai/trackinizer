@@ -48,7 +48,7 @@ test("a message to a live session is one keyed POST of its text; the sender is t
   ]);
 });
 
-test("a session no trax run is polling refuses a message with 409 and the server's reason", async () => {
+test("a session no run is polling refuses a message with 409 and the server's reason", async () => {
   stubFetch(() => Response.json({ detail: "No active inbound poller" }, { status: 409 }));
   await expect(sendSessionMessage(ID, "hi", "11111111-2222-4333-8444-555555555555")).rejects.toMatchObject({
     status: 409,

@@ -11,14 +11,13 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.trax import cli, profile
+from trackinizer.trax import cli, connection
 from trackinizer.trax.client_cache import Target, close_clients
 from trackinizer.trax.conftest import FakeClient, run
-from trackinizer.trax.profile import Profile
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -72,19 +71,6 @@ def test_module_entrypoint_is_directly_executable() -> None:
     assert not result.stderr
 
 
-def test_profile_flag_overrides_trackinizer_url(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    profile.save_profile("prod", Profile(url="http://prod:9000", author="alice"))
-    monkeypatch.setenv("TRACKINIZER_URL", "http://env:8766")
-    client = cli.connect(argparse.Namespace(profile="prod", host=None, port=None))
-    try:
-        assert client.base_url == "http://prod:9000"
-        assert client.author == "alice"
-    finally:
-        close_clients()
-
-
 _KEY: Final = "tok-SENTINEL-93f1c7"
 """A recognisable key, so a leak is found by substring."""
 
@@ -96,137 +82,13 @@ def no_ambient_token(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _resolve(*, profile_name: str | None = None, port: int | None = None) -> Target:
-    return cli._resolve_target(
+    return connection.resolve_target(
         argparse.Namespace(profile=profile_name, host=None, port=port),
     )
 
 
-class TestTokenEnvironment:
-    """``TRACKINIZER_TOKEN`` with ``TRACKINIZER_URL`` names a server and a key.
-
-    Without a URL the token is ignored.
-    """
-
-    @pytest.mark.parametrize(
-        ("profile_flag", "env_pairs", "expected"),
-        [
-            pytest.param(
-                "prod",
-                {"TRACKINIZER_URL": "http://env:1", "TRACKINIZER_TOKEN": _KEY},
-                Target(url="http://prod:9000", author="alice", api_key="profile-key"),
-                id="row1-profile-flag-ignores-env-token",
-            ),
-            pytest.param(
-                None,
-                {
-                    "TRACKINIZER_URL": "http://env:1",
-                    "TRACKINIZER_TOKEN": _KEY,
-                    "TRACKINIZER_PROFILE": "prod",
-                },
-                Target(url="http://env:1", author="", api_key=_KEY),
-                id="row2-env-url-and-token",
-            ),
-            pytest.param(
-                None,
-                {"TRACKINIZER_URL": "http://env:1", "TRACKINIZER_PROFILE": "prod"},
-                Target(url="http://env:1", author="", api_key=""),
-                id="row3-env-url-alone-has-no-key",
-            ),
-            pytest.param(
-                None,
-                {"TRACKINIZER_PROFILE": "prod"},
-                Target(url="http://prod:9000", author="alice", api_key="profile-key"),
-                id="row4-profile-environment",
-            ),
-        ],
-    )
-    def test_token_precedence_rows_1_to_4(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        profile_flag: str | None,
-        env_pairs: dict[str, str],
-        expected: Target,
-    ) -> None:
-        profile.save_profile(
-            "prod",
-            Profile(url="http://prod:9000", author="alice", api_key="profile-key"),
-        )
-        for name, value in env_pairs.items():
-            monkeypatch.setenv(name, value)
-
-        assert _resolve(profile_name=profile_flag) == expected
-
-    def test_host_flags_rewrite_the_env_url_and_keep_the_token(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
-        monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
-
-        assert _resolve(port=9) == Target(url="http://env:9", author="", api_key=_KEY)
-
-    def test_token_without_url_is_ignored(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """An ops shell exports only the token; the profile's own key stays in use."""
-        profile.save_profile(
-            "prod",
-            Profile(url="http://prod:9000", author="alice", api_key="profile-key"),
-        )
-        profile.switch_profile("prod")
-        monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
-
-        target = _resolve()
-        try:
-            client = cli.connect(argparse.Namespace(profile=None, host=None, port=None))
-            sent_key = client.api_key
-        finally:
-            close_clients()
-
-        assert target == Target(
-            url="http://prod:9000",
-            author="alice",
-            api_key="profile-key",
-        )
-        assert sent_key == "profile-key"
-        assert capsys.readouterr().err == ""
-
-    def test_token_without_url_falls_through_to_the_profile_environment(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        profile.save_profile("a", Profile(url="http://a:1", api_key="key-a"))
-        profile.save_profile("b", Profile(url="http://b:1", api_key="key-b"))
-        profile.switch_profile("a")
-        monkeypatch.setenv("TRACKINIZER_PROFILE", "b")
-        monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
-
-        assert _resolve() == Target(url="http://b:1", author="", api_key="key-b")
-
-    def test_token_without_url_and_without_profile_sends_no_key(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
-
-        assert _resolve().api_key == ""
-
-    def test_an_empty_token_is_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
-        monkeypatch.setenv("TRACKINIZER_TOKEN", "")
-
-        assert _resolve() == Target(url="http://env:1", author="", api_key="")
-
-    def test_profile_flag_needs_no_url_for_an_unused_token(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        profile.save_profile("prod", Profile(url="http://prod:9000"))
-        monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
-
-        assert _resolve(profile_name="prod").url == "http://prod:9000"
+class TestTokenNeverEchoed:
+    """A malformed or good ``TRACKINIZER_TOKEN`` text appears in no output."""
 
     @pytest.mark.parametrize(
         "token",
@@ -273,7 +135,9 @@ class TestTokenEnvironment:
 
         monkeypatch.setenv("TRACKINIZER_URL", "http://127.0.0.1:1")
         try:
-            client = cli.connect(argparse.Namespace(profile=None, host=None, port=None))
+            client = connection.connect(
+                argparse.Namespace(profile=None, host=None, port=None),
+            )
             shown += [str(client), repr(client)]
             assert cli.main(["issue"]) == 2
         finally:
@@ -283,55 +147,6 @@ class TestTokenEnvironment:
 
         assert shown
         assert [text for text in shown if _KEY in text] == []
-
-
-class TestClientSharing:
-    """A long-lived process must not build a connection pool per invocation.
-
-    The daemon calls ``parse_and_run`` once per request. A client cached
-    inside that call would open a fresh ``httpx2`` pool -- and a fresh TCP
-    handshake -- every time, discarding the keep-alive the transport exists
-    to provide, and would accumulate open sockets for the daemon's whole life.
-    """
-
-    def test_reuses_one_client_across_invocations(self) -> None:
-        profile.save_profile("prod", Profile(url="http://prod:9000"))
-        args = argparse.Namespace(profile="prod", host=None, port=None)
-        try:
-            clients = [cli.connect(args) for _ in range(5)]
-
-            assert len({id(client) for client in clients}) == 1, (
-                "each invocation built its own Client; under the daemon that "
-                "is a new connection pool and a leaked socket per request"
-            )
-        finally:
-            close_clients()
-
-    def test_separates_clients_by_resolved_target(self) -> None:
-        """Two profiles are two servers; they must not share a connection."""
-        profile.save_profile("a", Profile(url="http://a:9000"))
-        profile.save_profile("b", Profile(url="http://b:9000"))
-        try:
-            first = cli.connect(argparse.Namespace(profile="a", host=None, port=None))
-            second = cli.connect(argparse.Namespace(profile="b", host=None, port=None))
-
-            assert first is not second
-        finally:
-            close_clients()
-
-    def test_a_profile_rewrite_invalidates_the_cached_client(self) -> None:
-        """A cached client still carries the OLD token after a token change."""
-        profile.save_profile("prod", Profile(url="http://prod:9000", api_key="old"))
-        args = argparse.Namespace(profile="prod", host=None, port=None)
-        try:
-            before = cli.connect(args)
-            profile.save_profile("prod", Profile(url="http://prod:9000", api_key="new"))
-            after = cli.connect(args)
-
-            assert before is not after
-            assert after.api_key == "new"
-        finally:
-            close_clients()
 
 
 def test_global_flag_not_peeled_from_field_value() -> None:
@@ -661,39 +476,75 @@ def test_standalone_command_help_shows_local_forms(
     assert not client.calls
 
 
-def test_run_shim_resolves_client_from_active_profile(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("argv", "form"),
+    [
+        (["run", "claude", "--", "hi"], "run"),
+        (["run", "attach", "chat-1"], "run"),
+        (["--profile", "p", "--host", "h", "--port", "9", "RUN", "codex"], "run"),
+        (["machine"], "machine"),
+        (["MACHINE", "gx10", "connect", "--sandbox"], "machine"),
+        (["machine", "gx10", "role", "to", "dev"], "machine"),
+        (["job", "submit", "--", "python", "x.py", "--help"], "job"),
+        (["job", "status"], "job"),
+        (["job", "secret", "HF_TOKEN", "set"], "job"),
+        (["help", "Machine"], "machine"),
+        (["help", "job"], "job"),
+    ],
+)
+def test_a_form_that_moved_out_of_trax_exits_2_saying_so(
+    argv: list[str],
+    form: str,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """``trax run`` hands a profile-resolving client factory to the runner."""
-    profile.save_profile("rprof", Profile(url="http://rhost:9100", author="bob"))
-    profile.switch_profile("rprof")
-    captured: dict[str, object] = {}
+    def no_client() -> Client:
+        raise AssertionError("a moved form must not reach the server")
 
-    def fake_run_main(
-        argv: Sequence[str],
-        *,
-        client_factory: Callable[[], Client] | None = None,
-        profile: str | None = None,
-    ) -> int:
-        del profile
-        captured["argv"] = list(argv)
-        # The factory resolves the active profile only when invoked, mirroring
-        # the sync path; ``--no-sync`` never calls it.
-        assert client_factory is not None
-        captured["client"] = client_factory()
-        return 0
+    with pytest.raises(SystemExit) as stopped:
+        cli.parse_and_run(argv, client_factory=no_client)
 
-    monkeypatch.setattr("trackinizer.trax.run.session.main", fake_run_main)
-    cli.parse_and_run(["run", "claude", "--", "hi"])
+    assert stopped.value.code == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith(f"trax {form} moved out of trax")
+    assert err.count("\n") == 1
 
-    assert captured["argv"] == ["claude", "--", "hi"]
-    resolved = captured["client"]
-    assert isinstance(resolved, Client)
-    try:
-        assert resolved.base_url == "http://rhost:9100"
-        assert resolved.author == "bob"
-    finally:
-        resolved.close()
+
+def test_help_says_what_moved_out_of_trax(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli.parse_and_run(["help"])
+
+    out = capsys.readouterr().out
+    commands = out.split("Commands:")[1].splitlines()[0].split()
+    assert not {"run", "machine", "job"} & set(commands)
+    assert "Moved out of trax: job machine run" in out
+
+
+@pytest.mark.parametrize("verb", ["RUN", "machine", "job"])
+def test_a_moved_verb_prints_no_hint_about_traxs_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    verb: str,
+) -> None:
+    """The hint names trax's profiles, which a command that left trax does not use."""
+    monkeypatch.setenv("LC_TRAX_SERVER", "https://elsewhere.test")
+
+    with pytest.raises(SystemExit):
+        _ = cli.main(["--host", "h", verb, "status"])
+
+    assert capsys.readouterr().err.startswith(f"trax {verb.lower()} moved out of trax")
+
+
+def test_any_other_verb_still_prints_the_unmatched_server_hint(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("LC_TRAX_SERVER", "https://elsewhere.test")
+
+    _ = cli.main(["profile"])
+
+    assert "this shell came from https://elsewhere.test" in capsys.readouterr().err
 
 
 if __name__ == "__main__":

@@ -423,7 +423,7 @@ unmet (non-terminal) `requires` prerequisites.
 
 SSE (`/api/change_log/stream`, `/api/web/subscribe`) streams mutated-inquiry
 ids over Postgres `LISTEN/NOTIFY` (or PGlite's in-process bus). Subscribers
-with a live `trax run` session receive change envelopes pushed into their
+with a live agent run's session receive change envelopes pushed into their
 stdin ([`design_subscriber.md`](design_subscriber.md)); offline agents catch
 up via the `change_log` filtered by `subscribers_snapshot`.
 

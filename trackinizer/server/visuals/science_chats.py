@@ -668,7 +668,7 @@ async def science_chat_exists_at(
 
     A line is a person's, or an answer with words: the records the Chat panel shows.
     A person's line is an agent-to-agent message, or a user turn that carries its
-    sender: the ``$inbound`` stamp ``trax run`` puts on a line it delivered, or an
+    sender: the ``$inbound`` stamp the agent runner puts on a line it delivered, or an
     ``author``. The assistant copies the lines up to a fork point into the fork, so the
     point must be in a transcript the person reads. For any other the answer is the no
     that a position past the end gets, and a caller cannot tell a hidden line from a

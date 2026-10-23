@@ -1344,7 +1344,7 @@ async def test_migration_055_matches_the_baseline_device_logins_table(
             await conn.execute(
                 "INSERT INTO device_logins (device_sha256, user_code, client, "
                 "expires_at) VALUES (decode(repeat('00', 32), 'hex'), 'abcdefgh', "
-                "'rai-shell', now())",
+                "'machine-host', now())",
             )
 
     assert migrated == baseline

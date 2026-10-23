@@ -248,13 +248,13 @@ class OpenTerminal(BaseModel):
     """The view that opened it (Chat's terminal side, or one tile): it re-attaches to its own."""
 
     command: TerminalCommand | None = None
-    """Start ``trax run`` of this CLI in the terminal, in place of a login shell."""
+    """Start a detached agent run of this CLI, in place of a login shell."""
 
     attach: uuid.UUID | None = None
     """The AgentSession the run re-opens; needs ``command``."""
 
     run_name: str | None = Field(default=None, pattern=NAME_PATTERN)
-    """The detached run's name, for ``trax run attach NAME``; needs ``command``."""
+    """The detached run's name, which an attach takes; needs ``command``."""
 
     cwd: RunFolder | None = None
     """The run's folder on the machine, absolute or ``~``; needs ``command``."""

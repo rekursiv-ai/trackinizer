@@ -193,7 +193,6 @@ exclude = [
     "trackinizer/server/api/canvas_test_support.py",
     "trackinizer/server/asks_test_support.py",
     "trackinizer/server/embedders/qwen_fakes.py",
-    "trackinizer/trax/run/codex_app_fake.py",
 ]
 artifacts = ["trackinizer/web/dist/**"]
 

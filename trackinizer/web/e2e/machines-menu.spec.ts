@@ -54,7 +54,7 @@ test("signed in, the menu lists your machines, offers Allow, folds the steps, an
   await expect(menu.locator(".machines-row")).toHaveText([/laptop\s*Online/, /workstation\s*Waiting for you to allow it\s*Allow/, /old-desk\s*Offline/]);
   await expect(menu.locator("details.machines-connect")).not.toHaveAttribute("open");
   await menu.getByText("Connect a machine").click();
-  await expect(menu.getByText("trax machine connect")).toBeVisible();
+  await expect(menu.getByText(/keep it connected in tmux or as a user service/)).toBeVisible();
   await expect(menu.getByRole("region", { name: /^Provided by / }).getByRole("listitem")).toHaveText([/^GPU jobs/, /^Workspace box/]);
   const { violations } = await new AxeBuilder({ page }).include(".machines-menu").withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   expect(violations.map((each) => `${each.id}: ${each.nodes.map((node) => node.target.join(" ")).join(", ")}`)).toEqual([]);

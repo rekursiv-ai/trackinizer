@@ -331,7 +331,7 @@ def _posters(records: Sequence[RecordBody]) -> list[str]:
 
 # The loader's rule for a person's line: the assistant records one as an
 # ``AgentToAgentMessage`` with its sender, and a CLI run as a ``UserMessage`` that
-# `trax run` stamped ``$inbound`` with the attested sender on delivery, or that carries
+# the agent runner stamped ``$inbound`` with the attested sender on delivery, or that carries
 # an ``author``. Reading the first shape alone missed every line a CLI part records,
 # which then kept counting as on its way into the chat until its hand-out expired.
 def _poster(record: RecordBody) -> str | None:

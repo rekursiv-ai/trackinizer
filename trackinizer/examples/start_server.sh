@@ -43,7 +43,7 @@ session_ended() {
 # render_events: turn one page of events (JSON on stdin) into readable lines.
 # Parsing is the CLIENT's job -- the server hands back the typed message
 # verbatim -- and the shape is the same for every adapter, so one renderer
-# covers claude, codex, and anything else `trax run` wraps. ${RAW}=1 prints
+# covers claude, codex, and anything else the agent runner wraps. ${RAW}=1 prints
 # raw JSON instead; ${T0} (a `date +%s.%N` stamp) makes each line report
 # ARRIVAL time, which is what shows a turn is readable mid-run.
 render_events() {

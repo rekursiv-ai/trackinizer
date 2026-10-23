@@ -8,9 +8,6 @@ import { APP } from "../appName";
 import { formatRoute } from "../router/route";
 import { Command, setupCommand } from "../settings/ChatPartner";
 
-/** The command that enrolls the computer it runs on and keeps it connected. */
-const CONNECT = "trax machine connect";
-
 /** How each machine status reads; any other shows as the server says it. */
 const STATUS: Readonly<Record<string, string>> = { online: "Online", offline: "Offline", never: "Never connected", revoked: "Revoked" };
 
@@ -83,8 +80,7 @@ function ConnectSteps({ none, onNavigate }: { readonly none: boolean; readonly o
         <a href={formatRoute({ name: "settings" })} onClick={onNavigate}>Settings → API tokens</a>.</li>
       <li>On the computer, install trax and point it at this server, with your token for <code>&lt;TOKEN&gt;</code>:
         <Command command={setupCommand()} /></li>
-      <li>Keep it connected, in tmux or as a user service:
-        <Command command={CONNECT} /></li>
+      <li>On the computer, connect it to this server, and keep it connected in tmux or as a user service.</li>
       <li>Allow it here once it shows up above.</li>
     </ol>
   </details>;

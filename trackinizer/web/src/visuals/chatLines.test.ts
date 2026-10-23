@@ -149,7 +149,7 @@ test("a relay is none of the sender's own lines: it neither ends the wait for a 
   expect(sentBefore(transcript.lines, { me: "ada@example.com" })).toBe(1);
 });
 
-// A claude part: a line delivered by trax run carries the attested sender in its stamp, and the context the CLI
+// A claude part: a line delivered by the agent runner carries the attested sender in its stamp, and the context the CLI
 // adds after the words; a line typed at the terminal carries no stamp, so its text names no one.
 test("a claude part's delivered lines show with their attested senders, and the CLI's own user turns are no line", () => {
   const delivered = record(0, "UserMessage", { content: "[lab] ada@example.com: rerun the suite\nTrackinizer context (verify with trax): cwd /work",
@@ -220,7 +220,7 @@ test("a question keeps its options, and is answered under its header, or its que
 });
 
 // A line sent while claude is mid-turn is queued: claude logs it as a `queued_command` ContextState, not a UserMessage.
-// trax run stamps the one it typed; claude's own queued notices (task notifications) carry no stamp.
+// the agent runner stamps the one it typed; claude's own queued notices (task notifications) carry no stamp.
 test("a stamped queued_command is the person's line and clears a pending post; an unstamped one is no line", () => {
   const me = { me: "ada@example.com" };
   const first = record(0, "UserMessage", { content: "go", extra: { author: "ada@example.com" } });
@@ -239,7 +239,7 @@ test("a stamped queued_command is the person's line and clears a pending post; a
   expect(withPending(after, sent, me).filter((line) => line.pending)).toHaveLength(0);
 });
 
-// A record stamped by its CLI or trax run, and the goal, command and reply records they write.
+// A record stamped by its CLI or the agent runner, and the goal, command and reply records they write.
 const ME = "ada@example.com";
 const stamped = (at: SessionRecord, timestamp: string): SessionRecord => ({ ...at, timestamp }) as SessionRecord;
 const typedCommand = (idx: number, text: string, verb: string, args: string, source = ME): SessionRecord =>
@@ -389,7 +389,7 @@ test("an answer names the agent whose part wrote it, so each reply of a chat tha
   ]);
 });
 
-// What AgentSession#82 on alpha holds for a /compact typed in Chat: trax run's `$command` on a part of its own, and on
+// What AgentSession#82 on alpha holds for a /compact typed in Chat: the runner's `$command` on a part of its own, and on
 // claude's part the bare command, the boundary, the compaction and clear, the summary and the CLI's own print.
 test("a /compact typed in Chat is its command line, then one compaction line, and claude's own records of it are no lines", () => {
   const run = [stamped(typedCommand(0, "/compact", "compact", ""), "2026-10-20T22:46:54.590037Z")];

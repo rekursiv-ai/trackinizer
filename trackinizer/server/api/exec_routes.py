@@ -279,7 +279,7 @@ async def _exec_machine(request: Request, *, owner: str, name: str) -> UUID:
         raise _not_enabled(f"machine {name} is not confirmed; confirm it first")
     if from_plain(machine["facts"], dict[str, object]).get("exec") is not True:
         raise _not_enabled(
-            f"machine {name} runs no commands; start rai-shell without --no-exec",
+            f"machine {name} runs no commands: its host was started with --no-exec",
         )
     return from_plain(machine["id"], UUID)
 

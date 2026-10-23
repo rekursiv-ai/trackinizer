@@ -763,7 +763,7 @@ with one response shape, so the fixtures take one per verb.
   A group drawn about a step the reader opened, or is on, starts open, so a
   later step that folds it in leaves it open and focused as it was. The console
   shows every record as a line of its own, so it folds none.
-- A `trax run sh` run shows as one terminal, its colours kept; a record's model
+- A run of the runner's `sh` shows as one terminal, its colours kept; a record's model
   and time show when they change.
 - Relative times ("2h ago") re-render every minute.
 - The console shows one view at a time: the agents and rooms it picks, by name

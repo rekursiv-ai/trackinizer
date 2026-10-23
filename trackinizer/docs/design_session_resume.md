@@ -1,8 +1,8 @@
-# Design: `trax run` resume -- what is captured, and how it re-attaches
+# Design: The runner resume -- what is captured, and how it re-attaches
 
 Status: implemented. The capture surface below was measured on 2026-10-18
 against claude 2.1.302 and codex 0.163.0, each driven in tmux under
-`trax run <cli> --no-sync --out` and compared with the files the CLI wrote.
+the runner's `<cli> --no-sync --out` and compared with the files the CLI wrote.
 Supersedes the lazy-open + "requested name" behavior documented as a known
 gap in `design_session_messaging.md`.
 
@@ -16,7 +16,7 @@ session, a copy, a background session -- is not captured.
 
 `trax agentsession <seq> run <cli>` is the supported way to resume. A resume
 typed after `--` is captured only when it names the session by id; anything
-else runs uncaptured, and `trax run` says so.
+else runs uncaptured, and the runner says so.
 
 ## What the CLIs do
 
@@ -93,16 +93,16 @@ Evidence: **M** measured live on 2026-10-18; **T** asserted by a unit test;
 
 | Command | The CLI | Captured | Evidence |
 |---|---|---|---|
-| `trax run claude` | new session, id from trax | yes | M |
+| The runner | new session, id from trax | yes | M |
 | `trax agentsession <seq> run claude` or `... run codex` | appends to the materialized file | yes; re-attaches | T |
 | `trax agentsession <seq> run claude -- --fork-session` | new file, new id | the fork, as a new session | T |
-| `trax run claude -- --resume <id>`, any spelling above | appends to the existing file | yes, from its start; re-attaches | M, T |
+| The runner's `-- --resume <id>`, any spelling above | appends to the existing file | yes, from its start; re-attaches | M, T |
 | the same, for a session started in another directory | appends to THAT directory's file | yes | M (claude `-p`), T |
-| `trax run claude -- --resume <id> --fork-session`, `-c --fork-session` | new file, new id | yes, as a new session | T |
-| `trax run claude -- -c`, `--resume`, `--resume <term>`, `-r=<id>`, an id with no transcript | claude picks | no; warned at start | M, T |
-| `trax run codex -- resume <id>` | appends to the existing rollout | yes, from its start; re-attaches | M (codex), T |
-| `trax run codex -- resume --last`, the picker, a name, an id with no rollout | codex picks | no; warned at start | T |
-| `trax run codex -- fork <id>` | new rollout | yes | M |
+| The runner's `-- --resume <id> --fork-session`, `-c --fork-session` | new file, new id | yes, as a new session | T |
+| The runner's `-- -c`, `--resume`, `--resume <term>`, `-r=<id>`, an id with no transcript | claude picks | no; warned at start | M, T |
+| The runner's `-- resume <id>` | appends to the existing rollout | yes, from its start; re-attaches | M (codex), T |
+| The runner's `-- resume --last`, the picker, a name, an id with no rollout | codex picks | no; warned at start | T |
+| The runner's `-- fork <id>` | new rollout | yes | M |
 
 ### Inside the running session
 
@@ -158,10 +158,10 @@ in the live runs), so a reader of the transcript sees where it stopped.
    non-unique requested name is awarded `name`, then `name#2`, `name#3`, ...
    monotonically -- like a sequence. Handles are **never released or reused**
    (a session may resume later, so its name is reserved for its lifetime).
-2. **The child must know its granted handle.** Inside `trax run`, the agent
+2. **The child must know its granted handle.** Inside the runner, the agent
    learns it is `scientist#2` (so `trax send`/peer addressing uses the real
    address). Exported as `TRAX_ACTOR`.
-3. **The session opens eagerly, when `trax run` authenticates** -- not lazily
+3. **The session opens eagerly, when the runner authenticates** -- not lazily
    on first event. Accepted cost: a run that captures nothing still creates a
    session row (a run that started *is* a session).
 4. **Resume re-attaches to the existing session.** A resumed run continues the

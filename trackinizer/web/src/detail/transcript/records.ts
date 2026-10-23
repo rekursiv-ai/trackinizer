@@ -83,7 +83,7 @@ export type SearchResult = { readonly url: string; readonly title: string; reado
 
 /**
  * What the canvas appends to a message it sends (`render_inbound` in
- * `trax/run/inbound.py`), and the record it names, when it names one.
+ * the agent runner's `inbound.py`), and the record it names, when it names one.
  */
 export type CanvasContext = { readonly text: string; readonly recordId: string; readonly title: string };
 
@@ -232,7 +232,7 @@ export type TranscriptRow = {
 /**
  * `records`, in order, as the lines they show as. A tool call takes the first
  * record after it with its `call_id`, however far on: a batch of calls has its
- * results after all of them. A run of `trax run sh` terminal records
+ * results after all of them. A run of the runner's `sh` terminal records
  * (`types/streams.py`) is one line.
  */
 export function transcriptRows(records: readonly SessionRecord[]): TranscriptRow[] {
@@ -845,7 +845,7 @@ function parsed(text: string): unknown {
   }
 }
 
-/** The kinds a `trax run sh` capture writes, one per terminal line. */
+/** The kinds the runner's `sh` capture writes, one per terminal line. */
 const TERMINAL: ReadonlySet<string> = new Set(["Stdin", "Stdout", "Stderr"]);
 
 /** What each tool result kind did (`ToolKind`). */

@@ -26,8 +26,6 @@ from trackinizer.trax.grammar import (
     WRITE_FIELDS_CLI,
     ListQuery,
 )
-from trackinizer.trax.run.errors import NotResumableError
-from trackinizer.trax.run.materialize import Materialized
 from trackinizer.trax.verbs import (
     LABELS_BY_EDGE_KIND,
     Blocked,
@@ -1606,12 +1604,21 @@ def test_row_local_inline_create_builds_nested_subtree(
     monkeypatch.setattr(FakeClient, "resolve_id", _resolve)
     run(
         [
-            "belief", "1",
-            "produced", "websearch", "query", "to", "q",
-            "produced", "paper", "title", "to", "p",
+            "belief",
+            "1",
+            "produced",
+            "websearch",
+            "query",
+            "to",
+            "q",
+            "produced",
+            "paper",
+            "title",
+            "to",
+            "p",
         ],
         client,
-    )  # fmt: skip
+    )
     # One atomic batch creates both new nodes (websearch + paper).
     items = _batch_items(client)
     kinds = [kind for kind, _body in items]
@@ -2894,13 +2901,22 @@ def test_create_flatten_batches_existing_ref_resolution(
     monkeypatch.setattr(FakeClient, "resolve_id", _resolve_one)
     run(
         [
-            "issue", "title", "to", "root",
-            "blocks", "issue", "5",
-            "blocks", "issue", "6",
-            "blocks", "issue", "7",
+            "issue",
+            "title",
+            "to",
+            "root",
+            "blocks",
+            "issue",
+            "5",
+            "blocks",
+            "issue",
+            "6",
+            "blocks",
+            "issue",
+            "7",
         ],
         client,
-    )  # fmt: skip
+    )
     # All three existing-ref targets resolve through a single resolve_ids batch.
     # (FakeClient.resolve_ids fans out to resolve_id internally; the real client
     # batches the UUID lookups into one round-trip -- the point of F14.)
@@ -3526,47 +3542,6 @@ def test_issue_metric_is_unknown_token(client: FakeClient) -> None:
         run(["issue", "2", "metric", "at", "loss"], client)
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["CiphertextDroppedError", "LossyConversionError", "NotResumableError"],
-    ids=["ciphertext", "lossy", "not-resumable"],
-)
-def test_a_caught_exception_is_a_class_not_a_lazy_proxy(name: str) -> None:
-    """``except`` needs a real class, which a ``lazy_import`` proxy is not.
-
-    Deferring an EXCEPTION the way a function is deferred type-checks and
-    imports fine, then raises ``TypeError: catching classes that do not
-    inherit from BaseException`` at the moment the handler runs -- so the
-    failure surfaces only on the error path, replacing the diagnostic the
-    handler existed to print with a traceback.
-
-    Exercised by CATCHING rather than by ``isinstance``: wrapt forwards
-    ``__class__``, so a proxy passes every structural check and only the
-    actual ``except`` tells the two apart.
-
-    Asserted on every deferred exception, not just the one that bit: the
-    three share one cause, and a class fixed instance-by-instance comes back.
-    """
-    caught: object = getattr(verbs, name)  # pyright: ignore[reportAny] -- vendor lazy imports expose dynamic attributes.
-    assert isinstance(caught, type)
-    assert issubclass(caught, BaseException)
-    assert _declines(caught), f"{name} is a proxy, not a class"
-
-
-# The operation itself, because wrapt forwards ``__class__``: a proxy passes
-# ``isinstance``/``issubclass`` and only a real ``except`` tells the two apart, raising
-# ``TypeError`` rather than declining.
-def _declines(caught: type[BaseException]) -> bool:
-    """Whether ``caught`` works in an ``except`` and lets a stranger through."""
-    try:
-        _ = int("not a number")
-    except caught:
-        return False
-    except ValueError:
-        return True
-    return False
-
-
 def test_the_resume_tail_accepts_its_own_lossy_flag(client: FakeClient) -> None:
     """``--lossy`` reaches ``run_resume``, which is the only thing that reads it.
 
@@ -3578,37 +3553,29 @@ def test_the_resume_tail_accepts_its_own_lossy_flag(client: FakeClient) -> None:
         run(["agentsession", "1", "run", "gemini", "--lossy"], client)
 
 
-def test_the_lossy_flag_reaches_the_conversion(
+@pytest.mark.parametrize(
+    "tail",
+    [
+        ["claude"],
+        ["codex", "--lossy"],
+        ["claude", "--as", "bob", "--", "--model", "opus"],
+        ["claude", "--detach", "--name", "job"],
+    ],
+)
+def test_a_resume_says_it_moved_out_of_trax_and_asks_the_server_nothing(
     client: FakeClient,
-    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tail: list[str],
 ) -> None:
-    """Declaring the flag is not plumbing it.
+    """A well-formed resume, ``--lossy`` and the runner's own words included."""
+    with pytest.raises(SystemExit) as stopped:
+        run(["agentsession", "1", "run", *tail], client)
 
-    Both halves are needed and they pull against each other: the parser must
-    declare ``--lossy`` (or the command is rejected outright), and declaring
-    it means argparse CONSUMES it -- so the tail scan that used to find it
-    sees nothing and every ``--lossy`` resume is refused anyway. The value
-    has to come off the parsed namespace.
-    """
-    seen: list[bool] = []
-
-    def _prepare(
-        client: object,
-        session_id: object,
-        target: str,
-        *,
-        lossy: bool = False,
-    ) -> object:
-        del client, session_id, target
-        seen.append(lossy)
-        raise NotResumableError("stop here; the flag is what this asserts")
-
-    monkeypatch.setattr(verbs, "prepare_resume", _prepare)
-
-    with pytest.raises(ClientError):
-        run(["agentsession", "1", "run", "codex", "--lossy"], client)
-
-    assert seen == [True]
+    assert stopped.value.code == 2
+    assert capsys.readouterr().err.startswith(
+        "trax agentsession run moved out of trax",
+    )
+    assert client.calls == []
 
 
 def test_an_unresumable_target_reports_why_rather_than_raising(
@@ -4067,77 +4034,6 @@ def test_tail_keywords_are_literal_field_values(
     run([verb, "1", "title", "to", value], client)
     edits = [call for call in client.calls if call[0] == "edit"]
     assert edits[0][1][1:3] == ("title", value)
-
-
-@pytest.mark.parametrize(
-    "tail",
-    [
-        ["claude", "--as", "bob", "--", "--model", "opus"],
-        ["claude", "--detach", "--name", "job"],
-        ["claude", "--", "--lossy"],
-    ],
-)
-def test_resume_preserves_runner_tail(
-    tail: list[str],
-    client: FakeClient,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    written = Materialized(
-        path=tmp_path / "session.jsonl",
-        cli_session_id=uuid.uuid4(),
-        attach=uuid.uuid4(),
-        prefix_bytes=0,
-    )
-
-    def prepare(*args: object, **kwargs: object) -> Materialized:
-        del args, kwargs
-        return written
-
-    seen: list[list[str]] = []
-
-    def enter(argv: list[str], **kwargs: object) -> None:
-        del kwargs
-        seen.append(argv)
-
-    monkeypatch.setattr(verbs, "prepare_resume", prepare)
-    monkeypatch.setattr("trackinizer.trax.run.session.main", enter)
-    run(["agentsession", "1", "run", *tail], client)
-    assert seen == [tail]
-
-
-def test_resume_writes_into_the_session_after_its_loaded_history(
-    client: FakeClient,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """The run attaches to the resumed session and skips what it was loaded with."""
-    written = Materialized(
-        path=tmp_path / "session.jsonl",
-        cli_session_id=uuid.uuid4(),
-        attach=uuid.uuid4(),
-        prefix_bytes=4_096,
-    )
-
-    def prepare(*args: object, **kwargs: object) -> Materialized:
-        del args, kwargs
-        return written
-
-    entered: list[dict[str, object]] = []
-
-    def enter(argv: list[str], **kwargs: object) -> None:
-        del argv
-        entered.append(kwargs)
-
-    monkeypatch.setattr(verbs, "prepare_resume", prepare)
-    monkeypatch.setattr("trackinizer.trax.run.session.main", enter)
-    run(["agentsession", "1", "run", "claude"], client)
-
-    [kwargs] = entered
-    assert kwargs["attach"] == written.attach
-    assert kwargs["prefix_bytes"] == 4_096
-    assert kwargs["resume_path"] == written.path
-    assert kwargs["cli_session_id"] == str(written.cli_session_id)
 
 
 class _StoredClient(FakeClient):

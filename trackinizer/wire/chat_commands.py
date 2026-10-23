@@ -113,7 +113,7 @@ _GOAL_CLEARS: Final = frozenset({"clear", "stop", "off", "reset", "none", "cance
 
 _MENU: Final = (
     "Chat cannot run /{verb}: it opens a menu, changes settings or switches the "
-    "session. Use the terminal: trax run attach <run>"
+    "session. Use it in the run's own terminal."
 )
 
 _SETTING_CHARS: Final = {"model": 120, "effort": 20}
@@ -148,8 +148,7 @@ _ONE_TOKEN: Final = {
 
 _GOAL_BARE: Final = "Chat shows the goal above the box; /goal clear stops it"
 _GOAL_EDIT: Final = (
-    "Chat cannot run /goal edit: it opens an editor. Use the terminal: "
-    "trax run attach <run>"
+    "Chat cannot run /goal edit: it opens an editor. Use it in the run's own terminal."
 )
 
 _TABLE: Final[Mapping[str, Mapping[ChatProvider, str | None]]] = {

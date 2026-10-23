@@ -5,7 +5,7 @@ by leaving history out: a compaction's :class:`ContextClear`, which carries a su
 from claude, codex or the bot's sagent alike; or a claude part begun with ``/clear``.
 What is loaded is that window's opening plus every record after it, so a switch never
 loads what the last model had already compacted away. :func:`window` is the one place
-that decides the cut, for ``trax run``'s resume as claude or as codex and for the bot's
+that decides the cut, for the agent runner's resume as claude or as codex and for the bot's
 own history alike.
 
 Then a per-target :class:`Budget` applies. At or under ``fit_bytes`` the window loads

@@ -234,7 +234,7 @@ export function ProviderPicker({ station }: Props) {
         </div>;
       })}
       {cli !== null && !machines.isPending && capable.length === 0 && !machines.isError && <>
-        <p className="muted">Connect a machine with <code>trax machine connect</code> and install {cli} on it.</p>
+        <p className="muted">Connect a machine and install {cli} on it.</p>
         <Command command={setupCommand()} />
       </>}
     </div>}

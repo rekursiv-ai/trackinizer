@@ -341,7 +341,7 @@ def test_a_delivery_with_no_attested_sender_is_from_unknown() -> None:
 
 
 def test_a_stamped_mid_turn_line_is_a_persons_and_a_notice_is_not() -> None:
-    """Claude queues a line sent mid-turn as a ``queued_command``; only trax run's stamp makes it a person's."""
+    """Claude queues a line sent mid-turn as a ``queued_command``; only the runner's stamp makes it a person's."""
     segment = _segment(
         0,
         "claude",
