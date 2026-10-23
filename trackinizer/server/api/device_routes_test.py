@@ -129,22 +129,32 @@ async def test_a_decided_login_is_a_409_and_forgives_the_entry(status: str) -> N
 
 
 @pytest.mark.parametrize(
-    ("public_url", "expected"),
+    ("public_url", "sign_in", "expected"),
     [
-        ("https://trackinizer.example/hub", "https://trackinizer.example/hub"),
-        ("https://trackinizer.example/hub/", "https://trackinizer.example/hub"),
-        ("", "https://testserver"),
+        ("https://trackinizer.example/hub", "", "https://trackinizer.example/hub"),
+        ("https://trackinizer.example/hub/", "", "https://trackinizer.example/hub"),
+        (
+            "https://trackinizer.example",
+            "https://sign-in.example/hub",
+            "https://trackinizer.example",
+        ),
+        ("", "https://sign-in.example/hub", "https://sign-in.example/hub"),
+        ("", "", "https://testserver"),
     ],
-    ids=["set", "trailing-slash", "unset"],
+    ids=["set", "trailing-slash", "set-over-sign-in", "sign-in", "unset"],
 )
-async def test_the_public_address_is_the_deployments_or_the_requests_own(
+async def test_the_public_address_is_the_deployments_the_sign_ins_or_the_requests(
     monkeypatch: pytest.MonkeyPatch,
     public_url: str,
+    sign_in: str,
     expected: str,
 ) -> None:
     monkeypatch.setenv("TRACKINIZER_PUBLIC_URL", public_url)
+    request = _request()
+    if sign_in:
+        request.app.state.sign_in_base = sign_in
 
-    assert device_routes._public_base(_request()) == expected
+    assert device_routes._public_base(request) == expected
 
 
 if __name__ == "__main__":
