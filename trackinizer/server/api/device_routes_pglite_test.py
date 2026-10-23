@@ -519,32 +519,43 @@ async def test_a_server_with_authentication_off_hands_out_no_codes(
 
 
 @pytest.mark.parametrize(
-    ("public_url", "page"),
+    ("public_url", "sign_in", "page"),
     [
         (
             "https://trackinizer.example/hub",
+            "",
             "https://trackinizer.example/hub/auth/device",
         ),
         (
             "https://trackinizer.example",
+            "",
             "https://trackinizer.example/auth/device",
         ),
         (
             "https://trackinizer.example/hub/",
+            "",
             "https://trackinizer.example/hub/auth/device",
         ),
-        ("", "http://testserver/auth/device"),
+        (
+            "",
+            "https://trackinizer.example/hub",
+            "https://trackinizer.example/hub/auth/device",
+        ),
+        ("", "", "http://testserver/auth/device"),
     ],
-    ids=["hub-prefix", "root", "trailing-slash", "unset"],
+    ids=["hub-prefix", "root", "trailing-slash", "sign-in", "unset"],
 )
 async def test_the_page_address_is_the_public_one_the_deployment_names(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
     monkeypatch: pytest.MonkeyPatch,
     public_url: str,
+    sign_in: str,
     page: str,
 ) -> None:
     client, _ = pglite_route_client
     monkeypatch.setenv("TRACKINIZER_PUBLIC_URL", public_url)
+    if sign_in:
+        monkeypatch.setattr(app.state, "sign_in_base", sign_in, raising=False)
 
     code = await _code(client)
 

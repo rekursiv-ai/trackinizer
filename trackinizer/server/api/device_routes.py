@@ -22,7 +22,7 @@ differs from the live server's.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Final
+from typing import TYPE_CHECKING, Annotated, Final, cast
 from uuid import UUID
 
 import hashlib
@@ -76,6 +76,8 @@ from trackinizer.wire.wire_service_accounts import is_service_address
 
 
 if TYPE_CHECKING:
+    from fastapi import FastAPI
+
     from trackinizer.lib.postgres import Conn
 
 
@@ -471,14 +473,21 @@ async def _enrollment_token(conn: Conn, *, machine: str, email: str) -> str:
 
 
 # Behind a TLS-terminating proxy the request's own scheme, host and path prefix are not
-# the ones a person can open (the Hub's front strips ``/hub``), so the deployment's
-# public address wins: ``TRACKINIZER_PUBLIC_URL``, which includes any path prefix.
-# A box that serves Trackinizer under a prefix sets TRACKINIZER_PUBLIC_URL; ops/stack
-# does not set it yet.
+# the ones a person can open (the Hub's front strips ``/hub``). A page at the proxy's
+# http address signs nobody in: the browser drops the Secure cookies sign-in sets over
+# http, so the callback finds no state. The deployment's public address wins:
+# ``TRACKINIZER_PUBLIC_URL``, which includes any path prefix; else the address its
+# sign-in returns browsers to, which that sign-in sets as ``state.sign_in_base``. Only
+# a server with neither names the request's own.
 def _public_base(request: Request) -> str:
     """Return the public address of this server, without a trailing slash."""
-    public = os.environ.get("TRACKINIZER_PUBLIC_URL", "").rstrip("/")
-    return public or str(request.base_url).rstrip("/")
+    sign_in: object = getattr(cast("FastAPI", request.app).state, "sign_in_base", "")
+    assert isinstance(sign_in, str)
+    return (
+        os.environ.get("TRACKINIZER_PUBLIC_URL", "").rstrip("/")
+        or sign_in
+        or str(request.base_url).rstrip("/")
+    )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
