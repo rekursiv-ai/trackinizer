@@ -51,7 +51,7 @@ test("a render crash shows what happened, with Copy details and Reload; the deta
     answered.response = response;
     await route.fulfill({ response, json: { ...(await response.json()), inquiry_kind_all: 5 } });
   });
-  await page.goto("/app/");
+  await page.goto("/trax/");
   await expect(page.getByRole("heading", { name: "Trackinizer stopped on an error" })).toBeVisible();
   // The bundle is minified, so the name before `.find` is not the source's.
   await expect(page.getByRole("alert")).toHaveText(/^\w+\.find is not a function$/);
@@ -82,7 +82,7 @@ test("a read the server refuses shows Copy details with the id it echoed", async
     return route.continue({ url: url.toString() });
   });
   const refused = page.waitForResponse((response) => response.url().includes("l1b_no_such_field"));
-  await page.goto("/app/#/list/Paper");
+  await page.goto("/trax/#/list/Paper");
   const response = await refused;
   expect(response.status()).toBe(400);
   const alert = page.getByRole("alert");
@@ -102,7 +102,7 @@ test("a write the server refuses shows Copy details with the id it echoed", asyn
   await page.route(`**/api/inquiries/${id}/status`, (route) =>
     route.continue({ postData: JSON.stringify({ ...route.request().postDataJSON(), value: 5 }) }),
   );
-  await page.goto(`/app/#/lookup/${id}`);
+  await page.goto(`/trax/#/lookup/${id}`);
   await openProperties(page);
   const status = page.getByRole("complementary", { name: "Properties" }).locator('[data-field="status"] button.prop-btn');
   await expect(status).toHaveText("Active");
@@ -126,7 +126,7 @@ test("a write the server refuses shows Copy details with the id it echoed", asyn
 // The guard's positive control: a page error nobody allowed must fail its test.
 test("the error guard fails a test whose page throws, unless the test allowed it", async ({ page, context }) => {
   test.fail();
-  await page.goto("/app/");
+  await page.goto("/trax/");
   await expect(page.getByRole("button", { name: /^Account: / })).toBeVisible();
   const thrown = context.waitForEvent("weberror");
   await page.evaluate(() => {

@@ -9,7 +9,7 @@ test("every page in Go opens its view, and each kind's list has its tabs and too
   const { inquiry_kind_all: kinds } = (await (await request.get("/api/meta/enums")).json()) as {
     inquiry_kind_all: string[];
   };
-  await page.goto("/app/#/activity");
+  await page.goto("/trax/#/activity");
   const go = page.getByRole("navigation", { name: "Go to" });
   // Graph, Console, Activity, then one Browse entry per kind in the server's order.
   const hashes = ["#/graph", "#/console", "#/activity", ...kinds.map((kind) => `#/list/${kind}`)];

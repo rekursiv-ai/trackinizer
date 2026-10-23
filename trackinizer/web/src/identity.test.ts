@@ -15,10 +15,10 @@ test("a build picks its identity by key; none picks the default, and a typo is r
   expect(() => identityOf("trackinizr")).toThrow("Unknown app identity trackinizr");
 });
 
-test("the manifest names the identity and installs as a standalone window under /app/", () => {
+test("the manifest names the identity and installs as a standalone window under /trax/", () => {
   const manifest = manifestOf(OTHER);
   expect([manifest.name, manifest.short_name]).toEqual(["Acme", "Acme"]);
-  expect([manifest.display, manifest.id, manifest.start_url, manifest.scope]).toEqual(["standalone", "/app/", "/app/", "/app/"]);
+  expect([manifest.display, manifest.id, manifest.start_url, manifest.scope]).toEqual(["standalone", "/trax/", "/trax/", "/trax/"]);
   expect([manifest.theme_color, manifest.background_color]).toEqual(["#111111", "#222222"]);
   expect(manifestOf(IDENTITIES.trackinizer!).icons).toEqual(IDENTITIES.trackinizer!.icons);
 });
@@ -26,7 +26,7 @@ test("the manifest names the identity and installs as a standalone window under 
 test("every identity has the 192 and 512 pixel icons Chrome needs to offer install", () => {
   for (const each of Object.values(IDENTITIES)) {
     expect(each.icons.map((icon) => icon.sizes).toSorted()).toEqual(["192x192", "512x512"]);
-    expect(each.icons.every((icon) => icon.type === "image/png" && icon.src.startsWith("/app/"))).toBe(true);
+    expect(each.icons.every((icon) => icon.type === "image/png" && icon.src.startsWith("/trax/"))).toBe(true);
   }
 });
 

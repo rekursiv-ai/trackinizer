@@ -77,7 +77,7 @@ for (const { name, operations } of CASES) {
     mkdirSync(SHOTS, { recursive: true });
     await arrange(request, operations);
     await page.setViewportSize({ width: 1280, height: 800 });
-    await page.goto("/app/#/list/Issue");
+    await page.goto("/trax/#/list/Issue");
     await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
     await page.waitForTimeout(500);
     await page.screenshot({ path: `${SHOTS}/${name}-1280.png` });
@@ -92,7 +92,7 @@ for (const { name, operations } of CASES) {
     test(`at 390 px the canvas is usable with ${name}: no sideways scroll, and the message box reachable`, async ({ page, request }) => {
       await arrange(request, operations);
       await page.setViewportSize({ width: 390, height: 844 });
-      await page.goto("/app/#/list/Issue");
+      await page.goto("/trax/#/list/Issue");
       await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
       await page.waitForTimeout(500);
       await page.screenshot({ path: `${SHOTS}/${name}-390.png` });
@@ -124,7 +124,7 @@ for (const screen of [{ width: 1280, height: 800 }, { width: 1440, height: 900 }
     mkdirSync(SHOTS, { recursive: true });
     await arrange(request, FIVE);
     await page.setViewportSize(screen);
-    await page.goto("/app/#/list/Issue");
+    await page.goto("/trax/#/list/Issue");
     await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
     await expect(page.getByRole("region", { name: "Context graph" })).toBeVisible();
     await page.waitForTimeout(500);
@@ -147,7 +147,7 @@ test("with Chat beside the page, an Issue's title stays readable beside its labe
   expect(created.ok(), await created.text()).toBe(true);
   for (const width of [1280, 1440]) {
     await page.setViewportSize({ width, height: 900 });
-    await page.goto("/app/#/list/Issue");
+    await page.goto("/trax/#/list/Issue");
     const row = page.locator("a.row", { hasText: title }).first();
     await expect(row).toBeVisible();
     const shown = await row.locator(".row-title").evaluate((element) => element.clientWidth);
@@ -160,7 +160,7 @@ for (const theme of ["dark", "light"] as const) {
     await arrange(request, (issue) => [{ kind: "show", visual_type: "trax.subgraph", placement: "side", record_id: issue }]);
     await setPreferences(page.request, { theme });
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto("/app/#/list/Issue");
+    await page.goto("/trax/#/list/Issue");
     await expect(page.getByRole("group", { name: "Zoom" })).toBeVisible();
     const colours = await page.evaluate(() => {
       const probe = (token: string) => {

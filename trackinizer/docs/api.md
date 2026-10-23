@@ -228,7 +228,7 @@ A request is authenticated one of three ways:
 
 - `--no-auth` (or `TRACKINIZER_NO_AUTH=1`, which `--auth` overrides) is
   single-user local mode. Every request is one local admin and no credential
-  is read, so the web app at `/app/` needs no sign-in. The server binds
+  is read, so the web app at `/trax/` needs no sign-in. The server binds
   `127.0.0.1` unless `--host` says otherwise; anyone who can reach the port
   can edit everything.
 - Otherwise an `Authorization: Bearer <token>` header carries an API token,
@@ -417,8 +417,9 @@ GET /api/web/feed/facets?since=<iso>&until=<iso>
 GET /api/web/feed/facets?since=<iso>&until=<iso>&actor=<actor>&kind=<kind>
 GET /api/web/feed/histogram?since=<iso>&until=<iso>&buckets=N
 GET /api/web/feed/histogram?buckets=N&room=<room>&kind=<kind>
-GET /app/
-GET /app/<file>
+GET /trax/
+GET /trax/<file>
+GET /app/<path>
 ```
 
 `/api/web/search` splits `q` on whitespace and returns rows matching every
@@ -542,29 +543,32 @@ histogram counts every stored record: when a compaction rewrites a session
 file shorter, the feed reads only the part's new length, and the histogram
 still counts the records written before it, at the times they were written.
 
-`/app/` exists when the server has a built web app: the one in
+`/trax/` exists when the server has a built web app: the one in
 `--app-dir DIR`, else the build packaged with trackinizer. It serves the app,
-with `DIR/index.html` at `/app/`, to every caller the API answers: any
+with `DIR/index.html` at `/trax/`, to every caller the API answers: any
 signed-in role, and anyone under `--no-auth`. It refuses every other caller,
-as the API does, whether or not the server has session login: `/app/` and
-`/app/index.html` answer 302 to `/auth/login_page?next=<path>`, and every
+as the API does, whether or not the server has session login: `/trax/` and
+`/trax/index.html` answer 302 to `/auth/login_page?next=<path>`, and every
 other file answers 401. `DIR` is resolved on
 every request: it may be missing (404) or be a symlink swapped to a new
 build without a restart. A path that leaves `DIR`, through `..` or a
-symlink, answers 404. Every `/app/` response, errors included, is
+symlink, answers 404. Every `/trax/` response, errors included, is
 `private`, so shared caches never store it. A file found under
-`/app/assets/` (200, or 304 on revalidation) carries `Cache-Control:
+`/trax/assets/` (200, or 304 on revalidation) carries `Cache-Control:
 private, max-age=31536000, immutable`: its name holds its content's hash, so
 browsers keep it without asking again. Every other response carries
 `Cache-Control: private, no-cache`, so browsers revalidate the entry page
 after a new build lands.
 
 With an app, the old UI's paths lead into it: `/` answers 302 to
-`/app/`, and `/me`, `/admin`, `/graph` and `/console` to `/app/#/settings`,
-`/app/#/admin`, `/app/#/graph` and `/app/#/console`, each with
-`Cache-Control: private, no-cache`. A browser keeps a link's hash across a
-redirect whose `Location` has none, and the app reads the old UI's hashes.
-Without one, nothing is served at those paths.
+`/trax/`, and `/me`, `/admin`, `/graph` and `/console` to `/trax/#/settings`,
+`/trax/#/admin`, `/trax/#/graph` and `/trax/#/console`, each with
+`Cache-Control: private, no-cache`. So does `/app/`, the app's address
+before `/trax/`: `/app/<path>?<query>` answers 302 to `/trax/<path>?<query>`,
+signed in or not. A browser keeps a link's hash across a redirect whose
+`Location` has none, so `/app/#/ref/Issue/7` opens `/trax/#/ref/Issue/7`, and
+the app reads the old UI's hashes. Without one, nothing is served at those
+paths.
 
 `/auth/login_page` is the sign-in page, served to anyone.
 
@@ -2288,7 +2292,7 @@ Canvas mutations return canvas state; they do not produce a graph change.
 ### 4.2 Roles
 
 ```
-viewer  GET /api/** except GET /api/variables and GET /api/machines/**, GET /api/web/**, GET /api/me/**, GET /app/**,
+viewer  GET /api/** except GET /api/variables and GET /api/machines/**, GET /api/web/**, GET /api/me/**, GET /trax/**,
         PUT /api/me/visual-canvas,
         POST /api/canvases, POST /api/canvases/<uuid>/operations
 writer  viewer + inquiry/edge create/mutate/delete, GET /api/variables,

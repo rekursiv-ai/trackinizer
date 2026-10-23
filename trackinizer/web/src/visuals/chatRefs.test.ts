@@ -49,7 +49,7 @@ test("a link's text is cited, its target and a bare address are not", () => {
 });
 
 test("a link written as a ref to the app's own page cites that ref once", () => {
-  expect(namedRows("[Issue#4](https://alpha.example/app/#/ref/Issue/4)", KINDS)).toEqual([{ kind: "Issue", seq: 4 }]);
+  expect(namedRows("[Issue#4](https://alpha.example/trax/#/ref/Issue/4)", KINDS)).toEqual([{ kind: "Issue", seq: 4 }]);
 });
 
 test("at most 50 rows: as many as one highlight takes", () => {

@@ -1,6 +1,6 @@
 # Trackinizer web app
 
-The React app the trackinizer server serves at `/app/`. This file is its
+The React app the trackinizer server serves at `/trax/`. This file is its
 contract with the server and its runbook: the routes it calls, how it renders
 what they return, what it keeps in the browser, how it stays live, which links
 it takes, and how to run, test and deploy it. Route details are in
@@ -201,8 +201,9 @@ with one response shape, so the fixtures take one per verb.
   a UUID shows its first eight characters. Headings step down two levels.
 - A link written as a ref, its text a `Kind#seq` and its target that ref's
   route, alone or after the app's address on any host
-  (`https://<host>/app/#/ref/Issue/4`, or the old UI's `/#/ref/…`), is the
-  ref's own link, as agents copy one from trax. Any other link stays as written.
+  (`https://<host>/trax/#/ref/Issue/4`; `/app/#/ref/…` from before `/trax/`, or
+  the old UI's `/#/ref/…`), is the ref's own link, as agents copy one from trax.
+  Any other link stays as written.
 - An absolute path in text (`/` or `~/` opening a word, with two segments or
   more; not a URL's, one after a host as in `host:/opt/x`, a ratio as in
   `5/10`, nor the punctuation after it), and an inline code span that is one
@@ -497,7 +498,7 @@ with one response shape, so the fixtures take one per verb.
   `src/visuals/ChatSharing.tsx`) opens a panel listing `shared_with`, each with
   Remove, and a field to add an address; each change is `PUT`/`DELETE
   /api/chats/<id>/shares/<email>`, after which the head is read again, since it
-  is the list. The panel's Copy link copies `https://<host>/app/#/lookup/<session>`
+  is the list. The panel's Copy link copies `https://<host>/trax/#/lookup/<session>`
   (`chatLink`), the session's page, whose Continue in Chat opens the chat; it
   grants nothing, and the panel says who it opens for by the head's `audience`.
   Delete chat forever (`DeleteChat`) asks "Delete this chat? Its
@@ -1066,8 +1067,10 @@ arrives, on open, and from their Refresh button.
 
 ## Deep links
 
-The app lives at `https://<host>/app/`, and every view is a hash route
-(`src/router/route.ts`):
+The app lives at `https://<host>/trax/` (`src/base.ts`), and every view is a
+hash route (`src/router/route.ts`). The server answers its old address,
+`/app/<path>?<query>`, with a 302 to `/trax/<path>?<query>`, and the browser
+keeps the hash, so a stored `/app/#/…` link opens the same view:
 
 | Hash | Opens |
 |---|---|
@@ -1093,7 +1096,7 @@ rewritten as the server spells them; a hash that is not canonical is replaced in
 place. The path is split into parts before any part is decoded, so an encoded
 `?` or `/` stays in its part. A hash that names nothing shows a not-found view.
 
-A signed-out request for `/app/` gets the server's 302 to the login page. The
+A signed-out request for `/trax/` gets the server's 302 to the login page. The
 browser keeps the hash across that redirect, and the login page puts it back on
 `next`, so sign-in returns to the same view. A 401 that the running app sees
 keeps the hash its own way, as described under [client state](#client-state).
@@ -1101,7 +1104,7 @@ keeps the hash its own way, as described under [client state](#client-state).
 ## Running it
 
 An installed trackinizer serves the build packaged with it: run
-`trackinizer --no-auth`, then open http://127.0.0.1:8765/app/. The rest of this
+`trackinizer --no-auth`, then open http://127.0.0.1:8765/trax/. The rest of this
 section runs the app from source. Its commands run from this directory unless
 they say otherwise.
 
@@ -1114,11 +1117,11 @@ that Node first on `PATH`:
 ```
 
 The local preview is a trackinizer server on a persistent PGlite database with
-`--no-auth`, serving the latest build at `/app/`, with `vite build --watch`
+`--no-auth`, serving the latest build at `/trax/`, with `vite build --watch`
 keeping `dist/` current:
 
 ```sh
-scripts/preview.sh      # then open http://127.0.0.1:8765/app/
+scripts/preview.sh      # then open http://127.0.0.1:8765/trax/
 scripts/seed_local.py   # seed a representative graph; safe to rerun
 scripts/seed_local.py --writer --interval 1   # then keep editing, for live checks
 ```
@@ -1135,7 +1138,7 @@ read the trax CLI's `TRACKINIZER_URL` or `TRACKINIZER_TOKEN`. Against a shared
 server, use a token capped at the viewer role.
 
 ```sh
-./npm run dev           # http://127.0.0.1:5173/app/
+./npm run dev           # http://127.0.0.1:5173/trax/
 ```
 
 To serve a build you already have, on an in-memory database beside a running
@@ -1284,7 +1287,7 @@ fingerprint being the first 24 hex digits of the SHA-256 of the five files'
   every request, a 401's end of session, a 403, each write's send, automatic
   retry (attempt, wait, key), replay, conflict and final failure, and the errors
   above. Warnings and errors always reach the console. The rest reach it with
-  debug on: open `/app/?debug=1`, or run
+  debug on: open `/trax/?debug=1`, or run
   `localStorage.setItem("trackinizer.v2.debug", "1")` and reload
   (`removeItem` turns it off).
 - In the devtools console, `trackinizer.events()` returns the events and

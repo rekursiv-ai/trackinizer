@@ -29,7 +29,7 @@ async function pageAndGraph(request: APIRequestContext): Promise<void> {
 
 test("a closed page comes back with the user's next navigation", async ({ page, request }) => {
   await pageAndGraph(request);
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   const browse = page.locator(".visual-tile-browse");
   await expect(browse).toBeVisible();
 
@@ -44,7 +44,7 @@ test("a closed page comes back with the user's next navigation", async ({ page, 
 
 test("the Workbench section offers a closed page and brings it back", async ({ page, request }) => {
   await pageAndGraph(request);
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   const browse = page.locator(".visual-tile-browse");
   await browse.getByTitle("Dismiss visual").click();
   await expect(browse).toHaveCount(0);

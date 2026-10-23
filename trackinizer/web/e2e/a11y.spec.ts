@@ -40,7 +40,7 @@ for (const theme of ["dark", "light"] as const) {
         ],
       );
       const subscribed = streamOpened(page);
-      await page.goto("/app/#/graph");
+      await page.goto("/trax/#/graph");
       await subscribed;
       await expect(page.locator(".graph-count")).toHaveText(/\d nodes?$/);
       const root = page.getByRole("listbox", { name: "Roots" }).getByRole("option", { name: new RegExp(`A11y graph root ${tag}`) });
@@ -56,7 +56,7 @@ for (const theme of ["dark", "light"] as const) {
       const actors = agentsOnEveryColour(tag);
       await Promise.all(actors.map((actor) => session(request, `A11y console ${tag}`, { actor, rooms: [`a11y-${tag}`] })));
       const subscribed = streamOpened(page);
-      await page.goto("/app/#/console");
+      await page.goto("/trax/#/console");
       await subscribed;
       for (const actor of actors) await expect(page.locator(".console-actor", { hasText: actor }).first()).toBeVisible();
       const colours = await page
@@ -114,7 +114,7 @@ for (const theme of ["dark", "light"] as const) {
           { from_index: 4, to_index: 0, edge_kind: "produced_by" },
         ],
       );
-      await page.goto(`/app/#/lookup/${id}`);
+      await page.goto(`/trax/#/lookup/${id}`);
       await expect(page.getByRole("heading", { level: 1 })).toHaveText(`A11y detail ${tag}`);
       await expect(page.locator('[data-field="description"]').getByRole("group", { name: "JSON" }).getByRole("table")).toBeVisible();
       await expect(page.getByRole("link", { name: /^Open in graph:/ }).locator(".rail-graph-caption")).toHaveText(/nodes within 2 hops$/);
@@ -123,7 +123,7 @@ for (const theme of ["dark", "light"] as const) {
 
     test("an AgentSession's detail with its transcript", async ({ page, request }) => {
       const seq = await seqOf(request, await session(request, `A11y transcript ${tag}`));
-      await page.goto(`/app/#/ref/AgentSession/${seq}`);
+      await page.goto(`/trax/#/ref/AgentSession/${seq}`);
       const transcript = page.getByRole("region", { name: /^Transcript/ });
       await expect(transcript.getByRole("heading", { level: 2 })).toHaveText(`Transcript ${RECORDS.length} records`);
       // The raw record and the bookkeeping shown too, each drawn in its own colours.
@@ -151,14 +151,14 @@ for (const theme of ["dark", "light"] as const) {
       const [id] = await batch(request, [{ kind: "Experiment", title: `A11y metrics ${tag}` }]);
       const points = Array.from({ length: 20 }, (_, step) => ({ key: "loss", step, value: 2 - step / 20 }));
       expect((await request.post(`/api/experiments/${id}/metrics`, { data: { points } })).ok()).toBe(true);
-      await page.goto(`/app/#/lookup/${id}`);
+      await page.goto(`/trax/#/lookup/${id}`);
       await expect(page.getByRole("region", { name: /^Metrics/ }).locator('[data-metric="loss"] .r')).toBeVisible();
       await audit(page, theme, "Experiment metrics");
     });
 
     test("Activity", async ({ page, request }) => {
       await batch(request, [{ kind: "Issue", title: `A11y activity ${tag}` }]);
-      await page.goto("/app/#/activity");
+      await page.goto("/trax/#/activity");
       await expect(page.getByRole("heading", { level: 1 })).toHaveText("Activity");
       await expect(page.locator(".feed-row").first()).toBeVisible();
       await audit(page, theme, "Activity");
@@ -168,14 +168,14 @@ for (const theme of ["dark", "light"] as const) {
       const name = `a11y-${tag}`;
       const made = await post(request, "/api/me/tokens", { name, role: "viewer" });
       expect((await request.post(`/api/me/tokens/${made.id}/revoke`)).ok()).toBe(true);
-      await page.goto("/app/#/settings");
+      await page.goto("/trax/#/settings");
       await expect(page.getByRole("complementary", { name: "Your settings" }).getByRole("heading", { level: 1 })).toHaveText("Your settings");
       await expect(page.getByRole("region", { name: "API tokens" }).getByRole("row").filter({ hasText: name })).toContainText("revoked");
       await audit(page, theme, "Settings");
     });
 
     test("Admin", async ({ page }) => {
-      await page.goto("/app/#/admin");
+      await page.goto("/trax/#/admin");
       await expect(page.getByRole("complementary", { name: "Admin" }).getByRole("heading", { level: 1 })).toHaveText("Admin");
       await expect(page.getByRole("region", { name: "Users" }).getByRole("row").filter({ hasText: "no-auth@localhost" })).toBeVisible();
       await audit(page, theme, "Admin");
@@ -187,13 +187,13 @@ for (const theme of ["dark", "light"] as const) {
         { kind: "Belief", title: `A11y found ${tag} belief`, judgement: "proven" },
         { kind: "Paper", title: `A11y found ${tag} paper` },
       ]);
-      await page.goto(`/app/#/search/${encodeURIComponent(`A11y found ${tag}`)}`);
+      await page.goto(`/trax/#/search/${encodeURIComponent(`A11y found ${tag}`)}`);
       await expect(page.getByRole("heading", { level: 1 })).toHaveText(new RegExp(`^Search: A11y found ${tag} \\(\\d+\\)$`));
       await audit(page, theme, "Search");
     });
 
     test("the create form", async ({ page }) => {
-      await page.goto("/app/#/new/Issue");
+      await page.goto("/trax/#/new/Issue");
       const form = page.getByRole("dialog", { name: "New issue" });
       await expect(form.getByRole("textbox", { name: "Title" })).toBeFocused();
       await audit(page, theme, "create form");
@@ -201,7 +201,7 @@ for (const theme of ["dark", "light"] as const) {
 
     test("the palette, open, then with results", async ({ page, request }) => {
       await batch(request, [{ kind: "Issue", title: `A11y palette ${tag}` }]);
-      await page.goto("/app/#/activity");
+      await page.goto("/trax/#/activity");
       await expect(page.getByRole("heading", { level: 1 })).toHaveText("Activity");
       await page.keyboard.press("ControlOrMeta+k");
       const palette = page.getByRole("dialog", { name: "Command menu" });
@@ -219,7 +219,7 @@ for (const theme of ["dark", "light"] as const) {
     test("the sign-in page", async ({ page, allowErrors }) => {
       // This server has no Google sign-in, and its check answers 404 by design.
       allowErrors(failedResource("/auth/login/ready", 404));
-      await page.goto("/auth/login_page?next=%2Fapp%2F");
+      await page.goto("/auth/login_page?next=%2Ftrax%2F");
       await expect(page.getByRole("status")).toHaveText("Sign-in is not configured on this server.");
       await audit(page, theme, "sign-in page");
     });
@@ -227,7 +227,7 @@ for (const theme of ["dark", "light"] as const) {
     test("the sign-in page, offering Google sign-in", async ({ page }) => {
       // The test answers the check itself, so the page shows its button.
       await page.route("**/auth/login/ready", (route) => route.fulfill({ status: 204 }));
-      await page.goto("/auth/login_page?next=%2Fapp%2F");
+      await page.goto("/auth/login_page?next=%2Ftrax%2F");
       await expect(page.getByRole("link", { name: "Sign in with Google" })).toBeVisible();
       await audit(page, theme, "sign-in page, offering Google sign-in");
     });

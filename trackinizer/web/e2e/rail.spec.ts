@@ -56,7 +56,7 @@ test.beforeAll(async ({ request }) => {
 const section = (page: Page, name: string) => page.getByRole("region", { name, exact: true });
 
 async function open(page: Page) {
-  await page.goto(`/app/#/lookup/${self.id}`);
+  await page.goto(`/trax/#/lookup/${self.id}`);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(`Test spatial pretrained control ${TAG}`);
 }
 

@@ -39,7 +39,7 @@ async function createIssues(request: APIRequestContext, name: string): Promise<{
 
 /** Open the Issue list filtered to `label`, select all three rows by a click and a shift-click, and collect writes. */
 async function selectAll(page: Page, label: string): Promise<Request[]> {
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   await page.getByRole("button", { name: /^Filter$/ }).click();
   await page.getByRole("option", { name: "Label", exact: true }).click();
   await page.getByRole("combobox").fill(label);

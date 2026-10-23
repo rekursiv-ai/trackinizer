@@ -29,7 +29,7 @@ async function pageAndGraph(request: APIRequestContext): Promise<void> {
 
 test("Back, Forward and Home move the canvas, and each tab keeps its own", async ({ page, request }) => {
   await pageAndGraph(request);
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   const graph = page.locator(".visual-tile-side");
   await expect(graph).toBeVisible();
   const bar = page.getByRole("toolbar", { name: "Canvas" });
@@ -68,7 +68,7 @@ test("Back, Forward and Home move the canvas, and each tab keeps its own", async
 test("tab controls stay beside their tabs and new names are edited inline", async ({ page, request }) => {
   await pageAndGraph(request);
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   const bar = page.getByRole("toolbar", { name: "Canvas" });
   await expect(bar).toBeVisible();
   await expect(page.locator(".topbar")).toHaveClass(/topbar-auto-hidden/);

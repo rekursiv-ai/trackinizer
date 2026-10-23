@@ -43,7 +43,7 @@ test("a box drawn over a tile stays on it, at the same fractions, when a second 
   expect(made.ok(), await made.text()).toBe(true);
   const { ids } = await made.json() as { ids: string[] };
   await page.setViewportSize({ width: 1600, height: 900 });
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   const body = page.locator(".visual-tile-browse .visual-tile-body");
   await expect(body).toBeVisible();
   const start = await boxOf(body);
@@ -80,7 +80,7 @@ test("a box drawn over a tile stays on it, at the same fractions, when a second 
 test("a tiny box is shown at least 24 px wide and tall, centered where it was drawn", async ({ page, request }) => {
   await resetCanvas(request);
   await page.setViewportSize({ width: 1600, height: 900 });
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   const body = page.locator(".visual-tile-browse .visual-tile-body");
   await expect(body).toBeVisible();
   const area = await boxOf(body);

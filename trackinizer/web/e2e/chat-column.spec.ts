@@ -18,7 +18,7 @@ test.beforeEach(async ({ request }) => {
 async function open(page: Page, size = { width: 1280, height: 800 }): Promise<{ column: Locator; stage: Locator }> {
   await page.addInitScript(exposeEventSources);
   await page.setViewportSize(size);
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   const column = page.locator(".chat-column");
   await expect(column.getByRole("region", { name: "Chat" })).toBeVisible();
   // A phone shows Chat first; elsewhere the canvas stands beside it.
@@ -175,7 +175,7 @@ test("a workbench of three columns hides Chat, and closing one gives it back", a
     canvas = (await answer.json()) as typeof canvas;
   }
   await page.setViewportSize({ width: 1600, height: 900 });
-  await page.goto(`/app/#/lookup/${issue.id}`);
+  await page.goto(`/trax/#/lookup/${issue.id}`);
   const strip = page.getByRole("button", { name: "Show Chat" });
   await expect(strip).toBeVisible();
   await expect(page.locator(".chat-column")).toBeHidden();

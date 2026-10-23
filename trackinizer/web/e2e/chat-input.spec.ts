@@ -65,7 +65,7 @@ async function enableInput(page: Page, canvas: Canvas): Promise<Locator> {
 
 async function open(page: Page, canvas: Canvas): Promise<Locator> {
   const subscribed = streamOpened(page);
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   await subscribed;
   await expect(page.locator(".chat-panel").getByText("Latest answer", { exact: true })).toBeVisible();
   return enableInput(page, canvas);

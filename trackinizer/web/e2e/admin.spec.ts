@@ -9,7 +9,7 @@ import { expect, failedResource, revealBar, test } from "./fixtures";
 const OTHER = "e2e-admin@example.com";
 
 async function openAdmin(page: Page): Promise<void> {
-  await page.goto("/app/#/admin");
+  await page.goto("/trax/#/admin");
   await expect(page.getByRole("complementary", { name: "Admin" }).getByRole("heading", { level: 1 })).toHaveText("Admin");
 }
 
@@ -64,7 +64,7 @@ test("a viewer sees no Admin entry or command, a link to Admin is refused, and n
   page.on("request", (sent) => {
     if (new URL(sent.url()).pathname.startsWith("/api/admin/")) admin.push(sent);
   });
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   // The account names the role; its menu has Your settings and, for a viewer, no Admin.
   await (await revealBar(page)).getByRole("button", { name: /^Account: .*, viewer$/ }).click();
   const account = page.getByRole("dialog", { name: "Account" });
@@ -80,7 +80,7 @@ test("a viewer sees no Admin entry or command, a link to Admin is refused, and n
   await expect(palette.getByRole("option", { name: /Admin/ })).toHaveCount(0);
   await page.keyboard.press("Escape");
 
-  await page.goto("/app/#/admin");
+  await page.goto("/trax/#/admin");
   await expect(page.getByRole("heading", { name: "Admins only" })).toBeVisible();
   expect(admin).toEqual([]);
   // The view refetches the profile as it opens; one still in flight must not

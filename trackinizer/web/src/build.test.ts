@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import { expect, test } from "vitest";
 
-const BASE = "/app/";
+const BASE = "/trax/";
 
 /** One chunk as Vite's manifest describes it; imports are other manifest keys. */
 type ManifestChunk = { file: string; css?: string[]; imports?: string[]; dynamicImports?: string[] };
@@ -25,7 +25,7 @@ function built(): Promise<Map<string, string>> {
 }
 let building: Promise<Map<string, string>> | undefined;
 
-test("the build serves from /app/ and records its commit", { tags: ["manual"] }, async () => {
+test("the build serves from /trax/ and records its commit", { tags: ["manual"] }, async () => {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const files = await built();
 

@@ -303,7 +303,7 @@ test("Activity: a change joins the top of the feed within 3 s, at most one ask p
   const label = fresh("activity");
   const ids = await seed(request, label, 6);
   const subscribed = streamOpened(page);
-  await page.goto(`${server.url}/app/#/activity`);
+  await page.goto(`${server.url}/trax/#/activity`);
   await subscribed;
   await expect(page.locator(".feed-row").first()).toBeVisible();
   await startHolding(page);
@@ -378,7 +378,7 @@ test("Activity: a change joins the top of the feed within 3 s, at most one ask p
 test("search results stay the snapshot they were, labelled with its time, while their rows change", async ({ page }) => {
   const token = crypto.randomUUID().slice(0, 8);
   const { id } = await writer.create(`Snapshot ${token}`, [fresh("search")]);
-  await page.goto(`${server.url}/app/#/activity`);
+  await page.goto(`${server.url}/trax/#/activity`);
   await expect(page.locator(".feed-row").first()).toBeVisible();
   await page.keyboard.press("ControlOrMeta+k");
   await page.getByRole("combobox", { name: "Command" }).fill(token);
@@ -671,7 +671,7 @@ test("with the CPU slowed 4x: first load, live batches, and a busy hub's detail"
       const page = await context.newPage();
       await (await context.newCDPSession(page)).send("Emulation.setCPUThrottlingRate", { rate });
       const subscribed = streamOpened(page);
-      await page.goto(`${server.url}/app/${path}`);
+      await page.goto(`${server.url}/trax/${path}`);
       return { context, page, subscribed };
     };
     // First load of the Issue list, to 50 rows, then live batches on it with a peek.

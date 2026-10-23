@@ -301,7 +301,7 @@ cannot change what it cited. For example:
 ```
 
 Any signed-in teammate can read the exact revision at
-`/app/#/lookup/<artifact-id>` or through
+`/trax/#/lookup/<artifact-id>` or through
 `GET /api/artifacts/<artifact-id>/content`. An agent can show it on a canvas
 with `visual_type: "trax.artifact"` and `record_id` set to the Artifact ID.
 The renderer loads only when shown. Custom HTML

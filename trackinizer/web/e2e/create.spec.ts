@@ -36,7 +36,7 @@ test("a create with relations is one request, opened from C on the list, and ope
   const run = crypto.randomUUID().slice(0, 8);
   const parent = await createIssue(request, `D4 parent ${run}`);
   const blocker = await createIssue(request, `D4 blocker ${run}`);
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Issues");
   const writes = writesOf(page);
 
@@ -82,7 +82,7 @@ test("a create with relations is one request, opened from C on the list, and ope
 test("Create more keeps the form open; a relation the body cannot hold makes each create one batch", async ({ page, request }) => {
   const run = crypto.randomUUID().slice(0, 8);
   const question = await createIssue(request, `D4 question ${run}`);
-  await page.goto("/app/#/new/Artifact");
+  await page.goto("/trax/#/new/Artifact");
   const form = page.getByRole("dialog", { name: "New artifact" });
   const writes = writesOf(page);
   await form.getByRole("button", { name: "Create more" }).click();
@@ -117,7 +117,7 @@ test("Create more keeps the form open; a relation the body cannot hold makes eac
 
 test("a form opened with C and closed puts focus back on the list's current row, not the page body", async ({ page, request }) => {
   await createIssue(request, `D4 focus ${crypto.randomUUID().slice(0, 8)}`);
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Issues");
   const current = page.locator('a.row[aria-current="true"]');
   await expect(current).toHaveCount(1);

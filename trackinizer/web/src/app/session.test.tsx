@@ -34,7 +34,7 @@ test("leaving saves every draft and the hash, then loads the login page, once", 
   expect(sessionStorage.getItem("trackinizer.v2.return_hash")).toBe("#/ref/Issue/7");
   expect(assign.mock.calls).toEqual([[LOGIN_URL]]);
   expect(logged().filter(({ event }) => event === "session.ended")).toEqual([expect.objectContaining({ level: "warn", fields: { drafts: 2 } })]);
-  expect(new URL(LOGIN_URL, location.origin).searchParams.get("next")).toBe("/app/");
+  expect(new URL(LOGIN_URL, location.origin).searchParams.get("next")).toBe("/trax/");
 });
 
 test("the next boot restores the saved hash, unless it opened on its own", () => {

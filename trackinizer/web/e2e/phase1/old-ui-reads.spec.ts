@@ -98,7 +98,7 @@ const properties = (page: Page) => page.getByRole("complementary", { name: "Prop
 const field = (page: Page, name: string) => page.locator(`[data-field="${name}"]`);
 
 async function open(page: Page, id: string, title: string) {
-  await page.goto(`/app/#/lookup/${id}`);
+  await page.goto(`/trax/#/lookup/${id}`);
   await expect(heading(page)).toHaveText(title);
   await openProperties(page);
 }
@@ -226,7 +226,7 @@ async function filterToTag(page: Page) {
 test("list rows show what the old list's columns did: ref, status, type, priority, judgement, confidence, labels, owner, time", async ({
   page,
 }) => {
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   await filterToTag(page);
   const issue = page.locator("a.row").filter({ hasText: `Issue ${TAG}` });
   await expect(issue.locator(".row-ref")).toHaveText(/^#\d+$/);
@@ -237,7 +237,7 @@ test("list rows show what the old list's columns did: ref, status, type, priorit
   await expect(issue.locator(".row-owner")).toHaveAttribute("aria-label", "josh");
   await expect(issue.locator(".row-date")).toHaveAttribute("title", /^Updated [A-Z][a-z]{2} \d{1,2}, \d{4}/);
 
-  await page.goto("/app/#/list/Belief");
+  await page.goto("/trax/#/list/Belief");
   await filterToTag(page);
   const belief = page.locator("a.row").filter({ hasText: `Belief ${TAG}` });
   await expect(belief.getByRole("img", { name: "Proven" })).toBeVisible();
@@ -245,12 +245,12 @@ test("list rows show what the old list's columns did: ref, status, type, priorit
 });
 
 test("the old UI's links open their v2 views: #/inquiry/<uuid>, #/search?q= and palette jumps", async ({ page }) => {
-  await page.goto(`/app/#/inquiry/${ids[ISSUE]}`);
+  await page.goto(`/trax/#/inquiry/${ids[ISSUE]}`);
   await expect(heading(page)).toHaveText(`Issue ${TAG}`);
   expect(new URL(page.url()).hash).toBe(`#/lookup/${ids[ISSUE]}`);
 
   const palette = page.getByRole("dialog", { name: "Command menu" });
-  await page.goto(`/app/#/search?q=${encodeURIComponent(`WebSearch ${TAG}`)}`);
+  await page.goto(`/trax/#/search?q=${encodeURIComponent(`WebSearch ${TAG}`)}`);
   await expect(heading(page)).toHaveText(`Search: WebSearch ${TAG} (1)`);
   expect(new URL(page.url()).hash).toBe(`#/search/${encodeURIComponent(`WebSearch ${TAG}`)}`);
   await page.getByRole("table").getByRole("link", { name: /^WebSearch#/ }).click();

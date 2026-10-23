@@ -34,7 +34,7 @@ test("debug is on with ?debug=1 or the localStorage switch, and off otherwise", 
     return seen;
   };
   expect(on(() => {})).toBe(false);
-  expect(on(() => history.replaceState(null, "", "/app/?debug=1#/list/Issue"))).toBe(true);
+  expect(on(() => history.replaceState(null, "", "/trax/?debug=1#/list/Issue"))).toBe(true);
   expect(on(() => localStorage.setItem("trackinizer.v2.debug", "1"))).toBe(true);
   expect(on(() => localStorage.setItem("trackinizer.v2.debug", "0"))).toBe(false);
 });

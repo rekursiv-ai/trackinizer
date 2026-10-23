@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vitest/config";
+import { APP_BASE } from "./src/base";
 import { fillName, identityOf, manifestOf } from "./src/identity";
 
 // The dev server stands in for the trackinizer server: it proxies the API and the
@@ -33,7 +34,7 @@ const commit = execFileSync("git", ["rev-parse", "HEAD"], {
 }).trim();
 
 export default defineConfig({
-  base: "/app/",
+  base: APP_BASE,
   plugins: [react(), versionJson(), appIdentity(), preloadFirstLoad()],
   define: { __COMMIT__: JSON.stringify(commit), __APP__: JSON.stringify(app) },
   build: {
@@ -88,7 +89,7 @@ function appIdentity(): Plugin {
     name: "trackinizer-app-identity",
     transformIndexHtml: (html) => fillName(html, identity),
     configureServer(server) {
-      server.middlewares.use("/app/manifest.webmanifest", (_request, response) => {
+      server.middlewares.use(`${APP_BASE}manifest.webmanifest`, (_request, response) => {
         response.setHeader("Content-Type", "application/manifest+json");
         response.end(manifest);
       });

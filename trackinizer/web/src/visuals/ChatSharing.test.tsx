@@ -31,12 +31,12 @@ function openShare(chat: ChatHead): HTMLElement {
 }
 
 test("Share's Copy link copies the app's link to the chat's session page, without this page's query or route", async () => {
-  history.replaceState(null, "", "/app/?debug=1#/graph");
+  history.replaceState(null, "", "/trax/?debug=1#/graph");
   const copied = stubClipboard();
   const panel = openShare(head("open"));
   // A click alone: user-event would put its own clipboard in place of the stub.
   fireEvent.click(panel.querySelector("button[aria-label='Copy link to this chat']")!);
-  await waitFor(() => expect(copied).toEqual([`${location.origin}/app/#/lookup/${SESSION}`]));
+  await waitFor(() => expect(copied).toEqual([`${location.origin}/trax/#/lookup/${SESSION}`]));
   expect(await screen.findByText("Copied the link to this chat")).toBeTruthy();
 });
 
