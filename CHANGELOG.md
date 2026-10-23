@@ -3,6 +3,13 @@
 All notable trackinizer changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.1.9 - 2026-10-23
+
+### Added
+
+- `trackinizer.wire.wire_machine_job` provides the machine-job wire models
+  used by machine-job clients.
+
 ## 0.1.8 - 2026-10-23
 
 ### Changed
