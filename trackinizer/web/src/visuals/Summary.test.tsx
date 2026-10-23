@@ -56,7 +56,7 @@ function show(recordId: string | null = "ISSUE") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const instance = { id: "i", type: "trax.summary", version: 1, placement: "main" as const, record_id: recordId, params: {} };
   return render(<QueryClientProvider client={client}>
-    <Summary instance={instance} workspace={null} onWorkspaceChanged={vi.fn()} focused />
+    <Summary instance={instance} canvas={null} onCanvasChanged={vi.fn()} focused />
   </QueryClientProvider>);
 }
 

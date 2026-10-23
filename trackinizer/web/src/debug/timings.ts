@@ -2,7 +2,7 @@
  * Canvas timing marks: when each pushed frame arrived and when what it changed
  * painted, for `trackinizer.timings()`.
  *
- * A `workspace` frame is followed by the marks of the visuals it changed; a
+ * A `canvas` frame is followed by the marks of the visuals it changed; a
  * `navigate` frame by the mark of the page it opened, drawn with its data.
  * Wall times are epoch milliseconds from the same clock as the frame's `t` (the
  * server's), so on one machine `wall - t` is the time from the server accepting
@@ -23,10 +23,10 @@ export type Mark = {
 
 /** One pushed frame and its marks. */
 export type FrameTiming = {
-  readonly frame: "workspace" | "navigate";
-  /** The workspace revision of a `workspace` frame; null for a `navigate` frame. */
+  readonly frame: "canvas" | "navigate";
+  /** The canvas revision of a `canvas` frame; null for a `navigate` frame. */
   readonly revision: number | null;
-  /** The route a `navigate` frame opened; null for a `workspace` frame. */
+  /** The route a `navigate` frame opened; null for a `canvas` frame. */
   readonly route: string | null;
   /** The frame's `t`, the server's epoch milliseconds. */
   readonly t: number;
@@ -44,7 +44,7 @@ const frames: Held[] = [];
 /** The navigate frame whose page has not drawn yet. */
 let navigating: Held | null = null;
 
-function push(frame: "workspace" | "navigate", revision: number | null, route: string | null, t: number): Held {
+function push(frame: "canvas" | "navigate", revision: number | null, route: string | null, t: number): Held {
   const received = performance.now();
   const held: Held = { frame, revision, route, t, received, receivedWall: performance.timeOrigin + received, marks: [] };
   frames.push(held);
@@ -52,9 +52,9 @@ function push(frame: "workspace" | "navigate", revision: number | null, route: s
   return held;
 }
 
-/** Record that the `workspace` frame for `revision` arrived. */
+/** Record that the `canvas` frame for `revision` arrived. */
 export function recordFrame(revision: number, t: number): void {
-  push("workspace", revision, null, t);
+  push("canvas", revision, null, t);
 }
 
 /** Record that a `navigate` frame to `route` arrived; `markPageDrawn` closes it. */

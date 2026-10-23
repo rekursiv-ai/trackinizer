@@ -1910,41 +1910,41 @@ class Client:
             wire_sessions.SEND_MESSAGE_PATH,
         ).delivered
 
-    def read_workspace(self, workspace_id: uuid.UUID) -> dict[str, PlainTree]:
+    def read_canvas(self, canvas_id: uuid.UUID) -> dict[str, PlainTree]:
         """Read a canvas: its revision, visuals and focus.
 
         Args:
-          workspace_id: The canvas.
+          canvas_id: The canvas.
 
         Returns:
-          state: The workspace state as the server returns it.
+          state: The canvas state as the server returns it.
 
         """
-        where = f"/api/workspaces/{workspace_id}"
+        where = f"/api/canvases/{canvas_id}"
         return dict(_require_mapping(self.get(where), where))
 
-    def apply_workspace_operation(
+    def apply_canvas_operation(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         operation: Mapping[str, object],
     ) -> dict[str, PlainTree]:
         """Apply one canvas operation to the live revision, once more if it moved.
 
         Args:
-          workspace_id: The canvas.
+          canvas_id: The canvas.
           operation: A ``show``, ``hide``, ``focus`` or ``place`` operation.
 
         Returns:
-          state: The updated workspace state.
+          state: The updated canvas state.
 
         """
-        where = f"/api/workspaces/{workspace_id}/operations"
+        where = f"/api/canvases/{canvas_id}/operations"
         try:
             applied = self.post(
                 where,
                 body={
-                    "revision": self._revision_of(workspace_id),
+                    "revision": self._revision_of(canvas_id),
                     "operation": operation,
                 },
             )
@@ -1955,7 +1955,7 @@ class Client:
             applied = self.post(
                 where,
                 body={
-                    "revision": self._revision_of(workspace_id),
+                    "revision": self._revision_of(canvas_id),
                     "operation": operation,
                 },
             )
@@ -1963,21 +1963,21 @@ class Client:
 
     def navigate(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         route: str,
     ) -> dict[str, PlainTree]:
         """Move a canvas's page to ``route``; it is an event, so no revision is read.
 
         Args:
-          workspace_id: The canvas.
+          canvas_id: The canvas.
           route: A ``#/...`` hash.
 
         Returns:
-          state: The workspace state, which a navigation does not change.
+          state: The canvas state, which a navigation does not change.
 
         """
-        where = f"/api/workspaces/{workspace_id}/operations"
+        where = f"/api/canvases/{canvas_id}/operations"
         moved = self.post(
             where,
             body={"revision": 0, "operation": {"kind": "navigate", "route": route}},
@@ -1986,21 +1986,21 @@ class Client:
 
     def highlight(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         ids: Sequence[uuid.UUID],
     ) -> dict[str, PlainTree]:
         """Mark inquiries on a canvas's page; an event, so no revision is read.
 
         Args:
-          workspace_id: The canvas.
+          canvas_id: The canvas.
           ids: The inquiries to mark, at most 50; empty clears the marks.
 
         Returns:
-          state: The workspace state, which a highlight does not change.
+          state: The canvas state, which a highlight does not change.
 
         """
-        where = f"/api/workspaces/{workspace_id}/operations"
+        where = f"/api/canvases/{canvas_id}/operations"
         marked = self.post(
             where,
             body={
@@ -2012,21 +2012,21 @@ class Client:
 
     def set_preferences(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         change: Mapping[str, object],
     ) -> dict[str, PlainTree]:
-        """Change the station owner's preferences, as its agent; an event, so no revision is read.
+        """Change the canvas owner's preferences, as its agent; an event, so no revision is read.
 
         Args:
-          workspace_id: The station, whose owner's preferences change.
+          canvas_id: The canvas, whose owner's preferences change.
           change: The keys to change; ``None`` puts a key back to its default.
 
         Returns:
-          state: The station's state, carrying the owner's preferences after the change.
+          state: The canvas's state, carrying the owner's preferences after the change.
 
         """
-        where = f"/api/workspaces/{workspace_id}/operations"
+        where = f"/api/canvases/{canvas_id}/operations"
         changed = self.post(
             where,
             body={
@@ -2038,21 +2038,21 @@ class Client:
 
     def chat_window(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         hidden: bool,
     ) -> dict[str, PlainTree]:
         """Hide or show the browser tab's Chat window; an event, so no revision is read.
 
         Args:
-          workspace_id: The canvas.
+          canvas_id: The canvas.
           hidden: True to hide Chat, False to show it again.
 
         Returns:
-          state: The workspace state, which the window does not change.
+          state: The canvas state, which the window does not change.
 
         """
-        where = f"/api/workspaces/{workspace_id}/operations"
+        where = f"/api/canvases/{canvas_id}/operations"
         windowed = self.post(
             where,
             body={
@@ -2062,11 +2062,11 @@ class Client:
         )
         return dict(_require_mapping(windowed, where))
 
-    def capture_workspace(self, workspace_id: uuid.UUID) -> dict[str, PlainTree]:
+    def capture_canvas(self, canvas_id: uuid.UUID) -> dict[str, PlainTree]:
         """Ask the canvas owner's open page for a picture of the canvas.
 
         Args:
-          workspace_id: The canvas.
+          canvas_id: The canvas.
 
         Returns:
           capture: ``width``, ``height``, ``mime``, ``data`` (base64), the visuals
@@ -2075,13 +2075,13 @@ class Client:
             last). A 424 ``ClientError`` says why there is no picture.
 
         """
-        where = f"/api/workspaces/{workspace_id}/captures"
+        where = f"/api/canvases/{canvas_id}/captures"
         return dict(_require_mapping(self.post(where), where))
 
-    def _revision_of(self, workspace_id: uuid.UUID) -> int:
+    def _revision_of(self, canvas_id: uuid.UUID) -> int:
         """Return the canvas's live revision."""
-        where = f"/api/workspaces/{workspace_id}"
-        revision = _require_field(self.read_workspace(workspace_id), "revision", where)
+        where = f"/api/canvases/{canvas_id}"
+        revision = _require_field(self.read_canvas(canvas_id), "revision", where)
         if not isinstance(revision, int):
             raise ClientError(f"{where} returned a malformed revision {revision!r}")
         return revision
@@ -2324,14 +2324,14 @@ class Client:
     def terminal_machines(
         self,
         *,
-        workspace: uuid.UUID | None = None,
+        canvas: uuid.UUID | None = None,
     ) -> TerminalMachines:
-        """List the caller's machines, and the live terminals of one station.
+        """List the caller's machines, and the live terminals of one canvas.
 
         The server answers for the signed-in owner only: an API key is refused.
 
         Args:
-          workspace: The station whose live terminals to list; ``None`` lists none.
+          canvas: The canvas whose live terminals to list; ``None`` lists none.
 
         Returns:
           machines: The caller's machines, each with whether it can take a terminal
@@ -2342,7 +2342,7 @@ class Client:
         response = self._request(
             "GET",
             where,
-            params=None if workspace is None else {"workspace": str(workspace)},
+            params=None if canvas is None else {"canvas": str(canvas)},
         )
         return _validate_model(wire_terminals.TerminalMachines, response, where)
 
@@ -2353,7 +2353,7 @@ class Client:
         account, or a request without the server's own ``Origin`` is refused.
 
         Args:
-          body: The machine, the terminal's size and station, and the run to start.
+          body: The machine, the terminal's size and canvas, and the run to start.
 
         Returns:
           opened: The terminal's id and its one-use attach ticket.

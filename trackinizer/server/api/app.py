@@ -31,6 +31,7 @@ from trackinizer.server.api import (
     addons_routes,
     admin_routes,
     auth_routes,
+    canvas_routes,
     capture_routes,
     chat_partial_routes,
     code_routes,
@@ -62,7 +63,6 @@ from trackinizer.server.api import (
     variables_routes,
     visuals_routes,
     workspace_routes,
-    workstream_routes,
 )
 from trackinizer.server.api._deps import terminal_hub
 from trackinizer.server.api.addons_routes import deployment_of
@@ -83,7 +83,7 @@ from trackinizer.server.session_reaper import session_reaper_loop
 from trackinizer.server.store.core import Store
 from trackinizer.server.subscriber import push_changes_to_live_subscribers
 from trackinizer.server.terminals import sweep_loop
-from trackinizer.server.visuals.catalog import default_workspace
+from trackinizer.server.visuals.catalog import default_canvas
 from trackinizer.types.errors import (
     ChatDeletedError,
     ConflictError,
@@ -369,8 +369,8 @@ ROUTERS: Final = (
     timeline_routes.router,
     variables_routes.router,
     visuals_routes.router,
-    workstream_routes.router,
     workspace_routes.router,
+    canvas_routes.router,
 )
 
 
@@ -384,7 +384,7 @@ def _build_app() -> FastAPI:
     # The visual routes read the catalog from ``app.state.visual_catalog``, so it
     # is set on every app; ``attach_deployment`` swaps in a configured one.
     built.state.deployment = Deployment.Config().make()
-    built.state.visual_catalog = default_workspace()
+    built.state.visual_catalog = default_canvas()
     return built
 
 

@@ -75,14 +75,14 @@ async def _change_log_count(store: Store, *, subject_id: uuid.UUID) -> int:
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def workstream_issue(store: Store) -> uuid.UUID:
-    """Submit one owned workstream Issue before measuring its claim attempt."""
+async def workspace_issue(store: Store) -> uuid.UUID:
+    """Submit one owned workspace Issue before measuring its claim attempt."""
     return await store.submit_issue(
         SubmitIssue(
             account="tester@example.com",
             owner="tester@example.com",
-            title="Workstream",
-            labels=["workstream"],
+            title="Workspace",
+            labels=["workspace"],
         ),
     )
 
@@ -143,14 +143,14 @@ async def test_already_owned_issue_is_never_claimed(store: Store) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_claim_never_returns_a_workstream_issue(
+async def test_claim_never_returns_a_workspace_issue(
     store: Store,
-    workstream_issue: uuid.UUID,
+    workspace_issue: uuid.UUID,
 ) -> None:
-    """The trax next claim path excludes owner-attributed workstreams."""
+    """The trax next claim path excludes owner-attributed workspaces."""
     claimed = await store.claim_next_issue(owner="worker-1", actor="worker-1")
 
-    assert claimed is None or claimed.id != workstream_issue
+    assert claimed is None or claimed.id != workspace_issue
 
 
 @pytest.mark.db_pglite

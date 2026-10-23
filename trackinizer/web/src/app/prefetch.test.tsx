@@ -15,7 +15,7 @@ const ID = "00000000-0000-4000-8000-000000000007";
 const BOOT = ["/api/me/profile", "/api/meta/edges", "/api/meta/enums", "/api/meta/fields"];
 /** Reads the shell sends once it renders, beside its view's: never started early. */
 const SHELL: string[] = [];
-const PROFILE = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED };
+const PROFILE = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_canvas_enabled: false, ...AGREED };
 
 const BODIES: { [path: string]: unknown } = {
   "/api/meta/enums": { inquiry_kind_all: ["Issue", "Paper", "Belief"], status: ["active", "complete"] },

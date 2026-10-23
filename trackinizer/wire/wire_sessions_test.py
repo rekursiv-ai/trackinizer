@@ -13,6 +13,7 @@ import pytest
 
 from trackinizer.wire.wire_sessions import (
     CONSOLE_RELAY_MARK,
+    CanvasMark,
     ConsoleRelay,
     ConsoleTarget,
     FeedCursor,
@@ -23,7 +24,6 @@ from trackinizer.wire.wire_sessions import (
     SessionEnd,
     SessionRunState,
     SessionStart,
-    WorkspaceMark,
     inbound_read_timeout,
     session_audience_path,
     session_end_path,
@@ -332,9 +332,9 @@ class TestPaths:
         assert session_audience_path(sid) == f"/api/sessions/{sid}/audience"
 
 
-class TestWorkspaceMark:
+class TestCanvasMark:
     def test_a_box_stands_inside_the_stage(self) -> None:
-        box = WorkspaceMark(
+        box = CanvasMark(
             id=uuid.uuid4(),
             author="jp",
             left=0.1,
@@ -353,7 +353,7 @@ class TestWorkspaceMark:
         beyond: float,
     ) -> None:
         with pytest.raises(ValidationError):
-            WorkspaceMark.model_validate(
+            CanvasMark.model_validate(
                 {"id": str(uuid.uuid4()), "author": "jp", corner: beyond},
             )
 

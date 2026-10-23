@@ -21,7 +21,7 @@ from trackinizer.addons.deployment import (
     deployment_config,
     supervise,
 )
-from trackinizer.server.visuals.catalog import StaticVisual, Workspace
+from trackinizer.server.visuals.catalog import Canvas, StaticVisual
 
 
 if TYPE_CHECKING:
@@ -114,7 +114,7 @@ def two_addons() -> Site:
 def notes_site() -> Site:
     """Return a deployment of two test addons whose catalog can open on notes."""
     site = Site()
-    site.visuals = Workspace.Config(
+    site.visuals = Canvas.Config(
         visuals=[
             StaticVisual.Config(type="x.notes", title="Notes", description="Notes."),
         ],
@@ -141,14 +141,14 @@ def test_the_catalog_describes_each_addon_by_placement() -> None:
 
 def test_the_visual_catalog_is_part_of_the_deployment() -> None:
     cfg = Deployment.Config()
-    cfg.visuals = Workspace.Config(
+    cfg.visuals = Canvas.Config(
         visuals=[
             StaticVisual.Config(type="x.notes", title="Notes", description="Notes."),
         ],
         default_visual="x.notes",
     )
     deployment = cfg.make()
-    assert isinstance(deployment.visuals, Workspace)
+    assert isinstance(deployment.visuals, Canvas)
     assert deployment.visuals.default_visual == "x.notes"
 
 

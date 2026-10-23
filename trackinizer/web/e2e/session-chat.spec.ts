@@ -5,7 +5,7 @@ import { expect, failedResource, test, streamOpened } from "./fixtures";
 // The default path: the canvas is on, so the tab's stream is the canvas's.
 test.use({ canvas: true });
 
-// A station that an earlier spec bound to a chat would load that chat here.
+// A canvas that an earlier spec bound to a chat would load that chat here.
 test.beforeEach(async ({ request }) => {
   await resetCanvas(request);
 });

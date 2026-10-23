@@ -3,45 +3,47 @@ import type { ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { listStations, setStationLayout, setStationPage } from "../api/stations";
-import { createDefaultWorkspace, getWorkspace, type WorkspacePartner, type WorkspaceState } from "../api/workspaces";
+import { listCanvases, setCanvasLayout, setCanvasPage } from "../api/canvasManagement";
+import { createDefaultCanvas, getCanvas, type CanvasPartner, type CanvasState } from "../api/canvases";
 import { CommandRegistry, CommandRegistryContext, Shortcuts, useCommandList } from "../commands/registry";
-import { setStation } from "../stations/store";
+import { setCanvas } from "../canvases/store";
 import { ChatColumn } from "./ChatColumn";
 import { preferences, receivePreferences } from "../preferences";
 import { currentChatColumn, setChatFullscreen, setChatHidden, setPhoneView } from "./chatColumnState";
 import { FOLD_AFTER_MS, OPEN_AFTER_MS } from "./hoverOpen";
-import { flushLayouts, forgetLayouts, type Layout } from "./stationLayout";
+import { flushLayouts, forgetLayouts, type Layout } from "./canvasLayout";
 
-vi.mock("../api/workspaces", () => ({ createDefaultWorkspace: vi.fn(), getWorkspace: vi.fn() }));
-vi.mock("../api/stations", () => ({ listStations: vi.fn(), setStationPage: vi.fn(), setStationLayout: vi.fn(), createStation: vi.fn() }));
+vi.mock("../api/canvases", () => ({ createDefaultCanvas: vi.fn(), getCanvas: vi.fn() }));
+vi.mock("../api/canvasManagement", () => ({ listCanvases: vi.fn(), setCanvasPage: vi.fn(), setCanvasLayout: vi.fn(), createCanvas: vi.fn() }));
 // Chat itself is tested in Chat.test.tsx; here it is a panel with a box.
 vi.mock("./Chat", () => ({
-  Chat: ({ workspace, onWaiting }: { workspace: WorkspaceState | null; onWaiting?: (waiting: boolean) => void }) => (
-    <section aria-label="Chat"><span>{workspace?.id ?? "no workspace"}</span><textarea aria-label="Message" />
+  Chat: ({ canvas, onWaiting }: { canvas: CanvasState | null; onWaiting?: (waiting: boolean) => void }) => (
+    <section aria-label="Chat"><span>{canvas?.id ?? "no canvas"}</span><textarea aria-label="Message" />
       <button type="button" onClick={() => onWaiting?.(true)}>Report waiting</button></section>
   ),
 }));
 
 const SIZES_KEY = "trackinizer.v2.canvas.sizes";
-const workspace: WorkspaceState = { id: "w1", name: "unnamed-workstream#1", conversation_id: null, page: null, revision: 1, focused_instance: null, visuals: [] };
+const canvas: CanvasState = { id: "w1", name: "unnamed-canvas#1", conversation_id: null, page: null, revision: 1, focused_instance: null, visuals: [] };
 
-/** The layout keys Chat has written to its station so far, later writes over earlier ones. */
+/** The layout keys Chat has written to its canvas so far, later writes over earlier ones. */
 function written(): Layout {
   flushLayouts();
-  return Object.assign({}, ...vi.mocked(setStationLayout).mock.calls.map(([, patch]) => patch)) as Layout;
+  return Object.assign({}, ...vi.mocked(setCanvasLayout).mock.calls.map(([, patch]) => patch)) as Layout;
 }
 
 beforeEach(() => {
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(listStations).mockResolvedValue([]);
-  vi.mocked(setStationPage).mockResolvedValue(undefined);
-  vi.mocked(setStationLayout).mockResolvedValue(undefined);
+  // The store reads the previous file's tab before testSetup clears storage.
+  setCanvas(null);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(listCanvases).mockResolvedValue([]);
+  vi.mocked(setCanvasPage).mockResolvedValue(undefined);
+  vi.mocked(setCanvasLayout).mockResolvedValue(undefined);
   Element.prototype.setPointerCapture = vi.fn();
 });
 
 afterEach(() => {
-  setStation(null);
+  setCanvas(null);
   forgetLayouts();
   history.replaceState(null, "", "#/");
   cleanup();
@@ -61,10 +63,10 @@ function Palette() {
 }
 
 async function show(
-  state: WorkspaceState = workspace,
+  state: CanvasState = canvas,
   { sheet = null }: { readonly sheet?: ReactNode } = {},
 ) {
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(state);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><CommandRegistryContext value={new CommandRegistry()}>
     <Shortcuts />
@@ -83,7 +85,7 @@ async function show(
 /** What stands in the row, in order. */
 const order = (row: HTMLElement) => [...row.children].map((child) => child.className.split(" ")[0]);
 
-test("Chat is a column beside the workbench, on the left, and has the user's workspace", async () => {
+test("Chat is a column beside the workbench, on the left, and has the user's canvas", async () => {
   const { row, column, workbench } = await show();
   expect(order(row)).toEqual(["chat-column", "chat-column-edge", "chat-workbench"]);
   expect(column.contains(screen.getByRole("region", { name: "Chat" }))).toBe(true);
@@ -92,13 +94,13 @@ test("Chat is a column beside the workbench, on the left, and has the user's wor
   expect(column.style.getPropertyValue("--chat-width")).toBe("");
 });
 
-test("selecting an uncached chat shows loading until its workspace arrives", async () => {
-  let finish!: (value: WorkspaceState) => void;
-  vi.mocked(getWorkspace).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+test("selecting an uncached chat shows loading until its canvas arrives", async () => {
+  let finish!: (value: CanvasState) => void;
+  vi.mocked(getCanvas).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
   await show();
-  act(() => setStation("uncached"));
+  act(() => setCanvas("uncached"));
   expect(screen.getByText("Loading chat…").getAttribute("role")).toBe("status");
-  await act(async () => finish({ ...workspace, id: "uncached" }));
+  await act(async () => finish({ ...canvas, id: "uncached" }));
   expect(await screen.findByText("uncached")).toBeTruthy();
   expect(screen.queryByText("Loading chat…")).toBeNull();
 });
@@ -110,7 +112,7 @@ test("on the right Chat stands after the workbench, with the divider between the
 });
 
 test("a sheet opens in the stage, beside the page; full screen, over the row", async () => {
-  const { row } = await show(workspace, { sheet: <aside className="sheet" /> });
+  const { row } = await show(canvas, { sheet: <aside className="sheet" /> });
   const stage = () => document.querySelector<HTMLElement>(".chat-stage")!;
   expect(order(stage())).toEqual(["", "sheet"]);
   act(() => setChatFullscreen(true));
@@ -120,7 +122,7 @@ test("a sheet opens in the stage, beside the page; full screen, over the row", a
 test("on a phone Chat shows first, even if hidden, the workbench hidden, no strip or divider; the switch swaps them, both staying mounted", async () => {
   vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(max-width: 760px)", addEventListener() {}, removeEventListener() {} }));
   setChatHidden(true);
-  const { row, column, workbench, user } = await show(workspace);
+  const { row, column, workbench, user } = await show(canvas);
   expect(order(row)).toEqual(["chat-column", "chat-workbench", "chat-phone-switch"]);
   expect(column.hidden).toBe(false);
   expect(workbench.hidden).toBe(true);
@@ -197,14 +199,14 @@ test("the arrow keys move the divider 16 px, 48 with Shift, toward the side the 
   expect(written().chat_ch).toBe(35);
 });
 
-test("the width the station keeps, in ch, is the width Chat opens at", async () => {
-  const { column } = await show({ ...workspace, layout: { chat_ch: 64 } });
+test("the width the canvas keeps, in ch, is the width Chat opens at", async () => {
+  const { column } = await show({ ...canvas, layout: { chat_ch: 64 } });
   expect(column.style.getPropertyValue("--chat-width")).toBe("512px");
   expect(written()).toEqual({});
 });
 
 test("a row too narrow for the stored width shows Chat fitted to seven tenths of it, and writes nothing", async () => {
-  const { column, row } = await show({ ...workspace, layout: { chat_ch: 200 } });
+  const { column, row } = await show({ ...canvas, layout: { chat_ch: 200 } });
   Object.defineProperty(row, "clientWidth", { configurable: true, value: 400 });
   fireEvent(window, new Event("resize"));
   expect(column.style.getPropertyValue("--chat-width")).toBe("280px");
@@ -214,7 +216,7 @@ test("a row too narrow for the stored width shows Chat fitted to seven tenths of
   expect(written()).toEqual({});
 });
 
-test("a browser that kept Chat's width in pixels hands it to the first station it opens, in ch, and forgets it", async () => {
+test("a browser that kept Chat's width in pixels hands it to the first canvas it opens, in ch, and forgets it", async () => {
   localStorage.setItem(SIZES_KEY, JSON.stringify({ chat: 512, side: 400, floating: {}, share: {} }));
   const { column } = await show();
   expect(column.style.getPropertyValue("--chat-width")).toBe("512px");
@@ -226,21 +228,21 @@ test("Chat retains legacy width through a refused migration and retries it on re
   const sizes = { chat: 512, side: 400, floating: {}, share: {} };
   localStorage.setItem(SIZES_KEY, JSON.stringify(sizes));
   let reject: (error: Error) => void = () => { throw new Error("No held migration"); };
-  vi.mocked(setStationLayout).mockImplementationOnce(() => new Promise<void>((_resolve, refuse) => { reject = refuse; }));
+  vi.mocked(setCanvasLayout).mockImplementationOnce(() => new Promise<void>((_resolve, refuse) => { reject = refuse; }));
   await show();
   expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual(sizes);
   await act(async () => reject(new Error("offline")));
   expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual(sizes);
   cleanup();
   forgetLayouts();
-  setStation(null);
+  setCanvas(null);
   await show();
   await vi.waitFor(() => expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual({ side: 400, floating: {}, share: {} }), { interval: 1 });
 });
 
-test("a station that already holds Chat's width keeps it over the pixels the browser kept", async () => {
+test("a canvas that already holds Chat's width keeps it over the pixels the browser kept", async () => {
   localStorage.setItem(SIZES_KEY, JSON.stringify({ chat: 512 }));
-  const { column } = await show({ ...workspace, layout: { chat_ch: 50 } });
+  const { column } = await show({ ...canvas, layout: { chat_ch: 50 } });
   expect(column.style.getPropertyValue("--chat-width")).toBe("400px");
   expect(written()).toEqual({});
   expect(localStorage.getItem(SIZES_KEY)).toBeNull();
@@ -306,7 +308,7 @@ test("the palette offers New terminal, bound to no key", async () => {
   function Terminals() {
     return <output aria-label="Terminals">{useCommandList().filter((command) => command.section === "Terminal").map((command) => `${command.title}:${command.keys?.length ?? 0}`).join("|")}</output>;
   }
-  await show(workspace, { sheet: <Terminals /> });
+  await show(canvas, { sheet: <Terminals /> });
   expect(screen.getByLabelText("Terminals").textContent).toBe("New terminal:0");
 });
 
@@ -412,12 +414,12 @@ test("full screen Chat is never a peek, and hidden Chat that a frame shows is a 
   expect(column.classList).not.toContain("chat-column-peek");
 });
 
-const CODEX: WorkspacePartner = { session_id: "s1", actor: "codex", cli: "codex", status: "live", provider: "codex", label: "codex · gx10" };
+const CODEX: CanvasPartner = { session_id: "s1", actor: "codex", cli: "codex", status: "live", provider: "codex", label: "codex · gx10" };
 
-/** The station "Ship it" with a codex run as `run` says. */
-function shipIt(run: Partial<WorkspacePartner> = {}): WorkspaceState {
-  const partner: WorkspacePartner = { ...CODEX, ...run };
-  return { ...workspace, name: "Ship it", partner };
+/** The canvas "Ship it" with a codex run as `run` says. */
+function shipIt(run: Partial<CanvasPartner> = {}): CanvasState {
+  const partner: CanvasPartner = { ...CODEX, ...run };
+  return { ...canvas, name: "Ship it", partner };
 }
 
 test("a chat that waits on the person marks the browser tab's title and the strip of a hidden Chat; one that does not marks neither", async () => {
@@ -426,7 +428,7 @@ test("a chat that waits on the person marks the browser tab's title and the stri
   expect(document.title).toBe("● Ship it · Trackinizer");
   expect(screen.getByRole("button", { name: "Show Chat" }).querySelector(".chat-waiting")).not.toBeNull();
   cleanup();
-  setStation(null);
+  setCanvas(null);
   await show(shipIt({ state: "running" }));
   expect(document.title).toBe("Ship it · Trackinizer");
   expect(screen.getByRole("button", { name: "Show Chat" }).querySelector(".chat-waiting")).toBeNull();

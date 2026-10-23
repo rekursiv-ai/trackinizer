@@ -1,8 +1,8 @@
 ---
 name: trax
 description: >
-  ALWAYS invoke this skill for Trackinizer/trax work tracking, inquiry records, and visual workspaces: issues, beliefs, papers, experiments, codechanges, web results/searches, sessions, costs, board, workspace. Do not hand-write trax records directly -- invoke this skill first.
-argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|env|workspace|<kind>] ..."
+  ALWAYS invoke this skill for Trackinizer/trax work tracking, inquiry records, and visual canvases: issues, beliefs, papers, experiments, codechanges, web results/searches, sessions, costs, board, canvas. Do not hand-write trax records directly -- invoke this skill first.
+argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|env|canvas|<kind>] ..."
 user-invocable: true
 tools: Bash, Read, Write, Edit, Glob, Grep
 ---
@@ -373,51 +373,51 @@ Inspection: `trax graph --open-only`, `trax issue title re "<terms>"`,
 
 ## Agent-controlled canvas
 
-Two levers, kept apart. `trax workspace` moves attention: which visual shows,
+Two levers, kept apart. `trax canvas` moves attention: which visual shows,
 on which record, where. What a visual draws is rows: its record is the app's
 anchor row, and each row's `app.<app>` holds what the app knows about it
 (`trax experiment 12 app to '{"myapp": {...}}'`). To change what an app's visual
 shows inside, write its rows; the visual redraws on its next read.
 
-In a recorded agent run your canvas is `$TRAX_WORKSPACE` (your workstream is
-`$TRAX_WORKSTREAM`): show your work there, and leave the id off:
-`trax workspace show trax.subgraph --record RECORD_UUID`. Unset means the
-session was not placed; use a paired chat message's `workspace_id` instead.
+In a recorded agent run your canvas is `$TRAX_CANVAS` (your workspace is
+`$TRAX_WORKSPACE`): show your work there, and leave the id off:
+`trax canvas show trax.subgraph --record RECORD_UUID`. Unset means the
+session was not placed; use a paired chat message's `canvas_id` instead.
 
-When a paired chat message includes a `workspace_id`, use that ID to inspect or
+When a paired chat message includes a `canvas_id`, use that ID to inspect or
 change the user's canvas. The agent's trax profile must point at the same server
-as the browser workspace, and the session using its API key must be paired to
-that workspace. Read the state before choosing an instance ID:
+as the browser canvas, and the session using its API key must be paired to
+that canvas. Read the state before choosing an instance ID:
 
 ```bash
-trax workspace WORKSPACE_UUID
-trax workspace WORKSPACE_UUID show trax.subgraph --record RECORD_UUID \
+trax canvas CANVAS_UUID
+trax canvas CANVAS_UUID show trax.subgraph --record RECORD_UUID \
   --param hops=2 --param highlight=UUID,UUID
-trax workspace WORKSPACE_UUID show trax.timeline --record RECORD_UUID --placement side
-trax workspace WORKSPACE_UUID show trax.files --record RECORD_UUID \
+trax canvas CANVAS_UUID show trax.timeline --record RECORD_UUID --placement side
+trax canvas CANVAS_UUID show trax.files --record RECORD_UUID \
   --param path='src/**/*.py' --param changed=true --param file=train.py
-trax workspace WORKSPACE_UUID focus INSTANCE_UUID
-trax workspace WORKSPACE_UUID place INSTANCE_UUID floating
-trax workspace WORKSPACE_UUID hide INSTANCE_UUID
-trax workspace WORKSPACE_UUID highlight RECORD_UUID,RECORD_UUID
-trax workspace WORKSPACE_UUID mark 0.1,0.2 0.4,0.5 --record RECORD_UUID
-trax workspace WORKSPACE_UUID mark remove MARK_UUID
-trax workspace WORKSPACE_UUID mark clear
-trax workspace WORKSPACE_UUID mark clear --page '#/graph'
-trax workspace WORKSPACE_UUID hide chat
-trax workspace WORKSPACE_UUID show chat
-trax workspace WORKSPACE_UUID theme to light
-trax workspace WORKSPACE_UUID chat_side to null
+trax canvas CANVAS_UUID focus INSTANCE_UUID
+trax canvas CANVAS_UUID place INSTANCE_UUID floating
+trax canvas CANVAS_UUID hide INSTANCE_UUID
+trax canvas CANVAS_UUID highlight RECORD_UUID,RECORD_UUID
+trax canvas CANVAS_UUID mark 0.1,0.2 0.4,0.5 --record RECORD_UUID
+trax canvas CANVAS_UUID mark remove MARK_UUID
+trax canvas CANVAS_UUID mark clear
+trax canvas CANVAS_UUID mark clear --page '#/graph'
+trax canvas CANVAS_UUID hide chat
+trax canvas CANVAS_UUID show chat
+trax canvas CANVAS_UUID theme to light
+trax canvas CANVAS_UUID chat_side to null
 ```
 
 Boxes are red rectangles on the canvas, drawn by people and agents: `mark X1,Y1
 X2,Y2` takes two corners as fractions (0 to 1) of the stage, and the box shows on
-the page the station is on until someone clicks it away. `--record` names the
-records it points at. `trax workspace WORKSPACE_UUID` lists every box with its id,
+the page the canvas is on until someone clicks it away. `--record` names the
+records it points at. `trax canvas CANVAS_UUID` lists every box with its id,
 page and the records and visuals under it, and a Chat line carries the boxes drawn
-since the last one. A recorded Claude run started in a station hears
-of each new box with the person's next prompt; any other agent in a station runs
-`trax workspace $TRAX_WORKSPACE` to see the boxes when the person mentions the
+since the last one. A recorded Claude run started in a canvas hears
+of each new box with the person's next prompt; any other agent in a canvas runs
+`trax canvas $TRAX_CANVAS` to see the boxes when the person mentions the
 canvas. `mark remove` takes one away; `mark clear` takes every box,
 or one page's with `--page`.
 
@@ -443,7 +443,7 @@ only a new `--record` moves it there and keeps its params (the graph's hops and
 highlight, the files view's narrowing); any `--param` sets them anew, each one it
 leaves out back to its default. Each write reads
 the current revision and prints the resulting state. If another change wins the
-race and the server returns 409, read the workspace again before retrying.
+race and the server returns 409, read the canvas again before retrying.
 `highlight` points at what you are talking about: it marks up to 50 records, by
 UUID, wherever the user's page draws them (graph nodes, list rows, a record's
 relations), and an empty list clears the marks. Like `navigate` it is an event:
@@ -457,8 +457,8 @@ is read or changed, only an agent key may send it, and a reloaded tab shows Chat
 `chat_side`, `highlight_mentions`, `terminal_font_size`, `home`): theirs, not your
 account's, and every tab of theirs shows it at once. VALUE reads as JSON when it
 parses (`false`, `null`), else as text; `null` puts the key back to its default.
-`trax workspace WORKSPACE_UUID` prints the preferences as they stand. Only the
-station's assistant may do it, and only for these UI keys; the user's own data
+`trax canvas CANVAS_UUID` prints the preferences as they stand. Only the
+canvas's assistant may do it, and only for these UI keys; the user's own data
 is not yours to read or set.
 Pairing and disconnecting remain browser actions.
 
@@ -511,7 +511,7 @@ value. Never echo a secret into a command, a row or your own output.
 
 The registry of machines campaigns may run on, and GPU jobs, moved out of trax:
 `trax machine` and `trax job` say so. A shell the web app opens sets
-`TRAX_WORKSTREAM` and `TRAX_WORKSPACE`, and
+`TRAX_WORKSPACE` and `TRAX_CANVAS`, and
 `LC_TRAX_*` copies that survive `ssh`; `trax` reads `TRAX_X`, else `LC_TRAX_X`, and
 uses the saved profile whose URL is `LC_TRAX_SERVER`.
 

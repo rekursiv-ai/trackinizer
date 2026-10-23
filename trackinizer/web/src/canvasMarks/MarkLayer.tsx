@@ -18,7 +18,7 @@ const LEAST_DRAG = 0.005;
  * this layer. Only a box's outline takes a click, which removes it; the inside, and
  * everything else, passes clicks through to the page. While the pen is on, a drag
  * draws one box. Each box records the visuals and records under it when it is
- * drawn, which the station's agent reads.
+ * drawn, which the canvas's agent reads.
  */
 export function MarkLayer({ boxes, bodies }: { readonly boxes: Boxes; readonly bodies: TileBodies }) {
   const layer = useRef<HTMLDivElement>(null);

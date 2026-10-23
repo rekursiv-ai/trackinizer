@@ -3,10 +3,10 @@ import { client, send, TIMEOUT_MS } from "./client";
 import type { components } from "./generated/schema";
 import type { Profile } from "./me";
 
-/** The provider a station's chat talks to: a chat's own run, or the server's assistant. */
+/** The provider a canvas's chat talks to: a chat's own run, or the server's assistant. */
 export type Provider = components["schemas"]["ChatProvider"];
 
-/** Every provider a station's chat can talk to, the server's assistant first. */
+/** Every provider a canvas's chat can talk to, the server's assistant first. */
 export const PROVIDERS: readonly Provider[] = ["assistant", "claude", "codex"];
 
 /** Whether `value` names a provider. */
@@ -15,30 +15,30 @@ export function isProvider(value: unknown): value is Provider {
 }
 
 /**
- * What a station read says of its provider: the one it talks to, which are available, and why not. A station from a
+ * What a canvas read says of its provider: the one it talks to, which are available, and why not. A canvas from a
  * server older than these fields has none: its provider is the assistant and every provider is available.
  */
-export type StationProviders = Partial<Pick<components["schemas"]["WorkspaceState"], "provider" | "available" | "reasons">>;
+export type CanvasProviders = Partial<Pick<components["schemas"]["CanvasState"], "provider" | "available" | "reasons">>;
 
-/** The provider a station's chat talks to. */
-export function stationProvider(station: StationProviders | null | undefined): Provider {
-  return isProvider(station?.provider) ? station.provider : "assistant";
+/** The provider a canvas's chat talks to. */
+export function canvasProvider(canvas: CanvasProviders | null | undefined): Provider {
+  return isProvider(canvas?.provider) ? canvas.provider : "assistant";
 }
 
 /** The server's assistant, by the actor it is configured as; null on a server with none. */
-export type StationAssistant = { readonly assistant?: string | null };
+export type CanvasAssistant = { readonly assistant?: string | null };
 
 /** What a provider is called on a person's screen: a CLI by its name, the assistant by the server's own. */
-export function providerName(provider: Provider, station: StationAssistant | null | undefined): string {
-  return provider === "assistant" ? station?.assistant || "assistant" : provider;
+export function providerName(provider: Provider, canvas: CanvasAssistant | null | undefined): string {
+  return provider === "assistant" ? canvas?.assistant || "assistant" : provider;
 }
 
-/** Whether the server has an assistant at all: a station read from a server with none says `assistant: null`. */
-export function hasAssistant(station: StationAssistant | null | undefined): boolean {
-  return station?.assistant !== null;
+/** Whether the server has an assistant at all: a canvas read from a server with none says `assistant: null`. */
+export function hasAssistant(canvas: CanvasAssistant | null | undefined): boolean {
+  return canvas?.assistant !== null;
 }
 
-/** Why the assistant is out when the station says it is, and gives no reason: the caller's credit is spent. */
+/** Why the assistant is out when the canvas says it is, and gives no reason: the caller's credit is spent. */
 export const OUT_OF_CREDIT = "You are out of credit.";
 
 /** Why the assistant is out: the server has none configured. */
@@ -57,18 +57,18 @@ export type ProviderStatus = { readonly ok: boolean; readonly reason: string; re
 
 /**
  * Each provider's status: the assistant is out when the server has none, or when the site's billing addon answers
- * that the caller may not run (`can_run`, with its `reason`); otherwise a provider is out when the station read says
- * so. A station read without the fields leaves every provider available.
+ * that the caller may not run (`can_run`, with its `reason`); otherwise a provider is out when the canvas read says
+ * so. A canvas read without the fields leaves every provider available.
  */
-export function providerStatuses(station: (StationProviders & StationAssistant) | null | undefined, balance: BalanceBody | null): Record<Provider, ProviderStatus> {
-  return Object.fromEntries(PROVIDERS.map((provider) => [provider, statusOf(provider, station, balance)])) as Record<Provider, ProviderStatus>;
+export function providerStatuses(canvas: (CanvasProviders & CanvasAssistant) | null | undefined, balance: BalanceBody | null): Record<Provider, ProviderStatus> {
+  return Object.fromEntries(PROVIDERS.map((provider) => [provider, statusOf(provider, canvas, balance)])) as Record<Provider, ProviderStatus>;
 }
 
-function statusOf(provider: Provider, station: (StationProviders & StationAssistant) | null | undefined, balance: BalanceBody | null): ProviderStatus {
-  if (provider === "assistant" && !hasAssistant(station)) return { ok: false, reason: NO_ASSISTANT };
+function statusOf(provider: Provider, canvas: (CanvasProviders & CanvasAssistant) | null | undefined, balance: BalanceBody | null): ProviderStatus {
+  if (provider === "assistant" && !hasAssistant(canvas)) return { ok: false, reason: NO_ASSISTANT };
   if (provider === "assistant" && balance !== null && !balance.can_run) return { ok: false, reason: balance.reason, credit: true };
-  if (station?.available?.[provider] !== false) return { ok: true, reason: "" };
-  const reason = station.reasons?.[provider];
+  if (canvas?.available?.[provider] !== false) return { ok: true, reason: "" };
+  const reason = canvas.reasons?.[provider];
   if (reason) return { ok: false, reason };
   return provider === "assistant" ? { ok: false, reason: OUT_OF_CREDIT, credit: true } : { ok: false, reason: noMachineReason(provider) };
 }

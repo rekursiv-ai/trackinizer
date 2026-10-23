@@ -6,7 +6,7 @@ import { ApiError } from "../api/client";
 import { getEvidenceTimeline, type EvidenceTimeline, type TimelineRecord } from "../api/timeline";
 import { Timeline } from "./Timeline";
 import { timeAxis, timelineRows, ticks } from "./timelineLayout";
-import { WorkspaceActionsProvider } from "./workspaceActions";
+import { CanvasActionsProvider } from "./canvasActions";
 import { canvasActions } from "./testing";
 
 vi.mock("../api/timeline", () => ({ getEvidenceTimeline: vi.fn() }));
@@ -66,15 +66,15 @@ const instance = {
 function renderTimeline(children: ReactNode, operate = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(<QueryClientProvider client={client}>
-    <WorkspaceActionsProvider value={canvasActions({ operate })}>
+    <CanvasActionsProvider value={canvasActions({ operate })}>
       {children}
-    </WorkspaceActionsProvider>
+    </CanvasActionsProvider>
   </QueryClientProvider>);
   return { ...view, operate };
 }
 
 const view = (record_id: string | null = "Issue-706") =>
-  <Timeline instance={{ ...instance, record_id }} workspace={null} onWorkspaceChanged={vi.fn()} focused />;
+  <Timeline instance={{ ...instance, record_id }} canvas={null} onCanvasChanged={vi.fn()} focused />;
 
 test("draws leads above the record and its directions below, in that order", async () => {
   vi.mocked(getEvidenceTimeline).mockResolvedValue(timeline);
@@ -127,8 +127,8 @@ test("the svg is as wide as the window and clips titles to the label column", as
   const long = { ...timeline, directions: [{ ...timeline.directions[0]!,
     issue: record("Issue", 712, "A very long direction title that cannot fit the column", "2026-09-27T00:00:00Z") }] };
   vi.mocked(getEvidenceTimeline).mockResolvedValue(long);
-  const { container } = renderTimeline(<Timeline instance={{ ...instance }} workspace={null}
-    onWorkspaceChanged={vi.fn()} focused width={600} />);
+  const { container } = renderTimeline(<Timeline instance={{ ...instance }} canvas={null}
+    onCanvasChanged={vi.fn()} focused width={600} />);
   await screen.findByRole("link", { name: /Issue#712/ });
   const svg = container.querySelector("svg.tl-chart")!;
   expect(svg.getAttribute("width")).toBe("600");

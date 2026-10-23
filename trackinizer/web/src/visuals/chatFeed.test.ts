@@ -5,7 +5,7 @@ afterEach(() => sessionStorage.clear());
 
 test("pending posts survive remounts and reloads and stay with their sender", () => {
   const feed = new ChatFeed();
-  const line = { key: "k1", text: "continue", workspaceId: "w1", conversationId: "c1", baseline: 0, submittedAt: 1_000 };
+  const line = { key: "k1", text: "continue", canvasId: "w1", conversationId: "c1", baseline: 0, submittedAt: 1_000 };
   feed.updatePending("ada", () => [line]);
   feed.updatePending("bob", () => [{ ...line, key: "k2", text: "bob's post" }]);
 

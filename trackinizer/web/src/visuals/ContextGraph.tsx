@@ -11,7 +11,7 @@ import { formatRoute, UUID } from "../router/route";
 import { ReadFailure } from "../ui/failure";
 import { useVisualMark } from "./marks";
 import type { RendererProps } from "./registry";
-import { useWorkspaceActions } from "./workspaceActions";
+import { useCanvasActions } from "./canvasActions";
 import "../graph/graph.css";
 import "./ContextGraph.css";
 
@@ -38,17 +38,17 @@ export type ContextParams = { readonly hops: Reach; readonly highlight: readonly
  */
 export function ContextGraph({
   instance,
-  workspace,
+  canvas,
   createRenderer = forceGraphRenderer,
 }: RendererProps & { readonly createRenderer?: CreateRenderer }) {
   const recordId = instance.record_id ?? null;
   const { hops, highlight } = contextParams(instance.params ?? {});
   const highlighted = highlight.join(",");
-  const actions = useWorkspaceActions();
+  const actions = useCanvasActions();
   const palette = useThemePalette(useMeta());
   const query = useQuery({ ...contextQuery(recordId ?? "", hops), enabled: recordId !== null });
   const data = query.data;
-  useVisualMark(instance, workspace, "data", query.isSuccess);
+  useVisualMark(instance, canvas, "data", query.isSuccess);
   const [model] = useState(() => new GraphModel(palette));
   const host = useRef<HTMLDivElement>(null);
   const [renderer, setRenderer] = useState<Renderer | null>(null);

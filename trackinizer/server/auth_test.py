@@ -1038,7 +1038,7 @@ class TestSessionAudiences:
     """A browser session holds what its user holds, with no key limits."""
 
     @pytest.mark.asyncio
-    async def test_a_workspace_member_of_the_staff_domain_holds_staff(self) -> None:
+    async def test_a_canvas_member_of_the_staff_domain_holds_staff(self) -> None:
         identity = await _session_identity(
             email="ada@example.com",
             hosted_domain="example.com",

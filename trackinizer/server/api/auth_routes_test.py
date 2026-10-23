@@ -539,7 +539,7 @@ class TestProfile:
                 {
                     "name": "Alice",
                     "last_login": None,
-                    "visual_workspace_enabled": True,
+                    "visual_canvas_enabled": True,
                     "acknowledged_at": _WHEN,
                     "acknowledged_rules_version": "old",
                     "preferences": {"theme": "light", "retired": 1},
@@ -615,7 +615,7 @@ _EMPTY_USER_DATA: dict[str, object] = {
     "lens": None,
     "drafts": {},
     "create_draft": None,
-    "workstreams": {"order": [], "pinned": [], "hidden": []},
+    "workspaces": {"order": [], "pinned": [], "hidden": []},
     "settings_artifact_id": None,
 }
 
@@ -877,12 +877,12 @@ class TestRouteRequiresAuth:
         assert r.status_code == 401
 
 
-def test_api_key_cannot_enable_visual_workspace(
+def test_api_key_cannot_enable_visual_canvas(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     """Only an interactive browser session can opt its account in."""
     client, _store, engine = route_client
-    response = client.put("/api/me/visual-workspace", json={"enabled": True})
+    response = client.put("/api/me/visual-canvas", json={"enabled": True})
     assert response.status_code == 403
     assert not engine.conn.fetchval.called
 

@@ -27,8 +27,19 @@ from trackinizer.server.api.locks import require_unlocked
 from trackinizer.server.api.session_access import session_reader
 from trackinizer.server.audience import members_reader
 from trackinizer.server.auth import AuthIdentity, require_role
-from trackinizer.server.chat_hub import WorkspaceFrame
+from trackinizer.server.chat_hub import CanvasFrame
 from trackinizer.server.inbound import IdempotencyReuseError
+from trackinizer.server.visuals.canvas_store import (
+    AnswerNotOwnerError,
+    CanvasChatError,
+    CanvasSessionUnavailableError,
+    ChatTakenOverError,
+    CommandRefusedError,
+    PartnerBusyError,
+    ProviderOfflineError,
+    read_canvas,
+    send_chat_line,
+)
 from trackinizer.server.visuals.chat_forks import (
     ChatClosedError,
     ChatRefusedError,
@@ -37,17 +48,6 @@ from trackinizer.server.visuals.chat_forks import (
 )
 from trackinizer.server.visuals.chat_shares import delete_chat, set_share
 from trackinizer.server.visuals.science_chats import read_conversation, read_head
-from trackinizer.server.visuals.workspace_store import (
-    AnswerNotOwnerError,
-    ChatTakenOverError,
-    CommandRefusedError,
-    PartnerBusyError,
-    ProviderOfflineError,
-    StationChatError,
-    WorkspaceSessionUnavailableError,
-    read_workspace,
-    send_chat_line,
-)
 from trackinizer.wire.wire_science_chat import (
     CHAT_PATH,
     CHAT_SHARE_PATH,
@@ -62,7 +62,7 @@ from trackinizer.wire.wire_sessions import CHAT_TAKEN_OVER
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from trackinizer.server.visuals.chat_shares import UnboundStation
+    from trackinizer.server.visuals.chat_shares import UnboundCanvas
 
 
 router = APIRouter()
@@ -92,18 +92,18 @@ async def post_chat_line_route(
     someone else began is refused with 409. A
     line under the id of a
     deleted chat, named or as a fork's key, or a fork from a line of one, is refused
-    with 410 ``chat_deleted``: no chat starts under that id again. A station holds one
-    chat: its first line binds the station to the line's conversation, and a line
+    with 410 ``chat_deleted``: no chat starts under that id again. A canvas holds one
+    chat: its first line binds the canvas to the line's conversation, and a line
     naming another conversation is refused with 409, as is one for a conversation
-    another station of the poster holds. A fork goes to a new station, copied from
-    the one it was sent from and named in the answer's ``workspace_id``. The line's
+    another canvas of the poster holds. A fork goes to a new canvas, copied from
+    the one it was sent from and named in the answer's ``canvas_id``. The line's
     poster is the attested identity, never anything in the body. The answer is the
     conversation id at once: the conversation's session appears when the assistant
     opens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key
     queues nothing again.
 
-    The poster's station's provider answers, or in a chat someone else started, the
-    provider of its starter's station. ``assistant`` takes a ``line`` or an ``answer``
+    The poster's canvas's provider answers, or in a chat someone else started, the
+    provider of its starter's canvas. ``assistant`` takes a ``line`` or an ``answer``
     (422 for any other ``kind``); an ``answer`` is a choice on a card the assistant
     asked, queued for the chat's own session, and is 409 ``provider_offline`` while the
     assistant does not have the chat open. For ``claude`` or ``codex`` the post, with
@@ -111,11 +111,11 @@ async def post_chat_line_route(
     run drains; with no such run live it is 409 ``provider_offline``, and while the run
     reports ``taken_over``, its CLI opened in a terminal, it is 409 ``chat_taken_over``
     with nothing queued: reattach first. A fork from a ``claude`` or
-    ``codex`` station is one too: its new session is opened at once and its line
+    ``codex`` canvas is one too: its new session is opened at once and its line
     waits there for the run the person starts.
 
     A ``line`` that starts with a known slash command of claude or codex is judged
-    by the chat's provider, not the poster's station. One the provider runs from
+    by the chat's provider, not the poster's canvas. One the provider runs from
     Chat (``/goal``, and claude's ``/compact``) is queued as a ``command``, typed
     bare, with no page, trail or marks; ``/model <name>`` and ``/effort <level>``
     are queued as a ``settings`` post the same way (bare, they are refused); any
@@ -128,15 +128,15 @@ async def post_chat_line_route(
     the option taken (``{prompt_id, option}``), or in the older form a ``decision``.
 
     Args:
-      body: The line, the poster's station, and the conversation to post into or the
-        line to fork; neither continues the station's chat, else starts one, named by
+      body: The line, the poster's canvas, and the conversation to post into or the
+        line to fork; neither continues the canvas's chat, else starts one, named by
         ``key``.
       request: Request carrying the database engine and inbound queue.
       identity: The signed-in writer, who must own the canvas.
       key: Required retry-safe idempotency key.
 
     Returns:
-      sent: The conversation, the station it went to, and its session when the line
+      sent: The conversation, the canvas it went to, and its session when the line
         was queued on it.
 
     """
@@ -187,17 +187,17 @@ async def post_chat_line_route(
             detail={"code": "provider_offline", "message": str(error)},
         ) from error
     except (
-        WorkspaceSessionUnavailableError,
+        CanvasSessionUnavailableError,
         PartnerBusyError,
         IdempotencyReuseError,
         ConversationTakenError,
-        StationChatError,
+        CanvasChatError,
     ) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     if sent is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+        raise HTTPException(status_code=404, detail="Canvas not found")
     return sent
 
 
@@ -308,7 +308,7 @@ async def delete_chat_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> Response:
-    """Delete a chat: every session of it with its records, its shares, its stations.
+    """Delete a chat: every session of it with its records, its shares, its canvases.
 
     An admin deletes any chat, and so does the key that opened every session of it;
     any other API key is 403, as only a person's browser deletes a chat otherwise.
@@ -317,11 +317,11 @@ async def delete_chat_route(
     taken by the assistant and not yet recorded, as posted; once someone else has
     posted they are 403 ``chat_has_other_posters``, and anyone else is 403
     ``chat_not_starter``. A session that is locked, or linked to a locked row, needs
-    an admin. Each station that held the chat holds none after, at its next
-    revision, and its open tabs get a ``workspace`` frame saying so. The chat's
+    an admin. Each canvas that held the chat holds none after, at its next
+    revision, and its open tabs get a ``canvas`` frame saying so. The chat's
     forks stay, and so do its sessions' change log rows, without the titles and
     descriptions they held. Its queued lines go, and its id starts no chat again: a
-    session, a line or a station under it is 410 ``chat_deleted``.
+    session, a line or a canvas under it is 410 ``chat_deleted``.
 
     Args:
       conversation_id: The chat.
@@ -348,7 +348,7 @@ async def delete_chat_route(
             require_browser(identity)
         await require_unlocked(request, identity, found.sessions, include_peers=True)
     try:
-        stations = await delete_chat(
+        canvases = await delete_chat(
             store,
             assistant=assistant,
             caller=identity,
@@ -357,9 +357,9 @@ async def delete_chat_route(
         )
     except ChatRefusedError as error:
         raise HTTPException(status_code=403, detail={"code": error.code}) from error
-    if stations is None:
+    if canvases is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    await _publish_stations(request, stations=stations)
+    await _publish_canvases(request, canvases=canvases)
     return Response(status_code=204)
 
 
@@ -392,20 +392,20 @@ async def _set_share(
     return shared_with
 
 
-# Published after the delete commits, so a tab never reads a station still holding it.
-async def _publish_stations(
+# Published after the delete commits, so a tab never reads a canvas still holding it.
+async def _publish_canvases(
     request: Request,
-    stations: Sequence[UnboundStation],
+    canvases: Sequence[UnboundCanvas],
 ) -> None:
-    """Send each station's open tabs a ``workspace`` frame without the deleted chat."""
+    """Send each canvas's open tabs a ``canvas`` frame without the deleted chat."""
     hub = get_hub(request)
-    for station in stations:
-        state = await read_workspace(
+    for canvas in canvases:
+        state = await read_canvas(
             engine_of(request),
-            user_id=station.user_id,
-            workspace_id=station.workspace_id,
+            user_id=canvas.user_id,
+            canvas_id=canvas.canvas_id,
             inbound=get_inbound(request),
             assistant=get_assistant(request),
         )
         if state is not None:
-            hub.publish(station.workspace_id, frame=WorkspaceFrame(state=state))
+            hub.publish(canvas.canvas_id, frame=CanvasFrame(state=state))

@@ -267,7 +267,7 @@ async def served(
         for email, role, status in _USERS:
             await conn.execute(
                 "INSERT INTO users (id, email, name, role, status, "
-                "visual_workspace_enabled) VALUES ($1, $2, 'n', $3, $4, TRUE)",
+                "visual_canvas_enabled) VALUES ($1, $2, 'n', $3, $4, TRUE)",
                 uuid4(),
                 email,
                 role,

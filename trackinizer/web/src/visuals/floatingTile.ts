@@ -1,5 +1,5 @@
 import { type Size, toFraction, toPixels } from "./canvasSizes";
-import type { Layout } from "./stationLayout";
+import type { Layout } from "./canvasLayout";
 
 /**
  * A press on a floating tile's top bar that never goes farther than this many

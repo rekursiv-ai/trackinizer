@@ -1,4 +1,4 @@
-/* The app's one bar (TopBar.tsx), over the main area: the logo, Go, Search and New, the stations as tab groups, then the pin, Machines, the Workbench and the account. */
+/* The app's one bar (TopBar.tsx), over the main area: the logo, Go, Search and New, the canvases as tab groups, then the pin, Machines, the Workbench and the account. */
 .topbar {
   display: flex; flex: 0 0 auto; align-items: center; gap: 4px; height: 44px; min-width: 0;
   padding: 0 10px; padding-top: env(safe-area-inset-top, 0px); position: relative; z-index: 45;
@@ -12,7 +12,7 @@
 .topbar-logo { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--radius); flex: none; }
 .topbar-logo:hover { background: var(--surface-hover); }
 .topbar-rule { flex: none; width: 1px; height: 18px; margin: 0 6px; background: var(--line-strong); }
-.topbar-stations { display: flex; flex: 1; min-width: 0; align-items: center; }
+.topbar-canvases { display: flex; flex: 1; min-width: 0; align-items: center; }
 
 /* A menu from a button of the bar: under it, over the main area. */
 .topbar-pop-root { position: relative; flex: none; }
@@ -54,31 +54,31 @@
 .machines-provided li { display: flex; flex-direction: column; gap: 1px; padding: 4px; font-size: 13px; }
 .machines-provided li span { color: var(--ink-muted); }
 
-/* ---- Workstreams in the bar (WorkstreamBar.tsx) ---- */
-.workstream-bar-wrap { position: relative; display: flex; flex: 1; min-width: 0; align-items: center; gap: 4px; }
-.workstream-bar { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 3px; overflow-x: auto; scrollbar-width: none; }
-.workstream-bar::-webkit-scrollbar { display: none; }
-.workstream-slot { display: contents; }
-.workstream-title { --group: var(--accent); display: flex; flex: none; align-items: center; gap: 5px; height: 28px; max-width: 20em; padding: 0 9px; border: 1px solid transparent; border-radius: 7px; color: var(--ink-muted); font-size: 13px; white-space: nowrap; }
-.workstream-title:hover, .workstream-title:focus-visible { background: var(--surface-hover); color: var(--text); }
-.workstream-title.is-current { border-color: var(--line-strong); background: var(--accent-soft); color: var(--text); font-weight: 600; }
-.workstream-title[draggable="true"] { cursor: grab; }
-.workstream-title.is-dragged { opacity: .45; }
-.workstream-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.workstream-name { width: 160px; border-color: var(--accent); background: var(--bg); color: var(--text); font: inherit; }
-.workstream-pin { display: inline-flex; flex: none; align-items: center; }
-.workstream-divider { flex: none; width: 1px; height: 20px; margin: 0 5px; background: var(--line-strong); }
-.workstream-new { display: flex; flex: none; align-items: center; gap: 4px; height: 28px; padding: 0 8px; border: 1px dashed var(--line-strong); border-radius: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-.workstream-new:hover { color: var(--text); }
-.workstream-pop { position: absolute; z-index: 55; }
-.workstream-menu { position: fixed; min-width: 190px; width: 210px; }
-.workstream-drawer { position: fixed; z-index: 60; top: 52px; right: 12px; display: flex; flex-direction: column; gap: 10px; width: min(360px, calc(100vw - 24px)); max-height: calc(100vh - 64px); padding: 14px; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface-overlay); box-shadow: 0 16px 48px #0008; }
-.workstream-drawer-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.workstream-drawer h2, .workstream-drawer h3 { margin: 0; font-size: 15px; }
-.workstream-drawer ul { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 18px; }
-.workstream-drawer li { display: flex; flex-direction: column; gap: 2px; }
-.workstream-session { color: var(--muted); font: 11px ui-monospace, monospace; }
-.workstream-problem { position: absolute; top: calc(100% + 4px); left: 0; z-index: 60; margin: 0; padding: 5px 8px; border-radius: 5px; background: var(--surface-raised); color: var(--error-text); font-size: 12px; }
+/* ---- Workspaces in the bar (WorkspaceBar.tsx) ---- */
+.workspace-bar-wrap { position: relative; display: flex; flex: 1; min-width: 0; align-items: center; gap: 4px; }
+.workspace-bar { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 3px; overflow-x: auto; scrollbar-width: none; }
+.workspace-bar::-webkit-scrollbar { display: none; }
+.workspace-slot { display: contents; }
+.workspace-title { --group: var(--accent); display: flex; flex: none; align-items: center; gap: 5px; height: 28px; max-width: 20em; padding: 0 9px; border: 1px solid transparent; border-radius: 7px; color: var(--ink-muted); font-size: 13px; white-space: nowrap; }
+.workspace-title:hover, .workspace-title:focus-visible { background: var(--surface-hover); color: var(--text); }
+.workspace-title.is-current { border-color: var(--line-strong); background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.workspace-title[draggable="true"] { cursor: grab; }
+.workspace-title.is-dragged { opacity: .45; }
+.workspace-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.workspace-name { width: 160px; border-color: var(--accent); background: var(--bg); color: var(--text); font: inherit; }
+.workspace-pin { display: inline-flex; flex: none; align-items: center; }
+.workspace-divider { flex: none; width: 1px; height: 20px; margin: 0 5px; background: var(--line-strong); }
+.workspace-new { display: flex; flex: none; align-items: center; gap: 4px; height: 28px; padding: 0 8px; border: 1px dashed var(--line-strong); border-radius: 7px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.workspace-new:hover { color: var(--text); }
+.workspace-pop { position: absolute; z-index: 55; }
+.workspace-menu { position: fixed; min-width: 190px; width: 210px; }
+.workspace-drawer { position: fixed; z-index: 60; top: 52px; right: 12px; display: flex; flex-direction: column; gap: 10px; width: min(360px, calc(100vw - 24px)); max-height: calc(100vh - 64px); padding: 14px; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface-overlay); box-shadow: 0 16px 48px #0008; }
+.workspace-drawer-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.workspace-drawer h2, .workspace-drawer h3 { margin: 0; font-size: 15px; }
+.workspace-drawer ul { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 18px; }
+.workspace-drawer li { display: flex; flex-direction: column; gap: 2px; }
+.workspace-session { color: var(--muted); font: 11px ui-monospace, monospace; }
+.workspace-problem { position: absolute; top: calc(100% + 4px); left: 0; z-index: 60; margin: 0; padding: 5px 8px; border-radius: 5px; background: var(--surface-raised); color: var(--error-text); font-size: 12px; }
 
 /* ---- The account (AccountMenu.tsx) ---- */
 .account { margin-left: 4px; }
@@ -112,15 +112,15 @@
 
 @media (max-width: 760px) {
   .topbar { padding-left: max(8px, env(safe-area-inset-left, 0px)); padding-right: max(8px, env(safe-area-inset-right, 0px)); }
-  .workstream-new > span { display: none; }
+  .workspace-new > span { display: none; }
   .account-button:hover:not([aria-expanded="true"]) { padding-right: 2px; background: none; }
   .account-button:hover:not([aria-expanded="true"]) .account-reveal { max-width: 0; opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .account-reveal, .account-button { transition: none; }
 }
-/* A chat in the workstream waits on the person: the blue dot an editor puts on a tab that needs you. */
-.workstream-waiting { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+/* A chat in the workspace waits on the person: the blue dot an editor puts on a tab that needs you. */
+.workspace-waiting { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
 
 /* Pinned, the icon reads plainly; hovered or focused, it dims and crosses out: the click unpins. */
 .topbar-pin[aria-pressed="true"]:is(:hover, :focus-visible) span { opacity: .5; text-decoration: line-through; }

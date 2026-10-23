@@ -51,7 +51,7 @@ def cheap_scrypt(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _serve(monkeypatch: pytest.MonkeyPatch, *staff: str, session: str = "") -> None:
-    """Serve the app with Workspace members of ``example.com`` and these entries as staff."""
+    """Serve the app with Canvas members of ``example.com`` and these entries as staff."""
     config = Config(
         staff=("*@example.com", *staff),
         session_secret=session,
@@ -106,7 +106,7 @@ async def _admin(
     staff: bool = True,
     open_into: str | None = None,
 ) -> tuple[uuid.UUID, str]:
-    """Insert an admin, a Workspace member of the staff domain when ``staff``."""
+    """Insert an admin, a Canvas member of the staff domain when ``staff``."""
     user_id = await _person(
         store,
         email,

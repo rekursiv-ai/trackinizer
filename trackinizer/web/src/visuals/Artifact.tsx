@@ -58,12 +58,12 @@ export type ArtifactContentRevision = {
 );
 
 /** Render the revision selected by a canvas operation. */
-export function Artifact({ instance, workspace }: RendererProps) {
+export function Artifact({ instance, canvas }: RendererProps) {
   const id = instance.record_id;
   if (typeof id !== "string" || !UUID.test(id)) {
     return <p className="visual-unsupported">Open an Artifact or ask the agent to select one.</p>;
   }
-  return <ArtifactPage id={id} shown={{ instance, workspace }} />;
+  return <ArtifactPage id={id} shown={{ instance, canvas }} />;
 }
 
 /** One exact revision, read once however many places draw it: it never changes. */
@@ -83,10 +83,10 @@ export function ArtifactPage({ id, optional = false, framed = true, shown }: {
   /** Whether an HTML revision's page is drawn here; a record's page draws it across the pane itself (`ArtifactFrame`). */
   readonly framed?: boolean;
   /** The canvas visual this page is, so its data's paint is marked (`trackinizer.timings()`). */
-  readonly shown?: Pick<RendererProps, "instance" | "workspace">;
+  readonly shown?: Pick<RendererProps, "instance" | "canvas">;
 }) {
   const query = useArtifactContent(id);
-  useVisualMark(shown?.instance, shown?.workspace ?? null, "data", query.isSuccess);
+  useVisualMark(shown?.instance, shown?.canvas ?? null, "data", query.isSuccess);
   if (query.isPending) return <div className="visual-loading" aria-busy="true">Loading Artifact…</div>;
   if (optional && query.error instanceof ApiError && query.error.status === 404) return null;
   if (query.isError) return <div className="visual-unsupported" role="alert">Could not load this Artifact revision. <button className="btn ghost" type="button" onClick={() => void query.refetch()}>Retry</button></div>;

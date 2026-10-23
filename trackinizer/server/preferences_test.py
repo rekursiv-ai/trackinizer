@@ -45,7 +45,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "lens": None,
     "drafts": {},
     "create_draft": None,
-    "workstreams": {"order": [], "pinned": [], "hidden": []},
+    "workspaces": {"order": [], "pinned": [], "hidden": []},
     "settings_artifact_id": None,
 }
 
@@ -115,14 +115,14 @@ def test_a_skin_is_one_of_the_named_looks() -> None:
         Preferences.model_validate({"skin": "cyber"})
 
 
-def test_workstream_preferences_keep_order_pin_and_visibility() -> None:
+def test_workspace_preferences_keep_order_pin_and_visibility() -> None:
     saved = {
         "order": ["22222222-2222-2222-2222-222222222222"],
         "pinned": ["22222222-2222-2222-2222-222222222222"],
         "hidden": ["33333333-3333-3333-3333-333333333333"],
     }
     assert (
-        Preferences.model_validate({"workstreams": saved}).workstreams.model_dump()
+        Preferences.model_validate({"workspaces": saved}).workspaces.model_dump()
         == saved
     )
 

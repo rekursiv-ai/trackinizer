@@ -118,7 +118,7 @@ Left out on purpose, and why:
 * ``variables`` -- launch configuration, not graph records; a secret row names
   a value that lives outside the database, so a restored export could not
   carry it.
-* ``visual_workspaces``, ``visual_workspace_operations`` -- per-user stations
+* ``visual_canvases``, ``visual_canvas_operations`` -- per-user canvases
   (named canvases) and operation receipts, not account-agnostic graph records. A Chat conversation is an
   AgentSession, so its lines export with the sessions.
 * ``science_chat_shares``, ``science_chat_tombstones`` -- who may post into which

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { setVisualWorkspacePreference } from "../api/me";
+import { setVisualCanvasPreference } from "../api/me";
 import { bootQueries, useProfile } from "../app/boot";
 import { NO_AUTH_EMAIL, useSignOut } from "../app/signOut";
 import { CopyDetails } from "../debug/CopyDetails";
@@ -53,7 +53,7 @@ export function SettingsView({ assign = (url: string) => location.assign(url) }:
           <AliasesSection />
           <ThemeSection />
           <PreferencesDocument />
-          <VisualWorkspaceSection />
+          <VisualCanvasSection />
           <ChatPartnerSection />
           <BillingSection assign={assign} />
           <TokensSection />
@@ -64,40 +64,40 @@ export function SettingsView({ assign = (url: string) => location.assign(url) }:
   );
 }
 
-function VisualWorkspaceSection() {
+function VisualCanvasSection() {
   const profile = useProfile();
   const queryClient = useQueryClient();
   const online = useOnline();
   const change = useMutation({
-    mutationFn: setVisualWorkspacePreference,
+    mutationFn: setVisualCanvasPreference,
     onSuccess: ({ enabled }) => {
-      queryClient.setQueryData(bootQueries.profile.queryKey, { ...profile, visual_workspace_enabled: enabled });
+      queryClient.setQueryData(bootQueries.profile.queryKey, { ...profile, visual_canvas_enabled: enabled });
     },
   });
-  const enabled = change.data?.enabled ?? profile.visual_workspace_enabled;
+  const enabled = change.data?.enabled ?? profile.visual_canvas_enabled;
   const [mentions, chooseMentions] = useHighlightMentions();
   const toolCalls = usePreferences().chat_tool_calls;
   return (
-    <Section title="Agent workspace">
+    <Section title="Agent canvas">
       <div className="st-row">
-        <label className="st-workspace-choice">
+        <label className="st-canvas-choice">
           <input type="checkbox" checked={enabled} disabled={!online || change.isPending}
             onChange={(event) => change.mutate(event.target.checked)} />
           Enable agent-guided workbench
         </label>
         {change.isPending && <span className="w-status" role="status">Saving…</span>}
-        {change.isError && <span className="form-err" role="alert">Could not save workspace preference.</span>}
+        {change.isError && <span className="form-err" role="alert">Could not save canvas preference.</span>}
       </div>
       {/* This browser's, like the theme: it changes how the page draws an answer, not what the server holds. */}
       <div className="st-row">
-        <label className="st-workspace-choice">
+        <label className="st-canvas-choice">
           <input type="checkbox" checked={mentions} onChange={(event) => chooseMentions(event.target.checked)} />
           Highlight rows the assistant mentions
         </label>
       </div>
       {/* The user's preference: Chat draws each tool call as a card between lines. */}
       <div className="st-row">
-        <label className="st-workspace-choice">
+        <label className="st-canvas-choice">
           <input type="checkbox" checked={toolCalls} onChange={(event) => {
             void choosePreferences({ chat_tool_calls: event.target.checked });
           }} />
@@ -151,7 +151,7 @@ function ThemeSection() {
         </select>
       </div>
       <div className="st-row">
-        <label className="st-workspace-choice">
+        <label className="st-canvas-choice">
           <input type="checkbox" checked={tabChords} onChange={(event) => {
             void choosePreferences({ terminal_tab_chords: event.target.checked });
           }} />

@@ -1065,10 +1065,10 @@ class FakeClient:
     def terminal_machines(
         self,
         *,
-        workspace: uuid.UUID | None = None,
+        canvas: uuid.UUID | None = None,
     ) -> TerminalMachines:
         """Terminal machines."""
-        self.calls.append(("terminal_machines", (), {"workspace": workspace}))
+        self.calls.append(("terminal_machines", (), {"canvas": canvas}))
         return TerminalMachines(machines=[])
 
     def open_terminal(self, body: OpenTerminal) -> TerminalOpened:
@@ -1087,68 +1087,68 @@ class FakeClient:
         self.calls.append(("send_message", (actor, text), {"room": room}))
         return [self.target_id]
 
-    def read_workspace(self, workspace_id: uuid.UUID) -> dict[str, PlainTree]:
-        """Read workspace."""
-        self.calls.append(("read_workspace", (workspace_id,), {}))
-        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+    def read_canvas(self, canvas_id: uuid.UUID) -> dict[str, PlainTree]:
+        """Read canvas."""
+        self.calls.append(("read_canvas", (canvas_id,), {}))
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
 
-    def apply_workspace_operation(
+    def apply_canvas_operation(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         operation: Mapping[str, object],
     ) -> dict[str, PlainTree]:
-        """Apply workspace operation."""
+        """Apply canvas operation."""
         self.calls.append(
             (
-                "apply_workspace_operation",
-                (workspace_id,),
+                "apply_canvas_operation",
+                (canvas_id,),
                 {"operation": dict(operation)},
             ),
         )
-        return {"id": str(workspace_id), "revision": 1, "visuals": []}
+        return {"id": str(canvas_id), "revision": 1, "visuals": []}
 
     def navigate(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         route: str,
     ) -> dict[str, PlainTree]:
         """Navigate."""
-        self.calls.append(("navigate", (workspace_id,), {"route": route}))
-        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+        self.calls.append(("navigate", (canvas_id,), {"route": route}))
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
 
     def highlight(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         ids: Sequence[uuid.UUID],
     ) -> dict[str, PlainTree]:
         """Highlight."""
-        self.calls.append(("highlight", (workspace_id,), {"ids": list(ids)}))
-        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+        self.calls.append(("highlight", (canvas_id,), {"ids": list(ids)}))
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
 
     def chat_window(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         hidden: bool,
     ) -> dict[str, PlainTree]:
         """Hide or show Chat."""
-        self.calls.append(("chat_window", (workspace_id,), {"hidden": hidden}))
-        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+        self.calls.append(("chat_window", (canvas_id,), {"hidden": hidden}))
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
 
     def set_preferences(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         change: Mapping[str, object],
     ) -> dict[str, PlainTree]:
-        """Change the station owner's preferences."""
+        """Change the canvas owner's preferences."""
         self.calls.append(
-            ("set_preferences", (workspace_id,), {"change": dict(change)}),
+            ("set_preferences", (canvas_id,), {"change": dict(change)}),
         )
-        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
 
     def add_subscriber(
         self,

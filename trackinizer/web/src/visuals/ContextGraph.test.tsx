@@ -3,13 +3,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { FocusGraph, FocusNode } from "../api/graph";
 import { type Sent, stubFetch } from "../api/testing";
-import type { WorkspaceState } from "../api/workspaces";
+import type { CanvasState } from "../api/canvases";
 import { MetaContext } from "../app/boot";
 import { edge, FakeRenderer, META, node, uuid } from "../graph/testing";
 import { testClient } from "../live/testing";
 import { CONTEXT_LIMIT, ContextGraph, contextLens, contextParams } from "./ContextGraph";
 import { canvasActions } from "./testing";
-import { type WorkspaceActions, WorkspaceActionsProvider } from "./workspaceActions";
+import { type CanvasActions, CanvasActionsProvider } from "./canvasActions";
 
 /** Inquiry `n`, `hops` from the focus, as the focus read sends it. */
 function at(n: number, hops: number, fields: Partial<FocusNode> = {}): FocusNode {
@@ -41,27 +41,27 @@ afterEach(() => {
 
 const graphReads = () => sent.filter((request) => request.path === "/api/web/graph");
 
-function instance(recordId: string | null, params: WorkspaceState["visuals"][number]["params"] = {}): WorkspaceState["visuals"][number] {
+function instance(recordId: string | null, params: CanvasState["visuals"][number]["params"] = {}): CanvasState["visuals"][number] {
   return { id: "graph-instance", type: "trax.subgraph", version: 1, placement: "main", record_id: recordId, params };
 }
 
-function actions(fields: Partial<WorkspaceActions> = {}): WorkspaceActions {
+function actions(fields: Partial<CanvasActions> = {}): CanvasActions {
   return canvasActions({ visualTypes: new Set(["trax.subgraph"]), ...fields });
 }
 
-function show(pane: WorkspaceState["visuals"][number], workspace: WorkspaceActions | null = actions()) {
+function show(pane: CanvasState["visuals"][number], canvas: CanvasActions | null = actions()) {
   const client = testClient();
-  const tree = (shown: WorkspaceState["visuals"][number]) => (
+  const tree = (shown: CanvasState["visuals"][number]) => (
     <QueryClientProvider client={client}>
       <MetaContext value={META}>
-        <WorkspaceActionsProvider value={workspace}>
-          <ContextGraph instance={shown} workspace={null} onWorkspaceChanged={() => {}} focused createRenderer={renderer.create} />
-        </WorkspaceActionsProvider>
+        <CanvasActionsProvider value={canvas}>
+          <ContextGraph instance={shown} canvas={null} onCanvasChanged={() => {}} focused createRenderer={renderer.create} />
+        </CanvasActionsProvider>
       </MetaContext>
     </QueryClientProvider>
   );
   const view = render(tree(pane));
-  return { ...view, show: (next: WorkspaceState["visuals"][number]) => view.rerender(tree(next)) };
+  return { ...view, show: (next: CanvasState["visuals"][number]) => view.rerender(tree(next)) };
 }
 
 test("one read of the record's neighbourhood, a hop past what it lights, draws the record in context", async () => {
@@ -103,17 +103,17 @@ test("at three hops it reads three and lights them all", async () => {
 });
 
 test("a click on another node moves the page to it and re-centres the window there", async () => {
-  const workspace = actions();
-  show(instance(uuid(1), { hops: 2, highlight: uuid(4) }), workspace);
+  const canvas = actions();
+  show(instance(uuid(1), { hops: 2, highlight: uuid(4) }), canvas);
   await waitFor(() => expect(renderer.shown()).toHaveLength(5));
   act(() => renderer.events!.click(renderer.node("Issue 4")));
   expect(location.hash).toBe("#/ref/Issue/4");
   // The window keeps its hops and highlight: only its record changes.
-  expect(workspace.operate).toHaveBeenCalledWith({ kind: "show", visual_type: "trax.subgraph", record_id: uuid(4) });
+  expect(canvas.operate).toHaveBeenCalledWith({ kind: "show", visual_type: "trax.subgraph", record_id: uuid(4) });
   // The record itself, or the background, moves nothing.
   act(() => renderer.events!.click(renderer.node("Issue 1")));
   act(() => renderer.events!.click(null));
-  expect(workspace.operate).toHaveBeenCalledTimes(1);
+  expect(canvas.operate).toHaveBeenCalledTimes(1);
 });
 
 test("outside a canvas a click still moves the page", async () => {
@@ -140,12 +140,12 @@ test("a new record reads its own neighbourhood and frames it, keeping the nodes 
 });
 
 test("its hops buttons ask the canvas for the window at that reach, with its highlight kept", async () => {
-  const workspace = actions();
-  show(instance(uuid(1), { hops: 2, highlight: uuid(4) }), workspace);
+  const canvas = actions();
+  show(instance(uuid(1), { hops: 2, highlight: uuid(4) }), canvas);
   await waitFor(() => expect(renderer.shown()).toHaveLength(5));
   expect(screen.getByRole("button", { name: "2 hops" }).getAttribute("aria-pressed")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "1 hop" }));
-  expect(workspace.operate).toHaveBeenCalledWith({
+  expect(canvas.operate).toHaveBeenCalledWith({
     kind: "show",
     visual_type: "trax.subgraph",
     record_id: uuid(1),

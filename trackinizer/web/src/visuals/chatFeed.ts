@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useSyncExternalStore } from "react
 import type { PendingLine } from "./chatLines";
 
 /** An unconfirmed post's destination before its conversation has been assigned. */
-export type PendingPost = PendingLine & { readonly workspaceId: string };
+export type PendingPost = PendingLine & { readonly canvasId: string };
 type SavedPost = PendingPost & { readonly sender: string };
 
 const PENDING_KEY = "trackinizer.chat.pending";
@@ -21,7 +21,7 @@ export type ChatFeedState = {
 /**
  * Requests to continue a session and posts awaiting capture live above Chat,
  * a lazy chunk that may mount late or remount. Captured conversation lines are
- * read through the query cache; the station owns its conversation's identity.
+ * read through the query cache; the canvas owns its conversation's identity.
  */
 export class ChatFeed {
   #state: ChatFeedState = { request: null, pending: readPending() };
@@ -79,7 +79,7 @@ function isPendingPost(value: unknown): value is SavedPost {
   if (typeof value !== "object" || value === null) return false;
   const post = value as Record<string, unknown>;
   return typeof post.sender === "string" && post.sender.length > 0
-    && typeof post.workspaceId === "string" && post.workspaceId.length > 0
+    && typeof post.canvasId === "string" && post.canvasId.length > 0
     && typeof post.key === "string" && typeof post.text === "string"
     && (post.conversationId === null || typeof post.conversationId === "string")
     && typeof post.baseline === "number" && Number.isInteger(post.baseline) && post.baseline >= 0

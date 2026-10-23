@@ -1,4 +1,4 @@
-"""Place an agent run's session in a workstream and a station, and move it."""
+"""Place an agent run's session in a workspace and a canvas, and move it."""
 
 from __future__ import annotations
 
@@ -39,22 +39,22 @@ async def place_session_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> SessionPlacement:
-    """Place a session in the caller's workstream and a station; the server decides.
+    """Place a session in the caller's workspace and a canvas; the server decides.
 
-    The first rule that matches wins: the station the run started from, when it is the
-    caller's; the placement the session already has; the workstream of the caller's
-    newest earlier session on the same git branch, in a new station; else the caller's
-    Scratch, in a new station. Placing a placed session returns its placement. A
+    The first rule that matches wins: the canvas the run started from, when it is the
+    caller's; the placement the session already has; the workspace of the caller's
+    newest earlier session on the same git branch, in a new canvas; else the caller's
+    Scratch, in a new canvas. Placing a placed session returns its placement. A
     service account's session and a science chat are not placed: both ids are null.
 
     Args:
       session_id: The session, which the caller's own key opened.
-      body: The station the run started from, and its git checkout.
+      body: The canvas the run started from, and its git checkout.
       request: Request carrying the database engine and store.
       identity: The session's own account and key.
 
     Returns:
-      placement: The workstream and station of the session.
+      placement: The workspace and canvas of the session.
 
     """
     session = await _own_session(request, identity=identity, session_id=session_id)
@@ -72,7 +72,7 @@ async def place_session_route(
     return placement
 
 
-@router.put("/api/sessions/{session_id}/workstream", status_code=204)
+@router.put("/api/sessions/{session_id}/workspace", status_code=204)
 async def move_session_route(
     *,
     session_id: uuid.UUID,
@@ -80,13 +80,13 @@ async def move_session_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> None:
-    """Move a session to one of the caller's workstreams.
+    """Move a session to one of the caller's workspaces.
 
-    The station made for the session moves with it when no other session sits on it.
+    The canvas made for the session moves with it when no other session sits on it.
 
     Args:
       session_id: The session, which the caller owns.
-      body: The destination workstream Issue.
+      body: The destination workspace Issue.
       request: Request carrying the database engine and store.
       identity: The session's account, as a browser or as its own key.
 
@@ -98,9 +98,9 @@ async def move_session_route(
         session=session,
         email=identity.email,
         api_key_id=identity.api_key_id,
-        workstream_id=body.workstream_id,
+        workspace_id=body.workspace_id,
     ):
-        raise HTTPException(status_code=404, detail="Workstream not found")
+        raise HTTPException(status_code=404, detail="Workspace not found")
     get_hub(request).nudge()
 
 

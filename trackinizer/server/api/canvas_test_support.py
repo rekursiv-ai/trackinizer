@@ -119,7 +119,7 @@ async def seed_accounts(store: Store) -> None:
         for user_id, email, key_id in users:
             await conn.execute(
                 "INSERT INTO users (id, email, name, role, status, "
-                "visual_workspace_enabled) "
+                "visual_canvas_enabled) "
                 "VALUES ($1, $2, 'Test', 'writer', 'active', TRUE)",
                 user_id,
                 email,
@@ -346,29 +346,29 @@ async def open_science_chat(
     return session_id
 
 
-async def open_workspace(
+async def open_canvas(
     client: httpx2.AsyncClient,
     *,
     user_id: uuid.UUID = TEST_USER_ID,
     email: str = TEST_USER_EMAIL,
     new: bool = False,
 ) -> uuid.UUID:
-    """Open the user's station as a browser.
+    """Open the user's canvas as a browser.
 
     Args:
       client: The test client.
       user_id: The signed-in user.
       email: Their email.
-      new: Make another station instead of opening the one used last.
+      new: Make another canvas instead of opening the one used last.
 
     Returns:
-      workspace_id: The station.
+      canvas_id: The canvas.
 
     """
     browser(user_id, email=email)
-    created = await client.post("/api/workspaces/new" if new else "/api/workspaces")
+    created = await client.post("/api/canvases/new" if new else "/api/canvases")
     if created.status_code != 200:
-        raise ValueError(f"workspace create answered {created.status_code}")
+        raise ValueError(f"canvas create answered {created.status_code}")
     return uuid.UUID(
         from_plain(
             json_loads(created.content, dict[str, object])["id"],
@@ -380,7 +380,7 @@ async def open_workspace(
 async def send_chat(
     client: httpx2.AsyncClient,
     *,
-    workspace_id: uuid.UUID,
+    canvas_id: uuid.UUID,
     text: str,
     conversation_id: uuid.UUID | None = None,
     key: uuid.UUID | None = None,
@@ -391,7 +391,7 @@ async def send_chat(
 
     Args:
       client: The test client.
-      workspace_id: The canvas.
+      canvas_id: The canvas.
       text: The line.
       conversation_id: The conversation to post into; none starts one.
       key: The idempotency key; a fresh one by default.
@@ -409,7 +409,7 @@ async def send_chat(
     return await client.post(
         "/api/chats",
         json={
-            "workspace_id": str(workspace_id),
+            "canvas_id": str(canvas_id),
             "text": text,
             "conversation_id": None
             if conversation_id is None
@@ -441,7 +441,7 @@ async def converse(
     client: httpx2.AsyncClient,
     store: Store,
     *,
-    workspace_id: uuid.UUID,
+    canvas_id: uuid.UUID,
     text: str = "hello",
 ) -> uuid.UUID:
     """Post a line as the browser, and have the assistant open the conversation.
@@ -449,7 +449,7 @@ async def converse(
     Args:
       client: The test client.
       store: The test database.
-      workspace_id: The canvas.
+      canvas_id: The canvas.
       text: The line.
 
     Returns:
@@ -458,7 +458,7 @@ async def converse(
     """
     browser()
     conversation_id = conversation_of(
-        await send_chat(client, workspace_id=workspace_id, text=text),
+        await send_chat(client, canvas_id=canvas_id, text=text),
     )
     return await open_science_chat(client, store, conversation_id=conversation_id)
 
@@ -467,7 +467,7 @@ async def seed_converse(
     client: httpx2.AsyncClient,
     store: Store,
     *,
-    workspace_id: uuid.UUID,
+    canvas_id: uuid.UUID,
     text: str = "hello",
 ) -> uuid.UUID:
     """Post a line as the browser, and have the assistant open the conversation.
@@ -477,7 +477,7 @@ async def seed_converse(
     Args:
       client: The test client.
       store: The test database.
-      workspace_id: The canvas.
+      canvas_id: The canvas.
       text: The line.
 
     Returns:
@@ -486,24 +486,24 @@ async def seed_converse(
     """
     browser()
     conversation_id = conversation_of(
-        await send_chat(client, workspace_id=workspace_id, text=text),
+        await send_chat(client, canvas_id=canvas_id, text=text),
     )
     return await seed_science_chat(store, conversation_id=conversation_id)
 
 
-async def revision_of(client: httpx2.AsyncClient, *, workspace_id: uuid.UUID) -> int:
+async def revision_of(client: httpx2.AsyncClient, *, canvas_id: uuid.UUID) -> int:
     """Read a canvas's revision as the installed browser.
 
     Args:
       client: The test client.
-      workspace_id: The canvas.
+      canvas_id: The canvas.
 
     Returns:
       revision: Its current revision.
 
     """
     state = json_loads(
-        (await client.get(f"/api/workspaces/{workspace_id}")).content,
+        (await client.get(f"/api/canvases/{canvas_id}")).content,
         dict[str, object],
     )
     return from_plain(state["revision"], int)

@@ -649,13 +649,13 @@ def test_the_hint_quotes_a_server_that_holds_a_shell_metacharacter(
 def test_trax_env_prefers_the_plain_name_over_the_ssh_forwarded_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("TRAX_WORKSPACE", raising=False)
-    monkeypatch.delenv("LC_TRAX_WORKSPACE", raising=False)
-    assert trax_env("WORKSPACE") is None
-    monkeypatch.setenv("LC_TRAX_WORKSPACE", "from-ssh")
-    assert trax_env("WORKSPACE") == "from-ssh"
-    monkeypatch.setenv("TRAX_WORKSPACE", "plain")
-    assert trax_env("WORKSPACE") == "plain"
+    monkeypatch.delenv("TRAX_CANVAS", raising=False)
+    monkeypatch.delenv("LC_TRAX_CANVAS", raising=False)
+    assert trax_env("CANVAS") is None
+    monkeypatch.setenv("LC_TRAX_CANVAS", "from-ssh")
+    assert trax_env("CANVAS") == "from-ssh"
+    monkeypatch.setenv("TRAX_CANVAS", "plain")
+    assert trax_env("CANVAS") == "plain"
 
 
 def test_profile_login_runs_the_device_login_and_names_the_result(

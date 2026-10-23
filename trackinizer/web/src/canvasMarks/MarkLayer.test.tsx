@@ -4,14 +4,14 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { clearMarks, drawMark, type Mark, removeMark, type WorkspaceState } from "../api/workspaces";
+import { clearMarks, drawMark, type Mark, removeMark, type CanvasState } from "../api/canvases";
 import { createQueryClient } from "../app/queryClient";
 import { CommandRegistry, CommandRegistryContext, Shortcuts, useCommands } from "../commands/registry";
 import { MarkLayer } from "./MarkLayer";
 import { useTileBodies } from "./tileBodies";
 import { useBoxes } from "./useBoxes";
 
-vi.mock("../api/workspaces", () => ({ drawMark: vi.fn(), removeMark: vi.fn(), clearMarks: vi.fn() }));
+vi.mock("../api/canvases", () => ({ drawMark: vi.fn(), removeMark: vi.fn(), clearMarks: vi.fn() }));
 
 // Read from disk: Vitest serves a stylesheet, `?raw` included, as an empty string.
 const marksCss = readFileSync(join(import.meta.dirname, "marks.css"), "utf8");
@@ -24,13 +24,13 @@ const box = (id: string, page: string | null, tile?: string): Mark => ({
   ...(tile ? { tile } : {}),
 });
 
-const station = (marks: Mark[]): WorkspaceState => ({
+const canvas = (marks: Mark[]): CanvasState => ({
   id: "w", name: "s", conversation_id: null, page: null, revision: 1, focused_instance: null, visuals: [], marks,
 });
 
 /** What the canvas does: the bar's two buttons and the layer, over one stage holding a tile, a record row and the bodies of `tiles`. */
-function Harness({ workspace, tiles }: { readonly workspace: WorkspaceState; readonly tiles: readonly string[] }) {
-  const boxes = useBoxes(workspace);
+function Harness({ canvas, tiles }: { readonly canvas: CanvasState; readonly tiles: readonly string[] }) {
+  const boxes = useBoxes(canvas);
   const { bodies, bodyRef } = useTileBodies();
   return (
     <div data-testid="stage">
@@ -56,7 +56,7 @@ function mount(marks: Mark[] = [], back: () => void = () => {}, places: Readonly
       <CommandRegistryContext value={new CommandRegistry()}>
         <Shortcuts />
         <Page back={back} />
-        <Harness workspace={station(marks)} tiles={Object.keys(places)} />
+        <Harness canvas={canvas(marks)} tiles={Object.keys(places)} />
       </CommandRegistryContext>
     </QueryClientProvider>,
   );
@@ -71,9 +71,9 @@ function mount(marks: Mark[] = [], back: () => void = () => {}, places: Readonly
 
 beforeEach(() => {
   location.hash = "#/graph";
-  vi.mocked(drawMark).mockResolvedValue(station([]));
-  vi.mocked(removeMark).mockResolvedValue(station([]));
-  vi.mocked(clearMarks).mockResolvedValue(station([]));
+  vi.mocked(drawMark).mockResolvedValue(canvas([]));
+  vi.mocked(removeMark).mockResolvedValue(canvas([]));
+  vi.mocked(clearMarks).mockResolvedValue(canvas([]));
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.clearAllMocks(); location.hash = ""; });
 

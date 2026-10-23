@@ -9,7 +9,7 @@ from treekle import from_plain, json_loads
 import pytest
 
 from trackinizer.server.api.app import app
-from trackinizer.server.visuals.catalog import StaticVisual, Workspace
+from trackinizer.server.visuals.catalog import Canvas, StaticVisual
 
 
 if TYPE_CHECKING:
@@ -85,7 +85,7 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
 
 def test_visual_config_composes_titles_and_rejects_invalid_identity() -> None:
     """A contributor can configure modules without publishing duplicate IDs."""
-    configured = Workspace.Config(
+    configured = Canvas.Config(
         visuals=[
             StaticVisual.Config(type="trax.browse", title="Explore"),
             StaticVisual.Config(type="x.notes", title="Notes"),
@@ -95,14 +95,14 @@ def test_visual_config_composes_titles_and_rejects_invalid_identity() -> None:
     assert configured.catalog().visuals[0].title == "Explore"
 
     with pytest.raises(ValueError, match="unique"):
-        Workspace.Config(
+        Canvas.Config(
             visuals=[
                 StaticVisual.Config(type="trax.browse", title="Browse"),
                 StaticVisual.Config(type="trax.browse", title="Again"),
             ],
         ).make()
     with pytest.raises(ValueError, match="registered"):
-        Workspace.Config(
+        Canvas.Config(
             visuals=[StaticVisual.Config(type="x.notes", title="Notes")],
         ).make()
 
@@ -113,7 +113,7 @@ def test_visuals_route_serves_the_deployments_configured_catalog(
 ) -> None:
     """The route projects app.state.visual_catalog instead of building its own."""
     client, _, _ = route_client
-    configured = Workspace.Config(
+    configured = Canvas.Config(
         visuals=[StaticVisual.Config(type="x.notes", title="Notes")],
         default_visual="x.notes",
     ).make()

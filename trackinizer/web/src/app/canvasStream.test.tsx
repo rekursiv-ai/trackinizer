@@ -3,7 +3,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { useContext, useEffect } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
-import { answerCapture, createDefaultWorkspace, openWorkspaceEvents, type WorkspaceEventListener, type WorkspaceState } from "../api/workspaces";
+import { answerCapture, createDefaultCanvas, openCanvasEvents, type CanvasEventListener, type CanvasState } from "../api/canvases";
 import { captureStage } from "../canvasCapture/captureStage";
 import { CaptureContext } from "../canvasCapture/stageRegistry";
 import { recentTimings, resetTimings } from "../debug/timings";
@@ -15,24 +15,24 @@ import { currentChatColumn, setChatFullscreen, setChatSide } from "../visuals/ch
 import { ChatFeedContext, useChatFeed } from "../visuals/chatFeed";
 import { MetaContext } from "./boot";
 import { resetPreferences } from "../state/testing";
-import { setStation } from "../stations/store";
+import { setCanvas } from "../canvases/store";
 import { CanvasStream } from "./canvasStream";
 import { useHighlighted } from "./highlights";
 
-vi.mock("../api/workspaces", () => ({ createDefaultWorkspace: vi.fn(), openWorkspaceEvents: vi.fn(), answerCapture: vi.fn() }));
+vi.mock("../api/canvases", () => ({ createDefaultCanvas: vi.fn(), openCanvasEvents: vi.fn(), answerCapture: vi.fn() }));
 vi.mock("../canvasCapture/captureStage", () => ({ captureStage: vi.fn() }));
 
-const workspace: WorkspaceState = { id: "w1", name: "unnamed-workstream#1", conversation_id: null, page: null, revision: 3, focused_instance: null, visuals: [] };
+const canvas: CanvasState = { id: "w1", name: "unnamed-canvas#1", conversation_id: null, page: null, revision: 3, focused_instance: null, visuals: [] };
 
 const hub = { change: vi.fn(), open: vi.fn(), drop: vi.fn(), refuse: vi.fn() };
 let client: QueryClient;
 const close = vi.fn();
 
 beforeEach(() => {
-  setStation(null);
+  setCanvas(null);
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(openWorkspaceEvents).mockReturnValue(close);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
+  vi.mocked(openCanvasEvents).mockReturnValue(close);
   // A choice of Chat's side is kept in the preferences: the server takes it.
   stubFetch(async (request) => Response.json({ ...preferences(), ...(await request.json()) }));
   resetTimings();
@@ -60,23 +60,23 @@ function show(enabled: boolean, child: React.ReactNode = <Probe />) {
   return { view, again: (on: boolean, inner: React.ReactNode = child) => view.rerender(ui(on, inner)) };
 }
 
-async function listener(): Promise<WorkspaceEventListener> {
-  await waitFor(() => expect(openWorkspaceEvents).toHaveBeenCalled(), { interval: 1 });
-  return vi.mocked(openWorkspaceEvents).mock.calls.at(-1)![1];
+async function listener(): Promise<CanvasEventListener> {
+  await waitFor(() => expect(openCanvasEvents).toHaveBeenCalled(), { interval: 1 });
+  return vi.mocked(openCanvasEvents).mock.calls.at(-1)![1];
 }
 
-test("a user with the canvas off creates no workspace and opens no stream", async () => {
+test("a user with the canvas off creates no canvas and opens no stream", async () => {
   show(false);
   await new Promise((resolve) => setTimeout(resolve, 10));
-  expect(createDefaultWorkspace).not.toHaveBeenCalled();
-  expect(openWorkspaceEvents).not.toHaveBeenCalled();
+  expect(createDefaultCanvas).not.toHaveBeenCalled();
+  expect(openCanvasEvents).not.toHaveBeenCalled();
 });
 
-test("with the canvas on, one stream opens on the user's workspace, and closes when the canvas goes off", async () => {
+test("with the canvas on, one stream opens on the user's canvas, and closes when the canvas goes off", async () => {
   const { again } = show(true);
   await listener();
-  expect(openWorkspaceEvents).toHaveBeenCalledWith("w1", expect.any(Object));
-  expect(openWorkspaceEvents).toHaveBeenCalledOnce();
+  expect(openCanvasEvents).toHaveBeenCalledWith("w1", expect.any(Object));
+  expect(openCanvasEvents).toHaveBeenCalledOnce();
   again(false);
   expect(close).toHaveBeenCalledOnce();
 });
@@ -87,7 +87,7 @@ test("the stream outlives what it wraps: the canvas can unmount (Settings) and i
   again(true, <p>Settings</p>);
   expect(screen.getByText("Settings")).toBeTruthy();
   expect(close).not.toHaveBeenCalled();
-  expect(openWorkspaceEvents).toHaveBeenCalledOnce();
+  expect(openCanvasEvents).toHaveBeenCalledOnce();
 });
 
 test("the live layer takes its inquiry ids and its gaps from the stream", async () => {
@@ -103,13 +103,13 @@ test("the live layer takes its inquiry ids and its gaps from the stream", async 
   expect(hub.refuse).toHaveBeenCalledOnce();
 });
 
-test("a workspace frame is applied under its station's key, and an older one never replaces a newer", async () => {
+test("a canvas frame is applied under its canvas's key, and an older one never replaces a newer", async () => {
   show(true);
   const stream = await listener();
-  act(() => stream.workspace({ ...workspace, revision: 6 }, 10));
-  act(() => stream.workspace({ ...workspace, revision: 4, focused_instance: "stale" }, 11));
-  expect(client.getQueryData<WorkspaceState>(["workspace", "w1"])).toMatchObject({ revision: 6, focused_instance: null });
-  expect(recentTimings().map((frame) => [frame.frame, frame.revision, frame.t])).toEqual([["workspace", 6, 10], ["workspace", 4, 11]]);
+  act(() => stream.canvas({ ...canvas, revision: 6 }, 10));
+  act(() => stream.canvas({ ...canvas, revision: 4, focused_instance: "stale" }, 11));
+  expect(client.getQueryData<CanvasState>(["canvas", "w1"])).toMatchObject({ revision: 6, focused_instance: null });
+  expect(recentTimings().map((frame) => [frame.frame, frame.revision, frame.t])).toEqual([["canvas", 6, 10], ["canvas", 4, 11]]);
 });
 
 test("an agent's navigation moves the page when the router knows the route, and is recorded", async () => {
@@ -143,15 +143,15 @@ test("a navigation to where the page already is changes nothing", async () => {
   window.removeEventListener("hashchange", listen);
 });
 
-test("the stream follows the station: switching to another closes it and opens one on the new station", async () => {
+test("the stream follows the canvas: switching to another closes it and opens one on the new canvas", async () => {
   show(true);
   await listener();
-  expect(openWorkspaceEvents).toHaveBeenCalledWith("w1", expect.any(Object));
-  client.setQueryData(["workspace", "w2"], { ...workspace, id: "w2" });
-  act(() => setStation("w2"));
-  await waitFor(() => expect(openWorkspaceEvents).toHaveBeenCalledWith("w2", expect.any(Object)), { interval: 1 });
+  expect(openCanvasEvents).toHaveBeenCalledWith("w1", expect.any(Object));
+  client.setQueryData(["canvas", "w2"], { ...canvas, id: "w2" });
+  act(() => setCanvas("w2"));
+  await waitFor(() => expect(openCanvasEvents).toHaveBeenCalledWith("w2", expect.any(Object)), { interval: 1 });
   expect(close).toHaveBeenCalledOnce();
-  expect(openWorkspaceEvents).toHaveBeenCalledTimes(2);
+  expect(openCanvasEvents).toHaveBeenCalledTimes(2);
 });
 
 test("a chat frame hides or shows Chat's column in this tab; a hide leaves full screen, a show leaves the side", async () => {
@@ -169,7 +169,7 @@ test("a chat frame hides or shows Chat's column in this tab; a hide leaves full 
   expect(currentChatColumn()).toBe(before);
 });
 
-test("a preferences frame, from the user's other tab or the station's agent, is what the page shows", async () => {
+test("a preferences frame, from the user's other tab or the canvas's agent, is what the page shows", async () => {
   show(true);
   const stream = await listener();
   act(() => stream.preferences({ ...preferences(), theme: "light", chat_side: "right" }, 1));
@@ -186,8 +186,8 @@ test("an agent that moves the page or shows a visual leaves Chat where it is: th
   const stream = await listener();
   const feed = () => screen.getByRole("status").textContent;
   const before = feed();
-  const shown: WorkspaceState = { ...workspace, revision: 4, visuals: [{ id: "graph", type: "trax.subgraph", version: 1 }] };
-  act(() => stream.workspace(shown, 1));
+  const shown: CanvasState = { ...canvas, revision: 4, visuals: [{ id: "graph", type: "trax.subgraph", version: 1 }] };
+  act(() => stream.canvas(shown, 1));
   act(() => stream.navigate("#/list/Issue", 2));
   expect(feed()).toBe(before);
 });
@@ -225,7 +225,7 @@ test("a highlight moves neither the page nor the canvas", async () => {
   const stream = await listener();
   act(() => stream.highlight(["a"], 1));
   expect(window.location.hash).toBe("#/list/Issue");
-  expect(client.getQueryData(["workspace", "w1"])).toBe(workspace);
+  expect(client.getQueryData(["canvas", "w1"])).toBe(canvas);
   expect(recentTimings()).toEqual([]);
 });
 
@@ -238,18 +238,18 @@ test("a chat has no frames of its own: its session's change reaches the live lay
   expect(hub.change).toHaveBeenCalledTimes(2);
   expect(hub.change).toHaveBeenCalledWith("session-1");
   expect(invalidate).not.toHaveBeenCalled();
-  expect(Object.keys(stream).toSorted()).toEqual(["capture", "changed", "chat", "drop", "highlight", "navigate", "open", "preferences", "refuse", "workspace"]);
+  expect(Object.keys(stream).toSorted()).toEqual(["canvas", "capture", "changed", "chat", "drop", "highlight", "navigate", "open", "preferences", "refuse"]);
 });
 
 test("the stream's state drives the live layer's paused bar: down for 10 s pauses it, an open clears it", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const real = new LiveHubClass(client);
   const live = { change: real.change, open: real.open, drop: real.drop, refuse: real.refuse };
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
+  vi.mocked(createDefaultCanvas).mockResolvedValue(canvas);
   render(<QueryClientProvider client={client}><LiveContext value={live as unknown as LiveHub}>
     <CanvasStream enabled><Probe /></CanvasStream></LiveContext></QueryClientProvider>);
-  await vi.waitFor(() => expect(openWorkspaceEvents).toHaveBeenCalled());
-  const stream = vi.mocked(openWorkspaceEvents).mock.calls.at(-1)![1];
+  await vi.waitFor(() => expect(openCanvasEvents).toHaveBeenCalled());
+  const stream = vi.mocked(openCanvasEvents).mock.calls.at(-1)![1];
   stream.open();
   expect(real.status()).toBe("connected");
   stream.drop();

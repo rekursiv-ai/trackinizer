@@ -1,4 +1,4 @@
-"""Placing an agent run's session in a workstream and a station, over the whole app."""
+"""Placing an agent run's session in a workspace and a canvas, over the whole app."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from trackinizer.server.api.canvas_test_support import (
     act_as_other_agent,
     act_as_user_agent,
     browser,
-    open_workspace,
+    open_canvas,
     seed_accounts,
     seed_session,
 )
@@ -64,16 +64,16 @@ async def _place(
     return json_loads(answer.content, dict[str, object])
 
 
-async def _workstream(client: httpx2.AsyncClient, title: str) -> uuid.UUID:
-    """Make a workstream as the browser user."""
+async def _workspace(client: httpx2.AsyncClient, title: str) -> uuid.UUID:
+    """Make a workspace as the browser user."""
     browser()
-    made = await client.post("/api/workstreams", json={"title": title})
+    made = await client.post("/api/workspaces", json={"title": title})
     assert made.status_code == 200, made.text
     return uuid.UUID(from_plain(json_loads(made.content, dict[str, object])["id"], str))
 
 
 async def _edges(store: Store, session: uuid.UUID) -> list[uuid.UUID]:
-    """Return the workstreams a session is produced by."""
+    """Return the workspaces a session is produced by."""
     async with store.engine.acquire() as conn:
         rows = await conn.fetch(
             "SELECT to_id FROM edges WHERE from_id = $1 AND edge_kind = 'produced_by'",
@@ -92,49 +92,49 @@ async def _labels(store: Store, session: uuid.UUID) -> list[str]:
     return sorted(from_plain(labels, list[str]))
 
 
-async def _stations(store: Store) -> list[str]:
-    """Return the ids of the stations, in id order."""
+async def _canvases(store: Store) -> list[str]:
+    """Return the ids of the canvases, in id order."""
     async with store.engine.acquire() as conn:
-        rows = await conn.fetch("SELECT id FROM visual_workspaces ORDER BY id")
+        rows = await conn.fetch("SELECT id FROM visual_canvases ORDER BY id")
     return [str(from_plain(row["id"], uuid.UUID)) for row in rows]
 
 
-async def _station_workstream(store: Store, workspace: object) -> str | None:
-    """Return a station's stored workstream id."""
+async def _canvas_workspace(store: Store, canvas: object) -> str | None:
+    """Return a canvas's stored workspace id."""
     async with store.engine.acquire() as conn:
         found = await conn.fetchval(
-            "SELECT station->>'workstream_id' FROM visual_workspaces WHERE id = $1",
-            workspace,
+            "SELECT metadata->>'workspace_id' FROM visual_canvases WHERE id = $1",
+            canvas,
         )
     return None if found is None else from_plain(found, str)
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_session_with_nothing_else_lands_in_scratch_in_a_new_station(
+async def test_a_session_with_nothing_else_lands_in_scratch_in_a_new_canvas(
     pglite_route_client: _Client,
 ) -> None:
-    """Rule 4: Scratch, one new station named for the session, one edge, one label."""
+    """Rule 4: Scratch, one new canvas named for the session, one edge, one label."""
     client, store = pglite_route_client
     await seed_accounts(store)
     session = await seed_session(store, USER_AGENT, actor="Agent", cli="claude")
 
     placed = await _place(client, session)
 
-    workspace = from_plain(placed["workspace_id"], str)
+    canvas = from_plain(placed["canvas_id"], str)
     assert await _edges(store, session) == [
-        uuid.UUID(from_plain(placed["workstream_id"], str)),
+        uuid.UUID(from_plain(placed["workspace_id"], str)),
     ]
-    assert await _labels(store, session) == [f"station:{workspace}"]
-    assert await _station_workstream(store, workspace) == placed["workstream_id"]
+    assert await _labels(store, session) == [f"canvas:{canvas}"]
+    assert await _canvas_workspace(store, canvas) == placed["workspace_id"]
     async with store.engine.acquire() as conn:
-        station = await conn.fetchrow(
-            "SELECT station->>'name' AS name, station->>'session_id' AS made_for "
-            "FROM visual_workspaces WHERE id = $1",
-            uuid.UUID(workspace),
+        canvas = await conn.fetchrow(
+            "SELECT metadata->>'name' AS name, metadata->>'session_id' AS made_for "
+            "FROM visual_canvases WHERE id = $1",
+            uuid.UUID(canvas),
         )
-    assert station is not None
-    assert (station["name"], station["made_for"]) == ("Agent claude", str(session))
+    assert canvas is not None
+    assert (canvas["name"], canvas["made_for"]) == ("Agent claude", str(session))
 
 
 @pytest.mark.db_pglite
@@ -142,7 +142,7 @@ async def test_a_session_with_nothing_else_lands_in_scratch_in_a_new_station(
 async def test_placing_a_placed_session_returns_its_placement(
     pglite_route_client: _Client,
 ) -> None:
-    """Idempotent: no second station, no second edge."""
+    """Idempotent: no second canvas, no second edge."""
     client, store = pglite_route_client
     await seed_accounts(store)
     session = await seed_session(store, USER_AGENT)
@@ -151,55 +151,55 @@ async def test_placing_a_placed_session_returns_its_placement(
     second = await _place(client, session, _MAIN)
 
     assert second == first
-    assert await _stations(store) == [first["workspace_id"]]
+    assert await _canvases(store) == [first["canvas_id"]]
     assert await _edges(store, session) == [
-        uuid.UUID(from_plain(first["workstream_id"], str)),
+        uuid.UUID(from_plain(first["workspace_id"], str)),
     ]
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_run_started_from_a_station_joins_it_beside_the_sessions_it_holds(
+async def test_a_run_started_from_a_canvas_joins_it_beside_the_sessions_it_holds(
     pglite_route_client: _Client,
 ) -> None:
-    """Rule 1: the station and its workstream, however many sessions already sit on it."""
+    """Rule 1: the canvas and its workspace, however many sessions already sit on it."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    workspace = await open_workspace(client)
+    canvas = await open_canvas(client)
     _ = await seed_session(
         store,
         USER_AGENT,
         actor="a",
-        labels=[f"station:{workspace}"],
+        labels=[f"canvas:{canvas}"],
     )
     session = await seed_session(store, USER_AGENT, actor="b")
 
-    placed = await _place(client, session, {"workspace": str(workspace)})
+    placed = await _place(client, session, {"canvas": str(canvas)})
 
-    assert placed["workspace_id"] == str(workspace)
-    assert placed["workstream_id"] == await _station_workstream(store, workspace)
-    assert await _stations(store) == [str(workspace)]
+    assert placed["canvas_id"] == str(canvas)
+    assert placed["workspace_id"] == await _canvas_workspace(store, canvas)
+    assert await _canvases(store) == [str(canvas)]
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_another_users_station_id_is_never_joined(
+async def test_another_users_canvas_id_is_never_joined(
     pglite_route_client: _Client,
 ) -> None:
-    """Rule 1 needs the caller's own station; otherwise the session is placed afresh."""
+    """Rule 1 needs the caller's own canvas; otherwise the session is placed afresh."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    theirs = await open_workspace(client, user_id=OTHER_USER_ID, email=OTHER_EMAIL)
+    theirs = await open_canvas(client, user_id=OTHER_USER_ID, email=OTHER_EMAIL)
     session = await seed_session(store, USER_AGENT)
 
-    placed = await _place(client, session, {"workspace": str(theirs)})
+    placed = await _place(client, session, {"canvas": str(theirs)})
 
-    assert placed["workspace_id"] != str(theirs)
-    assert await _labels(store, session) == [f"station:{placed['workspace_id']}"]
+    assert placed["canvas_id"] != str(theirs)
+    assert await _labels(store, session) == [f"canvas:{placed['canvas_id']}"]
 
 
-async def _earlier_on_branch(store: Store, workstream: uuid.UUID) -> None:
-    """Seed an earlier session of the user's on the `main` branch, in ``workstream``."""
+async def _earlier_on_branch(store: Store, workspace: uuid.UUID) -> None:
+    """Seed an earlier session of the user's on the `main` branch, in ``workspace``."""
     earlier = await seed_session(
         store,
         USER_AGENT,
@@ -208,7 +208,7 @@ async def _earlier_on_branch(store: Store, workstream: uuid.UUID) -> None:
     )
     _ = await store.add_edge(
         from_id=earlier,
-        to_id=workstream,
+        to_id=workspace,
         edge_kind="produced_by",
         actor=USER_AGENT.email,
     )
@@ -216,21 +216,21 @@ async def _earlier_on_branch(store: Store, workstream: uuid.UUID) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_the_same_branch_returns_to_the_workstream_of_its_last_session(
+async def test_the_same_branch_returns_to_the_workspace_of_its_last_session(
     pglite_route_client: _Client,
 ) -> None:
-    """Rule 3: a new station in the workstream of the earlier session on the branch."""
+    """Rule 3: a new canvas in the workspace of the earlier session on the branch."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    workstream = await _workstream(client, "Branch work")
-    await _earlier_on_branch(store, workstream)
+    workspace = await _workspace(client, "Branch work")
+    await _earlier_on_branch(store, workspace)
     later = await seed_session(store, USER_AGENT, actor="b")
 
     placed = await _place(client, later, _MAIN)
 
-    assert placed["workstream_id"] == str(workstream)
-    assert await _edges(store, later) == [workstream]
-    assert await _stations(store) == [placed["workspace_id"]]
+    assert placed["workspace_id"] == str(workspace)
+    assert await _edges(store, later) == [workspace]
+    assert await _canvases(store) == [placed["canvas_id"]]
 
 
 @pytest.mark.db_pglite
@@ -241,8 +241,8 @@ async def test_another_branch_does_not_return_to_it(
     """Rule 3 needs the same origin and branch; else Scratch."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    workstream = await _workstream(client, "Branch work")
-    await _earlier_on_branch(store, workstream)
+    workspace = await _workspace(client, "Branch work")
+    await _earlier_on_branch(store, workspace)
     other = await seed_session(store, USER_AGENT, actor="c")
 
     placed = await _place(
@@ -251,7 +251,7 @@ async def test_another_branch_does_not_return_to_it(
         {"git": {"origin": "https://github.com/o/r.git", "branch": "dev"}},
     )
 
-    assert placed["workstream_id"] != str(workstream)
+    assert placed["workspace_id"] != str(workspace)
 
 
 @pytest.mark.db_pglite
@@ -263,12 +263,12 @@ async def test_a_backfilled_session_inherits_only_from_earlier_branch_history(
 ) -> None:
     client, store = pglite_route_client
     await seed_accounts(store)
-    recent = await _workstream(client, "Recent branch work")
-    historical = await _workstream(client, "Historical branch work")
+    recent = await _workspace(client, "Recent branch work")
+    historical = await _workspace(client, "Historical branch work")
     candidates = [(2022, recent)]
     if has_earlier:
         candidates.append((2019, historical))
-    for year, workstream in candidates:
+    for year, workspace in candidates:
         session_id = await store.submit_agentsession(
             SubmitAgentSession(
                 title=f"Session from {year}",
@@ -283,7 +283,7 @@ async def test_a_backfilled_session_inherits_only_from_earlier_branch_history(
         )
         await store.add_edge(
             from_id=session_id,
-            to_id=workstream,
+            to_id=workspace,
             edge_kind="produced_by",
             actor=USER_AGENT.email,
         )
@@ -302,12 +302,12 @@ async def test_a_backfilled_session_inherits_only_from_earlier_branch_history(
     placed = await _place(client, backfilled, _MAIN)
 
     if has_earlier:
-        assert placed["workstream_id"] == str(historical)
+        assert placed["workspace_id"] == str(historical)
     else:
-        assigned = await store.get_inquiry(uuid.UUID(str(placed["workstream_id"])))
+        assigned = await store.get_inquiry(uuid.UUID(str(placed["workspace_id"])))
         assert assigned is not None
         assert assigned.title == "Scratch"
-    assert placed["workstream_id"] != str(recent)
+    assert placed["workspace_id"] != str(recent)
 
 
 @pytest.mark.db_pglite
@@ -348,7 +348,7 @@ async def test_chats_and_service_accounts_are_not_placed(
     cli_session_id: str | None,
     account: str | None,
 ) -> None:
-    """Their placement is null and they leave no station, edge or label."""
+    """Their placement is null and they leave no canvas, edge or label."""
     client, store = pglite_route_client
     await seed_accounts(store)
     session = await seed_session(
@@ -365,10 +365,10 @@ async def test_chats_and_service_accounts_are_not_placed(
         return
 
     assert json_loads(answer.content, dict[str, object]) == {
-        "workstream_id": None,
         "workspace_id": None,
+        "canvas_id": None,
     }
-    assert (await _stations(store), await _edges(store, session)) == ([], [])
+    assert (await _canvases(store), await _edges(store, session)) == ([], [])
 
 
 @pytest.mark.db_pglite
@@ -387,71 +387,71 @@ async def test_only_the_sessions_own_account_places_or_moves_it(
     ).status_code == 403
     assert (
         await client.put(
-            f"/api/sessions/{session}/workstream",
-            json={"workstream_id": str(uuid.uuid4())},
+            f"/api/sessions/{session}/workspace",
+            json={"workspace_id": str(uuid.uuid4())},
         )
     ).status_code == 403
     assert (
         await client.post(f"/api/sessions/{uuid.uuid4()}/place", json={})
     ).status_code == 404
-    assert await _stations(store) == []
+    assert await _canvases(store) == []
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_moving_a_session_takes_the_station_made_for_it_when_it_is_alone(
+async def test_moving_a_session_takes_the_canvas_made_for_it_when_it_is_alone(
     pglite_route_client: _Client,
 ) -> None:
-    """The edge is replaced and the lone session's station follows."""
+    """The edge is replaced and the lone session's canvas follows."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    target = await _workstream(client, "Target")
+    target = await _workspace(client, "Target")
     session = await seed_session(store, USER_AGENT)
-    station = (await _place(client, session))["workspace_id"]
+    canvas = (await _place(client, session))["canvas_id"]
     act_as_user_agent()
 
     moved = await client.put(
-        f"/api/sessions/{session}/workstream",
-        json={"workstream_id": str(target)},
+        f"/api/sessions/{session}/workspace",
+        json={"workspace_id": str(target)},
     )
 
     assert moved.status_code == 204
     assert await _edges(store, session) == [target]
-    assert await _station_workstream(store, station) == str(target)
+    assert await _canvas_workspace(store, canvas) == str(target)
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_moving_a_session_leaves_a_station_another_session_sits_on(
+async def test_moving_a_session_leaves_a_canvas_another_session_sits_on(
     pglite_route_client: _Client,
 ) -> None:
     """Only the moved session's edge changes."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    target = await _workstream(client, "Target")
+    target = await _workspace(client, "Target")
     session = await seed_session(store, USER_AGENT, actor="a")
-    station = (await _place(client, session))["workspace_id"]
+    canvas = (await _place(client, session))["canvas_id"]
     _ = await seed_session(
         store,
         USER_AGENT,
         actor="b",
-        labels=[f"station:{station}"],
+        labels=[f"canvas:{canvas}"],
     )
     act_as_user_agent()
 
     moved = await client.put(
-        f"/api/sessions/{session}/workstream",
-        json={"workstream_id": str(target)},
+        f"/api/sessions/{session}/workspace",
+        json={"workspace_id": str(target)},
     )
 
     assert moved.status_code == 204
     assert await _edges(store, session) == [target]
-    assert await _station_workstream(store, station) != str(target)
+    assert await _canvas_workspace(store, canvas) != str(target)
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_session_is_not_moved_to_a_workstream_that_is_not_the_callers(
+async def test_a_session_is_not_moved_to_a_workspace_that_is_not_the_callers(
     pglite_route_client: _Client,
 ) -> None:
     """An unknown destination is 404 and changes nothing."""
@@ -461,8 +461,8 @@ async def test_a_session_is_not_moved_to_a_workstream_that_is_not_the_callers(
     act_as_user_agent()
 
     refused = await client.put(
-        f"/api/sessions/{session}/workstream",
-        json={"workstream_id": str(uuid.uuid4())},
+        f"/api/sessions/{session}/workspace",
+        json={"workspace_id": str(uuid.uuid4())},
     )
 
     assert refused.status_code == 404
@@ -471,26 +471,26 @@ async def test_a_session_is_not_moved_to_a_workstream_that_is_not_the_callers(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_moving_a_station_moves_every_session_placed_on_it(
+async def test_moving_a_canvas_moves_every_session_placed_on_it(
     pglite_route_client: _Client,
 ) -> None:
-    """Each session's workstream edge is replaced, so station and sessions agree."""
+    """Each session's workspace edge is replaced, so canvas and sessions agree."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    target = await _workstream(client, "Target")
+    target = await _workspace(client, "Target")
     first = await seed_session(store, USER_AGENT, actor="a")
-    station = (await _place(client, first))["workspace_id"]
+    canvas = (await _place(client, first))["canvas_id"]
     second = await seed_session(
         store,
         USER_AGENT,
         actor="b",
-        labels=[f"station:{station}"],
+        labels=[f"canvas:{canvas}"],
     )
     browser()
 
     moved = await client.put(
-        f"/api/workspaces/{station}/workstream",
-        json={"workstream_id": str(target)},
+        f"/api/canvases/{canvas}/workspace",
+        json={"workspace_id": str(target)},
     )
 
     assert moved.status_code == 200
@@ -500,60 +500,60 @@ async def test_moving_a_station_moves_every_session_placed_on_it(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_placed_sessions_key_may_operate_its_station_and_no_other_users_key(
+async def test_a_placed_sessions_key_may_operate_its_canvas_and_no_other_users_key(
     pglite_route_client: _Client,
 ) -> None:
-    """A label naming a station gives its key nothing unless the key is the owner's."""
+    """A label naming a canvas gives its key nothing unless the key is the owner's."""
     client, store = pglite_route_client
     await seed_accounts(store)
     session = await seed_session(store, USER_AGENT)
-    station = (await _place(client, session))["workspace_id"]
+    canvas = (await _place(client, session))["canvas_id"]
     _ = await seed_session(
         store,
         OTHER_AGENT,
         actor="liar",
-        labels=[f"station:{station}"],
+        labels=[f"canvas:{canvas}"],
     )
 
     act_as_user_agent()
-    allowed = await client.get(f"/api/workspaces/{station}")
+    allowed = await client.get(f"/api/canvases/{canvas}")
     act_as_other_agent()
-    labelled_by_another_user = await client.get(f"/api/workspaces/{station}")
+    labelled_by_another_user = await client.get(f"/api/canvases/{canvas}")
 
     assert (allowed.status_code, labelled_by_another_user.status_code) == (200, 404)
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_an_ended_sessions_key_no_longer_operates_its_station(
+async def test_an_ended_sessions_key_no_longer_operates_its_canvas(
     pglite_route_client: _Client,
 ) -> None:
-    """Only a live session's key may use the station."""
+    """Only a live session's key may use the canvas."""
     client, store = pglite_route_client
     await seed_accounts(store)
     session = await seed_session(store, USER_AGENT)
-    station = (await _place(client, session))["workspace_id"]
+    canvas = (await _place(client, session))["canvas_id"]
     ended = await client.post(f"/api/sessions/{session}/end", json={})
 
-    after_end = await client.get(f"/api/workspaces/{station}")
+    after_end = await client.get(f"/api/canvases/{canvas}")
 
     assert (ended.status_code, after_end.status_code) == (200, 403)
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_the_app_does_not_open_on_an_agents_station(
+async def test_the_app_does_not_open_on_an_agents_canvas(
     pglite_route_client: _Client,
 ) -> None:
-    """A station made for a session is skipped by `open latest`."""
+    """A canvas made for a session is skipped by `open latest`."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    mine = await open_workspace(client)
+    mine = await open_canvas(client)
     session = await seed_session(store, USER_AGENT)
     await _place(client, session)
 
     browser()
-    opened = await client.post("/api/workspaces")
+    opened = await client.post("/api/canvases")
 
     assert from_plain(json_loads(opened.content, dict[str, object])["id"], str) == str(
         mine,
@@ -562,17 +562,17 @@ async def test_the_app_does_not_open_on_an_agents_station(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_replayed_operation_answers_with_the_stations_current_workstream_and_session(
+async def test_a_replayed_operation_answers_with_the_canvases_current_workspace_and_session(
     pglite_route_client: _Client,
 ) -> None:
-    """The stored receipt is stale; the binding fields come from the station now."""
+    """The stored receipt is stale; the binding fields come from the canvas now."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    workspace = await open_workspace(client)
+    canvas = await open_canvas(client)
     session = await seed_session(
         store,
         USER_AGENT,
-        labels=[f"station:{workspace}"],
+        labels=[f"canvas:{canvas}"],
     )
     operation = {
         "revision": 0,
@@ -585,15 +585,15 @@ async def test_a_replayed_operation_answers_with_the_stations_current_workstream
     }
     headers = {"Idempotency-Key": str(uuid.uuid4())}
     act_as_user_agent()
-    path = f"/api/workspaces/{workspace}/operations"
+    path = f"/api/canvases/{canvas}/operations"
     assert (await client.post(path, json=operation, headers=headers)).status_code == 200
     moved, made_for = uuid.uuid4(), str(session)
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "UPDATE visual_workspaces SET station = station || "
-            "jsonb_build_object('workstream_id', $2::text, 'session_id', $3::text) "
+            "UPDATE visual_canvases SET metadata = metadata || "
+            "jsonb_build_object('workspace_id', $2::text, 'session_id', $3::text) "
             "WHERE id = $1",
-            workspace,
+            canvas,
             str(moved),
             made_for,
         )
@@ -603,7 +603,7 @@ async def test_a_replayed_operation_answers_with_the_stations_current_workstream
         dict[str, object],
     )
 
-    assert (replay["workstream_id"], replay["session_id"]) == (str(moved), made_for)
+    assert (replay["workspace_id"], replay["session_id"]) == (str(moved), made_for)
 
 
 if __name__ == "__main__":

@@ -264,7 +264,7 @@ def transformer_cost(spec: TransformerSpec) -> Callable[[int], float]:
 
 # The fraction of the non-weight VRAM the derivation may fill. The ONE named
 # tolerance (not a fitted constant): it covers the CUDA context, the compile /
-# inductor workspace, the SDPA kernel scratch, and allocator fragmentation --
+# inductor canvas, the SDPA kernel scratch, and allocator fragmentation --
 # the overhead around the otherwise-exact per-row byte count. Sized by
 # MEASUREMENT, not guess: at 0.9 a live 4B run held 28.65 GiB on a 32 GiB card at
 # the derived rows and OOM'd on a 6.6 GiB allocation, implying ~3.5 GiB of

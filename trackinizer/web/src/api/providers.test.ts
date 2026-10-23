@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { AGREED, stubFetch } from "./testing";
 import type { Profile } from "./me";
 import type { BalanceBody } from "./billing";
-import { NO_ASSISTANT, noMachineReason, OUT_OF_CREDIT, partnerLabel, profileChatProvider, providerName, providerStatuses, setChatProviderPreference, stationProvider } from "./providers";
+import { NO_ASSISTANT, noMachineReason, OUT_OF_CREDIT, partnerLabel, profileChatProvider, providerName, providerStatuses, setChatProviderPreference, canvasProvider } from "./providers";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -10,11 +10,11 @@ const SPENT: BalanceBody = { usd: 0, granted_usd: 10, purchased_usd: 0, spent_us
   can_run: false, reason: "You are out of credit." };
 const BALANCE: BalanceBody = { ...SPENT, usd: 0.5, spent_usd: 9.5, can_run: true, reason: "You have credit left." };
 
-test("a station with no provider fields talks to the default provider, and every provider is available", () => {
-  expect(stationProvider({})).toBe("assistant");
-  expect(stationProvider(null)).toBe("assistant");
-  expect(stationProvider({ provider: "claude" })).toBe("claude");
-  expect(stationProvider({ provider: "gemini" as "claude" })).toBe("assistant");
+test("a canvas with no provider fields talks to the default provider, and every provider is available", () => {
+  expect(canvasProvider({})).toBe("assistant");
+  expect(canvasProvider(null)).toBe("assistant");
+  expect(canvasProvider({ provider: "claude" })).toBe("claude");
+  expect(canvasProvider({ provider: "gemini" as "claude" })).toBe("assistant");
   expect(providerStatuses({}, null)).toEqual({
     assistant: { ok: true, reason: "" }, claude: { ok: true, reason: "" }, codex: { ok: true, reason: "" },
   });
@@ -36,12 +36,12 @@ test("the card obeys can_run and reason alone: no balance of zero or less greys 
   expect(providerStatuses({}, refused).assistant).toEqual({ ok: false, reason: "Because the server says so.", credit: true });
 });
 
-test("a station that marks the assistant out without a reason says the credit is spent", () => {
+test("a canvas that marks the assistant out without a reason says the credit is spent", () => {
   expect(providerStatuses({ available: { assistant: false } }, null).assistant).toEqual({ ok: false, reason: OUT_OF_CREDIT, credit: true });
   expect(providerStatuses({ available: { assistant: false }, reasons: { assistant: "Down for repairs" } }, null).assistant).toEqual({ ok: false, reason: "Down for repairs" });
 });
 
-test("a CLI is out when the station says so, with the server's reason or the machine's", () => {
+test("a CLI is out when the canvas says so, with the server's reason or the machine's", () => {
   const reason = noMachineReason("claude");
   expect(reason).toBe("Connect a machine and install claude on it");
   expect(providerStatuses({ available: { claude: false }, reasons: { claude: reason } }, null).claude).toEqual({ ok: false, reason });
@@ -56,7 +56,7 @@ test("a partner is named by its label, else its actor, else the name the caller 
   expect(partnerLabel(null, "codex")).toBe("codex");
 });
 
-test("the assistant is named by the station's assistant, and a CLI by its own name", () => {
+test("the assistant is named by the canvas's assistant, and a CLI by its own name", () => {
   expect(providerName("assistant", { assistant: "scout" })).toBe("scout");
   expect(providerName("assistant", { assistant: null })).toBe("assistant");
   expect(providerName("assistant", {})).toBe("assistant");
@@ -75,7 +75,7 @@ test("a server with no assistant grays the assistant with the reason, and leaves
 test("the default provider is the profile's preference, the assistant until one is chosen", () => {
   const profile = (preferences: Record<string, unknown> | undefined) =>
     ({ ...AGREED, user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null,
-      visual_workspace_enabled: true, preferences: preferences as Profile["preferences"] }) satisfies Profile;
+      visual_canvas_enabled: true, preferences: preferences as Profile["preferences"] }) satisfies Profile;
   expect(profileChatProvider(profile({ chat_provider: "codex" }))).toBe("codex");
   expect(profileChatProvider(profile({ chat_provider: "gemini" }))).toBe("assistant");
   expect(profileChatProvider(profile(undefined))).toBe("assistant");

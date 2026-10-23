@@ -23,7 +23,7 @@ type Steps = { entries: Snapshot[]; index: number; takenAt: number };
 type Pending = { readonly key: string; readonly target: Snapshot };
 
 /**
- * Back and Forward for every canvas tab this page has shown, by station and
+ * Back and Forward for every canvas tab this page has shown, by canvas and
  * tab: kept in memory, as a browser tab keeps its own history, and gone with
  * the page.
  */
@@ -31,8 +31,8 @@ const histories = new Map<string, Steps>();
 let pending: Pending | null = null;
 
 /**
- * The restore each station was left in the middle of, by station: its tab and
- * target, which the canvas finishes when the station is on show again. Until
+ * The restore each canvas was left in the middle of, by canvas: its tab and
+ * target, which the canvas finishes when the canvas is on show again. Until
  * then the canvas shows the tab half restored, which leaving it would keep as
  * the tab's own and so lose what the tab showed.
  */
@@ -115,19 +115,19 @@ export function settle(key: string, target: Snapshot, snapshot: Snapshot | null)
 
 /** Forget tab `key`'s steps, as closing it does, and a restore of it left unfinished. */
 export function forget(key: string): void {
-  for (const [station, left] of interrupted) if (left.key === key) interrupted.delete(station);
+  for (const [canvas, left] of interrupted) if (left.key === key) interrupted.delete(canvas);
   if (histories.delete(key)) changed();
 }
 
-/** Station `station` was left while the restore of tab `key` to `target` was on its way: finish it on coming back. */
-export function interrupt(station: string, key: string, target: Snapshot): void {
-  interrupted.set(station, { key, target });
+/** Canvas `canvas` was left while the restore of tab `key` to `target` was on its way: finish it on coming back. */
+export function interrupt(canvas: string, key: string, target: Snapshot): void {
+  interrupted.set(canvas, { key, target });
 }
 
-/** The restore station `station` was left in the middle of, taken to finish now, or null. */
-export function takeInterrupted(station: string): Pending | null {
-  const left = interrupted.get(station) ?? null;
-  interrupted.delete(station);
+/** The restore canvas `canvas` was left in the middle of, taken to finish now, or null. */
+export function takeInterrupted(canvas: string): Pending | null {
+  const left = interrupted.get(canvas) ?? null;
+  interrupted.delete(canvas);
   return left;
 }
 

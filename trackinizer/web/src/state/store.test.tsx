@@ -9,7 +9,7 @@ import { AGREED, stubFetch } from "../api/testing";
 import { DEFAULT_PREFERENCES, type Preferences, receivePreferences } from "../preferences";
 
 const KEY = `trackinizer.v2.${location.origin}.ada@example.com`;
-const PROFILE = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED };
+const PROFILE = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_canvas_enabled: false, ...AGREED };
 
 function wrapper({ children }: { children: ReactNode }) {
   return <ProfileContext value={PROFILE}>{children}</ProfileContext>;

@@ -253,7 +253,7 @@ and the page puts it back on `next`, so signing in returns to the same view.
 ```
 GET  /api/me/profile
 PATCH /api/me/preferences
-PUT  /api/me/visual-workspace
+PUT  /api/me/visual-canvas
 PUT  /api/me/acknowledge
 GET  /api/me/tokens
 POST /api/me/tokens
@@ -276,7 +276,7 @@ means nobody is staff. It is not stored per user and no route sets it.
 A domain pattern takes effect at each person's next browser login: the claim is
 stored only by the Google callback, so until then a person's `users` row has no
 Workspace domain and neither they nor their keys are staff (fail closed). Before
-setting a `*@domain` pattern on a deployment, sign in once with a Workspace account
+setting a `*@domain` pattern on a deployment, sign in once with a Canvas account
 and once with a consumer account on the same domain, and check that only the first
 gets `staff` in `GET /api/me/profile`.
 
@@ -412,7 +412,7 @@ GET /api/web/feed?after_created=<iso>&after_session=<uuid>&after_seq=N
 GET /api/web/feed?since=<iso>&until=<iso>&room=<room>&actor=<actor>&limit=N&tail=<bool>
 GET /api/web/feed?actor=<actor>&actor=<actor>&room=<room>&cli=<cli>&kind=<kind>
 GET /api/web/feed?conversation=true&tail=true&limit=N
-GET /api/web/feed?station=<workspace uuid>
+GET /api/web/feed?canvas=<canvas uuid>
 GET /api/web/feed/facets?since=<iso>&until=<iso>
 GET /api/web/feed/facets?since=<iso>&until=<iso>&actor=<actor>&kind=<kind>
 GET /api/web/feed/histogram?since=<iso>&until=<iso>&buckets=N
@@ -460,12 +460,12 @@ it wraps) and `kind` (the record's kind, such as `AssistantMessage` or
 values, and must pass every filter given, so
 `actor=a&actor=b&kind=ToolCall` is the tool calls of `a` and `b`.
 
-`station=<workspace uuid>` (also on the facets and the histogram) keeps the agents of
-one of the caller's stations: the sessions reachable by `produced_by` edges
-from the session whose `cli_session_id` is `chat:<the station's conversation>`
+`canvas=<canvas uuid>` (also on the facets and the histogram) keeps the agents of
+one of the caller's canvases: the sessions reachable by `produced_by` edges
+from the session whose `cli_session_id` is `chat:<the canvas's conversation>`
 (a campaign launched from the chat makes its lead's session `produced_by` the
 chat's), to depth 4 and at most 500 sessions, never the chat's own. It is one
-query. A station that is not the caller's, or has no chat, keeps nothing.
+query. A canvas that is not the caller's, or has no chat, keeps nothing.
 
 The feed alone also takes `conversation=true`, which keeps only the records
 the facets count as `conversation` (below), so a page of `limit` records holds
@@ -625,7 +625,7 @@ plain "Update trax" message and takes no lease; a drain by the other CLI is 409
 unexpired lease of the same CLI is 409 `chat_run_live`. The runner ends its run on
 `provider_is_assistant`, `provider_is_other_cli` and `chat_run_live` instead of
 retrying, and leaves the chat's session open as it exits. `POST .../end` takes the
-ending run's `cli` too: on a chat whose station chose another provider it is a 200
+ending run's `cli` too: on a chat whose canvas chose another provider it is a 200
 that changes nothing, so the exit of the run a switch stopped does not end the
 session the chosen provider drains. It takes the run's `instance` too: an end that
 names a `cli` and an `instance` is the same 200 that changes nothing when that run was
@@ -651,7 +651,7 @@ holds, so after a lapse or a server restart the state is back within 15 s of its
 drain. A report from a run other than the one holding the lease, or
 while none does, changes nothing and is answered the same. It is held to the rules of
 the drain: the opening key, or for a chat the starter's own run, never the
-assistant's. A station's `partner.state`, an entry of `GET /api/workspaces` and an
+assistant's. A canvas's `partner.state`, an entry of `GET /api/canvases` and an
 agent of `GET /api/web/feed/facets` carry `state`: `taken_over` after a report of it,
 else `requires_action` while an ask is open in the chat (whatever the run reports,
 and for the assistant's chats, which report nothing), else what the run last
@@ -689,7 +689,7 @@ An AgentSession carries an `audience` (`open`, `private` or `staff`) saying who 
 read its transcript. Only the transcript is gated: the session's title, actor, rooms,
 times, cost, edges and `audience`, and every row it files, stay readable by anyone
 who can read the graph. Who reads a transcript is one rule, set by the server's
-organisation mode, `TRACKINIZER_CHAT_ORGS`, as a chat workspace sets it:
+organisation mode, `TRACKINIZER_CHAT_ORGS`, as a chat canvas sets it:
 
 | mode | `open` session | `private` session | `staff` session |
 |---|---|---|---|
@@ -772,7 +772,7 @@ session's `account` and `audience`, and `hideable`, whether the caller may hide 
 A
 record written to a session pings the live streams
 (`GET /api/change_log/stream`, `GET /api/web/subscribe`, the `changed` frames of
-`GET /api/workspaces/<uuid>/events`) with the session's id, and a stream relays
+`GET /api/canvases/<uuid>/events`) with the session's id, and a stream relays
 that ping only to a caller who reads the session, by the one rule above: when a
 session receives a record is part of its transcript. A stream asks once per session
 and audience and keeps the answer for 30 s, so a hide is heard at once, and a share,
@@ -839,20 +839,20 @@ exported when both of its ends were selected, and a change-log, metric or
 session row when the inquiry it hangs off was. The header then carries the
 selector, so a reader can tell one slice from a whole-graph backup.
 
-### 1.24 Visual catalog and workspace
+### 1.24 Visual catalog and canvas
 
 ```
 GET  /api/visuals
-POST /api/workspaces
-GET  /api/workspaces
-POST /api/workspaces/new
-POST /api/workspaces/for-chat/<conversation uuid>
-GET  /api/workspaces/<uuid>
-PATCH /api/workspaces/<uuid>
-PUT  /api/workspaces/<uuid>/page
-PUT  /api/workspaces/<uuid>/layout
-POST /api/workspaces/<uuid>/operations
-POST /api/workspaces/<uuid>/relay
+POST /api/canvases
+GET  /api/canvases
+POST /api/canvases/new
+POST /api/canvases/for-chat/<conversation uuid>
+GET  /api/canvases/<uuid>
+PATCH /api/canvases/<uuid>
+PUT  /api/canvases/<uuid>/page
+PUT  /api/canvases/<uuid>/layout
+POST /api/canvases/<uuid>/operations
+POST /api/canvases/<uuid>/relay
 ```
 
 `GET /api/visuals` returns safe descriptors and the default visual type. It
@@ -883,9 +883,9 @@ directions with `results_per_direction` results each. The two limits come from
 the catalog descriptor; an out-of-range value returns 422, a missing record
 404.
 
-`PUT /api/me/visual-workspace` sets the signed-in user's canvas opt-in from
+`PUT /api/me/visual-canvas` sets the signed-in user's canvas opt-in from
 an interactive browser session. API keys cannot change that choice.
-`GET /api/me/profile` includes `visual_workspace_enabled`; it defaults to true. It
+`GET /api/me/profile` includes `visual_canvas_enabled`; it defaults to true. It
 also names `api_key_id`, the key the request used, or null for a browser session.
 
 `PATCH /api/me/preferences` changes the caller's preferences, kept on their user
@@ -909,18 +909,18 @@ A person's preferences are theirs: an admin may put them back to their defaults
 (`DELETE /api/admin/users/<uuid>/preferences`, 204 with no body) but no route lets
 anyone else read them, and no preference write makes a change row.
 The UI's settings are marked `x-setting` in the schema: Settings shows them as one
-document, each value under its description, and they are the keys a station's
+document, each value under its description, and they are the keys a canvas's
 assistant may read and change (`ASSISTANT_KEYS`, which a test keeps equal to them).
-Every station of the user is sent a `preferences` frame with the result, so each of
+Every canvas of the user is sent a `preferences` frame with the result, so each of
 their tabs shows the change.
 
-A station's assistant changes its owner's preferences with the workspace operation
+A canvas's assistant changes its owner's preferences with the canvas operation
 `{"kind": "preferences", "change": {"theme": "light"}}` (same keys, `null` resets):
 the owner's, not the assistant account's, and only the UI's keys (`ASSISTANT_KEYS`
-in `server/preferences.py`); any other key is a 422. Only an agent key the station
+in `server/preferences.py`); any other key is a 422. Only an agent key the canvas
 accepts may send it; like `navigate` it changes no visual and no revision, and every
-station of the owner gets a `preferences` frame (the station stream is the owner's
-browser alone). A station's state carries those UI keys of its owner's
+canvas of the owner gets a `preferences` frame (the canvas stream is the owner's
+browser alone). A canvas's state carries those UI keys of its owner's
 `preferences`, so the assistant can read what is set, and nothing more.
 
 `PUT /api/me/acknowledge` with `{"rules_version": "<version shown>"}` records that
@@ -951,14 +951,14 @@ edit them.
 `GET /api/web/get/<uuid>` carries `locked` beside
 `self`.
 
-**Stations.** A canvas is a station: a user has many, each with a `name`
-(1 to 120 characters, unique among the user's; `unnamed-workstream#N`, the lowest
+**Canvases.** A canvas is a canvas: a user has many, each with a `name`
+(1 to 120 characters, unique among the user's; `unnamed-canvas#N`, the lowest
 free N of 1 or more, until renamed), at most one science chat
 (`conversation_id`), the `#/...` `page` it was last on, and its `layout`. The database keeps
-these in one optional JSON column, `station`, beside the canvas's own. The
-routes here other than `GET /api/workspaces/<uuid>` are the signed-in browser's
+these in one optional JSON column, `canvas`, beside the canvas's own. The
+routes here other than `GET /api/canvases/<uuid>` are the signed-in browser's
 own; an API key is 403.
-`POST /api/workspaces` returns the station the user changed last (an operation, a
+`POST /api/canvases` returns the canvas the user changed last (an operation, a
 rename, a page or a chat bound), and makes the first, once however many requests
 race, when there is none. It starts
 with `trax.browse` in the main pane. Chat is not a visual: the browser draws it as a
@@ -966,53 +966,53 @@ column beside the canvas, and `show trax.chat` is refused as an unknown type. A
 stored canvas that still holds a `trax.chat` visual reads without it. The response
 has `id`, `revision`, `name`, `conversation_id`, `page`, `layout`, `visuals`,
 `focused_instance`, `assistant`, and `partner`.
-`GET /api/workspaces` lists the stations, the one changed last first, as
+`GET /api/canvases` lists the canvases, the one changed last first, as
 `{id, name, conversation_id, page, created_at, tabs, tab}`: `tabs` names each
 canvas tab in order as `{id, name}` (none until a second one is made) and `tab` is
-the open one's id or null, so the top bar shows every station's tabs without
-reading each station.
-`POST /api/workspaces/new` makes a station. An optional body `{workstream_id,
-provider}` names its workstream (else Scratch) and the provider its chat starts on
+the open one's id or null, so the top bar shows every canvas's tabs without
+reading each canvas.
+`POST /api/canvases/new` makes a canvas. An optional body `{workspace_id,
+provider}` names its workspace (else Scratch) and the provider its chat starts on
 (else the caller's `chat_provider` preference); a CLI is taken with no machine to
 run on, and nothing runs until one is picked.
-`PATCH /api/workspaces/<uuid>` with `{"name"}` renames it: the name is trimmed
+`PATCH /api/canvases/<uuid>` with `{"name"}` renames it: the name is trimmed
 and must then be 1 to 120 characters (else 422); a name the user already has is
 409.
-`PUT /api/workspaces/<uuid>/page` with `{"route"}`, a `#/...` address valid as a
+`PUT /api/canvases/<uuid>/page` with `{"route"}`, a `#/...` address valid as a
 navigation's, remembers the page; it is 204, changes no revision and publishes
 no frame, and the browser sends it at most every 500 ms.
-`PUT /api/workspaces/<uuid>/layout` remembers how the station's columns and windows
-were left, in `station.layout` beside the page. The body names any of `columns`
+`PUT /api/canvases/<uuid>/layout` remembers how the canvas's columns and windows
+were left, in `canvas.layout` beside the page. The body names any of `columns`
 (`left`, `side`: fractions of the stage's width), `chat_ch` (Chat's width in `ch`,
 10 to 400), `floating` (window `width`/`height` as fractions, by visual type),
 `tiles` (`collapsed` and `place` `left`/`top` as fractions, by visual type), `share`
 (a docked tile's share of its strip, by visual type) and `console` (the open
 Console view's id); each key named replaces the stored key and the others stay.
-Pixels are refused (422). It is 204, owner only (another's station is 404), changes
-no revision and publishes no frame. `GET /api/workspaces/<uuid>` returns it as
+Pixels are refused (422). It is 204, owner only (another's canvas is 404), changes
+no revision and publishes no frame. `GET /api/canvases/<uuid>` returns it as
 `layout`, null until one is written. The browser fits it to each screen and
 sends it at most every 500 ms.
-`POST /api/workspaces/for-chat/<conversation uuid>` returns the user's station that
-holds that chat, or makes one bound to it. A station that is not the user's is 404;
+`POST /api/canvases/for-chat/<conversation uuid>` returns the user's canvas that
+holds that chat, or makes one bound to it. A canvas that is not the user's is 404;
 a deleted chat is 410 `chat_deleted`.
-`GET /api/workspaces/<uuid>` returns that state to its owner, and to an
+`GET /api/canvases/<uuid>` returns that state to its owner, and to an
 assistant's key (below).
 
-`POST /api/workspaces/<uuid>/relay` with `{"targets": [{"actor", "room"}], "text"}`
-and a required `Idempotency-Key` tells the station's chat what its owner sent
+`POST /api/canvases/<uuid>/relay` with `{"targets": [{"actor", "room"}], "text"}`
+and a required `Idempotency-Key` tells the canvas's chat what its owner sent
 agents directly from the Console, after the per-agent `POST /api/messages`
-sends; it is the browser's own and a station that is not the owner's is 404. One
+sends; it is the browser's own and a canvas that is not the owner's is 404. One
 request is one Console line, however many targets. The partner it queues for is
-the one a Chat line of the station would go to: the chat's own session when the
+the one a Chat line of the canvas would go to: the chat's own session when the
 assistant has it open, else the assistant's service session. The message carries
-`context.relay` (`targets` and `text`) beside the usual `workspace_id` and
+`context.relay` (`targets` and `text`) beside the usual `canvas_id` and
 `conversation_id`, and its `text` is the relay's text. The assistant records it in
 the chat as a line of the poster's that starts with `→ ` (an arrow and a
 space), then `actor` or `actor:room` for each target joined by `, `, then `: `
 and the text; it runs no turn, so there is no answer and no cost, and it reads
 the line with its next prompt. The response is `{"delivered": bool}`: false when
-the station has no chat, its chat was deleted, its owner may not post into its chat
-(a station may be bound to a chat to read it, section 1.25 says who posts), its
+the canvas has no chat, its chat was deleted, its owner may not post into its chat
+(a canvas may be bound to a chat to read it, section 1.25 says who posts), its
 partner is not running or its queue is full, which is never an error.
 A retry under the same key queues nothing again.
 
@@ -1027,45 +1027,45 @@ none is configured. `partner` is computed on every read and never stored:
 no run holds), `provider`, `label` (`claude · gx10`), and for a live CLI run the
 `machine`, `run_name` and `cwd` its last drain named (null otherwise).
 
-**The provider.** A station's `provider` (`assistant`, `claude` or `codex`) says who
+**The provider.** A canvas's `provider` (`assistant`, `claude` or `codex`) says who
 answers its Chat; a canvas stored with the retired `partner_choice` reads as
-`assistant`. A new station starts on the provider `POST /api/workspaces/new` names,
-else on its owner's `chat_provider` preference; a fork keeps its source station's.
+`assistant`. A new canvas starts on the provider `POST /api/canvases/new` names,
+else on its owner's `chat_provider` preference; a fork keeps its source canvas's.
 The operation `{"kind": "provider", "provider": P}` is the owner's browser's alone
 (an API key is 422). A CLI no confirmed online machine of the owner lists is 409
-`provider_unavailable` with the reason; choosing a CLI gives the station a chat and
+`provider_unavailable` with the reason; choosing a CLI gives the canvas a chat and
 the chat a session at once, which an offline partner names for a run to attach to.
 A switch does not stop an assistant turn already running; its answer still lands.
 The state carries `available` and `reasons` per provider: a CLI is available while
 such a machine lists it, and `assistant` always is here (its credit is the billing
 addon's to say).
 
-The partner's key may read and operate a station while that station's partner
-is the session the key opened, and the live science chat the station holds
-(`conversation_id`) is one that key opened with the station's owner as its
-account or a poster (section 1.25). The check is per station: a station without
-a chat takes no key. Any other station is 404, so a user who never talked to
-the partner in that station gives it nothing. Only the key that opened a
+The partner's key may read and operate a canvas while that canvas's partner
+is the session the key opened, and the live science chat the canvas holds
+(`conversation_id`) is one that key opened with the canvas's owner as its
+account or a poster (section 1.25). The check is per canvas: a canvas without
+a chat takes no key. Any other canvas is 404, so a user who never talked to
+the partner in that canvas gives it nothing. Only the key that opened a
 partner or science-chat session may drain its inbound queue, whatever the role,
 except that a chat on `claude` or `codex` is drained by its starter's run under any
 of their keys. A science chat's queue has one drainer, the provider its starter's
-station names: for a CLI, the assistant's key is 409 `provider_is_cli`; for
+canvas names: for a CLI, the assistant's key is 409 `provider_is_cli`; for
 `assistant`, an opening key that is not the assistant's is 409
-`provider_is_assistant`. Either holds from the moment the station switches. A chat
+`provider_is_assistant`. Either holds from the moment the canvas switches. A chat
 has one live run at a time: a `provider` operation revokes the lease of the chat's
-run of any CLI it leaves and stops that station owner's terminals attached to the
+run of any CLI it leaves and stops that canvas owner's terminals attached to the
 chat's session, and `POST /api/terminals` with `attach` is 409 `chat_run_live` while
 another terminal or lease holds the session.
 
 An operation body has `revision` and one `operation`: `show`, `hide`, `focus`,
 `place`, `provider`, `navigate`, `highlight`, or `chat`. The caller supplies a UUID `Idempotency-Key`
 header. The
-server locks the workspace, checks the revision, validates the visual type,
+server locks the canvas, checks the revision, validates the visual type,
 parameters and record kind, and returns the new state. Retrying a recent body
 with the same key returns the original state and publishes nothing. The latest 64
 receipts are retained; an older retry receives a stale-revision 409 after its
 receipt expires. Reusing a retained key for another body returns 409. Both that
-conflict and a stale revision include `current` with the live workspace. An API
+conflict and a stale revision include `current` with the live canvas. An API
 key can operate only as the partner above; that check also runs before
 replaying an idempotency receipt.
 
@@ -1087,7 +1087,7 @@ browser is refused with 422), it changes no visual and no revision, and the serv
 pushes a `chat` frame. It is the tab's own state: never stored, not replayed, and a
 reload shows Chat.
 
-Viewer access is enough to change one's own canvas. Workspace operations do
+Viewer access is enough to change one's own canvas. Canvas operations do
 not edit trax records or add entries to `change_log`.
 
 ### 1.25 Science chat and canvas events
@@ -1101,7 +1101,7 @@ DELETE /api/chats/<uuid>/shares/<email>
 GET    /api/sessions/<uuid>/partial
 PUT    /api/sessions/<uuid>/partial
 DELETE /api/sessions/<uuid>/partial/<turn>
-GET    /api/workspaces/<uuid>/events
+GET    /api/canvases/<uuid>/events
 ```
 
 A canvas Chat conversation is one AgentSession the assistant opens: label
@@ -1121,36 +1121,36 @@ whatever the assistant asks. Its starter deletes it while every person's line in
 is theirs (Deleting below).
 
 `POST /api/chats` (browser only, writer role, with an `Idempotency-Key`) posts a
-line. The body is `{workspace_id, text, conversation_id, page, trail, kind,
+line. The body is `{canvas_id, text, conversation_id, page, trail, kind,
 payload}`; `text` holds a non-space
-character and at most 16,384 characters, and `workspace_id` is the poster's own
-station. `kind` is `line` by default, or `command`, `answer`, `settings` or
+character and at most 16,384 characters, and `canvas_id` is the poster's own
+canvas. `kind` is `line` by default, or `command`, `answer`, `settings` or
 `interrupt`, with `payload` as `POST /api/sessions/<uuid>/inbound` takes it (a stale
-browser's `science` reads as `line`). An `assistant` station takes a `line` or an
+browser's `science` reads as `line`). An `assistant` canvas takes a `line` or an
 `answer` (422 otherwise), an `answer` being a choice on a card the assistant asked,
 queued for the chat's own session and given by the chat's starter alone, as on a
-`claude` or `codex` station (403 `answer_not_owner`); it is 409
+`claude` or `codex` canvas (403 `answer_not_owner`); it is 409
 `provider_offline` while the assistant does not have the chat open. A `claude` or
-`codex` station queues the post on the chat's session its run drains, with only a
+`codex` canvas queues the post on the chat's session its run drains, with only a
 `line` carrying the canvas context, and while that run is taken over in a terminal
-refuses every post with 409 `chat_taken_over`. A station holds one chat: with none, the line's conversation becomes its
+refuses every post with 409 `chat_taken_over`. A canvas holds one chat: with none, the line's conversation becomes its
 chat in the transaction that queues the line; with one, a line that names another
-conversation is 409, as is one for a conversation another station of the poster
-holds, and a line that names none continues the station's chat. `page` is the `#/...` address the sender is on and `trail` the addresses
+conversation is 409, as is one for a conversation another canvas of the poster
+holds, and a line that names none continues the canvas's chat. `page` is the `#/...` address the sender is on and `trail` the addresses
 they came through before it, oldest first, at most 8; a malformed address or a
 longer trail is 422. The server resolves them to records in the context. A
 `conversation_id` continues a chat, for a writer who may post into it (see Forking
 below). None starts one, and the key
 names it, so a retry names the same conversation. `fork: {session_id, part, idx}`
-instead starts a new conversation from that line of another chat, in a new station
-copied from the one the line was sent from (the receipt's `workspace_id`); it and
+instead starts a new conversation from that line of another chat, in a new canvas
+copied from the one the line was sent from (the receipt's `canvas_id`); it and
 `conversation_id` together are 422. The line's poster is the attested account,
 never the body. The server builds the typed canvas context (the canvas, its
 visible visuals, the page and the trail; it pins no record) and queues the line
 for the conversation's own session when the canvas's partner has it open
 and some poller drains it, and for the partner's service session otherwise. The
-receipt is `{conversation_id, workspace_id, session_id}` at once;
-`workspace_id` is the station the line went to; `session_id` is null until
+receipt is `{conversation_id, canvas_id, session_id}` at once;
+`canvas_id` is the canvas the line went to; `session_id` is null until
 the assistant has the session open. The same key again returns the original receipt and queues nothing; a key
 reused for another line is 409. The de-duplication is in memory, so a retry after
 a server restart queues the line again. On `assistant`, no live assistant is 409; on
@@ -1161,7 +1161,7 @@ and nothing is queued.
 Slash commands. A `line` whose very first character is `/` and whose first word
 is a built-in slash command of claude or codex (`goal`, `compact`, `model`,
 `resume`, `exit` and the rest, in any case) is judged by the chat's provider:
-the starter's station's in a chat someone else began, never the poster's.
+the starter's canvas's in a chat someone else began, never the poster's.
 `/goal <condition>`, `/goal clear` (also typed as `stop`, `off`, `reset`, `none`
 or `cancel`), codex's `/goal pause` and `/goal resume`, claude's `/compact`,
 `/rename <name>` (and claude's bare `/rename`, which names the session from the
@@ -1173,7 +1173,7 @@ payload, likewise bare of context and marks; without the argument they are refus
 Any other built-in, a command of more than
 one line or over 800 characters, and every command to `assistant` are 422
 `{"detail": {"code": "command_refused", "message": "<why>"}}`, before anything
-is queued or a station bound. Any other text, `/etc/hosts is broken` or a custom
+is queued or a canvas bound. Any other text, `/etc/hosts is broken` or a custom
 command among it, is a line. A post of any other `kind` is not judged.
 
 Answers. An `answer` to a `claude` or `codex` chat comes from the chat's starter
@@ -1203,8 +1203,8 @@ is `staff`), and `may_share` and `may_delete` whether the caller may share it an
 delete it (Sharing and Deleting below).
 
 Forking. A fork is a new science chat that starts from a line of another: its
-`account` is the forker, it has its own conversation id (the key), and its station
-keeps the source station's provider. The server opens its session in the post's
+`account` is the forker, it has its own conversation id (the key), and its canvas
+keeps the source canvas's provider. The server opens its session in the post's
 transaction, under the assistant's service key for an `assistant` fork and the
 forker's own key for a CLI one (409 `provider_offline` when the forker has none),
 with copies of every part of the original's records up to and including that line,
@@ -1212,7 +1212,7 @@ in time order, keeping their times and `$inbound` stamps, and adds a `produced_b
 edge from the fork's session to the original's, labelled `chat-fork` and
 `fork-at:<part>:<idx>`; the fork's line is queued once that commits. The original is not
 written, and a fork point is dropped for a conversation that already has lines. Spend,
-campaigns and the new station belong to the forker. `forks` on the original's head counts
+campaigns and the new canvas belong to the forker. `forks` on the original's head counts
 the conversations with such an edge to it, counting only an edge that the key that
 opened the fork's session added with the fork label; `forked_from` on a fork's
 head is the original's conversation (the earliest such edge). A fork the forker's
@@ -1270,11 +1270,11 @@ emails, oldest share first.
 Deleting. `DELETE /api/chats/<uuid>` (writer role) deletes a whole chat: every
 session under its id, whoever's key opened it, with its records (each purged as
 `DELETE /api/inquiries/<uuid>` purges a row, audited), its shares, and its binding
-to any station, whose next line then starts a new chat; each such station moves to
-its next `revision`, and its open tabs get a `workspace` frame without the chat at
+to any canvas, whose next line then starts a new chat; each such canvas moves to
+its next `revision`, and its open tabs get a `canvas` frame without the chat at
 that revision. A tombstone keeps the id, and nothing starts the chat again: its
 head, a later post naming it, a `fork` keyed by it or from one of its lines,
-`POST /api/workspaces/for-chat/<uuid>` and `POST /api/sessions/start` with its
+`POST /api/canvases/for-chat/<uuid>` and `POST /api/sessions/start` with its
 `chat:<uuid>` id are each 410 `{"detail": {"code": "chat_deleted", "message":
 ...}}`, and an append to one of its sessions is 404, as the session is gone. Lines
 still queued for it go with it. It answers 204, or 404 for a chat the
@@ -1334,20 +1334,20 @@ opens one, from its opening key, a key of the configured assistant or a key of i
 starter; after that the part is written only by the key whose first write opened it,
 and a part opened before parts recorded their key by the chat's opening key alone. The
 same keys end it. Any other key's append or end is 403, a writer's included. Editing
-any of its fields (its labels and account decide who may use it from a station and
-which stations the assistant may use) and purging it by id are 403 from any key but
+any of its fields (its labels and account decide who may use it from a canvas and
+which canvases the assistant may use) and purging it by id are 403 from any key but
 its opening one (an admin may purge it), and
 `POST /api/sessions/<uuid>/inbound` and
 `/api/messages` refuse it with 409 because a line sent that way names no
 conversation. A browser's `/api/messages` send to a science chat, live or idle, is
-refused with the same 409 and the detail "Open its station to talk to this
+refused with the same 409 and the detail "Open its canvas to talk to this
 chat". A conversation has one session per assistant key that has spoken in it,
 since a session resumes only for the key that opened it; `GET /api/chats/<uuid>`
 names the live one, else the newest.
 
-`GET /api/workspaces/<uuid>/events` streams the owner's canvas as server-sent
+`GET /api/canvases/<uuid>/events` streams the owner's canvas as server-sent
 events (browser only), and is the tab's one stream. Each frame is `data: <json>`
-with `t`, the server's epoch milliseconds: `{type: "workspace", state}`
+with `t`, the server's epoch milliseconds: `{type: "canvas", state}`
 on open, after every applied operation, and when the partner changes (a
 session starts or ends, or its poller lease lapses);
 `{type: "navigate", route}`; `{type: "highlight", ids}`; `{type: "chat", hidden}`; and
@@ -1357,7 +1357,7 @@ changes that session, so every viewer who reads its audience gets a `changed`
 frame and reads what the session gained. A comment goes out on open and after 25 s without a
 frame, and on each the server checks the user is still active and ends
 the stream if not. A subscriber more than 256 frames behind is dropped and
-reconnects from the `workspace` frame.
+reconnects from the `canvas` frame.
 
 ### 1.26 Variables
 
@@ -1467,7 +1467,7 @@ credential; revoke it first.
 
 ```
 POST   /api/terminals
-GET    /api/terminals/machines?workspace=<uuid>
+GET    /api/terminals/machines?canvas=<uuid>
 POST   /api/terminals/<uuid>/attach
 POST   /api/terminals/<uuid>/close
 WS     /api/terminals/<uuid>/ws
@@ -1483,12 +1483,12 @@ machine's owner opens one, with a browser session (a cookie): an API key, a
 service account, a request without this server's own `Origin`, and anyone else
 answer 403 or 404. The machine must be online and its host must have asked for
 terminals within 45 seconds (the machine host does by default), else 409
-`terminal_not_enabled`. A station may hold any number of terminals; a user's 11th
+`terminal_not_enabled`. A canvas may hold any number of terminals; a user's 11th
 open within a minute answers 429. Every terminal refusal answers
 `detail: {code, message}`: `terminal_forbidden`, `terminal_not_enabled`,
 `terminal_unconfirmed`, `terminal_limit`, `cli_not_installed` and `chat_run_live`.
 
-`POST /api/terminals` takes `{machine, rows, cols, workspace?, surface?, command?,
+`POST /api/terminals` takes `{machine, rows, cols, canvas?, surface?, command?,
 attach?, run_name?, cwd?}` and returns `{terminal_id, ticket}`. `command` is `claude` or
 `codex`: the terminal starts the runner of that CLI in place of a login shell, and
 any other value is 422. `attach` (the AgentSession the run re-opens), `run_name`
@@ -1504,8 +1504,8 @@ and a folder that is not there ends the terminal with one line saying so. The ho
 an older wire still opens a login shell. Each machine in
 `GET /api/terminals/machines` carries `clis`, the CLIs its facts name, so a picker
 offers only what is installed. `surface` names the view that opened it;
-`GET /api/terminals/machines?workspace=ID` lists the caller's live terminals for
-that station as `terminals` (`terminal_id`, `machine`, `surface`), oldest first. The
+`GET /api/terminals/machines?canvas=ID` lists the caller's live terminals for
+that canvas as `terminals` (`terminal_id`, `machine`, `surface`), oldest first. The
 ticket is 256 random bits, valid once for 30 seconds; it never travels in a URL.
 The browser opens the WebSocket and sends
 `ATTACH` first (the 43-character ticket, then a u64 offset). One binary message is
@@ -1547,7 +1547,7 @@ even when such a job still holds the terminal open.
 
 Nothing a terminal shows or receives is stored: the server keeps the last 256 KiB
 in memory for a re-attach and drops it when the terminal ends. An agent run started
-inside the shell records its own session, placed in the station, as it does anywhere.
+inside the shell records its own session, placed in the canvas, as it does anywhere.
 
 ### 1.27 Code store
 
@@ -2283,14 +2283,14 @@ Inquiry and edge mutations -- including `DELETE` (field unset, inquiry
 purge, edge remove) -- return `200` with a body carrying the `change_id`
 they produced (section 3.13). Admin user-DELETE and chat `DELETE` return `204` with
 no body.
-Workspace mutations return canvas state; they do not produce a graph change.
+Canvas mutations return canvas state; they do not produce a graph change.
 
 ### 4.2 Roles
 
 ```
 viewer  GET /api/** except GET /api/variables and GET /api/machines/**, GET /api/web/**, GET /api/me/**, GET /app/**,
-        PUT /api/me/visual-workspace,
-        POST /api/workspaces, POST /api/workspaces/<uuid>/operations
+        PUT /api/me/visual-canvas,
+        POST /api/canvases, POST /api/canvases/<uuid>/operations
 writer  viewer + inquiry/edge create/mutate/delete, GET /api/variables,
         GET /api/machines/**, POST /api/code/blobs/**,
         PUT /api/code/records/<uuid>/snapshot

@@ -27,7 +27,7 @@ test("the shared assistant is the partner, and it is named; no local helper is o
 });
 
 test("an assistant that is not set up is said to be missing", async () => {
-  serveAccount(ADA, { workspace: { assistant: null } });
+  serveAccount(ADA, { canvas: { assistant: null } });
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);
   const region = within(screen.getByRole("region", { name: "Chat partner" }));
   await region.findByText("not set up on this server");

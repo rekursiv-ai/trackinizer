@@ -2,13 +2,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
-import type { WorkspaceState } from "../api/workspaces";
+import type { CanvasState } from "../api/canvases";
 import { Files } from "./Files";
 import type { FilesDoc } from "./filesDoc";
 import { answerFiles, canvasActions, FILES, FILES_RECORD, filesRow, TREE_DIFF } from "./testing";
-import { type WorkspaceActions, WorkspaceActionsProvider } from "./workspaceActions";
+import { type CanvasActions, CanvasActionsProvider } from "./canvasActions";
 
-type Params = WorkspaceState["visuals"][number]["params"];
+type Params = CanvasState["visuals"][number]["params"];
 
 // The highlighter is a chunk of its own; loaded here, its first evaluation is not
 // counted against a test's 100 ms.
@@ -46,15 +46,15 @@ function mount({
   params = {},
   actions = null,
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
-}: { record?: string | null; params?: Params; actions?: WorkspaceActions | null; client?: QueryClient } = {}) {
+}: { record?: string | null; params?: Params; actions?: CanvasActions | null; client?: QueryClient } = {}) {
   const pane = (shown: Params) => {
     const instance = { id: "files pane", type: "trax.files", version: 1, placement: "main" as const, record_id: record, params: shown };
-    const workspace = { id: "w", revision: 1, visuals: [instance] } as unknown as WorkspaceState;
+    const canvas = { id: "w", revision: 1, visuals: [instance] } as unknown as CanvasState;
     return (
       <QueryClientProvider client={client}>
-        <WorkspaceActionsProvider value={actions}>
-          <Files instance={instance} workspace={workspace} focused onWorkspaceChanged={vi.fn()} />
-        </WorkspaceActionsProvider>
+        <CanvasActionsProvider value={actions}>
+          <Files instance={instance} canvas={canvas} focused onCanvasChanged={vi.fn()} />
+        </CanvasActionsProvider>
       </QueryClientProvider>
     );
   };

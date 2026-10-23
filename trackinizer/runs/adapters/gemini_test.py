@@ -26,7 +26,7 @@ class TestSessionDiscovery:
         """Gemini mints ``<sha>/chats`` AFTER the watch is armed.
 
         A watch on the leaves existing at arming time cannot adopt the new
-        sibling, so a first-ever run in a workspace would capture nothing.
+        sibling, so a first-ever run in a canvas would capture nothing.
         """
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert tuple(GeminiAdapter().session_dirs()) == (tmp_path / ".gemini" / "tmp",)
@@ -59,7 +59,7 @@ class TestSessionDiscovery:
         A symlinked cwd names a directory that never receives a write.
         """
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        real = tmp_path / "workspace"
+        real = tmp_path / "canvas"
         real.mkdir()
         link = tmp_path / "link"
         link.symlink_to(real)

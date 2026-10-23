@@ -497,7 +497,7 @@ async def test_migration_033_gives_an_old_canvas_chat_once_on_postgres(
 ) -> None:
     """The migration's JSON surgery works on Postgres, and is safe to run again."""
     await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
-    user, workspace = uuid.uuid4(), uuid.uuid4()
+    user, canvas = uuid.uuid4(), uuid.uuid4()
     browse = {
         "id": str(uuid.uuid4()),
         "type": "trax.browse",
@@ -511,19 +511,21 @@ async def test_migration_033_gives_an_old_canvas_chat_once_on_postgres(
             user,
         )
         await conn.execute(
-            "INSERT INTO visual_workspaces (id, user_id, station, revision, state) "
-            'VALUES ($1, $2, \'{"name": "unnamed-workstream#1"}\', 5, $3)',
-            workspace,
+            "INSERT INTO visual_canvases (id, user_id, metadata, revision, state) "
+            'VALUES ($1, $2, \'{"name": "unnamed-canvas#1"}\', 5, $3)',
+            canvas,
             user,
             {"visuals": [browse]},
         )
         for expected_revision in (6, 6):
+            await conn.execute(load_sql("canvas_rename_down"))
             await conn.execute(load_sql("schema.033"))
+            await conn.execute(load_sql("schema.058"))
             row = await conn.fetchrow(
                 "SELECT revision, (SELECT array_agg(v ->> 'type' || ':' || (v ->> 'placement')) "
                 "FROM jsonb_array_elements(state -> 'visuals') AS v) AS visuals "
-                "FROM visual_workspaces WHERE id = $1",
-                workspace,
+                "FROM visual_canvases WHERE id = $1",
+                canvas,
             )
             assert row is not None
             assert row["revision"] == expected_revision
@@ -1019,8 +1021,9 @@ _CATALOG = (
 """Every table, column, constraint, index and sequence of the public schema."""
 
 
-async def _make_stations_old(conn: Conn) -> None:
-    """Turn a fresh database's stations back into 038's one-default-canvas shape."""
+async def _make_canvases_old(conn: Conn) -> None:
+    """Turn a fresh database's canvases back into 038's one-default-canvas shape."""
+    await conn.execute(load_sql("canvas_rename_down"))
     await conn.execute(
         "ALTER TABLE visual_workspaces DROP COLUMN station, "
         "ADD COLUMN is_default BOOLEAN NOT NULL DEFAULT TRUE, "
@@ -1034,7 +1037,7 @@ async def _make_stations_old(conn: Conn) -> None:
     await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.042.sql'")
 
 
-async def _seed_old_stations(conn: Conn) -> dict[str, uuid.UUID]:
+async def _seed_old_canvases(conn: Conn) -> dict[str, uuid.UUID]:
     """Give two users a canvas each, and presets that collide in every way."""
     ada, bo = uuid.uuid4(), uuid.uuid4()
     for user, email in ((ada, "ada@example.com"), (bo, "bo@example.com")):
@@ -1080,32 +1083,32 @@ async def _seed_old_stations(conn: Conn) -> dict[str, uuid.UUID]:
     return {"ada": ada, "bo": bo, "canvas": canvas, "continuation": continuation}
 
 
-async def _check_stations_migrated(engine: DatabaseEngine) -> None:
-    """Migrate 038's stations by bootstrap, and compare them with a fresh install."""
+async def _check_canvases_migrated(engine: DatabaseEngine) -> None:
+    """Migrate 038's canvases by bootstrap, and compare them with a fresh install."""
     await Store(engine, embed=StubEmbedder()).bootstrap()
     async with engine.acquire() as conn:
         fresh = {tuple(row.values()) for row in await conn.fetch(_CATALOG)}
-        await _make_stations_old(conn)
-        ids = await _seed_old_stations(conn)
+        await _make_canvases_old(conn)
+        ids = await _seed_old_canvases(conn)
     await Store(engine, embed=StubEmbedder()).bootstrap()
     async with engine.acquire() as conn:
         migrated = {tuple(row.values()) for row in await conn.fetch(_CATALOG)}
         ledger = await conn.fetchval(
             "SELECT count(*) FROM applied_migrations WHERE name = 'schema.042.sql'",
         )
-        stations = await conn.fetch(
-            "SELECT id, user_id, station->>'name' AS name, station->>'conversation_id' "
+        canvases = await conn.fetch(
+            "SELECT id, user_id, metadata->>'name' AS name, metadata->>'conversation_id' "
             "AS conversation_id, revision, state "
-            "FROM visual_workspaces ORDER BY modified_at DESC, station->>'name'",
+            "FROM visual_canvases ORDER BY modified_at DESC, metadata->>'name'",
         )
         columns = await conn.fetch(
             "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'visual_workspaces' ORDER BY ordinal_position",
+            "WHERE table_name = 'visual_canvases' ORDER BY ordinal_position",
         )
     assert fresh
     assert migrated == fresh
     assert ledger == 1
-    # Trax's columns stay as they were; the station's fields are one optional JSON.
+    # Trax's columns stay as they were; the canvas's fields are one optional JSON.
     assert [r["column_name"] for r in columns] == [
         "id",
         "user_id",
@@ -1113,10 +1116,10 @@ async def _check_stations_migrated(engine: DatabaseEngine) -> None:
         "state",
         "created_at",
         "modified_at",
-        "station",
+        "metadata",
     ]
     ada = sorted(
-        from_plain(r["name"], str) for r in stations if r["user_id"] == ids["ada"]
+        from_plain(r["name"], str) for r in canvases if r["user_id"] == ids["ada"]
     )
     assert ada == sorted(
         [
@@ -1128,15 +1131,15 @@ async def _check_stations_migrated(engine: DatabaseEngine) -> None:
             "x" * 116 + " (2)",
         ],
     )
-    assert [r["name"] for r in stations if r["user_id"] == ids["bo"]].count(
+    assert [r["name"] for r in canvases if r["user_id"] == ids["bo"]].count(
         "Review",
     ) == 1
-    assert {r["conversation_id"] for r in stations} == {None}
-    # The canvas stays the station the app opens, ahead of every converted view.
-    [canvas] = [r for r in stations if r["id"] == ids["canvas"]]
+    assert {r["conversation_id"] for r in canvases} == {None}
+    # The canvas stays the canvas the app opens, ahead of every converted view.
+    [canvas] = [r for r in canvases if r["id"] == ids["canvas"]]
     assert (canvas["name"], canvas["revision"]) == ("unnamed-workstream#1", 4)
-    assert ids["canvas"] in {r["id"] for r in stations[:2]}
-    kept = [r for r in stations if r["name"] == "Review" and r["user_id"] == ids["ada"]]
+    assert ids["canvas"] in {r["id"] for r in canvases[:2]}
+    kept = [r for r in canvases if r["name"] == "Review" and r["user_id"] == ids["ada"]]
     state = from_plain(kept[0]["state"], dict[str, object])
     assert state["agent_instructions"] == "Compare the tails first."
     assert state["continuation_record_id"] == str(ids["continuation"])
@@ -1144,21 +1147,21 @@ async def _check_stations_migrated(engine: DatabaseEngine) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_migration_042_makes_stations_of_canvases_and_presets_on_pglite(
+async def test_migration_042_makes_canvases_of_canvases_and_presets_on_pglite(
     pglite_engine: postgres.PGliteEngine,
 ) -> None:
-    """Old canvases and saved views become stations, and the catalog equals fresh."""
+    """Old canvases and saved views become canvases, and the catalog equals fresh."""
     await reset_schema(pglite_engine)
-    await _check_stations_migrated(pglite_engine)
+    await _check_canvases_migrated(pglite_engine)
 
 
 @pytest.mark.db_postgres
 @pytest.mark.asyncio(loop_scope="session")
-async def test_migration_042_makes_stations_of_canvases_and_presets_on_postgres(
+async def test_migration_042_makes_canvases_of_canvases_and_presets_on_postgres(
     scratch_engine: postgres.PostgresEngine,
 ) -> None:
     """The same on real Postgres, whose constraint and DO-block handling PGlite mirrors."""
-    await _check_stations_migrated(scratch_engine)
+    await _check_canvases_migrated(scratch_engine)
 
 
 @pytest.mark.db_pglite

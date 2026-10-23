@@ -10,7 +10,7 @@ import { useThemePalette } from "../graph/palette";
 import { formatRoute } from "../router/route";
 import { useRouter } from "../router/router";
 import { Icon } from "../ui/icons";
-import { useWorkspaceActions } from "../visuals/workspaceActions";
+import { useCanvasActions } from "../visuals/canvasActions";
 import { detailQueries, NEIGHBOURHOOD_LIMIT } from "./queries";
 import { radialLayout } from "./radial";
 
@@ -45,7 +45,7 @@ function Preview({ row }: { row: DetailRow }) {
   const graph = shown ? query.data : undefined;
   const name = `${row.kind}#${row.seq}`;
   const href = formatRoute({ name: "graph", focus: { ref: { kind: row.kind, seq: row.seq }, hops: HOPS } });
-  const canvas = useWorkspaceActions();
+  const canvas = useCanvasActions();
   return (
     <div className="rail-graph">
       <a className="rail-graph-link" href={href} aria-label={`Open in graph: ${name}, ${HOPS} hops`}>

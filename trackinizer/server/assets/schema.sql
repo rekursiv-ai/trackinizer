@@ -592,7 +592,7 @@ CREATE TABLE IF NOT EXISTS users (
     name        TEXT NOT NULL,
     role        TEXT NOT NULL CHECK (role IN ('viewer', 'writer', 'admin')),
     status      TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
-    visual_workspace_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    visual_canvas_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     last_login  TIMESTAMPTZ,
     -- The welcome flow's agreement: when, and to which rules version (see
@@ -1014,35 +1014,35 @@ CREATE TABLE IF NOT EXISTS machine_credentials (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_machine_credentials_live
     ON machine_credentials (machine_id) WHERE revoked_at IS NULL;
 
--- Per-user canvas state. A canvas is a named station, and a user has many. Its
--- station fields are one optional JSON object, ``station``, that only the workbench
+-- Per-user canvas state. A canvas is a named canvas, and a user has many. Its
+-- metadata is one optional JSON object, ``metadata``, that only the workbench
 -- reads: ``name``, the science chat it holds (``conversation_id``) and the ``page``
--- it was last on, each key present only when set. The app opens the station changed
+-- it was last on, each key present only when set. The app opens the canvas changed
 -- last. The companion receipt table makes retried operations return the original
--- result without applying them twice. Added in 026; made stations in 042.
-CREATE TABLE IF NOT EXISTS visual_workspaces (
+-- result without applying them twice. Added in 026; made canvases in 042.
+CREATE TABLE IF NOT EXISTS visual_canvases (
     id          UUID PRIMARY KEY,
     user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     revision    BIGINT NOT NULL DEFAULT 0 CHECK (revision >= 0),
     state       JSONB NOT NULL CHECK (jsonb_typeof(state) = 'object'),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     modified_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    station     JSONB CHECK (jsonb_typeof(station) = 'object')
+    metadata     JSONB CHECK (jsonb_typeof(metadata) = 'object')
 );
-CREATE UNIQUE INDEX IF NOT EXISTS uq_visual_workspaces_user_station_name
-    ON visual_workspaces (user_id, (station->>'name'));
-CREATE UNIQUE INDEX IF NOT EXISTS uq_visual_workspaces_user_station_chat
-    ON visual_workspaces (user_id, (station->>'conversation_id'));
-CREATE INDEX IF NOT EXISTS idx_visual_workspaces_user_modified
-    ON visual_workspaces (user_id, modified_at DESC, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_visual_canvases_user_metadata_name
+    ON visual_canvases (user_id, (metadata->>'name'));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_visual_canvases_user_metadata_chat
+    ON visual_canvases (user_id, (metadata->>'conversation_id'));
+CREATE INDEX IF NOT EXISTS idx_visual_canvases_user_modified
+    ON visual_canvases (user_id, modified_at DESC, id DESC);
 
-CREATE TABLE IF NOT EXISTS visual_workspace_operations (
-    workspace_id UUID NOT NULL REFERENCES visual_workspaces(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS visual_canvas_operations (
+    canvas_id UUID NOT NULL REFERENCES visual_canvases(id) ON DELETE CASCADE,
     key          UUID NOT NULL,
     request_hash TEXT NOT NULL,
     response     JSONB NOT NULL CHECK (jsonb_typeof(response) = 'object'),
     created_at   TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    PRIMARY KEY (workspace_id, key)
+    PRIMARY KEY (canvas_id, key)
 );
 
 -- Shared reports are identified separately from their immutable revisions.

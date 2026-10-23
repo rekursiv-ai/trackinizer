@@ -42,7 +42,7 @@
         "terminal_tab_chords": false,
         "theme": "dark",
         "views": [],
-        "workstreams": {
+        "workspaces": {
           "hidden": [],
           "order": [],
           "pinned": []
@@ -58,7 +58,7 @@
       "rules_version": null,
       "summary_accounts": [],
       "user_id": "00000000-0000-4000-9000-000000000001",
-      "visual_workspace_enabled": true
+      "visual_canvas_enabled": true
     },
     "headers": {
       "content-type": "application/json"

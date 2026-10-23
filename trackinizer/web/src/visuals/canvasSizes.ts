@@ -1,12 +1,12 @@
 import type { TileMemory } from "../state/value";
-import type { Layout } from "./stationLayout";
+import type { Layout } from "./canvasLayout";
 
 /** How large a floating window is, in pixels. */
 export type Size = { readonly width: number; readonly height: number };
 
 /**
  * The sizes the canvas's parts take on the stage now, in pixels, fitted from
- * the station's layout: how wide the column at each side of the page is, how
+ * the canvas's layout: how wide the column at each side of the page is, how
  * large each floating window is, by visual type, and each docked tile's share
  * of the strip it stands in, by visual type (1 is an even share). A part the
  * layout holds nothing for has none.
@@ -51,7 +51,7 @@ export function toPixels(fraction: number, extent: number): number {
 }
 
 /**
- * The canvas's sizes on a stage `stage` large, from the station's `layout`:
+ * The canvas's sizes on a stage `stage` large, from the canvas's `layout`:
  * columns held between the least and most the stage gives one, and windows held
  * between the smallest window and the stage. Nothing is written back: a stage
  * too narrow for what is stored shows the fitted sizes, and the layout keeps
@@ -75,7 +75,7 @@ export function fitSizes(layout: Layout, stage: Size): CanvasSizes {
 
 const KEY = "trackinizer.v2.canvas.sizes";
 
-/** What this browser kept in `trackinizer.v2.canvas.sizes` before the station held its layout, in pixels. */
+/** What this browser kept in `trackinizer.v2.canvas.sizes` before the canvas held its layout, in pixels. */
 export type LegacySizes = CanvasSizes & { readonly chat?: number };
 
 /** The sizes an older build kept in this browser; none where storage is off or holds something else. */
@@ -99,7 +99,7 @@ export function readLegacySizes(): LegacySizes {
 }
 
 /**
- * Forget what an older build kept, once the station holds it: `part` is the
+ * Forget what an older build kept, once the canvas holds it: `part` is the
  * canvas's sizes or Chat's width, and the other stays until its own migration.
  * The key goes when nothing is left in it.
  */

@@ -43,7 +43,7 @@ from trackinizer.server.api.canvas_test_support import (
     browser,
     conversation_of,
     drain,
-    open_workspace,
+    open_canvas,
     seed_accounts,
     seed_science_chat,
     seed_session,
@@ -80,7 +80,7 @@ from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
 from trackinizer.wire.wire_sessions import (
     RUN_ENDING_REFUSALS,
     RUN_NAME_PATTERN,
-    WorkspaceMessageContext,
+    CanvasMessageContext,
 )
 
 
@@ -200,7 +200,7 @@ class TestSendMessageIdempotency:
 
 
 class TestSendToAScienceChat:
-    """A chat is reached through its station: a browser's Console send is refused."""
+    """A chat is reached through its canvas: a browser's Console send is refused."""
 
     @classmethod
     def _chat_at(
@@ -239,7 +239,7 @@ class TestSendToAScienceChat:
             inbound.mark_poller(session_id)
         return session_id, inbound
 
-    def test_a_browser_is_told_to_open_the_chats_station_polled_or_not(
+    def test_a_browser_is_told_to_open_the_chats_canvas_polled_or_not(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
         monkeypatch: pytest.MonkeyPatch,
@@ -261,7 +261,7 @@ class TestSendToAScienceChat:
 
             assert refused.status_code == 409, refused.text
             assert from_plain(refused.json(), dict[str, object]) == {
-                "detail": "Open its station to talk to this chat",
+                "detail": "Open its canvas to talk to this chat",
             }
             assert inbound.pending(session_id) == 0
 
@@ -557,8 +557,8 @@ class TestTheKeyThatDrainsAChatLineHoldsItsTurn:
         inbound = InboundQueue()
         app.state.inbound = inbound
         session_id = uuid.uuid4()
-        context = WorkspaceMessageContext(
-            workspace_id=uuid.uuid4(),
+        context = CanvasMessageContext(
+            canvas_id=uuid.uuid4(),
             visible_visuals=[],
             conversation_id=uuid.uuid4(),
         )
@@ -1332,16 +1332,16 @@ def _message(response: httpx2.Response) -> str:
     return from_plain(detail["message"], str)
 
 
-async def _station_on(
+async def _canvas_on(
     store: Store,
     *,
     provider: str,
     conversation_id: uuid.UUID,
 ) -> None:
-    """Give the test user a station that holds ``conversation_id`` on ``provider``."""
+    """Give the test user a canvas that holds ``conversation_id`` on ``provider``."""
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO visual_workspaces (id, user_id, station, state) "
+            "INSERT INTO visual_canvases (id, user_id, metadata, state) "
             "VALUES (gen_random_uuid(), $1, $2, $3)",
             TEST_USER_ID,
             {"name": f"on-{provider}", "conversation_id": str(conversation_id)},
@@ -1355,7 +1355,7 @@ async def _station_on(
 async def test_a_chat_on_a_cli_is_drained_by_its_starters_run_and_never_the_assistant(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """The station's choice holds at the drain: two drainers never share one queue."""
+    """The canvas's choice holds at the drain: two drainers never share one queue."""
     client, store = pglite_route_client
     await seed_accounts(store)
     conversation = uuid.uuid4()
@@ -1366,7 +1366,7 @@ async def test_a_chat_on_a_cli_is_drained_by_its_starters_run_and_never_the_assi
         cli_session_id=chat_session_id(conversation),
         account=TEST_USER_EMAIL,
     )
-    await _station_on(store, provider="claude", conversation_id=conversation)
+    await _canvas_on(store, provider="claude", conversation_id=conversation)
 
     act_as_assistant()
     refused = await drain(client, session_id=chat)
@@ -1377,12 +1377,12 @@ async def test_a_chat_on_a_cli_is_drained_by_its_starters_run_and_never_the_assi
     assert (await drain(client, session_id=chat, cli="claude")).status_code == 403
 
 
-async def _station_with_chat(
+async def _canvas_with_chat(
     store: Store,
     *,
     provider: str,
 ) -> tuple[uuid.UUID, uuid.UUID]:
-    """Seed the test user's station on ``provider`` and its chat's unpolled session."""
+    """Seed the test user's canvas on ``provider`` and its chat's unpolled session."""
     conversation = uuid.uuid4()
     chat = await seed_session(
         store,
@@ -1392,22 +1392,22 @@ async def _station_with_chat(
         cli_session_id=chat_session_id(conversation),
         polled=False,
     )
-    await _station_on(store, provider=provider, conversation_id=conversation)
+    await _canvas_on(store, provider=provider, conversation_id=conversation)
     return conversation, chat
 
 
-async def _switch_station_to(
+async def _switch_canvas_to(
     store: Store,
     *,
     conversation_id: uuid.UUID,
     provider: str,
 ) -> None:
-    """Store ``provider`` as the choice of the station that holds the chat."""
+    """Store ``provider`` as the choice of the canvas that holds the chat."""
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "UPDATE visual_workspaces SET state = state || "
+            "UPDATE visual_canvases SET state = state || "
             "jsonb_build_object('provider', $2::text) "
-            "WHERE station ->> 'conversation_id' = $1",
+            "WHERE metadata ->> 'conversation_id' = $1",
             str(conversation_id),
             provider,
         )
@@ -1422,10 +1422,10 @@ async def test_after_a_switch_to_codex_only_codex_drains_the_chat(
     """A claude run left polling is told so, and a line queued for codex stays queued."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    conversation, chat = await _station_with_chat(store, provider="claude")
+    conversation, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
-    await _switch_station_to(store, conversation_id=conversation, provider="codex")
+    await _switch_canvas_to(store, conversation_id=conversation, provider="codex")
     inbound = cast("InboundQueue", app.state.inbound)
     _ = inbound.enqueue(chat, Inbound(text="pineapple"))
 
@@ -1453,7 +1453,7 @@ async def test_a_chat_drain_that_names_no_cli_is_told_to_update_trax(
     """A `trax` from before the drain named its CLI cannot be told apart, so it waits."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
 
     refused = await drain(client, session_id=chat)
@@ -1472,7 +1472,7 @@ async def test_a_second_run_on_a_chat_with_a_live_run_is_refused(
     """One run drains a chat at a time; the next may take it once the first is gone."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     first, second = "a" * 32, "b" * 32
 
@@ -1499,7 +1499,7 @@ async def test_a_refused_second_run_leaves_the_first_runs_lease_and_lines(
     """The refusal takes no lease; only the refused run's own end could cost the first."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     inbound = cast("InboundQueue", app.state.inbound)
     first, second = "a" * 32, "b" * 32
@@ -1537,10 +1537,10 @@ async def test_the_exit_of_a_run_a_switch_left_does_not_end_the_chat(
     """A switch stops the old run, whose exit must not end the session the chat uses."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    conversation, chat = await _station_with_chat(store, provider="claude")
+    conversation, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
-    await _switch_station_to(store, conversation_id=conversation, provider=chosen)
+    await _switch_canvas_to(store, conversation_id=conversation, provider=chosen)
     inbound = cast("InboundQueue", app.state.inbound)
     _ = inbound.enqueue(chat, Inbound(text="pineapple"))
 
@@ -1560,7 +1560,7 @@ async def test_the_exit_of_the_chats_own_run_ends_it(
     """Only a run of a CLI the chat left keeps it open; the chosen one's exit ends it."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="codex")
+    _, chat = await _canvas_with_chat(store, provider="codex")
     act_as_user_agent("writer")
     assert (await drain(client, session_id=chat, cli="codex")).status_code == 200
 
@@ -1580,7 +1580,7 @@ async def test_a_browser_closes_only_its_own_chat(
     """The starter closes the chat from a browser, which has no key; a stranger cannot."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
 
     browser(OTHER_USER_ID, email=OTHER_EMAIL)
     from_a_stranger = await client.post(f"/api/sessions/{chat}/end", json={})
@@ -1648,7 +1648,7 @@ async def test_a_chat_back_on_the_assistant_refuses_its_starters_run(
         cli="claude",
         cli_session_id=chat_session_id(conversation),
     )
-    await _station_on(store, provider="assistant", conversation_id=conversation)
+    await _canvas_on(store, provider="assistant", conversation_id=conversation)
 
     act_as_user_agent("writer")
     refused = await drain(client, session_id=run)
@@ -1675,7 +1675,7 @@ def _served(config: Config) -> Request:
             KB_EMAIL,
             {
                 "code": "provider_is_cli",
-                "message": "This chat's station answers it with claude",
+                "message": "This chat's canvas answers it with claude",
             },
         ),
         (
@@ -1683,7 +1683,7 @@ def _served(config: Config) -> Request:
             KB_EMAIL.upper(),
             {
                 "code": "provider_is_cli",
-                "message": "This chat's station answers it with codex",
+                "message": "This chat's canvas answers it with codex",
             },
         ),
         (
@@ -1691,7 +1691,7 @@ def _served(config: Config) -> Request:
             TEST_USER_EMAIL,
             {
                 "code": "provider_is_assistant",
-                "message": "This chat's station answers it with the assistant",
+                "message": "This chat's canvas answers it with the assistant",
             },
         ),
     ],
@@ -1741,17 +1741,17 @@ async def _post_to_the_assistant(
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR, cli_session_id=cli_session_id)
-    workspace_id = await open_workspace(client)
+    canvas_id = await open_canvas(client)
     sent = await send_chat(
         client,
-        workspace_id=workspace_id,
+        canvas_id=canvas_id,
         text="posted while it deployed",
     )
     assert sent.status_code == 200
     act_as_assistant()
     ended = await client.post(f"/api/sessions/{kb}/end", json={"status": "completed"})
     assert ended.status_code == 200
-    return kb, workspace_id
+    return kb, canvas_id
 
 
 @pytest.mark.db_pglite
@@ -1814,9 +1814,9 @@ async def test_a_session_starting_ending_or_taking_a_lease_nudges_the_streams(
     """Open canvases recheck their partner when it may have changed."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    workspace_id = uuid.uuid4()
+    canvas_id = uuid.uuid4()
     act_as_assistant()
-    with assistant_served.subscribe(workspace_id) as stream:
+    with assistant_served.subscribe(canvas_id) as stream:
         started = await client.post("/api/sessions/start", json={"cli": "codex"})
         assert started.status_code == 201
         assert stream.nudged.is_set()
@@ -1850,12 +1850,12 @@ async def test_a_drained_chat_message_carries_its_senders_role(
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
-    workspace_id = await open_workspace(client)
+    canvas_id = await open_canvas(client)
     for role in ("writer", "admin"):
         install_identity(make_test_identity(api_key_id=None, role=role))
         sent = await send_chat(
             client,
-            workspace_id=workspace_id,
+            canvas_id=canvas_id,
             text=f"as {role}",
         )
         assert sent.status_code == 200
@@ -1909,7 +1909,7 @@ async def test_the_assistant_long_polls_and_a_chat_message_reaches_it_at_once(
     client, store = pglite_route_client
     await seed_accounts(store)
     kb = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
-    workspace_id = await open_workspace(client)
+    canvas_id = await open_canvas(client)
     holds = _Holds()
     monkeypatch.setattr(
         InboundQueue,
@@ -1928,7 +1928,7 @@ async def test_the_assistant_long_polls_and_a_chat_message_reaches_it_at_once(
     browser()
     sent = await send_chat(
         client,
-        workspace_id=workspace_id,
+        canvas_id=canvas_id,
         text="wake up",
     )
     response = await asyncio.wait_for(waiting, 5)
@@ -2349,7 +2349,7 @@ async def test_only_a_state_that_changed_nudges_the_streams(
     """A run says its state again while it holds; open canvases recheck only a change."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     run = "a" * 32
     assert (
@@ -2374,7 +2374,7 @@ async def test_a_run_reports_its_state_and_its_next_drains_keep_it(
     """The state is the run's word; a drain renews the lease and leaves it be."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     run = "a" * 32
     inbound = cast("InboundQueue", app.state.inbound)
@@ -2407,7 +2407,7 @@ async def test_a_report_from_another_run_or_one_with_no_lease_changes_nothing(
     """Both are answered 204: the run is told nothing it could act on."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     inbound = cast("InboundQueue", app.state.inbound)
     first, second = "a" * 32, "b" * 32
@@ -2433,7 +2433,7 @@ async def test_only_the_chats_own_run_reports_its_state(
     """The report is held to the drain's rules: its starter's key, never the assistant's."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     run = "a" * 32
 
     browser()
@@ -2503,7 +2503,7 @@ async def test_a_replaced_run_is_turned_away_and_its_successor_is_not(
     """The run the server replaced cannot take the lease back from the run replacing it."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     old, new = "a" * 32, "b" * 32
     inbound = cast("InboundQueue", app.state.inbound)
@@ -2531,7 +2531,7 @@ async def test_a_run_draining_a_chat_that_was_closed_is_told_the_session_ended(
     """Closing a chat ends its session; the run still polling it is turned away for good."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
 
@@ -2553,7 +2553,7 @@ async def test_a_chat_run_closed_for_silence_is_revived_by_its_drain_not_turned_
     """Only a session its own end or a close ended is refused; the reaper's close is undone."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     inbound = cast("InboundQueue", app.state.inbound)
     assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
@@ -2580,7 +2580,7 @@ async def test_the_end_of_a_run_releases_the_asks_it_left_open(
     """A card with no run behind it is ended before the session closes to records."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
     await open_ask(store, chat, ask_id="a1")
@@ -2601,10 +2601,10 @@ async def test_the_exit_of_a_run_a_switch_left_keeps_the_asks_for_the_loop(
     """That exit changes nothing, so it releases nothing: the chat goes on."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    conversation, chat = await _station_with_chat(store, provider="claude")
+    conversation, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
-    await _switch_station_to(store, conversation_id=conversation, provider="codex")
+    await _switch_canvas_to(store, conversation_id=conversation, provider="codex")
     await open_ask(store, chat, ask_id="a1")
 
     left = await client.post(f"/api/sessions/{chat}/end", json={"cli": "claude"})
@@ -2622,7 +2622,7 @@ async def test_the_exit_of_a_run_a_reattach_replaced_leaves_the_new_run_alone(
     """The replaced run may quit before it learns so; its end must not end the chat."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     old, new = "a" * 32, "b" * 32
     inbound = cast("InboundQueue", app.state.inbound)
@@ -2657,7 +2657,7 @@ async def test_the_exit_of_the_run_that_holds_the_chat_ends_it(
     """A run that names its own instance still ends its chat."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _station_with_chat(store, provider="claude")
+    _, chat = await _canvas_with_chat(store, provider="claude")
     act_as_user_agent("writer")
     own = "a" * 32
     assert (

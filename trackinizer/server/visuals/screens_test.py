@@ -10,13 +10,13 @@ import uuid
 
 import pytest
 
-from trackinizer.server.visuals.screens import _named, read_screen, wire_marks
-from trackinizer.server.visuals.workspaces import (
+from trackinizer.server.visuals.canvases import (
     Mark,
     MarkPoint,
     VisualInstance,
 )
-from trackinizer.wire.wire_sessions import WorkspaceVisibleVisual
+from trackinizer.server.visuals.screens import _named, read_screen, wire_marks
+from trackinizer.wire.wire_sessions import CanvasVisibleVisual
 
 
 if TYPE_CHECKING:
@@ -104,8 +104,8 @@ def test_a_route_that_names_no_record_names_none(route: str) -> None:
     assert _named(route) is None
 
 
-def _visual(kind: str) -> WorkspaceVisibleVisual:
-    return WorkspaceVisibleVisual(id=uuid.uuid4(), type=kind)
+def _visual(kind: str) -> CanvasVisibleVisual:
+    return CanvasVisibleVisual(id=uuid.uuid4(), type=kind)
 
 
 def _mark(*, tile: uuid.UUID | None) -> Mark:

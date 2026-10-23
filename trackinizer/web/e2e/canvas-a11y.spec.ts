@@ -60,11 +60,11 @@ for (const theme of ["dark", "light"] as const) {
           conversation_id: chat, session_id: session, title: "What changed", account: "ada@example.com", live: true,
           forks: 0, forked_from: null, forks_on_typing: false, audience: "open", may_hide: false, shared_with: [], may_share: false, may_delete: false,
         } }));
-        // The user's station for that chat. Finding it again changes nothing, so writing its page makes
-        // it the one changed last, which a tab with no station asks the server for.
-        const found = await request.post(`/api/workspaces/for-chat/${chat}`);
+        // The user's canvas for that chat. Finding it again changes nothing, so writing its page makes
+        // it the one changed last, which a tab with no canvas asks the server for.
+        const found = await request.post(`/api/canvases/for-chat/${chat}`);
         expect(found.ok()).toBe(true);
-        const moved = await request.put(`/api/workspaces/${(await found.json()).id}/page`, { data: { route: "#/list/Issue" } });
+        const moved = await request.put(`/api/canvases/${(await found.json()).id}/page`, { data: { route: "#/list/Issue" } });
         expect(moved.ok()).toBe(true);
         return { issue: issue.id as string };
       }
@@ -95,7 +95,7 @@ for (const theme of ["dark", "light"] as const) {
         await expect(page.getByText("Two things:")).toBeVisible();
         await audit(page, theme, `a conversation, ${size.width} px`);
         await page.locator(".chat-column").getByRole("button", { name: "Scratch chat" }).click();
-        await expect(page.getByRole("dialog", { name: "Chats" }).getByRole("button", { name: /unnamed-workstream/ }).first()).toBeVisible();
+        await expect(page.getByRole("dialog", { name: "Chats" }).getByRole("button", { name: /unnamed-workspace/ }).first()).toBeVisible();
         await audit(page, theme, `the chat menu, ${size.width} px`);
       });
     });

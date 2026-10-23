@@ -1,13 +1,13 @@
 // Test helpers for the canvas's visuals; only tests import this file.
 import { vi } from "vitest";
 import { FILES_LABEL, FILES_OF, type FilesDoc } from "./filesDoc";
-import type { WorkspaceActions } from "./workspaceActions";
+import type { CanvasActions } from "./canvasActions";
 
 /**
  * A canvas's operations for a view under test: idle, `operate` a mock, and no
  * visual types offered; `fields` override any of them.
  */
-export function canvasActions(fields: Partial<WorkspaceActions> = {}): WorkspaceActions {
+export function canvasActions(fields: Partial<CanvasActions> = {}): CanvasActions {
   return {
     busy: false,
     writeError: null,

@@ -11,17 +11,17 @@ test.afterEach(async ({ request }) => {
   await resetCanvas(request);
 });
 
-/** A new station holding the page and the context graph of a fresh Issue docked at its right. */
+/** A new canvas holding the page and the context graph of a fresh Issue docked at its right. */
 async function pageAndGraph(request: APIRequestContext): Promise<void> {
   const ok = async <T>(response: { ok(): boolean; text(): Promise<string>; json(): Promise<unknown> }) => {
     expect(response.ok(), await response.text()).toBe(true);
     return (await response.json()) as T;
   };
-  const state = await ok<{ id: string; revision: number }>(await request.post("/api/workspaces/new"));
+  const state = await ok<{ id: string; revision: number }>(await request.post("/api/canvases/new"));
   const { ids } = await ok<{ ids: string[] }>(await request.post("/api/inquiries/batch", {
     data: { items: [{ kind: "Issue", title: `Bar ${crypto.randomUUID().slice(0, 8)}`, idempotency_key: crypto.randomUUID() }], edges: [] },
   }));
-  await ok(await request.post(`/api/workspaces/${state.id}/operations`, {
+  await ok(await request.post(`/api/canvases/${state.id}/operations`, {
     headers: { "Idempotency-Key": crypto.randomUUID() },
     data: { revision: state.revision, operation: { kind: "show", visual_type: "trax.subgraph", placement: "side", record_id: ids[0] } },
   }));
@@ -58,7 +58,7 @@ test("Back, Forward and Home move the canvas, and each tab keeps its own", async
   await expect(graph).toBeVisible();
   await expect(page).toHaveURL(/#\/activity$/);
 
-  // The tabs are the station's: a reload finds them, the one left open still open.
+  // The tabs are the canvas's: a reload finds them, the one left open still open.
   await page.reload();
   await expect(bar.getByRole("button", { name: "Tab 2", exact: true })).toBeAttached();
   await expect(bar.locator('.canvas-tab[aria-current="true"]')).toHaveText("Tab 1");
@@ -107,13 +107,13 @@ test("tab controls stay beside their tabs and new names are edited inline", asyn
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByRole("button", { name: "Open app bar" }).click();
-  const streams = page.getByRole("navigation", { name: "Workstreams" });
-  const newStream = page.getByRole("button", { name: "New workstream" });
+  const streams = page.getByRole("navigation", { name: "Workspaces" });
+  const newStream = page.getByRole("button", { name: "New workspace" });
   const strip = await streams.boundingBox();
   const plus = await newStream.boundingBox();
   expect(plus!.x - (strip!.x + strip!.width)).toBeLessThan(8);
   await newStream.click();
-  const streamName = streams.getByRole("textbox", { name: "Workstream name" });
+  const streamName = streams.getByRole("textbox", { name: "Workspace name" });
   await expect(streamName).toBeFocused();
   await streamName.fill("Review work");
   await streamName.press("Enter");

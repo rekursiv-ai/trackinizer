@@ -3618,27 +3618,27 @@ class _CanvasClient:
         self.chat_windows: list[bool] = []
         self.preferences: list[dict[str, object]] = []
         self.reads: list[str] = []
-        self.workspace = uuid.uuid4()
+        self.canvas = uuid.uuid4()
 
     def get(self, path: str) -> dict[str, object]:
         self.reads.append(path)
         return _CATALOG
 
-    def read_workspace(self, workspace_id: uuid.UUID) -> dict[str, object]:
-        self.reads.append(f"/api/workspaces/{workspace_id}")
+    def read_canvas(self, canvas_id: uuid.UUID) -> dict[str, object]:
+        self.reads.append(f"/api/canvases/{canvas_id}")
         return self._state(8, visuals=[])
 
-    def apply_workspace_operation(
+    def apply_canvas_operation(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         operation: dict[str, object],
     ) -> dict[str, object]:
-        del workspace_id
+        del canvas_id
         self.operations.append(operation)
         if operation["kind"] != "mark":
             return self._state(9, visuals=[])
-        record = str(self.workspace)
+        record = str(self.canvas)
         return {
             **self._state(9, visuals=[]),
             "record_labels": {record: "Experiment#12 Measured tails"},
@@ -3655,41 +3655,41 @@ class _CanvasClient:
 
     def navigate(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         route: str,
     ) -> dict[str, object]:
-        del workspace_id
+        del canvas_id
         self.navigations.append(route)
         return self._state(8, visuals=[])
 
     def highlight(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         ids: Sequence[uuid.UUID],
     ) -> dict[str, object]:
-        del workspace_id
+        del canvas_id
         self.highlights.append(list(ids))
         return self._state(8, visuals=[])
 
     def chat_window(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         hidden: bool,
     ) -> dict[str, object]:
-        del workspace_id
+        del canvas_id
         self.chat_windows.append(hidden)
         return self._state(8, visuals=[])
 
     def set_preferences(
         self,
-        workspace_id: uuid.UUID,
+        canvas_id: uuid.UUID,
         *,
         change: dict[str, object],
     ) -> dict[str, object]:
-        del workspace_id
+        del canvas_id
         self.preferences.append(dict(change))
         return {
             **self._state(8, visuals=[]),
@@ -3697,94 +3697,94 @@ class _CanvasClient:
         }
 
     def _state(self, revision: int, *, visuals: list[object]) -> dict[str, object]:
-        return {"id": str(self.workspace), "revision": revision, "visuals": visuals}
+        return {"id": str(self.canvas), "revision": revision, "visuals": visuals}
 
 
-def _workspace(client: _CanvasClient, *arguments: str) -> None:
+def _canvas(client: _CanvasClient, *arguments: str) -> None:
     cli.parse_and_run(
-        ["workspace", str(client.workspace), *arguments],
+        ["canvas", str(client.canvas), *arguments],
         client_factory=lambda: cast(Client, client),
     )
 
 
-def test_workspace_with_no_action_reads_and_renders_the_canvas(
+def test_canvas_with_no_action_reads_and_renders_the_canvas(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     client = _CanvasClient()
 
-    _workspace(client)
+    _canvas(client)
 
-    assert client.reads == [f"/api/workspaces/{client.workspace}"]
-    assert f"workspace {client.workspace} revision 8" in capsys.readouterr().out
+    assert client.reads == [f"/api/canvases/{client.canvas}"]
+    assert f"canvas {client.canvas} revision 8" in capsys.readouterr().out
 
 
 def _bare(client: _CanvasClient, *arguments: str) -> None:
-    """Run `trax workspace` with no id."""
+    """Run `trax canvas` with no id."""
     cli.parse_and_run(
-        ["workspace", *arguments],
+        ["canvas", *arguments],
         client_factory=lambda: cast(Client, client),
     )
 
 
-def test_workspace_with_no_id_uses_the_station_the_session_was_placed_on(
+def test_canvas_with_no_id_uses_the_canvas_the_session_was_placed_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _CanvasClient()
-    monkeypatch.setenv("TRAX_WORKSPACE", str(client.workspace))
+    monkeypatch.setenv("TRAX_CANVAS", str(client.canvas))
     instance = uuid.uuid4()
 
     _bare(client)
     _bare(client, "show", "trax.subgraph", "--record", str(uuid.uuid4()))
     _bare(client, "place", str(instance), "left")
 
-    assert client.reads[0] == f"/api/workspaces/{client.workspace}"
+    assert client.reads[0] == f"/api/canvases/{client.canvas}"
     shown, placed = client.operations
     assert shown["kind"] == "show"
     assert shown["visual_type"] == "trax.subgraph"
     assert (placed["kind"], placed["instance_id"]) == ("place", str(instance))
 
 
-def test_workspace_with_no_id_reads_the_ssh_forwarded_station(
+def test_canvas_with_no_id_reads_the_ssh_forwarded_canvas(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _CanvasClient()
-    monkeypatch.delenv("TRAX_WORKSPACE", raising=False)
-    monkeypatch.setenv("LC_TRAX_WORKSPACE", str(client.workspace))
+    monkeypatch.delenv("TRAX_CANVAS", raising=False)
+    monkeypatch.setenv("LC_TRAX_CANVAS", str(client.canvas))
 
     _bare(client)
 
-    assert client.reads[0] == f"/api/workspaces/{client.workspace}"
+    assert client.reads[0] == f"/api/canvases/{client.canvas}"
 
 
-def test_workspace_with_no_id_and_no_station_says_what_to_give(
+def test_canvas_with_no_id_and_no_canvas_says_what_to_give(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("TRAX_WORKSPACE", raising=False)
-    monkeypatch.delenv("LC_TRAX_WORKSPACE", raising=False)
+    monkeypatch.delenv("TRAX_CANVAS", raising=False)
+    monkeypatch.delenv("LC_TRAX_CANVAS", raising=False)
 
-    with pytest.raises(ClientError, match=r"no workspace"):
+    with pytest.raises(ClientError, match=r"no canvas"):
         _bare(_CanvasClient())
 
 
-def test_an_explicit_workspace_id_wins_over_the_placed_station(
+def test_an_explicit_canvas_id_wins_over_the_placed_canvas(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _CanvasClient()
-    monkeypatch.setenv("TRAX_WORKSPACE", str(uuid.uuid4()))
+    monkeypatch.setenv("TRAX_CANVAS", str(uuid.uuid4()))
 
-    _workspace(client)
+    _canvas(client)
 
-    assert client.reads == [f"/api/workspaces/{client.workspace}"]
+    assert client.reads == [f"/api/canvases/{client.canvas}"]
 
 
-def test_workspace_show_sends_one_operation_through_the_clients_one_path(
+def test_canvas_show_sends_one_operation_through_the_clients_one_path(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     client = _CanvasClient()
     record = uuid.uuid4()
     instance = uuid.uuid4()
 
-    _workspace(
+    _canvas(
         client,
         "show",
         "trax.subgraph",
@@ -3793,10 +3793,10 @@ def test_workspace_show_sends_one_operation_through_the_clients_one_path(
         "--placement",
         "side",
     )
-    _workspace(client, "hide", str(instance))
-    _workspace(client, "focus", str(instance))
-    _workspace(client, "place", str(instance), "floating")
-    _workspace(client, "place", str(instance), "left")
+    _canvas(client, "hide", str(instance))
+    _canvas(client, "focus", str(instance))
+    _canvas(client, "place", str(instance), "floating")
+    _canvas(client, "place", str(instance), "left")
 
     assert client.operations == [
         {
@@ -3811,14 +3811,14 @@ def test_workspace_show_sends_one_operation_through_the_clients_one_path(
         {"kind": "place", "instance_id": str(instance), "placement": "left"},
     ]
     assert client.reads == []
-    assert f"workspace {client.workspace} revision 9" in capsys.readouterr().out
+    assert f"canvas {client.canvas} revision 9" in capsys.readouterr().out
 
 
-def test_workspace_show_reads_each_param_as_the_type_the_catalog_gives_it() -> None:
+def test_canvas_show_reads_each_param_as_the_type_the_catalog_gives_it() -> None:
     """A value that looks like a number is still a string where the catalog says so."""
     client = _CanvasClient()
 
-    _workspace(
+    _canvas(
         client,
         "show",
         "x.demo",
@@ -3839,10 +3839,10 @@ def test_workspace_show_reads_each_param_as_the_type_the_catalog_gives_it() -> N
     ]
 
 
-def test_workspace_show_without_params_does_not_read_the_catalog() -> None:
+def test_canvas_show_without_params_does_not_read_the_catalog() -> None:
     client = _CanvasClient()
 
-    _workspace(client, "show", "trax.subgraph")
+    _canvas(client, "show", "trax.subgraph")
 
     assert "/api/visuals" not in client.reads
 
@@ -3866,22 +3866,22 @@ def test_workspace_show_without_params_does_not_read_the_catalog() -> None:
         (["--param", "label=a"], "does not accept operation arguments"),
     ],
 )
-def test_workspace_refuses_a_param_it_cannot_send(
+def test_canvas_refuses_a_param_it_cannot_send(
     arguments: list[str],
     message: str,
 ) -> None:
     client = _CanvasClient()
 
     with pytest.raises(ClientError, match=message):
-        _workspace(client, *arguments)
+        _canvas(client, *arguments)
 
     assert client.operations == []
 
 
-def test_workspace_navigate_moves_the_page_without_an_operation() -> None:
+def test_canvas_navigate_moves_the_page_without_an_operation() -> None:
     client = _CanvasClient()
 
-    _workspace(client, "navigate", "#/search/a%3Fb")
+    _canvas(client, "navigate", "#/search/a%3Fb")
 
     assert client.navigations == ["#/search/a%3Fb"]
     assert client.operations == []
@@ -3896,20 +3896,20 @@ def test_workspace_navigate_moves_the_page_without_an_operation() -> None:
         ["navigate", "#/graph", "--record", str(uuid.uuid4())],
     ],
 )
-def test_workspace_navigate_takes_exactly_one_route(arguments: list[str]) -> None:
+def test_canvas_navigate_takes_exactly_one_route(arguments: list[str]) -> None:
     client = _CanvasClient()
 
     with pytest.raises(ClientError, match="navigate requires one route"):
-        _workspace(client, *arguments)
+        _canvas(client, *arguments)
 
     assert client.navigations == []
 
 
-def test_workspace_hide_or_show_chat_moves_the_window_without_an_operation() -> None:
+def test_canvas_hide_or_show_chat_moves_the_window_without_an_operation() -> None:
     client = _CanvasClient()
 
-    _workspace(client, "hide", "chat")
-    _workspace(client, "show", "chat")
+    _canvas(client, "hide", "chat")
+    _canvas(client, "show", "chat")
 
     assert client.chat_windows == [True, False]
     assert client.operations == []
@@ -3924,33 +3924,33 @@ def test_workspace_hide_or_show_chat_moves_the_window_without_an_operation() -> 
         ["show", "chat", "--param", "hops=2"],
     ],
 )
-def test_workspace_chat_takes_no_other_argument(arguments: list[str]) -> None:
+def test_canvas_chat_takes_no_other_argument(arguments: list[str]) -> None:
     client = _CanvasClient()
 
     with pytest.raises(ClientError, match="chat takes no other argument"):
-        _workspace(client, *arguments)
+        _canvas(client, *arguments)
 
     assert client.chat_windows == []
     assert client.reads == []
 
 
-def test_workspace_chat_is_not_a_verb_of_its_own() -> None:
+def test_canvas_chat_is_not_a_verb_of_its_own() -> None:
     client = _CanvasClient()
 
-    with pytest.raises(ClientError, match="unknown workspace action 'chat'"):
-        _workspace(client, "chat", "hide")
+    with pytest.raises(ClientError, match="unknown canvas action 'chat'"):
+        _canvas(client, "chat", "hide")
 
     assert client.chat_windows == []
 
 
-def test_workspace_key_to_value_sets_the_owners_preference_as_json_or_text(
+def test_canvas_key_to_value_sets_the_owners_preference_as_json_or_text(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     client = _CanvasClient()
 
-    _workspace(client, "theme", "to", "light")
-    _workspace(client, "highlight_mentions", "to", "false")
-    _workspace(client, "theme", "to", "null")
+    _canvas(client, "theme", "to", "light")
+    _canvas(client, "highlight_mentions", "to", "false")
+    _canvas(client, "theme", "to", "null")
 
     assert client.preferences == [
         {"theme": "light"},
@@ -3973,23 +3973,23 @@ def test_workspace_key_to_value_sets_the_owners_preference_as_json_or_text(
         ["theme", "to", "light", "--record", str(uuid.uuid4())],
     ],
 )
-def test_workspace_key_to_takes_one_value_and_nothing_else(
+def test_canvas_key_to_takes_one_value_and_nothing_else(
     arguments: list[str],
 ) -> None:
     client = _CanvasClient()
 
     with pytest.raises(ClientError, match="theme to takes one VALUE"):
-        _workspace(client, *arguments)
+        _canvas(client, *arguments)
 
     assert client.preferences == []
 
 
-def test_workspace_highlight_sends_the_ids_without_an_operation() -> None:
+def test_canvas_highlight_sends_the_ids_without_an_operation() -> None:
     client = _CanvasClient()
     first, second = uuid.uuid4(), uuid.uuid4()
 
-    _workspace(client, "highlight", f"{first},{second}")
-    _workspace(client, "highlight", "")
+    _canvas(client, "highlight", f"{first},{second}")
+    _canvas(client, "highlight", "")
 
     assert client.highlights == [[first, second], []]
     assert client.operations == []
@@ -4004,20 +4004,20 @@ def test_workspace_highlight_sends_the_ids_without_an_operation() -> None:
         ["highlight", str(uuid.uuid4()), "--record", str(uuid.uuid4())],
     ],
 )
-def test_workspace_highlight_takes_one_list_of_uuids(arguments: list[str]) -> None:
+def test_canvas_highlight_takes_one_list_of_uuids(arguments: list[str]) -> None:
     client = _CanvasClient()
 
     with pytest.raises(ClientError, match="highlight requires"):
-        _workspace(client, *arguments)
+        _canvas(client, *arguments)
 
     assert client.highlights == []
 
 
-def test_workspace_highlight_refuses_a_ref_that_is_not_a_uuid() -> None:
+def test_canvas_highlight_refuses_a_ref_that_is_not_a_uuid() -> None:
     client = _CanvasClient()
 
     with pytest.raises(ClientError, match="not a valid UUID"):
-        _workspace(client, "highlight", "Issue#12")
+        _canvas(client, "highlight", "Issue#12")
 
     assert client.highlights == []
 
@@ -4258,27 +4258,27 @@ def test_an_added_cost_carries_its_actor_and_reason(
     assert capsys.readouterr().out == "added: Issue#7 agent-cost -0.500000\n"
 
 
-def test_workspace_rejects_a_malformed_id_by_name_and_value() -> None:
-    """A mistyped workspace id is named in the error, not swallowed."""
+def test_canvas_rejects_a_malformed_id_by_name_and_value() -> None:
+    """A mistyped canvas id is named in the error, not swallowed."""
     with pytest.raises(
         ClientError,
-        match=r"^workspace is not a valid UUID: 'not-a-uuid'$",
+        match=r"^canvas is not a valid UUID: 'not-a-uuid'$",
     ):
         cli.parse_and_run(
-            ["workspace", "not-a-uuid"],
-            client_factory=lambda: cast(Client, _RecordingWorkspace(uuid.uuid4())),
+            ["canvas", "not-a-uuid"],
+            client_factory=lambda: cast(Client, _RecordingCanvas(uuid.uuid4())),
         )
 
 
-def test_workspace_param_is_refused_off_show() -> None:
+def test_canvas_param_is_refused_off_show() -> None:
     """Only a shown visual takes params."""
-    workspace_id = uuid.uuid4()
-    client = _RecordingWorkspace(workspace_id)
+    canvas_id = uuid.uuid4()
+    client = _RecordingCanvas(canvas_id)
     with pytest.raises(ClientError, match="only with show"):
         cli.parse_and_run(
             [
-                "workspace",
-                str(workspace_id),
+                "canvas",
+                str(canvas_id),
                 "hide",
                 str(uuid.uuid4()),
                 "--param",
@@ -4289,12 +4289,12 @@ def test_workspace_param_is_refused_off_show() -> None:
     assert client.operations == []
 
 
-class _RecordingWorkspace:
-    """A workspace at revision 8 that keeps each operation posted to it."""
+class _RecordingCanvas:
+    """A canvas at revision 8 that keeps each operation posted to it."""
 
-    def __init__(self, workspace_id: uuid.UUID) -> None:
+    def __init__(self, canvas_id: uuid.UUID) -> None:
         self.state: dict[str, object] = {
-            "id": str(workspace_id),
+            "id": str(canvas_id),
             "revision": 8,
             "visuals": [],
             "focused_instance": None,
@@ -4317,12 +4317,12 @@ def _operation(client: _CanvasClient) -> dict[str, object]:
     return operation
 
 
-def test_workspace_mark_draws_a_box_from_two_corners_and_names_its_records() -> None:
+def test_canvas_mark_draws_a_box_from_two_corners_and_names_its_records() -> None:
     client = _CanvasClient()
     record = uuid.uuid4()
 
-    _workspace(client, "mark", "0.1,0.2", "0.4,0.5")
-    _workspace(client, "mark", "0,0", "1,1", "--record", f"{record},{record}")
+    _canvas(client, "mark", "0.1,0.2", "0.4,0.5")
+    _canvas(client, "mark", "0,0", "1,1", "--record", f"{record},{record}")
 
     plain, covered = client.operations
     corners = [{"x": 0.1, "y": 0.2}, {"x": 0.4, "y": 0.5}]
@@ -4336,21 +4336,21 @@ def test_workspace_mark_draws_a_box_from_two_corners_and_names_its_records() -> 
     }
 
 
-def test_workspace_mark_remove_and_clear_send_their_operations() -> None:
+def test_canvas_mark_remove_and_clear_send_their_operations() -> None:
     first, second = _CanvasClient(), _CanvasClient()
     mark_id = uuid.uuid4()
 
-    _workspace(first, "mark", "remove", str(mark_id))
-    _workspace(second, "mark", "clear")
+    _canvas(first, "mark", "remove", str(mark_id))
+    _canvas(second, "mark", "clear")
 
     assert _operation(first) == {"kind": "remove_mark", "id": str(mark_id)}
     assert _operation(second) == {"kind": "clear_marks"}
 
 
-def test_workspace_mark_clear_page_names_the_page_to_clear() -> None:
+def test_canvas_mark_clear_page_names_the_page_to_clear() -> None:
     client = _CanvasClient()
 
-    _workspace(client, "mark", "clear", "--page", "#/graph")
+    _canvas(client, "mark", "clear", "--page", "#/graph")
 
     assert _operation(client) == {"kind": "clear_marks", "page": "#/graph"}
 
@@ -4376,24 +4376,24 @@ def test_workspace_mark_clear_page_names_the_page_to_clear() -> None:
         (["mark", "clear", "--record", str(uuid.uuid4())], "mark takes X1,Y1"),
     ],
 )
-def test_workspace_mark_refuses_a_malformed_command(
+def test_canvas_mark_refuses_a_malformed_command(
     arguments: list[str],
     message: str,
 ) -> None:
     client = _CanvasClient()
 
     with pytest.raises(ClientError, match=message):
-        _workspace(client, *arguments)
+        _canvas(client, *arguments)
 
     assert client.operations == []
 
 
-def test_workspace_prints_each_box_with_its_id_page_and_what_it_covers(
+def test_canvas_prints_each_box_with_its_id_page_and_what_it_covers(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     client = _CanvasClient()
 
-    _workspace(client, "mark", "0.3,0.3", "0.5,0.5")
+    _canvas(client, "mark", "0.3,0.3", "0.5,0.5")
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[-2:] == [

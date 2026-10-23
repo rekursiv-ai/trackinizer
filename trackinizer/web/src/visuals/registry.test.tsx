@@ -9,7 +9,7 @@ vi.mock("./Timeline", () => { throw new Error("Timeline chunk unavailable"); });
 afterEach(() => { cleanup(); });
 
 test("timeline is a separate lazy renderer whose import failure stays in its tile", async () => {
-  const shared = { workspace: null, focused: false, onWorkspaceChanged: vi.fn() };
+  const shared = { canvas: null, focused: false, onCanvasChanged: vi.fn() };
   render(<>
     <VisualPane {...shared} instance={{ id: "browse", type: "trax.browse", version: 1,
       placement: "main", record_id: null, params: {} }}><button>Browse records</button></VisualPane>
@@ -28,8 +28,8 @@ test("a pane marks its paint for the revision that changed it, once, and not aga
   recordFrame(4, 1);
   recordFrame(5, 2);
   const instance = { id: "browse", type: "trax.browse", version: 1, placement: "main" as const, record_id: null, params: {} };
-  const show = (revision: number) => <VisualPane instance={instance} focused={false} onWorkspaceChanged={vi.fn()}
-    workspace={{ id: "w", name: "unnamed-workstream#1", conversation_id: null, page: null, revision, visuals: [instance], focused_instance: null, partner: null }}>
+  const show = (revision: number) => <VisualPane instance={instance} focused={false} onCanvasChanged={vi.fn()}
+    canvas={{ id: "w", name: "unnamed-canvas#1", conversation_id: null, page: null, revision, visuals: [instance], focused_instance: null, partner: null }}>
     <p>Browse records</p></VisualPane>;
   const view = render(show(4));
   vi.advanceTimersToNextFrame();
@@ -43,6 +43,6 @@ test("a pane marks its paint for the revision that changed it, once, and not aga
 
 test("trax.terminal has a renderer of its catalog version; another version shows the unsupported notice", () => {
   const instance = { id: "v1", type: "trax.terminal", version: 2, placement: "main", record_id: null, params: {} } as const;
-  render(<VisualPane instance={instance} workspace={null} onWorkspaceChanged={vi.fn()} focused={false} />);
+  render(<VisualPane instance={instance} canvas={null} onCanvasChanged={vi.fn()} focused={false} />);
   expect(screen.getByRole("alert").textContent).toBe("No renderer for trax.terminal version 2.");
 });

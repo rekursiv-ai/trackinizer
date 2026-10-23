@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useContext, useEffect, useRef, useState } from "react";
-import { openWorkspaceEvents } from "../api/workspaces";
+import { openCanvasEvents } from "../api/canvases";
 import { answerRequest } from "../canvasCapture/answer";
 import { CaptureContext, CaptureRegistry } from "../canvasCapture/stageRegistry";
 import { recordFrame, recordNavigation } from "../debug/timings";
@@ -9,8 +9,8 @@ import { receivePreferences } from "../preferences";
 import { parseHash } from "../router/route";
 import { setChatHidden } from "../visuals/chatColumnState";
 import { ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
-import { acceptWorkspace } from "../stations/cache";
-import { useStation } from "../stations/useStation";
+import { acceptCanvas } from "../canvases/cache";
+import { useCanvas } from "../canvases/useCanvas";
 import { MetaContext } from "./boot";
 import { HighlightContext, HighlightStore } from "./highlights";
 
@@ -20,7 +20,7 @@ import { HighlightContext, HighlightStore } from "./highlights";
  * is `enabled`, the live layer takes its inquiry ids from it (`changed` frames)
  * and `/api/web/subscribe` stays shut.
  *
- * It also applies what the stream says about the canvas: the workspace (a
+ * It also applies what the stream says about the canvas: the canvas (a
  * revision never replaces a newer one), an agent's navigation, and what it points at
  * (the tab's highlights, `highlights.ts`), when it hides or shows Chat's
  * column, and when it asks for a picture of the canvas, which the open canvas
@@ -37,14 +37,14 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
   const [feed] = useState(() => new ChatFeed());
   const [highlights] = useState(() => new HighlightStore());
   const [captures] = useState(() => new CaptureRegistry());
-  const created = useStation({ enabled });
-  const workspaceId = enabled ? created.data?.id : undefined;
+  const created = useCanvas({ enabled });
+  const canvasId = enabled ? created.data?.id : undefined;
   useEffect(() => {
-    if (!workspaceId) return;
-    const close = openWorkspaceEvents(workspaceId, {
-      workspace: (state, t) => {
+    if (!canvasId) return;
+    const close = openCanvasEvents(canvasId, {
+      canvas: (state, t) => {
         recordFrame(state.revision, t);
-        acceptWorkspace(queryClient, state);
+        acceptCanvas(queryClient, state);
       },
       navigate: (route, t) => {
         if (!route.startsWith("#/") || parseHash(route, kindsRef.current).name === "notFound") return;
@@ -53,7 +53,7 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
       },
       highlight: (ids) => highlights.set(ids),
       chat: (hidden) => setChatHidden(hidden),
-      capture: (request) => void answerRequest(workspaceId, request, captures, { hidden: document.hidden }),
+      capture: (request) => void answerRequest(canvasId, request, captures, { hidden: document.hidden }),
       preferences: (preferences) => receivePreferences(preferences),
       changed: (id) => hub?.change(id),
       open: () => hub?.open(),
@@ -65,7 +65,7 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
       close();
       highlights.set([]);
     };
-  }, [workspaceId, queryClient, hub, highlights, feed, captures]);
+  }, [canvasId, queryClient, hub, highlights, feed, captures]);
   return (
     <ChatFeedContext value={enabled ? feed : null}>
       <HighlightContext value={highlights}>

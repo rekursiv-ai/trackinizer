@@ -1,9 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { clearMarks, drawMark, type Mark, type NewMark, removeMark, type WorkspaceState } from "../api/workspaces";
+import { clearMarks, drawMark, type Mark, type NewMark, removeMark, type CanvasState } from "../api/canvases";
 import { useCommands } from "../commands/registry";
 import { SHEET, useHash, validHash } from "../router/trail";
-import { acceptWorkspace } from "../stations/cache";
+import { acceptCanvas } from "../canvases/cache";
 
 /** The red boxes of the open page and what the canvas bar and the layer do with them. */
 export type Boxes = {
@@ -21,13 +21,13 @@ export type Boxes = {
 };
 
 /**
- * Box-drawing state for `workspace`'s open page. Escape leaves drawing mode, as a
+ * Box-drawing state for `canvas`'s open page. Escape leaves drawing mode, as a
  * command registered while drawing so that it is the latest binding of the key and
  * the page's own Escape (back, for a record) does not also run. A write
  * that the server refuses sets `error`; the answers go to the query cache as any
  * canvas write's do.
  */
-export function useBoxes(workspace: WorkspaceState | undefined): Boxes {
+export function useBoxes(canvas: CanvasState | undefined): Boxes {
   const queryClient = useQueryClient();
   const hash = useHash();
   const page = validHash(hash) && !SHEET.test(hash) ? hash : null;
@@ -36,13 +36,13 @@ export function useBoxes(workspace: WorkspaceState | undefined): Boxes {
   const drawing = wanted && page !== null;
   useCommands(drawing ? [{ id: "marks.pen.down", title: "Put the pen down", keys: ["Escape"], run: () => setWanted(false) }] : []);
 
-  const id = workspace?.id;
-  const write = (call: (id: string) => Promise<WorkspaceState>, failure: string) => {
+  const id = canvas?.id;
+  const write = (call: (id: string) => Promise<CanvasState>, failure: string) => {
     if (!id) return;
     setError(null);
-    void call(id).then((state) => acceptWorkspace(queryClient, state)).catch(() => setError(failure));
+    void call(id).then((state) => acceptCanvas(queryClient, state)).catch(() => setError(failure));
   };
-  const shown = page === null ? [] : (workspace?.marks ?? []).filter((box) => box.page == null || box.page === page);
+  const shown = page === null ? [] : (canvas?.marks ?? []).filter((box) => box.page == null || box.page === page);
   return {
     page,
     shown,

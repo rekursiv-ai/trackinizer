@@ -30,7 +30,7 @@
 .chat-partner { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin-right: auto; }
 .chat-partner strong { font-size: 14px; font-weight: 600; }
 .chat-partner-note { color: var(--muted); font-size: 12px; }
-.chat-station { min-width: 0; overflow: hidden; color: var(--accent-hover); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.chat-canvas { min-width: 0; overflow: hidden; color: var(--accent-hover); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 /* A chat its starter hid, or one made staff only. */
 .chat-badge { padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font-size: 11px; line-height: 18px; }
 .chat-head-actions { display: flex; align-items: center; gap: 4px; }
@@ -45,14 +45,14 @@
 .chat-name-menu { left: 0; right: auto; width: min(320px, 90vw); }
 .chat-menu-label { margin: 2px 6px; color: var(--muted); font-size: 11px; }
 .chat-name-row { display: flex; align-items: center; min-width: 0; }
-.chat-name-row .station-option { flex: 1; min-width: 0; }
+.chat-name-row .canvas-option { flex: 1; min-width: 0; }
 .chat-name-row-actions { display: flex; gap: 2px; opacity: 0; }
 .chat-name-row:hover .chat-name-row-actions, .chat-name-row:focus-within .chat-name-row-actions { opacity: 1; }
 .chat-name-row-actions .btn { padding: 2px 5px; font-size: 11px; }
 .chat-name-search { padding-top: 4px; border-top: 1px solid var(--line); }
-.chat-workstream-pick { position: relative; display: flex; align-items: center; min-width: 0; flex: 1; gap: 5px; }
-.chat-workstream-menu { position: absolute; z-index: 42; top: calc(100% + 4px); left: 0; display: flex; flex-direction: column; gap: 5px; width: min(280px, 90vw); padding: 8px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
-.chat-workstream-menu input { width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.chat-workspace-pick { position: relative; display: flex; align-items: center; min-width: 0; flex: 1; gap: 5px; }
+.chat-workspace-menu { position: absolute; z-index: 42; top: calc(100% + 4px); left: 0; display: flex; flex-direction: column; gap: 5px; width: min(280px, 90vw); padding: 8px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
+.chat-workspace-menu input { width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
 .chat-suggestion-chip { display: inline-flex; flex: none; align-items: center; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent-soft); font-size: 12px; }
 .chat-suggestion-chip button { padding: 2px 7px; border: 0; background: transparent; color: var(--accent-hover); }
 .chat-more-menu, .chat-info-menu { position: absolute; z-index: 42; top: calc(100% + 4px); right: 8px; display: flex; flex-direction: column; gap: 4px; min-width: 220px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-raised); box-shadow: 0 16px 48px #0008; }
@@ -67,7 +67,7 @@
 @media (hover: none) { .hover-only, .chat-name-row-actions { opacity: 1; } }
 /* Share and Delete open under their item in the ⋯ menu, as wide as it: a pop-over hung from the item would run
    past the Chat column, whose panel clips what overflows it, and be cut off. */
-.chat-head-pop .station-menu { position: static; width: auto; box-shadow: none; }
+.chat-head-pop .canvas-menu { position: static; width: auto; box-shadow: none; }
 .chat-share-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 0 0 8px; font-size: 12px; overflow-wrap: anywhere; }
 .chat-head-pop .chat-note { margin: 0; }
 .chat-error { margin: 8px 12px 0; color: var(--error-text); font-size: 12px; }

@@ -6,7 +6,7 @@ import type { components } from "./generated/schema";
 export type VisualDescription = components["schemas"]["VisualDescription"];
 export type VisualCatalog = components["schemas"]["VisualCatalogBody"];
 
-/** Fetch available visuals and the default selection for a new workspace. */
+/** Fetch available visuals and the default selection for a new canvas. */
 export async function getVisualCatalog({ signal }: CallOptions = {}): Promise<VisualCatalog> {
   let catalog: VisualCatalog;
   try {

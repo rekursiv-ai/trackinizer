@@ -30,7 +30,7 @@ sign-in, and with no terminals: a terminal opens only for a signed-in person.
 The top bar folds into a thin strip along the top of the window. Rest the
 pointer on the strip, or tap it, to open the bar; the pin (📌) keeps it open.
 From left to right it holds the logo (the graph), **Go** (every page), Search
-(⌘K, or Ctrl+K), New, your workstreams, **Machines** (where commands run),
+(⌘K, or Ctrl+K), New, your workspaces, **Machines** (where commands run),
 **Workbench** (the canvas's visuals) and your avatar. The avatar's menu has
 **Your settings**, Appearance, the other accounts this browser has used,
 **Add another account** and **Sign out**.
@@ -60,19 +60,19 @@ which shows the page you are on and visuals beside it. The assistant in Chat
 sees what is on your canvas and can change it: open a page, show a visual,
 light up the rows it is talking about.
 
-### Chats and workstreams
+### Chats and workspaces
 
 A **chat** is one conversation with the assistant together with its own
-canvas. (The code and the Console call it a station.) A **workstream** groups
-the chats of one effort, and is an Issue in the graph. Chats in no workstream
+canvas. (The code and the Console call it a canvas.) A **workspace** groups
+the chats of one effort, and is an Issue in the graph. Chats in no workspace
 are in **Scratch**.
 
-- The top bar lists your workstreams. Click one to open its pinned chat, else
-  its newest; a workstream with no chat gets a new one.
-- **+ Workstream** makes a workstream; type its name and press Enter.
-- Double-click a workstream to rename it. Right-click it for Info, Pin, Move
+- The top bar lists your workspaces. Click one to open its pinned chat, else
+  its newest; a workspace with no chat gets a new one.
+- **+ Workspace** makes a workspace; type its name and press Enter.
+- Double-click a workspace to rename it. Right-click it for Info, Pin, Move
   left, Move right, Rename and Hide. Drag one to reorder.
-- A workstream's Info lists its chats and the agent sessions in each.
+- A workspace's Info lists its chats and the agent sessions in each.
 
 ### The chat header
 
@@ -80,14 +80,14 @@ The header's buttons show while the pointer is over the header, and always on
 a touch screen.
 
 - **The chat's name.** Click it to rename the chat: type, then Enter (Esc
-  cancels). The menu under it lists this workstream's chats, pinned ones first,
+  cancels). The menu under it lists this workspace's chats, pinned ones first,
   then the five most recent, each with Pin and Hide. It also has **+ New chat**
   and **Search all chats…**, which finds hidden chats too. A chat you never
   named shows as "Scratch chat".
-- **The workstream chip** (for example "Scratch ▾") moves the chat to another
-  workstream. Type a name and press Enter: the chat moves to the workstream of
+- **The workspace chip** (for example "Scratch ▾") moves the chat to another
+  workspace. Type a name and press Enter: the chat moves to the workspace of
   that name, which is created if you have none. When the server suggests a
-  workstream, a chip with its name and a question mark moves the chat there in
+  workspace, a chip with its name and a question mark moves the chat there in
   one click.
 - **The terminal icon** flips Chat over to a terminal on your own computer
   ([section 3](#3-a-terminal-on-your-own-machine)).
@@ -121,7 +121,7 @@ Type into the box and press Enter; Shift+Enter starts a new line. Each message
 carries the page you are on and the few pages before it, so "this" means what
 you see. When the page is a record, a line above the messages says which:
 "On screen: Issue#7 …". The reply shows as it is written. Rows the reply names
-light up on the canvas; **Your settings** → Agent workspace → "Highlight rows
+light up on the canvas; **Your settings** → Agent canvas → "Highlight rows
 the assistant mentions" turns that off.
 
 Keys: Ctrl+\\ (⌘\\ on a Mac) hides and shows Chat. Alt+Enter makes Chat fill
@@ -235,7 +235,7 @@ computer for yourself, and give agents a sandbox of their own. The idea is in
 
 The shell is your login shell, started in your home directory with a fresh
 environment, as an ssh login is. It knows the chat that opened it
-(`TRAX_WORKSPACE`, `TRAX_WORKSTREAM`) and the server (`TRACKINIZER_PROFILE`),
+(`TRAX_CANVAS`, `TRAX_WORKSPACE`) and the server (`TRACKINIZER_PROFILE`),
 so `trax` in it reports to that server, and agents started in it are filed in
 that chat.
 
@@ -366,7 +366,7 @@ to the chat. Your own run in a terminal is unchanged.
   the session, refuse, or refuse and stop the turn. The first answer wins, and
   the card closes with who answered. A card the run can no longer answer, because it ended or
   went offline, closes as Released within about a minute. While a card waits,
-  the chat header and its workstream tab show a blue dot. A card for a run on
+  the chat header and its workspace tab show a blue dot. A card for a run on
   your machine is yours alone to answer; one the assistant asks is answered by
   the person it asked. A computer connected with `--sandbox` shows no cards:
   its agents do not ask.
@@ -383,19 +383,19 @@ to the chat. Your own run in a terminal is unchanged.
 
 ### Where a session lands
 
-The server files each session in one of your workstreams and a chat, by the
+The server files each session in one of your workspaces and a chat, by the
 first rule that fits:
 
 1. the chat whose terminal you started it from, directly or over ssh;
 2. where the session was filed before, when you resume one;
-3. the workstream of your newest session on the same git branch, in a new chat;
+3. the workspace of your newest session on the same git branch, in a new chat;
 4. Scratch, in a new chat.
 
 On Chat's terminal side the bar says where: "Sessions land in" and the
-workstream.
+workspace.
 A chat made for a session names it under ⋯ → Info → Made for. The Console
 (Go → Console, or `g c`) shows sessions' messages live; opened inside a chat,
-it starts on that chat's sessions ("This station").
+it starts on that chat's sessions ("This canvas").
 
 Flags worth knowing:
 
@@ -420,7 +420,7 @@ still filed in that chat, and outlives the tab and the terminal's limits.
 
 An agent run's session filed in a chat is told, when
 it starts, that "the canvas" means that chat's, and how to read and change it
-with `trax workspace`. It is also told that the conversation is already logged to
+with `trax canvas`. It is also told that the conversation is already logged to
 trax as the chat's AgentSession, and to file each result as a row with the `trax`
 CLI, `--as` set to `$TRAX_ACTOR`. Claude hears it through `--append-system-prompt`, codex
 through `-c developer_instructions`; one you pass yourself wins, and then the

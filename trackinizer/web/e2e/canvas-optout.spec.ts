@@ -4,8 +4,8 @@ import { expect, test } from "./fixtures";
 // and no canvas: the one path the other specs, which run with the default canvas
 // on, do not take.
 
-test("a user who opted out of the canvas has /api/web/subscribe, no canvas and no workspace stream", async ({ page, request }) => {
-  const optedOut = await request.put("/api/me/visual-workspace", { data: { enabled: false } });
+test("a user who opted out of the canvas has /api/web/subscribe, no canvas and no canvas stream", async ({ page, request }) => {
+  const optedOut = await request.put("/api/me/visual-canvas", { data: { enabled: false } });
   expect(optedOut.ok(), await optedOut.text()).toBe(true);
   try {
     await page.addInitScript(() => {
@@ -20,23 +20,23 @@ test("a user who opted out of the canvas has /api/web/subscribe, no canvas and n
       };
     });
     const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
-    const workspaces: string[] = [];
+    const canvases: string[] = [];
     page.on("request", (sent) => {
-      if (new URL(sent.url()).pathname.startsWith("/api/workspaces")) workspaces.push(sent.url());
+      if (new URL(sent.url()).pathname.startsWith("/api/canvases")) canvases.push(sent.url());
     });
     await page.goto("/app/#/list/Issue");
     await subscribed;
     await expect(page.getByRole("heading", { level: 1, name: "Issues" })).toBeVisible();
     await expect(page.locator(".visual-canvas")).toHaveCount(0);
     expect(await page.evaluate(() => (window as unknown as { openedStreams: string[] }).openedStreams)).toEqual(["/api/web/subscribe"]);
-    expect(workspaces).toEqual([]);
+    expect(canvases).toEqual([]);
   } finally {
     // The next spec's fixture sets its own preference.
   }
 });
 
 test("turning the canvas back on in Settings moves the tab to the canvas's one stream", async ({ page, request }) => {
-  const optedOut = await request.put("/api/me/visual-workspace", { data: { enabled: false } });
+  const optedOut = await request.put("/api/me/visual-canvas", { data: { enabled: false } });
   expect(optedOut.ok(), await optedOut.text()).toBe(true);
   try {
     await page.goto("/app/#/settings");

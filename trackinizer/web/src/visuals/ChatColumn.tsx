@@ -2,16 +2,16 @@ import { useQueryClient } from "@tanstack/react-query";
 import { APP } from "../appName";
 import { waitingOf } from "../api/runState";
 import { type CSSProperties, type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { newChat } from "../stations/actions";
-import { usePageSync } from "../stations/usePageSync";
-import { useStation } from "../stations/useStation";
+import { newChat } from "../canvases/actions";
+import { usePageSync } from "../canvases/usePageSync";
+import { useCanvas } from "../canvases/useCanvas";
 import { useCommands } from "../commands/registry";
 import { Icon } from "../ui/icons";
 import { Chat } from "./Chat";
 import { dropLegacySizes, fitWidth, heldWidth, MIN_CHAT, readLegacySizes } from "./canvasSizes";
 import { type ChatSide, flipChatSide, setChatFullscreen, setChatHidden, setPhoneView, toggleChatFullscreen, toggleChatHidden, useChatColumn, usePhoneView } from "./chatColumnState";
 import { useHoverOpen } from "./hoverOpen";
-import { useLayout } from "./stationLayout";
+import { useLayout } from "./canvasLayout";
 import { showNewTerminal } from "./newTerminal";
 import "./chatColumn.css";
 
@@ -54,16 +54,16 @@ export function ChatColumn({
   const phone = usePhone();
   const view = usePhoneView();
   const queryClient = useQueryClient();
-  const station = useStation();
-  const workspace = station.data ?? null;
+  const canvasQuery = useCanvas();
+  const canvas = canvasQuery.data ?? null;
   usePageSync();
   // Whether an agent waits on the person: the server says so, or Chat reads a card still open in its log.
   const [reported, setReported] = useState(false);
-  const waiting = waitingOf(workspace?.partner) === true || reported;
-  // The tab is titled by its station, as a terminal's is by its directory, and marked while the station waits on the person.
+  const waiting = waitingOf(canvas?.partner) === true || reported;
+  // The tab is titled by its canvas, as a terminal's is by its directory, and marked while the canvas waits on the person.
   useEffect(() => {
-    if (workspace) document.title = `${waiting ? "● " : ""}${workspace.name} · ${APP.name}`;
-  }, [workspace?.name, waiting]);
+    if (canvas) document.title = `${waiting ? "● " : ""}${canvas.name} · ${APP.name}`;
+  }, [canvas?.name, waiting]);
   const row = useRef<HTMLDivElement>(null);
   const column = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
@@ -88,15 +88,15 @@ export function ChatColumn({
       observer?.disconnect();
     };
   }, []);
-  // A browser that kept Chat's width in pixels before the station did: the first
-  // station it shows takes it, unless it already holds one, and the browser forgets it.
+  // A browser that kept Chat's width in pixels before the canvas did: the first
+  // canvas it shows takes it, unless it already holds one, and the browser forgets it.
   useEffect(() => {
-    if (!workspace || !unit.ch) return;
+    if (!canvas || !unit.ch) return;
     const { chat } = readLegacySizes();
-    if (chat && workspace.layout?.chat_ch == null) {
+    if (chat && canvas.layout?.chat_ch == null) {
       changeLayout({ chat_ch: Math.round((chat / unit.ch) * 100) / 100 }, { now: true, onSaved: () => dropLegacySizes("chat") });
     } else dropLegacySizes("chat");
-  }, [workspace?.id, unit.ch > 0]);
+  }, [canvas?.id, unit.ch > 0]);
   // The width the stylesheet gave the column while the user has set none, for the divider to tell.
   const [drawn, setDrawn] = useState(0);
   useLayoutEffect(() => setDrawn(column.current?.offsetWidth ?? 0), [width, side, hidden, fullscreen]);
@@ -115,7 +115,7 @@ export function ChatColumn({
     { id: "chat.fullscreen", title: fullscreen ? "Leave full screen Chat" : "Chat full screen", keys: ["Alt+Enter"], section: "Chat", global: true, run: toggleChatFullscreen },
     { id: "chat.side", title: "Move Chat to the other side", section: "Chat", run: flipChatSide },
     { id: "chat.new", title: "New chat", section: "Chat", run: () => void newChat(queryClient) },
-    { id: "terminal.new", title: "New terminal", section: "Terminal", run: () => void showNewTerminal(queryClient, workspace) },
+    { id: "terminal.new", title: "New terminal", section: "Terminal", run: () => void showNewTerminal(queryClient, canvas) },
     ...(fullscreen ? [{ id: "chat.fullscreen.exit", title: "Leave full screen Chat", keys: ["Escape"], run: () => setChatFullscreen(false) }] : []),
   ]);
 
@@ -174,8 +174,8 @@ export function ChatColumn({
       // the capture would turn the Pin button under the pointer into Hide before its own click came.
       onClick={peeking ? () => setChatHidden(false) : undefined}
       onKeyDown={(event) => { if (event.key === "Escape" && fullscreen && !event.defaultPrevented) setChatFullscreen(false); }}>
-      {station.isPending && <p className="chat-note" role="status">Loading chat…</p>}
-      <Chat workspace={workspace} onWaiting={setReported} />
+      {canvasQuery.isPending && <p className="chat-note" role="status">Loading chat…</p>}
+      <Chat canvas={canvas} onWaiting={setReported} />
     </div>,
     shown && !fullscreen && !peeking && !phone && (
       <div key="edge" className="chat-column-edge" role="separator" aria-orientation="vertical" tabIndex={0}

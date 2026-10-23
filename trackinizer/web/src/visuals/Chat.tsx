@@ -4,9 +4,9 @@ import { ApiError } from "../api/client";
 import { type Keyed, newUuid } from "../api/idempotency";
 import { CHAT_DELETED, CHAT_FORK_CLOSED, CHAT_FORK_WIDER, type ChatFork, conversationOf, getChatHead, SCIENCE_CHAT_LABEL, sendChatLine } from "../api/chats";
 import type { OrgMode } from "../api/me";
-import { getWorkspace } from "../api/workspaces";
-import type { WorkspacePartner, WorkspaceState } from "../api/workspaces";
-import { type Provider, providerName, stationProvider } from "../api/providers";
+import { getCanvas } from "../api/canvases";
+import type { CanvasPartner, CanvasState } from "../api/canvases";
+import { type Provider, providerName, canvasProvider } from "../api/providers";
 import { runStateOf, takenOver, waitingOf } from "../api/runState";
 import { MetaContext, useProfile, useWriteMode } from "../app/boot";
 import { Composer } from "../composer/Composer";
@@ -16,11 +16,11 @@ import { Markdown } from "../markdown/Markdown";
 import { usePreferences } from "../preferences";
 import { parseHash } from "../router/route";
 import { useHash, validHash, visited } from "../router/trail";
-import { stationForChat, type StationSummary } from "../api/stations";
-import { clearChat as clearStationChat, hideStation, STATIONS_KEY } from "../stations/actions";
-import { showStation } from "../stations/useStation";
-import { beginStationNavigation } from "../stations/store";
-import { acceptWorkspace } from "../stations/cache";
+import { canvasForChat, type CanvasSummary } from "../api/canvasManagement";
+import { clearChat as clearCanvasChat, hideCanvas, CANVASES_KEY } from "../canvases/actions";
+import { showCanvas } from "../canvases/useCanvas";
+import { beginCanvasNavigation } from "../canvases/store";
+import { acceptCanvas } from "../canvases/cache";
 import { type ChatPart, type Goal, goalOf, type Line, type LineAt, linesThrough, openPrompts, PENDING, readTranscript, sentBefore, withPending } from "./chatLines";
 import { chatRecordsKey, IDLE_CLOSE_MS, OPENING, readChatParts, useLiveChat } from "./chatRecords";
 import { CloseChat } from "./ChatSharing";
@@ -30,7 +30,7 @@ import { useAnswerHighlights } from "./chatHighlights";
 import { useChatPartial } from "./chatPartial";
 import { useChatDraft } from "./chatDraft";
 import { ChatToolCard } from "./ChatToolCard";
-import { ChatWorkstreamHeader } from "./ChatWorkstreamHeader";
+import { ChatWorkspaceHeader } from "./ChatWorkspaceHeader";
 import { RecordField } from "./RecordField";
 import { useReattach } from "./reattach";
 import { type AnswerPrompt, type PromptAnswer, PromptCard } from "./PromptCard";
@@ -75,9 +75,9 @@ function chatReach(audience: string, orgMode: OrgMode | undefined): string {
 }
 
 /**
- * Talk with the workspace's partner in a science chat: a session the assistant
+ * Talk with the canvas's partner in a science chat: a session the assistant
  * opens, read by whom the server's org mode lets in, as a Slack channel is by its
- * workspace. Its lines are the session's records (read as the Console reads
+ * canvas. Its lines are the session's records (read as the Console reads
  * them, and kept current by the canvas stream's changed ids); a line posted here
  * shows at once, pending, until its record arrives. A new conversation has an id
  * at once and a session when the assistant opens it. The open conversation lives
@@ -90,8 +90,8 @@ function chatReach(audience: string, orgMode: OrgMode | undefined): string {
  * sent starts it. A private or staff-only chat cannot be forked, since the copy
  * would not keep who may read it. The starter makes a chat private or public (`PrivacySwitch`).
  */
-export function Chat({ workspace, onWaiting }: {
-  readonly workspace: WorkspaceState | null;
+export function Chat({ canvas, onWaiting }: {
+  readonly canvas: CanvasState | null;
   /** Told whether an agent waits on the person, as the header's dot says, whenever that changes. */
   readonly onWaiting?: (waiting: boolean) => void;
 }) {
@@ -100,12 +100,12 @@ export function Chat({ workspace, onWaiting }: {
   const { email: me, org_mode: orgMode, role } = useProfile();
   const writing = useWriteMode() === "enabled";
   const { feed, state } = useChatFeed();
-  const workspaceId = workspace?.id ?? null;
-  const draft = useChatDraft(workspaceId);
-  const partner = workspace?.partner ?? null;
-  // The station's chat: bound by its first line, and the same however Chat is mounted again.
-  const conversationId = workspace?.conversation_id ?? null;
-  const pending = state.pending.filter((post) => post.sender === me && post.workspaceId === workspaceId);
+  const canvasId = canvas?.id ?? null;
+  const draft = useChatDraft(canvasId);
+  const partner = canvas?.partner ?? null;
+  // The canvas's chat: bound by its first line, and the same however Chat is mounted again.
+  const conversationId = canvas?.conversation_id ?? null;
+  const pending = state.pending.filter((post) => post.sender === me && post.canvasId === canvasId);
   const setPending = useCallback((change: (held: readonly PendingPost[]) => readonly PendingPost[]) => feed.updatePending(me, change), [feed, me]);
   // Retry keeps the first submission's confirmation boundary even if capture arrived after a lost receipt.
   const attempts = useRef(new Map<string, { readonly baseline: number; readonly submittedAt: number }>());
@@ -224,10 +224,10 @@ export function Chat({ workspace, onWaiting }: {
 
   // The target names where a draft goes, so a retry under one key only ever
   // repeats a send to the same place.
-  const target = JSON.stringify([workspaceId, partner?.session_id ?? null, fork]);
+  const target = JSON.stringify([canvasId, partner?.session_id ?? null, fork]);
   // A run taken over in a terminal takes no line from Chat until it is reattached.
   const taken = takenOver(partner);
-  const live = !!workspace && partner?.status === "live" && writing && !taken;
+  const live = !!canvas && partner?.status === "live" && writing && !taken;
   // Who reads this chat, and so whether I may read it and type in it, is known once its head has been read.
   const reading = conversationId !== null && head.isPending;
   // Only an open chat forks: a copy would not keep a hidden or staff-only chat's readers.
@@ -235,26 +235,26 @@ export function Chat({ workspace, onWaiting }: {
   const hash = useHash();
   const screen = parseHash(hash, kinds);
 
-  // Another station is another conversation: what belonged to this one's pass with it. A
-  // fork's own station keeps the wait for its session, which its first line began.
+  // Another canvas is another conversation: what belonged to this one's pass with it. A
+  // fork's own canvas keeps the wait for its session, which its first line began.
   const forkLanding = useRef<string | null>(null);
-  const shownStation = useRef(workspaceId);
+  const shownCanvas = useRef(canvasId);
   useEffect(() => {
-    if (shownStation.current === workspaceId) return;
-    shownStation.current = workspaceId;
+    if (shownCanvas.current === canvasId) return;
+    shownCanvas.current = canvasId;
     setNotice(null);
     setForkAt(null);
-    setSentAt(forkLanding.current === workspaceId ? Date.now() : null);
+    setSentAt(forkLanding.current === canvasId ? Date.now() : null);
     forkLanding.current = null;
     stuck.current = true;
-  }, [workspaceId]);
+  }, [canvasId]);
 
-  /** Switch to the user's station that holds `conversation`, which the server makes if there is none. */
-  async function openConversation(conversation: string, current = beginStationNavigation()) {
+  /** Switch to the user's canvas that holds `conversation`, which the server makes if there is none. */
+  async function openConversation(conversation: string, current = beginCanvasNavigation()) {
     try {
-      const state = await stationForChat(conversation);
-      acceptWorkspace(queryClient, state);
-      if (mounted.current && current()) showStation(queryClient, state);
+      const state = await canvasForChat(conversation);
+      acceptCanvas(queryClient, state);
+      if (mounted.current && current()) showCanvas(queryClient, state);
     } catch (error) {
       if (mounted.current && current()) setNotice(error instanceof ApiError && error.code === CHAT_DELETED ? error.detail : "Could not open that chat.");
     }
@@ -269,8 +269,8 @@ export function Chat({ workspace, onWaiting }: {
   }, []);
   useEffect(() => {
     const request = state.request;
-    if (!request || !workspaceId) return;
-    const current = beginStationNavigation();
+    if (!request || !canvasId) return;
+    const current = beginCanvasNavigation();
     feed.taken(request.n);
     void queryClient.fetchQuery(detailQueries.detail(request.sessionId)).then((detail) => {
       if (!mounted.current || !current()) return;
@@ -280,46 +280,46 @@ export function Chat({ workspace, onWaiting }: {
       else setNotice("That session is not a science chat.");
     }, () => mounted.current && current() && setNotice("Could not open that chat."));
     // `openConversation` is the same function every render, but for what it closes over.
-  }, [state.request, workspaceId]);
+  }, [state.request, canvasId]);
 
-  /** The chat is gone: the station holds no conversation, and the stream says so to every tab. */
+  /** The chat is gone: the canvas holds no conversation, and the stream says so to every tab. */
   function chatDeleted(conversation: string) {
-    queryClient.setQueryData<WorkspaceState>(["workspace", workspaceId], (held) => held && { ...held, conversation_id: null });
-    queryClient.setQueryData<StationSummary[]>(STATIONS_KEY, (held) =>
+    queryClient.setQueryData<CanvasState>(["canvas", canvasId], (held) => held && { ...held, conversation_id: null });
+    queryClient.setQueryData<CanvasSummary[]>(CANVASES_KEY, (held) =>
       held?.map((each) => (each.conversation_id === conversation ? { ...each, conversation_id: null } : each)));
     queryClient.removeQueries({ queryKey: ["chat", "head", conversation] });
-    void queryClient.invalidateQueries({ queryKey: ["stations"] });
+    void queryClient.invalidateQueries({ queryKey: ["canvases"] });
   }
 
-  async function hideCurrentStation() {
-    if (!workspaceId) return;
+  async function hideCurrentCanvas() {
+    if (!canvasId) return;
     try {
-      await hideStation(queryClient, workspaceId);
+      await hideCanvas(queryClient, canvasId);
     } catch {
       setNotice("Could not hide this chat.");
     }
   }
 
   async function clearCurrentChat() {
-    if (!workspaceId) return;
+    if (!canvasId) return;
     try {
-      await clearStationChat(queryClient, workspaceId, newUuid());
+      await clearCanvasChat(queryClient, canvasId, newUuid());
     } catch {
       setNotice("Could not clear this chat.");
     }
   }
 
-  // A station that loses its conversation (deleted here or, by the stream, in another tab) shows an
+  // A canvas that loses its conversation (deleted here or, by the stream, in another tab) shows an
   // empty chat: what belonged to the conversation goes with it.
-  const heldConversation = useRef({ workspaceId, conversationId });
+  const heldConversation = useRef({ canvasId, conversationId });
   useEffect(() => {
     const lost = heldConversation.current;
-    heldConversation.current = { workspaceId, conversationId };
-    if (lost.workspaceId !== workspaceId || lost.conversationId === null || conversationId !== null) return;
+    heldConversation.current = { canvasId, conversationId };
+    if (lost.canvasId !== canvasId || lost.conversationId === null || conversationId !== null) return;
     setPending((held) => held.filter((line) => line.conversationId !== lost.conversationId));
     setForkAt(null);
     setSentAt(null);
-  }, [workspaceId, conversationId]);
+  }, [canvasId, conversationId]);
 
   // A chat deleted under this tab is let go, wherever the tab learns of it: its head read says 410.
   const goneHead = head.error instanceof ApiError && head.error.code === CHAT_DELETED;
@@ -361,31 +361,31 @@ export function Chat({ workspace, onWaiting }: {
       baseline: sentBefore(fresh ? [] : after && forkOf ? linesThrough(lines, after) : lines, { me }), submittedAt: Date.now(),
     };
     attempts.current.set(key, attempt);
-    const current = forkOf ? beginStationNavigation() : null;
-    setPending((held) => [...held.filter((line) => line.key !== key), { key, text, workspaceId: workspace!.id, conversationId: sentTo, ...attempt }]);
+    const current = forkOf ? beginCanvasNavigation() : null;
+    setPending((held) => [...held.filter((line) => line.key !== key), { key, text, canvasId: canvas!.id, conversationId: sentTo, ...attempt }]);
     setSending((held) => new Set(held).add(key));
     try {
       const { page, trail } = whereFrom(location.hash);
-      const sent = await sendChatLine({ workspaceId: workspace!.id, text, conversationId: forkOf ? null : sentTo,
+      const sent = await sendChatLine({ canvasId: canvas!.id, text, conversationId: forkOf ? null : sentTo,
         ...(forkOf && { fork: forkOf }), page, trail }, key);
-      setPending((held) => held.map((line) => (line.key === key ? { ...line, workspaceId: sent.workspace_id, conversationId: sent.conversation_id } : line)));
-      if (sent.workspace_id === workspace!.id) {
-        // The first line binds the conversation to the station; the station's state says so from here.
-        queryClient.setQueryData<WorkspaceState>(["workspace", sent.workspace_id], (held) => held && { ...held, conversation_id: sent.conversation_id });
-        if (mounted.current && shownStation.current === workspaceId) {
+      setPending((held) => held.map((line) => (line.key === key ? { ...line, canvasId: sent.canvas_id, conversationId: sent.conversation_id } : line)));
+      if (sent.canvas_id === canvas!.id) {
+        // The first line binds the conversation to the canvas; the canvas's state says so from here.
+        queryClient.setQueryData<CanvasState>(["canvas", sent.canvas_id], (held) => held && { ...held, conversation_id: sent.conversation_id });
+        if (mounted.current && shownCanvas.current === canvasId) {
           setForkAt(null);
           setSentAt(Date.now());
         }
       } else {
-        // A fork is a station of its own, which this tab now shows, on the page it is on.
-        const state = await getWorkspace(sent.workspace_id);
-        acceptWorkspace(queryClient, state);
+        // A fork is a canvas of its own, which this tab now shows, on the page it is on.
+        const state = await getCanvas(sent.canvas_id);
+        acceptCanvas(queryClient, state);
         if (mounted.current && current?.()) {
-          forkLanding.current = sent.workspace_id;
-          showStation(queryClient, state, window.location.hash);
+          forkLanding.current = sent.canvas_id;
+          showCanvas(queryClient, state, window.location.hash);
         }
       }
-      void queryClient.invalidateQueries({ queryKey: ["stations"] });
+      void queryClient.invalidateQueries({ queryKey: ["canvases"] });
       void queryClient.invalidateQueries({ queryKey: ["chat", "head", sent.conversation_id] });
       attempts.current.delete(key);
       return "";
@@ -408,9 +408,9 @@ export function Chat({ workspace, onWaiting }: {
    * the card keeps its answer, to resend under the same key.
    */
   async function answerPrompt(attempt: Keyed<PromptAnswer>): Promise<boolean> {
-    if (!workspace || !conversationId) return false;
+    if (!canvas || !conversationId) return false;
     try {
-      await sendChatLine({ workspaceId: workspace.id, text: attempt.body.text, conversationId, kind: "answer", payload: attempt.body.payload,
+      await sendChatLine({ canvasId: canvas.id, text: attempt.body.text, conversationId, kind: "answer", payload: attempt.body.payload,
         ...whereFrom(location.hash) }, attempt.key);
       return true;
     } catch (error) {
@@ -424,10 +424,10 @@ export function Chat({ workspace, onWaiting }: {
    * a second ask to stop. A refusal is shown.
    */
   async function stop() {
-    if (!workspace || !conversationId || stopping) return;
+    if (!canvas || !conversationId || stopping) return;
     setStopping(true);
     try {
-      await sendChatLine({ workspaceId: workspace.id, text: "interrupt", conversationId, kind: "interrupt", page: null, trail: [] }, newUuid());
+      await sendChatLine({ canvasId: canvas.id, text: "interrupt", conversationId, kind: "interrupt", page: null, trail: [] }, newUuid());
     } catch (error) {
       if (mounted.current) setNotice(failureText(error));
     } finally {
@@ -485,8 +485,8 @@ export function Chat({ workspace, onWaiting }: {
   }, []));
 
   return <section className="chat-panel" aria-label="Chat">
-    <ChatWorkstreamHeader workspace={workspace} head={head.data ?? undefined} waiting={needsYou}
-      onHide={hideCurrentStation} onClear={clearCurrentChat}
+    <ChatWorkspaceHeader canvas={canvas} head={head.data ?? undefined} waiting={needsYou}
+      onHide={hideCurrentCanvas} onClear={clearCurrentChat}
       onDeleted={(conversation) => chatDeleted(conversation)} />
     {screen.name === "lookup" && <ChatScreenContext id={screen.id} label={screen.id} />}
     {screen.name === "ref" && <ChatScreenRef kind={screen.kind} seq={screen.seq} />}
@@ -510,7 +510,7 @@ export function Chat({ workspace, onWaiting }: {
         <button className="btn ghost" type="button" onClick={() => void openConversation(head.data!.forked_from!)}>another chat</button>.</p>}
       {head.data && head.data.forks > 0 && <p className="chat-note">{forkedTimes(head.data.forks)}</p>}
       {outsider && <p className="chat-note" role="status">{outsiderNote(head.data!.audience)}</p>}
-      {lines.map((line) => <ChatLine key={line.key} line={line} me={me} kinds={kinds} assistant={providerName("assistant", workspace)}
+      {lines.map((line) => <ChatLine key={line.key} line={line} me={me} kinds={kinds} assistant={providerName("assistant", canvas)}
         onFork={forkable ? pickFork : undefined} onFollowUp={line.key === followUpKey ? launchFollowUp : undefined}
         onAnswer={answerable ? answerStable : undefined} />)}
       {/* One working line, the last tool call's name, in place of a status the partner no longer sends.
@@ -522,11 +522,11 @@ export function Chat({ workspace, onWaiting }: {
           </article>
         : statusText && <p className="chat-status" role="status">{statusText}</p>}
       {taken && <TakenOver onReattach={writing && session ? () => void reattach(session) : undefined} busy={reattaching !== null} />}
-      {workspace && writing && !live && !loading && !taken && <ChatOff provider={stationProvider(workspace)} />}
+      {canvas && writing && !live && !loading && !taken && <ChatOff provider={canvasProvider(canvas)} />}
     </div>
     {forkAt && <p className="chat-fork-banner" role="status">
       Your next message starts a fork of this chat after “{forkAt.quote}”.{" "}
-      <span className="chat-fork-runs">{forkRuns(workspace)}</span>{" "}
+      <span className="chat-fork-runs">{forkRuns(canvas)}</span>{" "}
       <button className="btn ghost" type="button" onClick={() => setForkAt(null)}>Cancel fork</button>
     </p>}
     <p className="chat-notice">{chatNotice(head.data?.audience ?? "open", orgMode)}</p>
@@ -535,8 +535,8 @@ export function Chat({ workspace, onWaiting }: {
     {stoppable ? <div className="chat-stop">
       <button className="btn ghost" type="button" disabled={stopping} aria-label="Stop" title="Interrupt the turn (Esc)" onClick={() => void stop()}>■</button>
     </div>
-      : closable && workspace && head.data && <div className="chat-stop">
-        <CloseChat head={head.data} bar onClose={() => hideStation(queryClient, workspace.id)} />
+      : closable && canvas && head.data && <div className="chat-stop">
+        <CloseChat head={head.data} bar onClose={() => hideCanvas(queryClient, canvas.id)} />
       </div>}
     {role === "viewer" ? <p className="chat-note chat-read-only" role="note">Viewers can read this chat but not post.</p>
       : <Composer send={send} target={target} draft={draft}
@@ -546,7 +546,7 @@ export function Chat({ workspace, onWaiting }: {
         event.preventDefault();
         void stop();
       } } : props} edit={edit} />}
-      history={{ key: JSON.stringify([me, workspaceId, conversationId]), entries: lines
+      history={{ key: JSON.stringify([me, canvasId, conversationId]), entries: lines
         .filter((line) => line.role === "user" && line.author === me && (!line.pending || !sending.has(line.key.slice(PENDING.length))))
         .map((line) => line.text) }}
       enabled={live && !reading && !loading && !outsider} editable pending={sending.size > 0}
@@ -576,7 +576,7 @@ function checkText(text: string): string {
   return length > MAX_TEXT ? `A message holds at most ${MAX_TEXT.toLocaleString("en")} characters; this one has ${length.toLocaleString("en")}.` : "";
 }
 
-function partnerGone(partner: WorkspacePartner): string {
+function partnerGone(partner: CanvasPartner): string {
   return `${partner.actor ?? "The partner"} is unavailable.`;
 }
 
@@ -696,14 +696,14 @@ function quoted(text: string): string {
 }
 
 /**
- * Where a fork will run, which is the station's provider: the assistant by its name; a CLI on its live run's machine
+ * Where a fork will run, which is the canvas's provider: the assistant by its name; a CLI on its live run's machine
  * and folder, or with no run yet, which the person picks a machine for after the fork.
  */
-function forkRuns(workspace: WorkspaceState | null): string {
-  const provider = stationProvider(workspace);
-  const name = providerName(provider, workspace);
+function forkRuns(canvas: CanvasState | null): string {
+  const provider = canvasProvider(canvas);
+  const name = providerName(provider, canvas);
   if (provider === "assistant") return `The fork runs on ${name}`;
-  const partner = workspace?.partner ?? null;
+  const partner = canvas?.partner ?? null;
   if (partner?.status !== "live") return `The fork runs on ${name} (no run yet: pick a machine after)`;
   const folder = partner.cwd ? ` in ${partner.cwd}` : "";
   return `The fork runs on ${name} on ${partner.machine ?? "your machine"}${folder}`;

@@ -1,6 +1,6 @@
 """Who a canvas's Chat talks to: the shared assistant, or the owner's claude or codex.
 
-The station's provider says which. The assistant is configured by actor and account,
+The canvas's provider says which. The assistant is configured by actor and account,
 and a session is its own only when both match: an actor handle is first come, first
 served, so a name alone proves nothing. A CLI's partner is the chat's own session,
 while a run drains it. Every function here runs on the caller's connection, and the
@@ -19,13 +19,13 @@ from treekle import from_plain
 from trackinizer.server.asks import open_ask_ids, waiting_sessions
 from trackinizer.server.inbound import PollerRun
 from trackinizer.server.preferences import ASSISTANT_KEYS, stored_preferences
-from trackinizer.server.visuals.science_chats import read_starter
-from trackinizer.server.visuals.workspaces import (
+from trackinizer.server.visuals.canvases import (
     NO_MACHINE_REASON,
+    CanvasPartner,
     ProviderFlags,
     ProviderReasons,
-    WorkspacePartner,
 )
+from trackinizer.server.visuals.science_chats import read_starter
 from trackinizer.wire.wire_machine_host import OFFLINE_AFTER_SEC
 from trackinizer.wire.wire_science_chat import (
     CHAT_SESSION_PREFIX,
@@ -34,7 +34,7 @@ from trackinizer.wire.wire_science_chat import (
     chat_conversation_id,
     chat_session_id,
 )
-from trackinizer.wire.wire_sessions import STATION_LABEL_PREFIX, RunState
+from trackinizer.wire.wire_sessions import CANVAS_LABEL_PREFIX, RunState
 
 
 if TYPE_CHECKING:
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn
     from trackinizer.server.config import Assistant
     from trackinizer.server.inbound import InboundQueue
-    from trackinizer.server.visuals.workspaces import WorkspaceState
+    from trackinizer.server.visuals.canvases import CanvasState
     from trackinizer.wire.wire_science_chat import ChatProvider
 
 
@@ -93,15 +93,15 @@ async def resolve_partner(
     assistant: Assistant | None,
     provider: ChatProvider,
     conversation_id: uuid.UUID | None,
-) -> WorkspacePartner | None:
+) -> CanvasPartner | None:
     """Name a canvas's partner: the provider's live session, or say it has none.
 
     Args:
       conn: Connection the answer must be consistent with.
       inbound: In-process poller leases; a session nobody polls is not live.
       assistant: The configured assistant, if any.
-      provider: The station's provider.
-      conversation_id: The chat the station holds, if any.
+      provider: The canvas's provider.
+      conversation_id: The chat the canvas holds, if any.
 
     Returns:
       partner: For ``assistant``, the assistant, live or unavailable, or None with
@@ -131,7 +131,7 @@ async def resolve_partner(
     )
 
 
-# Audience: gated -- the session's id and liveness go to a station that holds the
+# Audience: gated -- the session's id and liveness go to a canvas that holds the
 # chat, which its owner bound as a reader.
 async def cli_partner(
     conn: Conn,
@@ -140,7 +140,7 @@ async def cli_partner(
     assistant: Assistant | None,
     provider: ChatProvider,
     conversation_id: uuid.UUID | None,
-) -> WorkspacePartner:
+) -> CanvasPartner:
     """Name a chat's run of ``provider``: its session while a run drains it.
 
     The chat's sessions are those under its ``chat:`` id that the assistant's key or
@@ -155,7 +155,7 @@ async def cli_partner(
       inbound: In-process poller leases; a session nobody polls is not live.
       assistant: The configured assistant, if any.
       provider: ``claude`` or ``codex``.
-      conversation_id: The chat the station holds; None for none yet.
+      conversation_id: The chat the canvas holds; None for none yet.
 
     Returns:
       partner: The live session, with the machine, detached host and folder its
@@ -164,7 +164,7 @@ async def cli_partner(
         yet), which a run attaches to.
 
     """
-    offline = WorkspacePartner(
+    offline = CanvasPartner(
         session_id=None,
         actor=provider,
         cli=provider,
@@ -254,7 +254,7 @@ async def chat_run_states(
     openers: Sequence[str],
     conversation_ids: Sequence[uuid.UUID],
 ) -> dict[uuid.UUID, RunState]:
-    """Say what each chat's live runs are doing, for the badges of a station list.
+    """Say what each chat's live runs are doing, for the badges of a canvas list.
 
     A chat's runs are the sessions under its id that one of ``openers`` opened and some
     poller drains, as :func:`cli_partner` finds them; one a stranger's key opened is
@@ -265,7 +265,7 @@ async def chat_run_states(
       conn: A database connection.
       inbound: In-process poller leases.
       openers: The emails whose keys open a chat's sessions, in any case: the
-        station's owner and the assistant.
+        canvas's owner and the assistant.
       conversation_ids: The chats to ask about.
 
     Returns:
@@ -307,7 +307,7 @@ async def provider_availability(
     *,
     owner_id: uuid.UUID,
 ) -> tuple[ProviderFlags, ProviderReasons]:
-    """Say which providers a station's owner may choose, and why not the others.
+    """Say which providers a canvas's owner may choose, and why not the others.
 
     ``claude`` or ``codex`` is available when the owner has a confirmed machine that
     is online, holds a credential that is not revoked, and lists the CLI in its
@@ -317,7 +317,7 @@ async def provider_availability(
 
     Args:
       conn: A database connection.
-      owner_id: The station's owner.
+      owner_id: The canvas's owner.
 
     Returns:
       available: Which providers they may choose.
@@ -355,7 +355,7 @@ async def shared_partner(
     *,
     inbound: InboundQueue,
     assistant: Assistant | None,
-) -> WorkspacePartner | None:
+) -> CanvasPartner | None:
     """Name the assistant's newest live session, or say it has none.
 
     Args:
@@ -382,7 +382,7 @@ async def shared_partner(
         ),
         None,
     )
-    return WorkspacePartner(
+    return CanvasPartner(
         session_id=None if row is None else cast(uuid.UUID, row["id"]),
         actor=assistant.actor,
         cli=None if row is None else cast(str | None, row["cli"]),
@@ -394,11 +394,11 @@ async def shared_partner(
 async def attach_partner(
     conn: Conn,
     *,
-    state: WorkspaceState,
+    state: CanvasState,
     owner_id: uuid.UUID,
     inbound: InboundQueue,
     assistant: Assistant | None,
-) -> WorkspaceState:
+) -> CanvasState:
     """Return ``state`` with its assistant, partner, providers and owner's preferences.
 
     All are computed, never stored: the canvas JSONB and its replay receipts
@@ -510,26 +510,26 @@ async def assistant_key_may_use(
     conn: Conn,
     *,
     owner_id: uuid.UUID,
-    partner: WorkspacePartner | None,
+    partner: CanvasPartner | None,
     conversation_id: uuid.UUID | None,
     api_key_id: uuid.UUID,
 ) -> bool:
-    """Say whether a partner's key may read and operate a station.
+    """Say whether a partner's key may read and operate a canvas.
 
-    The key must have opened the station's live partner session, and also the live
-    science chat the station holds, in which the station's owner is the account or a
-    poster. A station without a chat takes no key, and a chat the key did not open, or
+    The key must have opened the canvas's live partner session, and also the live
+    science chat the canvas holds, in which the canvas's owner is the account or a
+    poster. A canvas without a chat takes no key, and a chat the key did not open, or
     one of another conversation, gives it nothing.
 
     Args:
       conn: Connection the answer must be consistent with.
-      owner_id: The station's owner.
-      partner: The station's partner.
-      conversation_id: The science chat the station holds, if any.
+      owner_id: The canvas's owner.
+      partner: The canvas's partner.
+      conversation_id: The science chat the canvas holds, if any.
       api_key_id: The calling key.
 
     Returns:
-      allowed: Whether the key may use the station.
+      allowed: Whether the key may use the canvas.
 
     """
     if (
@@ -564,27 +564,27 @@ async def assistant_key_may_use(
     )
 
 
-async def station_session_key_may_use(
+async def canvas_session_key_may_use(
     conn: Conn,
     *,
     owner_id: uuid.UUID,
-    workspace_id: uuid.UUID,
+    canvas_id: uuid.UUID,
     api_key_id: uuid.UUID,
 ) -> bool:
-    """Say whether a key opened a live session placed on a station of its own user.
+    """Say whether a key opened a live session placed on a canvas of its own user.
 
-    An agent run's session is labelled ``station:<id>`` when it is placed. The label
-    is the session's own claim, so the key must also belong to the station's owner:
-    a label naming another user's station gives its key nothing.
+    An agent run's session is labelled ``canvas:<id>`` when it is placed. The label
+    is the session's own claim, so the key must also belong to the canvas's owner:
+    a label naming another user's canvas gives its key nothing.
 
     Args:
       conn: Connection the answer must be consistent with.
-      owner_id: The station's owner.
-      workspace_id: The station.
+      owner_id: The canvas's owner.
+      canvas_id: The canvas.
       api_key_id: The calling key.
 
     Returns:
-      allowed: Whether the key may read and operate the station.
+      allowed: Whether the key may read and operate the canvas.
 
     """
     return bool(
@@ -597,7 +597,7 @@ async def station_session_key_may_use(
             "AND $3 = ANY(sess.labels) LIMIT 1",
             api_key_id,
             owner_id,
-            f"{STATION_LABEL_PREFIX}{workspace_id}",
+            f"{CANVAS_LABEL_PREFIX}{canvas_id}",
         ),
     )
 

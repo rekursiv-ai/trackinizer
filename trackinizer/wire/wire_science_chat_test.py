@@ -24,7 +24,7 @@ from trackinizer.wire.wire_science_chat import (
 from trackinizer.wire.wire_sessions import InboundKind
 
 
-_WORKSPACE = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+_CANVAS = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 
 
 def test_a_conversations_session_is_named_by_its_id() -> None:
@@ -44,7 +44,7 @@ def test_a_poster_label_names_the_attested_email() -> None:
 
 
 def test_a_post_is_a_persons_line_by_default() -> None:
-    sent = ChatSend(workspace_id=_WORKSPACE, text="hello")
+    sent = ChatSend(canvas_id=_CANVAS, text="hello")
     assert (sent.kind, sent.payload, sent.conversation_id) == ("line", None, None)
 
 
@@ -55,7 +55,7 @@ def test_the_post_kinds_are_the_inbound_kinds() -> None:
 
 def test_a_browser_that_still_sends_science_posts_a_line() -> None:
     sent = ChatSend.model_validate(
-        {"workspace_id": str(_WORKSPACE), "text": "hello", "kind": "science"},
+        {"canvas_id": str(_CANVAS), "text": "hello", "kind": "science"},
     )
     assert sent.kind == "line"
 
@@ -95,7 +95,7 @@ def test_each_kind_takes_the_payload_its_queue_documents(
 ) -> None:
     sent = ChatSend.model_validate(
         {
-            "workspace_id": str(_WORKSPACE),
+            "canvas_id": str(_CANVAS),
             "text": "Yes",
             "kind": kind,
             "payload": payload,
@@ -128,7 +128,7 @@ def test_a_payload_the_kind_does_not_take_is_refused(
     with pytest.raises(ValidationError):
         ChatSend.model_validate(
             {
-                "workspace_id": str(_WORKSPACE),
+                "canvas_id": str(_CANVAS),
                 "text": "Yes",
                 "kind": kind,
                 "payload": payload,
@@ -139,12 +139,12 @@ def test_a_payload_the_kind_does_not_take_is_refused(
 def test_a_fork_starts_from_a_line_only() -> None:
     fork = {"session_id": str(uuid.uuid4()), "part": 0, "idx": 3}
     assert ChatSend.model_validate(
-        {"workspace_id": str(_WORKSPACE), "text": "hi", "fork": fork},
+        {"canvas_id": str(_CANVAS), "text": "hi", "fork": fork},
     ).fork
     with pytest.raises(ValidationError):
         ChatSend.model_validate(
             {
-                "workspace_id": str(_WORKSPACE),
+                "canvas_id": str(_CANVAS),
                 "text": "/compact",
                 "kind": "command",
                 "fork": fork,
@@ -156,14 +156,14 @@ def test_a_fork_starts_from_a_line_only() -> None:
 def test_a_line_must_hold_a_non_space_character(text: str) -> None:
     """Whitespace alone is nothing to send."""
     with pytest.raises(ValidationError):
-        ChatSend(workspace_id=_WORKSPACE, text=text)
+        ChatSend(canvas_id=_CANVAS, text=text)
 
 
 def test_a_line_is_at_most_16384_characters() -> None:
     """The bound is exactly 16,384."""
-    assert ChatSend(workspace_id=_WORKSPACE, text="x" * 16_384).text
+    assert ChatSend(canvas_id=_CANVAS, text="x" * 16_384).text
     with pytest.raises(ValidationError):
-        ChatSend(workspace_id=_WORKSPACE, text="x" * 16_385)
+        ChatSend(canvas_id=_CANVAS, text="x" * 16_385)
 
 
 def test_a_line_names_no_poster_and_no_unknown_field() -> None:
@@ -171,7 +171,7 @@ def test_a_line_names_no_poster_and_no_unknown_field() -> None:
     for field, value in (("source", "mallory@example.com"), ("poster", "mallory")):
         with pytest.raises(ValidationError):
             ChatSend.model_validate(
-                {"workspace_id": str(_WORKSPACE), "text": "hello", field: value},
+                {"canvas_id": str(_CANVAS), "text": "hello", field: value},
             )
 
 

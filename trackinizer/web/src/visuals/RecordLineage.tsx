@@ -5,7 +5,7 @@ import type { TimelineRecord } from "../api/timeline";
 import { MetaContext } from "../app/boot";
 import { formatRoute } from "../router/route";
 import { ReadFailure } from "../ui/failure";
-import { useWorkspaceActions } from "./workspaceActions";
+import { useCanvasActions } from "./canvasActions";
 import { useVisualMark } from "./marks";
 import type { RendererProps } from "./registry";
 import "./RecordLineage.css";
@@ -13,7 +13,7 @@ import "./RecordLineage.css";
 /** Shared historical research reader: follow stored links without requiring a launch or inventing a tree. */
 export function RecordLineage({ recordId, visualType = "trax.timeline", recordKinds, mark }: {
   readonly recordId: string; readonly visualType?: string; readonly recordKinds?: readonly TimelineRecord["kind"][];
-  readonly mark?: Pick<RendererProps, "instance" | "workspace">;
+  readonly mark?: Pick<RendererProps, "instance" | "canvas">;
 }) {
   const read = useInfiniteQuery(lineageQuery(recordId, { direction: "out" }));
   const target = read.data?.pages[0]?.target;
@@ -23,7 +23,7 @@ export function RecordLineage({ recordId, visualType = "trax.timeline", recordKi
     if (previous.recordId === id && previous.sections.has(title)) return previous;
     return { recordId: id, sections: new Set(previous.recordId === id ? previous.sections : []).add(title) };
   }), []);
-  useVisualMark(mark?.instance, mark?.workspace ?? null, "data", !!target && ready.recordId === recordId && sections.every(({ title }) => ready.sections.has(title)));
+  useVisualMark(mark?.instance, mark?.canvas ?? null, "data", !!target && ready.recordId === recordId && sections.every(({ title }) => ready.sections.has(title)));
   if (!target) return read.error ? <ReadFailure error={read.error} retry={() => void read.refetch()} />
     : <p aria-busy="true">Loading research records…</p>;
   return <section className="record-lineage" aria-label="Research records">
@@ -55,7 +55,7 @@ function Relations({ recordId, visualType, recordKinds, title, filters, landed }
   const hasData = read.data !== undefined;
   useEffect(() => { if (hasData) landed(recordId, title); }, [hasData, landed, recordId, title]);
   const meta = useContext(MetaContext);
-  const actions = useWorkspaceActions();
+  const actions = useCanvasActions();
   const pages = read.data?.pages ?? [];
   const records = [...new Map(pages.flatMap((page) => page.records).map((record) => [record.id, record])).values()];
   const edges = [...new Map(pages.flatMap((page) => page.edges).map((edge) => [`${edge.from_id}:${edge.edge_kind}:${edge.to_id}`, edge])).values()];

@@ -128,7 +128,7 @@ async def hidden(
         for who in ALL:
             await conn.execute(
                 "INSERT INTO users (id, email, name, role, status, "
-                "visual_workspace_enabled) VALUES ($1, $2, 'n', 'writer', 'active', "
+                "visual_canvas_enabled) VALUES ($1, $2, 'n', 'writer', 'active', "
                 "TRUE)",
                 who.user_id,
                 who.email,
@@ -592,7 +592,7 @@ async def staff_owner(
     async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status, "
-            "visual_workspace_enabled) VALUES ($1, $2, 'n', 'writer', 'active', TRUE)",
+            "visual_canvas_enabled) VALUES ($1, $2, 'n', 'writer', 'active', TRUE)",
             STAFF_USER.user_id,
             STAFF_USER.email,
         )

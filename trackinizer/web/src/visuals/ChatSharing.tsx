@@ -7,7 +7,7 @@ import { newUuid } from "../api/idempotency";
 import { endSession, setSessionAudience } from "../api/sessions";
 import { formatRoute } from "../router/route";
 import { useCopy, useToast } from "../ui/toast";
-import "../stations/stations.css";
+import "../canvases/canvases.css";
 
 /**
  * Close an open pop-over when a press lands outside `root`: anywhere else on the
@@ -75,12 +75,12 @@ export function ShareChat({ head, disabled = "" }: { readonly head: ChatHead; re
   }
 
   return (
-    <div className="station chat-head-pop" ref={root}>
+    <div className="canvas chat-head-pop" ref={root}>
       <button className="chat-menu-item" type="button" aria-haspopup="dialog" aria-expanded={open}
         title={disabled || "Share this chat"} disabled={disabled !== ""} onClick={() => setOpen(!open)}>Share</button>
-      {open && <div className="station-menu" role="dialog" aria-label="Share chat"
+      {open && <div className="canvas-menu" role="dialog" aria-label="Share chat"
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setOpen(false); } }}>
-        <ul className="station-list" aria-label="Shared with">
+        <ul className="canvas-list" aria-label="Shared with">
           {head.shared_with.length === 0 && <li className="muted">Shared with nobody.</li>}
           {head.shared_with.map((who) => <li key={who} className="chat-share-row">
             <span>{who}</span>
@@ -88,7 +88,7 @@ export function ShareChat({ head, disabled = "" }: { readonly head: ChatHead; re
               onClick={() => void change(() => unshareChat(head.conversation_id, who), `Could not stop sharing with ${who}.`)}>Remove</button>
           </li>)}
         </ul>
-        <form className="station-rename" onSubmit={(event) => {
+        <form className="canvas-rename" onSubmit={(event) => {
           event.preventDefault();
           const who = email.trim();
           if (who) void change(() => shareChat(head.conversation_id, who), `Could not share with ${who}.`).then((landed) => landed && setEmail(""));
@@ -98,7 +98,7 @@ export function ShareChat({ head, disabled = "" }: { readonly head: ChatHead; re
           <button className="btn" type="submit" disabled={busy || !email.trim()}>Add</button>
         </form>
         <p className="chat-note">{linkReaders(head.audience)}</p>
-        <div className="station-actions">
+        <div className="canvas-actions">
           <button className="btn ghost" type="button" aria-label="Copy link to this chat"
             onClick={() => void copy(chatLink(head), "Copied the link to this chat")}>Copy link</button>
         </div>
@@ -167,13 +167,13 @@ export function DeleteChat({ head, onDeleted, disabled = "" }: { readonly head: 
   }
 
   return (
-    <div className="station chat-head-pop" ref={root}>
+    <div className="canvas chat-head-pop" ref={root}>
       <button className="chat-menu-item" type="button" aria-haspopup="dialog" aria-expanded={confirming}
         title={disabled || "Delete chat forever"} disabled={disabled !== ""} onClick={() => setConfirming(!confirming)}>Delete chat forever</button>
-      {confirming && <div className="station-menu" role="alertdialog" aria-label="Delete chat forever"
+      {confirming && <div className="canvas-menu" role="alertdialog" aria-label="Delete chat forever"
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setConfirming(false); } }}>
         <p className="chat-note">Delete this chat? Its forks keep their copies.</p>
-        <div className="station-actions">
+        <div className="canvas-actions">
           <button className="btn ghost" type="button" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
           <button className="btn danger" type="button" disabled={busy} onClick={() => void remove()}>Delete chat</button>
         </div>
@@ -213,13 +213,13 @@ export function CloseChat({ head, onClose, bar = false }: { readonly head: ChatH
   }
 
   return (
-    <div className="station chat-head-pop" ref={root}>
+    <div className="canvas chat-head-pop" ref={root}>
       <button className={bar ? "btn ghost" : "chat-menu-item"} type="button" aria-haspopup="dialog" aria-expanded={confirming}
         title="Stop this chat's run and take it off the bar" onClick={() => setConfirming(!confirming)}>Close chat</button>
-      {confirming && <div className="station-menu" role="alertdialog" aria-label="Close chat"
+      {confirming && <div className="canvas-menu" role="alertdialog" aria-label="Close chat"
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setConfirming(false); } }}>
         <p className="chat-note">Close this chat? Its run stops and it leaves the chat bar. Search all chats finds it again.</p>
-        <div className="station-actions">
+        <div className="canvas-actions">
           <button className="btn ghost" type="button" disabled={busy} onClick={() => setConfirming(false)}>Cancel</button>
           <button className="btn" type="button" disabled={busy} onClick={() => void close()}>Close</button>
         </div>

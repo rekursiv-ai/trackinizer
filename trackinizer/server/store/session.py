@@ -309,7 +309,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
     # right run -- a credentialed caller resuming another principal's
     # ``cli_session_id`` gets ``None`` (mints a fresh session) rather than silently
     # appending to a stranger's log. It is NOT an authorization boundary: AgentSessions
-    # are a shared workspace (events/read/end/drain are writer/viewer-gated, not owner-
+    # are a shared canvas (events/read/end/drain are writer/viewer-gated, not owner-
     # gated); ``opened_by_api_key_id`` is attribution + this resume key only. Under
     # ``--no-auth`` ALL sessions stamp ``opened_by = NULL``, so the scope degrades to
     # ``cli_session_id`` alone; a no-auth caller resuming a known ``cli_session_id`` re-

@@ -4,8 +4,8 @@ import type { components } from "./generated/schema";
  * What a chat's run says it is doing, as the server reports it: `idle` (waiting for the
  * person's next line), `running` (on a turn), `requires_action` (an agent waits for the
  * person to answer an ask) or `taken_over` (someone opened the CLI in a terminal, which
- * stopped the headless run, and Chat refuses lines until it is reattached). A station's
- * partner carries it as `state`; so do an entry of the station list and an agent of the
+ * stopped the headless run, and Chat refuses lines until it is reattached). A canvas's
+ * partner carries it as `state`; so do an entry of the canvas list and an agent of the
  * console. A server that does not send it is read as saying nothing, so these take any
  * object and read the field themselves.
  */

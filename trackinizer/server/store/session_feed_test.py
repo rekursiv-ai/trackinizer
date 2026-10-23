@@ -29,8 +29,8 @@ from trackinizer.server.audience import SessionReader
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     BucketGrid,
+    CanvasAgents,
     FeedScope,
-    StationAgents,
     _room_facets,
 )
 from trackinizer.server.values import vetted_sql
@@ -263,19 +263,19 @@ async def test_a_scope_keeps_any_value_of_a_field_and_every_named_field(
     assert await kept() == {(a, k) for a in "abc" for k in both}
 
 
-# ---- A station's agents -----------------------------------------------------
+# ---- A canvas's agents -----------------------------------------------------
 
 
 def _walk(first: int) -> str:
-    """Return the station clause as its values are bound after ``first`` others."""
-    workspace, owner, prefix, depth, limit = (f"${first + n}" for n in range(1, 6))
+    """Return the canvas clause as its values are bound after ``first`` others."""
+    canvas, owner, prefix, depth, limit = (f"${first + n}" for n in range(1, 6))
     return vetted_sql(
         "i.id IN (WITH RECURSIVE walk(id, depth) AS (SELECT c.id, 0 FROM inquiries c "
         "WHERE c.kind = 'AgentSession' AND c.agentsession_cli_session_id = ",
         prefix,
-        "::text || (SELECT w.station->>'conversation_id' FROM visual_workspaces w "
+        "::text || (SELECT w.metadata->>'conversation_id' FROM visual_canvases w "
         "WHERE w.id = ",
-        workspace,
+        canvas,
         " AND w.user_id = ",
         owner,
         ") UNION SELECT e.from_id, walk.depth + 1 FROM walk JOIN edges e "
@@ -289,26 +289,26 @@ def _walk(first: int) -> str:
     )
 
 
-_STATION = StationAgents(workspace_id=UUID(int=7), user_id=UUID(int=8))
-_STATION_VALUES = [_STATION.workspace_id, _STATION.user_id, "chat:", 4, 500]
+_CANVAS = CanvasAgents(canvas_id=UUID(int=7), user_id=UUID(int=8))
+_CANVAS_VALUES = [_CANVAS.canvas_id, _CANVAS.user_id, "chat:", 4, 500]
 
 
-def test_a_station_scope_binds_its_owner_and_the_bounds_of_the_walk() -> None:
+def test_a_canvas_scope_binds_its_owner_and_the_bounds_of_the_walk() -> None:
     alone: list[object] = []
     beside: list[object] = []
 
-    assert FeedScope(reader=_ANYONE, station=_STATION).clauses(
+    assert FeedScope(reader=_ANYONE, canvas=_CANVAS).clauses(
         alone,
         kind="e.kind",
     ) == [_walk(0)]
-    assert FeedScope(reader=_ANYONE, actors=("a",), station=_STATION).clauses(
+    assert FeedScope(reader=_ANYONE, actors=("a",), canvas=_CANVAS).clauses(
         beside,
         kind="e.kind",
     ) == ["i.owner = ANY($1::text[])", _walk(1)]
 
-    assert alone == _STATION_VALUES
-    assert beside == [["a"], *_STATION_VALUES]
-    assert FeedScope(reader=_ANYONE, station=_STATION).names_sessions
+    assert alone == _CANVAS_VALUES
+    assert beside == [["a"], *_CANVAS_VALUES]
+    assert FeedScope(reader=_ANYONE, canvas=_CANVAS).names_sessions
     assert not _ALL_SESSIONS.names_sessions
 
 
@@ -334,12 +334,12 @@ def test_each_field_of_a_scope_binds_one_array_in_the_order_the_sql_tests_it() -
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_station_keeps_the_agents_its_chat_produced_in_every_read(
+async def test_a_canvas_keeps_the_agents_its_chat_produced_in_every_read(
     integ_store: Store,
 ) -> None:
     """The chat itself, other chats' agents and unlinked sessions stay out."""
     conversation = uuid4()
-    station = await _station(integ_store, _OWNER, conversation)
+    canvas = await _canvas(integ_store, _OWNER, conversation)
     chat = await _session(integ_store, "chat-1", cli_session_id=f"chat:{conversation}")
     lead = await _session(integ_store, "lead-2")
     worker = await _session(integ_store, "worker-1")
@@ -356,7 +356,7 @@ async def test_a_station_keeps_the_agents_its_chat_produced_in_every_read(
         await _records(integ_store, session, [("ToolCall", _T0, "{}")])
     scope = FeedScope(
         reader=_ANYONE,
-        station=StationAgents(workspace_id=station, user_id=_OWNER),
+        canvas=CanvasAgents(canvas_id=canvas, user_id=_OWNER),
     )
 
     feed = await integ_store.read_feed(scope=scope)
@@ -376,11 +376,11 @@ async def test_a_station_keeps_the_agents_its_chat_produced_in_every_read(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_station_walks_four_produced_by_edges_and_survives_a_cycle(
+async def test_a_canvas_walks_four_produced_by_edges_and_survives_a_cycle(
     integ_store: Store,
 ) -> None:
     conversation = uuid4()
-    station = await _station(integ_store, _OWNER, conversation)
+    canvas = await _canvas(integ_store, _OWNER, conversation)
     chain = [
         await _session(
             integ_store,
@@ -400,7 +400,7 @@ async def test_a_station_walks_four_produced_by_edges_and_survives_a_cycle(
     feed = await integ_store.read_feed(
         scope=FeedScope(
             reader=_ANYONE,
-            station=StationAgents(workspace_id=station, user_id=_OWNER),
+            canvas=CanvasAgents(canvas_id=canvas, user_id=_OWNER),
         ),
     )
 
@@ -409,9 +409,9 @@ async def test_a_station_walks_four_produced_by_edges_and_survives_a_cycle(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_station_reads_at_most_500_agents(integ_store: Store) -> None:
+async def test_a_canvas_reads_at_most_500_agents(integ_store: Store) -> None:
     conversation = uuid4()
-    station = await _station(integ_store, _OWNER, conversation)
+    canvas = await _canvas(integ_store, _OWNER, conversation)
     chat = await _session(integ_store, "chat-1", cli_session_id=f"chat:{conversation}")
     await _children(integ_store, chat, count=501)
 
@@ -420,7 +420,7 @@ async def test_a_station_reads_at_most_500_agents(integ_store: Store) -> None:
         until=None,
         scope=FeedScope(
             reader=_ANYONE,
-            station=StationAgents(workspace_id=station, user_id=_OWNER),
+            canvas=CanvasAgents(canvas_id=canvas, user_id=_OWNER),
         ),
     )
 
@@ -429,21 +429,21 @@ async def test_a_station_reads_at_most_500_agents(integ_store: Store) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_station_without_a_chat_or_of_another_owner_matches_nothing(
+async def test_a_canvas_without_a_chat_or_of_another_owner_matches_nothing(
     integ_store: Store,
 ) -> None:
     conversation = uuid4()
-    chatless = await _station(integ_store, _OWNER, None)
-    owned = await _station(integ_store, _OWNER, conversation, name="owned")
+    chatless = await _canvas(integ_store, _OWNER, None)
+    owned = await _canvas(integ_store, _OWNER, conversation, name="owned")
     chat = await _session(integ_store, "chat-1", cli_session_id=f"chat:{conversation}")
     lead = await _session(integ_store, "lead-2")
     await _produced_by(integ_store, (lead, chat))
     await _records(integ_store, lead, [("ToolCall", _T0, "{}")])
 
-    async def kept(workspace_id: UUID, user_id: UUID) -> int:
+    async def kept(canvas_id: UUID, user_id: UUID) -> int:
         scope = FeedScope(
             reader=_ANYONE,
-            station=StationAgents(workspace_id=workspace_id, user_id=user_id),
+            canvas=CanvasAgents(canvas_id=canvas_id, user_id=user_id),
         )
         return len(await integ_store.read_feed(scope=scope))
 
@@ -1023,15 +1023,15 @@ async def _session(
     return session_id
 
 
-async def _station(
+async def _canvas(
     store: Store,
     user_id: UUID,
     conversation_id: UUID | None,
     *,
-    name: str = "unnamed-workstream#1",
+    name: str = "unnamed-canvas#1",
 ) -> UUID:
-    """Insert a station of ``user_id`` holding ``conversation_id``, and its owner."""
-    workspace_id = uuid4()
+    """Insert a canvas of ``user_id`` holding ``conversation_id``, and its owner."""
+    canvas_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
@@ -1040,9 +1040,9 @@ async def _station(
             f"{user_id}@example.com",
         )
         await conn.execute(
-            "INSERT INTO visual_workspaces (id, user_id, state, station) "
+            "INSERT INTO visual_canvases (id, user_id, state, metadata) "
             "VALUES ($1, $2, '{}'::jsonb, $3)",
-            workspace_id,
+            canvas_id,
             user_id,
             {"name": name}
             | (
@@ -1051,7 +1051,7 @@ async def _station(
                 else {"conversation_id": str(conversation_id)}
             ),
         )
-    return workspace_id
+    return canvas_id
 
 
 async def _produced_by(store: Store, *pairs: tuple[UUID, UUID]) -> None:

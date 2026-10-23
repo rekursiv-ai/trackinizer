@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 __all__ = [
     "RECORD_VISUAL",
+    "Canvas",
     "ContextGraphVisual",
     "FilesVisual",
     "ParameterDescription",
@@ -21,9 +22,8 @@ __all__ = [
     "Visual",
     "VisualCatalogBody",
     "VisualDescription",
-    "Workspace",
+    "default_canvas",
     "default_catalog",
-    "default_workspace",
     "offer_record_visual",
 ]
 
@@ -383,10 +383,10 @@ class RecordVisual:
         )
 
 
-class Workspace:
+class Canvas:
     """The trusted composition of visual configs and its initial selection."""
 
-    class Config(Fig["Workspace"]):
+    class Config(Fig["Canvas"]):
         visuals: list[Makeable[Visual]] = field(
             default_factory=lambda: [
                 StaticVisual.Config(
@@ -418,10 +418,10 @@ class Workspace:
                 TerminalVisual.Config(),
             ],
         )
-        """Configured visual modules available to a workspace."""
+        """Configured visual modules available to a canvas."""
 
         default_visual: str = "trax.browse"
-        """Visual type shown when a new workspace opens; it must need no record."""
+        """Visual type shown when a new canvas opens; it must need no record."""
 
     def __init__(self, config: Config) -> None:
         """Build the lightweight definitions and validate their identity."""
@@ -451,20 +451,20 @@ class Workspace:
         )
 
 
-def default_workspace() -> Workspace:
-    """Build the default workspace without instantiating a data provider."""
-    return Workspace.Config().make()
+def default_canvas() -> Canvas:
+    """Build the default canvas without instantiating a data provider."""
+    return Canvas.Config().make()
 
 
 def default_catalog() -> VisualCatalogBody:
-    """Project the default workspace's catalog."""
-    return default_workspace().catalog()
+    """Project the default canvas's catalog."""
+    return default_canvas().catalog()
 
 
 # The record tile is not in the default list: every web build mirrors the default
 # catalog with a renderer of its own (renderer-versions.json), and Trackinizer's app
 # draws no record tile, so only a site whose app does offers it.
-def offer_record_visual(visuals: Workspace.Config) -> None:
+def offer_record_visual(visuals: Canvas.Config) -> None:
     """Add the record tile to a deployment's catalog, once.
 
     Args:

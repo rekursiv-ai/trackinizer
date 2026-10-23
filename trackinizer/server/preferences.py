@@ -54,7 +54,7 @@ ASSISTANT_KEYS: Final = frozenset(
         "chat_tool_calls",
     },
 )
-"""The preferences a station's assistant may read and change for its owner: the
+"""The preferences a canvas's assistant may read and change for its owner: the
 UI's, each marked ``SETTING`` below. Every other key (the user's own data) stays
 the user's alone."""
 
@@ -178,8 +178,8 @@ class ReadState(_Strict):
     marks: Annotated[list[_Id], Field(max_length=5_000)]
 
 
-class WorkstreamsPreference(_Strict):
-    """The user's workstream bar state."""
+class WorkspacesPreference(_Strict):
+    """The user's workspace bar state."""
 
     order: Annotated[list[_Id], Field(max_length=500)] = []
     pinned: Annotated[list[_Id], Field(max_length=500)] = []
@@ -338,9 +338,9 @@ class Preferences(_Strict):
         default=None,
         description="The inquiry you started on the create form and have not created.",
     )
-    workstreams: WorkstreamsPreference = Field(
-        default_factory=WorkstreamsPreference,
-        description="Your workstream bar order, pins, and hidden items.",
+    workspaces: WorkspacesPreference = Field(
+        default_factory=WorkspacesPreference,
+        description="Your workspace bar order, pins, and hidden items.",
     )
     settings_artifact_id: _Id | None = Field(
         default=None,

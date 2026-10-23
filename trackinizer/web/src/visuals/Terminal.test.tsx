@@ -58,14 +58,14 @@ afterEach(() => { cleanup(); takeNewTerminalRequest(); vi.clearAllMocks(); vi.un
 const start = () => fireEvent.click(screen.getByRole("button", { name: /Start terminal/ }));
 
 test("nothing opens until Start is clicked", () => {
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   expect(openTerminal).not.toHaveBeenCalled();
   expect(xterm.instances).toHaveLength(0);
   expect(screen.queryByText(/Recorded/)).toBeNull();
 });
 
-test("Start opens on the machine from the station with the screen's size, and connects with the ticket", async () => {
-  render(<TerminalView machine="gx10" workspace="w1" />);
+test("Start opens on the machine from the canvas with the screen's size, and connects with the ticket", async () => {
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(openTerminal).toHaveBeenCalledWith("gx10", "w1", 24, 80, null);
@@ -73,7 +73,7 @@ test("Start opens on the machine from the station with the screen's size, and co
 });
 
 test("typing becomes input, a resize becomes a resize frame, and output is written", async () => {
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   xterm.instances[0]!.data("ls\r");
@@ -87,7 +87,7 @@ test("typing becomes input, a resize becomes a resize frame, and output is writt
 });
 
 test("on a slow link what is typed is drawn dim at once; the link's echo times turn that on", async () => {
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   const screen = xterm.instances[0]!;
@@ -102,7 +102,7 @@ test("on a slow link what is typed is drawn dim at once; the link's echo times t
 });
 
 test("a live terminal re-attaches once on mount, with a fresh ticket, and without a click", async () => {
-  render(<TerminalView machine="gx10" workspace="w1" resume={{ terminal_id: "t9" }} />);
+  render(<TerminalView machine="gx10" canvas="w1" resume={{ terminal_id: "t9" }} />);
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(attachTerminal).toHaveBeenCalledWith("t9");
   expect(openTerminal).not.toHaveBeenCalled();
@@ -110,7 +110,7 @@ test("a live terminal re-attaches once on mount, with a fresh ticket, and withou
 });
 
 test("4001 shows Take over, which attaches again", async () => {
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   act(() => options.onStatus({ state: "taken", note: "Another window took this terminal over." }));
@@ -119,7 +119,7 @@ test("4001 shows Take over, which attaches again", async () => {
 });
 
 test("an ended terminal offers Start new and links no transcript", async () => {
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   act(() => options.onStatus({ state: "ended", note: "The shell exited." }));
@@ -129,7 +129,7 @@ test("an ended terminal offers Start new and links no transcript", async () => {
 
 test("a failed open shows its message and keeps Start on offer", async () => {
   vi.mocked(openTerminal).mockRejectedValue(new Error("boom"));
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await screen.findByRole("alert");
   expect(screen.getByRole("button", { name: /Start terminal/ })).toBeTruthy();
@@ -138,7 +138,7 @@ test("a failed open shows its message and keeps Start on offer", async () => {
 test("Ctrl+K typed in the terminal does not reach the app's shortcuts", async () => {
   const run = vi.fn();
   const unbind = bindShortcuts(window, [{ id: "palette", title: "Palette", keys: ["Control+k"], global: true, run }]);
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   const section = screen.getByRole("region", { name: "Terminal" });
@@ -150,7 +150,7 @@ test("Ctrl+K typed in the terminal does not reach the app's shortcuts", async ()
 });
 
 test("unmounting lets go of the socket and the screen, and leaves the shell running", async () => {
-  const shown = render(<TerminalView machine="gx10" workspace="w1" />);
+  const shown = render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   shown.unmount();
@@ -162,7 +162,7 @@ test("unmounting lets go of the socket and the screen, and leaves the shell runn
 const ready = { name: "gx10", status: "online", terminal_ready: true, confirmed: true };
 const tileInstance = (id: string) => ({ id, type: "trax.terminal", version: 1, placement: "main", record_id: null, params: { machine: "gx10" } } as RendererProps["instance"]);
 // Each test names its own tile: the terminals an agent or a request started are remembered per tile id for the page.
-const renderTile = (id: string) => render(<QueryClientProvider client={new QueryClient()}><TerminalTile instance={tileInstance(id)} workspace={null} onWorkspaceChanged={vi.fn()} focused={false} /></QueryClientProvider>);
+const renderTile = (id: string) => render(<QueryClientProvider client={new QueryClient()}><TerminalTile instance={tileInstance(id)} canvas={null} onCanvasChanged={vi.fn()} focused={false} /></QueryClientProvider>);
 
 test("a tile opens its terminals with its own id as their surface", async () => {
   vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [] });
@@ -210,7 +210,7 @@ test("closing a tab stops its shell and drops the tab; the last one is replaced 
 
 // A tile an agent did not name a machine for: each tab keeps the machine it opened on.
 const laptop = { ...ready, name: "laptop" };
-const renderOpenTile = (id: string) => render(<QueryClientProvider client={new QueryClient()}><TerminalTile instance={{ ...tileInstance(id), params: {} }} workspace={null} onWorkspaceChanged={vi.fn()} focused={false} /></QueryClientProvider>);
+const renderOpenTile = (id: string) => render(<QueryClientProvider client={new QueryClient()}><TerminalTile instance={{ ...tileInstance(id), params: {} }} canvas={null} onCanvasChanged={vi.fn()} focused={false} /></QueryClientProvider>);
 
 test("tabs are named by their machine and count per machine", async () => {
   vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready, laptop], terminals: [
@@ -275,7 +275,7 @@ test.each([
   ["terminal_forbidden", 403, "Terminals are not available on a server without sign-in."],
 ])("an open refused with %s says what to do", async (code, status, text) => {
   vi.mocked(openTerminal).mockRejectedValue(await refused(status, code, "the server's own words"));
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   expect((await screen.findByRole("alert")).textContent).toBe(text);
 });
@@ -283,7 +283,7 @@ test.each([
 test("OSC 52 writes only just after the user's own key or click here, and says so", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal("navigator", { clipboard: { writeText } });
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   const provider = xterm.providers[0] as { readText: () => string; writeText: (selection: string, text: string) => Promise<void> | undefined };
@@ -300,7 +300,7 @@ test("OSC 52 writes only just after the user's own key or click here, and says s
 test("a click in the terminal opens the same window", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal("navigator", { clipboard: { writeText } });
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   fireEvent.pointerDown(screen.getByRole("region", { name: "Terminal" }));
@@ -310,7 +310,7 @@ test("a click in the terminal opens the same window", async () => {
 });
 
 test("Maximize fills the canvas with the same screen and socket, refits both ways, and restores", async () => {
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   const fitsBefore = xterm.fits;
@@ -329,7 +329,7 @@ test("Maximize fills the canvas with the same screen and socket, refits both way
 
 test("no key leaves the shell: Escape typed in a maximized terminal is not handled above it", async () => {
   const above = vi.fn();
-  render(<div onKeyDown={above}><TerminalView machine="gx10" workspace="w1" /></div>);
+  render(<div onKeyDown={above}><TerminalView machine="gx10" canvas="w1" /></div>);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   fireEvent.click(screen.getByRole("button", { name: "Maximize terminal" }));
@@ -339,13 +339,13 @@ test("no key leaves the shell: Escape typed in a maximized terminal is not handl
 });
 
 test("an agent's start opens the terminal once, without a click, and says who asked", async () => {
-  const { rerender } = render(<TerminalView machine="gx10" workspace="w1" autoStart="tile-1" requestedBy="scout" />);
+  const { rerender } = render(<TerminalView machine="gx10" canvas="w1" autoStart="tile-1" requestedBy="scout" />);
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(openTerminal).toHaveBeenCalledTimes(1);
   expect(screen.getByText("Opened at scout's request.")).toBeTruthy();
-  rerender(<TerminalView machine="gx10" workspace="w1" autoStart="tile-1" requestedBy="scout" />);
+  rerender(<TerminalView machine="gx10" canvas="w1" autoStart="tile-1" requestedBy="scout" />);
   cleanup();
-  render(<TerminalView machine="gx10" workspace="w1" autoStart="tile-1" requestedBy="scout" />);
+  render(<TerminalView machine="gx10" canvas="w1" autoStart="tile-1" requestedBy="scout" />);
   await Promise.resolve();
   expect(openTerminal).toHaveBeenCalledTimes(1);
 });
@@ -353,7 +353,7 @@ test("an agent's start opens the terminal once, without a click, and says who as
 test("a tile asked to start opens only on a ready machine of the user's, and never once a terminal is placed", async () => {
   vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: false, confirmed: true }], terminals: [] });
   const instance = (params: Record<string, string | boolean>, id: string) => ({ id, type: "trax.terminal", version: 1, placement: "main", record_id: null, params }) as RendererProps["instance"];
-  const wrap = (each: RendererProps["instance"]) => <QueryClientProvider client={new QueryClient()}><TerminalTile instance={each} workspace={null} onWorkspaceChanged={vi.fn()} focused={false} /></QueryClientProvider>;
+  const wrap = (each: RendererProps["instance"]) => <QueryClientProvider client={new QueryClient()}><TerminalTile instance={each} canvas={null} onCanvasChanged={vi.fn()} focused={false} /></QueryClientProvider>;
   render(wrap(instance({ machine: "gx10", start: true }, "t-notready")));
   await screen.findByRole("button", { name: "Start terminal on gx10" });
   expect(openTerminal).not.toHaveBeenCalled();
@@ -373,7 +373,7 @@ test("a tile asked to start opens only on a ready machine of the user's, and nev
 });
 
 test("the terminal's text size follows the user's preference as it changes", async () => {
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   act(() => receivePreferences({ ...preferences(), terminal_font_size: "18px" }));
@@ -383,10 +383,10 @@ test("the terminal's text size follows the user's preference as it changes", asy
 
 test("who asked is the placing user when not the viewer, the shared assistant, or the viewer's own agent", async () => {
   vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: true }], terminals: [] });
-  const tile = (id: string, placed_by: string | null, workspace: unknown) => render(
+  const tile = (id: string, placed_by: string | null, canvas: unknown) => render(
     <QueryClientProvider client={new QueryClient()}><ProfileContext value={{ email: "ada@example.com" } as never}>
       <TerminalTile instance={{ id, type: "trax.terminal", version: 1, placement: "main", record_id: null, params: { machine: "gx10", start: true }, placed_by } as RendererProps["instance"]}
-        workspace={workspace as RendererProps["workspace"]} onWorkspaceChanged={vi.fn()} focused={false} /></ProfileContext></QueryClientProvider>);
+        canvas={canvas as RendererProps["canvas"]} onCanvasChanged={vi.fn()} focused={false} /></ProfileContext></QueryClientProvider>);
   tile("q1", "grace@example.com", null);
   expect(await screen.findByText("Opened at grace@example.com's request.")).toBeTruthy();
   cleanup();
@@ -399,7 +399,7 @@ test("who asked is the placing user when not the viewer, the shared assistant, o
 
 test("handlers are registered before the first fit, and the open sends the fitted size", async () => {
   xterm.fitted = { rows: 40, cols: 120 };
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(xterm.events.slice(0, 4)).toEqual(["onData", "onResize", "open", "fit"]);
@@ -410,7 +410,7 @@ test("handlers are registered before the first fit, and the open sends the fitte
 test("an unmount while the terminal is still opening closes the one that arrives, and one being attached is left running", async () => {
   let arrive: (opened: { terminal_id: string; ticket: string }) => void = () => {};
   vi.mocked(openTerminal).mockReturnValue(new Promise((resolve) => { arrive = resolve; }));
-  const first = render(<TerminalView machine="gx10" workspace="w1" />);
+  const first = render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(openTerminal).toHaveBeenCalled());
   first.unmount();
@@ -420,7 +420,7 @@ test("an unmount while the terminal is still opening closes the one that arrives
   expect(connectTerminal).not.toHaveBeenCalled();
   let attached: (opened: { ticket: string; ice_servers: string[] }) => void = () => {};
   vi.mocked(attachTerminal).mockReturnValue(new Promise((resolve) => { attached = resolve; }));
-  const second = render(<TerminalView machine="gx10" workspace="w1" resume={{ terminal_id: "t9" }} />);
+  const second = render(<TerminalView machine="gx10" canvas="w1" resume={{ terminal_id: "t9" }} />);
   await waitFor(() => expect(attachTerminal).toHaveBeenCalledWith("t9"));
   second.unmount();
   attached({ ticket: "tk", ice_servers: [] });
@@ -429,7 +429,7 @@ test("an unmount while the terminal is still opening closes the one that arrives
 });
 
 test("under StrictMode an agent's start opens one terminal and ends connected, not stuck at starting", async () => {
-  render(<StrictMode><TerminalView machine="gx10" workspace="w1" autoStart="strict-1" requestedBy="scout" /></StrictMode>);
+  render(<StrictMode><TerminalView machine="gx10" canvas="w1" autoStart="strict-1" requestedBy="scout" /></StrictMode>);
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(openTerminal).toHaveBeenCalledTimes(1);
   expect(connectTerminal).toHaveBeenCalledTimes(1);
@@ -438,7 +438,7 @@ test("under StrictMode an agent's start opens one terminal and ends connected, n
 });
 
 test("under StrictMode a terminal that is live re-attaches once", async () => {
-  render(<StrictMode><TerminalView machine="gx10" workspace="w1" resume={{ terminal_id: "t9" }} /></StrictMode>);
+  render(<StrictMode><TerminalView machine="gx10" canvas="w1" resume={{ terminal_id: "t9" }} /></StrictMode>);
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(attachTerminal).toHaveBeenCalledTimes(1);
   expect(connectTerminal).toHaveBeenCalledTimes(1);
@@ -447,7 +447,7 @@ test("under StrictMode a terminal that is live re-attaches once", async () => {
 test("a tile asked to start on a machine its owner has not allowed stays inert", async () => {
   vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [{ name: "gx10", status: "online", terminal_ready: true, confirmed: false }], terminals: [] });
   const instance = { id: "t-unconfirmed", type: "trax.terminal", version: 1, placement: "main", record_id: null, params: { machine: "gx10", start: true } } as RendererProps["instance"];
-  render(<QueryClientProvider client={new QueryClient()}><TerminalTile instance={instance} workspace={null} onWorkspaceChanged={vi.fn()} focused={false} /></QueryClientProvider>);
+  render(<QueryClientProvider client={new QueryClient()}><TerminalTile instance={instance} canvas={null} onCanvasChanged={vi.fn()} focused={false} /></QueryClientProvider>);
   await screen.findByRole("button", { name: "Start terminal on gx10" });
   expect(openTerminal).not.toHaveBeenCalled();
 });
@@ -470,7 +470,7 @@ test("a shell an agent starts, or a reload re-attaches, leaves the keyboard wher
   await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(1));
   const asked = { id: "v-asked", type: "trax.terminal", version: 1, placement: "main", record_id: null, params: { machine: "gx10", start: true } } as RendererProps["instance"];
   vi.mocked(listTerminalMachines).mockResolvedValue({ machines: [ready], terminals: [] });
-  render(<QueryClientProvider client={new QueryClient()}><TerminalTile instance={asked} workspace={null} onWorkspaceChanged={vi.fn()} focused={false} /></QueryClientProvider>);
+  render(<QueryClientProvider client={new QueryClient()}><TerminalTile instance={asked} canvas={null} onCanvasChanged={vi.fn()} focused={false} /></QueryClientProvider>);
   await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(2));
   expect(xterm.focused).toBe(0);
 });
@@ -536,7 +536,7 @@ test("plain Ctrl+T, Ctrl+W and Ctrl+Tab reach the shell until the setting is on,
 });
 
 test("a terminal outside the tile, with no tabs to act on, sends every chord to the shell", async () => {
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(press(0, { ctrlKey: true, shiftKey: true, key: "T" })).toEqual({ sent: true, cancelled: false });
@@ -544,21 +544,21 @@ test("a terminal outside the tile, with no tabs to act on, sends every chord to 
 
 test("the STUN servers an open or an attach returns reach the link, for its direct channel", async () => {
   vi.mocked(openTerminal).mockResolvedValue({ terminal_id: "t1", ticket: "tk", ice_servers: ["stun:s.test:3478"] });
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(options.iceServers).toEqual(["stun:s.test:3478"]);
   cleanup();
 
   vi.mocked(attachTerminal).mockResolvedValue({ ticket: "tk2", ice_servers: ["stun:a.test"] });
-  render(<TerminalView machine="gx10" workspace="w1" resume={{ terminal_id: "t9" }} />);
+  render(<TerminalView machine="gx10" canvas="w1" resume={{ terminal_id: "t9" }} />);
   await waitFor(() => expect(connectTerminal).toHaveBeenCalledTimes(2));
   expect(options.iceServers).toEqual(["stun:a.test"]);
 });
 
 test("the view says when output goes direct, and for a while after the link falls back to the server", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
-  render(<TerminalView machine="gx10" workspace="w1" />);
+  render(<TerminalView machine="gx10" canvas="w1" />);
   start();
   await waitFor(() => expect(connectTerminal).toHaveBeenCalled());
   expect(screen.queryByText("Direct link")).toBeNull();

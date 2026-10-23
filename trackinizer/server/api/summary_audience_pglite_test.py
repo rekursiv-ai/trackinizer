@@ -121,7 +121,7 @@ async def filed(pglite_route_client: _Client) -> _Filed:
         for who in (SUMMARIZER, WRITER, VIEWER):
             await conn.execute(
                 "INSERT INTO users (id, email, name, role, status, "
-                "visual_workspace_enabled) VALUES ($1, $2, 'n', 'writer', 'active', "
+                "visual_canvas_enabled) VALUES ($1, $2, 'n', 'writer', 'active', "
                 "TRUE)",
                 who.user_id,
                 who.email,

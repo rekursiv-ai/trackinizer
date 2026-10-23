@@ -3,13 +3,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { CHAT_DELETED, CHAT_FORK_CLOSED, CHAT_FORK_WIDER, CHAT_NOT_SHARED, CHAT_STAFF_ONLY, type ChatHead, type ChatPartial, type ChatPartialState, deleteChat, getChatHead,
   readChatPartial, reattachChat, sendChatLine, shareChat, unshareChat } from "../api/chats";
-import { clearChat, hideStation as restoreStation, listStations, pinStation, renameStation, stationForChat } from "../api/stations";
-import { createStation as createStationInWorkstream, createWorkstream, listWorkstreams, moveStation } from "../api/workstreams";
+import { clearChat, hideCanvas as restoreCanvas, listCanvases, pinCanvas, renameCanvas, canvasForChat } from "../api/canvasManagement";
+import { createCanvas as createCanvasInWorkspace, createWorkspace, listWorkspaces, moveCanvas } from "../api/workspaces";
 import { ApiError, type CallOptions } from "../api/client";
 import { findRef, getDetail } from "../api/detail";
 import type { Profile } from "../api/me";
 import { endSession, listSessionParts, readSessionRecords, SESSION_NOT_OWNER, SESSION_STAFF, type SessionRecord, setSessionAudience } from "../api/sessions";
-import { getWorkspace, type WorkspacePartner, type WorkspaceState } from "../api/workspaces";
+import { getCanvas, type CanvasPartner, type CanvasState } from "../api/canvases";
 import { MetaContext, ProfileContext } from "../app/boot";
 import { HighlightContext, HighlightStore } from "../app/highlights";
 import { META, uuid } from "../detail/testing";
@@ -20,8 +20,8 @@ import { startTrail } from "../router/trail";
 import { preferences, receivePreferences, sendWaiting } from "../preferences";
 import { Chat } from "./Chat";
 import { IDLE_CLOSE_MS } from "./chatRecords";
-import { setStation, currentStation } from "../stations/store";
-import { useStation } from "../stations/useStation";
+import { setCanvas, currentCanvas } from "../canvases/store";
+import { useCanvas } from "../canvases/useCanvas";
 import { currentChatColumn, setChatHidden, setChatSide } from "./chatColumnState";
 import { ChatFeed, ChatFeedContext } from "./chatFeed";
 import { FOLLOW_UP_ASK } from "./chatFollowUp";
@@ -44,15 +44,15 @@ vi.mock("../api/chats", async (original) => ({
   unshareChat: vi.fn(),
   deleteChat: vi.fn(),
 }));
-vi.mock("../api/stations", async (original) => ({
-  ...(await original<typeof import("../api/stations")>()),
-  clearChat: vi.fn(), stationForChat: vi.fn(), hideStation: vi.fn(), createStation: vi.fn(), listStations: vi.fn(),
-  pinStation: vi.fn(), renameStation: vi.fn(),
+vi.mock("../api/canvasManagement", async (original) => ({
+  ...(await original<typeof import("../api/canvasManagement")>()),
+  clearChat: vi.fn(), canvasForChat: vi.fn(), hideCanvas: vi.fn(), createCanvas: vi.fn(), listCanvases: vi.fn(),
+  pinCanvas: vi.fn(), renameCanvas: vi.fn(),
 }));
-vi.mock("../api/workstreams", () => ({
-  createStation: vi.fn(), createWorkstream: vi.fn(), listWorkstreams: vi.fn(), moveStation: vi.fn(), updateWorkstream: vi.fn(),
+vi.mock("../api/workspaces", () => ({
+  createCanvas: vi.fn(), createWorkspace: vi.fn(), listWorkspaces: vi.fn(), moveCanvas: vi.fn(), updateWorkspace: vi.fn(),
 }));
-vi.mock("../api/workspaces", () => ({ getWorkspace: vi.fn() }));
+vi.mock("../api/canvases", () => ({ getCanvas: vi.fn() }));
 vi.mock("../api/sessions", async (original) => ({
   ...(await original<typeof import("../api/sessions")>()),
   listSessionParts: vi.fn(),
@@ -63,16 +63,16 @@ vi.mock("../api/sessions", async (original) => ({
 vi.mock("../api/terminals", () => ({ listTerminalMachines: vi.fn(async () => ({ machines: [], live: null })) }));
 vi.mock("../api/detail", () => ({ getDetail: vi.fn(), findRef: vi.fn() }));
 
-const WORKSPACE_ID = "c5286865-67b6-4bd8-ab51-e06e10c326c5";
+const CANVAS_ID = "c5286865-67b6-4bd8-ab51-e06e10c326c5";
 const ME = "ada@example.com";
 const GRACE = "grace@example.com";
 const SCOUT = { kind: "shared", session_id: "kb-session", actor: "scout", cli: "sagent", status: "live" } as const;
-const workspace: WorkspaceState = {
-  id: WORKSPACE_ID, name: "unnamed-workstream#1", conversation_id: null, page: null, revision: 3, focused_instance: null, partner: SCOUT, assistant: "scout",
+const canvas: CanvasState = {
+  id: CANVAS_ID, name: "unnamed-canvas#1", conversation_id: null, page: null, revision: 3, focused_instance: null, partner: SCOUT, assistant: "scout",
   visuals: [{ id: "889ffcb2-cf44-43e7-9806-eb08428c6203", type: "trax.browse", version: 1,
     placement: "main", record_id: null, params: {} }],
 };
-const PROFILE: Profile = { user_id: "u1", email: ME, name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: true, ...AGREED };
+const PROFILE: Profile = { user_id: "u1", email: ME, name: "Ada", role: "writer", last_login: null, visual_canvas_enabled: true, ...AGREED };
 
 /** The records of the session each conversation is held in, as the fake server has them. */
 const sessions = new Map<string, SessionRecord[]>();
@@ -84,9 +84,9 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   stubFetch(async (request) => request.method === "PATCH"
     ? Response.json({ ...preferences(), ...await request.json() }) : Response.json({}));
-  vi.mocked(listStations).mockResolvedValue([]);
-  vi.mocked(listWorkstreams).mockResolvedValue([]);
-  vi.mocked(getWorkspace).mockResolvedValue({ ...workspace, id: "w-fork", name: "unnamed-workstream#2", conversation_id: "f1" });
+  vi.mocked(listCanvases).mockResolvedValue([]);
+  vi.mocked(listWorkspaces).mockResolvedValue([]);
+  vi.mocked(getCanvas).mockResolvedValue({ ...canvas, id: "w-fork", name: "unnamed-canvas#2", conversation_id: "f1" });
   OPENING.everyMs = 5;
   OPENING.giveUpMs = 150;
   // A cited row resolves to an id unless a test says otherwise, as the server's route answers.
@@ -127,20 +127,20 @@ async function write(next: ChatPartial | null) {
 }
 
 let stopTrail = () => {};
-/** What a fork's first line is answered with: a station of its own, holding the new conversation. */
-const FORKED = { conversation_id: "f1", session_id: null, workspace_id: "w-fork" };
-/** The conversation the station holds, set by `open`. */
+/** What a fork's first line is answered with: a canvas of its own, holding the new conversation. */
+const FORKED = { conversation_id: "f1", session_id: null, canvas_id: "w-fork" };
+/** The conversation the canvas holds, set by `open`. */
 let opened: string | null = null;
 afterEach(async () => {
   opened = null;
   partial = { seq: 0, partial: null };
-  setStation(null);
+  setCanvas(null);
   vi.useRealTimers();
   stopTrail();
   stopTrail = () => {};
   cleanup();
   vi.restoreAllMocks();
-  for (const mock of [getChatHead, readChatPartial, sendChatLine, reattachChat, shareChat, unshareChat, deleteChat, stationForChat, restoreStation, pinStation, listStations, listWorkstreams, moveStation, createWorkstream, createStationInWorkstream, clearChat, getWorkspace, listSessionParts, readSessionRecords, setSessionAudience, endSession, getDetail, findRef]) {
+  for (const mock of [getChatHead, readChatPartial, sendChatLine, reattachChat, shareChat, unshareChat, deleteChat, canvasForChat, restoreCanvas, pinCanvas, listCanvases, listWorkspaces, moveCanvas, createWorkspace, createCanvasInWorkspace, clearChat, getCanvas, listSessionParts, readSessionRecords, setSessionAudience, endSession, getDetail, findRef]) {
     vi.mocked(mock).mockReset();
   }
   sessions.clear();
@@ -169,40 +169,40 @@ function hold(conversation: string, ...records: SessionRecord[]) {
   sessions.set(`s-${conversation}`, records);
 }
 
-/** The chat of the station this tab shows, as `ChatColumn` hands it: from the query cache the stream keeps. */
-function Station({ pinned }: { readonly pinned?: WorkspaceState }) {
-  const shown = useStation().data ?? null;
-  return <Chat workspace={pinned ?? shown} />;
+/** The chat of the canvas this tab shows, as `ChatColumn` hands it: from the query cache the stream keeps. */
+function Canvas({ pinned }: { readonly pinned?: CanvasState }) {
+  const shown = useCanvas().data ?? null;
+  return <Chat canvas={pinned ?? shown} />;
 }
 
 /** One shell's worth of state, kept across `again` renders as the app keeps it across Chat mounting again. */
 function shell(
-  state: WorkspaceState = workspace,
+  state: CanvasState = canvas,
   options: { profile?: Partial<Profile>; queries?: { retry: number | false; retryDelay?: number } } = {},
 ) {
   const feed = new ChatFeed();
   const session = new Session(() => {});
   const highlights = new HighlightStore();
   const client = new QueryClient({ defaultOptions: { queries: options.queries ?? { retry: false } } });
-  client.setQueryData(["stations"], []);
-  client.setQueryData(["workstreams"], []);
+  client.setQueryData(["canvases"], []);
+  client.setQueryData(["workspaces"], []);
   const live = { register: (query: LiveQuery) => {
     registered.push(query);
     return { push: () => {}, dispose: () => { registered = registered.filter((each) => each !== query); } };
   } } as unknown as LiveHub;
-  const held = (next: WorkspaceState) => (opened ? { ...next, conversation_id: opened } : next);
-  setStation(state.id);
-  client.setQueryData(["workspace", state.id], held(state));
-  const ui = (pinned?: WorkspaceState) => <SessionContext value={session}><ToastProvider><QueryClientProvider client={client}><MetaContext value={META}>
+  const held = (next: CanvasState) => (opened ? { ...next, conversation_id: opened } : next);
+  setCanvas(state.id);
+  client.setQueryData(["canvas", state.id], held(state));
+  const ui = (pinned?: CanvasState) => <SessionContext value={session}><ToastProvider><QueryClientProvider client={client}><MetaContext value={META}>
     <ProfileContext value={{ ...PROFILE, ...options.profile }}><LiveContext value={live}>
       <ChatFeedContext value={feed}><HighlightContext value={highlights}>
-        <Station pinned={pinned} />
+        <Canvas pinned={pinned} />
       </HighlightContext></ChatFeedContext></LiveContext></ProfileContext></MetaContext></QueryClientProvider></ToastProvider></SessionContext>;
   const view = render(ui());
   return {
     feed, client, view, highlights,
-    // The same station in another state, as the stream would say it.
-    again: (next: WorkspaceState = state) => view.rerender(ui(held(next))),
+    // The same canvas in another state, as the stream would say it.
+    again: (next: CanvasState = state) => view.rerender(ui(held(next))),
     mount: () => { view.unmount(); return render(ui()); },
   };
 }
@@ -219,14 +219,14 @@ async function type(text: string) {
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 }
 
-/** The station's chat is conversation `id` when the next `shell` renders. */
+/** The canvas's chat is conversation `id` when the next `shell` renders. */
 const open = (id: string) => { opened = id; };
 /** The words of each line, without its "Fork from here" button or the name of the agent that wrote an answer. */
 const articles = () => screen.getAllByRole("article").map((line) => [...line.children]
   .filter((child) => child.tagName !== "BUTTON" && !child.classList.contains("chat-line-agent"))
   .map((child) => child.textContent).join(""));
 const openMore = () => fireEvent.click(screen.getByRole("button", { name: "More chat actions" }));
-/** Open the workstream picker the way a person does: "Move to…" in the "…" menu. */
+/** Open the workspace picker the way a person does: "Move to…" in the "…" menu. */
 const openMove = () => {
   openMore();
   fireEvent.click(screen.getByRole("button", { name: "Move to…" }));
@@ -275,36 +275,36 @@ test("@ record suggestions take the arrows and Enter before history and send; Sh
   expect(sendChatLine).not.toHaveBeenCalled();
 });
 
-test("chat drafts follow their station across switches, partner changes and remounts", () => {
+test("chat drafts follow their canvas across switches, partner changes and remounts", () => {
   const { again, mount } = shell();
   const box = () => screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(box(), { target: { value: "Draft A" } });
-  again({ ...workspace, id: "station-b" });
+  again({ ...canvas, id: "canvas-b" });
   expect(box()).toHaveProperty("value", "");
   fireEvent.change(box(), { target: { value: "Draft B" } });
-  again({ ...workspace, partner: { ...SCOUT, session_id: "restarted" } });
+  again({ ...canvas, partner: { ...SCOUT, session_id: "restarted" } });
   expect(box()).toHaveProperty("value", "Draft A");
   mount();
   expect(box()).toHaveProperty("value", "Draft A");
 });
 
-test("a send finishing after a station switch clears only its original unchanged draft", async () => {
-  let finish = (_value: { conversation_id: string; session_id: string | null; workspace_id: string }) => {};
+test("a send finishing after a canvas switch clears only its original unchanged draft", async () => {
+  let finish = (_value: { conversation_id: string; session_id: string | null; canvas_id: string }) => {};
   vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   const { again } = shell();
   await type("Sent from A");
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce());
-  again({ ...workspace, id: "station-b" });
+  again({ ...canvas, id: "canvas-b" });
   const box = screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(box, { target: { value: "Draft B" } });
-  await act(async () => finish({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID }));
+  await act(async () => finish({ conversation_id: "c1", session_id: null, canvas_id: CANVAS_ID }));
   expect(box).toHaveProperty("value", "Draft B");
   again();
   expect(box).toHaveProperty("value", "");
 });
 
 test("a successfully delivered question is recallable before its transcript arrives", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, canvas_id: CANVAS_ID });
   shell();
   await type("Just delivered");
   const box = screen.getByRole("textbox", { name: "Message" });
@@ -322,7 +322,7 @@ test("scout is the partner with no pairing, and Chat is ready to send", () => {
   expect(getChatHead).not.toHaveBeenCalled();
 });
 
-test("the chat menu hides the panel without hiding its station", () => {
+test("the chat menu hides the panel without hiding its canvas", () => {
   setChatHidden(false);
   shell();
   expect(screen.queryByRole("button", { name: "Hide Chat" })).toBeNull();
@@ -330,8 +330,8 @@ test("the chat menu hides the panel without hiding its station", () => {
   expect(screen.queryByRole("button", { name: "Hide from bar" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Hide Chat" }));
   expect(currentChatColumn().hidden).toBe(true);
-  expect(currentStation().id).toBe(WORKSPACE_ID);
-  expect(restoreStation).not.toHaveBeenCalled();
+  expect(currentCanvas().id).toBe(CANVAS_ID);
+  expect(restoreCanvas).not.toHaveBeenCalled();
   expect(screen.queryByRole("button", { name: "Hide Chat" })).toBeNull();
   expect(screen.getByRole("button", { name: "More chat actions" }).getAttribute("aria-expanded")).toBe("false");
   openMore();
@@ -339,10 +339,10 @@ test("the chat menu hides the panel without hiding its station", () => {
   setChatHidden(false);
 });
 
-test("the info pop-over names the session a station was made for, with its state and a link", async () => {
+test("the info pop-over names the session a canvas was made for, with its state and a link", async () => {
   stubFetch(async (request) => new URL(request.url).pathname === "/api/inquiries/s-made"
     ? Response.json({ id: "s-made", kind: "AgentSession", cli: "claude", owner: "Agent", ended: null }) : Response.json({}));
-  shell({ ...workspace, session_id: "s-made" });
+  shell({ ...canvas, session_id: "s-made" });
   openMore();
   fireEvent.click(screen.getByRole("button", { name: "Info" }));
   const dialog = screen.getByRole("dialog", { name: "Chat info" });
@@ -351,12 +351,12 @@ test("the info pop-over names the session a station was made for, with its state
   expect(dialog.textContent).toContain("· live");
 });
 
-/** A claude run on gx10 that a detached run named `chat-1a2b3c4d` holds, as the station reads it. */
-const DETACHED: WorkspacePartner = { session_id: "s-chat", actor: null, cli: "claude", status: "live",
+/** A claude run on gx10 that a detached run named `chat-1a2b3c4d` holds, as the canvas reads it. */
+const DETACHED: CanvasPartner = { session_id: "s-chat", actor: null, cli: "claude", status: "live",
   label: "claude · gx10", provider: "claude", machine: "gx10", run_name: "chat-1a2b3c4d" };
 
 test("the info pop-over of a detached claude run names the run and its machine, with no command to copy", () => {
-  shell({ ...workspace, provider: "claude", partner: DETACHED });
+  shell({ ...canvas, provider: "claude", partner: DETACHED });
   openMore();
   fireEvent.click(screen.getByRole("button", { name: "Info" }));
   const dialog = screen.getByRole("dialog", { name: "Chat info" });
@@ -364,17 +364,17 @@ test("the info pop-over of a detached claude run names the run and its machine, 
   expect(within(dialog).queryByRole("button", { name: "Copy" })).toBeNull();
 });
 
-test("the info pop-over names the folder a detached run works in, when the station reads it", () => {
-  const inLoop: WorkspacePartner = { ...DETACHED, cwd: "~/project" };
-  shell({ ...workspace, provider: "claude", partner: inLoop });
+test("the info pop-over names the folder a detached run works in, when the canvas reads it", () => {
+  const inLoop: CanvasPartner = { ...DETACHED, cwd: "~/project" };
+  shell({ ...canvas, provider: "claude", partner: inLoop });
   openMore();
   fireEvent.click(screen.getByRole("button", { name: "Info" }));
   expect(within(screen.getByRole("dialog", { name: "Chat info" })).getByText("Detached run chat-1a2b3c4d on gx10 (in ~/project)")).toBeTruthy();
 });
 
 test("the info pop-over of a claude run in a terminal names its machine, with no command to attach", () => {
-  const foreground: WorkspacePartner = { ...DETACHED, run_name: null };
-  shell({ ...workspace, provider: "claude", partner: foreground });
+  const foreground: CanvasPartner = { ...DETACHED, run_name: null };
+  shell({ ...canvas, provider: "claude", partner: foreground });
   openMore();
   fireEvent.click(screen.getByRole("button", { name: "Info" }));
   const dialog = screen.getByRole("dialog", { name: "Chat info" });
@@ -383,9 +383,9 @@ test("the info pop-over of a claude run in a terminal names its machine, with no
 });
 
 test("the info pop-over says where a CLI with no run is to be run, and says nothing of a run for the assistant", () => {
-  const offline: WorkspacePartner = { session_id: "s-chat", actor: "claude", cli: "claude", status: "offline",
+  const offline: CanvasPartner = { session_id: "s-chat", actor: "claude", cli: "claude", status: "offline",
     label: "claude: no run", provider: "claude", machine: null };
-  shell({ ...workspace, provider: "claude", partner: offline });
+  shell({ ...canvas, provider: "claude", partner: offline });
   openMore();
   fireEvent.click(screen.getByRole("button", { name: "Info" }));
   expect(screen.getByRole("dialog", { name: "Chat info" }).textContent).toContain("No run: pick a machine in the provider card");
@@ -397,7 +397,7 @@ test("the info pop-over says where a CLI with no run is to be run, and says noth
   expect(text).not.toMatch(/No run|Detached run|Runs in/);
 });
 
-test("the info pop-over says nothing of a session for a station that was not made for one", () => {
+test("the info pop-over says nothing of a session for a canvas that was not made for one", () => {
   shell();
   openMore();
   fireEvent.click(screen.getByRole("button", { name: "Info" }));
@@ -424,7 +424,7 @@ test("a Chat open over the page can be pinned beside it from the menu", () => {
   expect(screen.queryByRole("button", { name: "Pin Chat beside the page" })).toBeNull();
 });
 
-test("Chat's header names the station and offers Clear chat without History", () => {
+test("Chat's header names the canvas and offers Clear chat without History", () => {
   shell();
   const partner = screen.getByRole("group", { name: "Chat partner" });
   expect(within(partner).getByRole("button", { name: "Scratch chat" })).toBeTruthy();
@@ -434,8 +434,8 @@ test("Chat's header names the station and offers Clear chat without History", ()
 });
 
 test("renaming a chat to a name already in use keeps the field open and explains the conflict", async () => {
-  const named = { ...workspace, name: "Original name" };
-  vi.mocked(renameStation).mockRejectedValue(new ApiError(409, "Conflict"));
+  const named = { ...canvas, name: "Original name" };
+  vi.mocked(renameCanvas).mockRejectedValue(new ApiError(409, "Conflict"));
   shell(named);
   fireEvent.click(screen.getByRole("button", { name: "Original name" }));
   const field = screen.getByRole("textbox", { name: "Chat name" });
@@ -443,38 +443,38 @@ test("renaming a chat to a name already in use keeps the field open and explains
   await act(async () => fireEvent.keyDown(field, { key: "Enter" }));
   expect(screen.getByText("You already have a chat with that name")).toBeTruthy();
   expect(screen.getByRole("textbox", { name: "Chat name" })).toHaveProperty("value", "Existing name");
-  expect(renameStation).toHaveBeenCalledWith(WORKSPACE_ID, "Existing name");
+  expect(renameCanvas).toHaveBeenCalledWith(CANVAS_ID, "Existing name");
 });
 
 test("clicking outside the chat name field saves the name", async () => {
-  const named = { ...workspace, name: "Original name" };
-  vi.mocked(renameStation).mockResolvedValue({ ...named, name: "Kept name" });
+  const named = { ...canvas, name: "Original name" };
+  vi.mocked(renameCanvas).mockResolvedValue({ ...named, name: "Kept name" });
   shell(named);
   fireEvent.click(screen.getByRole("button", { name: "Original name" }));
   fireEvent.change(screen.getByRole("textbox", { name: "Chat name" }), { target: { value: "Kept name" } });
   await act(async () => fireEvent.pointerDown(document.body));
-  expect(renameStation).toHaveBeenCalledWith(WORKSPACE_ID, "Kept name");
+  expect(renameCanvas).toHaveBeenCalledWith(CANVAS_ID, "Kept name");
   expect(await screen.findByRole("button", { name: "Kept name" })).toBeTruthy();
 });
 
-test("the chat title and workstream menus close each other in both directions", () => {
+test("the chat title and workspace menus close each other in both directions", () => {
   shell();
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
   expect(screen.getByRole("dialog", { name: "Chats" })).toBeTruthy();
 
   openMove();
   expect(screen.queryByRole("dialog", { name: "Chats" })).toBeNull();
-  expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Workstream" }));
+  expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Workspace" }));
 
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
-  expect(screen.queryByRole("textbox", { name: "Workstream" })).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "Workspace" })).toBeNull();
   expect(screen.getByRole("dialog", { name: "Chats" })).toBeTruthy();
   expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Chat name" }));
 });
 
-test("a chat name save finishing after switching menus leaves the workstream picker open", async () => {
-  let finish: (state: WorkspaceState) => void = () => {};
-  vi.mocked(renameStation).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+test("a chat name save finishing after switching menus leaves the workspace picker open", async () => {
+  let finish: (state: CanvasState) => void = () => {};
+  vi.mocked(renameCanvas).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   shell();
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
   const field = screen.getByRole("textbox", { name: "Chat name" });
@@ -483,157 +483,160 @@ test("a chat name save finishing after switching menus leaves the workstream pic
   openMove();
   expect(screen.queryByRole("dialog", { name: "Chats" })).toBeNull();
 
-  await act(async () => finish({ ...workspace, name: "Kept name" }));
+  await act(async () => finish({ ...canvas, name: "Kept name" }));
   expect(await screen.findByRole("button", { name: "Kept name" })).toBeTruthy();
-  expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Workstream" }));
+  expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Workspace" }));
 });
 
 test("global chat search includes hidden chats and restores one when opened", async () => {
   const hidden = { id: "w-hidden", name: "Secret notes", conversation_id: null, page: null, created_at: "2026-10-02T00:00:00Z",
-    modified_at: "2026-10-02T00:00:00Z", hidden: true, pinned: false, workstream_id: null };
-  vi.mocked(restoreStation).mockResolvedValue({ ...workspace, ...hidden, id: hidden.id, hidden: false });
+    modified_at: "2026-10-02T00:00:00Z", hidden: true, pinned: false, workspace_id: null };
+  vi.mocked(restoreCanvas).mockResolvedValue({ ...canvas, ...hidden, id: hidden.id, hidden: false });
   const { client } = shell();
-  client.setQueryData(["stations"], [hidden]);
+  client.setQueryData(["canvases"], [hidden]);
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
   const search = screen.getByRole("textbox", { name: "Search chats" });
   fireEvent.change(search, { target: { value: "Secret" } });
   expect(screen.getByRole("button", { name: "Secret notes · hidden" })).toBeTruthy();
   fireEvent.keyDown(search, { key: "Enter" });
-  await waitFor(() => expect(currentStation().id).toBe("w-hidden"));
-  expect(restoreStation).toHaveBeenCalledWith("w-hidden", false);
+  await waitFor(() => expect(currentCanvas().id).toBe("w-hidden"));
+  expect(restoreCanvas).toHaveBeenCalledWith("w-hidden", false);
 });
 
 test("selecting a cached chat closes the picker before its refresh completes", async () => {
-  let finish!: (value: WorkspaceState) => void;
-  vi.mocked(getWorkspace).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  let finish!: (value: CanvasState) => void;
+  vi.mocked(getCanvas).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   const { client } = shell();
-  const next = { ...workspace, id: "cached-chat", name: "Cached chat" };
-  client.setQueryData(["workspace", next.id], next);
-  client.setQueryData(["stations"], [{ ...next, created_at: "2026-10-01T00:00:00Z", modified_at: "2026-10-01T00:00:00Z" }]);
+  const next = { ...canvas, id: "cached-chat", name: "Cached chat" };
+  client.setQueryData(["canvas", next.id], next);
+  client.setQueryData(["canvases"], [{ ...next, created_at: "2026-10-01T00:00:00Z", modified_at: "2026-10-01T00:00:00Z" }]);
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
-  fireEvent.click(within(screen.getByRole("list", { name: "Chats in this workstream" })).getByRole("button", { name: next.name }));
-  expect(currentStation().id).toBe(next.id);
+  fireEvent.click(within(screen.getByRole("list", { name: "Chats in this workspace" })).getByRole("button", { name: next.name }));
+  expect(currentCanvas().id).toBe(next.id);
   expect(screen.queryByRole("dialog", { name: "Chats" })).toBeNull();
   await act(async () => finish(next));
 });
 
-test("the bar shows no workstream chip; Move to… in the menu opens a titled picker", () => {
+test("the bar shows no workspace chip; Move to… in the menu opens a titled picker", () => {
   shell();
-  expect(screen.queryByRole("button", { name: /^Workstream:/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: /^Workspace:/ })).toBeNull();
   openMove();
-  expect(screen.getByText("Move this chat to a workstream")).toBeTruthy();
-  expect(screen.getByRole("textbox", { name: "Workstream" })).toBeTruthy();
+  expect(screen.getByText("Move this chat to a workspace")).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Workspace" })).toBeTruthy();
 });
 
 test("the suggestion chip reads Move to <title>? beside its explicit label", () => {
-  shell({ ...workspace, suggestion: { title: "Craftax", workstream_id: "workstream-craftax" } });
-  expect(screen.getByRole("button", { name: "Move to suggested workstream Craftax" }).textContent).toBe("Move to Craftax?");
+  shell({ ...canvas, suggestion: { title: "Craftax", workspace_id: "workspace-craftax" } });
+  expect(screen.getByRole("button", { name: "Move to suggested workspace Craftax" }).textContent).toBe("Move to Craftax?");
 });
 
-test("Move to… moves this chat to the selected workstream", async () => {
-  const destination = { id: "workstream-2", title: "Training", hidden: false, pinned: false, scratch: false, seq: 2 };
-  vi.mocked(moveStation).mockResolvedValue({ ...workspace, workstream_id: destination.id });
+test("Move to… moves this chat to the selected workspace", async () => {
+  const destination = { id: "workspace-2", title: "Training", hidden: false, pinned: false, scratch: false, seq: 2 };
+  vi.mocked(moveCanvas).mockResolvedValue({ ...canvas, workspace_id: destination.id });
   const { client } = shell();
-  client.setQueryData(["workstreams"], [{ id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 }, destination]);
+  client.setQueryData(["workspaces"], [{ id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 }, destination]);
   openMove();
   fireEvent.click(screen.getByRole("button", { name: "Training" }));
-  await waitFor(() => expect(moveStation).toHaveBeenCalledWith(WORKSPACE_ID, destination.id));
+  await waitFor(() => expect(moveCanvas).toHaveBeenCalledWith(CANVAS_ID, destination.id));
 });
 
-test("the chat menu lists pinned then recent visible chats and creates in the current workstream", async () => {
+test("the chat menu lists pinned then recent visible chats and creates in the current workspace", async () => {
   const row = (id: string, name: string, modified_at: string, extra: { hidden?: boolean; pinned?: boolean } = {}) => ({
     id, name, conversation_id: null, page: null, created_at: modified_at, modified_at, hidden: extra.hidden ?? false,
-    pinned: extra.pinned ?? false, workstream_id: null,
+    pinned: extra.pinned ?? false, workspace_id: null,
   });
   const scratch = { id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 };
-  const next = { ...workspace, id: "new-chat", name: "unnamed-workstream#2" };
-  vi.mocked(createStationInWorkstream).mockResolvedValue(next);
+  const next = { ...canvas, id: "new-chat", name: "unnamed-canvas#2" };
+  vi.mocked(createCanvasInWorkspace).mockResolvedValue(next);
   const { client } = shell();
-  client.setQueryData(["stations"], [
-    row("current", "Current", "2026-10-01T00:00:00Z"), row("pinned", "Pinned", "2026-10-02T00:00:00Z", { pinned: true }),
+  client.setQueryData(["canvases"], [
+    row(CANVAS_ID, "Current", "2026-10-01T00:00:00Z"), row("pinned", "Pinned", "2026-10-02T00:00:00Z", { pinned: true }),
     row("recent", "Recent", "2026-10-03T00:00:00Z"), row("hidden", "Hidden", "2026-10-04T00:00:00Z", { hidden: true }),
   ]);
-  client.setQueryData(["workstreams"], [scratch]);
+  client.setQueryData(["workspaces"], [scratch]);
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
-  const chats = within(screen.getByRole("list", { name: "Chats in this workstream" }));
-  expect(chats.getAllByRole("button").filter((button) => button.classList.contains("station-option"))
+  const chats = within(screen.getByRole("list", { name: "Chats in this workspace" }));
+  expect(chats.getAllByRole("button").filter((button) => button.classList.contains("canvas-option"))
     .map((button) => button.textContent)).toEqual(["Pinned", "Recent", "Current"]);
+  expect(chats.getByRole("button", { name: "Current" }).getAttribute("aria-current")).toBe("true");
+  expect(chats.getByRole("button", { name: "Recent" }).getAttribute("aria-current")).toBe("false");
+  expect(chats.getByRole("button", { name: "Pinned" }).getAttribute("aria-current")).toBe("false");
   expect(chats.getByRole("button", { name: "Pin Recent" })).toBeTruthy();
   expect(chats.getByRole("button", { name: "Hide Recent" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: /\+ New chat · scout/ }));
-  await waitFor(() => expect(currentStation().id).toBe("new-chat"));
-  expect(createStationInWorkstream).toHaveBeenCalledWith("scratch", "assistant");
+  await waitFor(() => expect(currentCanvas().id).toBe("new-chat"));
+  expect(createCanvasInWorkspace).toHaveBeenCalledWith("scratch", "assistant");
 });
 
-test("the workstream picker creates a missing workstream and moves the chat", async () => {
+test("the workspace picker creates a missing workspace and moves the chat", async () => {
   const scratch = { id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 };
-  const created = { id: "new-workstream", title: "New work", hidden: false, pinned: false, scratch: false, seq: 2 };
-  vi.mocked(createWorkstream).mockResolvedValue(created);
-  vi.mocked(moveStation).mockResolvedValue({ ...workspace, workstream_id: created.id });
+  const created = { id: "new-workspace", title: "New work", hidden: false, pinned: false, scratch: false, seq: 2 };
+  vi.mocked(createWorkspace).mockResolvedValue(created);
+  vi.mocked(moveCanvas).mockResolvedValue({ ...canvas, workspace_id: created.id });
   const { client } = shell();
-  client.setQueryData(["workstreams"], [scratch]);
+  client.setQueryData(["workspaces"], [scratch]);
   openMove();
-  const picker = screen.getByRole("textbox", { name: "Workstream" });
+  const picker = screen.getByRole("textbox", { name: "Workspace" });
   fireEvent.change(picker, { target: { value: "New work" } });
   fireEvent.keyDown(picker, { key: "Enter" });
-  await waitFor(() => expect(moveStation).toHaveBeenCalledWith(WORKSPACE_ID, created.id));
-  expect(createWorkstream).toHaveBeenCalledWith("New work");
+  await waitFor(() => expect(moveCanvas).toHaveBeenCalledWith(CANVAS_ID, created.id));
+  expect(createWorkspace).toHaveBeenCalledWith("New work");
 });
 
 test("the chat pin control stays in the name picker instead of the header", async () => {
-  vi.mocked(pinStation).mockResolvedValue({ ...workspace, pinned: true });
+  vi.mocked(pinCanvas).mockResolvedValue({ ...canvas, pinned: true });
   const { client } = shell();
   expect(screen.queryByRole("button", { name: "Pin chat" })).toBeNull();
-  client.setQueryData(["stations"], [{ ...workspace, created_at: "2026-10-01T00:00:00Z" }]);
+  client.setQueryData(["canvases"], [{ ...canvas, created_at: "2026-10-01T00:00:00Z" }]);
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
-  fireEvent.click(screen.getByRole("button", { name: `Pin ${workspace.name}` }));
-  await waitFor(() => expect(pinStation).toHaveBeenCalledWith(WORKSPACE_ID, true));
+  fireEvent.click(screen.getByRole("button", { name: `Pin ${canvas.name}` }));
+  await waitFor(() => expect(pinCanvas).toHaveBeenCalledWith(CANVAS_ID, true));
 });
 
-test("clicking a workstream suggestion moves the chat there", async () => {
-  const target = { id: "workstream-craftax", title: "Craftax", hidden: false, pinned: false, scratch: false, seq: 2 };
-  const suggested = { ...workspace, suggestion: { title: target.title, workstream_id: target.id } };
-  vi.mocked(listWorkstreams).mockResolvedValue([
+test("clicking a workspace suggestion moves the chat there", async () => {
+  const target = { id: "workspace-craftax", title: "Craftax", hidden: false, pinned: false, scratch: false, seq: 2 };
+  const suggested = { ...canvas, suggestion: { title: target.title, workspace_id: target.id } };
+  vi.mocked(listWorkspaces).mockResolvedValue([
     { id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 }, target,
   ]);
-  vi.mocked(moveStation).mockResolvedValue({ ...workspace, workstream_id: target.id });
+  vi.mocked(moveCanvas).mockResolvedValue({ ...canvas, workspace_id: target.id });
   const { view } = shell(suggested);
-  fireEvent.click(screen.getByRole("button", { name: "Move to suggested workstream Craftax" }));
-  await waitFor(() => expect(moveStation).toHaveBeenCalledWith(WORKSPACE_ID, target.id));
+  fireEvent.click(screen.getByRole("button", { name: "Move to suggested workspace Craftax" }));
+  await waitFor(() => expect(moveCanvas).toHaveBeenCalledWith(CANVAS_ID, target.id));
   view.unmount();
 });
 
-test("a chat in Scratch is not offered Scratch as a workstream suggestion", async () => {
+test("a chat in Scratch is not offered Scratch as a workspace suggestion", async () => {
   const scratch = { id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 };
-  vi.mocked(listWorkstreams).mockResolvedValue([scratch]);
-  const { client } = shell({ ...workspace, suggestion: { title: scratch.title, workstream_id: scratch.id } });
-  await act(async () => client.setQueryData(["workstreams"], [scratch]));
-  await waitFor(() => expect(screen.queryByRole("button", { name: "Move to suggested workstream Scratch" })).toBeNull());
+  vi.mocked(listWorkspaces).mockResolvedValue([scratch]);
+  const { client } = shell({ ...canvas, suggestion: { title: scratch.title, workspace_id: scratch.id } });
+  await act(async () => client.setQueryData(["workspaces"], [scratch]));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Move to suggested workspace Scratch" })).toBeNull());
 });
 
-test("a chat in a workstream is not offered that workstream by title alone", async () => {
-  const charm = { id: "workstream-charm", title: "Charm ARC1/2", hidden: false, pinned: false, scratch: false, seq: 2 };
-  vi.mocked(listWorkstreams).mockResolvedValue([charm]);
-  const { client } = shell({ ...workspace, workstream_id: charm.id, suggestion: { title: "charm arc1/2", workstream_id: null } });
-  await act(async () => client.setQueryData(["workstreams"], [charm]));
-  await waitFor(() => expect(screen.queryByRole("button", { name: "Move to suggested workstream charm arc1/2" })).toBeNull());
+test("a chat in a workspace is not offered that workspace by title alone", async () => {
+  const charm = { id: "workspace-charm", title: "Charm ARC1/2", hidden: false, pinned: false, scratch: false, seq: 2 };
+  vi.mocked(listWorkspaces).mockResolvedValue([charm]);
+  const { client } = shell({ ...canvas, workspace_id: charm.id, suggestion: { title: "charm arc1/2", workspace_id: null } });
+  await act(async () => client.setQueryData(["workspaces"], [charm]));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Move to suggested workspace charm arc1/2" })).toBeNull());
 });
 
-test("a workstream suggestion can be dismissed for this view", () => {
-  const suggested = { ...workspace, suggestion: { title: "Craftax", workstream_id: "workstream-craftax" } };
+test("a workspace suggestion can be dismissed for this view", () => {
+  const suggested = { ...canvas, suggestion: { title: "Craftax", workspace_id: "workspace-craftax" } };
   shell(suggested);
-  fireEvent.click(screen.getByRole("button", { name: "Dismiss workstream suggestion" }));
-  expect(screen.queryByRole("button", { name: "Move to suggested workstream Craftax" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss workspace suggestion" }));
+  expect(screen.queryByRole("button", { name: "Move to suggested workspace Craftax" })).toBeNull();
 });
 
-test("Chat shows the conversation its station holds, and none for a station without a chat", async () => {
-  hold("c1", said(0, ME, "hello there"), answered(1, "in this station"));
+test("Chat shows the conversation its canvas holds, and none for a canvas without a chat", async () => {
+  hold("c1", said(0, ME, "hello there"), answered(1, "in this canvas"));
   open("c1");
   const { again } = shell();
-  expect(await screen.findByText("in this station")).toBeTruthy();
+  expect(await screen.findByText("in this canvas")).toBeTruthy();
   opened = null;
-  again({ ...workspace, conversation_id: null });
-  expect(screen.queryByText("in this station")).toBeNull();
+  again({ ...canvas, conversation_id: null });
+  expect(screen.queryByText("in this canvas")).toBeNull();
   expect(screen.getByText("Say something to scout.")).toBeTruthy();
 });
 
@@ -651,7 +654,7 @@ test("a relay line reads as \"you → lead-2: text\", in its own style, with no 
 });
 
 test("a prompt a claude run asked shows as a card, and Yes posts the decision as the chat's answer, not as a line of mine", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"), record(1, "SystemMessage", { extra: { $interaction: { id: "p1", type: "permission", tool: "Bash", input: { command: "make test" } } } }));
   shell();
@@ -659,12 +662,12 @@ test("a prompt a claude run asked shows as a card, and Yes posts the decision as
   fireEvent.click(within(prompt).getByRole("button", { name: "Yes" }));
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce());
   const [line] = vi.mocked(sendChatLine).mock.calls[0]!;
-  expect(line).toMatchObject({ workspaceId: WORKSPACE_ID, conversationId: "c1", kind: "answer", text: "Yes", payload: { prompt_id: "p1", decision: "allow" } });
+  expect(line).toMatchObject({ canvasId: CANVAS_ID, conversationId: "c1", kind: "answer", text: "Yes", payload: { prompt_id: "p1", decision: "allow" } });
   expect(document.querySelector(".chat-line-pending")).toBeNull();
 });
 
 test("a folder trust a CLI asks shows as a card in Chat, and Trust posts the answer as the chat's answer", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"), record(1, "SystemMessage", { extra: { $interaction: { id: "t1", type: "trust", tool: "claude", input: { folder: "~/proj" },
     questions: null, plan: null, state: "pending", cli: "claude", folder: "~/proj", machine: "gx10", remembered: true } } }));
@@ -673,7 +676,7 @@ test("a folder trust a CLI asks shows as a card in Chat, and Trust posts the ans
   fireEvent.click(within(card).getByRole("button", { name: "Trust ~/proj" }));
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce());
   const [line] = vi.mocked(sendChatLine).mock.calls[0]!;
-  expect(line).toMatchObject({ workspaceId: WORKSPACE_ID, conversationId: "c1", kind: "answer", text: "Trust ~/proj", payload: { prompt_id: "t1", decision: "allow" } });
+  expect(line).toMatchObject({ canvasId: CANVAS_ID, conversationId: "c1", kind: "answer", text: "Trust ~/proj", payload: { prompt_id: "t1", decision: "allow" } });
 });
 
 test("an answer from someone other than the run's owner (403) shows the server's reason, and the card keeps its answer", async () => {
@@ -707,7 +710,7 @@ test("a /goal the run recorded is the sender's monospace line, its log's goal a 
 // The records the agent runner writes, the partner the server reads, and the answer the server
 // queues: `test/seams/*.json`, which the Python producers' and consumers' tests hold too.
 test("the trust card the agent runner writes renders, and Trust posts the answer the server queues and the run takes", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"), trustCard as unknown as SessionRecord);
   shell();
@@ -729,7 +732,7 @@ test("the /goal command the agent runner records is its sender's command line", 
 });
 
 test("the info pop-over of the partner the server reads for a detached run names the run", () => {
-  shell({ ...workspace, provider: "claude", partner: livePartner as WorkspacePartner });
+  shell({ ...canvas, provider: "claude", partner: livePartner as CanvasPartner });
   openMore();
   fireEvent.click(screen.getByRole("button", { name: "Info" }));
   const dialog = screen.getByRole("dialog", { name: "Chat info" });
@@ -757,16 +760,16 @@ test("the composer says who reads the chat, as the server's org mode lets them i
   open("c1");
   hold("c1", ...TALK);
   const notice = () => document.querySelector(".chat-notice")!.textContent;
-  const { view } = shell(workspace, { profile: { org_mode: "single" } });
+  const { view } = shell(canvas, { profile: { org_mode: "single" } });
   await screen.findByText("a2");
   expect(notice()).toBe("Read by everyone signed in to this server. Do not type secrets here.");
   expect(document.body.textContent).not.toMatch(/Public to read|forks it instead|cannot be deleted/);
   view.unmount();
-  shell(workspace, { profile: { org_mode: "domain" } });
+  shell(canvas, { profile: { org_mode: "domain" } });
   await screen.findByText("a2");
   expect(notice()).toBe("Read by its starter, the people they share it with, and the starter's organisation. Do not type secrets here.");
   cleanup();
-  shell(workspace, { profile: { org_mode: "individual" } });
+  shell(canvas, { profile: { org_mode: "individual" } });
   await screen.findByText("a2");
   expect(notice()).toBe("Read by its starter and the people they share it with. Do not type secrets here.");
   cleanup();
@@ -781,12 +784,12 @@ test("the composer says a private chat is its starter's and their shares', and a
   hold("c1", ...TALK);
   vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { audience: "private" }));
   const notice = () => document.querySelector(".chat-notice")!.textContent;
-  shell(workspace, { profile: { org_mode: "single" } });
+  shell(canvas, { profile: { org_mode: "single" } });
   await screen.findByText("a2");
   expect(notice()).toBe("Private: only its starter and the people they share it with read it. Do not type secrets here.");
   cleanup();
   vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { audience: "staff" }));
-  shell(workspace, { profile: { org_mode: "single" } });
+  shell(canvas, { profile: { org_mode: "single" } });
   await screen.findByText("a2");
   expect(notice()).toBe("Staff only: of everyone signed in to this server, only those who hold staff read it. Do not type secrets here.");
 });
@@ -872,15 +875,15 @@ test("a refused share says why in one toast line and keeps the address in the fi
   expect((field as HTMLInputElement).value).toBe("linus@example.com");
 });
 
-test("Clear chat opens the server's new workspace with a fresh idempotency key", async () => {
-  const next = { ...workspace, id: "w-cleared", name: "unnamed-workstream#2", conversation_id: null };
+test("Clear chat opens the server's new canvas with a fresh idempotency key", async () => {
+  const next = { ...canvas, id: "w-cleared", name: "unnamed-canvas#2", conversation_id: null };
   vi.mocked(clearChat).mockResolvedValue(next);
   const { client } = shell();
   openMore();
   fireEvent.click(await screen.findByRole("button", { name: "Clear chat" }));
-  await waitFor(() => expect(currentStation().id).toBe("w-cleared"));
-  expect(clearChat).toHaveBeenCalledWith(WORKSPACE_ID, expect.any(String));
-  expect(client.getQueryData<WorkspaceState>(["workspace", "w-cleared"])).toEqual(next);
+  await waitFor(() => expect(currentCanvas().id).toBe("w-cleared"));
+  expect(clearChat).toHaveBeenCalledWith(CANVAS_ID, expect.any(String));
+  expect(client.getQueryData<CanvasState>(["canvas", "w-cleared"])).toEqual(next);
 });
 
 test("Delete chat forever asks first, Cancel does nothing, then deletes only the chat", async () => {
@@ -897,22 +900,22 @@ test("Delete chat forever asks first, Cancel does nothing, then deletes only the
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.queryByText(/Its forks keep their copies/)).toBeNull();
   expect(deleteChat).not.toHaveBeenCalled();
-  vi.mocked(restoreStation).mockResolvedValue({ ...workspace, conversation_id: null, hidden: true });
+  vi.mocked(restoreCanvas).mockResolvedValue({ ...canvas, conversation_id: null, hidden: true });
   fireEvent.click(screen.getByRole("button", { name: "Delete chat forever" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
   await waitFor(() => expect(screen.queryByText("a2")).toBeNull());
   expect(deleteChat).toHaveBeenCalledWith("c1");
-  expect(restoreStation).toHaveBeenCalledWith(WORKSPACE_ID);
-  expect(client.getQueryData<WorkspaceState>(["workspace", WORKSPACE_ID])?.conversation_id).toBeNull();
+  expect(restoreCanvas).toHaveBeenCalledWith(CANVAS_ID);
+  expect(client.getQueryData<CanvasState>(["canvas", CANVAS_ID])?.conversation_id).toBeNull();
   expect(screen.queryByRole("button", { name: "Delete chat forever" })).toBeNull();
 });
 
-test("Close chat asks first, then ends the chat's session and hides its station", async () => {
+test("Close chat asks first, then ends the chat's session and hides its canvas", async () => {
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(getChatHead).mockResolvedValue(head("c1"));
   vi.mocked(endSession).mockResolvedValue({ id: "s-c1" });
-  vi.mocked(restoreStation).mockResolvedValue({ ...workspace, hidden: true });
+  vi.mocked(restoreCanvas).mockResolvedValue({ ...canvas, hidden: true });
   shell();
   await screen.findByText("a2");
   openMore();
@@ -923,9 +926,9 @@ test("Close chat asks first, then ends the chat's session and hides its station"
   expect(endSession).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole("button", { name: "Close chat" }));
   fireEvent.click(within(screen.getByRole("alertdialog", { name: "Close chat" })).getByRole("button", { name: "Close" }));
-  await waitFor(() => expect(restoreStation).toHaveBeenCalledWith(WORKSPACE_ID));
+  await waitFor(() => expect(restoreCanvas).toHaveBeenCalledWith(CANVAS_ID));
   expect(endSession).toHaveBeenCalledWith("s-c1");
-  expect(vi.mocked(endSession).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(restoreStation).mock.invocationCallOrder[0]);
+  expect(vi.mocked(endSession).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(restoreCanvas).mock.invocationCallOrder[0]);
   expect(deleteChat).not.toHaveBeenCalled();
 });
 
@@ -942,7 +945,7 @@ test("a chat quiet past the idle threshold offers Close in the strip above the b
   hold("c1", stamped(said(0, ME, "all done"), IDLE_CLOSE_MS + 1_000));
   vi.mocked(getChatHead).mockResolvedValue(head("c1"));
   vi.mocked(endSession).mockResolvedValue({ id: "s-c1" });
-  vi.mocked(restoreStation).mockResolvedValue({ ...workspace, hidden: true });
+  vi.mocked(restoreCanvas).mockResolvedValue({ ...canvas, hidden: true });
   shell(codexChat({ state: "idle" }));
   await screen.findByText("all done");
   const strip = await waitFor(() => {
@@ -953,7 +956,7 @@ test("a chat quiet past the idle threshold offers Close in the strip above the b
   expect(within(strip).queryByRole("button", { name: "Stop" })).toBeNull();
   fireEvent.click(within(strip).getByRole("button", { name: "Close chat" }));
   fireEvent.click(within(screen.getByRole("alertdialog", { name: "Close chat" })).getByRole("button", { name: "Close" }));
-  await waitFor(() => expect(restoreStation).toHaveBeenCalledWith(WORKSPACE_ID));
+  await waitFor(() => expect(restoreCanvas).toHaveBeenCalledWith(CANVAS_ID));
   expect(endSession).toHaveBeenCalledWith("s-c1");
 });
 
@@ -980,18 +983,18 @@ test("a run mid-turn shows Stop, never Close, however long since its last record
   expect(within(strip).queryByRole("button", { name: "Close chat" })).toBeNull();
 });
 
-test("Close chat still hides the station when the session had already ended", async () => {
+test("Close chat still hides the canvas when the session had already ended", async () => {
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(getChatHead).mockResolvedValue(head("c1"));
   vi.mocked(endSession).mockRejectedValue(new ApiError(409, "already ended"));
-  vi.mocked(restoreStation).mockResolvedValue({ ...workspace, hidden: true });
+  vi.mocked(restoreCanvas).mockResolvedValue({ ...canvas, hidden: true });
   shell();
   await screen.findByText("a2");
   openMore();
   fireEvent.click(await screen.findByRole("button", { name: "Close chat" }));
   fireEvent.click(within(screen.getByRole("alertdialog", { name: "Close chat" })).getByRole("button", { name: "Close" }));
-  await waitFor(() => expect(restoreStation).toHaveBeenCalledWith(WORKSPACE_ID));
+  await waitFor(() => expect(restoreCanvas).toHaveBeenCalledWith(CANVAS_ID));
 });
 
 test("a refused Close says so and leaves the chat on the bar", async () => {
@@ -1005,30 +1008,30 @@ test("a refused Close says so and leaves the chat on the bar", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Close chat" }));
   fireEvent.click(within(screen.getByRole("alertdialog", { name: "Close chat" })).getByRole("button", { name: "Close" }));
   expect(await screen.findByText(/Could not close this chat/)).toBeTruthy();
-  expect(restoreStation).not.toHaveBeenCalled();
+  expect(restoreCanvas).not.toHaveBeenCalled();
 });
 
-test("Delete chat forever hides the emptied station and opens the station beside it", async () => {
+test("Delete chat forever hides the emptied canvas and opens the canvas beside it", async () => {
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(getChatHead).mockResolvedValue(head("c1", ME, { may_delete: true }));
   vi.mocked(deleteChat).mockResolvedValue();
-  vi.mocked(restoreStation).mockResolvedValue({ ...workspace, conversation_id: null, hidden: true });
-  vi.mocked(getWorkspace).mockResolvedValue({ ...workspace, id: "w-beta", name: "beta", conversation_id: "c2" });
+  vi.mocked(restoreCanvas).mockResolvedValue({ ...canvas, conversation_id: null, hidden: true });
+  vi.mocked(getCanvas).mockResolvedValue({ ...canvas, id: "w-beta", name: "beta", conversation_id: "c2" });
   const { client } = shell();
-  client.setQueryData(["stations"], [
-    { id: WORKSPACE_ID, name: "unnamed-workstream#1", conversation_id: "c1", page: null, created_at: "2026-10-01T10:00:00Z" },
+  client.setQueryData(["canvases"], [
+    { id: CANVAS_ID, name: "unnamed-canvas#1", conversation_id: "c1", page: null, created_at: "2026-10-01T10:00:00Z" },
     { id: "w-beta", name: "beta", conversation_id: "c2", page: null, created_at: "2026-10-02T10:00:00Z" },
   ]);
   await screen.findByText("a2");
   openMore();
   fireEvent.click(await screen.findByRole("button", { name: "Delete chat forever" }));
   fireEvent.click(screen.getByRole("button", { name: "Delete chat" }));
-  await waitFor(() => expect(currentStation().id).toBe("w-beta"));
+  await waitFor(() => expect(currentCanvas().id).toBe("w-beta"));
   expect(deleteChat).toHaveBeenCalledWith("c1");
-  expect(restoreStation).toHaveBeenCalledWith(WORKSPACE_ID);
-  expect(client.getQueryData<{ id: string; hidden?: boolean; conversation_id: string | null }[]>(["stations"])
-    ?.find((each) => each.id === WORKSPACE_ID)).toMatchObject({ hidden: true, conversation_id: null });
+  expect(restoreCanvas).toHaveBeenCalledWith(CANVAS_ID);
+  expect(client.getQueryData<{ id: string; hidden?: boolean; conversation_id: string | null }[]>(["canvases"])
+    ?.find((each) => each.id === CANVAS_ID)).toMatchObject({ hidden: true, conversation_id: null });
 });
 
 test("a share refused with chat_not_starter is said in words", async () => {
@@ -1075,14 +1078,14 @@ test("a delete refused with chat_has_other_posters is said in words, and an unkn
   expect(await screen.findByText("Locked by an admin")).toBeTruthy();
 });
 
-test("a workspace frame that drops the conversation leaves the station on an empty chat, and drops a fork picked in it", async () => {
+test("a canvas frame that drops the conversation leaves the canvas on an empty chat, and drops a fork picked in it", async () => {
   open("c1");
   hold("c1", ...TALK);
   const { client } = shell();
   await screen.findByText("a2");
   fireEvent.click(forkButton("a1"));
   expect(screen.getByText(/Your next message starts a fork/)).toBeTruthy();
-  await act(async () => client.setQueryData(["workspace", WORKSPACE_ID], { ...workspace, conversation_id: null, revision: 9 }));
+  await act(async () => client.setQueryData(["canvas", CANVAS_ID], { ...canvas, conversation_id: null, revision: 9 }));
   await waitFor(() => expect(screen.queryByText("a2")).toBeNull());
   expect(screen.queryByText(/Your next message starts a fork/)).toBeNull();
 });
@@ -1103,8 +1106,8 @@ test("a refused delete says why in a toast and keeps the chat", async () => {
 
 test("an unconfirmed post survives Chat remounting without sending it again", async () => {
   hold("c1");
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
-  const shown = shell({ ...workspace, conversation_id: "c1" });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
+  const shown = shell({ ...canvas, conversation_id: "c1" });
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", false));
   await type("continue");
   await screen.findByText("Waiting for the assistant…");
@@ -1117,8 +1120,8 @@ test("an unconfirmed post survives Chat remounting without sending it again", as
 
 test("a post with no captured acknowledgement stops claiming an indefinite wait", async () => {
   hold("c1");
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
-  shell({ ...workspace, conversation_id: "c1" });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
+  shell({ ...canvas, conversation_id: "c1" });
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", false));
   await type("continue");
 
@@ -1126,34 +1129,34 @@ test("a post with no captured acknowledgement stops claiming an indefinite wait"
   expect(sendChatLine).toHaveBeenCalledOnce();
 });
 
-test("switching to an empty station preserves the previous chat's unconfirmed post", async () => {
+test("switching to an empty canvas preserves the previous chat's unconfirmed post", async () => {
   hold("c1");
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
-  const original = { ...workspace, conversation_id: "c1" };
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
+  const original = { ...canvas, conversation_id: "c1" };
   const shown = shell(original);
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", false));
   await type("continue");
   await screen.findByText("Waiting for the assistant…");
-  shown.again({ ...workspace, id: "other-station", conversation_id: null });
+  shown.again({ ...canvas, id: "other-canvas", conversation_id: null });
   expect(within(screen.getByRole("log")).queryByText("continue")).toBeNull();
   shown.again(original);
   expect(await within(screen.getByRole("log")).findByText("continue")).toBeTruthy();
 });
 
-test("an in-flight first post belongs only to the station it was sent from", async () => {
+test("an in-flight first post belongs only to the canvas it was sent from", async () => {
   vi.mocked(sendChatLine).mockReturnValue(new Promise(() => {}));
   const shown = shell();
-  await type("for station A");
+  await type("for canvas A");
   await screen.findByText("Sending…");
-  shown.again({ ...workspace, id: "station-B" });
-  expect(within(screen.getByRole("log")).queryByText("for station A")).toBeNull();
+  shown.again({ ...canvas, id: "canvas-B" });
+  expect(within(screen.getByRole("log")).queryByText("for canvas A")).toBeNull();
 });
 
 test("retrying a captured post after a lost receipt keeps its original confirmation baseline", async () => {
   open("c1");
   hold("c1", said(0, ME, "first"), answered(1, "answer"));
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
-    .mockResolvedValueOnce({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+    .mockResolvedValueOnce({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   const shown = shell();
   await screen.findByText("answer");
   await type("captured already");
@@ -1172,7 +1175,7 @@ test("a refused line shows its failure and keeps the original text", async () =>
   hold("c1", record(0, "SystemMessage", { extra: { $delivery: {
     text: "continue", source: ME, kind: "line", refused: true, reason: "run ended",
   } } }));
-  shell({ ...workspace, conversation_id: "c1" });
+  shell({ ...canvas, conversation_id: "c1" });
 
   expect(await screen.findByText("continue")).toBeTruthy();
   expect(await screen.findByText(/Not delivered: run ended/)).toBeTruthy();
@@ -1180,7 +1183,7 @@ test("a refused line shows its failure and keeps the original text", async () =>
 });
 
 test("a line shows pending, then the conversation's id at once, then its record once the assistant has opened the session", async () => {
-  let finish: (value: { conversation_id: string; session_id: string | null; workspace_id: string }) => void = () => {};
+  let finish: (value: { conversation_id: string; session_id: string | null; canvas_id: string }) => void = () => {};
   vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   const { client } = shell();
 
@@ -1190,13 +1193,13 @@ test("a line shows pending, then the conversation's id at once, then its record 
   expect(pendingLine.closest("article")!.className).toContain("chat-line-pending");
   expect(screen.getByText("Sending…")).toBeTruthy();
   const [line, key] = vi.mocked(sendChatLine).mock.calls[0]!;
-  expect([line, typeof key]).toEqual([{ workspaceId: WORKSPACE_ID, text: "Show me Issue#12", conversationId: null, page: "#/graph", trail: [] }, "string"]);
+  expect([line, typeof key]).toEqual([{ canvasId: CANVAS_ID, text: "Show me Issue#12", conversationId: null, page: "#/graph", trail: [] }, "string"]);
 
   // The receipt names the conversation; its session is not there yet.
-  await act(async () => finish({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID }));
+  await act(async () => finish({ conversation_id: "c1", session_id: null, canvas_id: CANVAS_ID }));
   await waitFor(() => expect(screen.getByText("Waiting for the assistant…")).toBeTruthy(), { interval: 1 });
-  // The first line binds the conversation to the station.
-  expect(client.getQueryData<WorkspaceState>(["workspace", WORKSPACE_ID])?.conversation_id).toBe("c1");
+  // The first line binds the conversation to the canvas.
+  expect(client.getQueryData<CanvasState>(["canvas", CANVAS_ID])?.conversation_id).toBe("c1");
   expect(screen.getAllByText("Show me Issue#12")).toHaveLength(1);
 
   // The assistant opens the session: the line is its record, and the pending one gives way.
@@ -1215,7 +1218,7 @@ test("a line shows pending, then the conversation's id at once, then its record 
 });
 
 test("the next line of a conversation names it", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   hold("c1", said(0, ME, "one"), answered(1, "an answer"));
   shell();
   await type("one");
@@ -1281,7 +1284,7 @@ test("Working… names the last tool call, and gives way to the partner's unavai
   hold("c1", said(0, ME, "hi"), called(1, "SearchRecords"));
   await changed("s-c1");
   expect(await screen.findByText("Working: SearchRecords…")).toBeTruthy();
-  again({ ...workspace, partner: { ...SCOUT, status: "unavailable" } });
+  again({ ...canvas, partner: { ...SCOUT, status: "unavailable" } });
   expect(screen.queryByText(/Working/)).toBeNull();
   expect(screen.getByText("scout is unavailable.")).toBeTruthy();
   again();
@@ -1299,7 +1302,7 @@ test("a conversation whose last line is an answer shows no working line", async 
 test("the reply being written shows as its answer will, in place of the wait for the assistant", async () => {
   open("c1");
   hold("c1", said(0, ME, "q"), answered(1, "a"));
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   shell();
   await screen.findByText("a");
   await type("and now?");
@@ -1336,7 +1339,7 @@ test("the stored answer takes the bubble's place, once, and a partial cleared fo
 test("my next line's Sending… shows over the bubble, and an answer stored while that line waits takes the bubble's place, once", async () => {
   open("c1");
   hold("c1", said(0, ME, "first"));
-  let finish: (value: { conversation_id: string; session_id: string | null; workspace_id: string }) => void = () => {};
+  let finish: (value: { conversation_id: string; session_id: string | null; canvas_id: string }) => void = () => {};
   vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   shell();
   await screen.findByText("Working…");
@@ -1345,7 +1348,7 @@ test("my next line's Sending… shows over the bubble, and an answer stored whil
   await type("second");
   await screen.findByText("Sending…");
   expect(document.querySelector(".chat-line-partial")).toBeNull();
-  await act(async () => finish({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID }));
+  await act(async () => finish({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID }));
   await screen.findByText("The first");
   expect(screen.queryByText("Waiting for the assistant…")).toBeNull();
   await write({ turn: "t1", text: "The first answer", done: true });
@@ -1378,12 +1381,12 @@ test("the transcript follows the reply being written as it grows", async () => {
 test("Chat reads no reply being written while its partner is gone, whose going hides the bubble", async () => {
   open("c1");
   hold("c1", said(0, ME, "hi"));
-  const gone = { ...workspace, partner: { ...SCOUT, status: "unavailable" as const } };
+  const gone = { ...canvas, partner: { ...SCOUT, status: "unavailable" as const } };
   const { again } = shell(gone);
   await screen.findByText("scout is unavailable.");
   await act(() => Promise.resolve());
   expect(readChatPartial).not.toHaveBeenCalled();
-  again(workspace);
+  again(canvas);
   await write({ turn: "t1", text: "Half a reply", done: false });
   await screen.findByText("Half a reply");
   again(gone);
@@ -1406,7 +1409,7 @@ test("a finished turn's text still held raises no bubble under the next line", a
 test("a line the assistant never opens a session for is said plainly after a while, and can be sent again", async () => {
   // The clock is the test's: the give-up time passes by advancing it, not by waiting.
   vi.useFakeTimers({ shouldAdvanceTime: true });
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c9", session_id: null, workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c9", session_id: null, canvas_id: CANVAS_ID });
   shell();
   await type("anyone there?");
   await screen.findByText("Waiting for the assistant…");
@@ -1424,8 +1427,8 @@ test("a stored conversation with no session on this server says so, and reads no
 });
 
 test.each([
-  ["a live partner", workspace],
-  ["a CLI chat with no run", { ...workspace, provider: "claude" as const, partner: { ...SCOUT, status: "offline" as const, provider: "claude" as const, label: "claude: no run" } }],
+  ["a live partner", canvas],
+  ["a CLI chat with no run", { ...canvas, provider: "claude" as const, partner: { ...SCOUT, status: "offline" as const, provider: "claude" as const, label: "claude: no run" } }],
 ])("a viewer reads a chat with %s, and where the box would be is told they read it but do not post", async (_, state) => {
   open("c1");
   hold("c1", said(0, GRACE, "a teammate's line"), answered(1, "an answer"));
@@ -1438,7 +1441,7 @@ test.each([
 
 test("a failed send keeps the draft for a retry under one key, and shows no pending line", async () => {
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
-    .mockResolvedValueOnce({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID });
+    .mockResolvedValueOnce({ conversation_id: "c1", session_id: null, canvas_id: CANVAS_ID });
   shell();
   await type("hi");
   fireEvent.click(await screen.findByRole("button", { name: "Retry message" }));
@@ -1451,7 +1454,7 @@ test("recalling identical history after a failed send keeps retry identity and c
   open("c1");
   hold("c1", said(0, ME, "same"), answered(1, "answer"));
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
-    .mockResolvedValueOnce({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+    .mockResolvedValueOnce({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   shell();
   await screen.findByText("answer");
   await type("same");
@@ -1462,7 +1465,7 @@ test("recalling identical history after a failed send keeps retry identity and c
   fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
   await waitFor(() => expect(box.value).toBe(""));
   expect(vi.mocked(sendChatLine).mock.calls[1]![1]).toBe(vi.mocked(sendChatLine).mock.calls[0]![1]);
-  expect(preferences().drafts[`chat:${WORKSPACE_ID}`]).toBeUndefined();
+  expect(preferences().drafts[`chat:${CANVAS_ID}`]).toBeUndefined();
 });
 
 test("a refusal shows the server's reason and offers no retry, while a server fault does", async () => {
@@ -1480,7 +1483,7 @@ test("a refusal shows the server's reason and offers no retry, while a server fa
 });
 
 test("a message's length counts characters as the server does, so 16,384 emoji send and one more is refused", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, canvas_id: CANVAS_ID });
   shell();
   const box = screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(box, { target: { value: "\u{1F600}".repeat(16_385) } });
@@ -1499,13 +1502,13 @@ test("the composer refuses a too long message before sending it", async () => {
   expect((await screen.findByRole("alert")).textContent).toContain("at most 16,384");
   expect(sendChatLine).not.toHaveBeenCalled();
   fireEvent.change(box, { target: { value: "x".repeat(16_384) } });
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, canvas_id: CANVAS_ID });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledOnce(), { interval: 1 });
 });
 
 test("the box stays focused and editable while a message is sending, and what is typed meanwhile stays", async () => {
-  let finish: (value: { conversation_id: string; session_id: string | null; workspace_id: string }) => void = () => {};
+  let finish: (value: { conversation_id: string; session_id: string | null; canvas_id: string }) => void = () => {};
   vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   shell();
   await type("first");
@@ -1513,12 +1516,12 @@ test("the box stays focused and editable while a message is sending, and what is
   await screen.findByText("Sending…");
   expect(box.disabled).toBe(false);
   fireEvent.change(box, { target: { value: "second, typed meanwhile" } });
-  await act(async () => finish({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID }));
+  await act(async () => finish({ conversation_id: "c1", session_id: null, canvas_id: CANVAS_ID }));
   expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("second, typed meanwhile");
 });
 
-test("Chat mounting again keeps the station's conversation, which the station holds", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+test("Chat mounting again keeps the canvas's conversation, which the canvas holds", async () => {
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   hold("c1", said(0, ME, "hi"));
   const { mount } = shell();
   await type("hi");
@@ -1537,14 +1540,14 @@ test("a request from outside Chat to continue a science chat's session opens its
   } as never);
   hold("c7", said(0, GRACE, "from the Console"), answered(1, "an answer there"));
   vi.mocked(getChatHead).mockResolvedValue(head("c7", GRACE));
-  vi.mocked(stationForChat).mockResolvedValue({ ...workspace, id: "w7", name: "unnamed-workstream#7", conversation_id: "c7" });
+  vi.mocked(canvasForChat).mockResolvedValue({ ...canvas, id: "w7", name: "unnamed-canvas#7", conversation_id: "c7" });
   const { feed } = shell();
   expect(screen.getByText("Say something to scout.")).toBeTruthy();
   act(() => feed.continueIn("sess-1"));
   expect(await screen.findByText("an answer there")).toBeTruthy();
-  // The user's station for that chat is shown, the server having found or made it.
-  expect(stationForChat).toHaveBeenCalledWith("c7");
-  expect(currentStation().id).toBe("w7");
+  // The user's canvas for that chat is shown, the server having found or made it.
+  expect(canvasForChat).toHaveBeenCalledWith("c7");
+  expect(currentCanvas().id).toBe("w7");
   expect(getDetail).toHaveBeenCalledWith("sess-1", expect.any(Object));
   expect(feed.snapshot().request).toBeNull();
 });
@@ -1557,7 +1560,7 @@ test("a request to continue a session that is no science chat says so and opens 
   const { feed } = shell();
   act(() => feed.continueIn("sess-2"));
   expect((await screen.findByRole("status")).textContent).toBe("That session is not a science chat.");
-  expect(stationForChat).not.toHaveBeenCalled();
+  expect(canvasForChat).not.toHaveBeenCalled();
   expect(getChatHead).not.toHaveBeenCalled();
 });
 
@@ -1566,16 +1569,16 @@ test("a delayed continuation lookup cannot replace the chat requested last", asy
   vi.mocked(getDetail).mockReturnValueOnce(new Promise((resolve) => { first = resolve; }))
     .mockResolvedValueOnce({ self: { id: "second-session", kind: "AgentSession", seq: 2, title: "second", cli_session_id: "chat:c2", labels: ["science-chat"] },
       edges: {}, backlinks: {}, changes: [] } as never);
-  vi.mocked(stationForChat).mockImplementation(async (id) => ({ ...workspace, id: `w-${id}`, conversation_id: id }));
+  vi.mocked(canvasForChat).mockImplementation(async (id) => ({ ...canvas, id: `w-${id}`, conversation_id: id }));
   const { feed } = shell();
   act(() => feed.continueIn("first-session"));
   await waitFor(() => expect(getDetail).toHaveBeenCalledWith("first-session", expect.any(Object)));
   act(() => feed.continueIn("second-session"));
-  await waitFor(() => expect(currentStation().id).toBe("w-c2"));
+  await waitFor(() => expect(currentCanvas().id).toBe("w-c2"));
   await act(async () => first({ self: { id: "first-session", kind: "AgentSession", seq: 1, title: "first", cli_session_id: "chat:c1", labels: ["science-chat"] },
     edges: {}, backlinks: {}, changes: [] } as never));
-  expect(currentStation().id).toBe("w-c2");
-  expect(stationForChat).not.toHaveBeenCalledWith("c1");
+  expect(currentCanvas().id).toBe("w-c2");
+  expect(canvasForChat).not.toHaveBeenCalledWith("c1");
 });
 
 test("a request whose session cannot be read says so", async () => {
@@ -1592,15 +1595,15 @@ test("a request waits for Chat to mount: a Chat shown later takes it", async () 
   } as never);
   hold("c7", answered(0, "waiting for you"));
   vi.mocked(getChatHead).mockResolvedValue(head("c7", GRACE));
-  vi.mocked(stationForChat).mockResolvedValue({ ...workspace, id: "w7", name: "unnamed-workstream#7", conversation_id: "c7" });
+  vi.mocked(canvasForChat).mockResolvedValue({ ...canvas, id: "w7", name: "unnamed-canvas#7", conversation_id: "c7" });
   const feed = new ChatFeed();
   feed.continueIn("sess-1");
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  setStation(workspace.id);
-  client.setQueryData(["workspace", workspace.id], workspace);
+  setCanvas(canvas.id);
+  client.setQueryData(["canvas", canvas.id], canvas);
   render(<SessionContext value={new Session(() => {})}><QueryClientProvider client={client}><MetaContext value={META}><ProfileContext value={PROFILE}>
     <ChatFeedContext value={feed}>
-      <Station />
+      <Canvas />
     </ChatFeedContext></ProfileContext></MetaContext></QueryClientProvider></SessionContext>);
   expect(await screen.findByText("waiting for you")).toBeTruthy();
 });
@@ -1625,7 +1628,7 @@ test("every part of the session is read, in order", async () => {
   expect(articles()).toEqual(["before the restart", "after the restart"]);
 });
 
-test("each answer shows the agent whose part wrote it, not the provider the station has now", async () => {
+test("each answer shows the agent whose part wrote it, not the provider the canvas has now", async () => {
   open("c1");
   hold("c1");
   vi.mocked(listSessionParts).mockResolvedValue([
@@ -1633,7 +1636,7 @@ test("each answer shows the agent whose part wrote it, not the provider the stat
     { part: 1, name: "b.jsonl", format: "claude", records: 1, metadata: {}, ir_id: "j" },
   ]);
   vi.mocked(readSessionRecords).mockImplementation(async (_id, { part }) => (part === 0 ? [said(0, ME, "a question"), answered(1, "from the assistant")] : [answered(0, "from claude")]));
-  shell({ ...workspace, provider: "codex" });
+  shell({ ...canvas, provider: "codex" });
   await screen.findByText("from claude");
   const agentOf = (text: string) => screen.getByText(text).closest("article")!.querySelector(".chat-line-agent")?.textContent ?? null;
   expect([agentOf("a question"), agentOf("from the assistant"), agentOf("from claude")]).toEqual([null, "scout", "claude"]);
@@ -1643,8 +1646,8 @@ const OFF_LINE = "Chat is off: the assistant is not connected.";
 const emptyPanel = () => document.querySelector(".chat-panel")!.textContent!;
 
 test.each([
-  ["no assistant is set up", { ...workspace, partner: null, assistant: null }],
-  ["the assistant has no live session", { ...workspace, partner: { ...SCOUT, status: "unavailable" as const } }],
+  ["no assistant is set up", { ...canvas, partner: null, assistant: null }],
+  ["the assistant has no live session", { ...canvas, partner: { ...SCOUT, status: "unavailable" as const } }],
 ])("when %s, Chat says it is off, once, and the box is disabled with no setup", (_, state) => {
   shell(state);
   expect(screen.getAllByText(OFF_LINE)).toHaveLength(1);
@@ -1655,14 +1658,14 @@ test.each([
 });
 
 test("a CLI chat with no live run says so, and asks for a machine", () => {
-  shell({ ...workspace, provider: "claude", partner: { ...SCOUT, status: "offline" as const, provider: "claude", label: "claude: no run" } });
+  shell({ ...canvas, provider: "claude", partner: { ...SCOUT, status: "offline" as const, provider: "claude", label: "claude: no run" } });
   expect(screen.getAllByText("Chat is off: no claude run holds this chat. Pick a machine.")).toHaveLength(1);
   expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", true);
   expect(emptyPanel()).not.toMatch(/Chat is off: the assistant/);
 });
 
 test("a live partner shows none of the off line, and the header names it", () => {
-  shell({ ...workspace, partner: { ...SCOUT, actor: "ada-run" } });
+  shell({ ...canvas, partner: { ...SCOUT, actor: "ada-run" } });
   expect(within(screen.getByLabelText("Chat partner")).getByText("ada-run")).toBeTruthy();
   expect(screen.getByText("Say something to ada-run.")).toBeTruthy();
   expect(emptyPanel()).not.toMatch(/Chat is off|helper|uv tool install/);
@@ -1704,7 +1707,7 @@ async function sentFrom(hashes: readonly string[]) {
   stopTrail = startTrail();
   shell();
   for (const hash of hashes.slice(1)) go(hash);
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: null, canvas_id: CANVAS_ID });
   await type("where am I");
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledTimes(1), { interval: 1 });
   const { page, trail } = vi.mocked(sendChatLine).mock.calls[0]![0];
@@ -1789,7 +1792,7 @@ test("Chat's reads use the app's read retry: a read that fails once is read agai
   open("c1");
   hold("c1", answered(0, "second try"));
   vi.mocked(getChatHead).mockRejectedValueOnce(new ApiError(503, "unavailable")).mockResolvedValue(head("c1"));
-  shell(workspace, { queries: { retry: 1, retryDelay: 0 } });
+  shell(canvas, { queries: { retry: 1, retryDelay: 0 } });
   expect(await screen.findByText("second try")).toBeTruthy();
   expect(screen.queryByRole("alert")).toBeNull();
 });
@@ -1800,7 +1803,7 @@ const forkButton = (line: string) => within(screen.getByText(line).closest("arti
 test("typing in a chat I read joins it, and sends no fork", async () => {
   open("c1");
   hold("c1", ...TALK);
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   shell();
   await screen.findByText("a2");
   expect(screen.queryByText(/not shared with you/)).toBeNull();
@@ -1826,7 +1829,7 @@ test("Fork from here on an earlier line makes the next message a fork after it, 
   expect(line).toMatchObject({ conversationId: null, fork: { sessionId: "s-c1", part: 0, idx: 1 } });
   expect(typeof key).toBe("string");
   // The fork is open now, the banner has done its work, and the line sent has left the box.
-  await waitFor(() => expect(currentStation().id).toBe("w-fork"), { interval: 1 });
+  await waitFor(() => expect(currentCanvas().id).toBe("w-fork"), { interval: 1 });
   expect(screen.queryByText(/Your next message starts a fork/)).toBeNull();
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("value", ""), { interval: 1 });
   // The line shows in the fork while the assistant opens it, and not in the original.
@@ -1857,7 +1860,7 @@ test("my line in a fork shows until the fork holds one more of mine than it open
 test("Cancel fork goes back to posting into the chat", async () => {
   open("c1");
   hold("c1", ...TALK);
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   shell();
   await screen.findByText("a2");
   fireEvent.click(forkButton("a1"));
@@ -1869,8 +1872,8 @@ test("Cancel fork goes back to posting into the chat", async () => {
   expect(vi.mocked(sendChatLine).mock.calls[0]![0]).not.toHaveProperty("fork");
 });
 
-/** Pick "Fork from here" on the first answer of the conversation `c1`, which `TALK` holds, for a station in `state`. */
-async function pickFork(state: WorkspaceState) {
+/** Pick "Fork from here" on the first answer of the conversation `c1`, which `TALK` holds, for a canvas in `state`. */
+async function pickFork(state: CanvasState) {
   open("c1");
   hold("c1", ...TALK);
   const view = shell(state);
@@ -1880,23 +1883,23 @@ async function pickFork(state: WorkspaceState) {
 }
 
 test("the fork banner says the fork runs on the assistant by its name", async () => {
-  await pickFork(workspace);
+  await pickFork(canvas);
   expect(screen.getByText("The fork runs on scout")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Cancel fork" })).toBeTruthy();
 });
 
 test("the fork banner says the fork runs on a CLI's live machine and folder", async () => {
-  const inLoop: WorkspacePartner = { ...DETACHED, cwd: "~/project" };
-  await pickFork({ ...workspace, provider: "claude", partner: inLoop });
+  const inLoop: CanvasPartner = { ...DETACHED, cwd: "~/project" };
+  await pickFork({ ...canvas, provider: "claude", partner: inLoop });
   expect(screen.getByText("The fork runs on claude on gx10 in ~/project")).toBeTruthy();
 });
 
 test("the fork banner says a CLI whose run has ended gets its machine picked after the fork", async () => {
-  const live: WorkspacePartner = { session_id: "s-chat", actor: "codex", cli: "codex", status: "live",
+  const live: CanvasPartner = { session_id: "s-chat", actor: "codex", cli: "codex", status: "live",
     label: "codex · gx10", provider: "codex", machine: "gx10" };
-  const ended: WorkspacePartner = { ...live, status: "offline", label: "codex: no run", machine: null };
-  const { again } = await pickFork({ ...workspace, provider: "codex", partner: live });
-  again({ ...workspace, provider: "codex", partner: ended });
+  const ended: CanvasPartner = { ...live, status: "offline", label: "codex: no run", machine: null };
+  const { again } = await pickFork({ ...canvas, provider: "codex", partner: live });
+  again({ ...canvas, provider: "codex", partner: ended });
   expect(screen.getByText("The fork runs on codex (no run yet: pick a machine after)")).toBeTruthy();
 });
 
@@ -2028,7 +2031,7 @@ test("a post the server refuses as not shared with me is shown, never sent again
   expect((await screen.findByRole("alert")).textContent).toContain("This chat is not shared with you");
   expect(sendChatLine).toHaveBeenCalledOnce();
   expect(vi.mocked(sendChatLine).mock.calls[0]![0]).not.toHaveProperty("fork");
-  expect(currentStation().id).toBe(WORKSPACE_ID);
+  expect(currentCanvas().id).toBe(CANVAS_ID);
 });
 
 test.each([
@@ -2081,7 +2084,7 @@ test("a post into a deleted chat lets it go and starts a new chat with the same 
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(410, "This chat was deleted; start a new one", CHAT_DELETED))
-    .mockResolvedValue({ conversation_id: "n1", session_id: null, workspace_id: WORKSPACE_ID });
+    .mockResolvedValue({ conversation_id: "n1", session_id: null, canvas_id: CANVAS_ID });
   const { client } = shell();
   await screen.findByText("a2");
   await type("still there?");
@@ -2090,14 +2093,14 @@ test("a post into a deleted chat lets it go and starts a new chat with the same 
   expect(first).toMatchObject({ conversationId: "c1" });
   expect(second).toMatchObject({ text: "still there?", conversationId: null });
   expect(second).not.toHaveProperty("fork");
-  await waitFor(() => expect(client.getQueryData<WorkspaceState>(["workspace", WORKSPACE_ID])?.conversation_id).toBe("n1"));
+  await waitFor(() => expect(client.getQueryData<CanvasState>(["canvas", CANVAS_ID])?.conversation_id).toBe("n1"));
 });
 
 test("a fork of a deleted chat's line lets the chat go and starts a new chat with the line", async () => {
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(410, "This chat was deleted; start a new one", CHAT_DELETED))
-    .mockResolvedValue({ conversation_id: "n1", session_id: null, workspace_id: WORKSPACE_ID });
+    .mockResolvedValue({ conversation_id: "n1", session_id: null, canvas_id: CANVAS_ID });
   const { client } = shell();
   await screen.findByText("a2");
   fireEvent.click(forkButton("a1"));
@@ -2107,24 +2110,24 @@ test("a fork of a deleted chat's line lets the chat go and starts a new chat wit
   expect(first).toMatchObject({ conversationId: null, fork: { sessionId: "s-c1" } });
   expect(second).toMatchObject({ text: "a branch", conversationId: null });
   expect(second).not.toHaveProperty("fork");
-  await waitFor(() => expect(client.getQueryData<WorkspaceState>(["workspace", WORKSPACE_ID])?.conversation_id).toBe("n1"));
+  await waitFor(() => expect(client.getQueryData<CanvasState>(["canvas", CANVAS_ID])?.conversation_id).toBe("n1"));
   expect(screen.queryByText(/Your next message starts a fork/)).toBeNull();
 });
 
 test("opening a deleted chat by link says it was deleted", async () => {
   vi.mocked(getDetail).mockResolvedValue({ self: { cli_session_id: "chat:c9", labels: ["science-chat"] }, edges: {}, backlinks: {}, changes: [] } as never);
-  vi.mocked(stationForChat).mockRejectedValue(new ApiError(410, "This chat was deleted; start a new one", CHAT_DELETED));
+  vi.mocked(canvasForChat).mockRejectedValue(new ApiError(410, "This chat was deleted; start a new one", CHAT_DELETED));
   const { feed } = shell();
   act(() => feed.continueIn("s9"));
   expect(await screen.findByText("This chat was deleted; start a new one")).toBeTruthy();
 });
 
-test("a head read that says the chat is deleted (410) leaves the station on an empty chat, with no error to retry", async () => {
+test("a head read that says the chat is deleted (410) leaves the canvas on an empty chat, with no error to retry", async () => {
   open("c1");
   hold("c1", ...TALK);
   vi.mocked(getChatHead).mockRejectedValue(new ApiError(410, "This chat was deleted; start a new one", CHAT_DELETED));
   const { client } = shell();
-  await waitFor(() => expect(client.getQueryData<WorkspaceState>(["workspace", WORKSPACE_ID])?.conversation_id).toBeNull());
+  await waitFor(() => expect(client.getQueryData<CanvasState>(["canvas", CANVAS_ID])?.conversation_id).toBeNull());
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   expect(screen.queryByText("a2")).toBeNull();
 });
@@ -2148,11 +2151,11 @@ test("a chat says how often it was forked, and a fork says what it was forked fr
   vi.mocked(getChatHead).mockImplementation(async (id) => (id === "f1" ? head("f1", ME, { forked_from: "c0", forks: 1 }) : head(id)));
   shell();
   expect(await screen.findByText("Forked once.")).toBeTruthy();
-  vi.mocked(stationForChat).mockResolvedValue({ ...workspace, id: "w-c0", name: "unnamed-workstream#3", conversation_id: "c0" });
+  vi.mocked(canvasForChat).mockResolvedValue({ ...canvas, id: "w-c0", name: "unnamed-canvas#3", conversation_id: "c0" });
   fireEvent.click(screen.getByRole("button", { name: "another chat" }));
   expect(await screen.findByText("the original")).toBeTruthy();
-  expect(stationForChat).toHaveBeenCalledWith("c0");
-  expect(currentStation().id).toBe("w-c0");
+  expect(canvasForChat).toHaveBeenCalledWith("c0");
+  expect(currentCanvas().id).toBe("w-c0");
   cleanup();
   vi.mocked(getChatHead).mockResolvedValue(head("c0", ME, { forks: 3 }));
   shell();
@@ -2171,7 +2174,7 @@ test("a line still being sent, and a chat I cannot post in, offer no fork", asyn
   const pending = (await within(screen.getByRole("log")).findByText("on its way")).closest("article")!;
   expect(within(pending).queryByRole("button", { name: "Fork from here" })).toBeNull();
   view.unmount();
-  shell(workspace, { profile: { role: "viewer" } });
+  shell(canvas, { profile: { role: "viewer" } });
   await screen.findByText("a2");
   expect(screen.queryByRole("button", { name: "Fork from here" })).toBeNull();
 });
@@ -2242,7 +2245,7 @@ test("a lookup that fails is not retried, as the app's read retries would hold t
   });
   open("c1");
   hold("c1", said(0, ME, "What is open?"));
-  const { highlights } = shell(workspace, { queries: { retry: 3, retryDelay: 1 } });
+  const { highlights } = shell(canvas, { queries: { retry: 3, retryDelay: 1 } });
   await screen.findByText("What is open?");
   hold("c1", said(0, ME, "What is open?"), answered(1, "Issue#1 and Issue#2"));
   await changed("s-c1");
@@ -2339,7 +2342,7 @@ test("the switch is honoured while a lookup is under way", async () => {
 });
 
 test("a recap whose last answer proposes a next experiment offers to launch it, sending the canned ask", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   open("c1");
   hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nThe climb held.\n\n## Next experiment\nRaise the effort to high."));
   shell();
@@ -2361,7 +2364,7 @@ test("a refused follow-up says why and is not an unhandled rejection; it waits l
 
 test("a follow-up whose answer was lost resends under its key, and leaves the typed draft alone", async () => {
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
-    .mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+    .mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   open("c1");
   hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nok\n\n## Next experiment\nRaise it."));
   shell();
@@ -2378,13 +2381,13 @@ test("a follow-up whose answer was lost resends under its key, and leaves the ty
 
 test("a follow-up whose answer was lost takes a fresh key once it goes to another target", async () => {
   vi.mocked(sendChatLine).mockRejectedValueOnce(new ApiError(0, "offline", "network"))
-    .mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+    .mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   open("c1");
   hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nok\n\n## Next experiment\nRaise it."));
   const { again } = shell();
   fireEvent.click(await screen.findByRole("button", { name: "Launch the follow-up" }));
   await screen.findByText("Could not send this message. Retry to send the same draft safely.");
-  again({ ...workspace, partner: { ...SCOUT, session_id: "restarted" } });
+  again({ ...canvas, partner: { ...SCOUT, session_id: "restarted" } });
   fireEvent.click(await screen.findByRole("button", { name: "Launch the follow-up" }));
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledTimes(2));
   const [first, second] = vi.mocked(sendChatLine).mock.calls;
@@ -2392,7 +2395,7 @@ test("a follow-up whose answer was lost takes a fresh key once it goes to anothe
 });
 
 test("while a follow-up is on its way, Enter sends no second line, and the box stays editable", async () => {
-  let finish = (_value: { conversation_id: string; session_id: string | null; workspace_id: string }) => {};
+  let finish = (_value: { conversation_id: string; session_id: string | null; canvas_id: string }) => {};
   vi.mocked(sendChatLine).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
   open("c1");
   hold("c1", said(0, ME, "how did it go?"), answered(1, "## Results\nok\n\n## Next experiment\nRaise it."));
@@ -2404,7 +2407,7 @@ test("while a follow-up is on its way, Enter sends no second line, and the box s
   fireEvent.keyDown(box, { key: "Enter" });
   expect(box).toHaveProperty("disabled", false);
   expect(sendChatLine).toHaveBeenCalledOnce();
-  await act(async () => finish({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID }));
+  await act(async () => finish({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID }));
   expect(box).toHaveProperty("value", "also this");
 });
 
@@ -2417,7 +2420,7 @@ test("a plain last answer offers no follow-up", async () => {
 });
 
 test("hovering a stored line shows when it was sent, in the reader's own time; a line still being sent shows none", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   open("c1");
   hold("c1", { ...said(0, ME, "my question"), timestamp: "2026-10-13T11:50:00Z" } as SessionRecord);
   shell();
@@ -2431,33 +2434,33 @@ test("hovering a stored line shows when it was sent, in the reader's own time; a
 });
 
 test("the header names the provider the chat talks to, with its live label and dot", () => {
-  shell({ ...workspace, provider: "claude", partner: { ...SCOUT, status: "live" as const, provider: "claude", label: "claude · gx10", machine: "gx10" } });
+  shell({ ...canvas, provider: "claude", partner: { ...SCOUT, status: "live" as const, provider: "claude", label: "claude · gx10", machine: "gx10" } });
   const button = screen.getByRole("button", { name: "Chat provider: claude" });
   expect(button.textContent).toContain("claude · gx10");
   expect(button.querySelector(".provider-dot")?.classList.contains("live")).toBe(true);
 });
 
 test("+ New chat offers the three providers, the default first and starred, and a grayed one does nothing", async () => {
-  vi.mocked(createStationInWorkstream).mockResolvedValue({ ...workspace, id: "new-chat", name: "unnamed-workstream#2" });
-  const { client } = shell({ ...workspace, available: { claude: false },
+  vi.mocked(createCanvasInWorkspace).mockResolvedValue({ ...canvas, id: "new-chat", name: "unnamed-canvas#2" });
+  const { client } = shell({ ...canvas, available: { claude: false },
     reasons: { claude: "Connect a machine and install claude on it" } }, {
     // The preference a profile carries, which openapi.json does not list yet.
     profile: { preferences: { chat_provider: "codex" } as unknown as Profile["preferences"] },
   });
-  client.setQueryData(["workstreams"], [{ id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 }]);
+  client.setQueryData(["workspaces"], [{ id: "scratch", title: "Scratch", hidden: false, pinned: false, scratch: true, seq: 1 }]);
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
   const rows = screen.getAllByRole("button", { name: /\+ New chat · / });
   expect(rows.map((each) => each.textContent)).toEqual(["+ New chat · codex ★ default", "+ New chat · scout", "+ New chat · claude"]);
   expect((rows[2] as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByText(/install claude on it/)).toBeTruthy();
   fireEvent.click(rows[2]!);
-  expect(createStationInWorkstream).not.toHaveBeenCalled();
+  expect(createCanvasInWorkspace).not.toHaveBeenCalled();
   fireEvent.click(rows[0]!);
-  await waitFor(() => expect(createStationInWorkstream).toHaveBeenCalledWith("scratch", "codex"));
+  await waitFor(() => expect(createCanvasInWorkspace).toHaveBeenCalledWith("scratch", "codex"));
 });
 
 test("a server with no assistant offers no assistant in + New chat", async () => {
-  shell({ ...workspace, assistant: null }, { profile: { preferences: { chat_provider: "codex" } as unknown as Profile["preferences"] } });
+  shell({ ...canvas, assistant: null }, { profile: { preferences: { chat_provider: "codex" } as unknown as Profile["preferences"] } });
   fireEvent.click(screen.getByRole("button", { name: "Scratch chat" }));
   expect(screen.getAllByRole("button", { name: /\+ New chat · / }).map((each) => each.textContent))
     .toEqual(["+ New chat · codex ★ default", "+ New chat · claude"]);
@@ -2547,15 +2550,15 @@ const ASK = { id: "a1", type: "permission", tool: "shell", input: {}, questions:
   options: [{ id: "turn", label: "Yes", kind: "allow_once" }, { id: "decline", label: "No", kind: "deny" }] };
 const asking = (idx: number) => record(idx, "SystemMessage", { extra: { $interaction: ASK } });
 const settled = (idx: number, body: { [field: string]: unknown }) => record(idx, "SystemMessage", { extra: { $interaction_resolved: { id: "a1", ...body } } });
-const CODEX_RUN: WorkspacePartner = { ...(livePartner as WorkspacePartner), provider: "codex", cli: "codex", label: "codex · gx10" };
-/** The station of a codex chat whose run is as `run` says, over the live one. */
-function codexChat(run: Partial<WorkspacePartner> = {}): WorkspaceState {
-  const partner: WorkspacePartner = { ...CODEX_RUN, ...run };
-  return { ...workspace, provider: "codex", partner };
+const CODEX_RUN: CanvasPartner = { ...(livePartner as CanvasPartner), provider: "codex", cli: "codex", label: "codex · gx10" };
+/** The canvas of a codex chat whose run is as `run` says, over the live one. */
+function codexChat(run: Partial<CanvasPartner> = {}): CanvasState {
+  const partner: CanvasPartner = { ...CODEX_RUN, ...run };
+  return { ...canvas, provider: "codex", partner };
 }
 
 test("an ask with options shows the agent's buttons, and a click posts that option as the chat's answer", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"), asking(1));
   shell(codexChat());
@@ -2599,12 +2602,12 @@ test("the dot follows the server's word too: it shows with no open card in this 
 
 test.each([
   ["a codex run on a turn", codexChat({ state: "running" })],
-  ["a claude run waiting on an ask", { ...workspace, provider: "claude" as const, partner: { ...(livePartner as WorkspacePartner), state: "requires_action" as const } }],
-])("Stop interrupts %s: it posts the chat's interrupt, a fresh one each press", async (_name, station) => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  ["a claude run waiting on an ask", { ...canvas, provider: "claude" as const, partner: { ...(livePartner as CanvasPartner), state: "requires_action" as const } }],
+])("Stop interrupts %s: it posts the chat's interrupt, a fresh one each press", async (_name, canvas) => {
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"));
-  shell(station);
+  shell(canvas);
   await screen.findByText("run the suite");
   expect(screen.getByRole("button", { name: "Stop" }).textContent).toBe("■");
   expect(screen.getByRole("button", { name: "Stop" }).title).toBe("Interrupt the turn (Esc)");
@@ -2614,7 +2617,7 @@ test.each([
   fireEvent.click(screen.getByRole("button", { name: "Stop" }));
   await waitFor(() => expect(sendChatLine).toHaveBeenCalledTimes(2));
   const [[first, firstKey], [second, secondKey]] = vi.mocked(sendChatLine).mock.calls as [Parameters<typeof sendChatLine>, Parameters<typeof sendChatLine>];
-  expect(first).toMatchObject({ workspaceId: WORKSPACE_ID, conversationId: "c1", kind: "interrupt", text: "interrupt" });
+  expect(first).toMatchObject({ canvasId: CANVAS_ID, conversationId: "c1", kind: "interrupt", text: "interrupt" });
   expect(first.payload).toBeUndefined();
   expect(second).toMatchObject({ kind: "interrupt" });
   expect(secondKey).not.toBe(firstKey);
@@ -2623,19 +2626,19 @@ test.each([
 // Each chat still owes an answer to its last line, so it looks busy: its status says so.
 test.each([
   ["an idle run", codexChat({ state: "idle" }), "Working…"],
-  ["the assistant, which takes no interrupt", workspace, "Working…"],
+  ["the assistant, which takes no interrupt", canvas, "Working…"],
   ["a run taken over in a terminal", codexChat({ status: "offline", label: "codex: no run", state: "taken_over" }), "claude is unavailable."],
-])("no Stop shows for %s", async (_name, station, status) => {
+])("no Stop shows for %s", async (_name, canvas, status) => {
   open("c1");
   hold("c1", said(0, ME, "run the suite"));
-  shell(station);
+  shell(canvas);
   await screen.findByText("run the suite");
   expect(screen.getByText(status)).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
 });
 
 test("Esc in the box interrupts the turn a run is on and keeps the draft; with no turn on, it sends nothing", async () => {
-  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", workspace_id: WORKSPACE_ID });
+  vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c1", session_id: "s-c1", canvas_id: CANVAS_ID });
   open("c1");
   hold("c1", said(0, ME, "run the suite"));
   const { again } = shell(codexChat({ state: "idle" }));
@@ -2664,7 +2667,7 @@ test("a refused interrupt says why", async () => {
 test("the CLI's record of an interrupt ends the wait: Interrupted shows in place of Working", async () => {
   open("c1");
   hold("c1", said(0, ME, "run the suite"), record(1, "UserMessage", { content: "[Request interrupted by user]", extra: {} }));
-  shell({ ...workspace, provider: "claude", partner: livePartner as WorkspacePartner });
+  shell({ ...canvas, provider: "claude", partner: livePartner as CanvasPartner });
   await screen.findByText("run the suite");
   expect(articles()).toEqual(["run the suite", "Interrupted"]);
   expect(screen.queryByText("Working…")).toBeNull();
@@ -2682,7 +2685,7 @@ test("a chat taken over in a terminal says so in place of Chat is off, takes no 
   fireEvent.click(screen.getByRole("button", { name: "Reattach to Chat" }));
   await waitFor(() => expect(reattachChat).toHaveBeenCalledOnce());
   expect(vi.mocked(reattachChat).mock.calls[0]).toEqual(["s-c1", expect.any(String)]);
-  await waitFor(() => expect(invalidated).toHaveBeenCalledWith({ queryKey: ["workspace"] }));
+  await waitFor(() => expect(invalidated).toHaveBeenCalledWith({ queryKey: ["canvas"] }));
 });
 
 test("a run taken over while its partner is still live takes no line, and its open card is answered in the terminal", async () => {

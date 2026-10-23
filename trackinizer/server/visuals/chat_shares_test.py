@@ -19,13 +19,13 @@ from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.visuals import chat_shares
 from trackinizer.server.visuals.chat_forks import ChatClosedError, ChatRefusedError
 from trackinizer.server.visuals.chat_shares import (
-    UnboundStation,
+    UnboundCanvas,
     delete_chat,
     set_share,
 )
 from trackinizer.server.visuals.science_chats import Conversation
 from trackinizer.wire.wire_science_chat import chat_session_id
-from trackinizer.wire.wire_sessions import WorkspaceMessageContext
+from trackinizer.wire.wire_sessions import CanvasMessageContext
 
 
 if TYPE_CHECKING:
@@ -39,15 +39,15 @@ _SESSIONS: Final = (
     uuid.UUID("22222222-2222-2222-2222-222222222222"),
     uuid.UUID("33333333-3333-3333-3333-333333333333"),
 )
-_STATION: Final = uuid.UUID("44444444-4444-4444-4444-444444444444")
+_CANVAS: Final = uuid.UUID("44444444-4444-4444-4444-444444444444")
 _OWNER: Final = uuid.UUID("55555555-5555-5555-5555-555555555555")
 _KEY: Final = uuid.UUID("66666666-6666-6666-6666-666666666666")
 _ADA: Final = "ada@example.com"
 _ASSISTANT: Final = Assistant(actor="kb", email="kb@example.com")
 _UNBIND: Final = (
-    "UPDATE visual_workspaces SET station = station - 'conversation_id', "
+    "UPDATE visual_canvases SET metadata = metadata - 'conversation_id', "
     "revision = revision + 1 "
-    "WHERE station->>'conversation_id' = $1 RETURNING id, user_id"
+    "WHERE metadata->>'conversation_id' = $1 RETURNING id, user_id"
 )
 
 
@@ -149,14 +149,14 @@ def test_an_unshare_of_a_staff_chat_asks_no_one_whether_they_hold_staff() -> Non
     engine.conn.fetchrow.assert_not_awaited()
 
 
-def test_a_delete_purges_each_session_drops_its_shares_and_moves_its_stations() -> None:
+def test_a_delete_purges_each_session_drops_its_shares_and_moves_its_canvases() -> None:
     engine = FakeEngine()
-    engine.conn.fetch.return_value = [{"id": str(_STATION), "user_id": str(_OWNER)}]
+    engine.conn.fetch.return_value = [{"id": str(_CANVAS), "user_id": str(_OWNER)}]
 
-    stations, purged = _delete(engine, _caller(_ADA, key=_KEY))
+    canvases, purged = _delete(engine, _caller(_ADA, key=_KEY))
     executed = _executed(engine)
 
-    assert stations == [UnboundStation(workspace_id=_STATION, user_id=_OWNER)]
+    assert canvases == [UnboundCanvas(canvas_id=_CANVAS, user_id=_OWNER)]
     assert purged == list(_SESSIONS)
     assert executed[1] == (
         "SELECT pg_advisory_xact_lock(hashtext($1))",
@@ -295,8 +295,8 @@ def _delete(
     opened: bool = False,
     found: bool = True,
     inbound: InboundQueue | None = None,
-) -> tuple[list[UnboundStation] | None, list[uuid.UUID]]:
-    """Delete Ada's chat as ``caller``; return the stations and each session purged."""
+) -> tuple[list[UnboundCanvas] | None, list[uuid.UUID]]:
+    """Delete Ada's chat as ``caller``; return the canvases and each session purged."""
     purged: list[uuid.UUID] = []
     store = SimpleNamespace(
         engine=engine,
@@ -310,7 +310,7 @@ def _delete(
     )
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(chat_shares, "read_conversation", read if found else _missing)
-        stations = asyncio.run(
+        canvases = asyncio.run(
             delete_chat(
                 cast("Store", store),
                 assistant=_ASSISTANT,
@@ -319,7 +319,7 @@ def _delete(
                 inbound=inbound or InboundQueue(),
             ),
         )
-    return stations, purged
+    return canvases, purged
 
 
 async def _purge_into(
@@ -376,8 +376,8 @@ def _line(sender: str, *, conversation: uuid.UUID = _CHAT) -> Inbound:
     return Inbound(
         text="q",
         source=sender,
-        context=WorkspaceMessageContext(
-            workspace_id=_STATION,
+        context=CanvasMessageContext(
+            canvas_id=_CANVAS,
             visible_visuals=[],
             conversation_id=conversation,
         ),

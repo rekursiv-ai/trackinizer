@@ -3,7 +3,7 @@ import { expect, setPreferences, test } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
 // The app's one bar runs along the top, over Chat and the canvas: the logo, Go,
-// Search and New, the stations as tab groups each holding its canvas tabs, the
+// Search and New, the canvases as tab groups each holding its canvas tabs, the
 // Workbench's visuals, and the account. There is no sidebar.
 
 test.use({ canvas: true });
@@ -36,7 +36,7 @@ test("the bar spans the top over Chat, at the left, and the canvas; nothing is l
   expect(column.x + column.width).toBeLessThanOrEqual(canvas.x + 1);
   expect(column.x).toBeLessThan(16);
   await expect(page.getByRole("navigation", { name: "Sidebar" })).toHaveCount(0);
-  await expect(page.getByRole("navigation", { name: "Workstreams" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspaces" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Canvas tabs" })).toBeVisible();
 });
 
@@ -103,7 +103,7 @@ test("on a phone the bar fits the width, its controls each take a press, and Go 
   await page.getByRole("button", { name: "Open app bar" }).click();
   await expect(bar).toHaveClass(/topbar-auto-open/);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-  await bar.getByRole("navigation", { name: "Workstreams" }).getByRole("button", { name: "Scratch" }).click();
+  await bar.getByRole("navigation", { name: "Workspaces" }).getByRole("button", { name: "Scratch" }).click();
   await bar.getByRole("button", { name: "Go to" }).click();
   const go = page.getByRole("navigation", { name: "Go to" });
   await go.getByRole("link", { name: /^Activity/ }).click();

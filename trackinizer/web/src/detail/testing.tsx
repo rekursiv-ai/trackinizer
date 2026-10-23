@@ -14,7 +14,7 @@ import type { LiveHub } from "../live/hub";
 import { RouterProvider } from "../router/router";
 import { ToastProvider } from "../ui/toast";
 import { type ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
-import { type WorkspaceActions, WorkspaceActionsProvider } from "../visuals/workspaceActions";
+import { type CanvasActions, CanvasActionsProvider } from "../visuals/canvasActions";
 import { DetailView, type DetailTarget } from ".";
 
 const ALL_KINDS = ["Issue", "Artifact", "Experiment", "Paper", "Belief", "CodeChange", "WebResult", "WebSearch", "AgentSession"];
@@ -71,7 +71,7 @@ export const META: Meta = {
 };
 
 /** The signed-in user the detail renders for: a writer, so its editors show. */
-export const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED };
+export const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_canvas_enabled: false, ...AGREED };
 
 /** A stable, distinct UUID for test number `n`. */
 export function uuid(n: number): string {
@@ -180,7 +180,7 @@ export function serveDetails(details: readonly Detail[], confidence = 0.5): Sent
  * the one a 401 would end, `commands` the registry the palette would list,
  * `hub` the live stream's, if it is to keep the detail current, `onCommit` is
  * told of each commit of the detail's tree, `highlights` is the canvas's marks,
- * none by default, `workspace` is the canvas the detail shows inside, if any, and
+ * none by default, `canvas` is the canvas the detail shows inside, if any, and
  * `chat` is the shell's Chat feed, if the page is to continue a chat in it.
  */
 export function renderDetail(
@@ -193,7 +193,7 @@ export function renderDetail(
     hub = null,
     onCommit = () => {},
     highlights = new HighlightStore(),
-    workspace = null,
+    canvas = null,
     chat = null,
   }: {
     profile?: Profile;
@@ -202,7 +202,7 @@ export function renderDetail(
     hub?: LiveHub | null;
     onCommit?: () => void;
     highlights?: HighlightStore;
-    workspace?: WorkspaceActions | null;
+    canvas?: CanvasActions | null;
     chat?: ChatFeed | null;
   } = {},
 ) {
@@ -217,13 +217,13 @@ export function renderDetail(
                   <LiveContext value={hub}>
                     <Shortcuts />
                     <ChatFeedContext value={chat}>
-                      <WorkspaceActionsProvider value={workspace}>
+                      <CanvasActionsProvider value={canvas}>
                         <Profiler id="detail" onRender={onCommit}>
                           <HighlightContext value={highlights}>
                             <DetailView target={target} />
                           </HighlightContext>
                         </Profiler>
-                      </WorkspaceActionsProvider>
+                      </CanvasActionsProvider>
                     </ChatFeedContext>
                   </LiveContext>
                 </RouterProvider>

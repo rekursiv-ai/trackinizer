@@ -20,7 +20,7 @@ export type Profile = {
   name: string;
   role: string;
   last_login: string | null;
-  visual_workspace_enabled: boolean;
+  visual_canvas_enabled: boolean;
   /**
    * The user's preferences, every key, defaults filled (`src/preferences.ts`);
    * absent from a server older than them, whose page shows the defaults.
@@ -116,9 +116,9 @@ export async function setPreferences(
 }
 
 /** Persist the account's opt-in for the agent-guided canvas. */
-export async function setVisualWorkspacePreference(enabled: boolean): Promise<{ enabled: boolean }> {
+export async function setVisualCanvasPreference(enabled: boolean): Promise<{ enabled: boolean }> {
   return send(TIMEOUT_MS.write, undefined, (signal) =>
-    client.PUT("/api/me/visual-workspace", { body: { enabled }, signal }),
+    client.PUT("/api/me/visual-canvas", { body: { enabled }, signal }),
   );
 }
 

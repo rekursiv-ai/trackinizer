@@ -45,7 +45,7 @@ export default defineConfig({
       // lists (e2e/machines-menu.spec.ts).
       TRACKINIZER_COMPUTE: JSON.stringify([
         { name: "GPU jobs", about: "Campaigns send their GPU work to a shared queue; nothing to connect." },
-        { name: "Workspace box", about: "Each chat's assistant gets a shell of its own, made for the workspace." },
+        { name: "Workspace box", about: "Each chat's assistant gets a shell of its own, made for the canvas." },
       ]),
     },
     url: `http://127.0.0.1:${port}/app/`,

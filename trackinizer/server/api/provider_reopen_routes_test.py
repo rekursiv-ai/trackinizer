@@ -19,7 +19,7 @@ from trackinizer.server.api.canvas_test_support import (
     act_as_user_agent,
     browser,
     drain,
-    open_workspace,
+    open_canvas,
     revision_of,
     seed_accounts,
     seed_session,
@@ -44,20 +44,20 @@ async def test_switching_a_closed_chat_reopens_it_for_the_new_provider(
 ) -> None:
     client, store = pglite_route_client
     monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    workspace, conversation, session = await _closed_chat(
+    canvas, conversation, session = await _closed_chat(
         client,
         store=store,
         provider="codex" if provider == "claude" else "claude",
         account=TEST_USER_EMAIL.upper() if provider == "claude" else TEST_USER_EMAIL,
     )
-    revision = await revision_of(client, workspace_id=workspace)
+    revision = await revision_of(client, canvas_id=canvas)
     key = str(uuid.uuid4())
     operation = {
         "revision": revision,
         "operation": {"kind": "provider", "provider": provider},
     }
     chosen = await client.post(
-        f"/api/workspaces/{workspace}/operations",
+        f"/api/canvases/{canvas}/operations",
         json=operation,
         headers={"Idempotency-Key": key},
     )
@@ -95,7 +95,7 @@ async def test_switching_a_closed_chat_reopens_it_for_the_new_provider(
     ended = await client.post(f"/api/sessions/{session}/end", json={})
     assert ended.status_code == 200, ended.text
     replay = await client.post(
-        f"/api/workspaces/{workspace}/operations",
+        f"/api/canvases/{canvas}/operations",
         json=operation,
         headers={"Idempotency-Key": key},
     )
@@ -133,10 +133,10 @@ async def test_a_noop_or_refused_switch_leaves_the_chat_closed(
 ) -> None:
     client, store = pglite_route_client
     monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    workspace, conversation, _ = await _closed_chat(client, store=store)
-    revision = await revision_of(client, workspace_id=workspace)
+    canvas, conversation, _ = await _closed_chat(client, store=store)
+    revision = await revision_of(client, canvas_id=canvas)
     chosen = await client.post(
-        f"/api/workspaces/{workspace}/operations",
+        f"/api/canvases/{canvas}/operations",
         json={
             "revision": revision + int(stale),
             "operation": {
@@ -160,7 +160,7 @@ async def _closed_chat(
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     """Seed an assistant-origin chat and close it through the browser."""
     await seed_accounts(store)
-    workspace = await open_workspace(client)
+    canvas = await open_canvas(client)
     conversation = uuid.uuid4()
     session = await seed_session(
         store,
@@ -174,10 +174,10 @@ async def _closed_chat(
     )
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "UPDATE visual_workspaces SET station = station || "
+            "UPDATE visual_canvases SET metadata = metadata || "
             "jsonb_build_object('conversation_id', $2::text), state = state || "
             "jsonb_build_object('provider', $3::text) WHERE id = $1",
-            workspace,
+            canvas,
             str(conversation),
             provider,
         )
@@ -189,7 +189,7 @@ async def _closed_chat(
         )
     closed = await client.post(f"/api/sessions/{session}/end", json={})
     assert closed.status_code == 200, closed.text
-    return workspace, conversation, session
+    return canvas, conversation, session
 
 
 if __name__ == "__main__":

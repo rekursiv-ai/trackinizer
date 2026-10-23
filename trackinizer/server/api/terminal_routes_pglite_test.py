@@ -196,7 +196,7 @@ class _World:
         cookie: str,
         *,
         machine: str = "gx10",
-        workspace: uuid.UUID | None = None,
+        canvas: uuid.UUID | None = None,
         origin: str | None = _ORIGIN,
         requested_by: str | None = None,
         surface: str | None = None,
@@ -218,8 +218,8 @@ class _World:
             body["run_name"] = run_name
         if cwd is not None:
             body["cwd"] = cwd
-        if workspace is not None:
-            body["workspace"] = str(workspace)
+        if canvas is not None:
+            body["canvas"] = str(canvas)
         return await self.call(
             "POST",
             wire_terminals.TERMINALS_PATH,
@@ -227,18 +227,18 @@ class _World:
             body=body,
         )
 
-    async def station(self, user_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
-        workspace, workstream = uuid.uuid4(), uuid.uuid4()
+    async def canvas(self, user_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
+        canvas, workspace = uuid.uuid4(), uuid.uuid4()
         async with self.store.engine.acquire() as conn:
             await conn.execute(
-                "INSERT INTO visual_workspaces (id, user_id, state, station) "
+                "INSERT INTO visual_canvases (id, user_id, state, metadata) "
                 "VALUES ($1, $2, '{}', jsonb_build_object('name', 's', "
-                "'workstream_id', $3::text))",
-                workspace,
+                "'workspace_id', $3::text))",
+                canvas,
                 user_id,
-                str(workstream),
+                str(workspace),
             )
-        return workspace, workstream
+        return canvas, workspace
 
 
 @pytest.fixture
@@ -377,18 +377,18 @@ async def test_an_owner_opens_a_terminal_and_bytes_flow_both_ways_until_exit(
     cookie = world.cookie(ada)
     await world.join(cookie)
     await world.wait()
-    workspace, workstream = await world.station(ada)
+    canvas, workspace = await world.canvas(ada)
 
     terminal_id, ticket = _opened(
-        await world.open(cookie, workspace=workspace, requested_by="helper-1"),
+        await world.open(cookie, canvas=canvas, requested_by="helper-1"),
     )
     offered = from_plain((await world.wait()).json(), dict[str, object])
     assert offered["requested_by"] == "helper-1"
     assert offered["terminal_id"] == str(terminal_id)
     assert (offered["opener"], offered["rows"], offered["cols"]) == ("ada@x.y", 24, 80)
-    assert (offered["workspace"], offered["workstream"]) == (
+    assert (offered["canvas"], offered["workspace"]) == (
+        str(canvas),
         str(workspace),
-        str(workstream),
     )
 
     browser = _browser_peer(world, cookie, terminal_id)
@@ -593,15 +593,15 @@ async def test_a_browser_that_reconnects_with_an_offset_gets_only_what_it_missed
     await asyncio.gather(task, tasks[1])
 
 
-async def test_the_listing_names_every_live_terminal_of_the_station_with_its_surface(
+async def test_the_listing_names_every_live_terminal_of_the_canvas_with_its_surface(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
     bob = await world.person("bob@x.y")
     cookie = world.cookie(ada)
     await world.join(cookie)
-    workspace, _ = await world.station(ada)
-    path = f"{wire_terminals.TERMINAL_MACHINES_PATH}?workspace={workspace}"
+    canvas, _ = await world.canvas(ada)
+    path = f"{wire_terminals.TERMINAL_MACHINES_PATH}?canvas={canvas}"
 
     before = from_plain(
         (await world.call("GET", path, headers=world.browser(cookie))).json(),
@@ -616,15 +616,15 @@ async def test_the_listing_names_every_live_terminal_of_the_station_with_its_sur
             "clis": [],
         },
     ]
-    not_asked = await world.open(cookie, workspace=workspace)
+    not_asked = await world.open(cookie, canvas=canvas)
     assert (not_asked.status_code, _code(not_asked)) == (409, "terminal_not_enabled")
 
     await world.wait()
     first, _ = _opened(
-        await world.open(cookie, workspace=workspace, surface="chat"),
+        await world.open(cookie, canvas=canvas, surface="chat"),
     )
     second, _ = _opened(
-        await world.open(cookie, workspace=workspace, surface="tile-1"),
+        await world.open(cookie, canvas=canvas, surface="tile-1"),
     )
     after = from_plain(
         (await world.call("GET", path, headers=world.browser(cookie))).json(),
@@ -669,11 +669,11 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
     await world.join(cookie, name="laptop")
     await world.join(cookie, name="gx10")
     await world.wait()
-    workspace, _ = await world.station(ada)
+    canvas, _ = await world.canvas(ada)
     path = wire_terminals.TERMINAL_MACHINES_PATH
 
     def owned(email: str) -> str:
-        return f"{path}?owner={email}&workspace={workspace}"
+        return f"{path}?owner={email}&canvas={canvas}"
 
     for_ada = await world.call("GET", owned("ada@x.y"), headers=assistant)
     for_bob = await world.call("GET", owned("bob@x.y"), headers=assistant)
@@ -805,13 +805,13 @@ async def test_the_assistant_opens_only_a_detached_run_on_its_askers_machine(
     cookie = world.cookie(ada)
     await world.join(cookie, facts={"clis": ["claude"]})
     await world.wait()
-    station, _ = await world.station(ada)
+    canvas, _ = await world.canvas(ada)
     session = uuid.uuid4()
     body = {
         "machine": "gx10",
         "rows": 40,
         "cols": 120,
-        "workspace": str(station),
+        "canvas": str(canvas),
         "command": "claude",
         "attach": str(session),
         "run_name": "campaign-issue-7",
@@ -841,7 +841,7 @@ async def test_the_assistant_opens_only_a_detached_run_on_its_askers_machine(
     )
 
 
-async def test_campaign_brief_waits_for_the_askers_run_and_places_in_its_station(
+async def test_campaign_brief_waits_for_the_askers_run_and_places_in_its_canvas(
     world: _World,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -857,7 +857,7 @@ async def test_campaign_brief_waits_for_the_askers_run_and_places_in_its_station
     )
     ada = await world.person("ada@x.y")
     assistant = await world.person("kb@x.y")
-    station, _ = await world.station(ada)
+    canvas, _ = await world.canvas(ada)
     assistant_key = {"Authorization": f"Bearer {await world.key(assistant)}"}
     owner_key = {"Authorization": f"Bearer {await world.key(ada)}"}
     started = await world.call(
@@ -897,7 +897,7 @@ async def test_campaign_brief_waits_for_the_askers_run_and_places_in_its_station
         "POST",
         f"/api/sessions/{session}/place",
         headers=owner_key,
-        body={"workspace": str(station)},
+        body={"canvas": str(canvas)},
     )
     drained = await world.call(
         "GET",
@@ -911,7 +911,7 @@ async def test_campaign_brief_waits_for_the_askers_run_and_places_in_its_station
         200,
     )
     assert from_plain(queued.json(), dict[str, object])["queued"] == 1
-    assert from_plain(placed.json(), dict[str, object])["workspace_id"] == str(station)
+    assert from_plain(placed.json(), dict[str, object])["canvas_id"] == str(canvas)
     assert "Probe" in drained.text
 
 
@@ -935,12 +935,12 @@ async def test_the_assistant_cannot_open_a_shell_or_another_askers_machine(
     assistant = await world.person("kb@x.y")
     await world.join(world.cookie(bob), facts={"clis": ["claude"]})
     await world.wait()
-    station, _ = await world.station(ada)
+    canvas, _ = await world.canvas(ada)
     body = {
         "machine": "gx10",
         "rows": 40,
         "cols": 120,
-        "workspace": str(station),
+        "canvas": str(canvas),
         "command": "claude",
         "attach": str(uuid.uuid4()),
         "run_name": "campaign-issue-7",
@@ -1012,8 +1012,8 @@ async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_mac
         body={"machine": "gx10", "rows": 24, "cols": 80},
     )
     assert keyed.status_code == 403
-    stranger_station, _ = await world.station(bob)
-    assert (await world.open(cookie, workspace=stranger_station)).status_code == 404
+    stranger_canvas, _ = await world.canvas(bob)
+    assert (await world.open(cookie, canvas=stranger_canvas)).status_code == 404
     for _ in range(wire_terminals.MAX_OPENS_PER_MIN_PER_USER):
         _opened(await world.open(cookie))
     over = await world.open(cookie)
@@ -1625,16 +1625,16 @@ _OLD_RUN = "a" * 32
 
 
 class _Chat:
-    """A person's chat on claude: its session, its station, and the run that drained it."""
+    """A person's chat on claude: its session, its canvas, and the run that drained it."""
 
     def __init__(
         self,
         session: uuid.UUID,
-        station: uuid.UUID,
+        canvas: uuid.UUID,
         conversation: uuid.UUID,
     ) -> None:
         self.session = session
-        self.station = station
+        self.canvas = canvas
         self.conversation = conversation
 
 
@@ -1645,7 +1645,7 @@ async def _chat(
     *,
     provider: str = "claude",
 ) -> _Chat:
-    """Give a person a station on ``provider`` holding a chat their key opened."""
+    """Give a person a canvas on ``provider`` holding a chat their key opened."""
     async with world.store.engine.acquire() as conn:
         key_id, _, _, _ = await create_api_key(
             conn,
@@ -1663,17 +1663,17 @@ async def _chat(
         labels=[SCIENCE_CHAT_LABEL],
         polled=False,
     )
-    station = uuid.uuid4()
+    canvas = uuid.uuid4()
     async with world.store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO visual_workspaces (id, user_id, station, state) "
+            "INSERT INTO visual_canvases (id, user_id, metadata, state) "
             "VALUES ($1, $2, $3, $4)",
-            station,
+            canvas,
             user_id,
-            {"name": f"s-{station.hex[:6]}", "conversation_id": str(conversation)},
+            {"name": f"s-{canvas.hex[:6]}", "conversation_id": str(conversation)},
             {"visuals": [], "provider": provider},
         )
-    return _Chat(session, station, conversation)
+    return _Chat(session, canvas, conversation)
 
 
 def _taken_over(chat: _Chat) -> None:
@@ -1745,7 +1745,7 @@ async def test_a_chat_taken_over_is_reopened_headless_where_it_ran(
         str(chat.session),
         "~/work",
     )
-    assert (offered["opener"], offered["workspace"]) == ("ada@x.y", str(chat.station))
+    assert (offered["opener"], offered["canvas"]) == ("ada@x.y", str(chat.canvas))
     # The taken-over run's own name: a launch of it ends that host and resumes the
     # CLI session its terminal continued.
     assert offered["run_name"] == "chat-aaaaaaaa"

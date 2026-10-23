@@ -62,7 +62,7 @@ _DEFAULT_SESSION_MAX_AGE_SECONDS: int = (
 
 
 type ChatOrgs = Literal["single", "domain", "individual"]
-"""What an organisation is on this server, as a chat workspace has it: everyone
+"""What an organisation is on this server, as a chat canvas has it: everyone
 (``single``), the people whose verified email has one domain (``domain``), or each
 person alone (``individual``). A person reads the open sessions and science chats of
 their organisation besides their own and the chats shared with them."""

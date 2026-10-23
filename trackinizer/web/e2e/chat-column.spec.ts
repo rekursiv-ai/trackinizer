@@ -65,7 +65,7 @@ test("the divider resizes Chat by pointer and by arrow keys, never under 280 px,
   const edge = page.getByRole("separator", { name: "Resize Chat" });
   const before = (await box(column)).width;
   const at = await box(edge);
-  // The width goes to the station a moment after the drag; a reload before that would lose it.
+  // The width goes to the canvas a moment after the drag; a reload before that would lose it.
   const kept = page.waitForResponse((response) => response.url().endsWith("/layout") && response.ok());
   await page.mouse.move(at.x + at.width / 2, at.y + 300);
   await page.mouse.down();
@@ -165,14 +165,14 @@ test("a workbench of three columns hides Chat, and closing one gives it back", a
   const issue = (await (await request.post("/api/inquiries/issue", {
     data: { title: `Three columns ${crypto.randomUUID().slice(0, 8)}`, idempotency_key: crypto.randomUUID() },
   })).json()) as { id: string };
-  let station = (await (await request.post("/api/workspaces")).json()) as { id: string; revision: number };
+  let canvas = (await (await request.post("/api/canvases")).json()) as { id: string; revision: number };
   for (const [type, placement] of [["trax.timeline", "left"], ["trax.subgraph", "side"]] as const) {
-    const answer = await request.post(`/api/workspaces/${station.id}/operations`, {
+    const answer = await request.post(`/api/canvases/${canvas.id}/operations`, {
       headers: { "Idempotency-Key": crypto.randomUUID() },
-      data: { revision: station.revision, operation: { kind: "show", visual_type: type, placement, record_id: issue.id } },
+      data: { revision: canvas.revision, operation: { kind: "show", visual_type: type, placement, record_id: issue.id } },
     });
     expect(answer.ok(), await answer.text()).toBe(true);
-    station = (await answer.json()) as typeof station;
+    canvas = (await answer.json()) as typeof canvas;
   }
   await page.setViewportSize({ width: 1600, height: 900 });
   await page.goto(`/app/#/lookup/${issue.id}`);

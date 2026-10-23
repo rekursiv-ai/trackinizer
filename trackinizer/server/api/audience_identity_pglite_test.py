@@ -94,7 +94,7 @@ async def _profile(client: httpx2.AsyncClient, secret: str) -> dict[str, object]
 
 
 @pytest.mark.usefixtures("staff_setting")
-async def test_a_workspace_member_and_a_literal_address_are_staff_and_nobody_else(
+async def test_a_canvas_member_and_a_literal_address_are_staff_and_nobody_else(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client

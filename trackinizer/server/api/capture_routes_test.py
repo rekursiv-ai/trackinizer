@@ -23,7 +23,7 @@ from trackinizer.server.api.canvas_test_support import (
     act_as_other_agent,
     act_as_user_agent,
     browser,
-    open_workspace,
+    open_canvas,
     seed_accounts,
     seed_converse,
     seed_session,
@@ -86,9 +86,9 @@ async def _canvas(client: httpx2.AsyncClient, *, store: Store) -> uuid.UUID:
     """Open a canvas whose chat the assistant holds, so its key is the partner."""
     await seed_accounts(store)
     await seed_session(store, ASSISTANT, actor=KB_ACTOR)
-    workspace_id = await open_workspace(client)
-    _ = await seed_converse(client, store, workspace_id=workspace_id, text="hi")
-    return workspace_id
+    canvas_id = await open_canvas(client)
+    _ = await seed_converse(client, store, canvas_id=canvas_id, text="hi")
+    return canvas_id
 
 
 async def _requested(stream: Subscription) -> uuid.UUID:
@@ -100,23 +100,23 @@ async def _requested(stream: Subscription) -> uuid.UUID:
 
 def _ask(
     client: httpx2.AsyncClient,
-    workspace_id: uuid.UUID,
+    canvas_id: uuid.UUID,
 ) -> asyncio.Task[httpx2.Response]:
     """Ask as the partner key; the request waits for a page."""
     act_as_assistant()
-    return asyncio.create_task(client.post(f"/api/workspaces/{workspace_id}/captures"))
+    return asyncio.create_task(client.post(f"/api/canvases/{canvas_id}/captures"))
 
 
 async def _answer(
     client: httpx2.AsyncClient,
-    workspace_id: uuid.UUID,
+    canvas_id: uuid.UUID,
     request: uuid.UUID,
     *,
     body: dict[str, object] | bytes,
 ) -> httpx2.Response:
     """Answer as the signed-in owner."""
     browser()
-    path = f"/api/workspaces/{workspace_id}/captures/{request}"
+    path = f"/api/canvases/{canvas_id}/captures/{request}"
     if isinstance(body, bytes):
         return await client.put(path, content=body)
     return await client.put(path, json=body)
@@ -130,12 +130,12 @@ async def test_the_partner_gets_the_picture_the_owners_page_sends(
     served: ChatHub,
 ) -> None:
     client, store = pglite_route_client
-    workspace_id = await _canvas(client, store=store)
-    with served.subscribe(workspace_id) as stream:
-        asked = _ask(client, workspace_id)
+    canvas_id = await _canvas(client, store=store)
+    with served.subscribe(canvas_id) as stream:
+        asked = _ask(client, canvas_id)
         request = await _requested(stream)
         assert stream.queue.empty()
-        sent = await _answer(client, workspace_id, request, body=_picture())
+        sent = await _answer(client, canvas_id, request, body=_picture())
         got = await asked
 
     assert sent.status_code == 204
@@ -151,9 +151,9 @@ async def test_only_the_canvass_partner_key_may_ask(
     served: ChatHub,
 ) -> None:
     client, store = pglite_route_client
-    workspace_id = await _canvas(client, store=store)
-    path = f"/api/workspaces/{workspace_id}/captures"
-    with served.subscribe(workspace_id) as stream:
+    canvas_id = await _canvas(client, store=store)
+    path = f"/api/canvases/{canvas_id}/captures"
+    with served.subscribe(canvas_id) as stream:
         browser()
         by_browser = await client.post(path)
         act_as_user_agent()
@@ -176,16 +176,16 @@ async def test_only_the_owners_browser_may_answer(
     served: ChatHub,
 ) -> None:
     client, store = pglite_route_client
-    workspace_id = await _canvas(client, store=store)
-    with served.subscribe(workspace_id) as stream:
-        asked = _ask(client, workspace_id)
+    canvas_id = await _canvas(client, store=store)
+    with served.subscribe(canvas_id) as stream:
+        asked = _ask(client, canvas_id)
         request = await _requested(stream)
-        path = f"/api/workspaces/{workspace_id}/captures/{request}"
+        path = f"/api/canvases/{canvas_id}/captures/{request}"
         act_as_assistant()
         by_key = await client.put(path, json=_picture())
         browser(uuid.uuid4(), email="stranger@example.com")
         by_stranger = await client.put(path, json=_picture())
-        by_owner = await _answer(client, workspace_id, request, body=_picture())
+        by_owner = await _answer(client, canvas_id, request, body=_picture())
         _ = await asked
 
     assert by_key.status_code == 403
@@ -201,12 +201,12 @@ async def test_the_first_answer_wins_and_a_later_one_is_refused(
     served: ChatHub,
 ) -> None:
     client, store = pglite_route_client
-    workspace_id = await _canvas(client, store=store)
-    with served.subscribe(workspace_id) as stream:
-        asked = _ask(client, workspace_id)
+    canvas_id = await _canvas(client, store=store)
+    with served.subscribe(canvas_id) as stream:
+        asked = _ask(client, canvas_id)
         request = await _requested(stream)
-        first = await _answer(client, workspace_id, request, body={"error": "first"})
-        second = await _answer(client, workspace_id, request, body=_picture())
+        first = await _answer(client, canvas_id, request, body={"error": "first"})
+        second = await _answer(client, canvas_id, request, body=_picture())
         got = await asked
 
     assert (first.status_code, second.status_code) == (204, 404)
@@ -222,11 +222,11 @@ async def test_no_page_open_or_none_answering_is_a_424(
     served: ChatHub,
 ) -> None:
     client, store = pglite_route_client
-    workspace_id = await _canvas(client, store=store)
+    canvas_id = await _canvas(client, store=store)
     act_as_assistant()
-    path = f"/api/workspaces/{workspace_id}/captures"
+    path = f"/api/canvases/{canvas_id}/captures"
     none_open = await client.post(path)
-    with served.subscribe(workspace_id) as stream:
+    with served.subscribe(canvas_id) as stream:
         silent = await client.post(path)
         assert isinstance(stream.queue.get_nowait(), CaptureFrame)
 
@@ -243,17 +243,17 @@ async def test_an_answer_over_the_cap_is_refused_and_the_request_keeps_waiting(
     served: ChatHub,
 ) -> None:
     client, store = pglite_route_client
-    workspace_id = await _canvas(client, store=store)
-    with served.subscribe(workspace_id) as stream:
-        asked = _ask(client, workspace_id)
+    canvas_id = await _canvas(client, store=store)
+    with served.subscribe(canvas_id) as stream:
+        asked = _ask(client, canvas_id)
         request = await _requested(stream)
         huge = await _answer(
             client,
-            workspace_id,
+            canvas_id,
             request,
             body=b" " * (MAX_ANSWER_BYTES + 1),
         )
-        later = await _answer(client, workspace_id, request, body=_picture())
+        later = await _answer(client, canvas_id, request, body=_picture())
         got = await asked
 
     assert huge.status_code == 413
@@ -269,14 +269,14 @@ async def test_a_malformed_answer_is_refused_without_echoing_the_picture(
     served: ChatHub,
 ) -> None:
     client, store = pglite_route_client
-    workspace_id = await _canvas(client, store=store)
+    canvas_id = await _canvas(client, store=store)
     bad = _picture(mime="image/jpeg")
-    with served.subscribe(workspace_id) as stream:
-        asked = _ask(client, workspace_id)
+    with served.subscribe(canvas_id) as stream:
+        asked = _ask(client, canvas_id)
         request = await _requested(stream)
-        refused = await _answer(client, workspace_id, request, body=bad)
-        unknown = await _answer(client, workspace_id, uuid.uuid4(), body=_picture())
-        _ = await _answer(client, workspace_id, request, body={"error": "done"})
+        refused = await _answer(client, canvas_id, request, body=bad)
+        unknown = await _answer(client, canvas_id, uuid.uuid4(), body=_picture())
+        _ = await _answer(client, canvas_id, request, body={"error": "done"})
         _ = await asked
 
     assert refused.status_code == 422
@@ -291,7 +291,7 @@ def test_the_answer_body_the_schema_declares_is_the_one_the_route_reads() -> Non
     the served app's whole schema took 0.7s, and the tests above reach this
     route through the served app.
     """
-    path = "/api/workspaces/{workspace_id}/captures/{capture_id}"
+    path = "/api/canvases/{canvas_id}/captures/{capture_id}"
     alone = FastAPI()
     alone.include_router(capture_routes.router)
     served: object = alone.openapi()

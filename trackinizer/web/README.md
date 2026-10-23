@@ -23,7 +23,7 @@ anyone when it runs with `--no-auth`. Any other browser gets the sign-in page.
 - `test/testdata/` holds the server's real answer to the calls of the
   modules in `fixtures_test.py`'s table (see
   [response shapes](#response-shapes-and-fixtures)); the canvas's and Chat's
-  calls (`workspaces`, `chats`, `code`, and the visuals, timeline and Artifact
+  calls (`canvases`, `chats`, `code`, and the visuals, timeline and Artifact
   modules) have none.
 - `e2e/` is the Playwright suite, `e2e/live/` its live and responsiveness part.
 - `scripts/` holds the schema dump, the local preview, the seed and writer
@@ -85,7 +85,7 @@ anyone when it runs with `--no-auth`. Any other browser gets the sign-in page.
 ### The calls
 
 Each call's fixture, where it has one, is
-`test/testdata/<module>/<function>.json`. The `workspaces`, `chats` and `code`
+`test/testdata/<module>/<function>.json`. The `canvases`, `chats` and `code`
 calls have none: the schema types them (`tsc` against `openapi.json`, kept in step
 by `openapi_drift_test.py`), and their API-module tests check what each sends and
 how it reads a frame or an answer.
@@ -117,11 +117,11 @@ how it reads a frame or an answer.
 | `sessions` | `listSessionParts` | `GET /api/sessions/{id}/parts` |
 | | `readSessionRecords` | `GET /api/sessions/{id}/records?part=&after_idx=&limit=&plaintext_only=true` |
 | | `sendSessionMessage` | `POST /api/sessions/{id}/inbound` (header `Idempotency-Key`) |
-| | `readFeed` | `GET /api/web/feed?tail=&conversation=&after_created=&after_session=&after_part=&after_seq=&since=&until=&limit=&actor=&room=&cli=&kind=&station=&whose=&hidden=` (each filter repeated per value) |
-| | `readFeedFacets` | `GET /api/web/feed/facets?since=&until=&actor=&room=&cli=&kind=&station=&whose=&hidden=` |
+| | `readFeed` | `GET /api/web/feed?tail=&conversation=&after_created=&after_session=&after_part=&after_seq=&since=&until=&limit=&actor=&room=&cli=&kind=&canvas=&whose=&hidden=` (each filter repeated per value) |
+| | `readFeedFacets` | `GET /api/web/feed/facets?since=&until=&actor=&room=&cli=&kind=&canvas=&whose=&hidden=` |
 | | `sendRoutedMessage` | `POST /api/messages` (header `Idempotency-Key`) |
 | | `setSessionAudience` | `POST /api/sessions/{id}/audience` (header `Idempotency-Key`; `{audience: "private" \| "open"}`) |
-| `histogram` | `readHistogram` | `GET /api/web/feed/histogram?since=&until=&buckets=&actor=&room=&cli=&kind=&station=&whose=&hidden=` |
+| `histogram` | `readHistogram` | `GET /api/web/feed/histogram?since=&until=&buckets=&actor=&room=&cli=&kind=&canvas=&whose=&hidden=` |
 | `admin` | `setInquiryLock` | `PUT /api/admin/inquiries/{id}/lock` |
 | | `listUsers` | `GET /api/admin/users` |
 | | `setUserRole` | `PUT /api/admin/users/{id}/role` |
@@ -132,7 +132,7 @@ how it reads a frame or an answer.
 | | `removeAllowlistEntry` | `DELETE /api/admin/allowlist/{entry}` |
 | `graph` | `getGraph` | `GET /api/web/graph?limit=` |
 | `stream` | `openStream` | `GET /api/web/subscribe` (server-sent events) |
-| `workspaces` | `openWorkspaceEvents` | `GET /api/workspaces/{id}/events` (server-sent events) |
+| `canvases` | `openCanvasEvents` | `GET /api/canvases/{id}/events` (server-sent events) |
 | `chats` | `listChats` | `GET /api/chats` |
 | | `getChatHead` | `GET /api/chats/{id}` (404 until the assistant opens the session: `null`) |
 | | `sendChatLine` | `POST /api/chats` (header `Idempotency-Key`; `conversationId` null starts a conversation; `fork` starts one from a line of another) |
@@ -283,8 +283,8 @@ with one response shape, so the fixtures take one per verb.
   each a history entry; j and k move within the deepest column, and Enter opens
   its selection. A click leaves the focus where it was, as a list's buttons do,
   so Enter after a click still opens the selection.
-- The workbench (the canvas) is on for everyone (`visual_workspace_enabled`
-  defaults true; Settings' Agent workspace opts out, "Enable agent-guided
+- The workbench (the canvas) is on for everyone (`visual_canvas_enabled`
+  defaults true; Settings' Agent canvas opts out, "Enable agent-guided
   workbench"). It has no toolbar row: its visual toggles and Artifact link are
   the top bar's Workbench menu (see the top bar below). It wraps every view
   but Settings and Admin, so Chat stays while an agent moves the page. Its chunk
@@ -360,71 +360,71 @@ with one response shape, so the fixtures take one per verb.
   other stays mounted, hidden, so Chat's draft, scroll and stream survive a swap,
   and a reload shows Chat.
   Nothing of Chat covers the canvas while an agent moves it.
-- A station is a chat: a canvas with at most one conversation, a name and the
-  page it last showed (`src/stations/`), in one of the user's workstreams, or in
+- A canvas is a chat: a canvas with at most one conversation, a name and the
+  page it last showed (`src/canvases/`), in one of the user's workspaces, or in
   Scratch when in none. The tab shows one at a time. Its id is the
-  one `stations/store.ts` holds, kept in the tab's `sessionStorage` so a reload
-  keeps it; a tab with none (a new tab) asks the server (`POST /api/workspaces`,
-  the station changed last, or the first), and a station that is gone is
-  replaced the same way. `useStation` reads it from the
-  cache the stream keeps (`["workspace", id]`), and `CanvasStream`, the canvas,
+  one `canvases/store.ts` holds, kept in the tab's `sessionStorage` so a reload
+  keeps it; a tab with none (a new tab) asks the server (`POST /api/canvases`,
+  the canvas changed last, or the first), and a canvas that is gone is
+  replaced the same way. `useCanvas` reads it from the
+  cache the stream keeps (`["canvas", id]`), and `CanvasStream`, the canvas,
   Chat and the Settings partner choice all read that one entry. Switching
-  (`showStation`) seeds the cache, reopens the stream for the new id and moves the
-  page to the station's own (the graph when it has none). The page is written back
+  (`showCanvas`) seeds the cache, reopens the stream for the new id and moves the
+  page to the canvas's own (the graph when it has none). The page is written back
   by `usePageSync` at most once every 500 ms, and not for a switch until the
-  address is where the switch sent it. The tab's title is `<station name> ·
+  address is where the switch sent it. The tab's title is `<canvas name> ·
   Trackinizer`.
-- The user's workstreams stand in the app's top bar
-  (`src/topbar/WorkstreamBar.tsx`, `GET /api/workstreams`), pinned ones first,
-  then the rest, in the order the user left them (`PUT /api/workstreams/order`).
-  Each is an Issue; Scratch holds the stations in none. A click on one opens its
-  pinned station, else the one changed last, or makes one when it has none. A
+- The user's workspaces stand in the app's top bar
+  (`src/topbar/WorkspaceBar.tsx`, `GET /api/workspaces`), pinned ones first,
+  then the rest, in the order the user left them (`PUT /api/workspaces/order`).
+  Each is an Issue; Scratch holds the canvases in none. A click on one opens its
+  pinned canvas, else the one changed last, or makes one when it has none. A
   double click renames it in place (Enter or leaving the field saves, Esc keeps
   the old name), and a drag moves it. Its right-click menu has Info (its Issue,
-  and its stations with their sessions), Pin or Unpin, Move left, Move right,
-  Rename and Hide; Scratch's has Info and Rename alone. `+ Workstream` makes
-  `Workstream N`, opens it and edits its name. A station left while a canvas
+  and its canvases with their sessions), Pin or Unpin, Move left, Move right,
+  Rename and Hide; Scratch's has Info and Rename alone. `+ Workspace` makes
+  `Workspace N`, opens it and edits its name. A canvas left while a canvas
   tab's steps are on their way gets none of the rest: they stay its own, and the
-  canvas finishes them when the station is on show again, before anything can
+  canvas finishes them when the canvas is on show again, before anything can
   keep the half-restored canvas as the tab's (`interrupt` in
   `src/visuals/canvasHistory.ts`).
-- Chat's header switches stations (`src/visuals/ChatWorkstreamHeader.tsx`). Its
-  name, "Scratch chat" for one never named (`unnamed-workstream#N`), edits the
+- Chat's header switches canvases (`src/visuals/ChatWorkspaceHeader.tsx`). Its
+  name, "Scratch chat" for one never named (`unnamed-canvas#N`), edits the
   name in place (Enter or leaving the field saves, Esc keeps the old name, a
   taken name says "You already have a chat with that name") over the chat menu:
-  the stations of its workstream, the pinned ones and then the five changed last,
-  each with Pin and Hide, then `+ New chat` and a search of every station by name,
-  hidden ones too (opening a hidden one shows it again). The workstream chip moves
-  the station to another workstream, made when none has the typed name, and a
-  chip offers the workstream the server suggests. The palette has New chat. There
+  the canvases of its workspace, the pinned ones and then the five changed last,
+  each with Pin and Hide, then `+ New chat` and a search of every canvas by name,
+  hidden ones too (opening a hidden one shows it again). The workspace chip moves
+  the canvas to another workspace, made when none has the typed name, and a
+  chip offers the workspace the server suggests. The palette has New chat. There
   is no History: the chat menu's search replaces it.
 - Chat talks to the server's assistant (`src/visuals/Chat.tsx`). A conversation is
   a science chat: an AgentSession (label `science-chat`, `cli_session_id`
   `chat:<conversation id>`) that the assistant opens. Chat reads the session's
   records; there is no chat store. Its header names the partner
-  (`workspace.partner`) and holds the chat menu and the workstream chip (above),
-  the flip to the station's terminal (`ChatTerminalSide.tsx`), the side button and
+  (`canvas.partner`) and holds the chat menu and the workspace chip (above),
+  the flip to the canvas's terminal (`ChatTerminalSide.tsx`), the side button and
   a ⋯ menu: Clear chat (a new chat on the same canvas), Hide panel or Pin panel,
-  Delete chat forever, Info (the station's and the chat's ids, and the session
-  the station was made for), and Public or Private and Share when the head allows
+  Delete chat forever, Info (the canvas's and the chat's ids, and the session
+  the canvas was made for), and Public or Private and Share when the head allows
   them (below). Flipped, the ⋯ menu adds Close terminal and Terminal help, and
   grays the items that act on the chat. Which conversation Chat shows is
-  the station's `conversation_id`, which the first line binds (the receipt's
-  `workspace_id` names the station it went to; a fork is a station of its own, which
+  the canvas's `conversation_id`, which the first line binds (the receipt's
+  `canvas_id` names the canvas it went to; a fork is a canvas of its own, which
   the tab then shows on the page it is on). Any other science chat opens by link: a
   session's page, or the Console line, offers Continue in Chat (`useContinueInChat`,
   `src/visuals/continueChat.ts`), which leaves a request on the shell's `ChatFeed` and
   shows Chat, if it is hidden; Chat resolves the session (`cli_session_id`, label),
-  and `POST /api/workspaces/for-chat/<conversation>` opens the user's station for it
+  and `POST /api/canvases/for-chat/<conversation>` opens the user's canvas for it
   (made, if there is none) and the tab shows that, or says "That session is not a
   science chat."
-- Every Console read is scoped. Opened inside a named station, it starts on that
-  station's agents: its feed, facets and histogram reads carry `station=<id>`
+- Every Console read is scoped. Opened inside a named canvas, it starts on that
+  canvas's agents: its feed, facets and histogram reads carry `canvas=<id>`
   (the sessions its chat started agents in, the chat itself left out) and
   `whose=everyone`, since those are the assistant's sessions, under no person's
   account. Anywhere else it starts on the person's own sessions, `whose=mine`.
-  The Scope control (This station, inside a station; Mine; My campaigns;
-  Everyone) switches it, for the station it was switched in: My campaigns is
+  The Scope control (This canvas, inside a canvas; Mine; My campaigns;
+  Everyone) switches it, for the canvas it was switched in: My campaigns is
   `whose=campaigns`, the sessions of the campaigns the person launched (the
   server matches the `<slug>:asker:<email>` label of their briefs), and Everyone
   is `whose=everyone`, every session the server's org mode lets them read. Show
@@ -436,12 +436,12 @@ with one response shape, so the fixtures take one per verb.
   its facets and histogram again, a hide's toast offers Undo, and a refusal
   (`session_not_owner`, `session_staff`, which the server sends as a code alone)
   has a sentence of its own. The scope and Show hidden belong to the tab, not
-  to the saved view. The station's own chat is hidden
+  to the saved view. The canvas's own chat is hidden
   widened too, and no `chat-*` actor is a message target (an `@` completion, a To
-  chip, `@*`, or a typed `@chat-...`, which says "open its station"); another
-  station's chat line offers Open station, which goes through Chat's for-chat
+  chip, `@*`, or a typed `@chat-...`, which says "open its canvas"); another
+  canvas's chat line offers Open canvas, which goes through Chat's for-chat
   switch. The box names its targets ("Message lead-2"). When a line's per-target
-  sends have all settled, one `POST /api/workspaces/<id>/relay` tells the station's
+  sends have all settled, one `POST /api/canvases/<id>/relay` tells the canvas's
   chat (only when its head says `forks_on_typing` is false; a chat the person does
   not read is not theirs to speak into), with the targets that took it, under a
   key made with the line's route (a
@@ -480,7 +480,7 @@ with one response shape, so the fixtures take one per verb.
   refuses as such (409 `chat_fork_closed`, the chat closed after the line was
   picked) drops the picked line, keeps the draft, says why and reads the head
   again. A post that names a deleted chat (410
-  `chat_deleted`), or a head read that does, lets that chat go: the station
+  `chat_deleted`), or a head read that does, lets that chat go: the canvas
   holds no conversation, and a post starts a new chat with the same line. A fork
   opens with the original's lines up to the one picked, so mine among them are
   not waited for as a new line (`linesThrough`). The head also says how often a chat
@@ -501,10 +501,10 @@ with one response shape, so the fixtures take one per verb.
   (`chatLink`), the session's page, whose Continue in Chat opens the chat; it
   grants nothing, and the panel says who it opens for by the head's `audience`.
   Delete chat forever (`DeleteChat`) asks "Delete this chat? Its
-  forks keep their copies." first; once the server has deleted it the station
+  forks keep their copies." first; once the server has deleted it the canvas
   holds no conversation (its cached `conversation_id` is null), and Chat hides the
-  now-empty station (`hideStation`, `PATCH /api/workspaces/<id>`) and opens the
-  visible station beside it (`neighbourOf`). When there is none it stays, on an
+  now-empty canvas (`hideCanvas`, `PATCH /api/canvases/<id>`) and opens the
+  visible canvas beside it (`neighbourOf`). When there is none it stays, on an
   empty chat whose next line starts a new one. A refused share or delete is one
   toast line:
   `chat_not_starter`, `chat_has_other_posters` and `chat_staff_only` (a share of a
@@ -552,7 +552,7 @@ with one response shape, so the fixtures take one per verb.
   before the send). If none appears, Chat says the assistant has not opened the
   chat and the line can be sent again. "Working: <tool>…" shows while the last
   record is a tool call or a line with no answer after it. Should the partner go
-  away (`workspace.partner.status` not live), the working line gives way to
+  away (`canvas.partner.status` not live), the working line gives way to
   "<actor> has ended." or "is unavailable.", and the box is disabled. A viewer
   reads a chat but cannot post (`POST /api/chats` needs a writer): in place of the
   box Chat says "Viewers can read this chat but not post."
@@ -651,7 +651,7 @@ with one response shape, so the fixtures take one per verb.
 - The app has one bar, along the top over Chat and the canvas
   (`src/topbar/TopBar.tsx`), and no sidebar: the logo (home, the graph), Go,
   Search (⌘K), New for the kind on screen (its icon alone), the user's
-  workstreams and `+ Workstream` (with the canvas only), the pin, Machines, the
+  workspaces and `+ Workspace` (with the canvas only), the pin, Machines, the
   Workbench and the account. It folds away, leaving an 8 px strip along the window's top
   (Open app bar): the pointer resting on the strip or the bar for 120 ms, or a
   click or tap on the strip, opens it, and it folds 300 ms after the pointer and
@@ -676,7 +676,7 @@ with one response shape, so the fixtures take one per verb.
   without sign-in and a viewer read none. The menu's body is a chunk of its
   own. Settings has a Close link in its header, back to the last page
   before Settings or Admin, or the graph; the page is as wide as its sections, so
-  Close stands at their edge. On a phone (760 px and narrower) `+ Workstream`
+  Close stands at their edge. On a phone (760 px and narrower) `+ Workspace`
   shows its + alone, the account's email stays hidden, and Go reaches every page.
 - The account stands at the bar's end, as Google's does (`AccountMenu.tsx`): the
   avatar alone at rest, which the pointer resting on it widens to show the email
@@ -935,9 +935,9 @@ with one response shape, so the fixtures take one per verb.
   server so any browser finds them: each view's id, name, pin, start time, agents,
   rooms, CLIs, level and range. A view saves itself on every change; a new
   "Untitled view" is stored on its first. Pinned views list first, then the rest,
-  each newest first. The open view's id lives in the station's layout, so a reload
+  each newest first. The open view's id lives in the canvas's layout, so a reload
   opens it again, another tab's edit shows, and another tab's delete opens the
-  first view left; a station with none opens the first view. When the server
+  first view left; a canvas with none opens the first view. When the server
   refuses a change, the open view still shows it, unsaved. A browser that kept
   views under `trackinizer.v2.console.<email>` has them merged into the user's
   once, by id with the server's copy winning, and the key removed
@@ -957,10 +957,10 @@ with one response shape, so the fixtures take one per verb.
   `console.rail`. A new tab starts with each expanded.
 - Drafts live in their editor's state, never in a cached row, so a refetch
   leaves them alone.
-- The canvas's state is `["workspace", id]` in the cache, filled by the shell's
-  workspace events stream (`newerWorkspace` keeps the newest revision) and, once,
+- The canvas's state is `["canvas", id]` in the cache, filled by the shell's
+  canvas events stream (`newerCanvas` keeps the newest revision) and, once,
   by a read. A conversation's records are `["chat", "records", session]` and its head
-  `["chat", "head", id]`; the user's stations are `["stations"]`. What is not records
+  `["chat", "head", id]`; the user's canvases are `["canvases"]`. What is not records
   (how often the stream opened and a Continue in Chat request) is the shell's `ChatFeed`
   (`src/visuals/chatFeed.ts`), above Chat, which is a lazy chunk that may load
   after a frame arrived and mount again.
@@ -1027,12 +1027,12 @@ tunnel), which tells which hop holds headers or cuts an idle stream; see its
   every query does. A hidden tab fetches nothing and only collects ids.
 - After the stream has been down 10 s, a bar says live updates are paused.
 
-### The workspace events stream
+### The canvas events stream
 
 With the canvas on, the tab has one stream, and it is not `/api/web/subscribe`:
 `CanvasStream` (`src/app/canvasStream.tsx`), above the routes, creates the user's
-workspace and opens `openWorkspaceEvents` (`src/api/workspaces.ts`), one
-`EventSource` on `/api/workspaces/{id}/events`. It carries the inquiry ids too,
+canvas and opens `openCanvasEvents` (`src/api/canvases.ts`), one
+`EventSource` on `/api/canvases/{id}/events`. It carries the inquiry ids too,
 so the live layer takes them from it, and the early `/api/web/subscribe` stream
 that `main.tsx` opens before the profile is known is closed once the profile
 says the canvas is on. A user who opted out keeps `/api/web/subscribe` as above.
@@ -1045,7 +1045,7 @@ to the live layer, which recovers a gap as it does for `/api/web/subscribe`
 
 | Frame | Does |
 |---|---|
-| `{type: "workspace", state, t}` | The canvas as it stands: on every open, after every applied operation, and when the partner changes. Applied through `newerWorkspace`, so a frame never regresses a revision. |
+| `{type: "canvas", state, t}` | The canvas as it stands: on every open, after every applied operation, and when the partner changes. Applied through `newerCanvas`, so a frame never regresses a revision. |
 | `{type: "navigate", route, t}` | An agent moved the page: the browser goes to `route` when `parseHash` accepts it. |
 | `{type: "highlight", ids, t}` | An agent pointed at inquiries: the tab's highlight store (`app/highlights.ts`) takes `ids` as its marks, replacing the last; `[]` clears. The graph rings those nodes, list rows and the rail's peers take `is-highlighted`, and a record page marks its own header. Not state: a closed stream clears them. |
 | `{type: "changed", id, t}` | An inquiry changed, as `/api/web/subscribe` says it. A record appended to a science chat's session changes it, so an open Chat reads what the session gained. |
@@ -1178,7 +1178,7 @@ second user. `src/writes/cas.live.test.tsx` runs only with
 `TRACKINIZER_LIVE_URL` naming a disposable local server.
 
 `e2e/live/canvas-push.spec.ts` is the canvas's push bar: it applies 20
-operations per visual type through `POST /api/workspaces/{id}/operations`, and
+operations per visual type through `POST /api/canvases/{id}/operations`, and
 20 navigations, waits for each paint (`trackinizer.timings()`), and writes p50,
 p90 and max of `paint wall time - frame t` (and, for the context graph, timeline
 and Artifact, of the data's paint, and for a navigation, of the target page drawn
@@ -1298,7 +1298,7 @@ fingerprint being the first 24 hex digits of the SHA-256 of the five files'
 - `trackinizer.timings()` returns the canvas's timing marks, the last 200 pushed
   frames, each with its `t` (server epoch milliseconds), when it arrived
   (`received`, `performance.now()`, and `receivedWall`, epoch milliseconds) and
-  its marks. A `workspace` frame has its `revision` and the marks of the visuals
+  its marks. A `canvas` frame has its `revision` and the marks of the visuals
   it changed: `paint` is the pane's content committed and painted (a lazy
   renderer's mark waits for the renderer, not its fallback), and `data`, for the
   context graph, the timeline and the Artifact, is its data painted. A

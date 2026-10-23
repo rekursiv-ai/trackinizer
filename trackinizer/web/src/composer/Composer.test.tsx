@@ -39,7 +39,7 @@ test("history recalls messages and restores the unfinished draft without changin
   const entries = ["First question", "Second question"];
   render(<QueryClientProvider client={client}>
     <Composer send={async () => ""} target="chat" enabled placeholder="Write" failure={() => "failed"}
-      history={{ key: "station-a", entries }} />
+      history={{ key: "canvas-a", entries }} />
   </QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
   fireEvent.change(box, { target: { value: "Unfinished" } });
@@ -60,7 +60,7 @@ test("editing a recalled message keeps the way back to the unfinished draft", ()
   const client = new QueryClient();
   render(<QueryClientProvider client={client}>
     <Composer send={async () => ""} target="chat" enabled placeholder="Write" failure={() => "failed"}
-      history={{ key: "station-a", entries: ["First question", "Second question"] }} />
+      history={{ key: "canvas-a", entries: ["First question", "Second question"] }} />
   </QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
   fireEvent.change(box, { target: { value: "Unfinished" } });
@@ -77,7 +77,7 @@ test("a send ends recall: Down after it does not bring back the old unfinished d
   const client = new QueryClient();
   render(<QueryClientProvider client={client}>
     <Composer send={async () => ""} target="chat" enabled placeholder="Write" failure={() => "failed"}
-      history={{ key: "station-a", entries: ["Old"] }} />
+      history={{ key: "canvas-a", entries: ["Old"] }} />
   </QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
   fireEvent.change(box, { target: { value: "Unfinished" } });
@@ -111,7 +111,7 @@ test.each([
   render(<QueryClientProvider client={client}>
     <Composer send={async () => ""} target="chat" enabled placeholder="Write" failure={() => "failed"}
       field={(props, edit) => <AtField field={props} edit={edit} />}
-      history={{ key: "station-a", entries: [entry] }} />
+      history={{ key: "canvas-a", entries: [entry] }} />
   </QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
   box.focus();
@@ -132,7 +132,7 @@ test("history leaves multiline movement, selections, modifiers and composing key
   const client = new QueryClient();
   render(<QueryClientProvider client={client}>
     <Composer send={async () => ""} target="chat" enabled placeholder="Write" failure={() => "failed"}
-      history={{ key: "station-a", entries: ["Old question"] }} />
+      history={{ key: "canvas-a", entries: ["Old question"] }} />
   </QueryClientProvider>);
   const box = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
   fireEvent.change(box, { target: { value: "First\nSecond" } });
@@ -159,10 +159,10 @@ test("history snapshots survive arriving entries and reset when their scope chan
   rerender(view("a", ["First", "Second", "Third"]));
   fireEvent.keyDown(box, { key: "ArrowUp" });
   expect(box.value).toBe("First");
-  rerender(view("b", ["Other station"]));
+  rerender(view("b", ["Other canvas"]));
   box.setSelectionRange(0, 0);
   fireEvent.keyDown(box, { key: "ArrowUp" });
-  expect(box.value).toBe("Other station");
+  expect(box.value).toBe("Other canvas");
 });
 
 test("leaving a history scope forgets its navigation position even when returning without typing", () => {
@@ -182,7 +182,7 @@ test("leaving a history scope forgets its navigation position even when returnin
   expect(box.value).toBe("Second");
 });
 
-test("a controlled draft clears its captured snapshot after a send, not the current station", async () => {
+test("a controlled draft clears its captured snapshot after a send, not the current canvas", async () => {
   let finish = (_text: string) => {};
   const send = vi.fn(() => new Promise<string>((resolve) => { finish = resolve; }));
   const clearA = vi.fn();

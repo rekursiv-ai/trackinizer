@@ -114,7 +114,7 @@ TERMINALS_PATH: Final = "/api/terminals"
 """``POST``: open a terminal (the owner's browser, cookie only)."""
 
 TERMINAL_MACHINES_PATH: Final = "/api/terminals/machines"
-"""``GET``: the caller's own machines; ``?workspace=ID`` also lists its live terminals.
+"""``GET``: the caller's own machines; ``?canvas=ID`` also lists its live terminals.
 The configured assistant passes ``?owner=EMAIL`` to list the person it answers."""
 
 TERMINAL_CONFIRM_PATH: Final = "/api/terminals/machines/{name}/confirm"
@@ -236,8 +236,8 @@ class OpenTerminal(BaseModel):
     rows: Annotated[int, Field(ge=1, le=MAX_ROWS)]
     cols: Annotated[int, Field(ge=1, le=MAX_COLS)]
 
-    workspace: uuid.UUID | None = None
-    """The station the terminal opens from; the shell's trax context names it."""
+    canvas: uuid.UUID | None = None
+    """The canvas the terminal opens from; the shell's trax context names it."""
 
     requested_by: (
         Annotated[str, Field(max_length=63, pattern=r"^[\x20-\x7e]*$")] | None
@@ -325,7 +325,7 @@ class LiveTerminal(BaseModel):
 
 
 class TerminalMachines(BaseModel):
-    """The caller's machines, and their live terminals for the asked station."""
+    """The caller's machines, and their live terminals for the asked canvas."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -333,7 +333,7 @@ class TerminalMachines(BaseModel):
     """Newest first, by when each machine was registered."""
 
     terminals: list[LiveTerminal] = Field(default_factory=list)
-    """The caller's live terminals opened from ``?workspace=``, oldest first."""
+    """The caller's live terminals opened from ``?canvas=``, oldest first."""
 
 
 class TerminalWait(BaseModel):
@@ -353,8 +353,8 @@ class TerminalWait(BaseModel):
     ice_servers: IceServers = Field(default_factory=list)
     """The STUN servers to find the browser with."""
 
+    canvas: uuid.UUID | None = None
     workspace: uuid.UUID | None = None
-    workstream: uuid.UUID | None = None
 
     command: TerminalCommand | None = None
     """As :attr:`OpenTerminal.command`: the CLI to start in place of a login shell."""

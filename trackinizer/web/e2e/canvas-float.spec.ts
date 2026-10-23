@@ -20,15 +20,15 @@ test.afterEach(async ({ request }) => {
 const SHOTS = "/opt/scratch/artifacts/trax-hosted/ui/chatwindow";
 
 /** A canvas holding the page and the context graph of a fresh Issue floating over it; the canvas's id and the Issue's. */
-async function floatGraph(request: APIRequestContext): Promise<{ readonly workspace: string; readonly issue: string }> {
+async function floatGraph(request: APIRequestContext): Promise<{ readonly canvas: string; readonly issue: string }> {
   const ok = async <T>(response: { ok(): boolean; text(): Promise<string>; json(): Promise<unknown> }) => {
     expect(response.ok(), await response.text()).toBe(true);
     return (await response.json()) as T;
   };
-  await ok(await request.put("/api/me/visual-workspace", { data: { enabled: true } }));
-  let state = await ok<{ id: string; revision: number; visuals: { id: string; type: string }[] }>(await request.post("/api/workspaces"));
+  await ok(await request.put("/api/me/visual-canvas", { data: { enabled: true } }));
+  let state = await ok<{ id: string; revision: number; visuals: { id: string; type: string }[] }>(await request.post("/api/canvases"));
   const apply = async (operation: object) => {
-    state = await ok(await request.post(`/api/workspaces/${state.id}/operations`, {
+    state = await ok(await request.post(`/api/canvases/${state.id}/operations`, {
       headers: { "Idempotency-Key": crypto.randomUUID() }, data: { revision: state.revision, operation },
     }));
   };
@@ -37,7 +37,7 @@ async function floatGraph(request: APIRequestContext): Promise<{ readonly worksp
   }));
   for (const visual of state.visuals.filter((held) => held.type !== "trax.browse")) await apply({ kind: "hide", instance_id: visual.id });
   await apply({ kind: "show", visual_type: "trax.subgraph", placement: "floating", record_id: ids[0] });
-  return { workspace: state.id, issue: ids[0]! };
+  return { canvas: state.id, issue: ids[0]! };
 }
 
 async function open(page: Page, theme: "dark" | "light" = "dark"): Promise<{ tile: Locator; bar: Locator }> {
@@ -415,7 +415,7 @@ test("the window resizes by every edge and corner, down to its least size, and k
 });
 
 test("docked tiles trade room by the divider between them: across the page's strip, and down a column", async ({ page, request }) => {
-  const { workspace, issue } = await floatGraph(request);
+  const { canvas, issue } = await floatGraph(request);
   const { bar } = await open(page);
   const stage = await box(page.locator(".visual-stage"));
   const graph = page.locator(".visual-tile", { has: page.getByRole("region", { name: "Context graph" }) });
@@ -445,9 +445,9 @@ test("docked tiles trade room by the divider between them: across the page's str
   expect(Math.abs((await box(browse)).width - pageNow.width)).toBeLessThan(2);
 
   // Down a column: the graph over the timeline, at the right.
-  const current = await request.get(`/api/workspaces/${workspace}`);
+  const current = await request.get(`/api/canvases/${canvas}`);
   expect(current.ok(), await current.text()).toBe(true);
-  const shown = await request.post(`/api/workspaces/${workspace}/operations`, {
+  const shown = await request.post(`/api/canvases/${canvas}/operations`, {
     headers: { "Idempotency-Key": crypto.randomUUID() },
     data: { revision: ((await current.json()) as { revision: number }).revision, operation: { kind: "show", visual_type: "trax.timeline", placement: "side", record_id: issue } },
   });

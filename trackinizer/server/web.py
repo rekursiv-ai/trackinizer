@@ -88,8 +88,8 @@ from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.graph_focus import read_neighbourhood
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
+    CanvasAgents,
     FeedScope,
-    StationAgents,
 )
 from trackinizer.server.store.session_search import (
     SessionSearchHit,
@@ -642,7 +642,7 @@ def feed_scope(
     room: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     cli: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     kind: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
-    station: UUID | None = None,
+    canvas: UUID | None = None,
     whose: FeedWhose = "everyone",
     hidden: bool = False,
 ) -> FeedScope:
@@ -650,15 +650,15 @@ def feed_scope(
 
     Args:
       request: The request, which carries the configuration.
-      identity: Authenticated user, whose station ``station`` must be, and who
+      identity: Authenticated user, whose canvas ``canvas`` must be, and who
         reads.
       actor: Sessions by routing name.
       room: Sessions by a room they joined.
       cli: Sessions by the CLI they wrap.
       kind: Records by kind.
-      station: Only the agents of this station of the caller: the sessions below
+      canvas: Only the agents of this canvas of the caller: the sessions below
         its chat's by ``produced_by`` edges, to depth 4 and 500 sessions, never the
-        chat's own. A station that is not the caller's, or holds no chat, keeps
+        chat's own. A canvas that is not the caller's, or holds no chat, keeps
         nothing.
       whose: ``mine``, the sessions held under the caller's account; ``campaigns``,
         those of the campaigns the caller launched; ``everyone``, every session the
@@ -675,10 +675,10 @@ def feed_scope(
         rooms=tuple(room or ()),
         clis=tuple(cli or ()),
         kinds=tuple(kind or ()),
-        station=(
+        canvas=(
             None
-            if station is None
-            else StationAgents(workspace_id=station, user_id=identity.user_id)
+            if canvas is None
+            else CanvasAgents(canvas_id=canvas, user_id=identity.user_id)
         ),
         account=identity.email if whose == "mine" else "",
         asker=identity.email if whose == "campaigns" else "",

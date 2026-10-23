@@ -18,6 +18,7 @@ from trackinizer.server.config import Assistant
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue, PollerRun
 from trackinizer.server.store.core import Store
+from trackinizer.server.visuals.canvases import NO_MACHINE_REASON, CanvasState
 from trackinizer.server.visuals.partners import (
     assistant_key_may_use,
     attach_partner,
@@ -30,7 +31,6 @@ from trackinizer.server.visuals.partners import (
     provider_availability,
     resolve_partner,
 )
-from trackinizer.server.visuals.workspaces import NO_MACHINE_REASON, WorkspaceState
 from trackinizer.wire.wire_science_chat import (
     SCIENCE_CHAT_LABEL,
     chat_session_id,
@@ -52,7 +52,7 @@ _KB_USER: Final = uuid.UUID("33333333-3333-3333-3333-333333333333")
 _USER_KEY: Final = uuid.UUID("44444444-4444-4444-4444-444444444441")
 _OTHER_KEY: Final = uuid.UUID("44444444-4444-4444-4444-444444444442")
 _KB_KEY: Final = uuid.UUID("44444444-4444-4444-4444-444444444443")
-_WORKSPACE: Final = uuid.UUID("55555555-5555-5555-5555-555555555555")
+_CANVAS: Final = uuid.UUID("55555555-5555-5555-5555-555555555555")
 _CHAT: Final = uuid.UUID("66666666-6666-6666-6666-666666666666")
 _OTHER_CHAT: Final = uuid.UUID("66666666-6666-6666-6666-666666666667")
 
@@ -109,9 +109,9 @@ async def _seed(engine: PGliteEngine) -> Store:
                 f"trax_{key.hex[-4:]}",
             )
         await conn.execute(
-            "INSERT INTO visual_workspaces (id, user_id, station, state) "
-            'VALUES ($1, $2, \'{"name": "unnamed-workstream#1"}\', $3)',
-            _WORKSPACE,
+            "INSERT INTO visual_canvases (id, user_id, metadata, state) "
+            'VALUES ($1, $2, \'{"name": "unnamed-canvas#1"}\', $3)',
+            _CANVAS,
             _USER,
             {"visuals": []},
         )
@@ -261,10 +261,10 @@ async def test_attach_names_the_assistant_and_the_partner(
 ) -> None:
     """A canvas state carries both, computed, for every reader."""
     await _seed(pglite_engine)
-    state = WorkspaceState(
-        id=_WORKSPACE,
+    state = CanvasState(
+        id=_CANVAS,
         revision=0,
-        name="unnamed-workstream#1",
+        name="unnamed-canvas#1",
         conversation_id=None,
         page=None,
         visuals=[],
@@ -353,10 +353,10 @@ async def test_an_assistant_key_needs_a_live_science_chat_the_owner_is_in(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_station_takes_the_key_only_of_the_chat_it_holds(
+async def test_a_canvas_takes_the_key_only_of_the_chat_it_holds(
     pglite_engine: PGliteEngine,
 ) -> None:
-    """No chat, or another conversation's chat, gives a key nothing of the station."""
+    """No chat, or another conversation's chat, gives a key nothing of the canvas."""
     await _seed(pglite_engine)
     async with pglite_engine.acquire() as conn:
         service = await _session(conn, key=_KB_KEY, owner="scout", seq=1)
@@ -898,7 +898,7 @@ async def test_the_states_of_some_live_runs_are_read_together(
 async def test_the_state_of_each_chat_is_the_one_its_live_runs_agree_on(
     pglite_engine: PGliteEngine,
 ) -> None:
-    """A chat's runs are the sessions its station owner or the assistant opened."""
+    """A chat's runs are the sessions its canvas owner or the assistant opened."""
     store = await _seed(pglite_engine)
     inbound = InboundQueue()
     run = "a" * 32
@@ -1046,15 +1046,15 @@ async def test_a_cli_is_available_on_a_confirmed_online_machine_that_lists_it(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_attach_names_the_stations_cli_partner_and_what_its_owner_may_choose(
+async def test_attach_names_the_canvases_cli_partner_and_what_its_owner_may_choose(
     pglite_engine: PGliteEngine,
 ) -> None:
-    """A claude station without a run is offline, whatever the assistant is doing."""
+    """A claude canvas without a run is offline, whatever the assistant is doing."""
     await _seed(pglite_engine)
-    state = WorkspaceState(
-        id=_WORKSPACE,
+    state = CanvasState(
+        id=_CANVAS,
         revision=0,
-        name="unnamed-workstream#1",
+        name="unnamed-canvas#1",
         conversation_id=_CHAT,
         page=None,
         visuals=[],

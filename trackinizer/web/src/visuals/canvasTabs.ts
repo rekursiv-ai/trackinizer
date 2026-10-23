@@ -1,17 +1,17 @@
 import type { components } from "../api/generated/schema";
 import type { Snapshot } from "./canvasSnapshot";
-import { type Layout, layoutOf } from "./stationLayout";
+import { type Layout, layoutOf } from "./canvasLayout";
 
-/** One of a station's canvas tabs, as its layout keeps it (`server/visuals/workspaces.py`). */
+/** One of a canvas's canvas tabs, as its layout keeps it (`server/visuals/canvases.py`). */
 export type CanvasTab = components["schemas"]["CanvasTab"];
 
-/** The most tabs a station keeps. */
+/** The most tabs a canvas keeps. */
 export const MAX_TABS = 12;
 
-/** The tab a station has before a second is made, which its layout does not name. */
+/** The tab a canvas has before a second is made, which its layout does not name. */
 const FIRST: CanvasTab = { id: "1", name: "Tab 1" };
 
-/** A station's canvas tabs, in order: the one it has before a second is made, if its layout keeps none. */
+/** A canvas's canvas tabs, in order: the one it has before a second is made, if its layout keeps none. */
 export function tabsOf(layout: Layout): readonly CanvasTab[] {
   if (layout.tabs?.length) return layout.tabs;
   return layout.tabs ? [{ ...FIRST, id: layout.tab ?? FIRST.id }] : [FIRST];
@@ -67,7 +67,7 @@ export function leftTab(tab: CanvasTab, snapshot: Snapshot, layout: Layout): Can
   };
 }
 
-/** The layout's sizes as tab `tab` left them, each one it never set emptied: a station's sizes are its open tab's. */
+/** The layout's sizes as tab `tab` left them, each one it never set emptied: a canvas's sizes are its open tab's. */
 export function sizesOf(tab: CanvasTab | null): Layout {
   return layoutOf({ columns: tab?.columns ?? {}, floating: tab?.floating ?? {}, tiles: tab?.tiles ?? {}, share: tab?.share ?? {} });
 }

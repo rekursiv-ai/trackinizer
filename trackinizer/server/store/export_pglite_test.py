@@ -83,8 +83,8 @@ _LEFT_OUT: Final = frozenset(
         "variables",
         "visual_report_revisions",
         "visual_reports",
-        "visual_workspace_operations",
-        "visual_workspaces",
+        "visual_canvas_operations",
+        "visual_canvases",
     },
 )
 """Tables the export omits on purpose; ``wire_export.EXPORT_TABLES`` says why.

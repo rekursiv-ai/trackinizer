@@ -1,4 +1,4 @@
-import { answerCapture } from "../api/workspaces";
+import { answerCapture } from "../api/canvases";
 import { captureStage } from "./captureStage";
 import type { CaptureRegistry } from "./stageRegistry";
 
@@ -7,7 +7,7 @@ export const HIDDEN_WAIT_MS = 400;
 
 /** Take a picture of the open canvas, if there is one, and answer the agent's request with it. */
 export async function answerRequest(
-  workspaceId: string,
+  canvasId: string,
   request: string,
   registry: CaptureRegistry,
   options: { readonly hidden: boolean },
@@ -16,7 +16,7 @@ export async function answerRequest(
   const source = registry.get();
   const answer = source ? await captureStage(source) : { error: "No canvas is on screen: the person is on a page outside it." };
   try {
-    await answerCapture(workspaceId, request, answer);
+    await answerCapture(canvasId, request, answer);
   } catch {
     // Another tab answered first, or the request is over. `send` has logged it.
   }
