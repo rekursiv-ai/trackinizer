@@ -70,6 +70,7 @@ _LEFT_OUT: Final = frozenset(
         "inquiry_lock_log",
         "machine_credentials",
         "machine_enrollments",
+        "machine_jobs",
         "machines",
         "science_chat_shares",
         "science_chat_tombstones",

@@ -54,6 +54,22 @@ from trackinizer.wire.wire_machine_host import (
     HEARTBEAT_PATH,
     JOIN_PATH,
 )
+from trackinizer.wire.wire_machine_job import (
+    MACHINE_JOB_CANCEL_PATH,
+    MACHINE_JOB_FILE_PATH,
+    MACHINE_JOB_LOG_PATH,
+    MACHINE_JOB_MANIFEST_PATH,
+    MACHINE_JOB_PATH,
+    MACHINE_JOB_REPORT_PATH,
+    MACHINE_JOBS_PATH,
+    MACHINE_READ_REPLY_PATH,
+    MACHINE_WORK_PATH,
+    CancelWork,
+    JobReport,
+    MachineJobSubmit,
+    ReadRefused,
+    ReadReply,
+)
 from trackinizer.wire.wire_machines import (
     MACHINE_PATH,
     MACHINES_PATH,
@@ -1425,6 +1441,10 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
     | {"job_submit", "job_list", "job_view", "job_grant", "job_read_grant"}
     | {"job_grant_serial", "job_start", "job_cancel", "job_secret_names"}
     | {"job_put_secret", "job_delete_secret"}
+    | {"machine_job_submit", "machine_job_list", "machine_job_view"}
+    | {"machine_job_cancel", "machine_job_log", "machine_job_manifest"}
+    | {"machine_job_file", "wait_machine_work", "report_machine_job"}
+    | {"post_machine_read"}
     | {"code_missing", "code_put_blobs", "code_put_snapshot", "code_snapshot"}
     | {"capture_workspace"},
 )
@@ -3653,6 +3673,171 @@ class TestJobMethods:
         assert "hf_SECRETVALUE" not in str(err.value)
         assert (err.value.status_code, err.value.code) == (422, "bad_secret")
         assert err.value.__cause__ is None
+
+
+_MACHINE_JOB_VIEW: dict[str, object] = {
+    "id": 8,
+    "machine": "gx10",
+    "state": "running",
+    "gpus": 1,
+    "memory_mb": 2_048,
+    "minutes": 5,
+    "label": "",
+    "argv": ["python", "x.py"],
+    "remote": "https://github.com/o/r.git",
+    "ref": "refs/heads/main",
+    "commit": _JOB_COMMIT,
+    "exit_code": None,
+    "reason": "",
+    "created_at": "2026-10-23T12:00:00Z",
+    "queued_at": None,
+    "started_at": None,
+    "ended_at": None,
+}
+_CHUNK: dict[str, object] = {
+    "reply": {
+        "kind": "chunk",
+        "data_b64": "aGk=",
+        "offset": 4,
+        "size": 6,
+        "ended": True,
+    },
+}
+
+
+class TestMachineJobMethods:
+    """Each ``machine_job_*`` method and the host's three calls hit their paths."""
+
+    def test_submit_posts_the_body_once_and_parses_the_job(self) -> None:
+        seen: list[httpx2.Request] = []
+        body = MachineJobSubmit(
+            machine="gx10",
+            argv=["python", "x.py"],
+            gpus=1,
+            memory_mb=2_048,
+            minutes=5,
+            remote="https://github.com/o/r.git",
+            ref="refs/heads/main",
+            commit=_JOB_COMMIT,
+        )
+        with _job_client(
+            seen,
+            httpx2.Response(503, json={}),
+            httpx2.Response(201, json=_MACHINE_JOB_VIEW),
+        ) as client:
+            with pytest.raises(ClientError) as err:
+                _ = client.machine_job_submit(body)
+            job = client.machine_job_submit(body)
+
+        # A retry after a lost answer would queue the job twice.
+        assert err.value.status_code == 503
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("POST", MACHINE_JOBS_PATH),
+        ] * 2
+        assert json_loads(seen[0].content) == body.model_dump(mode="json")
+        assert (job.id, job.machine, job.state) == (8, "gx10", "running")
+
+    def test_list_view_and_cancel_hit_their_paths(self) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(
+            seen,
+            httpx2.Response(200, json={"jobs": [_MACHINE_JOB_VIEW]}),
+            httpx2.Response(200, json=_MACHINE_JOB_VIEW),
+            httpx2.Response(200, json=_MACHINE_JOB_VIEW | {"state": "cancelled"}),
+        ) as client:
+            listing = client.machine_job_list()
+            one = client.machine_job_view(8)
+            cancelled = client.machine_job_cancel(8)
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", MACHINE_JOBS_PATH),
+            ("GET", MACHINE_JOB_PATH.format(job_id=8)),
+            ("POST", MACHINE_JOB_CANCEL_PATH.format(job_id=8)),
+        ]
+        assert [job.id for job in listing.jobs] == [8]
+        assert (one.remote, cancelled.state) == (
+            "https://github.com/o/r.git",
+            "cancelled",
+        )
+
+    def test_a_read_is_sent_once_with_a_timeout_past_the_relay_and_the_hold(
+        self,
+    ) -> None:
+        seen: list[httpx2.Request] = []
+        with _job_client(
+            seen,
+            httpx2.Response(504, json={}),
+            httpx2.Response(200, json=_CHUNK),
+            httpx2.Response(
+                200,
+                json={"reply": {"kind": "manifest", "entries": [], "total_bytes": 0}},
+            ),
+            httpx2.Response(200, json={"reply": {"kind": "refused", "reason": "big"}}),
+        ) as client:
+            with pytest.raises(ClientError) as lost:
+                _ = client.machine_job_log(8, offset=4, wait=20)
+            log = client.machine_job_log(8, offset=4, wait=20)
+            manifest = client.machine_job_manifest(8)
+            refused = client.machine_job_file(8, "a/b.txt", offset=9)
+
+        assert lost.value.status_code == 504
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", MACHINE_JOB_LOG_PATH.format(job_id=8)),
+            ("GET", MACHINE_JOB_LOG_PATH.format(job_id=8)),
+            ("GET", MACHINE_JOB_MANIFEST_PATH.format(job_id=8)),
+            ("GET", MACHINE_JOB_FILE_PATH.format(job_id=8)),
+        ]
+        assert dict(seen[1].url.params) == {"offset": "4", "wait": "20"}
+        assert dict(seen[3].url.params) == {"path": "a/b.txt", "offset": "9"}
+        assert [_read_timeout(r) for r in seen] == [55, 55, 35, 35]
+        assert log.reply.kind == "chunk"
+        assert manifest.reply.kind == "manifest"
+        assert refused.reply == ReadRefused(reason="big")
+
+    def test_the_host_waits_reports_and_answers_on_its_own_paths(self) -> None:
+        seen: list[httpx2.Request] = []
+        machine, instance, read_id = uuid.UUID(int=1), uuid.UUID(int=2), uuid.uuid4()
+        with _job_client(
+            seen,
+            httpx2.Response(200, json={"work": {"kind": "cancel", "job_id": 8}}),
+            httpx2.Response(204),
+            httpx2.Response(204),
+        ) as client:
+            offer = client.wait_machine_work(machine, instance=instance, wait_sec=25)
+            client.report_machine_job(machine, 8, JobReport(state="running"))
+            client.post_machine_read(machine, read_id, ReadReply.model_validate(_CHUNK))
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", MACHINE_WORK_PATH.format(machine_id=machine)),
+            ("POST", MACHINE_JOB_REPORT_PATH.format(machine_id=machine, job_id=8)),
+            (
+                "POST",
+                MACHINE_READ_REPLY_PATH.format(machine_id=machine, read_id=read_id),
+            ),
+        ]
+        assert dict(seen[0].url.params) == {"instance": str(instance), "wait_sec": "25"}
+        assert (_read_timeout(seen[0]) or 0) > 25
+        assert offer.work == CancelWork(job_id=8)
+        assert json_loads(seen[1].content) == {
+            "state": "running",
+            "exit_code": None,
+            "reason": "",
+        }
+        assert json_loads(seen[2].content) == _CHUNK
+
+    def test_a_host_wait_that_fails_is_not_retried(self) -> None:
+        seen: list[httpx2.Request] = []
+        with (
+            _job_client(seen, httpx2.Response(502, json={})) as client,
+            pytest.raises(ClientError),
+        ):
+            _ = client.wait_machine_work(
+                uuid.UUID(int=1),
+                instance=uuid.UUID(int=2),
+                wait_sec=0,
+            )
+
+        assert len(seen) == 1
 
 
 if __name__ == "__main__":

@@ -77,6 +77,7 @@ if TYPE_CHECKING:
         wire_exec,
         wire_job,
         wire_machine_host,
+        wire_machine_job,
         wire_machines,
         wire_metrics,
         wire_metrics_query,
@@ -103,6 +104,14 @@ if TYPE_CHECKING:
         EnrollResponse,
         HeartbeatResponse,
         JoinResponse,
+    )
+    from trackinizer.wire.wire_machine_job import (
+        JobReport,
+        MachineJobList,
+        MachineJobSubmit,
+        MachineJobView,
+        ReadReply,
+        WorkOffer,
     )
     from trackinizer.wire.wire_machines import Facts, Machine, MachineDetail
     from trackinizer.wire.wire_metrics import (
@@ -162,6 +171,7 @@ else:
     wire_code = lazy_import("trackinizer.wire.wire_code")
     # Same lazy-bind for ``wire_job``: only the ``job_*`` methods touch it.
     wire_job = lazy_import("trackinizer.wire.wire_job")
+    wire_machine_job = lazy_import("trackinizer.wire.wire_machine_job")
     pydantic = lazy_import("pydantic")
 
 
@@ -2712,6 +2722,167 @@ class Client:
             "DELETE",
             wire_job.JOB_SECRET_PATH.format(name=quote(name, safe="")),
         )
+
+    # -- Jobs on a person's own machine. The machine fetches the code by git; the
+    # server relays a read's bytes between the machine and the reader and keeps none.
+
+    def machine_job_submit(self, body: MachineJobSubmit) -> MachineJobView:
+        """Queue a job on one of the caller's machines; sent once.
+
+        A retry after a lost answer would queue the job twice.
+
+        Args:
+          body: The machine, the command, its limits, and the pushed commit.
+
+        Returns:
+          job: The job as recorded, in state ``requested``.
+
+        """
+        where = wire_machine_job.MACHINE_JOBS_PATH
+        response = self._request(
+            "POST",
+            where,
+            body=body.model_dump(mode="json"),
+            retry_attempts=1,
+        )
+        return _validate_model(wire_machine_job.MachineJobView, response, where)
+
+    def machine_job_list(self) -> MachineJobList:
+        """Return the caller's machine jobs, newest first."""
+        where = wire_machine_job.MACHINE_JOBS_PATH
+        response = self._request("GET", where)
+        return _validate_model(wire_machine_job.MachineJobList, response, where)
+
+    def machine_job_view(self, job_id: int) -> MachineJobView:
+        """Return one machine job of the caller's; 404 for another's or none."""
+        where = wire_machine_job.MACHINE_JOB_PATH.format(job_id=job_id)
+        response = self._request("GET", where)
+        return _validate_model(wire_machine_job.MachineJobView, response, where)
+
+    def machine_job_cancel(self, job_id: int) -> MachineJobView:
+        """Stop a machine job: at once if no host took it, else through its host."""
+        where = wire_machine_job.MACHINE_JOB_CANCEL_PATH.format(job_id=job_id)
+        response = self._request("POST", where)
+        return _validate_model(wire_machine_job.MachineJobView, response, where)
+
+    def machine_job_log(self, job_id: int, *, offset: int, wait: float) -> ReadReply:
+        """Read a machine job's log from byte ``offset``, relayed from the machine.
+
+        Args:
+          job_id: The job.
+          offset: The first byte wanted.
+          wait: How long the machine may hold for new bytes while the job runs.
+
+        Returns:
+          reply: At most 1 MiB of the log, or the machine's refusal.
+
+        """
+        where = wire_machine_job.MACHINE_JOB_LOG_PATH.format(job_id=job_id)
+        return self._machine_read(where, {"offset": offset, "wait": wait}, wait=wait)
+
+    def machine_job_manifest(self, job_id: int) -> ReadReply:
+        """List a machine job's result files with sizes and digests, or the refusal."""
+        where = wire_machine_job.MACHINE_JOB_MANIFEST_PATH.format(job_id=job_id)
+        return self._machine_read(where, {}, wait=0)
+
+    def machine_job_file(self, job_id: int, path: str, *, offset: int) -> ReadReply:
+        """Read at most 1 MiB of one result file from ``offset``, or the refusal."""
+        where = wire_machine_job.MACHINE_JOB_FILE_PATH.format(job_id=job_id)
+        return self._machine_read(where, {"path": path, "offset": offset}, wait=0)
+
+    def wait_machine_work(
+        self,
+        machine_id: uuid.UUID,
+        *,
+        instance: uuid.UUID,
+        wait_sec: float,
+    ) -> WorkOffer:
+        """Hold up to ``wait_sec`` for a job to start or cancel, or a read, as the host.
+
+        Args:
+          machine_id: The machine's id, from joining.
+          instance: The host's id, which must be the machine's current one.
+          wait_sec: How long the server may hold the request; the read timeout
+            exceeds it, or the client would abort the very wait it asked for.
+
+        Returns:
+          offer: The work, or an offer of none when nothing came in time.
+
+        """
+        where = wire_machine_job.MACHINE_WORK_PATH.format(machine_id=machine_id)
+        response = self._request(
+            "GET",
+            where,
+            params={"instance": str(instance), "wait_sec": wait_sec},
+            retry_attempts=1,
+            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+        )
+        return _validate_model(wire_machine_job.WorkOffer, response, where)
+
+    def report_machine_job(
+        self,
+        machine_id: uuid.UUID,
+        job_id: int,
+        report: JobReport,
+    ) -> None:
+        """Report one of the machine's jobs, as its host; the same report again is 204.
+
+        Args:
+          machine_id: The machine.
+          job_id: The job.
+          report: The job's new state.
+
+        """
+        self._request(
+            "POST",
+            wire_machine_job.MACHINE_JOB_REPORT_PATH.format(
+                machine_id=machine_id,
+                job_id=job_id,
+            ),
+            body=report.model_dump(mode="json"),
+        )
+
+    def post_machine_read(
+        self,
+        machine_id: uuid.UUID,
+        read_id: uuid.UUID,
+        reply: ReadReply,
+    ) -> None:
+        """Answer a read the machine's host was handed; 404 once its reader has gone.
+
+        Args:
+          machine_id: The machine.
+          read_id: The read, as the work offer named it.
+          reply: The bytes asked for, the listing, or the refusal.
+
+        """
+        self._request(
+            "POST",
+            wire_machine_job.MACHINE_READ_REPLY_PATH.format(
+                machine_id=machine_id,
+                read_id=read_id,
+            ),
+            body=reply.model_dump(mode="json"),
+        )
+
+    def _machine_read(
+        self,
+        where: str,
+        params: Mapping[str, object],
+        *,
+        wait: float,
+    ) -> ReadReply:
+        """Send one relayed read, once: its caller decides whether to ask again."""
+        # The server waits up to 10 s for the machine to take the read, then the hold
+        # and 15 s more for its answer.
+        response = self._request(
+            "GET",
+            where,
+            params=params,
+            retry_attempts=1,
+            timeout=wait + 35,
+        )
+        return _validate_model(wire_machine_job.ReadReply, response, where)
 
     def _patch_field(
         self,
