@@ -32,6 +32,11 @@ _ASSISTANT: Final = (
     "The assistant runs no slash commands. /goal works in a chat on claude or "
     "codex: pick one in the provider card."
 )
+_RENAME_BARE: Final = "codex asks for the name in a dialog; type /rename <name>"
+_NO_RC: Final = (
+    "codex has no remote control for a chat's run: codex remote-control serves "
+    "codex's background daemon, not this run"
+)
 
 
 def _menu(verb: str) -> Refused:
@@ -242,6 +247,35 @@ _ONE_EFFORT: Final = (
             ),
         ),
         ("/effort " + "e" * 21, "codex", Refused(reason=_ONE_EFFORT)),
+        # /rename <name> names the session on both; bare, claude names it from the
+        # conversation and codex opens a dialog for the name.
+        (
+            "/rename probe-name",
+            "claude",
+            Command(text="/rename probe-name", verb="rename", args="probe-name"),
+        ),
+        (
+            "/Rename  the probe ",
+            "codex",
+            Command(text="/rename the probe", verb="rename", args="the probe"),
+        ),
+        ("/rename", "claude", Command(text="/rename", verb="rename", args="")),
+        ("/rename  ", "codex", Refused(reason=_RENAME_BARE)),
+        # Claude's run starts Remote Control, named or not; codex has none for a run.
+        ("/rc", "claude", Command(text="/rc", verb="rc", args="")),
+        (
+            "/RC my phone",
+            "claude",
+            Command(text="/rc my phone", verb="rc", args="my phone"),
+        ),
+        (
+            "/remote-control",
+            "claude",
+            Command(text="/remote-control", verb="remote-control", args=""),
+        ),
+        ("/rc", "codex", Refused(reason=_NO_RC)),
+        ("/Remote-Control x", "codex", Refused(reason=_NO_RC)),
+        ("/rename x", "assistant", Refused(reason=_ASSISTANT)),
         # Any other known verb opens a menu, changes settings or switches session.
         ("/Resume", "claude", _menu("resume")),
         ("/exit", "codex", _menu("exit")),
@@ -304,6 +338,8 @@ def test_the_known_verbs_are_the_built_ins_of_claude_and_codex() -> None:
             "plan",
             "fork",
             "rename",
+            "rc",
+            "remote-control",
             "diff",
             "mcp",
             "agents",
@@ -339,7 +375,10 @@ def test_the_known_verbs_are_the_built_ins_of_claude_and_codex() -> None:
 
 @pytest.mark.parametrize(
     "verb",
-    sorted(KNOWN_VERBS - {"goal", "compact", "model", "effort"}),
+    sorted(
+        KNOWN_VERBS
+        - {"goal", "compact", "model", "effort", "rename", "rc", "remote-control"},
+    ),
 )
 def test_every_other_known_verb_is_refused_on_both_clis(verb: str) -> None:
     assert (

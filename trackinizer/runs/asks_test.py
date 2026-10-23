@@ -484,8 +484,9 @@ class _Fake:
         await self._events.put(_command_ask())
         await self._events.put(StateChanged(state="requires_action"))
 
-    async def command(self, verb: str, args: str) -> None:
+    async def command(self, verb: str, args: str) -> str:
         del verb, args
+        return ""
 
     async def answer(self, answer: Answer) -> None:
         self.answers.append(answer)

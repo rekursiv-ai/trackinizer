@@ -1163,7 +1163,9 @@ is a built-in slash command of claude or codex (`goal`, `compact`, `model`,
 `resume`, `exit` and the rest, in any case) is judged by the chat's provider:
 the starter's station's in a chat someone else began, never the poster's.
 `/goal <condition>`, `/goal clear` (also typed as `stop`, `off`, `reset`, `none`
-or `cancel`), codex's `/goal pause` and `/goal resume`, and claude's `/compact`
+or `cancel`), codex's `/goal pause` and `/goal resume`, claude's `/compact`,
+`/rename <name>` (and claude's bare `/rename`, which names the session from the
+conversation), and claude's `/rc [name]` or `/remote-control [name]`
 are queued as kind `command`, verb lowercased, with no canvas context and no
 marks, and the run types them bare. `/model <name>` and `/effort <level>` (one
 token; the level lowercased) are queued as kind `settings` with a `{"model", "effort"}`
