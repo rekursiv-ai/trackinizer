@@ -587,6 +587,38 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             )
             return True
 
+    async def reopen_session(
+        self,
+        session_id: UUID,
+        *,
+        conn: Conn,
+        actor: Inquiry.Actor,
+    ) -> None:
+        """Reopen an ended session inside an authorized caller's transaction.
+
+        The caller owns authorization, the transaction and notification buffering.
+        A live session is left unchanged, including its liveness clock.
+
+        Args:
+          session_id: AgentSession to resume.
+          conn: Connection inside the caller's transaction.
+          actor: Author of the lifecycle audit.
+
+        """
+        row = await conn.fetchrow(_LOCK_SESSION_SQL, session_id)
+        if row is None:
+            raise NotFoundError(session_id)
+        if row["kind"] != "AgentSession":
+            raise ConflictError("Only an AgentSession can be reopened")
+        if row["agentsession_ended"] is not None:
+            await self._reopen_on_conn(
+                conn,
+                session_id=session_id,
+                row=row,
+                api_key_id=None,
+                actor=actor,
+            )
+
     # One statement moves the row from ended to live, so the lifecycle CHECK (``ended``
     # set iff ``status='complete'``) never observes ``ended`` set with ``status`` active
     # -- the mirror of ``end_session``'s atomic live-to-ended move.
