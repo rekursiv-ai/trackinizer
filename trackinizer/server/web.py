@@ -3,9 +3,10 @@
 Mounted by ``trackinizer --web`` (or programmatically via :func:`attach`).
 Adds:
 
-- ``GET /app/*`` -- a separately built web app, for the callers the API answers
-  (``--app-dir``). With it, ``/`` answers 302 to ``/app/``, and ``/me``,
-  ``/admin``, ``/graph`` and ``/console`` lead into the app likewise.
+- ``GET /trax/*`` -- a separately built web app, for the callers the API answers
+  (``--app-dir``). With it, ``/`` answers 302 to ``/trax/``, and ``/me``,
+  ``/admin``, ``/graph`` and ``/console`` lead into the app likewise, as does
+  ``/app/*``, its old address.
 - ``GET /auth/login_page`` -- the sign-in page (``assets/login.html``).
 - ``GET /auth/device`` -- where a person approves a program's device login
   (``assets/device.html``), for a signed-in visitor; the others go to the sign-in
@@ -136,7 +137,7 @@ _SESSION_SEARCH_MAX_LIMIT: Final = 200
 _SESSION_SEARCH_MAPPER: Final = FootprintMapper().name
 
 
-# See ``_AppRoute``: shared caches must never store an /app/ response.
+# See ``_AppRoute``: shared caches must never store a /trax/ response.
 _APP_CACHE_CONTROL: Final = "private, no-cache"
 
 # See ``_AppRoute``: a built file under ``assets/`` never changes under one URL.
@@ -972,22 +973,24 @@ def attach(
     static_dir: Path | None = None,
     app_dir: Path | None = None,
 ) -> None:
-    """Mount the read-API router, the sign-in page, ``/static/*`` and ``/app/*``.
+    """Mount the read-API router, the sign-in page, ``/static/*`` and ``/trax/*``.
 
     ``/static`` serves ``static_dir`` when given, so an operator can serve files
     written after deploy (e.g. a generated report) without copying them into
     the source tree; unset mounts none.
 
-    ``/app/`` serves a separately built web app from ``app_dir`` to the callers
+    ``/trax/`` serves a separately built web app from ``app_dir`` to the callers
     the API answers (every caller under ``--no-auth``), with ``index.html`` at
-    ``/app/``; any other caller's entry page redirects to the sign-in page, and
+    ``/trax/``; any other caller's entry page redirects to the sign-in page, and
     its other files answer 401. The directory is
-    resolved on every request, so it may be missing at startup (``/app/``
+    resolved on every request, so it may be missing at startup (``/trax/``
     answers 404) or be a symlink swapped to a new build without a restart.
-    With it, the old UI's paths answer 302 into the app: ``/`` to ``/app/``,
+    With it, the old UI's paths answer 302 into the app: ``/`` to ``/trax/``,
     and ``/me``, ``/admin``, ``/graph`` and ``/console`` to the app's
-    ``#/settings``, ``#/admin``, ``#/graph`` and ``#/console``. Without it,
-    nothing is served at those paths.
+    ``#/settings``, ``#/admin``, ``#/graph`` and ``#/console``. So does
+    ``/app/``, the app's address before ``/trax/``: each ``/app/<path>?<query>``
+    answers 302 to ``/trax/<path>?<query>``. Without it, nothing is served at
+    those paths.
 
     Idempotent: a second call is a no-op, so the first call's directories win.
     ``server._configure_app`` attaches the module-global app, and a test that
@@ -998,7 +1001,7 @@ def attach(
       assets_dir: Directory holding ``login.html`` and ``device.html`` (overrides the
         bundled ones).
       static_dir: Directory to serve at /static; unset mounts none.
-      app_dir: Directory of a built web app to serve at /app/; unset mounts none.
+      app_dir: Directory of a built web app to serve at /trax/; unset mounts none.
 
     """
     if app in _ATTACHED:
@@ -1011,17 +1014,18 @@ def attach(
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     if app_dir is not None:
-        _get(app, "/app/{path:path}", _AppRoute(files=_app_files(app_dir)))
+        _get(app, "/trax/{path:path}", _AppRoute(files=_app_files(app_dir)))
+        _get(app, "/app/{path:path}", _moved_app)
         # Stored links name ``/`` with a hash, which the browser keeps across a
         # redirect whose ``Location`` has none, and the app's router reads the old
         # hashes. 302, not 301: a browser keeps a 301 for good, which would pin
-        # these paths to ``/app/`` past any later move.
+        # these paths to ``/trax/`` past any later move.
         for path, location in (
-            ("/", "/app/"),
-            ("/me", "/app/#/settings"),
-            ("/admin", "/app/#/admin"),
-            ("/graph", "/app/#/graph"),
-            ("/console", "/app/#/console"),
+            ("/", "/trax/"),
+            ("/me", "/trax/#/settings"),
+            ("/admin", "/trax/#/admin"),
+            ("/graph", "/trax/#/graph"),
+            ("/console", "/trax/#/console"),
         ):
             _get(app, path, _RedirectRoute(location=location))
     _add_login_route(app, page_path=assets / "login.html", app_dir=app_dir)
@@ -1106,8 +1110,22 @@ class _AppRoute:
         return _login_redirect(request)
 
 
-# Signed in or not: ``/app/`` decides sign-in. ``no-cache`` as on ``/app/``, so a change
-# of where a path leads is seen at once.
+# The app's address before ``/trax/``, which records, chats and docs still link to.
+# The same path and query under ``/trax/``, and the browser keeps the hash. 302 as on
+# the old UI's paths, and here it matters more: another app takes ``/app/`` next, which
+# a browser holding a 301 would never reach.
+async def _moved_app(request: Request, path: str) -> RedirectResponse:
+    """Return a 302 to ``/trax/<path>?<query>`` for ``/app/<path>?<query>``."""
+    query = request.url.query
+    return RedirectResponse(
+        f"/trax/{path}?{query}" if query else f"/trax/{path}",
+        status_code=302,
+        headers={"Cache-Control": _APP_CACHE_CONTROL},
+    )
+
+
+# Signed in or not: ``/trax/`` decides sign-in. ``no-cache`` as on ``/trax/``, so a
+# change of where a path leads is seen at once.
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _RedirectRoute:
     location: str

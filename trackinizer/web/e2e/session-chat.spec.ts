@@ -51,7 +51,7 @@ async function drain(request: APIRequestContext, id: string): Promise<{ text: st
 /** Open the session's detail once the live stream is connected; its transcript section. */
 async function openSession(page: Page, seq: number): Promise<Locator> {
   const subscribed = streamOpened(page);
-  await page.goto(`/app/#/ref/AgentSession/${seq}`);
+  await page.goto(`/trax/#/ref/AgentSession/${seq}`);
   await subscribed;
   return page.locator('[data-section="transcript"]');
 }

@@ -51,7 +51,7 @@ async function dragEdge(page: Page, edge: Locator, dx: number): Promise<void> {
 
 async function open(page: Page, width: number): Promise<void> {
   await page.setViewportSize({ width, height: 900 });
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   await expect(page.locator(".chat-column").getByRole("region", { name: "Chat" })).toBeVisible();
   await expect(page.getByRole("separator", { name: "Resize the right column" })).toBeVisible();
 }

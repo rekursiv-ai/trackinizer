@@ -20,7 +20,7 @@ test("a server that fails to start leaves no data behind (CR-LIVE-R4-D1)", async
 });
 
 test("stopping a server a signal has already ended returns (CR-LIVE-R3-03)", async () => {
-  // Serves /app/, then ends itself with SIGKILL, which leaves no exit code.
+  // Serves /trax/, then ends itself with SIGKILL, which leaves no exit code.
   const killed = (port: number) =>
     [
       "node",
@@ -39,7 +39,7 @@ test("a readiness probe of a server that takes the request and never answers giv
   const silent = createServer(() => {});
   await new Promise<void>((listening) => silent.listen(0, "127.0.0.1", listening));
   const from = Date.now();
-  expect(await answers(`http://127.0.0.1:${(silent.address() as AddressInfo).port}/app/`)).toBe(false);
+  expect(await answers(`http://127.0.0.1:${(silent.address() as AddressInfo).port}/trax/`)).toBe(false);
   expect(Date.now() - from).toBeLessThan(3_000);
   silent.closeAllConnections();
   silent.close();

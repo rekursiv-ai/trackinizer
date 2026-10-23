@@ -162,25 +162,28 @@ test("a full URL to a route of this page's app is a link without a target", () =
 test("a link whose text is a ref and whose target is that ref in the app, on any of its hosts, is the ref's chip", () => {
   const root = renderMd(
     [
-      "[Issue#42](https://trackinizer.example.com/app/#/ref/Issue/42)",
+      "[Issue#42](https://trackinizer.example.com/trax/#/ref/Issue/42)",
+      // The app's addresses before `/trax/`, which stored text still names.
+      "[Issue#43](https://trackinizer.example.com/app/#/ref/Issue/43)",
       "[Experiment#5](https://trackinizer.example.com/#/ref/Experiment/5)",
       "[Belief#7](#/ref/Belief/7)",
       // Not the ref it names, not the app's route, or not a kind: each stays the link written.
-      "[Issue#8](https://trackinizer.example.com/app/#/ref/Issue/9)",
+      "[Issue#8](https://trackinizer.example.com/trax/#/ref/Issue/9)",
       "[Issue#10](https://example.com/docs/#/ref/Issue/10)",
-      "[the brief](https://trackinizer.example.com/app/#/ref/Issue/11)",
-      "[Foo#12](https://trackinizer.example.com/app/#/ref/Foo/12)",
+      "[the brief](https://trackinizer.example.com/trax/#/ref/Issue/11)",
+      "[Foo#12](https://trackinizer.example.com/trax/#/ref/Foo/12)",
     ].join(" "),
   );
   const links = [...root.querySelectorAll("a")].map((a) => [a.textContent, a.getAttribute("href"), a.className, a.getAttribute("target")]);
   expect(links).toEqual([
     ["Issue#42", "#/ref/Issue/42", "ref", null],
+    ["Issue#43", "#/ref/Issue/43", "ref", null],
     ["Experiment#5", "#/ref/Experiment/5", "ref", null],
     ["Belief#7", "#/ref/Belief/7", "ref", null],
-    ["Issue#8", "https://trackinizer.example.com/app/#/ref/Issue/9", "", "_blank"],
+    ["Issue#8", "https://trackinizer.example.com/trax/#/ref/Issue/9", "", "_blank"],
     ["Issue#10", "https://example.com/docs/#/ref/Issue/10", "", "_blank"],
-    ["the brief", "https://trackinizer.example.com/app/#/ref/Issue/11", "", "_blank"],
-    ["Foo#12", "https://trackinizer.example.com/app/#/ref/Foo/12", "", "_blank"],
+    ["the brief", "https://trackinizer.example.com/trax/#/ref/Issue/11", "", "_blank"],
+    ["Foo#12", "https://trackinizer.example.com/trax/#/ref/Foo/12", "", "_blank"],
   ]);
   // The chip has its kind's icon, as a ref in text does.
   expect(root.querySelector("a.ref svg")).not.toBeNull();

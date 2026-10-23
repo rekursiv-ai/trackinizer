@@ -82,7 +82,7 @@ async function capture(browser: Browser, shot: Shot, { origin, data }: { origin:
     await keepGraphState(context, { roots: false });
     const page = await context.newPage();
     const open = openRequests(page);
-    await page.goto(`${origin}/app/${shot.hash}`);
+    await page.goto(`${origin}/trax/${shot.hash}`);
     await shot.drawn(page);
     await settledRequests(page, open);
     await page.evaluate(async () => {

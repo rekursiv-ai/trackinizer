@@ -241,7 +241,7 @@ test("the browser remembers the account signed in; another it remembers is liste
   const lead = others.getByTitle("Sign in as lead@acme-robotics.com");
   expect(lead.textContent).toBe("Llead@acme-robotics.comadmin · acme-robotics.comWork");
   await user.click(lead);
-  await waitFor(() => expect(assign).toHaveBeenCalledWith("/auth/login?next=%2Fapp%2F&login_hint=lead%40acme-robotics.com"), { interval: 1 });
+  await waitFor(() => expect(assign).toHaveBeenCalledWith("/auth/login?next=%2Ftrax%2F&login_hint=lead%40acme-robotics.com"), { interval: 1 });
   await user.click(others.getByRole("button", { name: "Forget lead@acme-robotics.com on this browser" }));
   expect(readAccounts().map((each) => each.email)).toEqual(["ada@example.com"]);
   expect(others.queryByTitle("Sign in as lead@acme-robotics.com")).toBeNull();

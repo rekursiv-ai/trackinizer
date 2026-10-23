@@ -11,7 +11,7 @@ import { formatRoute, parseSeq } from "../router/route";
  * server's inquiry kinds, matched as trax writes them (`Issue#4`, not `issue#4`);
  * a ref right after a word character or another `#` (`x#Issue#4`) is not one.
  * A link written as a ref, its text the ref and its target that ref in the app
- * (`[Issue#4](https://<host>/app/#/ref/Issue/4)`, as agents copy one), is the
+ * (`[Issue#4](https://<host>/trax/#/ref/Issue/4)`, as agents copy one), is the
  * ref's own link too.
  */
 export function remarkRefs({ kinds }: { kinds: readonly string[] }) {
@@ -27,13 +27,16 @@ export function remarkRefs({ kinds }: { kinds: readonly string[] }) {
 
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 
-/** A ref's route in the app, alone or after the app's address: `https://<host>/app/#/ref/Issue/4`, or `/#/ref/…` for the old UI's. */
-const APP_REF = /^(?:https?:\/\/[^/?#\s]+(?:\/app)?\/)?(#\/ref\/.*)$/;
+/**
+ * A ref's route in the app, alone or after the app's address: `https://<host>/trax/#/ref/Issue/4`,
+ * or the addresses stored text still names, `/app/#/ref/…` from before `/trax/` and `/#/ref/…` for the old UI's.
+ */
+const APP_REF = /^(?:https?:\/\/[^/?#\s]+(?:\/trax|\/app)?\/)?(#\/ref\/.*)$/;
 
 /**
  * Each link in `node` whose text is one ref (`ref`) and whose target is that
- * ref's route, in the app here or at its address on any host (`/` or `/app/`),
- * made the ref's own link, in place.
+ * ref's route, in the app here or at one of its addresses on any host (`/trax/`,
+ * `/app/` or `/`), made the ref's own link, in place.
  */
 function refLinks(node: Nodes, ref: RegExp): void {
   if (node.type !== "link") {

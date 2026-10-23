@@ -922,7 +922,7 @@ class TestRoutes:
         ]
 
     def test_without_the_app_the_old_paths_serve_nothing(self, tmp_path: Path) -> None:
-        # The old pages are gone. Without ``--app-dir`` there is no ``/app/`` to
+        # The old pages are gone. Without ``--app-dir`` there is no ``/trax/`` to
         # send their paths to, so each answers 404, even where an old build's
         # files still lie in the assets directory; the read API stays.
         for name in ("index", "graph", "console", "me", "admin"):
@@ -932,7 +932,15 @@ class TestRoutes:
         app = FastAPI()
         web.attach(app, assets_dir=tmp_path)
         client = TestClient(app, follow_redirects=False)
-        for path in ("/", "/me", "/admin", "/graph", "/console", "/static/app.js"):
+        for path in (
+            "/",
+            "/me",
+            "/admin",
+            "/graph",
+            "/console",
+            "/app/",
+            "/static/app.js",
+        ):
             assert client.get(path).status_code == 404, path
         paths = registered_paths(app)
         for path in ("/api/web/search", "/api/web/graph", "/api/web/feed"):
@@ -1741,7 +1749,7 @@ class TestLoginPage:
         assert all(url.startswith(("data:", "/auth/")) for url in urls), urls
 
 
-# ---- A separately built web app at /app/ ----------------------------------
+# ---- A separately built web app at /trax/ ---------------------------------
 
 
 def _write_build(root: Path, *, marker: str) -> Path:
@@ -1764,7 +1772,7 @@ def _build_pages_and_app(tmp_path: Path) -> FastAPI:
 
 
 def _build_app_dir_app(tmp_path: Path, app_dir: Path) -> FastAPI:
-    """Build a fresh FastAPI serving ``app_dir`` at ``/app/``, no sign-in page."""
+    """Build a fresh FastAPI serving ``app_dir`` at ``/trax/``, no sign-in page."""
     assets = tmp_path / "no-pages"
     assets.mkdir()
     app = FastAPI()
@@ -1790,6 +1798,7 @@ class TestAttachedRoutes:
             if isinstance(r, APIRoute) and not r.path.startswith("/api/web")
         }
         assert set(routes) == {
+            "/trax/{path:path}",
             "/app/{path:path}",
             "/",
             "/me",
@@ -1819,6 +1828,27 @@ class TestAttachedRoutes:
         monkeypatch.setattr(web, "StaticFiles", Spy)
         web._app_files(tmp_path / "missing")
         assert seen == [False]
+
+    def test_without_an_assets_dir_the_shipped_pages_serve(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # macOS's file system ignores case, so a misspelt name would serve there
+        # too; only the mounted paths show the server reads the files it ships.
+        app = FastAPI()
+        web.attach(app, app_dir=_write_build(tmp_path / "b", marker="a"))
+        shipped = Path(web.__file__).parent / "assets"
+        pages = {
+            r.path: r.endpoint.page_path
+            for r in app.routes
+            if isinstance(r, APIRoute)
+            and isinstance(r.endpoint, web._LoginPageRoute | web._DevicePageRoute)
+        }
+        assert pages == {
+            "/auth/login_page": shipped / "login.html",
+            "/auth/device": shipped / "device.html",
+        }
+        assert TestClient(app).get("/auth/login_page").status_code == 200
 
 
 class TestDevicePage:
@@ -1908,7 +1938,7 @@ class TestAppDir:
         app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
         _install_identity(app, None)
         client = TestClient(app, follow_redirects=False)
-        for path in ("/app/", "/app/index.html?tab=x"):
+        for path in ("/trax/", "/trax/index.html?tab=x"):
             r = client.get(path)
             assert r.status_code == 302, path
             location = urlparse(r.headers["location"])
@@ -1923,7 +1953,7 @@ class TestAppDir:
         schema = from_plain(app.openapi(), dict[str, object])
         paths = set(from_plain(schema["paths"], dict[str, object]))
         assert paths.isdisjoint(
-            {"/", "/me", "/admin", "/graph", "/console", "/app/{path}"},
+            {"/", "/me", "/admin", "/graph", "/console", "/trax/{path}", "/app/{path}"},
         )
         assert "/api/web/get/{target_id}" in paths
 
@@ -1934,7 +1964,7 @@ class TestAppDir:
         app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
         _install_identity(app, None)
         client = TestClient(app, follow_redirects=False)
-        for path in ("/app/assets/app.js", "/app/assets/missing.js"):
+        for path in ("/trax/assets/app.js", "/trax/assets/missing.js"):
             r = client.get(path)
             assert r.status_code == 401, path
             assert "// a" not in r.text
@@ -1944,7 +1974,7 @@ class TestAppDir:
         [
             pytest.param(
                 Config(),
-                (401, 302, "/auth/login_page?next=%2Fapp%2F", 401),
+                (401, 302, "/auth/login_page?next=%2Ftrax%2F", 401),
                 id="default",
             ),
             pytest.param(
@@ -1956,7 +1986,7 @@ class TestAppDir:
             # reads its settings, so this stands for a server with it too.
             pytest.param(
                 Config(session_secret=uuid.uuid4().hex),
-                (401, 302, "/auth/login_page?next=%2Fapp%2F", 401),
+                (401, 302, "/auth/login_page?next=%2Ftrax%2F", 401),
                 id="session-login",
             ),
         ],
@@ -1967,7 +1997,7 @@ class TestAppDir:
         config: Config,
         answers: tuple[int, int, str | None, int],
     ) -> None:
-        # The app's source is public, so ``/app/`` keeps nothing back on its own
+        # The app's source is public, so ``/trax/`` keeps nothing back on its own
         # account: an anonymous caller gets it where the API answers them and is
         # refused where the API refuses them, whatever the mode. A browser opens
         # the entry page, so its refusal is the sign-in page.
@@ -1976,19 +2006,19 @@ class TestAppDir:
         app.state.store, app.state.engine = make_store()
         app.include_router(auth_routes.router)
         client = TestClient(app, follow_redirects=False)
-        page = client.get("/app/")
+        page = client.get("/trax/")
         assert (
             client.get("/api/me/profile").status_code,
             page.status_code,
             page.headers.get("location"),
-            client.get("/app/assets/app.js").status_code,
+            client.get("/trax/assets/app.js").status_code,
         ) == answers
 
     def test_signed_in_viewer_loads_assets(self, tmp_path: Path) -> None:
         app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
         _install_identity(app, _viewer_identity())
         client = TestClient(app)
-        r = client.get("/app/assets/app.js")
+        r = client.get("/trax/assets/app.js")
         assert r.status_code == 200
         assert r.text == "// a"
 
@@ -1996,7 +2026,7 @@ class TestAppDir:
         app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
         _install_identity(app, _viewer_identity())
         client = TestClient(app)
-        for path in ("/app/", "/app/index.html", "/app"):
+        for path in ("/trax/", "/trax/index.html", "/trax"):
             r = client.get(path)
             assert r.status_code == 200, path
             assert r.text == "INDEX-a"
@@ -2012,9 +2042,9 @@ class TestAppDir:
         app = _build_app_dir_app(tmp_path, build)
         _install_identity(app, _viewer_identity())
         client = TestClient(app)
-        assert client.get("/app/").status_code == 404
+        assert client.get("/trax/").status_code == 404
         _write_build(build, marker="late")
-        r = client.get("/app/")
+        r = client.get("/trax/")
         assert r.status_code == 200
         assert r.text == "INDEX-late"
 
@@ -2031,7 +2061,7 @@ class TestAppDir:
         try:
             app = _build_app_dir_app(tmp_path, build)
             _install_identity(app, _viewer_identity())
-            r = TestClient(app).get("/app/assets/app.js")
+            r = TestClient(app).get("/trax/assets/app.js")
         finally:
             (build / "assets").chmod(0o755)
         assert r.status_code == 500
@@ -2050,12 +2080,12 @@ class TestAppDir:
         app = _build_app_dir_app(tmp_path, current)
         _install_identity(app, _viewer_identity())
         client = TestClient(app)
-        assert client.get("/app/").text == "INDEX-old"
+        assert client.get("/trax/").text == "INDEX-old"
         staged = tmp_path / "current.next"
         staged.symlink_to(new)
         staged.replace(current)
-        assert client.get("/app/").text == "INDEX-new"
-        assert client.get("/app/assets/app.js").text == "// new"
+        assert client.get("/trax/").text == "INDEX-new"
+        assert client.get("/trax/assets/app.js").text == "// new"
 
     def test_path_traversal_is_refused(self, tmp_path: Path) -> None:
         build = _write_build(tmp_path / "b", marker="a")
@@ -2066,11 +2096,11 @@ class TestAppDir:
         _install_identity(app, _viewer_identity())
         client = TestClient(app)
         for path in (
-            "/app/%2e%2e/secret.txt",
-            "/app/..%2fsecret.txt",
-            "/app/assets/..%2f..%2fsecret.txt",
-            f"/app/{secret}",
-            "/app/escape.txt",
+            "/trax/%2e%2e/secret.txt",
+            "/trax/..%2fsecret.txt",
+            "/trax/assets/..%2f..%2fsecret.txt",
+            f"/trax/{secret}",
+            "/trax/escape.txt",
         ):
             r = client.get(path)
             assert r.status_code == 404, path
@@ -2092,11 +2122,11 @@ class TestAppDir:
         r = client.get("/static/report.html")
         assert r.status_code == 200
         assert r.text == "REPORT"
-        assert client.get("/app/assets/app.js").status_code == 401
+        assert client.get("/trax/assets/app.js").status_code == 401
 
     def test_every_response_forbids_shared_caches(self, tmp_path: Path) -> None:
         # A shared cache in front of the server (Cloudflare stores ``.js`` by
-        # extension there, 404s included) must never store an /app/ response:
+        # extension there, 404s included) must never store a /trax/ response:
         # a signed-in user's copy would be served to anyone, and a cached 401 or
         # 404 would break the app for everyone. ``private`` keeps shared caches
         # out. A file under ``assets/`` is named by its content's hash, so the
@@ -2109,12 +2139,12 @@ class TestAppDir:
         immutable = "private, max-age=31536000, immutable"
         revalidated = "private, no-cache"
         cases: tuple[tuple[AuthIdentity | None, str, int, str], ...] = (
-            (_viewer_identity(), "/app/", 200, revalidated),
-            (_viewer_identity(), "/app/favicon.svg", 200, revalidated),
-            (_viewer_identity(), "/app/assets/app.js", 200, immutable),
-            (_viewer_identity(), "/app/assets/missing.js", 404, revalidated),
-            (None, "/app/", 302, revalidated),
-            (None, "/app/assets/app.js", 401, revalidated),
+            (_viewer_identity(), "/trax/", 200, revalidated),
+            (_viewer_identity(), "/trax/favicon.svg", 200, revalidated),
+            (_viewer_identity(), "/trax/assets/app.js", 200, immutable),
+            (_viewer_identity(), "/trax/assets/missing.js", 404, revalidated),
+            (None, "/trax/", 302, revalidated),
+            (None, "/trax/assets/app.js", 401, revalidated),
         )
         for identity, path, status, cache_control in cases:
             _install_identity(app, identity)
@@ -2126,8 +2156,8 @@ class TestAppDir:
         # ``no-cache`` for as long as its hash does not change.
         _install_identity(app, _viewer_identity())
         client = TestClient(app)
-        etag = client.get("/app/assets/app.js").headers["etag"]
-        r = client.get("/app/assets/app.js", headers={"if-none-match": etag})
+        etag = client.get("/trax/assets/app.js").headers["etag"]
+        r = client.get("/trax/assets/app.js", headers={"if-none-match": etag})
         assert r.status_code == 304
         assert r.headers.get("cache-control") == immutable
 
@@ -2146,11 +2176,11 @@ class TestAppDir:
         _install_identity(app, None)
         client = TestClient(app, follow_redirects=False)
         paths = (
-            "/app/manifest.webmanifest",
-            "/app/icon-192.png",
-            "/app/icon-512.png",
-            "/app/favicon.svg",
-            "/app/assets/app.js",
+            "/trax/manifest.webmanifest",
+            "/trax/icon-192.png",
+            "/trax/icon-512.png",
+            "/trax/favicon.svg",
+            "/trax/assets/app.js",
         )
         answers = [client.get(path) for path in paths]
         served = {
@@ -2158,17 +2188,19 @@ class TestAppDir:
             for path, r in zip(paths, answers, strict=True)
         }
         assert served == {
-            "/app/manifest.webmanifest": (200, "application/manifest+json"),
-            "/app/icon-192.png": (200, "image/png"),
-            "/app/icon-512.png": (200, "image/png"),
-            "/app/favicon.svg": (401, "application/json"),
-            "/app/assets/app.js": (401, "application/json"),
+            "/trax/manifest.webmanifest": (200, "application/manifest+json"),
+            "/trax/icon-192.png": (200, "image/png"),
+            "/trax/icon-512.png": (200, "image/png"),
+            "/trax/favicon.svg": (401, "application/json"),
+            "/trax/assets/app.js": (401, "application/json"),
         }
 
     def test_app_is_off_unless_a_directory_is_given(self, tmp_path: Path) -> None:
         app = FastAPI()
         web.attach(app, assets_dir=tmp_path)
-        assert not any(path.startswith("/app") for path in registered_paths(app))
+        assert not any(
+            path.startswith(("/trax", "/app")) for path in registered_paths(app)
+        )
 
 
 # ---- The old UI's paths, once the app is served ---------------------------
@@ -2179,11 +2211,11 @@ class TestAppDir:
 # ``Location`` has none, and the app's router reads v1's hashes; a ``Location`` that
 # has a hash replaces the request's.
 _OLD_PATHS: Final = (
-    ("/", "/app/"),
-    ("/me", "/app/#/settings"),
-    ("/admin", "/app/#/admin"),
-    ("/graph", "/app/#/graph"),
-    ("/console", "/app/#/console"),
+    ("/", "/trax/"),
+    ("/me", "/trax/#/settings"),
+    ("/admin", "/trax/#/admin"),
+    ("/graph", "/trax/#/graph"),
+    ("/console", "/trax/#/console"),
 )
 
 
@@ -2199,12 +2231,40 @@ class TestOldPathsWithTheApp:
         identity: AuthIdentity | None,
     ) -> None:
         # With the app served, each of the old UI's paths answers 302, signed in
-        # or not, and ``/app/`` decides sign-in. 302 rather than 301, which a
-        # browser keeps for good; ``no-cache`` as on ``/app/``.
+        # or not, and ``/trax/`` decides sign-in. 302 rather than 301, which a
+        # browser keeps for good; ``no-cache`` as on ``/trax/``.
         app = _build_pages_and_app(tmp_path)
         _install_identity(app, identity)
         client = TestClient(app, follow_redirects=False)
         for path, location in _OLD_PATHS:
+            r = client.get(path)
+            assert (r.status_code, r.headers.get("location")) == (302, location), path
+            assert r.headers.get("cache-control") == "private, no-cache", path
+
+    @pytest.mark.parametrize(
+        "identity",
+        [None, _viewer_identity()],
+        ids=["signed-out", "viewer"],
+    )
+    def test_the_old_address_redirects_to_the_same_place_under_trax(
+        self,
+        tmp_path: Path,
+        identity: AuthIdentity | None,
+    ) -> None:
+        # The app was served at ``/app/`` before ``/trax/``, and links to it are
+        # stored in records, chats and docs. Each answers 302 to the same path and
+        # query under ``/trax/``, signed in or not, and the browser keeps the hash.
+        # 302, not 301: a browser keeps a 301 for good, and another app takes
+        # ``/app/`` next.
+        app = _build_pages_and_app(tmp_path)
+        _install_identity(app, identity)
+        client = TestClient(app, follow_redirects=False)
+        for path, location in (
+            ("/app/", "/trax/"),
+            ("/app/?x=1", "/trax/?x=1"),
+            ("/app/index.html?tab=x&q=%2Fa%3Fb", "/trax/index.html?tab=x&q=%2Fa%3Fb"),
+            ("/app/assets/app.js", "/trax/assets/app.js"),
+        ):
             r = client.get(path)
             assert (r.status_code, r.headers.get("location")) == (302, location), path
             assert r.headers.get("cache-control") == "private, no-cache", path
@@ -2226,13 +2286,15 @@ class TestOldPathsWithTheApp:
             "/admin",
             "/graph",
             "/console",
+            "/app/#/ref/Issue/7",
+            "/app",
         )
         walks: tuple[
             tuple[AuthIdentity | None, tuple[str, dict[str, list[str]]], str],
             ...,
         ] = (
-            (_viewer_identity(), ("/app/", {}), "INDEX-a"),
-            (None, ("/auth/login_page", {"next": ["/app/"]}), "LOGIN"),
+            (_viewer_identity(), ("/trax/", {}), "INDEX-a"),
+            (None, ("/auth/login_page", {"next": ["/trax/"]}), "LOGIN"),
         )
         for identity, landing, page in walks:
             _install_identity(app, identity)

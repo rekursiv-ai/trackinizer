@@ -11,7 +11,7 @@ const TAG = crypto.randomUUID().slice(0, 8);
 /** Open Activity and wait for the live stream, so changes written next join the feed. */
 async function openActivity(page: Page) {
   const subscribed = streamOpened(page);
-  await page.goto("/app/#/activity");
+  await page.goto("/trax/#/activity");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Activity");
   await subscribed;
 }

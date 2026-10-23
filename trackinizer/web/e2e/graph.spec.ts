@@ -29,7 +29,7 @@ function drawn(page: Page): Promise<Drawn> {
 async function openGraph(page: Page, hash = "#/graph?group=none") {
   const subscribed = streamOpened(page);
   const read = page.waitForResponse((response) => response.url().includes("/api/web/graph"));
-  await page.goto(`/app/${hash}`);
+  await page.goto(`/trax/${hash}`);
   await Promise.all([subscribed, read]);
   await expect(page.locator(".graph-count")).toHaveText(/\d nodes?$/);
 }
@@ -179,7 +179,7 @@ test("a change made while the stream was down shows once it reconnects (FR-02)",
     );
   }
   const [id] = await create(request, [["Issue", `Dropped issue ${TAG}`]]);
-  await page.goto("/app/#/graph");
+  await page.goto("/trax/#/graph");
   await expect(page.locator(".graph-count")).toHaveText(/\d nodes?$/);
   const title = async () => (await drawn(page)).nodes.find((node) => node.id === id)?.title;
   expect(await title()).toBe(`Dropped issue ${TAG}`);
@@ -463,7 +463,7 @@ test("1,000 nodes draw at 60 fps while the layout runs, with no long task after 
     requestAnimationFrame(tick);
     Object.assign(window, { frames: () => frames });
   });
-  await page.goto("/app/#/graph");
+  await page.goto("/trax/#/graph");
   await expect(page.locator(".graph-count")).toHaveText("1,000 nodes");
   const answered = await page.evaluate(
     () =>

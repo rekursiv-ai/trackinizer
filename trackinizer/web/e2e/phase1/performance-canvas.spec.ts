@@ -24,7 +24,7 @@ test("with the canvas on, a hub's detail renders with no main-thread task over 5
   // three times, log every sample, and hold each to the budget.
   const samples = [];
   for (let attempt = 0; attempt < 3; attempt++) {
-    await page.goto(`/app/?load=${attempt}#/lookup/${hub}`);
+    await page.goto(`/trax/?load=${attempt}#/lookup/${hub}`);
     const children = page.getByRole("region", { name: "Children", exact: true });
     await expect(children.locator(".rail-peer")).toHaveCount(10);
     await expect(children.getByRole("button", { name: `Show all ${PERF_CHILDREN + 1}` })).toBeVisible();

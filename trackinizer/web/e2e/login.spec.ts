@@ -14,7 +14,7 @@ test("offers Google sign-in once the server says it can, passing the link's view
     await asked;
     await route.fulfill({ status: 204 });
   });
-  await page.goto("/auth/login_page?next=%2Fapp%2F#/list/Paper");
+  await page.goto("/auth/login_page?next=%2Ftrax%2F#/list/Paper");
   const google = page.getByRole("link", { name: "Sign in with Google" });
   // While the server is asked, the page offers nothing and says nothing.
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
@@ -23,10 +23,10 @@ test("offers Google sign-in once the server says it can, passing the link's view
 
   answer();
   await expect(google).toBeVisible();
-  await expect(google).toHaveAttribute("href", `/auth/login?next=${encodeURIComponent("/app/#/list/Paper")}`);
+  await expect(google).toHaveAttribute("href", `/auth/login?next=${encodeURIComponent("/trax/#/list/Paper")}`);
   await expect(page.getByRole("status")).toHaveText("");
   // Where sign-in leads is the link's business, not the page's.
-  await expect(page.locator("body")).not.toContainText("/app/", { useInnerText: true });
+  await expect(page.locator("body")).not.toContainText("/trax/", { useInnerText: true });
 });
 
 test("a next that is not a path on this server is dropped", async ({ page }) => {
@@ -43,7 +43,7 @@ for (const [status, why] of [
     // The check's answer, which this test provokes.
     allowErrors(failedResource("/auth/login/ready", status));
     if (status !== 404) await page.route(READY, (route) => route.fulfill({ status }));
-    await page.goto("/auth/login_page?next=%2Fapp%2F");
+    await page.goto("/auth/login_page?next=%2Ftrax%2F");
     await expect(page.getByRole("status")).toHaveText("Sign-in is not configured on this server.");
     await expect(page.getByRole("link", { name: "Sign in with Google" })).toBeHidden();
   });
@@ -53,7 +53,7 @@ test("says so when the server cannot be reached", async ({ page, allowErrors }) 
   // The aborted check, which this test provokes.
   allowErrors(failedResource("/auth/login/ready", "ERR_FAILED"));
   await page.route(READY, (route) => route.abort());
-  await page.goto("/auth/login_page?next=%2Fapp%2F");
+  await page.goto("/auth/login_page?next=%2Ftrax%2F");
   await expect(page.getByRole("status")).toHaveText("Could not reach the server. Reload to try again.");
   await expect(page.getByRole("link", { name: "Sign in with Google" })).toBeHidden();
 });

@@ -40,7 +40,7 @@ export async function serveSeeded(port: number): Promise<Served> {
   if (!existsSync(join(DIST, "index.html"))) throw new Error(`No build in ${DIST}; run the npm script, which builds it.`);
   const origin = `http://127.0.0.1:${port}`;
   // Another server there would answer the start check, and the captures would show its data.
-  if (await answers(`${origin}/app/`)) throw new Error(`Port ${port} is in use; stop the server on it first.`);
+  if (await answers(`${origin}/trax/`)) throw new Error(`Port ${port} is in use; stop the server on it first.`);
   const data = mkdtempSync(join(tmpdir(), "trackinizer-capture-"));
   const server = serve(data, port);
   const remove = () => rmSync(data, { recursive: true, force: true });
@@ -145,7 +145,7 @@ function serve(data: string, port: number): ChildProcess {
 /** Wait until `server` serves the app, at most 2 minutes, and not after it has exited. */
 async function serving(server: ChildProcess, origin: string): Promise<void> {
   for (const deadline = Date.now() + 120_000; Date.now() < deadline && !exited(server); await sleep(250)) {
-    if (await answers(`${origin}/app/`)) return;
+    if (await answers(`${origin}/trax/`)) return;
   }
   throw new Error(`The server did not start at ${origin}.`);
 }

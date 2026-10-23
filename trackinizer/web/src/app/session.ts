@@ -1,13 +1,14 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef } from "react";
+import { APP_BASE } from "../base";
 import { log } from "../debug/log";
 
 /** The login page, which sends the visitor back to the app after sign-in. */
-export const LOGIN_URL = `/auth/login_page?next=${encodeURIComponent("/app/")}`;
+export const LOGIN_URL = `/auth/login_page?next=${encodeURIComponent(APP_BASE)}`;
 
 /**
  * The signed-in session's way out: to the login page, once, keeping work.
  *
- * `next` returns to `/app/` only, as in the old UI, so the hash the user was on
+ * `next` returns to `/trax/` only, as in the old UI, so the hash the user was on
  * waits in this tab's `sessionStorage`, and the next boot restores it
  * (`restoreReturnHash`). Open drafts are saved first by the callbacks their
  * editors register.

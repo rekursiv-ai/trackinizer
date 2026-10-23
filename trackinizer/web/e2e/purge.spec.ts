@@ -13,7 +13,7 @@ async function createIssue(request: APIRequestContext, fields: object): Promise<
 /** Open `hash` once the live stream is connected. */
 async function openLive(page: Page, hash: string): Promise<void> {
   const subscribed = streamOpened(page);
-  await page.goto(`/app/${hash}`);
+  await page.goto(`/trax/${hash}`);
   await subscribed;
 }
 

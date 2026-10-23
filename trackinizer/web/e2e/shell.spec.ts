@@ -12,17 +12,26 @@ async function go(page: Page) {
 }
 
 test("a deep link opens its view, and an old UI link lands on its v2 route", async ({ page }) => {
-  await page.goto("/app/#/list/Belief");
+  await page.goto("/trax/#/list/Belief");
   await expect(heading(page)).toHaveText("Beliefs");
   await expect((await go(page)).getByRole("link", { name: "Beliefs" })).toHaveAttribute("aria-current", "page");
 
-  await page.goto("/app/#/recent");
+  await page.goto("/trax/#/recent");
   await expect(heading(page)).toHaveText("Activity");
   expect(hash(page)).toBe("#/activity");
 });
 
+test("a link to the app's old address, /app/, opens the same view under /trax/", async ({ page }) => {
+  // The server sends /app/<path>?<query> to /trax/<path>?<query>, and the browser
+  // keeps the hash across a redirect whose Location has none.
+  await page.goto("/app/?from=link#/list/Belief");
+  await expect(heading(page)).toHaveText("Beliefs");
+  const { pathname, search } = new URL(page.url());
+  expect([pathname, search, hash(page)]).toEqual(["/trax/", "?from=link", "#/list/Belief"]);
+});
+
 test("Back then Forward keeps the URL and the view in agreement", async ({ page }) => {
-  await page.goto("/app/#/activity");
+  await page.goto("/trax/#/activity");
   await (await go(page)).getByRole("link", { name: "Issues" }).click();
   await expect(heading(page)).toHaveText("Issues");
   await (await go(page)).getByRole("link", { name: "Papers" }).click();
@@ -37,7 +46,7 @@ test("Back then Forward keeps the URL and the view in agreement", async ({ page 
 });
 
 test("⌘K toggles the palette, and a search link opens the search page, not the palette", async ({ page }) => {
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   await expect(heading(page)).toHaveText("Issues");
   const palette = page.getByRole("dialog", { name: "Command menu" });
   await page.keyboard.press("ControlOrMeta+k");
@@ -46,7 +55,7 @@ test("⌘K toggles the palette, and a search link opens the search page, not the
   await page.keyboard.press("ControlOrMeta+k");
   await expect(palette).toBeHidden();
 
-  await page.goto("/app/#/search/what%3F");
+  await page.goto("/trax/#/search/what%3F");
   await expect(heading(page)).toHaveText(/^Search: what\? \(\d+\)$/);
   await expect(page.getByRole("searchbox", { name: "Search query" })).toHaveValue("what?");
   await expect(palette).toBeHidden();
@@ -54,7 +63,7 @@ test("⌘K toggles the palette, and a search link opens the search page, not the
 
 test("on a phone, Go's pages are out of the keyboard's reach until it opens, and in it once opened (WEB-07)", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.goto("/app/#/activity");
+  await page.goto("/trax/#/activity");
   await expect(heading(page)).toHaveText("Activity");
   const inGo = () => page.evaluate(() => document.activeElement?.closest(".go-menu") !== null);
   for (let step = 0; step < 12; step++) {
@@ -76,7 +85,7 @@ test("a bar that comes on its own, such as offline, moves none of the rows (the 
     data: { items: [{ kind: "Issue", title: "Shell bar row", idempotency_key: "5e11ba70-0000-4000-8000-000000000001" }], edges: [] },
   });
   expect(seeded.ok(), await seeded.text()).toBe(true);
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   const first = page.locator("a.row").first();
   await expect(first).toBeVisible();
   const before = await first.boundingBox();

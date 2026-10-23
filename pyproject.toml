@@ -181,7 +181,7 @@ build-backend = "hatchling.build"
 packages = ["trackinizer"]
 # The web app ships built, not as source: `npm run build` in trackinizer/web runs
 # before `uv build` (package validation and the publish workflow), and the server
-# serves this copy at /app/ by default; the sdist carries both. An artifact,
+# serves this copy at /trax/ by default; the sdist carries both. An artifact,
 # not a force-include: hatch applies a force-include to the editable install too,
 # so `uv sync` would fail in every checkout that has not built the app yet.
 # Package validation checks that the wheel carries it.

@@ -19,7 +19,7 @@ async function openDetail(page: Page, id: string): Promise<Request[]> {
     if (request.method() !== "GET" && request.url().includes("/api/")) writes.push(request);
   });
   const subscribed = streamOpened(page);
-  await page.goto(`/app/#/lookup/${id}`);
+  await page.goto(`/trax/#/lookup/${id}`);
   await subscribed;
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   return writes;

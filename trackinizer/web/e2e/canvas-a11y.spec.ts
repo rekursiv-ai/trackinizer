@@ -71,14 +71,14 @@ for (const theme of ["dark", "light"] as const) {
 
       test("a list and a detail, with Chat beside them", async ({ page, request }) => {
         const { issue } = await seed(page, request);
-        await page.goto("/app/#/list/Issue");
+        await page.goto("/trax/#/list/Issue");
         await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
         // A phone shows Chat first, the page kept mounted and hidden until the switch shows it.
         const phone = size.width <= 760;
         if (phone) await expect(page.locator(".visual-stage")).toBeHidden();
         else await expect(page.locator("a.row").first()).toBeVisible();
         await audit(page, theme, `a list with Chat, ${size.width} px`);
-        await page.goto(`/app/#/lookup/${issue}`);
+        await page.goto(`/trax/#/lookup/${issue}`);
         if (phone) await expect(page.getByRole("heading", { level: 1 })).toBeHidden();
         else await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
         await audit(page, theme, `a detail with Chat, ${size.width} px`);
@@ -91,7 +91,7 @@ for (const theme of ["dark", "light"] as const) {
 
       test("Chat with a conversation open, and the chat menu open", async ({ page, request }) => {
         const { issue } = await seed(page, request);
-        await page.goto(`/app/#/lookup/${issue}`);
+        await page.goto(`/trax/#/lookup/${issue}`);
         await expect(page.getByText("Two things:")).toBeVisible();
         await audit(page, theme, `a conversation, ${size.width} px`);
         await page.locator(".chat-column").getByRole("button", { name: "Scratch chat" }).click();
@@ -104,7 +104,7 @@ for (const theme of ["dark", "light"] as const) {
 
 // The control: the audit above would see a violation in Chat's panel were there one.
 test("the audit finds an unnamed button put inside Chat", async ({ page }) => {
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   await expect(page.getByRole("region", { name: "Chat" })).toBeVisible();
   await page.evaluate(() => document.querySelector(".chat-panel")!.append(document.createElement("button")));
   const { violations } = await new AxeBuilder({ page }).withTags(WCAG).analyze();

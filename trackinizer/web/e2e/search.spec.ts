@@ -35,7 +35,7 @@ test("a search link shows every kind's matches from one request, newest first, w
   page.on("request", (request) => {
     if (request.url().includes("/api/web/search")) searches.push(new URL(request.url()));
   });
-  await page.goto(`/app/#/search/${encodeURIComponent(`Search ${TAG}`)}`);
+  await page.goto(`/trax/#/search/${encodeURIComponent(`Search ${TAG}`)}`);
   await expect(heading(page)).toHaveText(`Search: Search ${TAG} (3)`);
   expect(await rows(page)).toEqual([
     ["Ref", "Status", "Title"],
@@ -51,7 +51,7 @@ test("a search link shows every kind's matches from one request, newest first, w
 });
 
 test("an empty link asks for a query; one entered with no match says so", async ({ page }) => {
-  await page.goto("/app/#/search");
+  await page.goto("/trax/#/search");
   await expect(heading(page)).toHaveText("Search");
   await expect(page.getByText("Enter a query above")).toBeVisible();
   await expect(box(page)).toBeFocused();
@@ -69,7 +69,7 @@ test("a search over the server's time budget shows its message, and Retry search
   await page.route("**/api/web/search?*", (route) =>
     refuse ? route.fulfill({ status: 400, json: { detail: BUDGET } }) : route.continue(),
   );
-  await page.goto(`/app/#/search/${encodeURIComponent(`Search ${TAG}`)}`);
+  await page.goto(`/trax/#/search/${encodeURIComponent(`Search ${TAG}`)}`);
   await expect(page.getByRole("alert")).toContainText(BUDGET);
   refuse = false;
   await page.getByRole("alert").getByRole("button", { name: "Retry" }).click();

@@ -101,7 +101,7 @@ test("an Experiment's metrics show as sparklines, and a full page says it is tru
   const small = await create(request, "Experiment", "E2E metrics");
   await logMetric(request, small.id, "loss", 40, (s) => 2 - s / 40);
   await logMetric(request, small.id, "ece", 5, () => 0.03);
-  await page.goto(`/app/#/ref/Experiment/${small.seq}`);
+  await page.goto(`/trax/#/ref/Experiment/${small.seq}`);
   const metrics = page.getByRole("region", { name: /^Metrics/ });
   await expect(metrics.getByRole("heading", { level: 2 })).toHaveText("Metrics 2");
   await expect(metrics.locator('[data-metric="loss"] .v')).toHaveText("1.02");
@@ -112,7 +112,7 @@ test("an Experiment's metrics show as sparklines, and a full page says it is tru
   const big = await create(request, "Experiment", "E2E metrics over the cap");
   await logMetric(request, big.id, "a_first", 700, (s) => s);
   await logMetric(request, big.id, "b_second", 400, (s) => -s);
-  await page.goto(`/app/#/ref/Experiment/${big.seq}`);
+  await page.goto(`/trax/#/ref/Experiment/${big.seq}`);
   await expect(metrics.getByRole("note")).toContainText("Later points of b_second and any metric after it are not shown.");
   await expect(metrics.locator('[data-metric="b_second"] .r')).toHaveText("300 points · steps 0–299 · range -299–0 · partial");
 });
@@ -122,7 +122,7 @@ test("a transcript shows every part in full, past 200 records, its bookkeeping o
     ["main.jsonl", 250],
     ["compacted.jsonl", 12],
   ]);
-  await page.goto(`/app/#/ref/AgentSession/${seq}`);
+  await page.goto(`/trax/#/ref/AgentSession/${seq}`);
   const transcript = page.getByRole("region", { name: /^Transcript/ });
   await expect(transcript.getByRole("heading", { level: 2 })).toHaveText("Transcript 262 records");
   // A turn and a tool call in every ten records; the token usage between hides until asked.
@@ -144,7 +144,7 @@ test("a transcript shows every part in full, past 200 records, its bookkeeping o
 
 test("a long part shows its newest 1,000 records, and Load earlier reads the rest", async ({ page }) => {
   const { seq } = await session(page.request, "E2E long transcript", [["long.jsonl", 1050]]);
-  await page.goto(`/app/#/ref/AgentSession/${seq}`);
+  await page.goto(`/trax/#/ref/AgentSession/${seq}`);
   await expect(page.locator(".tr-more")).toHaveText("Showing 1,000 of 1,050 records.Load earlier");
   // Records 50 to 1,049: a turn and a tool call in every ten.
   await expect(turns(page, 0)).toHaveCount(200);
@@ -165,7 +165,7 @@ test("a record appended to a live session shows with one read of what follows th
     if (url.pathname === `/api/sessions/${id}/records`) reads.push(url.search);
   });
   const subscribed = streamOpened(page);
-  await page.goto(`/app/#/ref/AgentSession/${seq}`);
+  await page.goto(`/trax/#/ref/AgentSession/${seq}`);
   await expect(turns(page, 0)).toHaveCount(50);
   await subscribed;
   reads.length = 0;
@@ -187,7 +187,7 @@ test("a 1,000-record transcript draws with no main-thread task over 50 ms, with 
     page = await context.newPage();
     await watchLongTasks(page);
     await (await context.newCDPSession(page)).send("Emulation.setCPUThrottlingRate", { rate: 4 });
-    await page.goto(`/app/?load=${attempt}#/ref/AgentSession/${seq}`);
+    await page.goto(`/trax/?load=${attempt}#/ref/AgentSession/${seq}`);
     // Each shell result shows inside the call it answers: 800 lines, record 0 last drawn.
     await expect(turns(page, 0)).toHaveCount(800, { timeout: 30_000 });
     await expect(page.locator('[data-part="0"] [data-idx="0"]')).toBeVisible();

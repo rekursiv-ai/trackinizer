@@ -48,7 +48,7 @@ export default defineConfig({
         { name: "Workspace box", about: "Each chat's assistant gets a shell of its own, made for the canvas." },
       ]),
     },
-    url: `http://127.0.0.1:${port}/app/`,
+    url: `http://127.0.0.1:${port}/trax/`,
     // Another checkout's server on this port would serve a different build.
     reuseExistingServer: false,
     timeout: 120_000,

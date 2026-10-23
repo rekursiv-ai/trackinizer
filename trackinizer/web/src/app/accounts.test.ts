@@ -43,6 +43,6 @@ test("an address at a mail host anyone joins is personal; any other is its organ
 });
 
 test("signing in as a remembered account asks Google to pick it; adding one asks for none", () => {
-  expect(signInUrl("lead@acme.co")).toBe("/auth/login?next=%2Fapp%2F&login_hint=lead%40acme.co");
-  expect(signInUrl()).toBe("/auth/login?next=%2Fapp%2F");
+  expect(signInUrl("lead@acme.co")).toBe("/auth/login?next=%2Ftrax%2F&login_hint=lead%40acme.co");
+  expect(signInUrl()).toBe("/auth/login?next=%2Ftrax%2F");
 });

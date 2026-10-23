@@ -52,7 +52,7 @@ async function slowTerminal(page: Page, request: Parameters<typeof resetCanvas>[
     });
   });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   await page.getByRole("button", { name: "Start terminal on gx10" }).click();
   const tile = page.locator(".visual-tile").filter({ has: page.locator(".terminal-tile") });
   await expect(tile.locator(".xterm-screen")).toBeVisible();

@@ -18,7 +18,7 @@ test("floating Browse's stable content host folds to its bar and opens again", a
   });
   expect(placed.ok(), await placed.text()).toBe(true);
   await page.setViewportSize({ width: 1600, height: 900 });
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   const tile = page.locator(".visual-tile-browse.visual-tile-floating");
   const content = tile.locator(".visual-browse-content > .view");
   await expect(content).toBeVisible();
@@ -48,7 +48,7 @@ test("an HTML Artifact in Browse keeps its document, edit and focus through rere
   let reads = 0;
   page.on("request", (read) => { if (new URL(read.url()).pathname === `/api/artifacts/${artifact}/html`) reads += 1; });
   await page.setViewportSize({ width: 1600, height: 900 });
-  await page.goto(`/app/#/lookup/${artifact}`);
+  await page.goto(`/trax/#/lookup/${artifact}`);
   const draft = page.frameLocator(".artifact-html-frame").getByRole("textbox", { name: "Artifact draft" });
   await draft.fill("unsaved iframe edit");
   const token = await draft.evaluate(() => Reflect.get(window, "documentToken") as string);
@@ -133,7 +133,7 @@ test("Browse in the last main slot keeps overflow inside its strip", async ({ pa
     state = await changed.json() as CanvasState;
   }
   await page.setViewportSize({ width: 1000, height: 900 });
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   const strip = page.locator(".visual-main-strip");
   await expect(page.locator(".visual-browse-slot")).toBeAttached();
   await expect.poll(() => strip.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);

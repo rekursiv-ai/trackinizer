@@ -287,7 +287,7 @@ class TestPureFunctions:
         fresh = FastAPI()
         monkeypatch.setattr(server, "app", fresh)
         server._configure_app(flags)
-        assert "/app/{path:path}" in registered_paths(fresh)
+        assert "/trax/{path:path}" in registered_paths(fresh)
 
     def test_the_packaged_build_is_served_unless_app_dir_names_another(
         self,
@@ -315,7 +315,9 @@ class TestPureFunctions:
 
         server._configure_app(flags)
 
-        assert not any(path.startswith("/app") for path in registered_paths(fresh))
+        assert not any(
+            path.startswith(("/trax", "/app")) for path in registered_paths(fresh)
+        )
 
     def test_the_packaged_build_is_the_built_app_beside_the_package(
         self,
@@ -588,13 +590,13 @@ def _write_build(root: Path, *, marker: str) -> Path:
 
 
 def _served_index(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> str:
-    """Configure a fresh app from ``argv``; return its ``/app/`` to a signed-in user."""
+    """Configure a fresh app from ``argv``; return ``/trax/`` to a signed-in user."""
     flags, _ = _parse_args(argparse.ArgumentParser(), argv)
     fresh = FastAPI()
     monkeypatch.setattr(server, "app", fresh)
     server._configure_app(flags)
     fresh.dependency_overrides[web.optional_identity] = _signed_in
-    return TestClient(fresh).get("/app/").text
+    return TestClient(fresh).get("/trax/").text
 
 
 async def _signed_in() -> AuthIdentity:

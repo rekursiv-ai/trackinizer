@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { APP_BASE } from "../base";
 
 /**
  * An account this browser has been signed in as: what the account menu shows of
@@ -73,7 +74,7 @@ export function accountKind(email: string): AccountKind {
 
 /** Where signing in as another account starts: Google's chooser, with `email` picked when given. */
 export function signInUrl(email?: string): string {
-  const next = `next=${encodeURIComponent("/app/")}`;
+  const next = `next=${encodeURIComponent(APP_BASE)}`;
   return email ? `/auth/login?${next}&login_hint=${encodeURIComponent(email)}` : `/auth/login?${next}`;
 }
 

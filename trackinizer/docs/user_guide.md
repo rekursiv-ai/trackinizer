@@ -22,7 +22,7 @@ sign-in, and with no terminals: a terminal opens only for a signed-in person.
 
 ### Sign in
 
-1. Open the server's address. It takes you to the app, at `/app/`.
+1. Open the server's address. It takes you to the app, at `/trax/`.
 2. On the sign-in page, choose **Sign in with Google**. A server with no
    sign-in set up says "Sign-in is not configured on this server."
 3. After signing in you land on the page you first asked for.
@@ -39,7 +39,7 @@ From left to right it holds the logo (the graph), **Go** (every page), Search
 
 The app ships a web app manifest, so a browser that installs web apps can
 install it: use the browser's Install or Add to Home Screen command. The
-installed app opens in a window of its own at `/app/`. It also gets a few keys
+installed app opens in a window of its own at `/trax/`. It also gets a few keys
 that a browser keeps for itself in a plain tab (see
 [Terminals and machines](#terminals-and-machines)).
 

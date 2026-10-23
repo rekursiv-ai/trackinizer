@@ -1,8 +1,8 @@
 /**
  * The hash of `href` when it is a page of this app, else null.
  *
- * A page of this app has this page's origin and path (`/app/`) and a `#/` route:
- * `https://<this host>/app/#/ref/Issue/9` is `#/ref/Issue/9`. A relative `#/…`
+ * A page of this app has this page's origin and path (`/trax/`) and a `#/` route:
+ * `https://<this host>/trax/#/ref/Issue/9` is `#/ref/Issue/9`. A relative `#/…`
  * is one too. `/api/…` URLs, other hosts and other paths are not.
  */
 export function appHash(href: string, page: Pick<Location, "href"> = location): string | null {

@@ -2,7 +2,7 @@ import { expect, failedResource, revealBar, test } from "./fixtures";
 
 // The server runs with --no-auth, so every request is the synthetic admin.
 test("the shell boots and shows the signed-in profile", async ({ page }) => {
-  await page.goto("/app/");
+  await page.goto("/trax/");
   await expect(page).toHaveTitle("Trackinizer");
   // The account is its avatar until the pointer rests on it; then the address and the role show.
   const me = (await revealBar(page)).getByRole("button", { name: "Account: no-auth@localhost, admin" });
@@ -25,12 +25,12 @@ test("a 401 sends the browser to the login page, and the next boot restores the 
   await page.route("**/api/me/profile", (route) =>
     route.fulfill({ status: 401, json: { detail: "not signed in" } }),
   );
-  await page.goto("/app/#/list/Paper");
-  await page.waitForURL("**/auth/login_page?next=%2Fapp%2F");
+  await page.goto("/trax/#/list/Paper");
+  await page.waitForURL("**/auth/login_page?next=%2Ftrax%2F");
 
-  // Signed in again: the login page returns to /app/ with no hash.
+  // Signed in again: the login page returns to /trax/ with no hash.
   await page.unroute("**/api/me/profile");
-  await page.goto("/app/");
+  await page.goto("/trax/");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Papers");
   expect(new URL(page.url()).hash).toBe("#/list/Paper");
 });

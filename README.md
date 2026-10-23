@@ -59,9 +59,9 @@ terminals on your own machine, and agent sessions.
 
 The web app browses the same records the API serves. Its source is `web/`
 ([`web/README.md`](trackinizer/web/README.md)), and the package ships it
-built: `trackinizer` serves it at `/app/`, and `/` leads there. To use it on
-your own machine, run the server in single-user local mode, then open
-http://127.0.0.1:8765/app/:
+built: `trackinizer` serves it at `/trax/`, and `/` and its old address `/app/`
+lead there. To use it on your own machine, run the server in single-user local
+mode, then open http://127.0.0.1:8765/trax/:
 
 ```bash
 trackinizer --no-auth
@@ -69,7 +69,7 @@ trackinizer --no-auth
 
 `--no-auth` makes every request an admin, so keep the server on localhost, its
 default `--host`. Without it, the API accepts only API tokens, which is how
-`trax` and agents connect, and `/app/` follows the same rule: a browser gets
+`trax` and agents connect, and `/trax/` follows the same rule: a browser gets
 the sign-in page, and the package ships no browser sign-in.
 
 `--app-dir DIR` serves the app built in `DIR` in place of the packaged one. In
@@ -403,10 +403,10 @@ Pick one of these orders depending on what you came in for.
 trackinizer                        # pglite (default)
 trackinizer --engine pg --dsn ...  # against real Postgres
 trackinizer --no-auth              # single-user local mode: everyone is admin
-trackinizer --app-dir DIR          # the web app built in DIR at /app/
+trackinizer --app-dir DIR          # the web app built in DIR at /trax/
 trackinizer --assistant ACTOR=EMAIL  # the shared Chat partner (or $TRACKINIZER_ASSISTANT)
 trackinizer --staff PATTERNS         # who is staff: user@host or *@domain (or $TRACKINIZER_STAFF)
-trackinizer --no-web               # without /api/web, /app/ or the login page
+trackinizer --no-web               # without /api/web, /trax/ or the login page
 ```
 
 `trax` is the client half and talks to any reachable server, so it is

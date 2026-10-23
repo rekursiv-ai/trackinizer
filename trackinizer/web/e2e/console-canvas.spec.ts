@@ -51,7 +51,7 @@ async function bindOwnChat(page: Page, request: APIRequestContext): Promise<void
 
 async function openConsole(page: Page): Promise<void> {
   const subscribed = streamOpened(page);
-  await page.goto("/app/#/console");
+  await page.goto("/trax/#/console");
   await subscribed;
   await expect(page.getByRole("group", { name: "Scope" })).toBeVisible();
 }
@@ -158,7 +158,7 @@ test(`the chat draws a relay line as its own`, async ({ page, request }) => {
   expect((await request.post(`/api/canvases/for-chat/${conversation}`)).ok()).toBe(true);
   await page.setViewportSize({ width: 1400, height: 900 });
   const subscribed = streamOpened(page);
-  await page.goto("/app/#/list/Issue");
+  await page.goto("/trax/#/list/Issue");
   await subscribed;
   const line = page.locator(".chat-line-relay");
   await expect(line).toHaveText("you → lead-2, tiles-a:ops: rerun the suite");

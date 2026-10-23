@@ -870,7 +870,7 @@ test("the Workbench section opens Artifact content from its canonical link", asy
 
   expect(await screen.findByRole("textbox", { name: "Artifact link" })).toBeTruthy();
   fireEvent.change(screen.getByRole("textbox", { name: "Artifact link" }),
-    { target: { value: `https://trackinizer.example.com/app/#/lookup/${artifactId}` } });
+    { target: { value: `https://trackinizer.example.com/trax/#/lookup/${artifactId}` } });
   fireEvent.click(screen.getByRole("button", { name: "Open Artifact" }));
   await waitFor(() => expect(applyCanvasOperation).toHaveBeenCalledWith(
     canvas.id, canvas.revision,

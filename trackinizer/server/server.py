@@ -271,14 +271,15 @@ def _parse_args(
         default=None,
         metavar="DIR",
         help=(
-            "Serve a separately built web app from DIR at /app/ to the callers "
+            "Serve a separately built web app from DIR at /trax/ to the callers "
             "the API answers: signed-in users, or everyone under --no-auth; "
-            "/app/ serves DIR/index.html. DIR is resolved on every request, so "
+            "/trax/ serves DIR/index.html. DIR is resolved on every request, so "
             "it may be missing at startup (404 until a build lands) or a "
             "symlink swapped to a new build without a restart. "
             "Unset, it is the build packaged with trackinizer, if any. With an "
-            "app, /, /me, /admin, /graph and /console redirect into it; with "
-            "none, nothing is served at them or at /app/."
+            "app, /, /me, /admin, /graph, /console and the app's old address "
+            "/app/ redirect into it; with none, nothing is served at them or at "
+            "/trax/."
         ),
     )
     parser.add_argument(
