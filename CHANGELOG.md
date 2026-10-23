@@ -3,7 +3,7 @@
 All notable trackinizer changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 0.1.8 - 2026-10-23
 
 ### Changed
 
@@ -29,6 +29,9 @@ All notable trackinizer changes are documented here. This project follows
   `zstandard`, `torch`, `transformers`, `huggingface-hub` and `peft`. `bashlex`
   and `watchdog` (macOS) stay in the base: the agent runner's session capture
   uses them through `trackinizer.lib`. A source checkout is unaffected.
+- `pyyaml` is a required dependency: the model catalog
+  (`trackinizer.lib.agent.catalog`), which Chat's `/model` options read, loads
+  its roles from YAML.
 
 ### Removed
 
