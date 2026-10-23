@@ -656,7 +656,8 @@ async def session_end_route(
     steering messages. A second end on an already-closed session is a 409. A
     session whose audience the caller neither reads nor opened is 403
     ``session_audience``. A science chat is closed by a key that may run on it: its
-    opening key, the assistant's or its starter's (403 otherwise). An end that names
+    opening key, the assistant's or its starter's (403 otherwise); its starter may also
+    close it from a browser, which has no key. An end that names
     a ``cli`` other than the chat's provider is a 200 that changes nothing: it is the
     exit of a run a switch stopped, and the session is the chat's, now drained by the
     provider its station chose. An end that names a ``cli`` and an ``instance`` is
@@ -683,7 +684,7 @@ async def session_end_route(
     session = await require_session(store, session_id)
     require_session_write_access(identity, session)
     await require_session_access(request, identity, session=session, mode="write")
-    await require_chat_writer(request, identity, session=session)
+    await require_chat_writer(request, identity, session=session, closing=True)
     # A switch stops the old run, which may exit after the new provider's run attached:
     # ending the chat's session then would take that run's lease and queued lines.
     provider = await _chat_provider_of(request, session=session)

@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Final
 
 import re
 
+from trackinizer.lib.agent.catalog import models
+
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -119,18 +121,30 @@ _MENU: Final = (
 _SETTING_CHARS: Final = {"model": 120, "effort": 20}
 """The longest argument of ``/model`` and ``/effort``: the limits of ``ChatSettings``."""
 
-# Where the options come from: claude's aliases are the catalog's roles (``best``,
-# ``default`` and ``utility`` in ``lib/agent/catalog/anthropic.py``); codex's models
-# are the catalog's ``wire_model_id`` of its newest rows (``lib/agent/catalog/
-# openai.py``); the levels are ``Effort`` in ``lib/agent/harness/types.py``, which both
-# CLIs take. This package may not import ``lib``, so the lists are spelled here.
+# Where the options come from: the catalog's roles, in the order best, default,
+# everyday, utility. Claude's are each role's family alias; codex's are each role's
+# ``wire_model_id``. The levels are ``Effort`` in ``lib/agent/harness/types.py``,
+# which both CLIs take.
+_ROLES: Final = ("best", "default", "everyday", "utility")
+_CLAUDE: Final = models("anthropic")
+_CODEX: Final = models("openai")
+# Two roles may name one model, which is listed once.
+_CLAUDE_ALIASES: Final = tuple(
+    dict.fromkeys(_CLAUDE[role].model_id.rpartition("-")[0] for role in _ROLES),
+)
+_CLAUDE_FULL_ID: Final = _CLAUDE["default"].wire_model_id or _CLAUDE["default"].model_id
+_CODEX_IDS: Final = tuple(
+    dict.fromkeys(
+        _CODEX[role].wire_model_id or _CODEX[role].model_id for role in _ROLES
+    ),
+)
 _MODELS: Final[Mapping[ChatProvider, str]] = {
-    "claude": "opus, sonnet, fable, or a full id such as claude-opus-5-5",
-    "codex": "gpt-6.1-sol, gpt-6-sol, gpt-6-luna, gpt-5.6, gpt-5.5",
+    "claude": f"{', '.join(_CLAUDE_ALIASES)}, or a full id such as {_CLAUDE_FULL_ID}",
+    "codex": ", ".join(_CODEX_IDS),
 }
 _EXAMPLE: Final[Mapping[ChatProvider, str]] = {
-    "claude": "opus",
-    "codex": "gpt-6.1-sol",
+    "claude": _CLAUDE["default"].model_id.rpartition("-")[0],
+    "codex": _CODEX["default"].wire_model_id or _CODEX["default"].model_id,
 }
 _EFFORTS: Final = "low, medium, high, xhigh, max"
 _BARE_MODEL: Final = (
