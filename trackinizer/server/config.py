@@ -20,6 +20,10 @@ from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.wire import wire_terminals
+from trackinizer.wire.wire_service_accounts import (
+    SERVICE_DOMAIN,
+    is_service_address,
+)
 
 
 if TYPE_CHECKING:
@@ -73,7 +77,9 @@ class Assistant:
     """An account whose live sessions every signed-in user may talk to.
 
     An actor handle is first come, first served, so a session is the assistant's
-    only when the API key that opened it also belongs to ``email``.
+    only when the API key that opened it also belongs to ``email``. Every key of that
+    account acts as the assistant, so it is a service account (:func:`parse_assistant`
+    refuses any other).
     """
 
     actor: str
@@ -362,7 +368,8 @@ def parse_assistant(value: str) -> Assistant | None:
       assistant: The assistant, or None when blank.
 
     Raises:
-      ConfigError: The value is not ``ACTOR=EMAIL``.
+      ConfigError: The value is not ``ACTOR=EMAIL``, or ``EMAIL`` is not a service
+        account's.
 
     """
     if not value.strip():
@@ -370,6 +377,13 @@ def parse_assistant(value: str) -> Assistant | None:
     actor, _, email = value.partition("=")
     if not actor.strip() or not email.strip():
         raise ConfigError(f"--assistant must be ACTOR=EMAIL, got {value!r}")
+    # A person's address would make every key of theirs the assistant: their own runs
+    # would be refused their chats, and their keys would act for any asker.
+    if not is_service_address(email):
+        raise ConfigError(
+            "--assistant (TRACKINIZER_ASSISTANT) must name a service account, "
+            f"NAME@{SERVICE_DOMAIN}, got {email.strip()!r}",
+        )
     # users.email is stored lowercase, so only a lowercase one can match it.
     return Assistant(actor=actor.strip(), email=email.strip().lower())
 

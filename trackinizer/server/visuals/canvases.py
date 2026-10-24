@@ -471,6 +471,14 @@ class CanvasPartner(BaseModel):
     """What Chat shows for it: the assistant's name; ``claude · <machine>``, or
     ``claude`` when the machine is not known; ``claude: no run`` while offline."""
 
+    refused: str = ""
+    """While a CLI is offline, why the server refused the last drain by a run of the
+    chat's own account, so the person sees why a run they started never went live;
+    empty when none was refused since one drained."""
+
+    refused_at: datetime | None = None
+    """When ``refused`` was; a new refusal moves it."""
+
 
 class ProviderFlags(BaseModel):
     """Which providers the canvas's owner may choose now."""

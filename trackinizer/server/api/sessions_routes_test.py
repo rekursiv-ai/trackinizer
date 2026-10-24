@@ -1377,6 +1377,39 @@ async def test_a_chat_on_a_cli_is_drained_by_its_starters_run_and_never_the_assi
     assert (await drain(client, session_id=chat, cli="claude")).status_code == 403
 
 
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_refused_drain_of_the_chats_own_run_is_kept_for_its_canvas(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A stranger's refused drain is kept for no one; a drain let in forgets it."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    conversation = uuid.uuid4()
+    chat = await seed_session(
+        store,
+        ASSISTANT,
+        actor="chat-1",
+        cli_session_id=chat_session_id(conversation),
+        account=TEST_USER_EMAIL,
+    )
+    await _canvas_on(store, provider="claude", conversation_id=conversation)
+    inbound = cast("InboundQueue", app.state.inbound)
+
+    act_as_other_agent("writer")
+    assert (await drain(client, session_id=chat, cli="claude")).status_code == 403
+    assert inbound.refusal(chat) is None
+    act_as_user_agent("writer")
+    refused = await drain(client, session_id=chat, cli="codex")
+    assert (refused.status_code, _code(refused)) == (409, "provider_is_other_cli")
+    kept = inbound.refusal(chat)
+    assert kept is not None
+    assert kept.reason == _message(refused)
+    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
+    assert inbound.refusal(chat) is None
+
+
 async def _canvas_with_chat(
     store: Store,
     *,

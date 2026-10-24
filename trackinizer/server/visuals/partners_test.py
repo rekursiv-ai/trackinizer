@@ -18,7 +18,11 @@ from trackinizer.server.config import Assistant
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue, PollerRun
 from trackinizer.server.store.core import Store
-from trackinizer.server.visuals.canvases import NO_MACHINE_REASON, CanvasState
+from trackinizer.server.visuals.canvases import (
+    NO_MACHINE_REASON,
+    CanvasPartner,
+    CanvasState,
+)
 from trackinizer.server.visuals.partners import (
     assistant_key_may_use,
     attach_partner,
@@ -188,6 +192,8 @@ async def test_the_assistants_newest_live_session_is_the_default_partner(
         "run_name": None,
         "cwd": None,
         "label": "scout",
+        "refused": "",
+        "refused_at": None,
     }
 
 
@@ -226,6 +232,8 @@ async def test_an_assistant_with_no_live_session_is_still_named_as_unavailable(
         "run_name": None,
         "cwd": None,
         "label": "scout",
+        "refused": "",
+        "refused_at": None,
     }
     assert none is None
 
@@ -676,6 +684,49 @@ async def test_a_live_runs_partner_says_where_it_runs_and_how_to_attach(
         # A run from a trax that names nothing is shown as runs always were.
         assert await partner(PollerRun()) == ("live", None, None, None, "claude")
         assert await partner(None) == ("offline", None, None, None, "claude: no run")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_offline_partner_says_why_the_chats_run_was_refused(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """The person who started a run that never went live is told the server's reason."""
+    await _seed(pglite_engine)
+    inbound = InboundQueue()
+    async with pglite_engine.acquire() as conn:
+        chat = await _session(
+            conn,
+            key=_USER_KEY,
+            owner="chat-1",
+            seq=1,
+            cli="claude",
+            cli_session_id=chat_session_id(_CHAT),
+        )
+
+        async def partner() -> CanvasPartner:
+            found = await resolve_partner(
+                conn,
+                inbound=inbound,
+                assistant=_KB,
+                provider="claude",
+                conversation_id=_CHAT,
+            )
+            assert found is not None
+            return found
+
+        assert ((await partner()).refused, (await partner()).refused_at) == ("", None)
+        inbound.refuse(chat, reason="Another run is draining this chat")
+        refused = await partner()
+        kept = inbound.refusal(chat)
+        assert kept is not None
+        assert (refused.status, refused.refused, refused.refused_at) == (
+            "offline",
+            "Another run is draining this chat",
+            kept.at,
+        )
+        inbound.mark_poller(chat, cli="claude")
+        assert ((await partner()).status, (await partner()).refused) == ("live", "")
 
 
 @pytest.mark.db_pglite

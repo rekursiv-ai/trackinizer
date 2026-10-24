@@ -766,6 +766,8 @@ async def test_browser_chat_reaches_the_assistant_with_the_page_and_no_pinned_re
         "run_name": None,
         "cwd": None,
         "label": KB_ACTOR,
+        "refused": "",
+        "refused_at": None,
     }
     async with store.engine.acquire() as conn:
         await conn.execute(
@@ -1344,6 +1346,8 @@ async def test_a_canvas_talks_to_the_assistant_however_its_session_is_named(
         "run_name": None,
         "cwd": None,
         "label": KB_ACTOR,
+        "refused": "",
+        "refused_at": None,
     }
     sent = await send_chat(
         client,

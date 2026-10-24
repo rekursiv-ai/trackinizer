@@ -1317,6 +1317,23 @@
             "$ref": "#/components/schemas/ChatProvider",
             "default": "assistant"
           },
+          "refused": {
+            "default": "",
+            "title": "Refused",
+            "type": "string"
+          },
+          "refused_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refused At"
+          },
           "run_name": {
             "anyOf": [
               {

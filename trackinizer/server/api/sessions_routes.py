@@ -502,50 +502,26 @@ async def session_inbound_drain_route(
 
     """
     store = get_store(request)
-    session, provider = await _authorize_drain(
-        request,
-        identity,
-        session_id=session_id,
-        cli=cli,
-        names_cli=True,
-    )
     inbound = get_inbound(request)
-    # A run closed for silence that polls again was alive all along -- cut off,
-    # not dead -- so it gets its session back before this poll is served.
-    if session.ended is not None and await revive_if_reaped(
-        store,
-        session_id=session_id,
-    ):
-        session = await require_session(store, session_id)
-    # A CLI chat's session that stays ended -- the person closed the chat -- is no
-    # session to wait on: the run polling it stops, where an empty answer would leave
-    # it polling a chat no line can reach.
-    if session.ended is not None and provider not in {None, "assistant"}:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": SESSION_ENDED,
-                "message": "This chat was closed; its run stops",
-            },
+    try:
+        polling = await _admit_drain(
+            request,
+            identity,
+            session_id=session_id,
+            cli=cli,
+            instance=instance,
         )
-    polling = session.status == "active" and session.ended is None
+    except HTTPException as refused:
+        await _remember_refusal(
+            request,
+            identity,
+            session_id=session_id,
+            refused=refused,
+        )
+        raise
     if polling:
-        # No await between this test and the lease it protects: two runs that start
-        # together cannot both pass it.
-        if (
-            provider is not None
-            and provider != "assistant"
-            and cli is not None
-            and instance is not None
-            and inbound.held_by_another(session_id, cli=cli, instance=instance)
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": CHAT_RUN_LIVE,
-                    "message": "Another run is draining this chat; stop it first",
-                },
-            )
+        # No await since the admission's lease test: two runs that start together
+        # cannot both pass it.
         if not inbound.has_poller(session_id):
             get_hub(request).nudge()
         inbound.mark_poller(
@@ -811,6 +787,91 @@ async def _authorize_drain(
         if not owned:
             raise HTTPException(status_code=403, detail="Own session key required")
     return session, provider
+
+
+async def _admit_drain(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    session_id: UUID,
+    cli: str | None,
+    instance: str | None,
+) -> bool:
+    """Refuse a drain the session may not take; return whether it renews the lease."""
+    store = get_store(request)
+    session, provider = await _authorize_drain(
+        request,
+        identity,
+        session_id=session_id,
+        cli=cli,
+        names_cli=True,
+    )
+    # A run closed for silence that polls again was alive all along -- cut off,
+    # not dead -- so it gets its session back before this poll is served.
+    if session.ended is not None and await revive_if_reaped(
+        store,
+        session_id=session_id,
+    ):
+        session = await require_session(store, session_id)
+    # A CLI chat's session that stays ended -- the person closed the chat -- is no
+    # session to wait on: the run polling it stops, where an empty answer would leave
+    # it polling a chat no line can reach.
+    if session.ended is not None and provider not in {None, "assistant"}:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": SESSION_ENDED,
+                "message": "This chat was closed; its run stops",
+            },
+        )
+    polling = session.status == "active" and session.ended is None
+    # No await from this test to the lease the route takes on return: two runs that
+    # start together cannot both pass it.
+    if (
+        polling
+        and provider is not None
+        and provider != "assistant"
+        and cli is not None
+        and instance is not None
+        and get_inbound(request).held_by_another(
+            session_id,
+            cli=cli,
+            instance=instance,
+        )
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": CHAT_RUN_LIVE,
+                "message": "Another run is draining this chat; stop it first",
+            },
+        )
+    return polling
+
+
+# Only a run of the chat's own account: a stranger's refused drain would otherwise tell
+# the person why someone else was turned away from their chat.
+async def _remember_refusal(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    session_id: UUID,
+    refused: HTTPException,
+) -> None:
+    """Keep why a drain by a run of the session's own account was refused."""
+    try:
+        session = await require_session(get_store(request), session_id)
+    except HTTPException:
+        return
+    if session.account.lower() != identity.email.lower():
+        return
+    detail: object = refused.detail
+    message = (
+        from_plain(detail, dict[str, object]).get("message")
+        if isinstance(detail, dict)
+        else detail
+    )
+    get_inbound(request).refuse(session_id, reason=str(message))
 
 
 def _no_direct_line() -> HTTPException:

@@ -24,6 +24,7 @@ from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import asyncio
@@ -99,6 +100,17 @@ class PollerRun:
     """What the run last reported of itself (:meth:`InboundQueue.report_state`). It
     stays through the run's later drains, and starts again at ``idle`` for a run that
     reports nothing, or a lease that lapsed."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DrainRefusal:
+    """Why the server last refused a drain by a run of the session's own account."""
+
+    reason: str
+    """The refusal's message, as the run was told it."""
+
+    at: datetime
+    """When; a later refusal moves it, so a reader tells a fresh one from one it saw."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -180,6 +192,9 @@ class InboundQueue:
     max_places: int = 4_096
     """Most sessions that remember where their run last said it ran."""
 
+    max_refusals: int = 4_096
+    """Most sessions that remember why their run's last drain was refused."""
+
     _clock: Callable[[], float] = field(default=time.monotonic, repr=False)
 
     _leases: dict[UUID, _Lease] = field(default_factory=dict)
@@ -194,6 +209,10 @@ class InboundQueue:
 
     # Where each session's run last said it ran, which outlives its lease.
     _places: OrderedDict[UUID, PollerRun] = field(default_factory=OrderedDict)
+
+    # Why each session's own run was last turned away, until a drain is let in: a run
+    # refused at its first drain never goes live, and the canvas says why.
+    _refusals: OrderedDict[UUID, DrainRefusal] = field(default_factory=OrderedDict)
 
     _queues: dict[UUID, deque[Inbound]] = field(
         default_factory=lambda: defaultdict(deque),
@@ -249,6 +268,7 @@ class InboundQueue:
 
         """
         with self._lock:
+            _ = self._refusals.pop(session_id, None)
             now = self._clock()
             held = self._live(session_id)
             where = PollerRun(
@@ -344,6 +364,29 @@ class InboundQueue:
         """
         with self._lock:
             return self._places.get(session_id)
+
+    def refuse(self, session_id: UUID, *, reason: str) -> None:
+        """Keep why a drain by the session's own run was refused, until one is let in.
+
+        Args:
+          session_id: The session the run drains.
+          reason: The refusal's message.
+
+        """
+        with self._lock:
+            at = datetime.now(UTC)
+            # Strictly later, so two refusals within one clock tick still differ.
+            if (last := self._refusals.get(session_id)) is not None and at <= last.at:
+                at = last.at + timedelta(microseconds=1)
+            self._refusals[session_id] = DrainRefusal(reason=reason, at=at)
+            self._refusals.move_to_end(session_id)
+            while len(self._refusals) > self.max_refusals:
+                _ = self._refusals.popitem(last=False)
+
+    def refusal(self, session_id: UUID) -> DrainRefusal | None:
+        """Say why the session's own run was last refused; ``None`` once one drained."""
+        with self._lock:
+            return self._refusals.get(session_id)
 
     def report_state(self, session_id: UUID, *, instance: str, state: RunState) -> bool:
         """Keep what a run says it is doing, while it holds its session's lease.
