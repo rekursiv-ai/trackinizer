@@ -6537,6 +6537,71 @@
         "title": "MachinePut",
         "type": "object"
       },
+      "MachineRun": {
+        "additionalProperties": false,
+        "description": "A live run of a CLI that names the machine, under its owner's account.\n\nThe machine is the run's own word on each poll, shown to the owner and stopped by\nthem, never a grant.",
+        "properties": {
+          "cli": {
+            "title": "Cli",
+            "type": "string"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cwd"
+          },
+          "run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState",
+            "default": "idle"
+          }
+        },
+        "required": [
+          "session_id",
+          "cli"
+        ],
+        "title": "MachineRun",
+        "type": "object"
+      },
+      "MachineRuns": {
+        "additionalProperties": false,
+        "description": "The live runs of one of the caller's machines.",
+        "properties": {
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/MachineRun"
+            },
+            "title": "Runs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs"
+        ],
+        "title": "MachineRuns",
+        "type": "object"
+      },
       "MachineStatus": {
         "enum": [
           "revoked",
@@ -11779,6 +11844,13 @@
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
             "title": "Name",
             "type": "string"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/MachineRun"
+            },
+            "title": "Runs",
+            "type": "array"
           },
           "status": {
             "$ref": "#/components/schemas/MachineStatus"
@@ -20357,6 +20429,47 @@
         "summary": "Put Machine Route"
       }
     },
+    "/api/machines/{name}/disconnect": {
+      "post": {
+        "description": "Revoke a machine's host and stop every live run of its owner that names it.\n\nThe host learns of it by a 410 on its next request, and its terminals and\ncommands are closed, as a revoke does. The host joins it again with the key the\ncomputer holds, which this leaves untouched.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine, the hubs and the inbound queue.\n  identity: Admin principal, or the machine's owner.\n\nReturns:\n  runs: The runs it stopped.\n\nRaises:\n  NotFoundError: No such machine.\n  HTTPException: 403 when a writer names a machine that is not theirs.",
+        "operationId": "disconnect_machine_route_api_machines__name__disconnect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineRuns"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect Machine Route"
+      }
+    },
     "/api/machines/{name}/exec": {
       "post": {
         "description": "Run a command on the asker's machine and return what it produced.\n\nOnly the configured assistant calls this, naming an attested writer or admin\n``asker`` who owns the machine. The request is held until the machine's host\nreports, up to the command's ``timeout_sec`` and a short grace. A retry under the\nsame ``Idempotency-Key`` is told what the first try was, its result or its 504 or\n410 once the host was handed the command, and runs nothing twice. A command that\nwas refused, or that no host took, is run by the retry. The machine must be online,\nconfirmed by its owner, and report ``exec: true``.\n\nArgs:\n  name: The machine's name.\n  body: The command, its folder and timeout, and optionally stdin and variables.\n  request: Request carrying the database engine and the exec hub.\n  identity: The assistant's key.\n  asker: The person the assistant runs the command for.\n\nReturns:\n  result: The exit code, both streams, the folder the command ended in, whether\n    output was cut, and how long it ran.\n\nRaises:\n  HTTPException: 403 ``exec_forbidden`` for any caller but the assistant naming a\n    writer or admin, and on a server with authentication off; 404 for no such\n    machine of the asker; 409 ``exec_not_enabled`` for a machine that is offline,\n    unconfirmed or not opted in, ``exec_busy`` past 4 commands on one machine; 410\n    ``exec_machine_revoked`` when the machine was revoked meanwhile; 429\n    ``exec_limit`` past 60 commands a minute for the asker; 504 ``exec_lost`` when\n    the host did not take the command or did not report in time.",
@@ -20500,6 +20613,91 @@
           }
         },
         "summary": "Revoke Machine Route"
+      }
+    },
+    "/api/machines/{name}/runs": {
+      "get": {
+        "description": "List the caller's live runs that name one of their machines.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine and the inbound queue.\n  identity: The machine's owner.\n\nReturns:\n  runs: Each live run, by CLI, then host name, then session.\n\nRaises:\n  NotFoundError: The caller owns no such machine.",
+        "operationId": "list_machine_runs_route_api_machines__name__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineRuns"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Machine Runs Route"
+      }
+    },
+    "/api/machines/{name}/runs/{session_id}/stop": {
+      "post": {
+        "description": "Stop one of the caller's live runs on one of their machines.\n\nIts lease ends now, and its next drain is refused, so the run ends within one\ndrain's hold. Its chat stays, and a new run may take it.\n\nArgs:\n  name: The machine's name.\n  session_id: The session the run drains.\n  request: Request carrying the database engine and the inbound queue.\n  identity: The machine's owner.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: The caller owns no such machine, or no live run of theirs on it\n    drains that session.",
+        "operationId": "stop_machine_run_route_api_machines__name__runs__session_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stop Machine Run Route"
       }
     },
     "/api/me/acknowledge": {

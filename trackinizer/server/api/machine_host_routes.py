@@ -75,6 +75,7 @@ __all__ = [
     "heartbeat_machine_route",
     "issue_enrollment",
     "join_machine_route",
+    "revoke_machine",
     "revoke_machine_route",
     "router",
 ]
@@ -346,6 +347,31 @@ async def revoke_machine_route(
       HTTPException: 403 when a writer names a machine that is not theirs.
 
     """
+    _ = await revoke_machine(request, name=name, identity=identity)
+    return Response(status_code=204)
+
+
+async def revoke_machine(
+    request: Request,
+    *,
+    name: str,
+    identity: AuthIdentity,
+) -> str | None:
+    """Revoke a machine as the revoke route does, and return its owner.
+
+    Args:
+      request: Request carrying the database engine and the hubs.
+      name: The machine's name.
+      identity: Admin principal, or the machine's owner.
+
+    Returns:
+      owner: The machine's owner; ``None`` for a machine no person owns.
+
+    Raises:
+      NotFoundError: No such machine.
+      HTTPException: 403 when a writer names a machine that is not theirs.
+
+    """
     refuse_reserved(name)
     async with engine_of(request).acquire() as conn, tx(conn):
         machine = await conn.fetchrow(
@@ -354,10 +380,8 @@ async def revoke_machine_route(
         )
         if machine is None:
             raise absent_machine(name)
-        if (
-            identity.role != "admin"
-            and from_plain(machine["owner"], str | None) != identity.email
-        ):
+        owner = from_plain(machine["owner"], str, default=None)
+        if identity.role != "admin" and owner != identity.email:
             raise HTTPException(
                 status_code=403,
                 detail="machine belongs to another user",
@@ -375,7 +399,7 @@ async def revoke_machine_route(
         )
     get_exec_hub(request).close_machine(from_plain(machine_id, UUID))
     await get_terminal_hub(request).close_machine(from_plain(machine_id, UUID))
-    return Response(status_code=204)
+    return owner
 
 
 async def claim_machine(

@@ -578,6 +578,61 @@ class TestReplacingARun:
         assert queue.held_by_another(second, cli="claude", instance="a" * 32)
 
 
+class TestTheRunsOnAMachine:
+    """A machine's owner sees the live runs that say they run on it, and stops them."""
+
+    def test_a_machine_lists_its_owners_live_cli_runs_alone(self) -> None:
+        queue = InboundQueue()
+        mine, theirs, elsewhere, assistant = (uuid.uuid4() for _ in range(4))
+        queue.mark_poller(mine, machine="box", cli="claude", account="Dan@x.ai")
+        queue.mark_poller(theirs, machine="box", cli="claude", account="eve@x.ai")
+        queue.mark_poller(elsewhere, machine="gx10", cli="codex", account="dan@x.ai")
+        queue.mark_poller(assistant, machine="box", account="dan@x.ai")
+
+        assert queue.runs_on("box", account="dan@X.ai") == {
+            mine: PollerRun(machine="box", cli="claude"),
+        }
+
+    def test_a_run_whose_lease_lapsed_is_not_listed(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        queue.mark_poller(uuid.uuid4(), machine="box", cli="claude", account="d@x.ai")
+        now[0] = 200.0
+
+        assert queue.runs_on("box", account="d@x.ai") == {}
+
+    def test_a_stopped_run_is_refused_and_a_new_run_of_its_session_is_not(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        old, new = "a" * 32, "b" * 32
+        queue.mark_poller(session, machine="box", cli="claude", instance=old)
+
+        queue.stop_run(session)
+
+        assert queue.poller_run(session) is None
+        assert queue.stopped(session, instance=old)
+        assert not queue.stopped(session, instance=new)
+        assert not queue.stopped(uuid.uuid4(), instance=old)
+
+    def test_a_session_with_no_live_run_stops_nobody(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+
+        queue.stop_run(session)
+
+        assert not queue.stopped(session, instance="a" * 32)
+
+    def test_the_server_keeps_the_newest_stopped_runs_alone(self) -> None:
+        queue = InboundQueue(max_stopped=1)
+        first, second = uuid.uuid4(), uuid.uuid4()
+        for session in (first, second):
+            queue.mark_poller(session, cli="claude", instance="a" * 32)
+            queue.stop_run(session)
+
+        assert not queue.stopped(first, instance="a" * 32)
+        assert queue.stopped(second, instance="a" * 32)
+
+
 class TestWhereARunWas:
     """Where a run said it ran outlives its lease, for a run to start there again."""
 

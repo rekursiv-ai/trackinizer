@@ -113,7 +113,12 @@ if TYPE_CHECKING:
         ReadReply,
         WorkOffer,
     )
-    from trackinizer.wire.wire_machines import Facts, Machine, MachineDetail
+    from trackinizer.wire.wire_machines import (
+        Facts,
+        Machine,
+        MachineDetail,
+        MachineRun,
+    )
     from trackinizer.wire.wire_metrics import (
         LogMetricsResponse,
         MetricPoint,
@@ -2472,6 +2477,18 @@ class Client:
             "POST",
             wire_machine_host.REVOKE_PATH.format(name=quote(name, safe="")),
         )
+
+    def machine_runs(self, name: str) -> list[MachineRun]:
+        """Return the caller's live runs that name their machine; 404 for another's."""
+        where = wire_machines.MACHINE_RUNS_PATH.format(name=quote(name, safe=""))
+        response = self._request("GET", where)
+        return _validate_model(wire_machines.MachineRuns, response, where).runs
+
+    def disconnect_machine(self, name: str) -> list[MachineRun]:
+        """Revoke a machine's host and stop its owner's live runs; return those stopped."""
+        where = wire_machines.MACHINE_DISCONNECT_PATH.format(name=quote(name, safe=""))
+        response = self._request("POST", where)
+        return _validate_model(wire_machines.MachineRuns, response, where).runs
 
     def code_missing(self, owner: str, *, hashes: Sequence[str]) -> list[str]:
         """Return the blob hashes the code store lacks for ``owner``, in the order given.

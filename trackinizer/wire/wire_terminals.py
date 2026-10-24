@@ -39,7 +39,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from trackinizer.wire.wire_machines import NAME_PATTERN, MachineStatus
+from trackinizer.wire.wire_machines import NAME_PATTERN, MachineRun, MachineStatus
 
 
 __all__ = [
@@ -311,6 +311,10 @@ class TerminalMachine(BaseModel):
 
     cwd: RunFolder | None = None
     """The folder its owner last chose for a CLI run; None until one is named."""
+
+    runs: list[MachineRun] = Field(default_factory=list)
+    """Its owner's live runs that name it. They reach the server without its host, so
+    the machine is still connected while one is live, whatever ``status`` says."""
 
 
 class LiveTerminal(BaseModel):

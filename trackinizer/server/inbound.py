@@ -120,6 +120,10 @@ class _Lease:
     expires: float
     where: PollerRun
 
+    account: str | None = None
+    """Whose key drained, as the server attested it: the machine a run names is the
+    run's own word, so its owner's list holds only the runs of the owner's account."""
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Handed:
@@ -189,6 +193,9 @@ class InboundQueue:
     max_retired: int = 4_096
     """Most sessions that remember the run they replaced (:meth:`retire_run`)."""
 
+    max_stopped: int = 4_096
+    """Most sessions that remember the run their owner stopped (:meth:`stop_run`)."""
+
     max_places: int = 4_096
     """Most sessions that remember where their run last said it ran."""
 
@@ -206,6 +213,9 @@ class InboundQueue:
     # The one run each session turned away on purpose: it is held off when it drains
     # again, though no lease names it.
     _retired: OrderedDict[UUID, str] = field(default_factory=OrderedDict)
+
+    # The one run each session's owner stopped: every drain it makes is refused.
+    _stopped: OrderedDict[UUID, str] = field(default_factory=OrderedDict)
 
     # Where each session's run last said it ran, which outlives its lease.
     _places: OrderedDict[UUID, PollerRun] = field(default_factory=OrderedDict)
@@ -251,6 +261,7 @@ class InboundQueue:
         cwd: str | None = None,
         cli: str | None = None,
         instance: str | None = None,
+        account: str | None = None,
     ) -> None:
         """Renew a session's short lease after an authorized inbound poll.
 
@@ -265,6 +276,7 @@ class InboundQueue:
           cwd: The run's working directory.
           cli: The CLI the run is.
           instance: The run's own id.
+          account: The email of the account whose key polled.
 
         """
         with self._lock:
@@ -284,6 +296,7 @@ class InboundQueue:
             self._leases[session_id] = _Lease(
                 expires=now + self.poller_ttl_sec,
                 where=where,
+                account=account,
             )
             if run is not None or machine is not None or cwd is not None:
                 self._places[session_id] = where
@@ -512,6 +525,51 @@ class InboundQueue:
                 while len(self._retired) > self.max_retired:
                     _ = self._retired.popitem(last=False)
             self._revoke(session_id)
+
+    def runs_on(self, machine: str, *, account: str) -> dict[UUID, PollerRun]:
+        """Return the live runs of a CLI that name ``machine``, polled by ``account``.
+
+        Args:
+          machine: The machine's name, as the runs name it.
+          account: The email of the machine's owner, matched in any case.
+
+        Returns:
+          runs: Each run's session and what its last poll said of it.
+
+        """
+        with self._lock:
+            self._sweep(self._clock())
+            return {
+                session_id: lease.where
+                for session_id, lease in self._leases.items()
+                if lease.where.cli is not None
+                and lease.where.machine == machine
+                and lease.account is not None
+                and lease.account.lower() == account.lower()
+            }
+
+    # Unlike a replaced run, which only a chat's next run holds off, a stopped run is
+    # refused on every session, so the drain checks it before the session's kind.
+    def stop_run(self, session_id: UUID) -> None:
+        """Stop a session's live run: revoke its lease and refuse its drains for good.
+
+        Args:
+          session_id: The session whose run its owner stopped.
+
+        """
+        with self._lock:
+            lease = self._leases.get(session_id)
+            if lease is not None and lease.where.instance is not None:
+                self._stopped[session_id] = lease.where.instance
+                self._stopped.move_to_end(session_id)
+                while len(self._stopped) > self.max_stopped:
+                    _ = self._stopped.popitem(last=False)
+            self._revoke(session_id)
+
+    def stopped(self, session_id: UUID, *, instance: str) -> bool:
+        """Say whether the session's owner stopped the run of this ``instance``."""
+        with self._lock:
+            return self._stopped.get(session_id) == instance
 
     def _revoke(self, session_id: UUID) -> None:
         """Drop a session's lease, note it gone and release its holds."""

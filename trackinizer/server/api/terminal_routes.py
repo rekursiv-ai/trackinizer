@@ -38,6 +38,7 @@ from trackinizer.server.api._deps import (
 )
 from trackinizer.server.api._origin import is_strictly_same_origin
 from trackinizer.server.api._routes_shared import engine_of, idempotency_key
+from trackinizer.server.api.machine_runs_routes import live_runs
 from trackinizer.server.api.machines_routes import MachineName, fetch_machines
 from trackinizer.server.api.session_access import (
     require_session,
@@ -401,6 +402,11 @@ async def list_terminal_machines_route(
                 "confirmed": row["confirmed_at"] is not None,
                 "clis": _clis_of(row["facts"]),
                 "cwd": row["last_run_cwd"],
+                "runs": live_runs(
+                    request,
+                    machine=from_plain(row["name"], str),
+                    owner=email,
+                ),
             },
         )
         for row in sorted(

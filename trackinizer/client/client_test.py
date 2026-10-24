@@ -1436,6 +1436,7 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
     | {"list_machines", "get_machine", "put_machine"}
     | {"change_machine_labels", "delete_machine"}
     | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"}
+    | {"machine_runs", "disconnect_machine"}
     | {"wait_terminals"}
     | {"exec_command", "wait_exec", "post_exec_result"}
     | {"job_submit", "job_list", "job_view", "job_grant", "job_read_grant"}
@@ -3245,6 +3246,34 @@ class TestMachineHostMethods:
             ("POST", "/api/machines/gpu-box/revoke"),
         ] * 2
         assert err.value.status_code == 404
+
+    def test_a_machines_runs_are_read_and_disconnect_returns_those_it_stopped(
+        self,
+    ) -> None:
+        run = {
+            "session_id": "11111111-1111-1111-1111-111111111111",
+            "cli": "claude",
+            "run": "chat-11111111",
+            "cwd": "~/w",
+            "state": "idle",
+        }
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"runs": [run]})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            listed = client.machine_runs("gpu-box")
+            stopped = client.disconnect_machine("gpu-box")
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", "/api/machines/gpu-box/runs"),
+            ("POST", "/api/machines/gpu-box/disconnect"),
+        ]
+        assert [each.run for each in listed] == [each.run for each in stopped]
+        assert listed[0].run == "chat-11111111"
 
 
 class TestTerminalMethods:

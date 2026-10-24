@@ -68,6 +68,7 @@ __all__ = [
     "PROVIDER_IS_OTHER_CLI",
     "RUN_ENDING_REFUSALS",
     "RUN_NAME_PATTERN",
+    "RUN_STOPPED",
     "SEND_MESSAGE_PATH",
     "SESSIONS_PATH",
     "SESSION_API_PATHS",
@@ -868,6 +869,9 @@ name does: the server cannot tell which CLI polls, so it takes no lease."""
 
 SESSION_ENDED: Final = "session_ended"
 """The chat's session ended, as when the person closed the chat, and its run still polls."""
+
+RUN_STOPPED: Final = "run_stopped"
+"""The run's owner stopped it, or disconnected its machine, and it still polls."""
 
 RUN_NAME_PATTERN: Final = r"^[A-Za-z0-9][A-Za-z0-9._@#+=:-]{0,127}$"
 """A detached run's name: the server takes it on a drain, and a detached run takes it
