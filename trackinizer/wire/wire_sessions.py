@@ -69,6 +69,7 @@ __all__ = [
     "RUN_ENDING_REFUSALS",
     "RUN_NAME_PATTERN",
     "SEND_MESSAGE_PATH",
+    "SESSIONS_PATH",
     "SESSION_API_PATHS",
     "SESSION_AUDIENCE_PATH",
     "SESSION_ENDED",
@@ -830,6 +831,7 @@ class SessionEndResponse(BaseModel):
 
 
 # API route paths -- wire contract shared with the client, not tunables.
+SESSIONS_PATH: Final = "/api/sessions"
 SESSION_START_PATH: Final = "/api/sessions/start"
 SESSION_RECORDS_PATH: Final = "/api/sessions/{session_id}/records"
 SESSION_PARTS_PATH: Final = "/api/sessions/{session_id}/parts"
@@ -894,6 +896,7 @@ CHAT_TAKEN_OVER_MESSAGE: Final = (
 # the session/messaging/feed/version family. A new route in this family belongs
 # here so the same drift guard covers it.
 SESSION_API_PATHS: tuple[str, ...] = (
+    SESSIONS_PATH,
     SESSION_START_PATH,
     SESSION_RECORDS_PATH,
     SESSION_PARTS_PATH,
