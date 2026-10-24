@@ -2558,6 +2558,37 @@ async def test_a_replaced_run_is_turned_away_and_its_successor_is_not(
 @pytest.mark.db_pglite
 @pytest.mark.usefixtures("assistant_served")
 @pytest.mark.asyncio(loop_scope="session")
+async def test_a_stopped_run_is_refused_with_a_403_and_a_new_run_is_not(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A 403 ends every run ever shipped, where a 409 code it does not know is retried."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _canvas_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    old, new = "a" * 32, "b" * 32
+    inbound = cast("InboundQueue", app.state.inbound)
+    first = await drain(
+        client,
+        session_id=chat,
+        cli="claude",
+        instance=old,
+        machine="box",
+    )
+    assert first.status_code == 200
+    assert list(inbound.runs_on("box", account=TEST_USER_EMAIL)) == [chat]
+
+    inbound.stop_run(chat)
+    turned_away = await drain(client, session_id=chat, cli="claude", instance=old)
+    taken = await drain(client, session_id=chat, cli="claude", instance=new)
+
+    assert (turned_away.status_code, _code(turned_away)) == (403, "run_stopped")
+    assert taken.status_code == 200
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
 async def test_a_run_draining_a_chat_that_was_closed_is_told_the_session_ended(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:

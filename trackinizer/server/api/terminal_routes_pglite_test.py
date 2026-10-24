@@ -614,6 +614,7 @@ async def test_the_listing_names_every_live_terminal_of_the_canvas_with_its_surf
             "terminal_ready": False,
             "confirmed": True,
             "clis": [],
+            "runs": [],
         },
     ]
     not_asked = await world.open(cookie, canvas=canvas)
@@ -699,6 +700,7 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
                 "terminal_ready": True,
                 "confirmed": True,
                 "clis": [],
+                "runs": [],
             },
             {
                 "name": "laptop",
@@ -706,6 +708,7 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
                 "terminal_ready": False,
                 "confirmed": True,
                 "clis": [],
+                "runs": [],
             },
         ],
         "terminals": [],

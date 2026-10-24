@@ -73,6 +73,7 @@ from trackinizer.wire.wire_sessions import (
     PROVIDER_IS_CLI,
     PROVIDER_IS_OTHER_CLI,
     RUN_NAME_PATTERN,
+    RUN_STOPPED,
     SESSION_ENDED,
     DrainInboundResponse,
     InboundDrainItem,
@@ -531,6 +532,7 @@ async def session_inbound_drain_route(
             cwd=cwd,
             cli=cli,
             instance=instance,
+            account=identity.email,
         )
         await store.record_session_seen(
             session_id,
@@ -798,6 +800,16 @@ async def _admit_drain(
     instance: str | None,
 ) -> bool:
     """Refuse a drain the session may not take; return whether it renews the lease."""
+    # A 403, which every run ever shipped takes as the end of its run, where it
+    # retries a 409 code it does not know.
+    if instance is not None and get_inbound(request).stopped(
+        session_id,
+        instance=instance,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": RUN_STOPPED, "message": "This run was stopped"},
+        )
     store = get_store(request)
     session, provider = await _authorize_drain(
         request,

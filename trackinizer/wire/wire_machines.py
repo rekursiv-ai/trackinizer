@@ -14,6 +14,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Final, Literal
 
+import uuid
+
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -24,11 +26,16 @@ from pydantic import (
     field_validator,
 )
 
+from trackinizer.wire.wire_sessions import RunState
+
 
 __all__ = [
     "MACHINES_PATH",
+    "MACHINE_DISCONNECT_PATH",
     "MACHINE_LABELS_PATH",
     "MACHINE_PATH",
+    "MACHINE_RUNS_PATH",
+    "MACHINE_RUN_STOP_PATH",
     "MAX_FACTS_BYTES",
     "MAX_HOW_CHARS",
     "NAME_PATTERN",
@@ -41,6 +48,8 @@ __all__ = [
     "MachineLabels",
     "MachineList",
     "MachinePut",
+    "MachineRun",
+    "MachineRuns",
     "MachineStatus",
 ]
 
@@ -100,6 +109,9 @@ released the machine since, else ``offline``."""
 MACHINES_PATH: Final = "/api/machines"
 MACHINE_PATH: Final = "/api/machines/{name}"
 MACHINE_LABELS_PATH: Final = "/api/machines/{name}/labels"
+MACHINE_RUNS_PATH: Final = "/api/machines/{name}/runs"
+MACHINE_RUN_STOP_PATH: Final = "/api/machines/{name}/runs/{session_id}/stop"
+MACHINE_DISCONNECT_PATH: Final = "/api/machines/{name}/disconnect"
 
 
 class Machine(BaseModel):
@@ -183,3 +195,37 @@ class MachineLabels(BaseModel):
 
     remove: list[str] = Field(default_factory=list)
     """Labels to remove."""
+
+
+class MachineRun(BaseModel):
+    """A live run of a CLI that names the machine, under its owner's account.
+
+    The machine is the run's own word on each poll, shown to the owner and stopped by
+    them, never a grant.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    session_id: uuid.UUID
+    """The session the run drains, which its chat names."""
+
+    cli: str
+    """The CLI the run is: ``claude`` or ``codex``."""
+
+    run: str | None = None
+    """The detached host's name, which an attach takes; ``None`` for a run in a terminal
+    of its own."""
+
+    cwd: str | None = None
+    """Its working directory, ``~/...`` under its home."""
+
+    state: RunState = "idle"
+    """What the run last reported of itself."""
+
+
+class MachineRuns(BaseModel):
+    """The live runs of one of the caller's machines."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    runs: list[MachineRun]
