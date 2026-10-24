@@ -34,7 +34,7 @@ class _Node:
         parts: list[_BashNode] | None = None,
         type: str = "",
         input: int | None = None,
-        output: _BashNode | None = None,
+        output: _BashNode | int | str | None = None,
         heredoc: _BashNode | None = None,
         value: str = "",
         pos: tuple[int, int] = (0, 0),
@@ -897,12 +897,12 @@ def test_heredoc_write_rejects_missing_delimiter_and_body() -> None:
     cat = _Node(kind="word", word="cat", parts=[], pos=(0, 3))
     assert shell_results._heredoc_write([cat, document], literal=True) is None
     document.heredoc = _Node(value="body")
-    document.output.word = "EOF"
+    output.word = "EOF"
     assert shell_results._heredoc_write([cat, document], literal=True) is None
 
     echo = _Node(kind="word", word="echo", parts=[], pos=(0, 4))
     assert shell_results._heredoc_write([echo, document], literal=True) is None
-    document.output.word = "-"
+    output.word = "-"
     target = _Node(
         kind="redirect",
         type=">",
@@ -910,7 +910,7 @@ def test_heredoc_write_rejects_missing_delimiter_and_body() -> None:
         output=_Node(kind="word", word="a", parts=[], pos=(0, 1)),
     )
     assert shell_results._heredoc_write([cat, target, document], literal=True) is None
-    document.output.word = "EOF"
+    output.word = "EOF"
     assert shell_results._heredoc_write([cat, target, document], literal=True) is None
 
 
@@ -921,6 +921,24 @@ def test_single_output_rejects_other_descriptors_and_redirects() -> None:
 
     assert shell_results._single_output([descriptor]) is None
     assert shell_results._single_output([unknown]) is None
+
+
+def test_file_and_document_redirects_require_a_word_operand() -> None:
+    cat = _Node(kind="word", word="cat", parts=[], pos=(0, 3))
+    target = _Node(
+        kind="redirect",
+        type=">",
+        input=None,
+        output=_Node(kind="word", word="a", parts=[], pos=(0, 1)),
+    )
+    descriptor = _Node(kind="redirect", input=None, type=">", output=2)
+    document = _Node(kind="redirect", input=None, type="<<", output=2)
+
+    message = r"^Expected not isinstance\(output, int \| str\)\.$"
+    with pytest.raises(TypeError, match=message):
+        shell_results._single_output([descriptor])
+    with pytest.raises(TypeError, match=message):
+        shell_results._heredoc_write([cat, target, document], literal=True)
 
 
 def test_patch_helpers_reject_invalid_operands() -> None:
