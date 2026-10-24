@@ -344,6 +344,46 @@ class TestSubmitModels:
         assert SubmitPaper(title="x").source is None
 
 
+class TestSubmitTimes:
+    def test_times_default_to_unset(self) -> None:
+        body = SubmitIssue(title="x")
+        assert (body.created, body.modified) == (None, None)
+
+    def test_created_alone_leaves_modified_to_the_server(self) -> None:
+        created = datetime(2024, 3, 1, 12, tzinfo=UTC)
+        assert SubmitIssue(title="x", created=created).modified is None
+
+    def test_explicit_modified_is_kept(self) -> None:
+        created = datetime(2024, 3, 1, 12, tzinfo=UTC)
+        modified = created + timedelta(days=2)
+        body = SubmitArtifact(title="x", created=created, modified=modified)
+        assert (body.created, body.modified) == (created, modified)
+
+    def test_modified_before_created_is_rejected(self) -> None:
+        created = datetime(2024, 3, 1, 12, tzinfo=UTC)
+        with pytest.raises(ValidationError, match="modified must not precede created"):
+            SubmitIssue(
+                title="x",
+                created=created,
+                modified=created - timedelta(seconds=1),
+            )
+
+    def test_modified_without_created_is_rejected(self) -> None:
+        modified = datetime(2024, 3, 1, 12, tzinfo=UTC)
+        with pytest.raises(ValidationError, match="modified requires created"):
+            SubmitIssue(title="x", modified=modified)
+
+    def test_naive_modified_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="timezone"):
+            SubmitIssue.model_validate(
+                {
+                    "title": "x",
+                    "created": "2024-03-01T12:00:00Z",
+                    "modified": "2024-03-02T12:00:00",
+                },
+            )
+
+
 class TestEdgeBodies:
     def test_create_edge_labels_default_none(self) -> None:
         """Bare edge create leaves labels unset (NULL), not ``[]`` (F11).

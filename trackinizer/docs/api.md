@@ -1826,13 +1826,18 @@ reason  optional; default is empty string
 {
   <SubmitKind JSON from wire/bodies.py>,
   "actor": "<actor>",
-  "reason": "<text>"
+  "reason": "<text>",
+  "created": "<iso-8601 with offset>",
+  "modified": "<iso-8601 with offset>"
 }
 ```
 
 ```
-actor   optional audit label; omitted means server uses principal email
-reason  optional; default is empty string
+actor     optional audit label; omitted means server uses principal email
+reason    optional; default is empty string
+created   optional; when the row was first recorded, for an import of
+          past work; omitted means the server clock (below)
+modified  optional, admin only, needs created; omitted means the server clock
 ```
 
 Every inquiry create body accepts an optional `created` timestamp through
@@ -1850,8 +1855,9 @@ For example, `POST /api/inquiries/issue` can import a historical issue:
 ```
 
 On first insert, the row's `created` is the supplied time and `modified` is
-the current server time. The creation event's `change_log.created` also keeps
-the current server time, so audit history records when the server received
+the current server time, unless an admin supplies it (below). The creation
+event's `change_log.created` also keeps the current server time, so audit
+history records when the server received
 the row. For a backfill, the same creation event records
 `backfill: created=<ISO timestamp>` in its `reason`, followed by `; ` and the
 caller's reason when supplied. This annotation survives later edits and same-key
@@ -1871,6 +1877,14 @@ Historical dates participate in existing chronological sorting and provenance
 inference. Branch placement of a historical session considers sessions no later
 than its creation time. Audit and notification cursors use the creation event's
 server timestamp, so an imported record remains visible as a new change.
+
+`modified` sets the row's last-changed time for the same import. Only an admin
+may send it: anyone else gets 403, never a silent drop. A time without a UTC
+offset, `modified` without `created`, or `modified` before `created` is a 422.
+The edges written in the same request (`narrows`, `requires`, `proved_by`,
+`favored_by`, batch `edges`) leave the row's `modified` as given; their own
+changes carry the server clock. A retry that returns an existing row keeps its
+`modified`, a later edit's included.
 
 ### 3.7 Inquiry batch create body
 
@@ -1897,6 +1911,7 @@ Initial edges generate additional audit events.
 Retrying the same item idempotency_key returns the original id.
 Reusing one item idempotency_key for another kind returns 409.
 A same-kind retry returns the original row without replacing its content or dates.
+One item carrying modified from a non-admin 403s the whole batch.
 ```
 
 ### 3.8 Edge create body
@@ -2271,7 +2286,7 @@ counted twice, and `size` is one blob's. `files` is sorted by path.
 302  auth redirect
 400  invalid body, invalid field for kind, invalid projected edge mutation
 401  missing or invalid auth; an unusable enrollment token or machine credential
-403  role too low; a service account's key on a route that manages keys; a grant beyond the caller's role or audiences; a chat's share or delete the caller may not make; a session's transcript the caller does not read (`session_audience`), or may not hide (`session_not_owner`), or a chat it may not read into (`chat_not_member`); code filed under another's email by a caller who does not hold `staff`
+403  role too low; `modified` on an inquiry create from a non-admin; a service account's key on a route that manages keys; a grant beyond the caller's role or audiences; a chat's share or delete the caller may not make; a session's transcript the caller does not read (`session_audience`), or may not hide (`session_not_owner`), or a chat it may not read into (`chat_not_member`); code filed under another's email by a caller who does not hold `staff`
 404  row not found
 409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, machine in service, another host connected, service account name taken or account disabled; a `staff` session hidden (`session_staff`), a private or staff chat forked (`chat_fork_closed`), a staff chat shared outside staff (`chat_staff_only`), a staff read into a private chat (`chat_private`); a code snapshot whose blob is not stored (`code_blobs_missing`) or whose parent holds none of its owner (`code_parent_missing`)
 410  machine credential revoked; a deleted science chat (`chat_deleted`)
@@ -2298,9 +2313,9 @@ viewer  GET /api/** except GET /api/variables and GET /api/machines/**, GET /api
 writer  viewer + inquiry/edge create/mutate/delete, GET /api/variables,
         GET /api/machines/**, POST /api/code/blobs/**,
         PUT /api/code/records/<uuid>/snapshot
-admin   writer + /api/admin/**, PUT/DELETE /api/variables/<name>,
-        PUT/PATCH/DELETE /api/machines/**, POST /api/machines/enroll,
-        POST /api/machines/<name>/revoke
+admin   writer + /api/admin/**, modified on inquiry create,
+        PUT/DELETE /api/variables/<name>, PUT/PATCH/DELETE /api/machines/**,
+        POST /api/machines/enroll, POST /api/machines/<name>/revoke
 none    POST /api/machines/join, POST /api/machines/<uuid>/heartbeat (the
         enrollment token or machine credential in the request is the credential)
 ```

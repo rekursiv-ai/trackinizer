@@ -2,8 +2,9 @@
 
 Every ``submit_X`` routes through :meth:`_submit_generic`, the single insert
 path (idempotency probe -> reference validation -> row -> ``created`` change
--> kind-specific edges). :meth:`submit_batch` threads one shared connection
-through each item so a mixed-kind batch commits or rolls back atomically.
+-> kind-specific edges -> a backdated row's ``modified`` re-stamped).
+:meth:`submit_batch` threads one shared connection through each item so a
+mixed-kind batch commits or rolls back atomically.
 """
 
 from __future__ import annotations
@@ -51,6 +52,8 @@ from trackinizer.wire.wire_science_chat import chat_conversation_id
 
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     import asyncpg
 
     from trackinizer.types.edges import Edge
@@ -461,6 +464,8 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             )
             if post_insert is not None:
                 await post_insert(conn, row_id, cause)
+            if req.modified is not None:
+                await _restamp_modified(conn, [(row_id, req.modified)])
         finally:
             # Safety net: ``emit_change`` consumes the slot on its first
             # call, but an exception between the set and the consume would
@@ -764,6 +769,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             self.engine.acquire() as conn,
             tx(conn),
         ):
+            replayed = await _replayed_keys(conn, items)
             # Sequential on one connection: asyncpg runs one query at a time.
             # Per-item actor override wins, mirroring the single-submit route.
             ids = [
@@ -796,4 +802,44 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     api_key_id=api_key_id,
                     actor=actor,
                 )
+            # A replayed row keeps whatever ``modified`` it has now: it may have
+            # been edited since its first submit.
+            await _restamp_modified(
+                conn,
+                [
+                    (row_id, item.modified)
+                    for item, row_id in zip(items, ids, strict=True)
+                    if item.modified is not None
+                    and item.idempotency_key not in replayed
+                ],
+            )
             return ids
+
+
+# Only a backdated item's key matters: :func:`_restamp_modified` skips every other row.
+async def _replayed_keys(conn: Conn, items: Sequence[SubmitBase]) -> set[UUID]:
+    """Return the backdated items' idempotency keys an earlier submit already used."""
+    keys = [
+        item.idempotency_key
+        for item in items
+        if item.modified is not None and item.idempotency_key is not None
+    ]
+    if not keys:
+        return set()
+    rows = await conn.fetch("SELECT id FROM change_log WHERE id = ANY($1)", keys)
+    return {from_plain(row["id"], UUID) for row in rows}
+
+
+# The ``created`` change and every edge audit after it bump ``modified`` to the DB
+# clock, so a backdated row would read back as changed today.
+async def _restamp_modified(
+    conn: Conn,
+    stamps: Sequence[tuple[UUID, datetime]],
+) -> None:
+    """Set each new row's ``modified`` back to the time its submit carried."""
+    for row_id, modified in stamps:
+        await conn.execute(
+            "UPDATE inquiries SET modified = $2 WHERE id = $1",
+            row_id,
+            modified,
+        )
