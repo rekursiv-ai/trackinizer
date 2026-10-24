@@ -1,5 +1,5 @@
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, test, streamOpened, allowStreamErrors, STREAM_ROUTES } from "./fixtures";
+import { expect, test, streamOpened, allowStreamErrors, STREAM_ROUTES, route } from "./fixtures";
 import { expectControlSeen, longTasks, watchLongTasks } from "./longTasks";
 
 // The graph view, `#/graph`. Its canvas cannot be read, so checks read what it
@@ -102,7 +102,7 @@ test("the empty hash opens the graph, which draws the newest inquiries with thei
     ],
   );
   await openGraph(page, "");
-  expect(new URL(page.url()).hash).toBe("#/graph");
+  expect(route(page)).toBe("#/graph");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Graph");
   // The home view opens grouped by root.
   await expect(page.getByRole("button", { name: "Group by root" })).toHaveAttribute("aria-pressed", "true");
@@ -179,7 +179,7 @@ test("a change made while the stream was down shows once it reconnects (FR-02)",
     );
   }
   const [id] = await create(request, [["Issue", `Dropped issue ${TAG}`]]);
-  await page.goto("/trax/#/graph");
+  await page.goto("/trax/graph");
   await expect(page.locator(".graph-count")).toHaveText(/\d nodes?$/);
   const title = async () => (await drawn(page)).nodes.find((node) => node.id === id)?.title;
   expect(await title()).toBe(`Dropped issue ${TAG}`);
@@ -215,7 +215,7 @@ test("hover shows what a node is; a click opens Peek on it; a Parents link to a 
 
   await peek.getByRole("region", { name: "Parents", exact: true }).getByRole("link", { name: new RegExp(`Peek root ${TAG}`) }).click();
   await expect(peek.locator(".d-title")).toHaveText(`Peek root ${TAG}`);
-  expect(new URL(page.url()).hash).toBe("#/graph?group=none");
+  expect(route(page)).toBe("#/graph?group=none");
   expect((await drawn(page)).selected).toBe(root);
   await page.keyboard.press("Escape");
   await expect(peek).toHaveCount(0);
@@ -278,7 +278,7 @@ test("a double-click focuses a node, kept in the hash; hops 1 to 3 widen the lig
   await openGraph(page);
   const b = (await settled(page)).nodes.find((node) => node.id === ids[1])!;
   await page.mouse.dblclick(b.screen!.x, b.screen!.y);
-  await expect.poll(() => new URL(page.url()).hash).toBe(`#/graph?focus=Issue/${b.seq}&hops=1&group=none`);
+  await expect.poll(() => route(page)).toBe(`#/graph?focus=Issue/${b.seq}&hops=1&group=none`);
   expect((await drawn(page)).focus).toBe(ids[1]);
   const hops = page.getByRole("group", { name: "Hops" });
   await expect(hops.getByRole("button")).toHaveCount(4);
@@ -295,7 +295,7 @@ test("a double-click focuses a node, kept in the hash; hops 1 to 3 widen the lig
   await hops.getByRole("button", { name: /^2 hops/ }).click();
   await expect.poll(hiddenTitles).toEqual([]);
   await hops.getByRole("button", { name: /^3 hops/ }).click();
-  await expect.poll(() => new URL(page.url()).hash).toBe(`#/graph?focus=Issue/${b.seq}&hops=3&group=none`);
+  await expect.poll(() => route(page)).toBe(`#/graph?focus=Issue/${b.seq}&hops=3&group=none`);
   await page.getByRole("button", { name: "Dim the rest" }).click();
 });
 
@@ -335,7 +335,7 @@ test("Group by root lists the roots with the keyboard in them; j to the second a
   await openGraph(page);
   await settled(page);
   await page.getByRole("button", { name: "Group by root" }).click();
-  await expect.poll(() => new URL(page.url()).hash).toBe("#/graph");
+  await expect.poll(() => route(page)).toBe("#/graph");
   const roots = page.getByRole("listbox", { name: "Roots" });
   await expect(roots).toBeFocused();
   await page.keyboard.press("j");
@@ -377,7 +377,7 @@ test("Group by root lists the roots with the keyboard in them; j to the second a
   await toggle.click();
   await expect(page.getByRole("complementary", { name: "Roots" })).toHaveCount(0);
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
-  expect(new URL(page.url()).hash).toBe("#/graph");
+  expect(route(page)).toBe("#/graph");
   const wide = (await page.locator(".graph-canvas").boundingBox())!;
   expect(wide.width).toBeGreaterThan(narrow.width + 300);
   const middle = wide.x + ((await page.getByRole("complementary", { name: "Key" }).boundingBox())!.x - wide.x) / 2;
@@ -463,7 +463,7 @@ test("1,000 nodes draw at 60 fps while the layout runs, with no long task after 
     requestAnimationFrame(tick);
     Object.assign(window, { frames: () => frames });
   });
-  await page.goto("/trax/#/graph");
+  await page.goto("/trax/graph");
   await expect(page.locator(".graph-count")).toHaveText("1,000 nodes");
   const answered = await page.evaluate(
     () =>

@@ -113,11 +113,11 @@ for (const theme of ["dark", "light"] as const) {
     await expect(page.getByRole("complementary", { name: "Search results" })).toHaveText("2 matches");
     await audit(page, theme, "graph, Peek and results collapsed");
     // The same document under another hash: the stream stays open, so nothing to wait for but the view.
-    await page.goto(`/trax/#/ref/Issue/${root}`);
+    await page.goto(`/trax/ref/Issue/${root}`);
     await page.getByRole("button", { name: "Collapse parents, children and properties" }).click();
     await expect(page.getByRole("region", { name: "Children" })).toHaveCount(0);
     await audit(page, theme, "detail, rail collapsed");
-    await page.goto("/trax/#/console");
+    await page.goto("/trax/console");
     await page.getByRole("button", { name: "Collapse views and filters" }).click();
     await expect(page.getByRole("complementary", { name: "Views and filters" })).toBeHidden();
     await audit(page, theme, "console, its rail collapsed", { feed: false });

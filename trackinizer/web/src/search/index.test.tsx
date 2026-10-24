@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
 import { MetaContext } from "../app/boot";
 import { META, row } from "../detail/testing";
+import { currentRoute } from "../router/addressBar";
 import { RouterProvider } from "../router/router";
 import { SearchView } from ".";
 
@@ -72,7 +73,7 @@ test("the matches show in a Ref, Status and Title table, with their count", asyn
     ["Belief#9", "Complete", "Retries help"],
   ]);
   const ref = within(screen.getByRole("table")).getByRole("link", { name: "Issue#7" });
-  expect(ref.getAttribute("href")).toBe("#/ref/Issue/7");
+  expect(ref.getAttribute("href")).toBe("/trax/ref/Issue/7");
   expect(within(screen.getAllByRole("row")[2]!).getAllByRole("img").map((img) => img.getAttribute("aria-label"))).toEqual([
     "Proven",
     "Complete",
@@ -107,5 +108,5 @@ test("a query entered in the box opens its own search link", async () => {
   expect((box as HTMLInputElement).value).toBe("retry");
   await userEvent.clear(box);
   await userEvent.type(box, "why? not{Enter}");
-  expect(location.hash).toBe("#/search/why%3F%20not");
+  expect(currentRoute()).toBe("#/search/why%3F%20not");
 });

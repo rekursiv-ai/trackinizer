@@ -2,7 +2,7 @@ import type { InquiryRow } from "../api/inquiries";
 import type { Selection } from "../bulk/selection";
 import { useAncestry } from "../lists/ancestry";
 import { Row, shortAge } from "../lists/Row";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { ReadFailure } from "../ui/failure";
 import { StatusGlyph } from "../ui/glyphs";
 import { buildStreams, type Stream } from "./streams";
@@ -101,7 +101,7 @@ function StreamHead({ stream: { root, rows, active, done, newest }, now }: { str
     <div className="s-head">
       {root && <StatusGlyph status={root.status} />}
       <span className="s-title">
-        {root ? <a href={formatRoute({ name: "ref", kind: root.kind, seq: root.seq })}>{root.title}</a> : "No parent"}
+        {root ? <a href={routeHref({ name: "ref", kind: root.kind, seq: root.seq })}>{root.title}</a> : "No parent"}
       </span>
       {root && <span className="s-ref">#{root.seq}</span>}
       <span className="s-counts">

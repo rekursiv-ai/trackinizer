@@ -124,9 +124,9 @@ test("Info shows the Issue link and each chat session from the info route", asyn
   fireEvent.click(screen.getByRole("menuitem", { name: /Info/ }));
   const drawer = await screen.findByRole("dialog", { name: "Alpha info" });
   expect(mocks.workspaceInfo).toHaveBeenCalledWith("ws-a");
-  expect(within(drawer).getByRole("link", { name: "Issue 1" }).getAttribute("href")).toBe("#/lookup/ws-a");
-  expect(within(drawer).getByRole("link", { name: "Workspace settings" }).getAttribute("href")).toBe("#/lookup/ws-a");
-  expect(within(drawer).getByRole("link", { name: "session-1" }).getAttribute("href")).toBe("#/lookup/session-1");
+  expect(within(drawer).getByRole("link", { name: "Issue 1" }).getAttribute("href")).toBe("/trax/lookup/ws-a");
+  expect(within(drawer).getByRole("link", { name: "Workspace settings" }).getAttribute("href")).toBe("/trax/lookup/ws-a");
+  expect(within(drawer).getByRole("link", { name: "session-1" }).getAttribute("href")).toBe("/trax/lookup/session-1");
 });
 
 test("Scratch has no Hide action; other workspaces hide without confirmation", async () => {

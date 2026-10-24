@@ -10,6 +10,7 @@ import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/
 import { LiveContext } from "../live";
 import { LiveHub } from "../live/hub";
 import { testClient } from "../live/testing";
+import { currentRoute } from "../router/addressBar";
 import { RouterProvider } from "../router/router";
 import type { Panel } from "../ui/panel";
 import { GraphView } from ".";
@@ -555,18 +556,38 @@ test("a click on the background, or Esc, clears the selection", async () => {
   expect(peek()).toBeNull();
 });
 
+/**
+ * Who takes a click on the link named `name`: Peek, selecting in place; the
+ * app's router, moving to its page; or the browser, left to open it.
+ */
+function clickLink(name: string, init?: MouseEventInit): "peek" | "router" | "browser" {
+  const before = location.href;
+  let taken = false;
+  // After every listener of the app's: whether one took the click; then the
+  // browser's load stopped, which jsdom cannot do.
+  const after = (event: Event) => {
+    taken = event.defaultPrevented;
+    event.preventDefault();
+  };
+  addEventListener("click", after);
+  fireEvent.click(screen.getByRole("link", { name }), init);
+  removeEventListener("click", after);
+  const moved = location.href !== before;
+  history.replaceState(null, "", before);
+  return moved ? "router" : taken ? "peek" : "browser";
+}
+
 test("a link in Peek to a node the graph draws selects it in place and centres on it; Open and others navigate", async () => {
   await shown();
   act(() => renderer.events!.click(renderer.node("Issue 2")));
-  // fireEvent answers false when the click's default, following the link, was prevented.
-  expect(fireEvent.click(screen.getByRole("link", { name: "Parent by ref" }))).toBe(false);
+  expect(clickLink("Parent by ref")).toBe("peek");
   expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
-  expect(fireEvent.click(screen.getByRole("link", { name: "Paper by id" }))).toBe(false);
+  expect(clickLink("Paper by id")).toBe("peek");
   expect(within(peek()!).getByRole("heading").textContent).toBe("Paper#3");
   expect(renderer.centred).toEqual(["Issue 1", "A paper"]);
-  expect(fireEvent.click(screen.getByRole("link", { name: "Open" }))).toBe(true);
-  expect(fireEvent.click(screen.getByRole("link", { name: "Not drawn" }))).toBe(true);
-  expect(fireEvent.click(screen.getByRole("link", { name: "Parent by ref" }), { metaKey: true })).toBe(true);
+  expect(clickLink("Open")).toBe("router");
+  expect(clickLink("Not drawn")).toBe("router");
+  expect(clickLink("Parent by ref", { metaKey: true })).toBe("browser");
 });
 
 test("a Peek link to a node the graph loaded but does not draw navigates: one a filter hides, or Only these leaves out", async () => {
@@ -574,14 +595,14 @@ test("a Peek link to a node the graph loaded but does not draw navigates: one a 
   sessionStorage.setItem("trackinizer.v2.graph", JSON.stringify(kept));
   await shown("2 of 3 nodes");
   act(() => renderer.events!.click(renderer.node("Issue 2")));
-  expect(fireEvent.click(screen.getByRole("link", { name: "Paper by id" }))).toBe(true);
+  expect(clickLink("Paper by id")).toBe("router");
   cleanup();
   // Within 1 hop of Issue 1 lie Issues 1 and 2; Only these hides the paper.
   sessionStorage.setItem("trackinizer.v2.graph", JSON.stringify({ ...kept, hiddenKinds: [], only: true }));
   history.replaceState(null, "", "#/graph?focus=Issue/1&hops=1");
   await shown("2 of 3 nodes");
   expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
-  expect(fireEvent.click(screen.getByRole("link", { name: "Paper by id" }))).toBe(true);
+  expect(clickLink("Paper by id")).toBe("router");
 });
 
 test("a selected node the graph no longer has is no longer selected (R3-03)", async () => {
@@ -654,9 +675,9 @@ test("Shift+Enter, or the panel's foot, searches every inquiry on the app's sear
   const { user } = await shown();
   await user.click(search());
   fireEvent.change(search(), { target: { value: "what?" } });
-  expect(screen.getByRole("link", { name: /Search every inquiry for “what\?”/ }).getAttribute("href")).toBe("#/search/what%3F");
+  expect(screen.getByRole("link", { name: /Search every inquiry for “what\?”/ }).getAttribute("href")).toBe("/trax/search/what%3F");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
-  await waitFor(() => expect(location.hash).toBe("#/search/what%3F"));
+  await waitFor(() => expect(currentRoute()).toBe("#/search/what%3F"));
 });
 
 test("search by #seq picks the first match on Enter; no match says so; Escape empties it, leaves it, and clears the selection", async () => {
@@ -741,7 +762,7 @@ test("a double-click focuses a node: the hash keeps it, the focus row counts its
   answers.set(1000, CHAIN);
   await shown("6 nodes");
   act(() => renderer.events!.doubleClick(renderer.node("Issue 2")));
-  await waitFor(() => expect(location.hash).toBe("#/graph?focus=Issue/2&hops=1&group=none"));
+  await waitFor(() => expect(currentRoute()).toBe("#/graph?focus=Issue/2&hops=1&group=none"));
   const row = within(screen.getByRole("group", { name: "Focus" }));
   expect(row.getByText("Issue#2 · Issue 2")).toBeTruthy();
   expect(within(screen.getByRole("group", { name: "Hops" })).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
@@ -762,7 +783,7 @@ test(". focuses the graph on the selected node, at the hops held", async () => {
   const { user } = await shown("6 nodes");
   act(() => renderer.events!.click(renderer.node("Issue 4")));
   await user.keyboard(".");
-  await waitFor(() => expect(location.hash).toBe("#/graph?focus=Issue/4&hops=2"));
+  await waitFor(() => expect(currentRoute()).toBe("#/graph?focus=Issue/4&hops=2"));
 });
 
 test("Hops step the focus 1 to 3 and All, each replacing the hash; what lies two or more hops out fades", async () => {
@@ -772,13 +793,13 @@ test("Hops step the focus 1 to 3 and All, each replacing the hash; what lies two
   const before = history.length;
   expect(dimmed()).toEqual(["Issue 3", "Issue 4", "Issue 5", "Issue 6"]);
   await user.click(hopsButton(/^2 hops/));
-  expect(location.hash).toBe("#/graph?focus=Issue/1&hops=2");
+  expect(currentRoute()).toBe("#/graph?focus=Issue/1&hops=2");
   expect(dimmed()).toEqual(["Issue 4", "Issue 5", "Issue 6"]);
   expect(renderer.node("Issue 3").look.ringAlpha).toBe(0.7);
   await user.click(hopsButton(/^3 hops/));
   expect(dimmed()).toEqual(["Issue 6"]);
   await user.click(hopsButton(/^All hops/));
-  expect(location.hash).toBe("#/graph?focus=Issue/1&hops=all");
+  expect(currentRoute()).toBe("#/graph?focus=Issue/1&hops=all");
   expect(history.length).toBe(before);
 });
 
@@ -815,7 +836,7 @@ test("opened on a focus, as Show in graph opens it, the view selects the focus: 
   expect(renderer.centred).toEqual([]);
   // A focus moved within the view selects nothing new.
   act(() => renderer.events!.doubleClick(renderer.node("Issue 4")));
-  await waitFor(() => expect(location.hash).toBe("#/graph?focus=Issue/4&hops=1"));
+  await waitFor(() => expect(currentRoute()).toBe("#/graph?focus=Issue/4&hops=1"));
   expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#2");
 });
 
@@ -825,7 +846,7 @@ test("a focus by an id in capitals finds its node, and the hash spells the id in
   history.replaceState(null, "", `#/graph?focus=${id.toUpperCase()}&hops=1`);
   await shown("2 nodes");
   expect(screen.getByRole("group", { name: "Focus" }).querySelector(".graph-focus-name")?.textContent).toBe(`${id} · Issue 2`);
-  expect(location.hash).toBe(`#/graph?focus=${id}&hops=1`);
+  expect(currentRoute()).toBe(`#/graph?focus=${id}&hops=1`);
 });
 
 test("Only these hides what the focus leaves out, and Dim the rest shows it again, dim", async () => {
@@ -859,14 +880,14 @@ test("Esc clears the selection first, then the focus; the focus chip's close cle
   act(() => renderer.events!.click(renderer.node("Issue 2")));
   await user.keyboard("{Escape}");
   expect(peek()).toBeNull();
-  expect(location.hash).toBe("#/graph?focus=Issue/1&hops=1");
+  expect(currentRoute()).toBe("#/graph?focus=Issue/1&hops=1");
   await user.keyboard("{Escape}");
-  await waitFor(() => expect(location.hash).toBe("#/graph"));
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"));
   expect(screen.queryByRole("group", { name: "Focus" })).toBeNull();
   expect(dimmed()).toEqual([]);
   act(() => renderer.events!.doubleClick(renderer.node("Issue 4")));
   await user.click(await screen.findByRole("button", { name: "Clear the focus" }));
-  await waitFor(() => expect(location.hash).toBe("#/graph"));
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"));
 });
 
 test("a focus on an inquiry the graph has not loaded says so and lights nothing", async () => {
@@ -897,13 +918,13 @@ test("the graph opens grouped by root: each root's subgraph is an island, the ro
   expect(renderer.nodes.map((drawn) => drawn.look.label?.text ?? null)).toEqual(["Issue 1", null, "Issue 3", null, null, null]);
   expect(rootsList()).not.toBeNull();
   await user.click(button());
-  await waitFor(() => expect(location.hash).toBe("#/graph?group=none"));
+  await waitFor(() => expect(currentRoute()).toBe("#/graph?group=none"));
   expect(button().getAttribute("aria-pressed")).toBe("false");
   expect(renderer.groups).toBeNull();
   expect(rootsList()).toBeNull();
   expect(renderer.nodes.map((drawn) => drawn.look.label)).toEqual(Array(6).fill(null));
   await user.click(button());
-  await waitFor(() => expect(location.hash).toBe("#/graph"));
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"));
   expect(renderer.groups?.get("Issue 4")).toBe(uuid(3));
   expect(document.activeElement).toBe(rootsList());
 });
@@ -946,7 +967,7 @@ test("the graph's keys work from the roots list: . focuses on the root picked, /
   const { user } = await shown("6 nodes");
   rootsList()!.focus();
   await user.keyboard("jj{Enter}.");
-  await waitFor(() => expect(location.hash).toBe("#/graph?focus=Issue/1&hops=1"));
+  await waitFor(() => expect(currentRoute()).toBe("#/graph?focus=Issue/1&hops=1"));
   expect(document.activeElement).toBe(rootsList());
   await user.keyboard("/");
   expect(document.activeElement).toBe(search());
@@ -954,7 +975,7 @@ test("the graph's keys work from the roots list: . focuses on the root picked, /
   await user.keyboard("{Escape}");
   expect(peek()).toBeNull();
   await user.keyboard("{Escape}");
-  await waitFor(() => expect(location.hash).toBe("#/graph"));
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"));
 });
 
 test("a root's frame takes its island, the nodes laid out nearest it, not every node under it", async () => {
@@ -990,7 +1011,7 @@ test("while grouped, the Roots list button, or [, hides the roots list and frame
   expect(panel()).toBeNull();
   expect(toggle().getAttribute("aria-pressed")).toBe("false");
   expect(renderer.refits).toHaveLength(1);
-  expect(location.hash).toBe("#/graph");
+  expect(currentRoute()).toBe("#/graph");
   expect(renderer.groups?.get("Issue 4")).toBe(uuid(3));
   cleanup();
   renderer = new FakeRenderer();
@@ -1005,7 +1026,7 @@ test("while grouped, the Roots list button, or [, hides the roots list and frame
   expect(rootsList()).toBeNull();
   // Ungrouped, there is no list to show, so neither the button nor [ does anything.
   await again.user.click(screen.getByRole("button", { name: "Group by root" }));
-  await waitFor(() => expect(location.hash).toBe("#/graph?group=none"));
+  await waitFor(() => expect(currentRoute()).toBe("#/graph?group=none"));
   expect(screen.queryByRole("button", { name: "Roots list" })).toBeNull();
   await again.user.keyboard("[[");
   expect(renderer.refits).toHaveLength(2);

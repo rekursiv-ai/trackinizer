@@ -93,7 +93,7 @@ test("an answer citing two rows lights them up within the budget", async ({ page
   const other = await createIssue(request, `Highlight other ${stamp}`);
   const { answer } = await openConversation(page, [{ kind: "AgentToAgentMessage", content: "Which are open?" }]);
   const subscribed = streamOpened(page);
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await subscribed;
   await expect(page.getByText("Which are open?")).toBeVisible();
   await expect(page.locator("a.row", { hasText: other.title })).toBeVisible();
@@ -130,7 +130,7 @@ test("with the switch off in Settings an answer lights nothing", async ({ page, 
   const third = await createIssue(request, `Quiet third ${stamp}`);
   const { answer } = await openConversation(page, [{ kind: "AgentToAgentMessage", content: "Which are open?" }]);
   const subscribed = streamOpened(page);
-  await page.goto("/trax/#/settings");
+  await page.goto("/trax/settings");
   await subscribed;
   const toggle = page.getByRole("checkbox", { name: SWITCH });
   await expect(toggle).toBeChecked();
@@ -144,7 +144,7 @@ test("with the switch off in Settings an answer lights nothing", async ({ page, 
     await page.screenshot({ path: `${SHOTS}/settings-switch-${theme}.png` });
   }
 
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await expect(page.getByText("Which are open?")).toBeVisible();
   await expect(page.locator("a.row", { hasText: first.title })).toBeVisible();
   const glowed = await watchGlowed(page);
@@ -152,9 +152,9 @@ test("with the switch off in Settings an answer lights nothing", async ({ page, 
   await expect(page.locator(".chat-line-assistant")).toContainText("Both are open");
   // Positive control, in place of a wait for a late glow to land: with the switch on again, an
   // answer citing a third row lights it, and every glow seen since the first answer is that one.
-  await page.goto("/trax/#/settings");
+  await page.goto("/trax/settings");
   await page.getByRole("checkbox", { name: SWITCH }).check();
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await answer(`And Issue#${third.seq}.`, 2);
   await expect(page.locator("a.row.is-highlighted")).toHaveCount(1);
   await expect(page.locator("a.row.is-highlighted", { hasText: third.title })).toBeVisible();
@@ -162,7 +162,7 @@ test("with the switch off in Settings an answer lights nothing", async ({ page, 
 });
 
 test("the choice of the switch is the browser's and survives a reload", async ({ page }) => {
-  await page.goto("/trax/#/settings");
+  await page.goto("/trax/settings");
   const toggle = page.getByRole("checkbox", { name: SWITCH });
   await expect(toggle).toBeChecked();
   await toggle.uncheck();

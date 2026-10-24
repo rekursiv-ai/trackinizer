@@ -18,7 +18,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  history.replaceState(null, "", location.pathname);
+  history.replaceState(null, "", "/");
 });
 
 test("Copy details has the message, time, page, build and browser, the failed request, and the recent events", () => {
@@ -55,7 +55,7 @@ test("a failure without a request says what it can; any other error keeps its st
 
 test("the page's route leaves out search text and a hash's query", () => {
   const route = (hash: string) => {
-    history.replaceState(null, "", hash || location.pathname);
+    history.replaceState(null, "", hash || "/");
     return pageRoute();
   };
   expect(route("#/search/my%20private%20words")).toBe("#/search/…");

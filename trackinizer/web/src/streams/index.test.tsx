@@ -54,7 +54,7 @@ test("the switch reads List · Streams · Outline · Columns, and Streams groups
     "Issue 1: #23 [· in Issue 11] #22",
     "No parent: #24",
   ]);
-  expect(document.querySelector(".s-stream .s-head a")!.getAttribute("href")).toBe("#/ref/Issue/2");
+  expect(document.querySelector(".s-stream .s-head a")!.getAttribute("href")).toBe("/trax/ref/Issue/2");
 });
 
 test("a stream's header counts its rows, active and done, with a status bar and the newest row's age", async () => {

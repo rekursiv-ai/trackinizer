@@ -14,7 +14,7 @@ test.beforeEach(async ({ request }) => {
 
 async function open(page: Page, width = 1280): Promise<{ bar: Locator; chat: Locator; stage: Locator }> {
   await page.setViewportSize({ width, height: 800 });
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await expect(page.locator(".chat-column").getByRole("region", { name: "Chat" })).toBeVisible();
   await page.mouse.move(640, 1);
   await expect(page.getByRole("banner", { name: "App" })).toHaveClass(/topbar-auto-open/);
@@ -97,7 +97,7 @@ test("a skin chosen in Appearance shows at once, and a reload keeps it, from the
 
 test("on a phone the bar fits the width, its controls each take a press, and Go reaches every page", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   const bar = page.getByRole("banner", { name: "App" });
   await expect(bar).toBeVisible();
   await page.getByRole("button", { name: "Open app bar" }).click();
@@ -107,6 +107,6 @@ test("on a phone the bar fits the width, its controls each take a press, and Go 
   await bar.getByRole("button", { name: "Go to" }).click();
   const go = page.getByRole("navigation", { name: "Go to" });
   await go.getByRole("link", { name: /^Activity/ }).click();
-  await expect(page).toHaveURL(/#\/activity$/);
+  await expect(page).toHaveURL(/\/trax\/activity$/);
   await expect(go).toHaveCount(0);
 });

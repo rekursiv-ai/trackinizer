@@ -1,5 +1,5 @@
 import type { Page, Route } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, test, route } from "./fixtures";
 
 // The server is ephemeral and shared with the other spec files, so this file seeds
 // its own rows, with words no other spec uses: a hub with three children, a Belief
@@ -68,7 +68,7 @@ test("loaded rows show while typing, the server's after a pause with their time;
     await new Promise((resolve) => setTimeout(resolve, 1000));
     await route.continue();
   });
-  await page.goto(`/trax/#/lookup/${ids[0]}`);
+  await page.goto(`/trax/lookup/${ids[0]}`);
   await expect(heading(page)).toHaveText("C4 hub");
   await page.keyboard.press("ControlOrMeta+k");
   await page.keyboard.type("C4 local child");
@@ -90,7 +90,7 @@ test("loaded rows show while typing, the server's after a pause with their time;
 });
 
 test("a regex search keeps its backslashes, and a server result opens", async ({ page }) => {
-  await page.goto("/trax/#/activity");
+  await page.goto("/trax/activity");
   await expect(heading(page)).toHaveText("Activity");
   await page.keyboard.press("ControlOrMeta+k");
   await page.keyboard.type("title:^C4rx\\s\\d+");
@@ -101,7 +101,7 @@ test("a regex search keeps its backslashes, and a server result opens", async ({
 });
 
 test("a search link opens the search page on its query and searches at once", async ({ page }) => {
-  await page.goto("/trax/#/search/zebra");
+  await page.goto("/trax/search/zebra");
   await expect(page.getByRole("searchbox", { name: "Search query" })).toHaveValue("zebra");
   await expect(page.getByRole("table").getByRole("row").filter({ hasText: "C4 server-only belief zebra" })).toHaveCount(1);
 });
@@ -116,7 +116,7 @@ test("typing on cancels the searches still in flight", async ({ page }) => {
   page.on("requestfailed", (request) => {
     if (request.url().includes("/api/web/search")) aborted.push(request.failure()?.errorText ?? "");
   });
-  await page.goto("/trax/#/activity");
+  await page.goto("/trax/activity");
   await expect(heading(page)).toHaveText("Activity");
   await page.keyboard.press("ControlOrMeta+k");
   await page.keyboard.type("held");
@@ -137,7 +137,7 @@ test("a search over the server's time budget shows the server's message, and Ret
     if (budget && kind === "Issue") void route.fulfill({ status: 400, json: { detail: BUDGET } });
     else void route.continue();
   });
-  await page.goto("/trax/#/activity");
+  await page.goto("/trax/activity");
   await expect(heading(page)).toHaveText("Activity");
   await page.keyboard.press("ControlOrMeta+k");
   await page.keyboard.type("C4 hub");
@@ -150,12 +150,12 @@ test("a search over the server's time budget shows the server's message, and Ret
 });
 
 test("picking a command runs it", async ({ page }) => {
-  await page.goto("/trax/#/list/Paper");
+  await page.goto("/trax/list/Paper");
   await expect(heading(page)).toHaveText("Papers");
   await page.keyboard.press("ControlOrMeta+k");
   await page.keyboard.type("activity");
   await expect(activeOption(page)).toHaveText(/Go to Activity/);
   await page.keyboard.press("Enter");
   await expect(heading(page)).toHaveText("Activity");
-  expect(new URL(page.url()).hash).toBe("#/activity");
+  expect(route(page)).toBe("#/activity");
 });

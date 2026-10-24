@@ -97,14 +97,14 @@ test("with the canvas on the tab holds one stream, the canvas's, through Setting
   await ok(await request.put("/api/me/visual-canvas", { data: { enabled: true } }));
   const open = () => page.evaluate(() => (window as unknown as { heldEventSources: EventSource[] }).heldEventSources
     .filter((source) => source.readyState !== 2).map((source) => new URL(source.url).pathname.replace(/[0-9a-f-]{36}/, "<id>")));
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await expect(page.locator(".visual-canvas")).toBeVisible();
   await page.waitForFunction(() => (window as unknown as { trackinizer: { timings(): unknown[] } }).trackinizer.timings().length > 0);
   expect(await open()).toEqual(["/api/canvases/<id>/events"]);
-  await page.goto("/trax/#/settings");
+  await page.goto("/trax/settings");
   await expect(page.getByRole("heading", { name: /settings/i }).first()).toBeVisible();
   expect(await open()).toEqual(["/api/canvases/<id>/events"]);
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await expect(page.locator(".visual-canvas")).toBeVisible();
   expect(await open()).toEqual(["/api/canvases/<id>/events"]);
 });
@@ -124,7 +124,7 @@ test("a visual of every type paints within 100 ms of the server accepting its op
     }));
   }
   // The page must not see a stale browse pane from a previous run's canvas.
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await expect(page.locator(".visual-canvas")).toBeVisible();
   // The stream's first frame is the canvas as it stands: the page is listening.
   await page.waitForFunction(() => (window as unknown as { trackinizer: { timings(): unknown[] } }).trackinizer.timings().length > 0);

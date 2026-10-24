@@ -1,5 +1,5 @@
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, openProperties, test } from "../fixtures";
+import { expect, openProperties, test, route } from "../fixtures";
 
 // Phase 1 is done when every read of the old UI (the deleted
 // server/assets/index.html) has a place in v2. This file makes one inquiry of
@@ -98,7 +98,7 @@ const properties = (page: Page) => page.getByRole("complementary", { name: "Prop
 const field = (page: Page, name: string) => page.locator(`[data-field="${name}"]`);
 
 async function open(page: Page, id: string, title: string) {
-  await page.goto(`/trax/#/lookup/${id}`);
+  await page.goto(`/trax/lookup/${id}`);
   await expect(heading(page)).toHaveText(title);
   await openProperties(page);
 }
@@ -128,7 +128,7 @@ test("an Issue shows its type, priority, done-when, status and Markdown descript
   await expect(panel.locator('[data-field="issue_kind"] dd')).toHaveText("bug");
   await expect(field(page, "validation")).toContainText("The phase 1 journey passes.");
   const description = field(page, "description");
-  await expect(description.getByRole("link", { name: "Belief#1" })).toHaveAttribute("href", "#/ref/Belief/1");
+  await expect(description.getByRole("link", { name: "Belief#1" })).toHaveAttribute("href", "/trax/ref/Belief/1");
   await expect(description.locator("strong")).toHaveText("bold");
 });
 
@@ -174,7 +174,7 @@ test("an Experiment shows its outcome, its code changes and its config", async (
   await expect(field(page, "outcome")).toContainText("Every read has a place.");
   const changes = properties(page).locator('[data-field="codechanges"] dd').getByRole("link");
   await expect(changes).toHaveText(ids[CODECHANGE].slice(0, 8));
-  await expect(changes).toHaveAttribute("href", `#/lookup/${ids[CODECHANGE]}`);
+  await expect(changes).toHaveAttribute("href", `/trax/lookup/${ids[CODECHANGE]}`);
   await expect(field(page, "config")).toContainText('"lr": 0.25');
 });
 
@@ -226,7 +226,7 @@ async function filterToTag(page: Page) {
 test("list rows show what the old list's columns did: ref, status, type, priority, judgement, confidence, labels, owner, time", async ({
   page,
 }) => {
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await filterToTag(page);
   const issue = page.locator("a.row").filter({ hasText: `Issue ${TAG}` });
   await expect(issue.locator(".row-ref")).toHaveText(/^#\d+$/);
@@ -237,7 +237,7 @@ test("list rows show what the old list's columns did: ref, status, type, priorit
   await expect(issue.locator(".row-owner")).toHaveAttribute("aria-label", "josh");
   await expect(issue.locator(".row-date")).toHaveAttribute("title", /^Updated [A-Z][a-z]{2} \d{1,2}, \d{4}/);
 
-  await page.goto("/trax/#/list/Belief");
+  await page.goto("/trax/list/Belief");
   await filterToTag(page);
   const belief = page.locator("a.row").filter({ hasText: `Belief ${TAG}` });
   await expect(belief.getByRole("img", { name: "Proven" })).toBeVisible();
@@ -245,14 +245,14 @@ test("list rows show what the old list's columns did: ref, status, type, priorit
 });
 
 test("the old UI's links open their v2 views: #/inquiry/<uuid>, #/search?q= and palette jumps", async ({ page }) => {
-  await page.goto(`/trax/#/inquiry/${ids[ISSUE]}`);
+  await page.goto(`/trax/inquiry/${ids[ISSUE]}`);
   await expect(heading(page)).toHaveText(`Issue ${TAG}`);
-  expect(new URL(page.url()).hash).toBe(`#/lookup/${ids[ISSUE]}`);
+  expect(route(page)).toBe(`#/lookup/${ids[ISSUE]}`);
 
   const palette = page.getByRole("dialog", { name: "Command menu" });
-  await page.goto(`/trax/#/search?q=${encodeURIComponent(`WebSearch ${TAG}`)}`);
+  await page.goto(`/trax/search?q=${encodeURIComponent(`WebSearch ${TAG}`)}`);
   await expect(heading(page)).toHaveText(`Search: WebSearch ${TAG} (1)`);
-  expect(new URL(page.url()).hash).toBe(`#/search/${encodeURIComponent(`WebSearch ${TAG}`)}`);
+  expect(route(page)).toBe(`#/search/${encodeURIComponent(`WebSearch ${TAG}`)}`);
   await page.getByRole("table").getByRole("link", { name: /^WebSearch#/ }).click();
   await expect(heading(page)).toHaveText(`WebSearch ${TAG}`);
 

@@ -12,6 +12,7 @@ import { WorkbenchSlot } from "../app/workbenchSlot";
 import { PROFILE } from "../detail/testing";
 import { DEFAULT_PREFERENCES, receivePreferences } from "../preferences";
 import { setCanvas } from "../canvases/store";
+import { currentRoute } from "../router/addressBar";
 import { Canvas } from "./Canvas";
 import { forgetHistories, observe, settle, step } from "./canvasHistory";
 import { snapshotOf } from "./canvasSnapshot";
@@ -230,7 +231,7 @@ test("Back restores a visual closed in this tab", async () => {
   fireEvent.click(button("Back"));
   await waitFor(() => expect(document.querySelector('[data-visual-type="trax.timeline"]')).not.toBeNull(), { interval: 1 });
   expect(sent().at(-1)).toEqual({ kind: "show", visual_type: "trax.timeline", placement: "left", record_id: "r1", params: {} });
-  expect(location.hash).toBe("#/activity");
+  expect(currentRoute()).toBe("#/activity");
 });
 
 test("Forward calls the action for the next visual state", () => {
@@ -266,13 +267,13 @@ test("an agent's change to the canvas is a step Back undoes", async () => {
 test("Home shows the page on the graph and nothing else; Back brings the canvas back", async () => {
   await mount();
   fireEvent.click(button("Home"));
-  await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"), { interval: 1 });
   expect(sent()).toEqual([{ kind: "hide", instance_id: "timeline" }]);
   await waitFor(() => expect(button("Back").disabled).toBe(false), { interval: 1 });
 
   fireEvent.click(button("Back"));
 
-  await waitFor(() => expect(location.hash).toBe("#/list/Issue"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/list/Issue"), { interval: 1 });
   expect(served.visuals.map((visual) => visual.type)).toEqual(["trax.browse", "trax.timeline"]);
 });
 
@@ -280,9 +281,9 @@ test("clearing a canvas tab clears only that tab, and Back restores Browse", asy
   await mountBrowseOnly();
 
   userNavigates("#/activity");
-  await waitFor(() => expect(location.hash).toBe("#/activity"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/activity"), { interval: 1 });
   await addTab();
-  await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"), { interval: 1 });
   const tabs = written().tabs!.map((tab) => tab.id);
 
   fireEvent.click(button("Clear canvas"));
@@ -294,12 +295,12 @@ test("clearing a canvas tab clears only that tab, and Back restores Browse", asy
   expect(button("Back").disabled).toBe(false);
 
   fireEvent.click(button("Back"));
-  await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"), { interval: 1 });
   await waitFor(() => expect(document.querySelector('[data-visual-type="trax.browse"]')).not.toBeNull(), { interval: 1 });
 
   // The other tab still shows what it showed before the clear.
   fireEvent.click(button("Tab 1"));
-  await waitFor(() => expect(location.hash).toBe("#/activity"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/activity"), { interval: 1 });
   await waitFor(() => expect(document.querySelector('[data-visual-type="trax.browse"]')).not.toBeNull(), { interval: 1 });
 });
 
@@ -312,7 +313,7 @@ test("with home set to empty, Home clears the canvas", async () => {
 
   await waitFor(() => expect(screen.getByText(/Nothing on this canvas\. .*Workbench menu in the top bar\./)).toBeTruthy(), { interval: 1 });
   expect(sent()).toEqual([{ kind: "hide", instance_id: "page" }, { kind: "hide", instance_id: "timeline" }]);
-  expect(location.hash).toBe("#/list/Issue");
+  expect(currentRoute()).toBe("#/list/Issue");
 });
 
 test("Clear canvas is danger-styled and Cancel or Escape leave the action alone", async () => {
@@ -342,7 +343,7 @@ test("Clear canvas is danger-styled and Cancel or Escape leave the action alone"
 test("a new tab opens home and keeps the tab left; opening that tab again shows it as it was left", async () => {
   await mount();
   await addTab();
-  await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"), { interval: 1 });
   await waitFor(() => expect(document.querySelector('[data-visual-type="trax.timeline"]')).toBeNull(), { interval: 1 });
   const layout = written();
   expect(layout.tabs?.map(({ name, page }) => [name, page])).toEqual([["Tab 1", "#/list/Issue"], ["Tab 2", "#/graph"]]);
@@ -355,7 +356,7 @@ test("a new tab opens home and keeps the tab left; opening that tab again shows 
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: /^Tab 1/ }).disabled).toBe(false), { interval: 1 });
   fireEvent.click(screen.getByRole("button", { name: /^Tab 1/ }));
 
-  await waitFor(() => expect(location.hash).toBe("#/list/Issue"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/list/Issue"), { interval: 1 });
   await waitFor(() => expect(document.querySelector('[data-visual-type="trax.timeline"]')).not.toBeNull(), { interval: 1 });
   expect(written().tab).toBe("1");
   expect(written().tabs?.[1]?.page).toBe("#/graph");
@@ -364,12 +365,12 @@ test("a new tab opens home and keeps the tab left; opening that tab again shows 
 test("closing the open tab opens its neighbour; a tab renamed in place keeps its name", async () => {
   await mount();
   await addTab();
-  await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"), { interval: 1 });
   await waitFor(() => expect(button("Close Tab 2").disabled).toBe(false), { interval: 1 });
 
   fireEvent.click(button("Close Tab 2"));
 
-  await waitFor(() => expect(location.hash).toBe("#/list/Issue"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/list/Issue"), { interval: 1 });
   expect(written().tabs?.map((tab) => tab.name)).toEqual(["Tab 1"]);
   expect(written().tab).toBe("1");
   expect(screen.queryByRole("button", { name: "Close Tab 1" })).toBeNull();
@@ -386,7 +387,7 @@ test("closing the open tab opens its neighbour; a tab renamed in place keeps its
 test("a canvas opened while a tab's steps are on their way gets none of them: not its visuals, not its page", async () => {
   await mount();
   await addTab();
-  await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"), { interval: 1 });
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Tab 1" }).disabled).toBe(false), { interval: 1 });
   // Another canvas, on Papers with the page alone; and the next step to the server held back, as a slow network holds it.
   const other: CanvasState = { ...START, id: "0b7c5d2e-1111-4a5b-9c8d-2e3f4a5b6c7d", name: "beta", revision: 9, visuals: [START.visuals[0]!] };
@@ -410,7 +411,7 @@ test("a canvas opened while a tab's steps are on their way gets none of them: no
 
   // The other canvas's canvas and page are its own still.
   expect(vi.mocked(applyCanvasOperation).mock.calls.filter(([id]) => id === other.id)).toEqual([]);
-  expect(location.hash).toBe("#/list/Paper");
+  expect(currentRoute()).toBe("#/list/Paper");
   // And the canvas is not left waiting on the step it gave up: the canvas's tabs open again.
   await waitFor(() => expect(button("New tab").disabled).toBe(false), { interval: 1 });
 });
@@ -418,7 +419,7 @@ test("a canvas opened while a tab's steps are on their way gets none of them: no
 test("coming back to a canvas left while a tab's steps were on their way finishes them, so the tab is whole and keeps what it shows", async () => {
   await mount();
   await addTab();
-  await waitFor(() => expect(location.hash).toBe("#/graph"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"), { interval: 1 });
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Tab 1" }).disabled).toBe(false), { interval: 1 });
   const home = served;
   const other: CanvasState = { ...START, id: "0b7c5d2e-1111-4a5b-9c8d-2e3f4a5b6c7d", name: "beta", revision: 9, visuals: [START.visuals[0]!] };
@@ -449,7 +450,7 @@ test("coming back to a canvas left while a tab's steps were on their way finishe
     setCanvas(CANVAS, "#/graph");
   });
   await waitFor(() => expect(document.querySelector('[data-visual-type="trax.timeline"]')).not.toBeNull(), { interval: 1 });
-  await waitFor(() => expect(location.hash).toBe("#/list/Issue"), { interval: 1 });
+  await waitFor(() => expect(currentRoute()).toBe("#/list/Issue"), { interval: 1 });
   expect(showing).toBe(CANVAS);
 });
 

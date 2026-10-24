@@ -1,5 +1,6 @@
 import type { ComponentProps } from "react";
 import type { ExtraProps } from "react-markdown";
+import { routeUrl } from "../router/addressBar";
 import { Icon } from "../ui/icons";
 import { linkProps } from "../router/appLink";
 import { KindIcon } from "../ui/kinds";
@@ -15,7 +16,7 @@ export function Link({ href, className, title, children }: ComponentProps<"a"> &
   if (className === "ref") {
     const kind = /^#\/ref\/([^/]+)\//.exec(href)?.[1];
     return (
-      <a className="ref" href={href} title={title}>
+      <a className="ref" href={routeUrl(href)} title={title}>
         {kind ? <KindIcon kind={decodeURIComponent(kind)} size={12} /> : <Icon name="link" size={12} />}
         {children}
       </a>

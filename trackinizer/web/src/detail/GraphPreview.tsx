@@ -7,7 +7,7 @@ import { CopyDetails } from "../debug/CopyDetails";
 import type { Palette } from "../graph/encode";
 import { GraphModel, PLAIN_LENS } from "../graph/model";
 import { useThemePalette } from "../graph/palette";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { useRouter } from "../router/router";
 import { Icon } from "../ui/icons";
 import { useCanvasActions } from "../visuals/canvasActions";
@@ -44,7 +44,7 @@ function Preview({ row }: { row: DetailRow }) {
   const query = useQuery({ ...detailQueries.neighbourhood(row.id, HOPS), enabled: shown });
   const graph = shown ? query.data : undefined;
   const name = `${row.kind}#${row.seq}`;
-  const href = formatRoute({ name: "graph", focus: { ref: { kind: row.kind, seq: row.seq }, hops: HOPS } });
+  const href = routeHref({ name: "graph", focus: { ref: { kind: row.kind, seq: row.seq }, hops: HOPS } });
   const canvas = useCanvasActions();
   return (
     <div className="rail-graph">

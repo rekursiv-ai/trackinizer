@@ -3,7 +3,7 @@ import type { Detail, Peer } from "../api/detail";
 import { useMeta, useWriteMode } from "../app/boot";
 import { useRelationActions } from "../relations/flows";
 import { RelationRow } from "../relations/RelationRow";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { LabelChip, PriorityGlyph, StateGlyphs } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
 import { KindIcon } from "../ui/kinds";
@@ -112,7 +112,7 @@ function Row({ detail, group, peer, mode }: { detail: Detail; group: RelationGro
   const priority = peer.priority ?? null;
   return (
     <RelationRow detail={detail} group={group} peer={peer} mode={mode}>
-      <a className="rel-link" href={formatRoute({ name: "ref", kind: peer.kind, seq: peer.seq })}>
+      <a className="rel-link" href={routeHref({ name: "ref", kind: peer.kind, seq: peer.seq })}>
         {inbound && priority !== null ? <PriorityGlyph priority={priority} /> : <KindIcon kind={peer.kind} />}
         <span className="rel-ref">{`${peer.kind}#${peer.seq}`}</span>
         <StateGlyphs status={peer.status} judgement={peer.judgement} />

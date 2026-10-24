@@ -1,4 +1,4 @@
-import { expect, revealBar, test } from "../fixtures";
+import { expect, revealBar, test, route } from "../fixtures";
 
 // Phase 1's manual row starts with "every sidebar entry" and "each kind's list:
 // tabs, Filter, Group, Sort". The pages are now the top bar's Go menu, and
@@ -9,7 +9,7 @@ test("every page in Go opens its view, and each kind's list has its tabs and too
   const { inquiry_kind_all: kinds } = (await (await request.get("/api/meta/enums")).json()) as {
     inquiry_kind_all: string[];
   };
-  await page.goto("/trax/#/activity");
+  await page.goto("/trax/activity");
   const go = page.getByRole("navigation", { name: "Go to" });
   // Graph, Console, Activity, then one Browse entry per kind in the server's order.
   const hashes = ["#/graph", "#/console", "#/activity", ...kinds.map((kind) => `#/list/${kind}`)];
@@ -26,7 +26,7 @@ test("every page in Go opens its view, and each kind's list has its tabs and too
     // The console adds its open view's name: "Console · Untitled view".
     const named = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     await expect(page.getByRole("heading", { level: 1 })).toHaveText(new RegExp(`^${named}( · .+)?$`));
-    expect(new URL(page.url()).hash).toBe(hash);
+    expect(route(page)).toBe(hash);
     await (await revealBar(page)).getByRole("button", { name: "Go to" }).click();
     await expect(go.getByRole("link").nth(n)).toHaveAttribute("aria-current", "page");
     await page.keyboard.press("Escape");
@@ -44,6 +44,6 @@ test("every page in Go opens its view, and each kind's list has its tabs and too
     await (await revealBar(page)).getByRole("button", { name: /^Account: / }).click();
     await page.getByRole("dialog", { name: "Account" }).getByRole("link", { name }).click();
     await expect(page.getByRole("complementary", { name }).getByRole("heading", { level: 1 })).toHaveText(name);
-    expect(new URL(page.url()).hash).toBe(hash);
+    expect(route(page)).toBe(hash);
   }
 });

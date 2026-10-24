@@ -2,8 +2,8 @@ import { createContext, Fragment, type ReactNode, use, useLayoutEffect, useRef, 
 import type { SessionRecord } from "../../api/sessions";
 import { Markdown } from "../../markdown/Markdown";
 import { safeUrl } from "../../markdown/safeUrl";
+import { routeHref } from "../../router/addressBar";
 import { linkProps } from "../../router/appLink";
-import { formatRoute } from "../../router/route";
 import { Icon } from "../../ui/icons";
 import { Ansi, AnsiLines, Code, Diff, Output } from "./Code";
 import {
@@ -475,7 +475,7 @@ function CanvasNote({ context }: { context: CanvasContext }) {
         {context.recordId ? (
           <>
             {" · "}
-            <a href={formatRoute({ name: "lookup", id: context.recordId })}>{context.title || context.recordId}</a>
+            <a href={routeHref({ name: "lookup", id: context.recordId })}>{context.title || context.recordId}</a>
           </>
         ) : null}
       </summary>

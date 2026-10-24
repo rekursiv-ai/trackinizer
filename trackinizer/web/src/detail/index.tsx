@@ -17,7 +17,8 @@ import { Markdown, useMarkdownWarm } from "../markdown/Markdown";
 import { ProgressiveMarkdown } from "../markdown/ProgressiveMarkdown";
 import { cachedInquiries } from "../palette/sources";
 import { RelationFlows, useRelationActions } from "../relations/flows";
-import { formatRoute, type Route } from "../router/route";
+import { currentRoute, routeHref } from "../router/addressBar";
+import { type Route } from "../router/route";
 import { useRouter } from "../router/router";
 import { Bar } from "../ui/bars";
 import { capitalize } from "../ui/glyphs";
@@ -99,7 +100,7 @@ function DetailById({ id, kind, name }: { id: string; kind: string | null; name:
   const drawn = !!query.data && !gone && shown;
   // After an agent's navigation here, the page drawn with its data is what its timing mark waits for.
   useLayoutEffect(() => {
-    if (drawn) markPageDrawn(window.location.hash);
+    if (drawn) markPageDrawn(currentRoute());
   }, [drawn, id]);
   if (query.data && !gone && shown) {
     return (
@@ -239,7 +240,7 @@ function ShowInGraph({ row }: { row: DetailRow }) {
   );
   if (inGraph) return null;
   return (
-    <a className="btn ghost" href={formatRoute(graph)} title={`Show ${row.kind}#${row.seq} in the graph`}>
+    <a className="btn ghost" href={routeHref(graph)} title={`Show ${row.kind}#${row.seq} in the graph`}>
       <Icon name="graph" size={14} />
       <span className="hide-sm">Show in graph</span>
     </a>
@@ -418,7 +419,7 @@ function Frame({
         <nav className="crumbs" aria-label="Breadcrumb">
           {kind ? (
             <>
-              <a className="crumb-btn" href={formatRoute({ name: "list", kind })} title="Back (Esc)">
+              <a className="crumb-btn" href={routeHref({ name: "list", kind })} title="Back (Esc)">
                 <Icon name="arrowL" size={14} />
                 <span className="hide-sm">{kindLook(kind).plural}</span>
               </a>

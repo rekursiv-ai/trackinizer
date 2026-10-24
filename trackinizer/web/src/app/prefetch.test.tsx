@@ -3,10 +3,11 @@ import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } fr
 import { AGREED, type Sent, stubFetch } from "../api/testing";
 import { openEarlyStream } from "../live/earlyStream";
 import { FakeEventSource } from "../live/testing";
+import { currentRoute } from "../router/addressBar";
 import { DetailView, GraphView } from "../router/views";
 import { App } from "./App";
 import { prefetch, prefetched, takeReadAt } from "./prefetch";
-import { LOGIN_URL } from "./session";
+import { loginUrl } from "./session";
 
 // The graph draws on a canvas, which jsdom lacks: a renderer that draws nothing stands in.
 vi.mock("../graph/renderer", async () => ({ forceGraphRenderer: new (await import("../graph/testing")).FakeRenderer().create }));
@@ -74,7 +75,7 @@ const ACTIVE = '/api/inquiries {"field":"status","op":"is","value":"active"}';
 beforeAll(() => Promise.all([DetailView.preload(), GraphView.preload()]));
 
 beforeEach(() => {
-  history.replaceState(null, "", location.pathname);
+  history.replaceState(null, "", "/");
   sessionStorage.clear();
   // The bar starts pinned, and an open bar reads Machines; these tests count the reads of the page.
   localStorage.setItem("trackinizer.topbar.pinned", "0");
@@ -102,9 +103,9 @@ async function open(
   started: readonly string[],
   { answer = {}, assign = vi.fn() }: { answer?: { [path: string]: () => Response }; assign?: (url: string) => void } = {},
 ): Promise<Sent[]> {
-  history.replaceState(null, "", hash || location.pathname);
+  history.replaceState(null, "", hash || "/");
   const sent = serve(answer);
-  prefetch(location.hash);
+  prefetch(currentRoute());
   await waitFor(() => expect(reads(sent)).toEqual([...started].sort()), { interval: 1 });
   render(<App assign={assign} />);
   return sent;
@@ -115,7 +116,7 @@ test.each(["#/list/Issue", "#/list/issue", "#/list"])(
   async (hash) => {
     const sent = await open(hash, [...BOOT, ACTIVE]);
     expect(await screen.findByText("Issue from the started read")).toBeTruthy();
-    expect(location.hash).toBe("#/list/Issue");
+    expect(currentRoute()).toBe("#/list/Issue");
     await waitFor(() => expect(reads(sent)).toEqual([...BOOT, ...SHELL, ACTIVE].sort()));
   },
 );
@@ -183,7 +184,7 @@ test("a 401 on a started read sends the browser to sign in, as any read's does",
   const assign = vi.fn();
   const answer = { "/api/me/profile": () => Response.json({ detail: "not signed in" }, { status: 401 }) };
   const sent = await open("#/list/Issue", [...BOOT, ACTIVE], { answer, assign });
-  await waitFor(() => expect(assign).toHaveBeenCalledWith(LOGIN_URL), { interval: 1 });
+  await waitFor(() => expect(assign).toHaveBeenCalledWith(loginUrl("/trax/list/Issue")), { interval: 1 });
   expect(assign).toHaveBeenCalledTimes(1);
   expect(reads(sent).filter((path) => path === "/api/me/profile")).toHaveLength(1);
 });
@@ -206,7 +207,7 @@ test("kinds the router cannot read show the app's crash screen, and a hash's wai
 test("a started read is its query's first fetch only: the next reads afresh", async () => {
   serve();
   history.replaceState(null, "", "#/activity");
-  prefetch(location.hash);
+  prefetch(currentRoute());
   const read = vi.fn(async () => ({ ...PROFILE, name: "Fresh" }));
   for (const key of [["meta", "enums"], ["meta", "fields"], ["meta", "edges"]]) await prefetched(key, read);
   expect(await prefetched(["me", "profile"], read)).toEqual(PROFILE);
@@ -219,7 +220,7 @@ test("a started read no query has taken 10 s after load is dropped: a later quer
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   serve();
   history.replaceState(null, "", "#/activity");
-  prefetch(location.hash);
+  prefetch(currentRoute());
   vi.advanceTimersByTime(10_000);
   const read = vi.fn(async () => ({ ...PROFILE, name: "Fresh" }));
   expect(await prefetched(["me", "profile"], read)).toEqual({ ...PROFILE, name: "Fresh" });
@@ -234,7 +235,7 @@ test("a query that took a started read can learn once when it started, for the s
   serve();
   history.replaceState(null, "", "#/activity");
   vi.setSystemTime(1_000);
-  prefetch(location.hash);
+  prefetch(currentRoute());
   vi.setSystemTime(2_000);
   const read = vi.fn(async () => PROFILE);
   await prefetched(["me", "profile"], read);
@@ -279,7 +280,7 @@ test.each([
   const sent = serve();
   history.replaceState(null, "", hash);
   openEarlyStream();
-  prefetch(location.hash);
+  prefetch(currentRoute());
   await waitFor(() => expect(sent.map(({ path }) => path)).toContain(read), { interval: 1 });
   await act(() => vi.advanceTimersByTimeAsync(5));
   openStreams();

@@ -19,7 +19,7 @@ async function stored(request: APIRequestContext, id: string): Promise<{ owner: 
 }
 
 async function openDetail(page: Page, id: string): Promise<void> {
-  await page.goto(`/trax/#/lookup/${id}`);
+  await page.goto(`/trax/lookup/${id}`);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await openProperties(page);
 }
@@ -80,7 +80,7 @@ test("from a detail: a new person owns it by email, a new agent subscribes by ha
 
 test("from a create form: a new agent as owner and a new person without an email as subscriber, in the one create", async ({ page, request }) => {
   const run = suffix();
-  await page.goto("/trax/#/new/Issue");
+  await page.goto("/trax/new/Issue");
   const form = page.getByRole("dialog", { name: "New issue" });
   await form.getByRole("textbox", { name: "Title" }).fill(`G3 create ${run}`);
   const writes = writesOf(page);
@@ -106,7 +106,7 @@ test("from the bulk bar: a new person owns every selected row, by email", async 
   const run = suffix();
   const label = `g3-bulk-${run}`;
   const ids = [await createIssue(request, { title: `G3 bulk ${run} 1`, labels: [label] }), await createIssue(request, { title: `G3 bulk ${run} 2`, labels: [label] })];
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await page.getByRole("button", { name: /^Filter$/ }).click();
   await page.getByRole("option", { name: "Label", exact: true }).click();
   await page.getByRole("combobox").fill(label);

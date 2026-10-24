@@ -93,7 +93,7 @@ test("the rail opens with the inquiry's neighbourhood two hops out, read by focu
 test("the preview is one link, to the graph focused on the inquiry two hops out, named for it", async () => {
   renderDetail({ kind: "Issue", seq: 1 });
   const link = await screen.findByRole("link", { name: "Open in graph: Issue#1, 2 hops" });
-  expect(link.getAttribute("href")).toBe("#/graph?focus=Issue/1&hops=2");
+  expect(link.getAttribute("href")).toBe("/trax/graph?focus=Issue/1&hops=2");
   expect(within(link).queryAllByRole("link")).toEqual([]);
   expect(link.querySelector("svg")!.getAttribute("aria-hidden")).toBe("true");
 });

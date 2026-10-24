@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { currentRoute, onRouteChange } from "./addressBar";
 
 /** The most hashes the trail keeps: the current page and the 8 a message may carry besides it. */
 const KEPT = 9;
@@ -32,25 +33,20 @@ export function visited(): readonly string[] {
  */
 export function startTrail(): () => void {
   const record = () => {
-    const hash = location.hash;
+    const hash = currentRoute();
     if (!validHash(hash) || trail.at(-1) === hash) return;
     trail = [...trail, hash].slice(-KEPT);
   };
   trail = [];
   record();
-  addEventListener("hashchange", record);
+  const stop = onRouteChange(record);
   return () => {
-    removeEventListener("hashchange", record);
+    stop();
     trail = [];
   };
 }
 
-/** The address bar's hash, live. */
+/** The route the address bar is on, live. */
 export function useHash(): string {
-  return useSyncExternalStore(subscribe, () => location.hash);
-}
-
-function subscribe(onChange: () => void): () => void {
-  addEventListener("hashchange", onChange);
-  return () => removeEventListener("hashchange", onChange);
+  return useSyncExternalStore(onRouteChange, currentRoute);
 }

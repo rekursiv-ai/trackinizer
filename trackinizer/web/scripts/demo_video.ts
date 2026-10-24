@@ -85,7 +85,7 @@ async function record(
   // Headless Chromium draws no pointer, so the page draws one where the mouse is.
   await context.addInitScript(drawPointer);
   const page = await context.newPage();
-  await page.goto(`${origin}/trax/#/graph`);
+  await page.goto(`${origin}/trax/graph`);
   await page.locator(".graph-count").filter({ hasText: "5,000 nodes" }).waitFor();
   const start = performance.now();
   const clock = () => (performance.now() - start) / 1000;

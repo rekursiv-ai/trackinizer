@@ -52,7 +52,7 @@ test("Columns drill four levels, Back steps back, and a deep link opens the same
   await page.keyboard.press("ArrowRight");
   const drilled = ["Root issues: Root*", "Under Root: One*", "Under One: Two*", "Under Two: Three*", "Under Three: Four"];
   await expect.poll(() => columns(page, tag)).toEqual(drilled);
-  await expect(page).toHaveURL(new RegExp(`#/list/Issue\\?view=columns&path=${pathOf(chain.slice(0, 4))}$`));
+  await expect(page).toHaveURL(new RegExp(`/trax/list/Issue\\?view=columns&path=${pathOf(chain.slice(0, 4))}$`));
 
   await page.goBack();
   await expect.poll(() => columns(page, tag)).toEqual(drilled.slice(0, 3).concat("Under Two: Three"));
@@ -62,14 +62,14 @@ test("Columns drill four levels, Back steps back, and a deep link opens the same
   await page.goto(`/trax/?deep=1#/list/Issue?view=columns&path=${pathOf(chain.slice(0, 4))}`);
   await expect.poll(() => columns(page, tag)).toEqual(drilled);
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(new RegExp(`#/ref/Issue/${chain[3]!.seq}$`));
+  await expect(page).toHaveURL(new RegExp(`/trax/ref/Issue/${chain[3]!.seq}$`));
 });
 
 test("a child added elsewhere to the Issue selected last shows in its column", async ({ page, request }) => {
   const tag = freshLabel("lv2");
   const chain = await seedChain(request, tag);
   await openView(page, tag, "Columns");
-  await page.goto(`/trax/#/list/Issue?view=columns&path=${pathOf(chain.slice(0, 4))}`);
+  await page.goto(`/trax/list/Issue?view=columns&path=${pathOf(chain.slice(0, 4))}`);
   await expect.poll(async () => (await columns(page, tag)).at(-1)).toBe("Under Three: Four");
 
   await post(request, "/api/inquiries/batch", {

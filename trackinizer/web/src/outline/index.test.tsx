@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { serveViews, showList, up, viewButton } from "../lists/viewTesting";
 import { issue } from "../live/testing";
+import { currentRoute } from "../router/addressBar";
 
 /** The outline's lines as `<indent>#ref title`, `older` after an ancestor outside the page; then the No parent group. */
 async function outlined(): Promise<string[]> {
@@ -65,7 +66,7 @@ test("rows nest under their parents; parents outside the page show older, and a 
   expect(await outlined()).toEqual(["#1 › #2 older", "  #21", "    #22", "  #20"]);
   const older = document.querySelector(".o-older")!;
   expect(older.querySelector(".row-title")!.textContent).toBe("Issue 1 › Issue 2");
-  expect(older.getAttribute("href")).toBe("#/ref/Issue/2");
+  expect(older.getAttribute("href")).toBe("/trax/ref/Issue/2");
 });
 
 test("rows with no parent go in a No parent group at the end, which collapses", async () => {
@@ -92,7 +93,7 @@ test("← and → collapse and expand the focused line, j and k move over older 
   expect(focused()).toBe("#41");
   await user.keyboard("k");
   await user.keyboard("{Enter}");
-  expect(location.hash).toBe("#/ref/Issue/4");
+  expect(currentRoute()).toBe("#/ref/Issue/4");
 });
 
 test("the view is kept with the list's state, so the list opens again as an outline", async () => {

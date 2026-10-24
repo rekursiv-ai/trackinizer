@@ -10,6 +10,7 @@ import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { createQueryClient } from "../app/queryClient";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { DEFAULT_PREFERENCES, receivePreferences } from "../preferences";
+import { currentRoute } from "../router/addressBar";
 import { RouterProvider } from "../router/router";
 import { DetailView } from "../router/views";
 import { meFilter, meNames } from "../state/me";
@@ -373,7 +374,7 @@ test("j and k move the focus, and Enter opens the focused row", async () => {
   expect(focused()).toBe("Row b");
   const seq = screen.getByText("Row b").closest("a")!.getAttribute("href");
   await key("{Enter}");
-  expect(location.hash).toBe(seq);
+  expect(location.pathname).toBe(seq);
 });
 
 test("Space peeks at the focused row, the peek follows j, and Escape closes it", async () => {
@@ -390,7 +391,7 @@ test("Space peeks at the focused row, the peek follows j, and Escape closes it",
   expect(within(peek()!).getByText(/Detail of/).textContent).not.toBe(first);
   await key("{Escape}");
   expect(peek()).toBeNull();
-  expect(location.hash).toBe("#/list/Issue");
+  expect(currentRoute()).toBe("#/list/Issue");
 });
 
 test("] collapses Peek to a strip that follows j; Space expands a collapsed Peek, and peeks expanded after a close", async () => {
@@ -564,7 +565,7 @@ test("after clicks on a tab, the view switch and a group's heading, Enter opens 
   await user.keyboard("j");
   const href = screen.getByText("Row a").closest("a")!.getAttribute("href");
   await user.keyboard("{Enter}");
-  expect(location.hash).toBe(href);
+  expect(location.pathname).toBe(href);
 });
 
 test("a group's count says when Load more may find more of it (BF1, README TODO 3)", async () => {

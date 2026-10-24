@@ -5,7 +5,7 @@ import { useState } from "react";
 import { listCompute } from "../api/compute";
 import { confirmTerminalMachine, type TerminalMachines } from "../api/terminals";
 import { APP } from "../appName";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { Command, setupCommand } from "../settings/ChatPartner";
 
 /** How each machine status reads; any other shows as the server says it. */
@@ -77,7 +77,7 @@ function ConnectSteps({ none, onNavigate }: { readonly none: boolean; readonly o
     <summary>Connect a machine</summary>
     <ol>
       <li>Make an API token with the writer role in{" "}
-        <a href={formatRoute({ name: "settings" })} onClick={onNavigate}>Settings → API tokens</a>.</li>
+        <a href={routeHref({ name: "settings" })} onClick={onNavigate}>Settings → API tokens</a>.</li>
       <li>On the computer, install trax and point it at this server, with your token for <code>&lt;TOKEN&gt;</code>:
         <Command command={setupCommand()} /></li>
       <li>On the computer, connect it to this server, and keep it connected in tmux or as a user service.</li>

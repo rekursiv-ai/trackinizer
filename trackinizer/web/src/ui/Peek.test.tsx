@@ -45,7 +45,7 @@ test("Peek shows the row's detail under a bar with its ref, Open and a close but
   );
   expect((await screen.findByRole("heading")).textContent).toBe("Detail of Issue#7");
   expect(screen.getByRole("complementary", { name: "Peek" }).textContent).toContain("Issue#7");
-  expect(screen.getByRole("link", { name: "Open" }).getAttribute("href")).toBe("#/ref/Issue/7");
+  expect(screen.getByRole("link", { name: "Open" }).getAttribute("href")).toBe("/trax/ref/Issue/7");
   await user.click(screen.getByRole("button", { name: "Close peek" }));
   expect(onClose).toHaveBeenCalledOnce();
 });

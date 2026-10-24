@@ -414,7 +414,7 @@ export async function timeToShow(
 /** Open the Issue list, filtered to `label` through the Filter menu, once the stream is connected. */
 export async function openList(page: Page, url: string, label: string): Promise<void> {
   const subscribed = streamOpened(page);
-  await page.goto(`${url}/trax/#/list/Issue`);
+  await page.goto(`${url}/trax/list/Issue`);
   await subscribed;
   await filterTo(page, label);
 }
@@ -432,7 +432,7 @@ export async function filterTo(page: Page, label: string): Promise<void> {
 /** Open the detail of inquiry `id`, once the stream is connected and the detail has loaded. */
 export async function openDetail(page: Page, url: string, id: string): Promise<void> {
   const subscribed = streamOpened(page);
-  await page.goto(`${url}/trax/#/lookup/${id}`);
+  await page.goto(`${url}/trax/lookup/${id}`);
   await subscribed;
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
 }

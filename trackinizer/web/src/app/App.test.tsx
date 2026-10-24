@@ -7,10 +7,11 @@ import { logRenderError } from "../debug/install";
 import { recentEvents } from "../debug/log";
 import { stubClipboard } from "../debug/testing";
 import { FakeEventSource } from "../live/testing";
+import { currentRoute } from "../router/addressBar";
 import { ActivityView, GraphView, SearchView } from "../router/views";
 import { App } from "./App";
 import * as boot from "./boot";
-import { LOGIN_URL } from "./session";
+import { loginUrl } from "./session";
 
 // The graph draws on a canvas, which jsdom lacks; its own tests replace its renderer.
 vi.mock("../graph", () => ({ GraphView: () => <h1>Graph</h1> }));
@@ -56,7 +57,7 @@ function goLink(label: string) {
 beforeAll(() => Promise.all([ActivityView.preload(), GraphView.preload(), SearchView.preload()]));
 
 beforeEach(() => {
-  history.replaceState(null, "", location.pathname);
+  history.replaceState(null, "", "/");
   sessionStorage.clear();
   vi.stubGlobal("EventSource", FakeEventSource);
 });
@@ -135,7 +136,7 @@ test("an empty hash opens the graph, the home view", async () => {
   serve();
   render(<App assign={vi.fn()} />);
   expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Graph");
-  expect(location.hash).toBe("#/graph");
+  expect(currentRoute()).toBe("#/graph");
   expect(goLink("Graph").getAttribute("aria-current")).toBe("page");
 });
 
@@ -144,18 +145,17 @@ test("a deep link opens its view", async () => {
   history.replaceState(null, "", "#/list/codechange");
   render(<App assign={vi.fn()} />);
   expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Code changes");
-  expect(location.hash).toBe("#/list/CodeChange");
+  expect(currentRoute()).toBe("#/list/CodeChange");
   expect(goLink("Code changes").getAttribute("aria-current")).toBe("page");
 });
 
-test("a 401 at boot saves the hash and goes to the login page once", async () => {
+test("a 401 at boot goes to the login page once, which returns to the page", async () => {
   serve({ "/api/me/profile": () => Response.json({ detail: "not signed in" }, { status: 401 }) });
   history.replaceState(null, "", "#/ref/Issue/7");
   const assign = vi.fn();
   render(<App assign={assign} />);
-  await waitFor(() => expect(assign).toHaveBeenCalledWith(LOGIN_URL));
+  await waitFor(() => expect(assign).toHaveBeenCalledWith(loginUrl("/trax/ref/Issue/7")));
   expect(assign).toHaveBeenCalledTimes(1);
-  expect(sessionStorage.getItem("trackinizer.v2.return_hash")).toBe("#/ref/Issue/7");
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
@@ -270,12 +270,12 @@ test("g then a goes to Activity; an old UI link lands on its v2 route", async ()
   history.replaceState(null, "", "#/recent");
   render(<App assign={vi.fn()} />);
   expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Activity");
-  expect(location.hash).toBe("#/activity");
+  expect(currentRoute()).toBe("#/activity");
 
   await user.click(goLink("Issues"));
   await waitFor(() => expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Issues"));
   await user.keyboard("ga");
-  await waitFor(() => expect(location.hash).toBe("#/activity"));
+  await waitFor(() => expect(currentRoute()).toBe("#/activity"));
   expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Activity");
 });
 
@@ -286,7 +286,7 @@ test("g then g goes to the graph, and its entry in Go marks it current", async (
   render(<App assign={vi.fn()} />);
   expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Issues");
   await user.keyboard("gg");
-  await waitFor(() => expect(location.hash).toBe("#/graph"));
+  await waitFor(() => expect(currentRoute()).toBe("#/graph"));
   expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Graph");
   expect(goLink("Graph").getAttribute("aria-current")).toBe("page");
 });
@@ -296,8 +296,8 @@ test("a link that names nothing says so and offers the graph, the home view", as
   history.replaceState(null, "", "#/nowhere");
   render(<App assign={vi.fn()} />);
   expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Not found");
-  expect(location.hash).toBe("#/nowhere");
-  expect(screen.getByRole("link", { name: "Go to the graph" }).getAttribute("href")).toBe("#/graph");
+  expect(currentRoute()).toBe("#/nowhere");
+  expect(screen.getByRole("link", { name: "Go to the graph" }).getAttribute("href")).toBe("/trax/graph");
 });
 
 test("the logo leads home, to the graph", async () => {
@@ -305,7 +305,7 @@ test("the logo leads home, to the graph", async () => {
   history.replaceState(null, "", "#/list/Issue");
   render(<App assign={vi.fn()} />);
   await screen.findByRole("button", { name: /^Account:/ });
-  expect(topBar().getByRole("link", { name: "Trackinizer, the graph" }).getAttribute("href")).toBe("#/graph");
+  expect(topBar().getByRole("link", { name: "Trackinizer, the graph" }).getAttribute("href")).toBe("/trax/graph");
 });
 
 test("a link straight to the create form opens it over the graph, the home view", async () => {
@@ -314,5 +314,5 @@ test("a link straight to the create form opens it over the graph, the home view"
   render(<App assign={vi.fn()} />);
   // Hidden from the accessibility tree once the form's dialog has opened over it.
   expect((await screen.findByRole("heading", { level: 1, hidden: true })).textContent).toBe("Graph");
-  expect(location.hash).toBe("#/new/Issue");
+  expect(currentRoute()).toBe("#/new/Issue");
 });

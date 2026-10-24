@@ -16,6 +16,7 @@ import { META, uuid } from "../detail/testing";
 import { LiveContext } from "../live";
 import type { LiveHub } from "../live/hub";
 import type { LiveQuery } from "../live/serial";
+import { currentRoute } from "../router/addressBar";
 import { startTrail } from "../router/trail";
 import { preferences, receivePreferences, sendWaiting } from "../preferences";
 import { Chat } from "./Chat";
@@ -347,7 +348,7 @@ test("the info pop-over names the session a canvas was made for, with its state 
   fireEvent.click(screen.getByRole("button", { name: "Info" }));
   const dialog = screen.getByRole("dialog", { name: "Chat info" });
   await within(dialog).findByText("claude as Agent");
-  expect(within(dialog).getByRole("link", { name: "claude as Agent" }).getAttribute("href")).toBe("#/lookup/s-made");
+  expect(within(dialog).getByRole("link", { name: "claude as Agent" }).getAttribute("href")).toBe("/trax/lookup/s-made");
   expect(dialog.textContent).toContain("· live");
 });
 
@@ -1677,10 +1678,11 @@ test("a record link in an answer is a plain link that only sets the address, and
   hold("c1", answered(0, "See Issue#12 and 61d3a095-c7f1-4d27-a4c4-a5b1c218a31e."));
   shell();
   const issue = await screen.findByRole("link", { name: /Issue#12/ });
-  expect(issue.getAttribute("href")).toBe("#/ref/Issue/12");
+  expect(issue.getAttribute("href")).toBe("/trax/ref/Issue/12");
   const lookup = screen.getByRole("link", { name: /61d3a095/ });
-  expect(lookup.getAttribute("href")).toBe("#/lookup/61d3a095-c7f1-4d27-a4c4-a5b1c218a31e");
-  expect(fireEvent.click(lookup)).toBe(true);
+  expect(lookup.getAttribute("href")).toBe("/trax/lookup/61d3a095-c7f1-4d27-a4c4-a5b1c218a31e");
+  fireEvent.click(lookup);
+  expect(currentRoute()).toBe("#/lookup/61d3a095-c7f1-4d27-a4c4-a5b1c218a31e");
   expect(sendChatLine).not.toHaveBeenCalled();
 });
 
@@ -1727,7 +1729,8 @@ test("the trail a line carries holds at most 8 pages and never the current one",
 });
 
 test("a page the server would refuse is sent as null, with the pages before it as the trail", async () => {
-  expect(await sentFrom(["#/graph", "#/settings", "#top"])).toEqual({ page: null, trail: ["#/graph", "#/settings"] });
+  // Past the 512 characters the server takes as a page.
+  expect(await sentFrom(["#/graph", "#/settings", `#/search/${"x".repeat(512)}`])).toEqual({ page: null, trail: ["#/graph", "#/settings"] });
 });
 
 test("Chat names the record on screen and follows the page", async () => {

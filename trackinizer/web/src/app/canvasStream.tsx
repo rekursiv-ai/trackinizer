@@ -6,6 +6,7 @@ import { CaptureContext, CaptureRegistry } from "../canvasCapture/stageRegistry"
 import { recordFrame, recordNavigation } from "../debug/timings";
 import { LiveContext } from "../live";
 import { receivePreferences } from "../preferences";
+import { currentRoute, goTo } from "../router/addressBar";
 import { parseHash } from "../router/route";
 import { setChatHidden } from "../visuals/chatColumnState";
 import { ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
@@ -49,7 +50,7 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
       navigate: (route, t) => {
         if (!route.startsWith("#/") || parseHash(route, kindsRef.current).name === "notFound") return;
         recordNavigation(route, t);
-        if (window.location.hash !== route) window.location.hash = route;
+        if (currentRoute() !== route) goTo(route);
       },
       highlight: (ids) => highlights.set(ids),
       chat: (hidden) => setChatHidden(hidden),

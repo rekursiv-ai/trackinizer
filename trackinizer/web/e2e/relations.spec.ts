@@ -1,5 +1,5 @@
 import type { APIRequestContext, Page, Request } from "@playwright/test";
-import { expect, failedResource, test, streamOpened } from "./fixtures";
+import { expect, failedResource, test, streamOpened, route } from "./fixtures";
 
 // Editing relations against the e2e server: add through the picker, annotate,
 // remove, and supersede with a new inquiry. Each test makes its own rows, with
@@ -19,7 +19,7 @@ async function openDetail(page: Page, id: string): Promise<Request[]> {
     if (request.method() !== "GET" && request.url().includes("/api/")) writes.push(request);
   });
   const subscribed = streamOpened(page);
-  await page.goto(`/trax/#/lookup/${id}`);
+  await page.goto(`/trax/lookup/${id}`);
   await subscribed;
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   return writes;
@@ -107,7 +107,7 @@ test("supersede with a new inquiry is one batch, opens the new inquiry, and leav
   await dialog.getByRole("button", { name: /Create and supersede/ }).click();
 
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(`D3 new ${run}`);
-  const created = new URL(page.url()).hash.replace("#/lookup/", "");
+  const created = route(page).replace("#/lookup/", "");
   const parents = page.getByRole("region", { name: "Parents", exact: true });
   await expect(parents.locator(".rail-link")).toHaveText(`D3 old ${run} Issue#${old.seq}`);
   await expect(parents.getByRole("link", { name: `supersedes Issue#${old.seq}`, exact: true })).toBeVisible();

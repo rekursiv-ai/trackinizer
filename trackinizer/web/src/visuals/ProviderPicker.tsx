@@ -7,6 +7,7 @@ import { PROVIDERS, type Provider, type ProviderStatus, partnerLabel, profileCha
 import { confirmTerminalMachine, listTerminalMachines, openTerminal, type RunLaunch, type TerminalMachine } from "../api/terminals";
 import { chooseProvider, getCanvas, type CanvasState } from "../api/canvases";
 import { useProfile } from "../app/boot";
+import { routeHref } from "../router/addressBar";
 import { Command, setupCommand } from "../settings/ChatPartner";
 import { acceptCanvas } from "../canvases/cache";
 import "./ProviderPicker.css";
@@ -248,12 +249,12 @@ function CreditLine({ balance }: { readonly balance: BalanceBody }) {
   const low = lowCredit(balance);
   return <>
     <p className="provider-credit muted">{left} · {spent}</p>
-    {low !== null && <p className="provider-low" role="status">{low} Top up in <a href="#/settings">Settings</a>.</p>}
+    {low !== null && <p className="provider-low" role="status">{low} Top up in <a href={routeHref({ name: "settings" })}>Settings</a>.</p>}
   </>;
 }
 
 /** Why a provider is out, with the link to Settings where the reason is about the caller's credit. */
 export function reasonText(status: ProviderStatus) {
-  if (status.credit) return <>{status.reason} Top up in <a href="#/settings">Settings</a>.</>;
+  if (status.credit) return <>{status.reason} Top up in <a href={routeHref({ name: "settings" })}>Settings</a>.</>;
   return status.reason;
 }

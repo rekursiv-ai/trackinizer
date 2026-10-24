@@ -2,7 +2,7 @@ import { useDeferredValue, useId } from "react";
 import type { Change, Detail } from "../api/detail";
 import { useMeta } from "../app/boot";
 import { Markdown } from "../markdown/Markdown";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { Avatar, RefChip } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
 import { type ActivityItem, activityItems, describeChange, type Mention, type Phrase } from "./timeline";
@@ -103,7 +103,7 @@ function MentionLink({ mention }: { mention: Mention }) {
   const { peer } = mention;
   if (peer) return <RefChip kind={peer.kind} seq={peer.seq} title={peer.title} />;
   return (
-    <a className="ref" href={formatRoute({ name: "lookup", id: mention.id })} title={mention.id}>
+    <a className="ref" href={routeHref({ name: "lookup", id: mention.id })} title={mention.id}>
       <Icon name="link" size={12} />
       {`${mention.kind} ${mention.id.slice(0, 8)}`}
     </a>

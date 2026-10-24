@@ -1,17 +1,21 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useRef } from "react";
 import { APP_BASE } from "../base";
 import { log } from "../debug/log";
+import { currentRoute, routeUrl } from "../router/addressBar";
 
-/** The login page, which sends the visitor back to the app after sign-in. */
-export const LOGIN_URL = `/auth/login_page?next=${encodeURIComponent(APP_BASE)}`;
+/** The login page, which sends the visitor back to `next`, a path of this origin, after sign-in. */
+export function loginUrl(next: string): string {
+  return `/auth/login_page?next=${encodeURIComponent(next)}`;
+}
+
+/** The login page, which sends the visitor back to the app's home after sign-in. */
+export const LOGIN_URL = loginUrl(APP_BASE);
 
 /**
  * The signed-in session's way out: to the login page, once, keeping work.
  *
- * `next` returns to `/trax/` only, as in the old UI, so the hash the user was on
- * waits in this tab's `sessionStorage`, and the next boot restores it
- * (`restoreReturnHash`). Open drafts are saved first by the callbacks their
- * editors register.
+ * `next` is the page the user was on, so sign-in returns there. Open drafts are
+ * saved first by the callbacks their editors register.
  */
 export class Session {
   readonly #draftSavers = new Set<() => void>();
@@ -36,7 +40,7 @@ export class Session {
     };
   }
 
-  /** Save drafts and the current hash, then go to the login page. Later calls do nothing. */
+  /** Save drafts, then go to the login page, which returns to this page. Later calls do nothing. */
   leaveForLogin(): void {
     if (this.#leaving) return;
     this.#leaving = true;
@@ -49,28 +53,8 @@ export class Session {
         console.error("Could not save a draft before signing in again.", error);
       }
     }
-    try {
-      if (location.hash) sessionStorage.setItem(RETURN_HASH_KEY, location.hash);
-    } catch {
-      // Storage off or full: sign-in still works; the user lands on the default view.
-    }
-    this.#assign(LOGIN_URL);
+    this.#assign(loginUrl(routeUrl(currentRoute())));
   }
-}
-
-/**
- * Put back the hash saved before a sign-in, unless the page opened on a hash of
- * its own. Call once, before the router reads the address bar.
- */
-export function restoreReturnHash(): void {
-  let saved: string | null;
-  try {
-    saved = sessionStorage.getItem(RETURN_HASH_KEY);
-    sessionStorage.removeItem(RETURN_HASH_KEY);
-  } catch {
-    return;
-  }
-  if (saved && !location.hash) history.replaceState(history.state, "", saved);
 }
 
 export const SessionContext = createContext<Session | null>(null);
@@ -90,5 +74,3 @@ export function useDraftSaver(save: () => void): void {
   });
   useEffect(() => session.addDraftSaver(() => latest.current()), [session]);
 }
-
-const RETURN_HASH_KEY = "trackinizer.v2.return_hash";

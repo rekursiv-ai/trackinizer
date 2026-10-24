@@ -40,7 +40,7 @@ async function openDetail(page: Page, id: string): Promise<Request[]> {
     if (request.method() !== "GET" && request.url().includes("/api/")) writes.push(request);
   });
   const subscribed = streamOpened(page);
-  await page.goto(`/trax/#/lookup/${id}`);
+  await page.goto(`/trax/lookup/${id}`);
   await subscribed;
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await openProperties(page);
@@ -63,7 +63,7 @@ test("a status change after the Python client's gets the conflict dialog, then l
   // The stream this turns off, and the compare-and-set 409 the other change causes.
   allowStreamErrors(allowErrors);
   allowErrors(failedResource(`/api/inquiries/${id}/status`, 409));
-  await page.goto(`/trax/#/lookup/${id}`);
+  await page.goto(`/trax/lookup/${id}`);
   await openProperties(page);
   await expect(propButton(page, "status")).toHaveText("Active");
   await pythonEdit(baseURL!, id, "status", "abandoned");
@@ -233,7 +233,7 @@ test("an Issue's last type goes with a DELETE checked at save, so a type the Pyt
     if (sent.method() !== "GET" && sent.url().includes("/api/")) writes.push(sent);
   });
   const sent = () => writes.map((write) => [`${write.method()} ${new URL(write.url()).pathname.split("/").at(-1)}`, write.postDataJSON()]);
-  await page.goto(`/trax/#/lookup/${id}`);
+  await page.goto(`/trax/lookup/${id}`);
   await openProperties(page);
   await expect(propButton(page, "issue_kind")).toHaveText("bug");
   await pythonEdit(baseURL!, id, "issue_kind", ["bug", "feature"]);

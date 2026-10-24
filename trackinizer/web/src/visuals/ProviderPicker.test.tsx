@@ -205,7 +205,7 @@ test("a provider out of reach is grayed, cannot be chosen or starred, and says w
 test("the assistant the server says may not run is grayed, and its reason links to Settings", async () => {
   picker(canvas({ provider: "claude", partner: LIVE_CLAUDE }), { balance: SPENT });
   await waitFor(() => expect((screen.getByRole("radio", { name: "scout" }) as HTMLInputElement).disabled).toBe(true));
-  expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("#/settings");
+  expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/trax/settings");
   expect(document.querySelector(".provider-row:nth-child(1) .provider-reason")?.textContent).toBe("You are out of credit. Top up in Settings.");
 });
 
@@ -235,7 +235,7 @@ test("under $5 left, a user whose credit decides is told before the hard stop", 
   picker(canvas({ provider: "claude", partner: LIVE_CLAUDE }), { balance: { ...BALANCE, usd: 4.2, spent_usd: 495.8 } });
   const notice = await screen.findByRole("status");
   expect(notice.textContent).toBe("Low credit: $4.20 left. Top up in Settings.");
-  expect(notice.querySelector("a")?.getAttribute("href")).toBe("#/settings");
+  expect(notice.querySelector("a")?.getAttribute("href")).toBe("/trax/settings");
   expect((screen.getByRole("radio", { name: "scout" }) as HTMLInputElement).disabled).toBe(false);
 });
 

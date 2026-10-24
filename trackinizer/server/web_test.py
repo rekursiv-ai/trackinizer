@@ -1938,7 +1938,11 @@ class TestAppDir:
         app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
         _install_identity(app, None)
         client = TestClient(app, follow_redirects=False)
-        for path in ("/trax/", "/trax/index.html?tab=x"):
+        for path in (
+            "/trax/",
+            "/trax/index.html?tab=x",
+            "/trax/graph?focus=Issue/7&hops=2",
+        ):
             r = client.get(path)
             assert r.status_code == 302, path
             location = urlparse(r.headers["location"])
@@ -2030,6 +2034,28 @@ class TestAppDir:
             r = client.get(path)
             assert r.status_code == 200, path
             assert r.text == "INDEX-a"
+
+    def test_each_route_serves_the_entry_page_and_a_missing_asset_stays_404(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The app reads its route from the address (``/trax/ref/Issue/7``), which
+        # names no file of the build. A hashed asset an old page asks for after a
+        # deploy is not a route: the entry page in its place would fail as a script.
+        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
+        _install_identity(app, _viewer_identity())
+        client = TestClient(app)
+        for path in (
+            "/trax/ref/Issue/7",
+            "/trax/graph?focus=Issue/7&hops=2",
+            "/trax/search/a%2Fb.c",
+        ):
+            r = client.get(path)
+            assert (r.status_code, r.text) == (200, "INDEX-a"), path
+            assert r.headers.get("cache-control") == "private, no-cache", path
+        r = client.get("/trax/assets/missing.js")
+        assert r.status_code == 404
+        assert r.headers.get("cache-control") == "private, no-cache"
 
     def test_missing_directory_answers_404_until_a_build_lands(
         self,
@@ -2208,14 +2234,13 @@ class TestAppDir:
 
 # Each old page's path and where the app shows the same thing. Stored links point at
 # ``/`` with a hash naming the view, which the browser keeps across a redirect whose
-# ``Location`` has none, and the app's router reads v1's hashes; a ``Location`` that
-# has a hash replaces the request's.
+# ``Location`` has none, and the app's router moves v1's hashes onto their paths.
 _OLD_PATHS: Final = (
     ("/", "/trax/"),
-    ("/me", "/trax/#/settings"),
-    ("/admin", "/trax/#/admin"),
-    ("/graph", "/trax/#/graph"),
-    ("/console", "/trax/#/console"),
+    ("/me", "/trax/settings"),
+    ("/admin", "/trax/admin"),
+    ("/graph", "/trax/graph"),
+    ("/console", "/trax/console"),
 )
 
 
@@ -2274,36 +2299,37 @@ class TestOldPathsWithTheApp:
         tmp_path: Path,
     ) -> None:
         # The server never sees a link's hash: ``#/ref/Issue/7`` stays in the
-        # browser for the app's router. So each link walks to the app signed
-        # in, and to the login page signed out, whose ``next`` is the app.
+        # browser for the app's router. So each link walks to the app's page for
+        # it signed in, and to the login page signed out, whose ``next`` is that
+        # page.
         app = _build_pages_and_app(tmp_path)
         links = (
-            "/#/ref/Issue/7",
-            f"/#/inquiry/{new_uuid()}",
-            "/#/recent",
-            "/#/search?q=x",
-            "/me",
-            "/admin",
-            "/graph",
-            "/console",
-            "/app/#/ref/Issue/7",
-            "/app",
+            ("/#/ref/Issue/7", "/trax/"),
+            (f"/#/inquiry/{new_uuid()}", "/trax/"),
+            ("/#/recent", "/trax/"),
+            ("/#/search?q=x", "/trax/"),
+            ("/me", "/trax/settings"),
+            ("/admin", "/trax/admin"),
+            ("/graph", "/trax/graph"),
+            ("/console", "/trax/console"),
+            ("/app/#/ref/Issue/7", "/trax/"),
+            ("/app", "/trax/"),
+            ("/app/ref/Issue/7", "/trax/ref/Issue/7"),
+            ("/trax/ref/Issue/7", "/trax/ref/Issue/7"),
         )
-        walks: tuple[
-            tuple[AuthIdentity | None, tuple[str, dict[str, list[str]]], str],
-            ...,
-        ] = (
-            (_viewer_identity(), ("/trax/", {}), "INDEX-a"),
-            (None, ("/auth/login_page", {"next": ["/trax/"]}), "LOGIN"),
-        )
-        for identity, landing, page in walks:
+        for identity in (_viewer_identity(), None):
             _install_identity(app, identity)
             client = TestClient(app)
-            for link in links:
+            for link, page in links:
                 r = client.get(link)
                 assert r.status_code == 200, link
-                assert (r.url.path, parse_qs(r.url.query.decode())) == landing, link
-                assert r.text == page, link
+                landing = (r.url.path, parse_qs(r.url.query.decode()), r.text)
+                if identity is None:
+                    assert landing == ("/auth/login_page", {"next": [page]}, "LOGIN"), (
+                        link
+                    )
+                else:
+                    assert landing == (page, {}, "INDEX-a"), link
 
 
 # ---- Read routes on a real engine ----------------------------------------

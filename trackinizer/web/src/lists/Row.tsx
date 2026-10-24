@@ -4,7 +4,7 @@ import { useIsHighlighted } from "../app/highlights";
 import { Selectable } from "../bulk/Selectable";
 import { usd } from "../detail/fields";
 import { dateTime } from "../detail/time";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { Avatar, LabelChip, PriorityGlyph, StateGlyphs } from "../ui/glyphs";
 import { KindIcon } from "../ui/kinds";
 
@@ -46,7 +46,7 @@ export const Row = memo(function Row({
   const link = (
     <a
       className={["row", focused ? "is-focused" : "", highlighted ? "is-highlighted" : ""].filter(Boolean).join(" ")}
-      href={formatRoute({ name: "ref", kind: row.kind, seq: row.seq })}
+      href={routeHref({ name: "ref", kind: row.kind, seq: row.seq })}
       data-row={row.id}
       aria-current={focused ? "true" : undefined}
       onClick={(event) => {

@@ -45,7 +45,7 @@ async function createIssue(request: APIRequestContext, title: string, label: str
 /** Open the Issue list filtered to `label`, once the live stream is connected. */
 async function openList(page: Page, label: string) {
   const subscribed = streamOpened(page);
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await subscribed;
   await page.getByRole("button", { name: /^Filter$/ }).click();
   await page.getByRole("option", { name: "Label", exact: true }).click();

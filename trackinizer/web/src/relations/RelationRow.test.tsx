@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { PROFILE, renderDetail, row } from "../detail/testing";
 import { stubLayout } from "../editors/testing";
+import { currentRoute } from "../router/addressBar";
 import { cacheWith, serveGraph, type StoredEdge } from "./testing";
 
 const SELF = row("Issue", 1);
@@ -214,7 +215,7 @@ test("Remove asks first and names the provenance edge that stays; Escape closes 
   expect(screen.queryByRole("form")).toBeNull();
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Remove narrows Issue#3" }));
   // Escape closed the step only; the detail is still open.
-  expect(location.hash).toBe("#/ref/Issue/1");
+  expect(currentRoute()).toBe("#/ref/Issue/1");
 });
 
 test("Remove sends the reason given, and the provenance edge stays", async () => {

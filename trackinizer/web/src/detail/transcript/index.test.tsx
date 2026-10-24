@@ -589,7 +589,7 @@ test("a canvas message shows what was said, its injected context folded and link
   const folded = line.querySelector("details")!;
   expect(folded.open).toBe(false);
   expect(folded.querySelector("summary")!.textContent).toBe("Canvas context · Issue#1 Web app preview: seeded root");
-  expect(folded.querySelector("summary a")!.getAttribute("href")).toBe("#/lookup/6d0f9b7e-1c2d-4f3a-8b9c-2e1d0c3b4a59");
+  expect(folded.querySelector("summary a")!.getAttribute("href")).toBe("/trax/lookup/6d0f9b7e-1c2d-4f3a-8b9c-2e1d0c3b4a59");
   expect(folded.querySelector("pre")!.textContent).toBe(`${context}\n${commands}`);
 });
 

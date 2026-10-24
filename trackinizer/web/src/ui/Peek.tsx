@@ -1,6 +1,6 @@
 import { Suspense, useId, useState } from "react";
 import { CommandRegistry, CommandRegistryContext } from "../commands/registry";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { DetailView } from "../router/views";
 import { Icon } from "./icons";
 import { type Panel, type PanelSpec, PanelStrip, PanelToggle } from "./panel";
@@ -49,7 +49,7 @@ export function Peek({ row, panel, onClose }: { row: { readonly kind: string; re
               {row.kind}#{row.seq}
             </span>
             <span className="spacer" />
-            <a className="btn ghost" href={formatRoute(ref)}>
+            <a className="btn ghost" href={routeHref(ref)}>
               Open
             </a>
             <PanelToggle panel={panel} controls={id} />

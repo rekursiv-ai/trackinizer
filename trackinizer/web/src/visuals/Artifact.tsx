@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { getArtifactContentRevision } from "../api/artifacts";
-import { formatRoute, UUID } from "../router/route";
+import { routeHref } from "../router/addressBar";
+import { UUID } from "../router/route";
 import { useVisualMark } from "./marks";
 import type { RendererProps } from "./registry";
 import "./Artifact.css";
@@ -109,11 +110,11 @@ export function ArtifactContent({ artifact, framed = true }: { readonly artifact
       <p className="artifact-summary">{artifact.summary}</p>
       <p className="artifact-byline">By {artifact.author} · {artifact.created_at.slice(0, 10)}</p>
       <p className="artifact-source">
-        <a href={formatRoute({ name: "lookup", id: artifact.artifact_id })}>Link to this Artifact</a>
+        <a href={routeHref({ name: "lookup", id: artifact.artifact_id })}>Link to this Artifact</a>
       </p>
       <p className="artifact-source">
-        Source: <a href={formatRoute({ name: "lookup", id: artifact.issue_id })}>Issue</a>
-        {" · "}Artifact <a href={formatRoute({ name: "lookup", id: artifact.artifact_id })}>{artifact.artifact_id}</a>
+        Source: <a href={routeHref({ name: "lookup", id: artifact.issue_id })}>Issue</a>
+        {" · "}Artifact <a href={routeHref({ name: "lookup", id: artifact.artifact_id })}>{artifact.artifact_id}</a>
       </p>
     </header>
     {artifact.citations.length > 0 && <section className="artifact-source-evidence" aria-label="Artifact sources">
@@ -168,11 +169,11 @@ function Citation({ citation }: { readonly citation: ArtifactCitation }) {
         : `${edge ?? "evidence"} · neutral (0)`;
   return <li className="artifact-citation">
     <span className={evidenceClass}>{evidenceLabel}</span>{" · "}
-    <a href={formatRoute({ name: "lookup", id: citation.record_id })}>
+    <a href={routeHref({ name: "lookup", id: citation.record_id })}>
       {citation.kind}#{citation.seq} {citation.title}
     </a>
     {citation.claim_id && citation.claim_kind && citation.claim_seq != null && citation.claim_title
-      && <> → <a href={formatRoute({ name: "lookup", id: citation.claim_id })}>
+      && <> → <a href={routeHref({ name: "lookup", id: citation.claim_id })}>
         {citation.claim_kind}#{citation.claim_seq} {citation.claim_title}
       </a></>}
     {citation.note && <span className="artifact-citation-note"> · {citation.note}</span>}

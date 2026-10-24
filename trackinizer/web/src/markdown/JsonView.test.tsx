@@ -51,7 +51,7 @@ test("a description that is one line of JSON shows as a JSON view, one entry a l
     "}",
   ]);
   expect(within(view).getByRole("link", { name: "01434be3" }).getAttribute("href")).toBe(
-    "#/lookup/01434be3-ebf8-4ed6-9c1b-bf9c0735c9c9",
+    "/trax/lookup/01434be3-ebf8-4ed6-9c1b-bf9c0735c9c9",
   );
 });
 
@@ -137,7 +137,7 @@ test("Copy copies the JSON as it was written", async () => {
 test("a ref in a JSON string links as it does in text", () => {
   renderMd('{"note": "Rerun after Issue#4 lands", "ref": "Experiment#12"}');
   const view = screen.getByRole("group", { name: "JSON" });
-  expect(within(view).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual(["#/ref/Issue/4", "#/ref/Experiment/12"]);
+  expect(within(view).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual(["/trax/ref/Issue/4", "/trax/ref/Experiment/12"]);
   expect(lines(view)[1]).toBe('"note": "Rerun after Issue#4 lands",');
 });
 

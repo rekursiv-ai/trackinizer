@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { clearChat as requestClearChat, createCanvas, hideCanvas as requestHideCanvas, listCanvases, renameCanvas, type CanvasSummary } from "../api/canvasManagement";
 import { getCanvas, type CanvasState } from "../api/canvases";
+import { currentRoute, goTo } from "../router/addressBar";
 import { neighbourOf } from "../visuals/canvasTabs";
 import { acceptCanvas, newerCanvas } from "./cache";
 import { beginCanvasNavigation, currentCanvas, setCanvas } from "./store";
@@ -19,7 +20,7 @@ export async function openCanvas(queryClient: QueryClient, id: string): Promise<
     return;
   }
   const previous = currentCanvas();
-  const page = window.location.hash;
+  const page = currentRoute();
   const queryKey = ["canvas", id];
   const cached = queryClient.getQueryData<CanvasState>(queryKey);
   const refresh = queryClient.fetchQuery({
@@ -36,7 +37,7 @@ export async function openCanvas(queryClient: QueryClient, id: string): Promise<
   } catch (error) {
     if (!cached && current()) {
       setCanvas(previous.id, page);
-      window.location.hash = page;
+      goTo(page);
     }
     throw error;
   }

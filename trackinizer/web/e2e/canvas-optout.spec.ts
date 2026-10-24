@@ -24,7 +24,7 @@ test("a user who opted out of the canvas has /api/web/subscribe, no canvas and n
     page.on("request", (sent) => {
       if (new URL(sent.url()).pathname.startsWith("/api/canvases")) canvases.push(sent.url());
     });
-    await page.goto("/trax/#/list/Issue");
+    await page.goto("/trax/list/Issue");
     await subscribed;
     await expect(page.getByRole("heading", { level: 1, name: "Issues" })).toBeVisible();
     await expect(page.locator(".visual-canvas")).toHaveCount(0);
@@ -39,10 +39,10 @@ test("turning the canvas back on in Settings moves the tab to the canvas's one s
   const optedOut = await request.put("/api/me/visual-canvas", { data: { enabled: false } });
   expect(optedOut.ok(), await optedOut.text()).toBe(true);
   try {
-    await page.goto("/trax/#/settings");
+    await page.goto("/trax/settings");
     await page.getByRole("checkbox", { name: "Enable agent-guided workbench" }).click();
     await expect(page.getByRole("checkbox", { name: "Enable agent-guided workbench" })).toBeChecked();
-    await page.goto("/trax/#/list/Issue");
+    await page.goto("/trax/list/Issue");
     await expect(page.locator(".visual-canvas")).toBeVisible();
   } finally {
     // The next spec's fixture sets its own preference.

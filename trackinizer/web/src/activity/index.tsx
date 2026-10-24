@@ -4,7 +4,7 @@ import { useTabState } from "../app/tabState";
 import { dateTime, relativeTime, useMinuteClock } from "../detail/time";
 import { LiveFailureBar, useLiveActivity } from "../live";
 import { Markdown } from "../markdown/Markdown";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { Bar } from "../ui/bars";
 import { ReadFailure } from "../ui/failure";
 import { Avatar, RefChip } from "../ui/glyphs";
@@ -169,7 +169,7 @@ function MentionLink({ mention, subjects }: { mention: Mention; subjects: Readon
   const found = subjects.get(mention.id);
   if (found) return <RefChip kind={found.kind} seq={found.seq} title={found.title} />;
   return (
-    <a className="ref" href={formatRoute({ name: "lookup", id: mention.id })} title={mention.id}>
+    <a className="ref" href={routeHref({ name: "lookup", id: mention.id })} title={mention.id}>
       <KindIcon kind={mention.kind} size={12} />
       {`${mention.kind} ${mention.id.slice(0, 8)}`}
     </a>

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { detailOf, peer, serveViews, showList, viewButton } from "../lists/viewTesting";
 import { issue } from "../live/testing";
+import { currentRoute } from "../router/addressBar";
 
 /** Each column as `<heading>: #seq …`, the selected one starred. */
 function columns(): string[] {
@@ -47,7 +48,7 @@ test("Columns opens #/list/Issue?view=columns and lists the root Issues the list
   showList();
   fireEvent.click(await viewButton("Columns"));
   await expectColumns(["Root issues: #4 #1"]);
-  expect(location.hash).toBe("#/list/Issue?view=columns");
+  expect(currentRoute()).toBe("#/list/Issue?view=columns");
   const filters = new URLSearchParams(sent.at(-1)!.query).getAll("filter").map((raw) => JSON.parse(raw));
   expect(filters).toContainEqual({ field: "narrows", op: "isnull", value: "" });
   expect(screen.getByTitle("The same query from the CLI").textContent).toBe("trax issue status is active narrows isnull");
@@ -60,7 +61,7 @@ test("another view leaves Columns for the list's plain hash, so Columns never op
   showList("Issue", "#/list/Issue?view=columns");
   await expectColumns(["Root issues: #4 #1"]);
   fireEvent.click(await viewButton("List"));
-  await waitFor(() => expect(location.hash).toBe("#/list/Issue"));
+  await waitFor(() => expect(currentRoute()).toBe("#/list/Issue"));
   await waitFor(() => expect(document.querySelectorAll("a.row")).toHaveLength(2));
 });
 
@@ -70,7 +71,7 @@ test("a deep link opens each selection's children in the next column, and the la
   await expectColumns(["Root issues: #4 #1*", "Under Issue 1: #2*", "Under Issue 2: #3"]);
   const outputs = document.querySelectorAll(".c-column")[2]!.querySelectorAll(".c-output");
   expect([...outputs].map((output) => output.textContent)).toEqual(["Experiment 9"]);
-  expect(outputs[0]!.getAttribute("href")).toBe("#/ref/Experiment/9");
+  expect(outputs[0]!.getAttribute("href")).toBe("/trax/ref/Experiment/9");
 });
 
 test("a click drills in, and → selects the first child", async () => {
@@ -79,10 +80,10 @@ test("a click drills in, and → selects the first child", async () => {
   await expectColumns(["Root issues: #4 #1"]);
   fireEvent.click([...document.querySelectorAll(".c-item")].find((item) => item.textContent!.includes("#1"))!);
   await expectColumns(["Root issues: #4 #1*", "Under Issue 1: #2"]);
-  expect(location.hash).toBe("#/list/Issue?view=columns&path=1");
+  expect(currentRoute()).toBe("#/list/Issue?view=columns&path=1");
   await userEvent.setup().keyboard("{ArrowRight}");
   await expectColumns(["Root issues: #4 #1*", "Under Issue 1: #2*", "Under Issue 2: #3"]);
-  expect(location.hash).toBe("#/list/Issue?view=columns&path=1,2");
+  expect(currentRoute()).toBe("#/list/Issue?view=columns&path=1,2");
 });
 
 test("← steps out, j and k move in the deepest column, and Enter opens its selection", async () => {
@@ -94,9 +95,9 @@ test("← steps out, j and k move in the deepest column, and Enter opens its sel
   await expectColumns(["Root issues: #4 #1*", "Under Issue 1: #2"]);
   await user.keyboard("k");
   await expectColumns(["Root issues: #4* #1", "Under Issue 4:"]);
-  expect(location.hash).toBe("#/list/Issue?view=columns&path=4");
+  expect(currentRoute()).toBe("#/list/Issue?view=columns&path=4");
   await user.keyboard("{Enter}");
-  expect(location.hash).toBe("#/ref/Issue/4");
+  expect(currentRoute()).toBe("#/ref/Issue/4");
 });
 
 test("after a click on an item and →, Enter opens the selection, not the clicked item again (LV-13)", async () => {
@@ -109,5 +110,5 @@ test("after a click on an item and →, Enter opens the selection, not the click
   await user.keyboard("{ArrowRight}");
   await expectColumns(["Root issues: #4 #1*", "Under Issue 1: #2*", "Under Issue 2: #3"]);
   await user.keyboard("{Enter}");
-  expect(location.hash).toBe("#/ref/Issue/2");
+  expect(currentRoute()).toBe("#/ref/Issue/2");
 });

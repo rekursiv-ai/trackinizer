@@ -7,6 +7,7 @@ import type { CanvasState } from "../api/canvases";
 import { MetaContext } from "../app/boot";
 import { edge, FakeRenderer, META, node, uuid } from "../graph/testing";
 import { testClient } from "../live/testing";
+import { currentRoute } from "../router/addressBar";
 import { CONTEXT_LIMIT, ContextGraph, contextLens, contextParams } from "./ContextGraph";
 import { canvasActions } from "./testing";
 import { type CanvasActions, CanvasActionsProvider } from "./canvasActions";
@@ -107,7 +108,7 @@ test("a click on another node moves the page to it and re-centres the window the
   show(instance(uuid(1), { hops: 2, highlight: uuid(4) }), canvas);
   await waitFor(() => expect(renderer.shown()).toHaveLength(5));
   act(() => renderer.events!.click(renderer.node("Issue 4")));
-  expect(location.hash).toBe("#/ref/Issue/4");
+  expect(currentRoute()).toBe("#/ref/Issue/4");
   // The window keeps its hops and highlight: only its record changes.
   expect(canvas.operate).toHaveBeenCalledWith({ kind: "show", visual_type: "trax.subgraph", record_id: uuid(4) });
   // The record itself, or the background, moves nothing.
@@ -120,7 +121,7 @@ test("outside a canvas a click still moves the page", async () => {
   show(instance(uuid(1)), null);
   await waitFor(() => expect(renderer.shown()).toHaveLength(5));
   act(() => renderer.events!.click(renderer.node("Issue 2")));
-  expect(location.hash).toBe("#/ref/Issue/2");
+  expect(currentRoute()).toBe("#/ref/Issue/2");
 });
 
 test("a new record reads its own neighbourhood and frames it, keeping the nodes both share in place", async () => {
@@ -156,7 +157,7 @@ test("its hops buttons ask the canvas for the window at that reach, with its hig
 test("Open in graph leads to the graph page focused there", async () => {
   show(instance(uuid(1), { hops: 3 }));
   const link = await screen.findByRole("link", { name: "Open in graph" });
-  expect(link.getAttribute("href")).toBe(`#/graph?focus=${uuid(1)}&hops=3`);
+  expect(link.getAttribute("href")).toBe(`/trax/graph?focus=${uuid(1)}&hops=3`);
 });
 
 test("without a record it says to open one, and reads nothing", () => {

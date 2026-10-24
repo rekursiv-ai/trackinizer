@@ -3,7 +3,7 @@ import { APP } from "../appName";
 import { usePalette } from "../commands/palette";
 import { keyCaps } from "../commands/registry";
 import { ComposeButton } from "../create/ComposeButton";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { Icon, Logo } from "../ui/icons";
 import { useWorkbenchPresent, WorkbenchSlot } from "../app/workbenchSlot";
 import { AccountMenu } from "./AccountMenu";
@@ -61,7 +61,7 @@ export function TopBar({ canvases }: { readonly canvases: boolean }) {
       onPointerMove={peek.handlers.onPointerMove} onPointerLeave={peek.handlers.onPointerLeave} onClick={() => peek.set(true)} />
     <header ref={header} className={`topbar${shown ? " topbar-auto-open" : " topbar-auto-hidden"}`} aria-label="App"
       onPointerMove={peek.handlers.onPointerMove} onPointerLeave={peek.handlers.onPointerLeave} onBlurCapture={peek.handlers.onBlur}>
-      <a className="topbar-logo" href={formatRoute({ name: "graph" })} aria-label={`${APP.name}, the graph`} title={APP.name}>
+      <a className="topbar-logo" href={routeHref({ name: "graph" })} aria-label={`${APP.name}, the graph`} title={APP.name}>
         <Logo />
       </a>
       <GoMenu open={goOpen} onOpen={setGoOpen} />

@@ -71,7 +71,7 @@ async function readAs(page: Page, audiences: string[]) {
 }
 
 async function open(page: Page, seq: number) {
-  await page.goto(`/trax/#/ref/Issue/${seq}`);
+  await page.goto(`/trax/ref/Issue/${seq}`);
   await (await revealBar(page)).getByRole("button", { name: "Workbench", exact: true }).click();
   const option = page.locator(".workbench-menu").getByRole("checkbox", { name: /Campaign summary/ });
   // Showing a visual is a write to the canvas; the box checks when the server's canvas comes back.

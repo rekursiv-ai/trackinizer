@@ -5,6 +5,7 @@ import type { InquiryRow } from "../api/inquiries";
 import { useCommands } from "../commands/registry";
 import { detailQueries } from "../detail/queries";
 import { useLiveDetail } from "../live";
+import { routeHref } from "../router/addressBar";
 import { formatRoute } from "../router/route";
 import { useRouter } from "../router/router";
 import { ReadFailure } from "../ui/failure";
@@ -159,7 +160,7 @@ function ColumnList({
         <a
           key={item.id}
           className="c-item"
-          href={formatRoute(link(item))}
+          href={routeHref(link(item))}
           data-row={rows ? item.id : undefined}
           aria-current={item.seq === column.selected ? "true" : undefined}
           // The focus stays where it was, as on a list's buttons: a link the mouse
@@ -182,7 +183,7 @@ function ColumnList({
       {empty && <p className="c-note">No issues narrow it.</p>}
       {column.outputs.length > 0 && <h4 className="c-subheading">Outputs</h4>}
       {column.outputs.map((output) => (
-        <a key={output.id} className="c-output" href={formatRoute({ name: "ref", kind: output.kind, seq: output.seq })}>
+        <a key={output.id} className="c-output" href={routeHref({ name: "ref", kind: output.kind, seq: output.seq })}>
           <KindIcon kind={output.kind} size={14} />
           {output.title}
         </a>

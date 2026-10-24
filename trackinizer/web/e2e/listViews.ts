@@ -29,7 +29,7 @@ export async function openView(page: Page, label: string, view: "List" | "Stream
   const state = { tab: "active", choices: [{ field: "labels", values: [label] }], grouping: "none", ordering: "created", pages: {}, collapsed: [], focus: null };
   await page.addInitScript((saved) => sessionStorage.setItem("trackinizer.v2.list.Issue", saved), JSON.stringify(state));
   const subscribed = streamOpened(page);
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await subscribed;
   await page.getByRole("group", { name: "View" }).getByRole("button", { name: view }).click();
 }

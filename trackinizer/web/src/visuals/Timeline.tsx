@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState, type MouseEvent } from "react";
 import { getEvidenceTimeline, type TimelineEvidence, type TimelineExperiment, type TimelineRecord } from "../api/timeline";
+import { goTo, routeUrl } from "../router/addressBar";
 import { formatRoute } from "../router/route";
 import { useVisualMark } from "./marks";
 import type { RendererProps } from "./registry";
@@ -57,7 +58,7 @@ export function Timeline({ instance, canvas, width }: RendererProps & { readonly
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     if (target.id === recordId) return;
-    window.location.hash = recordHref(target);
+    goTo(recordHref(target));
     actions?.operate({ kind: "show", visual_type: instance.type, record_id: target.id });
   };
   const height = heightOf(rows.length);
@@ -117,7 +118,7 @@ function Cards({ row, index, axis, open, selected }: {
   const label = `${ref(record)} ${record.title}`;
   const self = selected?.record.id === record.id ? selected : null;
   return <g data-role={row.role} data-ref={ref(record)} data-record={record.id}>
-    <a href={recordHref(record)} aria-label={label} onClick={(event) => open(event, record)}>
+    <a href={routeUrl(recordHref(record))} aria-label={label} onClick={(event) => open(event, record)}>
       <title>{self ? resultHover(record, self.evidence, self.evidence_truncated) : hover(record)}</title>
       <rect x={0} y={TOP + index * ROW_H} width={axis.labelW} height={ROW_H} className="tl-card-hit" />
       <text x={16} y={y - 4} className="tl-row-ref">{ref(record)}</text>
@@ -144,7 +145,7 @@ function Results({ row, index, axis, selectedId, open }: {
       const rx = xs[i]!;
       return <g key={record.id} className={`tl-result${record.id === selectedId ? " tl-selected" : ""}`} data-ref={ref(record)} data-record={record.id}>
         <line x1={node.cx} y1={node.cy} x2={rx} y2={ry} className="tl-produced" aria-hidden="true" />
-        <a href={recordHref(record)} aria-label={`${ref(record)} ${record.title}`} onClick={(event) => open(event, record)}>
+        <a href={routeUrl(recordHref(record))} aria-label={`${ref(record)} ${record.title}`} onClick={(event) => open(event, record)}>
           <title>{resultHover(record, evidence, evidence_truncated)}</title>
           <rect x={rx - 6} y={ry - 6} width={12} height={12} rx={3}
             className={`tl-square tl-kind-${record.kind}${faded(record)}`} />

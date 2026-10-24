@@ -7,6 +7,7 @@ import { stubFetch } from "../api/testing";
 import { HighlightStore } from "../app/highlights";
 import { CommandRegistry } from "../commands/registry";
 import { stubLayout } from "../editors/testing";
+import { currentRoute } from "../router/addressBar";
 import { openedAt } from "./queries";
 import { change, detail, META, PROFILE, peer, renderDetail, row, serveDetails, uuid } from "./testing";
 
@@ -76,7 +77,7 @@ test("a Kind#seq link resolves its id, then shows the inquiry", async () => {
   expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Issue number 1");
   expect(sent.map((request) => request.path)).toEqual(["/api/inquiries/Issue/1", `/api/web/get/${root.id}`]);
   const description = screen.getByText(/See/).closest("p")!;
-  expect(within(description).getByRole("link", { name: "Belief#2" }).getAttribute("href")).toBe("#/ref/Belief/2");
+  expect(within(description).getByRole("link", { name: "Belief#2" }).getAttribute("href")).toBe("/trax/ref/Belief/2");
   expect(within(description).getByRole("link", { name: "the plan" }).getAttribute("href")).toBe("https://example.com/p");
 });
 
@@ -105,7 +106,7 @@ test("a lookup link reads the inquiry by id in one request", async () => {
   const sent = serveDetails([detail(belief)]);
   renderDetail({ id: belief.id });
   expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Belief number 5");
-  expect(screen.getByRole("link", { name: "Beliefs" }).getAttribute("href")).toBe("#/list/Belief");
+  expect(screen.getByRole("link", { name: "Beliefs" }).getAttribute("href")).toBe("/trax/list/Belief");
   expect(sent.map((request) => request.path)).toContain(`/api/web/get/${belief.id}`);
   expect(sent.map((request) => request.path)).not.toContain("/api/inquiries/Belief/5");
 });
@@ -156,7 +157,7 @@ test("an Artifact lookup link shows its published content", async () => {
   expect(await screen.findByRole("heading", { name: "ARC3 atlas" })).toBeTruthy();
   expect(screen.getByRole("heading", { name: "Representation" })).toBeTruthy();
   expect(screen.getByRole("link", { name: "Link to this Artifact" }).getAttribute("href"))
-    .toBe(`#/lookup/${artifact.id}`);
+    .toBe(`/trax/lookup/${artifact.id}`);
 });
 
 test("an ordinary Artifact keeps its detail page when no content is published", async () => {
@@ -313,7 +314,7 @@ test("the rail lists each parent and child once, with its title, status and ever
     ["spc001 Experiment#589", ["produces"]],
   ]);
   const pickupLink = within(section("Parents")).getByRole("link", { name: /ARC3 pickup/ });
-  expect(pickupLink.getAttribute("href")).toBe("#/ref/Issue/760");
+  expect(pickupLink.getAttribute("href")).toBe("/trax/ref/Issue/760");
   expect(within(pickupLink).getByRole("img", { name: "Complete" })).toBeTruthy();
   // The rail is the one place for these edges: no other list repeats them, and
   // the eyebrow names the kind, not the parents.
@@ -371,7 +372,7 @@ describe("Show in graph links to the graph focused on the inquiry, two hops out"
     serveDetails([detail(row(kind, seq))]);
     renderDetail({ kind, seq });
     await screen.findByRole("heading", { level: 1 });
-    expect(screen.getByRole("link", { name: "Show in graph" }).getAttribute("href")).toBe(`#/graph?focus=${kind}/${seq}&hops=2`);
+    expect(screen.getByRole("link", { name: "Show in graph" }).getAttribute("href")).toBe(`/trax/graph?focus=${kind}/${seq}&hops=2`);
   });
 });
 
@@ -383,7 +384,7 @@ test("Show in graph is a palette command under the inquiry's Kind#seq, with no k
   const show = commands.getCommands().find((command) => command.title === "Show in graph");
   expect([show?.section, show?.keys]).toEqual(["Belief#4", undefined]);
   act(() => show!.run());
-  expect(location.hash).toBe("#/graph?focus=Belief/4&hops=2");
+  expect(currentRoute()).toBe("#/graph?focus=Belief/4&hops=2");
 });
 
 test("Peek beside a list offers Show in graph; Peek in the graph, where it would lead, does not", async () => {
@@ -646,11 +647,11 @@ test("activity reads oldest first, names fields and relations, and folds alerts 
     "ada@example.com added relation Narrowed by Issue#2 · 6m ago",
     "librarian 2 upstream changes · 4m ago",
   ]);
-  expect(screen.getByRole("link", { name: "Belief#4" }).getAttribute("href")).toBe("#/ref/Belief/4");
+  expect(screen.getByRole("link", { name: "Belief#4" }).getAttribute("href")).toBe("/trax/ref/Belief/4");
   const alerts = document.querySelector(".timeline details")!;
   expect([...alerts.querySelectorAll("a")].map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
-    ["Issue#2", "#/ref/Issue/2"],
-    ["Issue 5f3a9c1e", "#/lookup/5f3a9c1e-0000-4000-8000-000000000099"],
+    ["Issue#2", "/trax/ref/Issue/2"],
+    ["Issue 5f3a9c1e", "/trax/lookup/5f3a9c1e-0000-4000-8000-000000000099"],
   ]);
 });
 
@@ -819,5 +820,5 @@ test("Esc goes back to the kind's list", async () => {
   renderDetail({ kind: "Paper", seq: 1 });
   await screen.findByRole("heading", { level: 1 });
   await userEvent.keyboard("{Escape}");
-  expect(location.hash).toBe("#/list/Paper");
+  expect(currentRoute()).toBe("#/list/Paper");
 });

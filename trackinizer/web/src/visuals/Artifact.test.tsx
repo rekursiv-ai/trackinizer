@@ -50,18 +50,18 @@ test("keeps section details closed while summaries and citation links stay visib
 
   expect(screen.getByRole("heading", { name: "Scaling directions" })).toBeTruthy();
   expect(screen.getByRole("link", { name: "Link to this Artifact" }).getAttribute("href"))
-    .toBe("#/lookup/artifact-1");
+    .toBe("/trax/lookup/artifact-1");
   expect(screen.getByText("The wider representation performed best.")).toBeTruthy();
   expect(screen.getByText("12 wins · n=16 · held-out")).toBeTruthy();
   expect(screen.getByText("Section details").closest("details")?.open).toBe(false);
   expect(screen.getByText("Uncertainty and method").closest("details")?.open).toBe(false);
 
   const supports = screen.getByRole("link", { name: "Belief#467 Feature adds lift" });
-  expect(supports.getAttribute("href")).toBe("#/lookup/belief-1");
+  expect(supports.getAttribute("href")).toBe("/trax/lookup/belief-1");
   expect(supports.closest("details")).toBeNull();
   expect(screen.getByText("proves · supports (0.8)")).toBeTruthy();
   expect(screen.getByRole("link", { name: "Belief#450 Possible confound" }).getAttribute("href"))
-    .toBe("#/lookup/belief-2");
+    .toBe("/trax/lookup/belief-2");
   expect(screen.getByText("favors · argues against (-0.5)")).toBeTruthy();
 });
 

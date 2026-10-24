@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { watchEvents } from "../debug/testing";
+import { currentRoute } from "./addressBar";
 import { formatRoute } from "./route";
 import { RouterProvider, useRouter } from "./router";
 
@@ -35,7 +36,7 @@ function renderRouter(): { navigate: ReturnType<typeof useRouter>["navigate"] } 
 /** Traverse history and wait for the router to hear about it. */
 async function traverse(step: () => void): Promise<void> {
   await act(async () => {
-    const heard = new Promise((resolve) => addEventListener("hashchange", resolve, { once: true }));
+    const heard = new Promise((resolve) => addEventListener("popstate", resolve, { once: true }));
     step();
     await heard;
   });
@@ -50,11 +51,11 @@ test("Back then Forward leaves the URL and the view in agreement (COLD-03)", asy
   expect(screen.getByRole("status").textContent).toBe("#/ref/Issue/7");
 
   await traverse(() => history.back());
-  expect(location.hash).toBe("#/list/Belief");
+  expect(currentRoute()).toBe("#/list/Belief");
   expect(screen.getByRole("status").textContent).toBe("#/list/Belief");
 
   await traverse(() => history.forward());
-  expect(location.hash).toBe("#/ref/Issue/7");
+  expect(currentRoute()).toBe("#/ref/Issue/7");
   expect(screen.getByRole("status").textContent).toBe("#/ref/Issue/7");
 });
 
@@ -62,7 +63,7 @@ test("an old UI link is replaced by its v2 form without a history entry", async 
   const before = history.length;
   history.replaceState(null, "", "#/recent");
   renderRouter();
-  expect(location.hash).toBe("#/activity");
+  expect(currentRoute()).toBe("#/activity");
   expect(screen.getByRole("status").textContent).toBe("#/activity");
   expect(history.length).toBe(before);
 });

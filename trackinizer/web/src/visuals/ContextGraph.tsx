@@ -7,6 +7,7 @@ import { type DrawNode, GraphModel, type Lens, PLAIN_LENS } from "../graph/model
 import { useThemePalette } from "../graph/palette";
 import { type CreateRenderer, forceGraphRenderer, type Renderer } from "../graph/renderer";
 import { hopsName } from "../graph/search";
+import { goTo, routeHref } from "../router/addressBar";
 import { formatRoute, UUID } from "../router/route";
 import { ReadFailure } from "../ui/failure";
 import { useVisualMark } from "./marks";
@@ -62,7 +63,7 @@ export function ContextGraph({
 
   const open = useEffectEvent((node: DrawNode | null) => {
     if (!node || node.id === recordId) return;
-    location.hash = formatRoute({ name: "ref", kind: node.kind, seq: node.seq });
+    goTo(formatRoute({ name: "ref", kind: node.kind, seq: node.seq }));
     void actions?.operate({ kind: "show", visual_type: instance.type, record_id: node.id });
   });
   const drawing = recordId !== null;
@@ -132,7 +133,7 @@ export function ContextGraph({
             </button>
           ))}
         </div>
-        <a className="btn ghost" href={formatRoute({ name: "graph", focus: { ref: { id: recordId }, hops } })}>
+        <a className="btn ghost" href={routeHref({ name: "graph", focus: { ref: { id: recordId }, hops } })}>
           Open in graph
         </a>
       </header>

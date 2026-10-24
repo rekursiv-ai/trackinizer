@@ -14,7 +14,7 @@ const SHOTS = "/opt/scratch/artifacts/trax-hosted/ui/machines-menu";
 /** Open the bar and the Machines menu on the issue list, at a laptop's size. */
 async function openMenu(page: Page) {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await page.mouse.move(640, 1);
   const bar = page.getByRole("banner", { name: "App" });

@@ -10,6 +10,7 @@ import { detail, META, PROFILE, row, uuid } from "../detail/testing";
 import { stubLayout } from "../editors/testing";
 import { DEFAULT_PREFERENCES, preferences, receivePreferences } from "../preferences";
 import { cacheWith } from "../relations/testing";
+import { currentRoute } from "../router/addressBar";
 import { formatRoute } from "../router/route";
 import { RouterProvider, useRouter } from "../router/router";
 import { adoptLocalUserData } from "../state/local";
@@ -102,7 +103,7 @@ test("each kind's form asks for its own fields and chips; the kind menu switches
   fireEvent.change(title(), { target: { value: "Retry jitter" } });
 
   await pick(form().getByRole("button", { name: "Kind: Papers" }), "Issues");
-  await waitFor(() => expect(location.hash).toBe("#/new/Issue"));
+  await waitFor(() => expect(currentRoute()).toBe("#/new/Issue"));
   expect(title().value).toBe("Retry jitter");
   expect(fields()).toEqual(["Done when"]);
   expect(chips()).toEqual([
@@ -196,7 +197,7 @@ test("Create more keeps the form open for the next one, with the kind and chips,
     fireEvent.keyDown(title(), { key: "Enter", metaKey: true });
     await waitFor(() => expect(title().value).toBe(""));
   }
-  expect(location.hash).toBe("#/new/Issue");
+  expect(currentRoute()).toBe("#/new/Issue");
   expect(document.activeElement).toBe(title());
   expect(form().getByRole("textbox", { name: "Description" }).textContent).toBe("");
   expect(chips()).toContain("Priority: P0 Critical");

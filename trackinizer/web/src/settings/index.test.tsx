@@ -4,6 +4,7 @@ import noAuth from "../../test/testdata/me/getProfile.json";
 import type { OrgMode, Profile } from "../api/me";
 import { LOGIN_URL } from "../app/session";
 import { DEFAULT_PREFERENCES, receivePreferences, sendWaiting } from "../preferences";
+import { currentRoute } from "../router/addressBar";
 import { startTrail } from "../router/trail";
 import { chooseTheme, installTheme } from "../theme";
 import { SettingsView } from ".";
@@ -39,18 +40,18 @@ test("Close goes back to the last page before Settings, or to the graph when the
   history.replaceState(null, "", "#/settings");
   let stop = startTrail();
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  expect(close()).toBe("#/graph");
+  expect(close()).toBe("/trax/graph");
   cleanup();
   stop();
   history.replaceState(null, "", "#/list/Paper");
   stop = startTrail();
   for (const hash of ["#/admin", "#/settings"]) {
     location.hash = hash;
-    await waitFor(() => expect(location.hash).toBe(hash));
+    await waitFor(() => expect(currentRoute()).toBe(hash));
     window.dispatchEvent(new HashChangeEvent("hashchange"));
   }
   renderScreen(<SettingsView assign={vi.fn()} />, ADA);
-  expect(close()).toBe("#/list/Paper");
+  expect(close()).toBe("/trax/list/Paper");
   stop();
   history.replaceState(null, "", "#/");
 });

@@ -11,6 +11,7 @@ import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/
 import { META, PROFILE, uuid } from "../detail/testing";
 import { stubLayout } from "../editors/testing";
 import { ListView } from "../lists";
+import { currentRoute } from "../router/addressBar";
 import { RouterProvider } from "../router/router";
 import { ToastProvider } from "../ui/toast";
 
@@ -110,7 +111,7 @@ test("rows are selected by their check, a shift-click over a range, and x; Escap
   // Shown newest first: 4, 3, 2, 1. A shift-click on a row selects too, and opens nothing.
   fireEvent.click(screen.getByText("Issue 2"), { shiftKey: true });
   expect(selected()).toEqual(["Issue 4", "Issue 3", "Issue 2"]);
-  expect(location.hash).toBe("#/list/Issue");
+  expect(currentRoute()).toBe("#/list/Issue");
   expect(check(3).getAttribute("aria-pressed")).toBe("true");
 
   // The focused row is the first; x takes it out, and puts it back.

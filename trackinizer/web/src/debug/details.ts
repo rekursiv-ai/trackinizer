@@ -1,4 +1,5 @@
 import { ApiError, failureFields } from "../api/client";
+import { currentRoute } from "../router/addressBar";
 import { formatEvent, recentEvents } from "./log";
 
 /**
@@ -27,7 +28,7 @@ export function errorDetails(message: string, error: unknown): string {
  * query (the old UI's `#/search?q=`) goes too.
  */
 export function pageRoute(): string {
-  return location.hash.replace(/\?.*$/, "").replace(/^(#\/search\/).+$/, "$1…") || "#/";
+  return currentRoute().replace(/\?.*$/, "").replace(/^(#\/search\/).+$/, "$1…") || "#/";
 }
 
 /** What `error` says about itself. */

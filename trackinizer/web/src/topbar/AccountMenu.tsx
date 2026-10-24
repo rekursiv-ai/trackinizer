@@ -4,7 +4,7 @@ import { accountKind, forgetAccount, type RememberedAccount, rememberAccount, si
 import { SessionContext } from "../app/session";
 import { NO_AUTH_EMAIL, useSignOut } from "../app/signOut";
 import { sendWaiting, usePreferences } from "../preferences";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { chooseSkin, chooseTheme, SKINS, type ThemePreference, useTheme } from "../theme";
 import { useOnline } from "../ui/bars";
 import { Icon } from "../ui/icons";
@@ -76,11 +76,11 @@ export function AccountMenu({ onNavigate }: { readonly onNavigate: () => void })
             <strong className="account-head-email">{profile.email}</strong>
             <span className="account-head-meta">{role}<span>{orgLabel(profile.email)}</span></span>
           </div>
-          <a className="topbar-item" href={formatRoute({ name: "settings" })} onClick={() => { close(); onNavigate(); }}>
+          <a className="topbar-item" href={routeHref({ name: "settings" })} onClick={() => { close(); onNavigate(); }}>
             <Icon name="gear" /><span className="label">Your settings</span>
           </a>
           {profile.role === "admin" && (
-            <a className="topbar-item" href={formatRoute({ name: "admin" })} onClick={() => { close(); onNavigate(); }}>
+            <a className="topbar-item" href={routeHref({ name: "admin" })} onClick={() => { close(); onNavigate(); }}>
               <Icon name="shield" /><span className="label">Admin</span>
             </a>
           )}
