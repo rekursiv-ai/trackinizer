@@ -27,6 +27,7 @@ from trackinizer.lib.agent.types.sessions import (
     IncompleteRecord,
     SessionRecord,
     ShellCommandResult,
+    SystemMessage,
     Thinking,
     TokenUsage,
     ToolCall,
@@ -69,6 +70,15 @@ def test_a_user_turn_becomes_a_user_message() -> None:
     assert message.content == "fix it"
     assert message.timestamp is not None
     assert message.timestamp.startswith("2026-09-21T")
+
+
+def test_a_system_message_is_the_harness_speaking_not_the_user() -> None:
+    """The agent's reminders must not count as the human's words in an audit."""
+    records = _read(_history("system_message", text="cwd: /x", timestamp=1790000000.5))
+
+    [note] = _only(records, SystemMessage)
+    assert (note.content, note.subtype) == ("cwd: /x", "reminder")
+    assert _only(records, UserMessage) == []
 
 
 def test_an_assistant_turn_splits_into_thinking_text_and_calls() -> None:

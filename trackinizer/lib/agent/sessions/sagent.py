@@ -5,7 +5,8 @@ and this module is deleted when it does. Until then it is the one place that
 knows sagent's three record families:
 
 - ``kind: history`` records (``user``, ``assistant``, ``tool_result``,
-  ``agent_send``, ``compact_*``), plus ``meta`` / ``tool_state`` side records;
+  ``agent_send``, ``system_message``, ``compact_*``), plus ``meta`` / ``tool_state``
+  side records;
 - the older ``kind: message`` records tagged by ``descriptor``;
 - the oldest ``kind: message`` records tagged by ``role``.
 
@@ -46,6 +47,7 @@ from trackinizer.lib.agent.types.sessions import (
     SessionRecord,
     ShellCommandResult,
     Splice,
+    SystemMessage,
     Thinking,
     TokenUsage,
     ToolCall,
@@ -195,6 +197,9 @@ class _Reader:
         text = _str(record.get("text"))
         if kind == "user":
             return [UserMessage(timestamp=stamp, content=text)]
+        # The agent's own reminders to its model: the harness, never the user.
+        if kind == "system_message":
+            return [SystemMessage(timestamp=stamp, content=text, subtype="reminder")]
         if kind == "assistant":
             thoughts = [
                 (
