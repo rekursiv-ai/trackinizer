@@ -7576,6 +7576,31 @@
             "title": "Aliases",
             "type": "array"
           },
+          "app_bar": {
+            "default": "top",
+            "description": "Where the app bar stands: along the top, or down the left side, where it resizes and folds to its icons. A phone keeps it along the top.",
+            "enum": [
+              "top",
+              "left"
+            ],
+            "title": "App Bar",
+            "type": "string",
+            "x-setting": true
+          },
+          "app_bar_folded": {
+            "default": false,
+            "description": "The app bar on the left folded to its icons.",
+            "title": "App Bar Folded",
+            "type": "boolean"
+          },
+          "app_bar_width": {
+            "default": 220,
+            "description": "The app bar's width in px when it stands on the left, unfolded.",
+            "maximum": 400.0,
+            "minimum": 160.0,
+            "title": "App Bar Width",
+            "type": "integer"
+          },
           "chat_provider": {
             "$ref": "#/components/schemas/ChatProvider",
             "default": "assistant",
@@ -7631,6 +7656,17 @@
               }
             ],
             "description": "The inquiry you started on the create form and have not created."
+          },
+          "dismissed": {
+            "default": [],
+            "description": "The notes you dismissed, by key: each stays hidden wherever it would show.",
+            "items": {
+              "maxLength": 100,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Dismissed",
+            "type": "array"
           },
           "drafts": {
             "additionalProperties": {
@@ -7740,6 +7776,17 @@
             "description": "The browser terminal's font size, in px or pt: 13px, or 16pt.",
             "pattern": "^[1-9][0-9]?(\\.[0-9])?(px|pt)$",
             "title": "Terminal Font Size",
+            "type": "string",
+            "x-setting": true
+          },
+          "terminal_placement": {
+            "default": "bottom",
+            "description": "Where the terminal opens beside the page: under it, the page's width, or at its side.",
+            "enum": [
+              "bottom",
+              "side"
+            ],
+            "title": "Terminal Placement",
             "type": "string",
             "x-setting": true
           },
