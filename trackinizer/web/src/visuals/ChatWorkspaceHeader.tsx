@@ -11,6 +11,7 @@ import { hideCanvas, nameCanvas, openCanvas, CANVASES_KEY } from "../canvases/ac
 import { showCanvas } from "../canvases/useCanvas";
 import { beginCanvasNavigation } from "../canvases/store";
 import { acceptCanvas } from "../canvases/cache";
+import { routeUrl } from "../router/addressBar";
 import { setChatHidden, setChatSide, useChatColumn } from "./chatColumnState";
 import { CloseChat, DeleteChat, PrivacySwitch, ShareChat } from "./ChatSharing";
 import { ProviderPicker, reasonText, useChatDefault, useProviderStatuses } from "./ProviderPicker";
@@ -300,7 +301,7 @@ export function ChatWorkspaceHeader({ canvas, head, waiting = false, onHide, onC
         {run && <div className="chat-info-run">
           <span>{run.text}</span>
         </div>}
-        {madeFor !== null && <span>Made for: <a href={`#/lookup/${madeFor}`}>{`${madeCli}${madeActor}`}</a>
+        {madeFor !== null && <span>Made for: <a href={routeUrl(`#/lookup/${madeFor}`)}>{`${madeCli}${madeActor}`}</a>
           {made ? (made.ended ? " · ended" : " · live") : ""}</span>}
       </div>}
     </div>

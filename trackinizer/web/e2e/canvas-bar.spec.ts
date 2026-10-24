@@ -29,7 +29,7 @@ async function pageAndGraph(request: APIRequestContext): Promise<void> {
 
 test("Back, Forward and Home move the canvas, and each tab keeps its own", async ({ page, request }) => {
   await pageAndGraph(request);
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   const graph = page.locator(".visual-tile-side");
   await expect(graph).toBeVisible();
   const bar = page.getByRole("toolbar", { name: "Canvas" });
@@ -39,24 +39,24 @@ test("Back, Forward and Home move the canvas, and each tab keeps its own", async
 
   await page.evaluate(() => { location.hash = "#/activity"; });
   await back.click();
-  await expect(page).toHaveURL(/#\/list\/Issue$/);
+  await expect(page).toHaveURL(/\/trax\/list\/Issue$/);
   await forward.click();
-  await expect(page).toHaveURL(/#\/activity$/);
+  await expect(page).toHaveURL(/\/trax\/activity$/);
 
   await bar.getByRole("button", { name: "Home" }).click();
-  await expect(page).toHaveURL(/#\/graph$/);
+  await expect(page).toHaveURL(/\/trax\/graph$/);
   await expect(graph).toHaveCount(0);
   await back.click();
   await expect(graph).toBeVisible();
-  await expect(page).toHaveURL(/#\/activity$/);
+  await expect(page).toHaveURL(/\/trax\/activity$/);
 
   await bar.getByRole("button", { name: "New tab" }).click();
-  await expect(page).toHaveURL(/#\/graph$/);
+  await expect(page).toHaveURL(/\/trax\/graph$/);
   await expect(graph).toHaveCount(0);
   await expect(back).toBeDisabled();
   await bar.getByRole("button", { name: "Tab 1", exact: true }).click();
   await expect(graph).toBeVisible();
-  await expect(page).toHaveURL(/#\/activity$/);
+  await expect(page).toHaveURL(/\/trax\/activity$/);
 
   // The tabs are the canvas's: a reload finds them, the one left open still open.
   await page.reload();
@@ -68,7 +68,7 @@ test("Back, Forward and Home move the canvas, and each tab keeps its own", async
 test("tab controls stay beside their tabs and new names are edited inline", async ({ page, request }) => {
   await pageAndGraph(request);
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   const bar = page.getByRole("toolbar", { name: "Canvas" });
   await expect(bar).toBeVisible();
   await expect(page.locator(".topbar")).toHaveClass(/topbar-auto-hidden/);

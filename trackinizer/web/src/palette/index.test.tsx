@@ -7,6 +7,7 @@ import { stubFetch } from "../api/testing";
 import { type Meta, MetaContext } from "../app/boot";
 import { PaletteContext, usePaletteState } from "../commands/palette";
 import { type Command, CommandRegistry, CommandRegistryContext, useCommands } from "../commands/registry";
+import { currentRoute } from "../router/addressBar";
 import { RouterProvider } from "../router/router";
 import { markOpened } from "../detail/queries";
 import { PaletteView } from ".";
@@ -131,7 +132,7 @@ function serveSearch(answer: (kind: string, q: string) => Response | null) {
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
   vi.setSystemTime(new Date("2026-09-26T12:34:56Z"));
-  history.replaceState(null, "", location.pathname);
+  history.replaceState(null, "", "/");
 });
 
 afterEach(() => {
@@ -228,7 +229,7 @@ test("picking an inquiry opens it and closes the palette; picking a command runs
   type(input, "ship");
   fireEvent.keyDown(input, { key: "Enter" });
   await pass();
-  expect(location.hash).toBe("#/ref/Issue/7");
+  expect(currentRoute()).toBe("#/ref/Issue/7");
   expect(screen.queryByRole("dialog")).toBeNull();
 
   fireEvent.click(screen.getByRole("button", { name: "Open" }));
@@ -247,7 +248,7 @@ test("a Kind#seq or a UUID jumps without a search; Enter with nothing listed sea
   type(input, uuid(42).toUpperCase());
   expect(listed()).toEqual({ "Jump to": [`${uuid(42)}Open`] });
   fireEvent.keyDown(input, { key: "Enter" });
-  expect(location.hash).toBe(`#/lookup/${uuid(42)}`);
+  expect(currentRoute()).toBe(`#/lookup/${uuid(42)}`);
 
   fireEvent.click(screen.getByRole("button", { name: "Open" }));
   const next = screen.getByRole("combobox", { name: "Command" });

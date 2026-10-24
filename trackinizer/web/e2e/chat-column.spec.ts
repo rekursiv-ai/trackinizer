@@ -18,7 +18,7 @@ test.beforeEach(async ({ request }) => {
 async function open(page: Page, size = { width: 1280, height: 800 }): Promise<{ column: Locator; stage: Locator }> {
   await page.addInitScript(exposeEventSources);
   await page.setViewportSize(size);
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   const column = page.locator(".chat-column");
   await expect(column.getByRole("region", { name: "Chat" })).toBeVisible();
   // A phone shows Chat first; elsewhere the canvas stands beside it.
@@ -175,7 +175,7 @@ test("a workbench of three columns hides Chat, and closing one gives it back", a
     canvas = (await answer.json()) as typeof canvas;
   }
   await page.setViewportSize({ width: 1600, height: 900 });
-  await page.goto(`/trax/#/lookup/${issue.id}`);
+  await page.goto(`/trax/lookup/${issue.id}`);
   const strip = page.getByRole("button", { name: "Show Chat" });
   await expect(strip).toBeVisible();
   await expect(page.locator(".chat-column")).toBeHidden();
@@ -216,7 +216,7 @@ test("an agent that moves the page covers nothing: Chat and the workbench stay w
   const { column, stage } = await open(page);
   const [chat, work] = [await box(column), await box(stage)];
   await pushNavigate(page, "#/activity");
-  await expect(page).toHaveURL(/#\/activity$/);
+  await expect(page).toHaveURL(/\/trax\/activity$/);
   await expect(column.getByRole("region", { name: "Chat" })).toBeVisible();
   expect(await box(column)).toEqual(chat);
   expect(await box(stage)).toEqual(work);

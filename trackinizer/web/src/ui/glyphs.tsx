@@ -3,7 +3,7 @@
 // concept, used by every view, so two views can never draw the same value
 // differently (COLD-14).
 import type { ReactNode } from "react";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import "./glyphs.css";
 import { KindIcon } from "./kinds";
 
@@ -130,7 +130,7 @@ export function LabelDot({ label }: { label: string }) {
 /** A link to an inquiry: its kind's icon and `Kind#seq`, with its title on hover. */
 export function RefChip({ kind, seq, title }: { kind: string; seq: number; title: string }) {
   return (
-    <a className="ref" href={formatRoute({ name: "ref", kind, seq })} title={title}>
+    <a className="ref" href={routeHref({ name: "ref", kind, seq })} title={title}>
       <KindIcon kind={kind} size={12} />
       {`${kind}#${seq}`}
     </a>

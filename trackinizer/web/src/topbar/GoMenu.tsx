@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useRef } from "react";
 import { keyCaps } from "../commands/registry";
-import { formatRoute, type Route } from "../router/route";
+import { routeHref } from "../router/addressBar";
+import { type Route } from "../router/route";
 import { useRouter } from "../router/router";
 import { Icon } from "../ui/icons";
 import { KindIcon, kindLook } from "../ui/kinds";
@@ -52,7 +53,7 @@ function GoItem({ route, current, icon, label, keys, onGo }: {
   readonly onGo: () => void;
 }) {
   return (
-    <a className={current ? "topbar-item is-current" : "topbar-item"} href={formatRoute(route)}
+    <a className={current ? "topbar-item is-current" : "topbar-item"} href={routeHref(route)}
       aria-current={current ? "page" : undefined} onClick={onGo}>
       {icon}
       <span className="label">{label}</span>

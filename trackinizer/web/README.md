@@ -16,7 +16,7 @@ anyone when it runs with `--no-auth`. Any other browser gets the sign-in page.
 - `src/api/openapi.json` is the server's schema, committed. `scripts/codegen.ts`
   generates `src/api/generated/` from it (not committed) before every `dev`,
   `build`, `test` and `typecheck`.
-- `src/app/` boots and holds the shell, `src/router/` the hash router,
+- `src/app/` boots and holds the shell, `src/router/` the router and the address bar,
   `src/live/` the stream layer, `src/writes/` the write layer, `src/debug/` the
   logger and Copy details (see [debugging](#debugging)), and the other
   directories one view or control each.
@@ -201,7 +201,7 @@ with one response shape, so the fixtures take one per verb.
   a UUID shows its first eight characters. Headings step down two levels.
 - A link written as a ref, its text a `Kind#seq` and its target that ref's
   route, alone or after the app's address on any host
-  (`https://<host>/trax/#/ref/Issue/4`; `/app/#/ref/…` from before `/trax/`, or
+  (`https://<host>/trax/ref/Issue/4`; `/trax/#/ref/…` from before routes were paths, `/app/#/ref/…` from before `/trax/`, or
   the old UI's `/#/ref/…`), is the ref's own link, as agents copy one from trax.
   Any other link stays as written.
 - An absolute path in text (`/` or `~/` opening a word, with two segments or
@@ -498,7 +498,7 @@ with one response shape, so the fixtures take one per verb.
   `src/visuals/ChatSharing.tsx`) opens a panel listing `shared_with`, each with
   Remove, and a field to add an address; each change is `PUT`/`DELETE
   /api/chats/<id>/shares/<email>`, after which the head is read again, since it
-  is the list. The panel's Copy link copies `https://<host>/trax/#/lookup/<session>`
+  is the list. The panel's Copy link copies `https://<host>/trax/lookup/<session>`
   (`chatLink`), the session's page, whose Continue in Chat opens the chat; it
   grants nothing, and the panel says who it opens for by the head's `audience`.
   Delete chat forever (`DeleteChat`) asks "Delete this chat? Its
@@ -863,10 +863,10 @@ with one response shape, so the fixtures take one per verb.
   the app holds opens by that row's id, with no by-seq lookup.
 - A 401 from any read or write ends the session: the drafts still open are saved
   to `localStorage` (`trackinizer.v2.drafts.<email>`, and `trackinizer.v2.create.<email>`
-  for the create form), since the server can no longer take them, the current hash
-  to `sessionStorage` (`trackinizer.v2.return_hash`), and the browser goes to
-  `/auth/login_page?next=%2Fapp%2F`. The next boot sends the drafts to the user's
-  preferences (`adoptLocalUserData`) and restores the hash.
+  for the create form), since the server can no longer take them, and the browser
+  goes to the login page with the page it was on as `next`
+  (`/auth/login_page?next=%2Ftrax%2Fref%2FIssue%2F7`). The next boot sends the
+  drafts to the user's preferences (`adoptLocalUserData`).
 - A write refused with 403 refetches the profile, since the role may have
   changed.
 - The user's own data lives in their preferences on the server
@@ -1068,38 +1068,45 @@ arrives, on open, and from their Refresh button.
 ## Deep links
 
 The app lives at `https://<host>/trax/` (`src/base.ts`), and every view is a
-hash route (`src/router/route.ts`). The server answers its old address,
-`/app/<path>?<query>`, with a 302 to `/trax/<path>?<query>`, and the browser
-keeps the hash, so a stored `/app/#/…` link opens the same view:
+route (`src/router/route.ts`): the app, the server, agents and a canvas's saved
+page name it `#/ref/Issue/7`, and the address bar shows it as a path under the
+app, `/trax/ref/Issue/7` (`src/router/addressBar.ts`). The server serves the
+app's page at every such path. A click on a link to one moves the app in place.
 
-| Hash | Opens |
+| Address | Opens |
 |---|---|
-| (empty) | the graph |
-| `#/list/<Kind>` | one kind's list |
-| `#/list/<Kind>?view=columns&path=<seq>,…` | an Issue list's Columns, the Issues selected column by column |
-| `#/ref/<Kind>/<seq>` | an inquiry, found by `GET /api/inquiries/{Kind}/{seq}` |
-| `#/lookup/<uuid>` | an inquiry, read with `GET /api/web/get/{id}` |
-| `#/activity` | Activity |
-| `#/console` | the live feed across sessions, narrowed by a saved view, and a line for messaging agents |
-| `#/graph` | the graph of the newest 1,000 inquiries (or the count chosen), each followed by the older ones it links to, and the edges between them, gathered into one island per root |
-| `#/graph?focus=<Kind>/<seq>&hops=<1\|2\|3\|all>` | the graph lit within that many hops of one inquiry; `focus` also takes a UUID, and `hops` is 1 when left out |
-| `#/graph?group=none` | the graph as one web, not gathered by root, after any focus and hops |
-| `#/search/<q>` | the search page for `q` |
-| `#/new/<Kind>` | the create form, over the last view |
-| `#/settings`, `#/admin` | Your settings; Admin (non-admins see "Admins only") |
+| `/trax/` | the graph |
+| `/trax/list/<Kind>` | one kind's list |
+| `/trax/list/<Kind>?view=columns&path=<seq>,…` | an Issue list's Columns, the Issues selected column by column |
+| `/trax/ref/<Kind>/<seq>` | an inquiry, found by `GET /api/inquiries/{Kind}/{seq}` |
+| `/trax/lookup/<uuid>` | an inquiry, read with `GET /api/web/get/{id}` |
+| `/trax/activity` | Activity |
+| `/trax/console` | the live feed across sessions, narrowed by a saved view, and a line for messaging agents |
+| `/trax/graph` | the graph of the newest 1,000 inquiries (or the count chosen), each followed by the older ones it links to, and the edges between them, gathered into one island per root |
+| `/trax/graph?focus=<Kind>/<seq>&hops=<1\|2\|3\|all>` | the graph lit within that many hops of one inquiry; `focus` also takes a UUID, and `hops` is 1 when left out |
+| `/trax/graph?group=none` | the graph as one web, not gathered by root, after any focus and hops |
+| `/trax/search/<q>` | the search page for `q` |
+| `/trax/new/<Kind>` | the create form, over the last view |
+| `/trax/settings`, `/trax/admin` | Your settings; Admin (non-admins see "Admins only") |
 
-The old UI's links still work: `#/inquiry/<uuid>` opens the lookup, `#/recent`
-Activity, `#/search?q=` the search page, and a bare `#/list` or `#/new` the first
-kind's list or create form. `#/graph?group=root`, from before grouping was the
-default, opens the graph grouped. Kinds match in any case and are
-rewritten as the server spells them; a hash that is not canonical is replaced in
-place. The path is split into parts before any part is decoded, so an encoded
-`?` or `/` stays in its part. A hash that names nothing shows a not-found view.
+Old links still work. An address with a `#/...` route, from before routes
+were paths (`/trax/#/ref/Issue/7`, the old UI's `/#/ref/Issue/7`), opens that
+route, and the router moves the address onto its path in place. The server
+answers the app's old address, `/app/<path>?<query>`, with a 302 to
+`/trax/<path>?<query>`, and the browser keeps the hash. The old UI's routes
+still parse: `#/inquiry/<uuid>` opens the lookup, `#/recent` Activity,
+`#/search?q=` the search page, and a bare `#/list` or `#/new` the first kind's
+list or create form. `#/graph?group=root`, from before grouping was the default,
+opens the graph grouped. Kinds match in any case and are rewritten as the
+server spells them; a route that is not canonical is replaced in place. The
+path is split into parts before any part is decoded, so an encoded `?` or `/`
+stays in its part. A route that names nothing shows a not-found view.
 
-A signed-out request for `/trax/` gets the server's 302 to the login page. The
-browser keeps the hash across that redirect, and the login page puts it back on
-`next`, so sign-in returns to the same view. A 401 that the running app sees
-keeps the hash its own way, as described under [client state](#client-state).
+A signed-out request for a page of the app gets the server's 302 to the login
+page, whose `next` is that page, so sign-in returns to the same view; the
+login page puts an old link's `#/...` route back on `next` too. A 401 that the
+running app sees returns to its page the same way, as described under
+[client state](#client-state).
 
 ## Running it
 

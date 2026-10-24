@@ -17,6 +17,7 @@ import { isStrings, useTabState } from "../app/tabState";
 import { useCommands } from "../commands/registry";
 import "../lists/lists.css";
 import { LiveFailureBar } from "../live";
+import { routeOf } from "../router/addressBar";
 import { type FocusRef, type Hops, parseHash, type Route } from "../router/route";
 import { useRouter } from "../router/router";
 import { ReadFailure } from "../ui/failure";
@@ -528,9 +529,10 @@ function countText(loaded: boolean, total: number, drawn: number, matched: numbe
 function usePeekLinks(meta: Meta, drawn: readonly GraphNode[], selected: GraphNode | undefined, select: (row: GraphNode) => void) {
   return (event: MouseEvent<HTMLElement>) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    const href = event.target instanceof Element ? event.target.closest("a")?.getAttribute("href") : null;
-    if (!href?.startsWith("#/")) return;
-    const route = parseHash(href, meta.kinds);
+    const link = event.target instanceof Element ? event.target.closest("a") : null;
+    const hash = link ? routeOf(link.href) : null;
+    if (hash === null) return;
+    const route = parseHash(hash, meta.kinds);
     const target =
       route.name === "lookup"
         ? drawn.find((row) => row.id === route.id)

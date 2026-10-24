@@ -4,7 +4,7 @@ import { useMeta, useWriteMode } from "../app/boot";
 import { useIsHighlighted } from "../app/highlights";
 import { useRelationActions } from "../relations/flows";
 import { RelationRow } from "../relations/RelationRow";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { PriorityGlyph, StateGlyphs } from "../ui/glyphs";
 import { type RailPeer, railPeers, relationGroups } from "./relationGroups";
 import { EdgeMarks } from "./Relations";
@@ -81,7 +81,7 @@ function Section({ detail, title, add, peers }: { detail: Detail; title: string;
  */
 function PeerRow({ detail, rail: { peer, edges }, mode }: { detail: Detail; rail: RailPeer; mode: WriteMode }) {
   const ref = `${peer.kind}#${peer.seq}`;
-  const href = formatRoute({ name: "ref", kind: peer.kind, seq: peer.seq });
+  const href = routeHref({ name: "ref", kind: peer.kind, seq: peer.seq });
   const highlighted = useIsHighlighted(peer.id);
   return (
     <li className={highlighted ? "rail-peer is-highlighted" : "rail-peer"}>

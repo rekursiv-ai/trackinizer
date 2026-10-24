@@ -1,3 +1,4 @@
+import { routeUrl } from "../router/addressBar";
 import { SHEET, visited } from "../router/trail";
 import { Icon } from "../ui/icons";
 
@@ -5,7 +6,7 @@ import { Icon } from "../ui/icons";
 export function CloseSheet({ label }: { readonly label: string }) {
   const back = visited().findLast((hash) => !SHEET.test(hash)) ?? "#/graph";
   return (
-    <a className="icon-btn" href={back} aria-label={label} title={label}>
+    <a className="icon-btn" href={routeUrl(back)} aria-label={label} title={label}>
       <Icon name="x" />
     </a>
   );

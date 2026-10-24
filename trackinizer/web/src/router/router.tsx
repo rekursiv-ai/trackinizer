@@ -7,6 +7,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { type Fields, log } from "../debug/log";
+import { currentRoute, goTo, onRouteChange } from "./addressBar";
 import { formatRoute, parseHash, type Route } from "./route";
 
 /** The current route, and the way to change it. */
@@ -23,8 +24,9 @@ const RouterContext = createContext<Router | null>(null);
  * The route is never stored anywhere else: links and `navigate` write the URL
  * from a route, and every URL change (a link, `navigate`, Back, Forward) is
  * parsed into the route. So the URL and the view cannot disagree (COLD-03). A
- * hash that is not canonical, such as an old UI link, is replaced in place,
- * which adds no history entry.
+ * route that is not canonical, such as an old UI link, and an old link's
+ * `#/...` address are replaced in place by the route's path, which adds no
+ * history entry.
  */
 export function RouterProvider({
   kinds,
@@ -33,11 +35,11 @@ export function RouterProvider({
   kinds: readonly string[];
   children: ReactNode;
 }) {
-  const hash = useSyncExternalStore(subscribe, () => location.hash);
+  const hash = useSyncExternalStore(onRouteChange, currentRoute);
   const route = useMemo(() => parseHash(hash, kinds), [hash, kinds]);
   const canonical = formatRoute(route);
   useLayoutEffect(() => {
-    if (canonical !== hash) navigate(route, { replace: true });
+    if (canonical !== hash || location.hash.startsWith("#/")) navigate(route, { replace: true });
     else log("info", "navigate", routeFields(route));
   }, [canonical, hash, route]);
   const router = useMemo(() => ({ route, navigate }), [route]);
@@ -53,24 +55,7 @@ export function useRouter(): Router {
 
 /** Go to `route`; `replace` swaps the current history entry instead of adding one. */
 function navigate(route: Route, { replace = false }: { replace?: boolean } = {}): void {
-  const hash = formatRoute(route);
-  if (!replace) {
-    location.hash = hash;
-    return;
-  }
-  const oldURL = location.href;
-  history.replaceState(history.state, "", hash);
-  // replaceState fires no event, and the router learns of every change from one.
-  dispatchEvent(new HashChangeEvent("hashchange", { oldURL, newURL: location.href }));
-}
-
-function subscribe(onChange: () => void): () => void {
-  addEventListener("hashchange", onChange);
-  addEventListener("popstate", onChange);
-  return () => {
-    removeEventListener("hashchange", onChange);
-    removeEventListener("popstate", onChange);
-  };
+  goTo(formatRoute(route), { replace });
 }
 
 /** Where `route` goes, for the log: its name, kind, seq and id, never search text. */

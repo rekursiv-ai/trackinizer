@@ -7,6 +7,7 @@ import { openCanvas, canvasesQuery } from "../canvases/actions";
 import { showCanvas, useCanvas } from "../canvases/useCanvas";
 import { beginCanvasNavigation } from "../canvases/store";
 import { acceptCanvas } from "../canvases/cache";
+import { routeUrl } from "../router/addressBar";
 import { Icon } from "../ui/icons";
 
 const WORKSPACES_KEY = ["workspaces"] as const;
@@ -251,12 +252,12 @@ function WorkspaceInfoDrawer({
   return (
     <aside className="workspace-drawer workspace-pop" role="dialog" aria-label={`${info.title} info`}>
       <div className="workspace-drawer-head"><h2>{info.title}</h2><button type="button" aria-label="Close info" onClick={onClose}><Icon name="x" /></button></div>
-      <a href={`#/lookup/${info.id}`}>Issue {info.seq}</a>
-      <a href={`#/lookup/${info.id}`}>Workspace settings</a>
+      <a href={routeUrl(`#/lookup/${info.id}`)}>Issue {info.seq}</a>
+      <a href={routeUrl(`#/lookup/${info.id}`)}>Workspace settings</a>
       <h3>Chats</h3>
       {info.canvases.length ? <ul>{info.canvases.map((each) => <li key={each.id}>
         <span>{each.name}{each.hidden ? " · hidden" : ""}</span>
-        {each.session_ids.map((session) => <a className="workspace-session" href={`#/lookup/${session}`} key={session}>{session}</a>)}
+        {each.session_ids.map((session) => <a className="workspace-session" href={routeUrl(`#/lookup/${session}`)} key={session}>{session}</a>)}
       </li>)}</ul> : <p>No chats in this workspace.</p>}
     </aside>
   );

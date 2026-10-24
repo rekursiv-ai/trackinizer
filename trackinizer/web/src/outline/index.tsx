@@ -4,7 +4,7 @@ import type { Selection } from "../bulk/selection";
 import { useCommands } from "../commands/registry";
 import { useAncestry } from "../lists/ancestry";
 import { Row } from "../lists/Row";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { ReadFailure } from "../ui/failure";
 import { StatusGlyph } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
@@ -166,7 +166,7 @@ function Older({ line, focused, onFocus }: { line: OutlineLine; focused: boolean
   return (
     <a
       className={focused ? "o-older is-focused" : "o-older"}
-      href={formatRoute({ name: "ref", kind: node.kind, seq: node.seq })}
+      href={routeHref({ name: "ref", kind: node.kind, seq: node.seq })}
       // Marked as a row, so the list scrolls it into view when focused.
       data-row={node.id}
       aria-current={focused ? "true" : undefined}

@@ -133,10 +133,10 @@ test("each line links to its inquiry, first by id, then by Kind#seq once looked 
   const sent = serve([change(1), change(2)], { purged: [uuid(102)] });
   show();
   await waitFor(() => expect(screen.getByRole("link", { name: "Issue#101" })).toBeTruthy());
-  expect(screen.getByRole("link", { name: "Issue#101" }).getAttribute("href")).toBe("#/ref/Issue/101");
+  expect(screen.getByRole("link", { name: "Issue#101" }).getAttribute("href")).toBe("/trax/ref/Issue/101");
   expect(screen.getByText("Inquiry 101")).toBeTruthy();
   // Purged: the lookup does not find it, so it stays a link by id, which says it is gone.
-  expect(screen.getByRole("link", { name: "Issue 00000000" }).getAttribute("href")).toBe(`#/lookup/${uuid(102)}`);
+  expect(screen.getByRole("link", { name: "Issue 00000000" }).getAttribute("href")).toBe(`/trax/lookup/${uuid(102)}`);
   const lookups = sent.filter((request) => request.path === "/api/inquiries");
   expect(lookups).toHaveLength(1);
   // Oldest mention first, so live lines joining at the top leave older lookups be.

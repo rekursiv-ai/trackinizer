@@ -14,6 +14,7 @@ import { detailQueries } from "../detail/queries";
 import { useLiveDetail } from "../live";
 import { Markdown } from "../markdown/Markdown";
 import { usePreferences } from "../preferences";
+import { currentRoute } from "../router/addressBar";
 import { parseHash } from "../router/route";
 import { useHash, validHash, visited } from "../router/trail";
 import { canvasForChat, type CanvasSummary } from "../api/canvasManagement";
@@ -365,7 +366,7 @@ export function Chat({ canvas, onWaiting }: {
     setPending((held) => [...held.filter((line) => line.key !== key), { key, text, canvasId: canvas!.id, conversationId: sentTo, ...attempt }]);
     setSending((held) => new Set(held).add(key));
     try {
-      const { page, trail } = whereFrom(location.hash);
+      const { page, trail } = whereFrom(currentRoute());
       const sent = await sendChatLine({ canvasId: canvas!.id, text, conversationId: forkOf ? null : sentTo,
         ...(forkOf && { fork: forkOf }), page, trail }, key);
       setPending((held) => held.map((line) => (line.key === key ? { ...line, canvasId: sent.canvas_id, conversationId: sent.conversation_id } : line)));
@@ -382,7 +383,7 @@ export function Chat({ canvas, onWaiting }: {
         acceptCanvas(queryClient, state);
         if (mounted.current && current?.()) {
           forkLanding.current = sent.canvas_id;
-          showCanvas(queryClient, state, window.location.hash);
+          showCanvas(queryClient, state, currentRoute());
         }
       }
       void queryClient.invalidateQueries({ queryKey: ["canvases"] });
@@ -411,7 +412,7 @@ export function Chat({ canvas, onWaiting }: {
     if (!canvas || !conversationId) return false;
     try {
       await sendChatLine({ canvasId: canvas.id, text: attempt.body.text, conversationId, kind: "answer", payload: attempt.body.payload,
-        ...whereFrom(location.hash) }, attempt.key);
+        ...whereFrom(currentRoute()) }, attempt.key);
       return true;
     } catch (error) {
       if (mounted.current) setNotice(failureText(error));

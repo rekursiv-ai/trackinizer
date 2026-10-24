@@ -3,6 +3,7 @@ import { useCallback, useContext, useEffect, useState, type MouseEvent } from "r
 import { lineageQuery, type LineageEdge, type LineageFilters } from "../api/lineage";
 import type { TimelineRecord } from "../api/timeline";
 import { MetaContext } from "../app/boot";
+import { goTo, routeUrl } from "../router/addressBar";
 import { formatRoute } from "../router/route";
 import { ReadFailure } from "../ui/failure";
 import { useCanvasActions } from "./canvasActions";
@@ -64,7 +65,7 @@ function Relations({ recordId, visualType, recordKinds, title, filters, landed }
     const type = !recordKinds || recordKinds.includes(record.kind) ? visualType : "trax.timeline";
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || !actions?.visualTypes.has(type)) return;
     event.preventDefault();
-    window.location.hash = href(record);
+    goTo(href(record));
     actions.operate({ kind: "show", visual_type: type, record_id: record.id });
   };
   return <section aria-label={title}>
@@ -73,7 +74,7 @@ function Relations({ recordId, visualType, recordKinds, title, filters, landed }
     {!read.data && !read.error ? <p aria-busy="true">Loading links…</p> : null}
     {read.data && records.length === 0 ? <p className="muted">No recorded links.</p> : null}
     <ol>{records.map((record) => <li key={record.id}>
-      <a href={href(record)} onClick={(event) => open(event, record)}>{reference(record)} · {record.title}</a>
+      <a href={routeUrl(href(record))} onClick={(event) => open(event, record)}>{reference(record)} · {record.title}</a>
       <span className="muted">{record.status} · {record.created.slice(0, 10)}</span>
       {edges.filter((edge) => edge.from_id === record.id || edge.to_id === record.id).map((edge) => {
         const label = meta?.edges[edge.edge_kind]?.forward ?? edge.edge_kind;

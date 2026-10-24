@@ -1,6 +1,6 @@
 import { type KeyboardEvent, type ReactNode, type RefObject, useEffect } from "react";
 import type { GraphNode } from "../api/graph";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { StatusGlyph } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
 import { KindIcon } from "../ui/kinds";
@@ -162,7 +162,7 @@ export function SearchResults({
           ),
         )}
       </div>
-      <a className="graph-panel-foot" href={formatRoute({ name: "search", q: text })}>
+      <a className="graph-panel-foot" href={routeHref({ name: "search", q: text })}>
         <Icon name="search" size={14} />
         <span className="row-title">Search every inquiry for “{text}”</span>
         <kbd>⇧</kbd>

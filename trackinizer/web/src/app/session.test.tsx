@@ -1,10 +1,10 @@
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { watchEvents } from "../debug/testing";
-import { LOGIN_URL, restoreReturnHash, Session, SessionContext, useDraftSaver } from "./session";
+import { LOGIN_URL, loginUrl, Session, SessionContext, useDraftSaver } from "./session";
 
 beforeEach(() => {
-  history.replaceState(null, "", location.pathname);
+  history.replaceState(null, "", "/");
   sessionStorage.clear();
 });
 
@@ -13,7 +13,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("leaving saves every draft and the hash, then loads the login page, once", () => {
+test("leaving saves every draft, then loads the login page, which returns to this page, once", () => {
   const assign = vi.fn();
   const session = new Session(assign);
   const order: string[] = [];
@@ -25,28 +25,23 @@ test("leaving saves every draft and the hash, then loads the login page, once", 
   const stop = session.addDraftSaver(() => order.push("removed"));
   stop();
   vi.spyOn(console, "error").mockImplementation(() => {});
-  history.replaceState(null, "", "#/ref/Issue/7");
+  history.replaceState(null, "", "/trax/ref/Issue/7?tab=2");
   const logged = watchEvents();
 
   session.leaveForLogin();
   session.leaveForLogin();
   expect(order).toEqual(["broken", "title"]);
-  expect(sessionStorage.getItem("trackinizer.v2.return_hash")).toBe("#/ref/Issue/7");
-  expect(assign.mock.calls).toEqual([[LOGIN_URL]]);
+  expect(assign.mock.calls).toEqual([[loginUrl("/trax/ref/Issue/7?tab=2")]]);
   expect(logged().filter(({ event }) => event === "session.ended")).toEqual([expect.objectContaining({ level: "warn", fields: { drafts: 2 } })]);
   expect(new URL(LOGIN_URL, location.origin).searchParams.get("next")).toBe("/trax/");
 });
 
-test("the next boot restores the saved hash, unless it opened on its own", () => {
-  sessionStorage.setItem("trackinizer.v2.return_hash", "#/list/Belief");
-  restoreReturnHash();
-  expect(location.hash).toBe("#/list/Belief");
-  expect(sessionStorage.getItem("trackinizer.v2.return_hash")).toBeNull();
-
-  sessionStorage.setItem("trackinizer.v2.return_hash", "#/list/Paper");
-  restoreReturnHash();
-  expect(location.hash).toBe("#/list/Belief");
-  expect(sessionStorage.getItem("trackinizer.v2.return_hash")).toBeNull();
+test("leaving an old link's #/... address returns to its route's path", () => {
+  const assign = vi.fn();
+  history.replaceState(null, "", "/trax/#/list/Belief");
+  new Session(assign).leaveForLogin();
+  expect(assign.mock.calls).toEqual([[loginUrl("/trax/list/Belief")]]);
+  expect(new URL(loginUrl("/trax/list/Belief"), location.origin).searchParams.get("next")).toBe("/trax/list/Belief");
 });
 
 test("a mounted editor's latest draft saver runs; an unmounted one's does not", () => {

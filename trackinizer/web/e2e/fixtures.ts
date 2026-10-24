@@ -4,6 +4,14 @@ import { type APIRequestContext, type Locator, type Page, test as base, expect }
 
 export { expect };
 
+/** The route the page is on, as the app names it (`#/ref/Issue/7`): its path under `/trax/`, with its query. */
+export function route(page: Page): string {
+  const url = new URL(page.url());
+  if (url.hash.startsWith("#/")) return url.hash;
+  const path = url.pathname.replace(/^\/trax\/?/, "");
+  return path || url.search ? `#/${path}${url.search}` : "";
+}
+
 /**
  * Set the suite's user's preferences (theme, Chat style and side, stars, ...), as Settings
  * or the agent does; `null` puts a key back to its default. They live on the server,

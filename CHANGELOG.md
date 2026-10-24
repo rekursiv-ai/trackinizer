@@ -12,6 +12,15 @@ All notable trackinizer changes are documented here. This project follows
   `/trax/`, and the browser keeps the `#/...` route, so saved links still open.
   `/`, `/me`, `/admin`, `/graph` and `/console` lead to `/trax/`. The installed app's
   id, start and scope are now `/trax/`, so a browser counts it as a new app.
+- The web app's address bar shows its route as a path, `/trax/ref/Issue/7`, in
+  place of `/trax/#/ref/Issue/7`, and its links are those paths. The server
+  serves the app's page at every path under `/trax/` that names no file and is
+  not under `/trax/assets/`; signed out, such a path leads to the sign-in page
+  with itself as `next`. `/me`, `/admin`, `/graph` and `/console` lead to
+  `/trax/settings`, `/trax/admin`, `/trax/graph` and `/trax/console`. An old
+  link's `#/...` route still opens its page, and the app moves the address onto
+  its path. Routes are unchanged elsewhere: a canvas's page, `trax canvas
+  navigate` and a chat line's `page` still name them `#/...`.
 - An agent key's `show` of a `trax.record` tile makes room by the canvas's room
   rule (`trackinizer.server.visuals.canvas_room`). With no placement, the tile
   stands over the records of its kind, else in a column of its own, and what keeps

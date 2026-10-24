@@ -106,7 +106,7 @@ test("a 50-row list is usable within the first-load target, and renders with no 
 });
 
 test("browse: tabs, Load more, Filter, Group, Sort, keys, and Back", async ({ page }) => {
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   // Other spec files add rows to this unfiltered list live, so its count is theirs too.
   await expect(rows(page).first()).toBeVisible();
   await expect(trax(page)).toHaveText("trax issue status is active");
@@ -162,7 +162,7 @@ test("browse: tabs, Load more, Filter, Group, Sort, keys, and Back", async ({ pa
 
 test("after a click on a tab, Enter opens the focused row, not the tab again (BF1, README TODO 1)", async ({ page }) => {
   await page.addInitScript((state) => sessionStorage.setItem("trackinizer.v2.list.Issue", state), BROWSE_STATE);
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await expect(rows(page)).toHaveCount(50);
   await page.getByRole("button", { name: "Active", exact: true }).click();
   await page.keyboard.press("j");
@@ -172,7 +172,7 @@ test("after a click on a tab, Enter opens the focused row, not the tab again (BF
 });
 
 test("COLD-08: several labels filter as literals on the real server", async ({ page }) => {
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await expect(rows(page).first()).toBeVisible();
   await filterLabels(page, "c2.dot", "c2-none");
   await expect(trax(page)).toHaveText("trax issue status is active labels re '^(c2\\.dot|c2-none)$'");
@@ -181,7 +181,7 @@ test("COLD-08: several labels filter as literals on the real server", async ({ p
 });
 
 test("COLD-01: a Paper without authors shows in the Paper list", async ({ page }) => {
-  await page.goto("/trax/#/list/Paper");
+  await page.goto("/trax/list/Paper");
   const papers = rows(page).filter({ hasText: "C2 paper" });
   await expect(papers.locator(".row-title")).toHaveText(["C2 paper with authors", "C2 paper without authors"]);
   await expect(papers.getByText("Lovelace et al. · NeurIPS")).toBeVisible();
@@ -209,7 +209,7 @@ test("PAGE-02: Load more continues after the last row loaded, so a row closing a
     ([state]) => sessionStorage.setItem("trackinizer.v2.list.Issue", state!),
     [BROWSE_STATE.replace("c2-browse", label)],
   );
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await expect(rows(page)).toHaveCount(50);
   // A row the first page holds closes: the server's list moves up by one.
   const shown = await rows(page).first().getAttribute("data-row");

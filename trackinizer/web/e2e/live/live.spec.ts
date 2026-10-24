@@ -303,7 +303,7 @@ test("Activity: a change joins the top of the feed within 3 s, at most one ask p
   const label = fresh("activity");
   const ids = await seed(request, label, 6);
   const subscribed = streamOpened(page);
-  await page.goto(`${server.url}/trax/#/activity`);
+  await page.goto(`${server.url}/trax/activity`);
   await subscribed;
   await expect(page.locator(".feed-row").first()).toBeVisible();
   await startHolding(page);
@@ -378,7 +378,7 @@ test("Activity: a change joins the top of the feed within 3 s, at most one ask p
 test("search results stay the snapshot they were, labelled with its time, while their rows change", async ({ page }) => {
   const token = crypto.randomUUID().slice(0, 8);
   const { id } = await writer.create(`Snapshot ${token}`, [fresh("search")]);
-  await page.goto(`${server.url}/trax/#/activity`);
+  await page.goto(`${server.url}/trax/activity`);
   await expect(page.locator(".feed-row").first()).toBeVisible();
   await page.keyboard.press("ControlOrMeta+k");
   await page.getByRole("combobox", { name: "Command" }).fill(token);

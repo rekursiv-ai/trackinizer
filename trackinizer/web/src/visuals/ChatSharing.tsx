@@ -5,7 +5,7 @@ import { chatRefusalMessage } from "../api/chatRefusals";
 import { type ChatHead, deleteChat, shareChat, unshareChat } from "../api/chats";
 import { newUuid } from "../api/idempotency";
 import { endSession, setSessionAudience } from "../api/sessions";
-import { formatRoute } from "../router/route";
+import { routeHref } from "../router/addressBar";
 import { useCopy, useToast } from "../ui/toast";
 import "../canvases/canvases.css";
 
@@ -25,16 +25,13 @@ function useCloseOutside(open: boolean, root: RefObject<HTMLElement | null>, set
 }
 
 /**
- * The link to a chat: the app's page for its session, `#/lookup/<session>`, whose
+ * The link to a chat: the app's page for its session, `/trax/lookup/<session>`, whose
  * Continue in Chat opens the chat. It grants nothing: whoever opens it reads the
  * chat only if the server lets them (`audience.py`). This page's query is left
  * off, so `?debug=1` does not travel.
  */
 export function chatLink(head: ChatHead, page: Pick<Location, "href"> = location): string {
-  const url = new URL(page.href);
-  url.search = "";
-  url.hash = formatRoute({ name: "lookup", id: head.session_id });
-  return url.href;
+  return new URL(routeHref({ name: "lookup", id: head.session_id }), page.href).href;
 }
 
 /** Who a chat's link opens it for, by the head's `audience`, in the words of the Public/Private switch. */

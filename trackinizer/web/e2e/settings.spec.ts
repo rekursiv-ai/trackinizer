@@ -11,7 +11,7 @@ const suffix = () => crypto.randomUUID().slice(0, 8);
 const sheet = (page: Page) => page.getByRole("complementary", { name: "Your settings" });
 
 async function openSettings(page: Page): Promise<void> {
-  await page.goto("/trax/#/settings");
+  await page.goto("/trax/settings");
   await expect(sheet(page).getByRole("heading", { level: 1 })).toHaveText("Your settings");
 }
 
@@ -100,7 +100,7 @@ test("the user's own data follows them to a fresh browser: names, stars, saved v
   await expect(names.getByRole("list", { name: "Your names" })).toContainText(alias);
 
   const kept = page.waitForResponse((response) => response.request().method() === "PATCH" && response.url().endsWith("/api/me/preferences") && (response.request().postData() ?? "").includes("drafts"));
-  await page.goto(`/trax/#/lookup/${id}`);
+  await page.goto(`/trax/lookup/${id}`);
   await page.getByText("First words.").click();
   await page.getByRole("textbox", { name: "Description" }).pressSequentially(" My draft.");
   expect((await kept).ok()).toBe(true);
@@ -109,7 +109,7 @@ test("the user's own data follows them to a fresh browser: names, stars, saved v
   const other = await fresh.newPage();
   const preferences = ((await (await fresh.request.get("/api/me/profile")).json()) as { preferences: { stars: string[]; views: unknown[] } }).preferences;
   expect([preferences.stars, preferences.views]).toEqual([[id], [view]]);
-  await other.goto(`/trax/#/lookup/${id}`);
+  await other.goto(`/trax/lookup/${id}`);
   await expect(other.getByRole("textbox", { name: "Description" })).toHaveValue("First words. My draft.");
   await openSettings(other);
   await expect(other.getByRole("list", { name: "Your names" })).toContainText(alias);
@@ -117,7 +117,7 @@ test("the user's own data follows them to a fresh browser: names, stars, saved v
 });
 
 test("Settings opens as half a page over the page, from its left edge, and Close takes the tab back", async ({ page }) => {
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   const list = page.getByRole("heading", { level: 1, name: "Issues" });
   await expect(list).toBeVisible();
   await (await revealBar(page)).getByRole("button", { name: /^Account: / }).click();
@@ -137,7 +137,7 @@ test("Settings opens as half a page over the page, from its left edge, and Close
   const profile = (await page.getByRole("region", { name: "Profile" }).boundingBox())!;
   expect(Math.round(close.x + close.width)).toBe(Math.round(profile.x + profile.width));
   await page.getByRole("link", { name: "Close settings" }).click();
-  await expect(page).toHaveURL(/#\/list\/Issue$/);
+  await expect(page).toHaveURL(/\/trax\/list\/Issue$/);
   await expect(sheet(page)).toHaveCount(0);
 });
 
@@ -155,14 +155,14 @@ test("a theme and terminal font size chosen in Settings follow the user to a fre
 
   const fresh = await browser.newContext();
   const other = await fresh.newPage();
-  await other.goto("/trax/#/graph");
+  await other.goto("/trax/graph");
   await expect(other.locator("html")).toHaveAttribute("data-theme", "light");
   expect(await other.evaluate(() => Object.keys(localStorage))).not.toContain("trackinizer.theme");
   await fresh.close();
 });
 
 test("what a browser kept before preferences moved to the server is sent once, then forgotten", async ({ page }) => {
-  await page.goto("/trax/#/graph");
+  await page.goto("/trax/graph");
   await page.evaluate(() => {
     localStorage.setItem("trackinizer.theme", "light");
     localStorage.setItem("trackinizer.chat.side", "right");
@@ -187,7 +187,7 @@ test("the preferences document saves an edited setting, and the page takes it at
 
 test("a browser's old stars, names and drafts are sent once, merged into the user's, and forgotten but for the tiles", async ({ page, request }) => {
   await setPreferences(request, { stars: ["kept-on-server"] });
-  await page.goto("/trax/#/graph");
+  await page.goto("/trax/graph");
   await page.evaluate(() => {
     const state = { version: 2, stars: ["old-star"], aliases: ["old-alias"], ui: { tiles: { chat: { collapsed: true, place: null } } } };
     localStorage.setItem(`trackinizer.v2.${location.origin}.no-auth@localhost`, JSON.stringify(state));

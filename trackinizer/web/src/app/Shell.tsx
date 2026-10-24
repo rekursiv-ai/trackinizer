@@ -7,8 +7,9 @@ import { settingsCommands } from "../commands/settings";
 import { createKindFor, creatableKinds } from "../create/draft";
 import { ListView } from "../lists";
 import { PaletteView } from "../palette";
+import { routeHref } from "../router/addressBar";
 import { lazyView, useLoaded } from "../router/lazy";
-import { formatRoute, type Route } from "../router/route";
+import { type Route } from "../router/route";
 import { useRouter } from "../router/router";
 import { ActivityView, AdminView, ConsoleView, CreateView, DetailView, GraphView, SearchView, SettingsView } from "../router/views";
 import { BarStack, OfflineBar, PausedBar } from "../ui/bars";
@@ -180,7 +181,7 @@ function RouteView({ route }: { route: ViewRoute }) {
             <p>
               <code className="mono">{route.hash}</code> is not a {APP.name} link.
             </p>
-            <a className="btn" href={formatRoute(HOME)}>
+            <a className="btn" href={routeHref(HOME)}>
               Go to the graph
             </a>
           </EmptyState>

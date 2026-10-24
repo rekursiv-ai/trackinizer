@@ -4,8 +4,8 @@ import type { Detail } from "../api/detail";
 import { useMeta } from "../app/boot";
 import { PropertyEditor } from "../editors/PropertyEditor";
 import { safeUrl } from "../markdown/safeUrl";
+import { routeHref } from "../router/addressBar";
 import { linkProps } from "../router/appLink";
-import { formatRoute } from "../router/route";
 import { ReadFailure } from "../ui/failure";
 import { Avatar, capitalize, JudgementGlyph, LabelChip, PriorityGlyph, priorityName, StatusGlyph } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
@@ -150,7 +150,7 @@ function List({ name, items, uuids }: { name: string; items: readonly string[]; 
   }
   if (uuids) {
     return items.map((id, index) => (
-      <a key={key(index, id)} className="ref" href={formatRoute({ name: "lookup", id })} title={id}>
+      <a key={key(index, id)} className="ref" href={routeHref({ name: "lookup", id })} title={id}>
         <Icon name="link" size={12} />
         {id.slice(0, 8)}
       </a>

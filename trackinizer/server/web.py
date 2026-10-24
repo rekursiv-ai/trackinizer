@@ -981,13 +981,14 @@ def attach(
 
     ``/trax/`` serves a separately built web app from ``app_dir`` to the callers
     the API answers (every caller under ``--no-auth``), with ``index.html`` at
-    ``/trax/``; any other caller's entry page redirects to the sign-in page, and
-    its other files answer 401. The directory is
+    ``/trax/`` and at every path of the app's own routes (``/trax/ref/Issue/7``),
+    which name no file of the build; any other caller's entry page redirects to
+    the sign-in page, and its other files answer 401. The directory is
     resolved on every request, so it may be missing at startup (``/trax/``
     answers 404) or be a symlink swapped to a new build without a restart.
     With it, the old UI's paths answer 302 into the app: ``/`` to ``/trax/``,
     and ``/me``, ``/admin``, ``/graph`` and ``/console`` to the app's
-    ``#/settings``, ``#/admin``, ``#/graph`` and ``#/console``. So does
+    ``settings``, ``admin``, ``graph`` and ``console``. So does
     ``/app/``, the app's address before ``/trax/``: each ``/app/<path>?<query>``
     answers 302 to ``/trax/<path>?<query>``. Without it, nothing is served at
     those paths.
@@ -1016,16 +1017,16 @@ def attach(
     if app_dir is not None:
         _get(app, "/trax/{path:path}", _AppRoute(files=_app_files(app_dir)))
         _get(app, "/app/{path:path}", _moved_app)
-        # Stored links name ``/`` with a hash, which the browser keeps across a
-        # redirect whose ``Location`` has none, and the app's router reads the old
-        # hashes. 302, not 301: a browser keeps a 301 for good, which would pin
-        # these paths to ``/trax/`` past any later move.
+        # Stored links name ``/`` with a ``#/...`` route, which the browser keeps
+        # across a redirect whose ``Location`` has none, and the app's router moves
+        # an old route onto its path. 302, not 301: a browser keeps a 301 for good,
+        # which would pin these paths to ``/trax/`` past any later move.
         for path, location in (
             ("/", "/trax/"),
-            ("/me", "/trax/#/settings"),
-            ("/admin", "/trax/#/admin"),
-            ("/graph", "/trax/#/graph"),
-            ("/console", "/trax/#/console"),
+            ("/me", "/trax/settings"),
+            ("/admin", "/trax/admin"),
+            ("/graph", "/trax/graph"),
+            ("/console", "/trax/console"),
         ):
             _get(app, path, _RedirectRoute(location=location))
     _add_login_route(app, page_path=assets / "login.html", app_dir=app_dir)
@@ -1090,7 +1091,7 @@ class _AppRoute:
     ) -> Response:
         if identity is not None or path in _INSTALL_FILES:
             try:
-                return await self.files.get_response(path, scope=request.scope)
+                return await self._file(request, path)
             except StarletteHTTPException as err:
                 # Starlette answers 401 when it cannot read a file. For a signed-in
                 # caller that would read as "signed out"; an unreadable build is
@@ -1101,13 +1102,45 @@ class _AppRoute:
                     status_code=500,
                     detail="the app build is not readable by the server",
                 ) from err
-        # Refused where the API refuses the caller. Only the entry page redirects: a
-        # script or stylesheet cannot use a login page. It does so on a server that
-        # signs no browser in too, since the login page says so; a 401 there left a
-        # bare JSON error at the address a new user opens first.
-        if path != "index.html":
+        # Refused where the API refuses the caller. Only the entry page redirects, at
+        # any of the app's routes: a script or stylesheet cannot use a login page. It
+        # does so on a server that signs no browser in too, since the login page says
+        # so; a 401 there left a bare JSON error at the address a new user opens first.
+        # The path's shape alone decides here, so a signed-out caller learns nothing
+        # of what a build holds: a route's last part names no file type.
+        last = path.rsplit("/", 1)[-1]
+        if path != "index.html" and (not _is_route(path) or "." in last):
             raise HTTPException(status_code=401, detail="not authenticated")
         return _login_redirect(request)
+
+    async def _file(self, request: Request, path: str) -> Response:
+        """Return the build's file at ``path``, or its entry page for a route no file names."""
+        try:
+            return await self.files.get_response(path, scope=request.scope)
+        except StarletteHTTPException as err:
+            # A name in the build that is refused, such as a symlink out of it,
+            # stays refused.
+            named = Path(self.files.directory or "", path)
+            if (
+                err.status_code != 404
+                or not _is_route(path)
+                or await asyncio.to_thread(named.is_symlink)
+            ):
+                raise
+        return await self.files.get_response("index.html", scope=request.scope)
+
+
+# A hashed asset an old page asks for after a deploy stays a 404, which the app answers
+# by loading again; the entry page in its place would fail as a script. A path that
+# would leave the build is no route either: it stays refused.
+def _is_route(path: str) -> bool:
+    """Return whether ``path`` may be one of the app's routes (``ref/Issue/7``)."""
+    parts = path.split("/")
+    return (
+        not path.startswith(("/", "\\", "assets/"))
+        and "." not in parts
+        and ".." not in parts
+    )
 
 
 # The app's address before ``/trax/``, which records, chats and docs still link to.

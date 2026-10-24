@@ -10,7 +10,7 @@ test.beforeEach(async ({ request }) => {
 
 async function open(page: Page): Promise<void> {
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await expect(page.locator(".chat-column").getByRole("region", { name: "Chat" })).toBeVisible();
 }
 

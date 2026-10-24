@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { clearChat, hideCanvas } from "../api/canvasManagement";
 import { getCanvas } from "../api/canvases";
 import type { CanvasState } from "../api/canvases";
+import { currentRoute } from "../router/addressBar";
 import { clearChat as clearChatAction, CANVASES_KEY, hideCanvas as hideCanvasAction, openCanvas } from "./actions";
 import { currentCanvas, setCanvas } from "./store";
 
@@ -56,7 +57,7 @@ test("a canvas refresh keeps navigation made after the chat was selected", async
   window.location.hash = "#/list/Issue";
   finish({ ...state("w2"), page: "#/graph", revision: 2 });
   await opening;
-  expect(window.location.hash).toBe("#/list/Issue");
+  expect(currentRoute()).toBe("#/list/Issue");
 });
 
 test("hiding the current canvas opens its visible neighbour and marks it hidden", async () => {

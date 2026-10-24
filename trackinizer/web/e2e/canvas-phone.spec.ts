@@ -31,7 +31,7 @@ async function floatGraph(request: APIRequestContext): Promise<void> {
 
 async function open(page: Page, size: { width: number; height: number }) {
   await page.setViewportSize(size);
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   await expect(page.locator(".chat-row")).toBeVisible();
 }
 

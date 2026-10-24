@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { renderDetail, row } from "../detail/testing";
 import { stubLayout } from "../editors/testing";
+import { currentRoute } from "../router/addressBar";
 import { cacheWith, serveGraph } from "./testing";
 
 const OLD = row("Issue", 1, { title: "Old plan" });
@@ -79,7 +80,7 @@ test("Supersede with a new inquiry is one batch of the new row and its edge, the
   fireEvent.change(title, { target: { value: "New plan" } });
   fireEvent.change(within(dialog).getByRole("textbox", { name: "Description" }), { target: { value: "Replaces the old plan." } });
   fireEvent.keyDown(title, { key: "Enter", metaKey: true });
-  await waitFor(() => expect(location.hash).toBe(`#/lookup/${server.rows.at(-1)!.id}`));
+  await waitFor(() => expect(currentRoute()).toBe(`#/lookup/${server.rows.at(-1)!.id}`));
   expect(screen.getByText("Created a new issue that supersedes Issue#1")).toBeTruthy();
   const [write] = server.writes();
   const items = (write!.body as { items: { idempotency_key: string }[] }).items;
@@ -109,7 +110,7 @@ test("a batch the server keeps failing is retried with the same keys, then offer
   expect(within(dialog).getByText("Not saved: the server failed (database unavailable).")).toBeTruthy();
   expect(server.writes()).toHaveLength(4);
   fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(location.hash).toBe(`#/lookup/${server.rows.at(-1)!.id}`));
+  await waitFor(() => expect(currentRoute()).toBe(`#/lookup/${server.rows.at(-1)!.id}`));
   // Every send is the same request: the same row key.
   expect(new Set(server.writes().map((write) => JSON.stringify(write.body))).size).toBe(1);
 });
@@ -138,6 +139,6 @@ test("a supersede dialog closed while its batch is sent opens nothing once it la
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   release();
   expect(await screen.findByText("Created a new issue that supersedes Issue#1")).toBeTruthy();
-  expect(location.hash).toBe("#/ref/Issue/1");
+  expect(currentRoute()).toBe("#/ref/Issue/1");
   expect(server.rows).toHaveLength(3);
 });

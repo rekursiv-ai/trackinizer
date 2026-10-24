@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { createDefaultCanvas, getCanvas, type CanvasState } from "../api/canvases";
+import { currentRoute, goTo } from "../router/addressBar";
 import { acceptCanvas, newerCanvas } from "./cache";
 import { setCanvas, useCurrentCanvas } from "./store";
 
@@ -48,5 +49,5 @@ export function useCanvas({ enabled = true }: { readonly enabled?: boolean } = {
 export function showCanvas(queryClient: QueryClient, state: CanvasState, route: string = state.page ?? HOME): void {
   acceptCanvas(queryClient, state);
   setCanvas(state.id, route);
-  if (window.location.hash !== route) window.location.hash = route;
+  if (currentRoute() !== route) goTo(route);
 }

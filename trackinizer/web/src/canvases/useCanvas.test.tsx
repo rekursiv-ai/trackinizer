@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ApiError } from "../api/client";
 import { createDefaultCanvas, getCanvas, type CanvasState } from "../api/canvases";
+import { currentRoute } from "../router/addressBar";
 import { currentCanvas, setCanvas } from "./store";
 import { showCanvas, useCanvas } from "./useCanvas";
 
@@ -37,7 +38,7 @@ test("a tab with no canvas asks for the one changed last, and keeps it", async (
   expect(client.getQueryData(["canvas", "w1"])).toMatchObject({ id: "w1" });
   expect(getCanvas).not.toHaveBeenCalled();
   // The page the tab opened on is left where it was.
-  expect(location.hash).toBe("#/list/Issue");
+  expect(currentRoute()).toBe("#/list/Issue");
 });
 
 test("a tab that kept a canvas reads that one, without asking for the last", async () => {
@@ -85,13 +86,13 @@ test("showing a canvas seeds the cache, remembers it, and moves the page to the 
   showCanvas(client, state("w5", { page: "#/list/Paper" }));
   expect(client.getQueryData(["canvas", "w5"])).toMatchObject({ id: "w5" });
   expect(currentCanvas()).toEqual({ id: "w5", landing: "#/list/Paper" });
-  expect(location.hash).toBe("#/list/Paper");
+  expect(currentRoute()).toBe("#/list/Paper");
 });
 
 test("a canvas that showed no page opens on the graph, and a caller can keep the page it is on", () => {
   showCanvas(client, state("w5"));
-  expect(location.hash).toBe("#/graph");
+  expect(currentRoute()).toBe("#/graph");
   showCanvas(client, state("w6"), "#/list/Paper");
-  expect(location.hash).toBe("#/list/Paper");
+  expect(currentRoute()).toBe("#/list/Paper");
   expect(currentCanvas().landing).toBe("#/list/Paper");
 });

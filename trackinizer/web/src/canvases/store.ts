@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { currentRoute } from "../router/addressBar";
 
 /** The canvas this tab shows, and the page it was sent to when the tab switched to it. */
 export type CurrentCanvas = {
@@ -25,8 +26,8 @@ let navigation = 0;
 /** An asynchronous navigation may select its result only while this intent is current. */
 export function beginCanvasNavigation(): () => boolean {
   const intent = ++navigation;
-  const route = window.location.hash;
-  return () => intent === navigation && window.location.hash === route;
+  const route = currentRoute();
+  return () => intent === navigation && currentRoute() === route;
 }
 
 // The browser no longer keeps the last canvas opened for every tab: forget what an older build left.

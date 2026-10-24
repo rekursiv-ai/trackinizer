@@ -44,7 +44,7 @@ async function drain(request: APIRequestContext, id: string): Promise<string[]> 
 /** Open the console once the live stream is connected. */
 async function openConsole(page: Page) {
   const subscribed = streamOpened(page);
-  await page.goto("/trax/#/console");
+  await page.goto("/trax/console");
   await subscribed;
 }
 

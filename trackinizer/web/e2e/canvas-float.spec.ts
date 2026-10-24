@@ -44,7 +44,7 @@ async function open(page: Page, theme: "dark" | "light" = "dark"): Promise<{ til
   await setPreferences(page.request, { theme });
   // Wide enough that the stage, beside the Chat column, is as wide as the specs assume.
   await page.setViewportSize({ width: 1600, height: 900 });
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   const tile = page.locator(".visual-tile-floating");
   await expect(tile.getByRole("region", { name: "Context graph" })).toBeVisible();
   return { tile, bar: tile.locator(".visual-tile-toolbar") };

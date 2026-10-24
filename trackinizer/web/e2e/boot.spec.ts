@@ -1,4 +1,4 @@
-import { expect, failedResource, revealBar, test } from "./fixtures";
+import { expect, failedResource, revealBar, test, route } from "./fixtures";
 
 // The server runs with --no-auth, so every request is the synthetic admin.
 test("the shell boots and shows the signed-in profile", async ({ page }) => {
@@ -13,7 +13,7 @@ test("the shell boots and shows the signed-in profile", async ({ page }) => {
   expect((await page.request.get(favicon!)).status()).toBe(200);
 });
 
-test("a 401 sends the browser to the login page, and the next boot restores the hash", async ({
+test("a 401 sends the browser to the login page, whose next is the page it was on", async ({
   page,
   allowErrors,
 }) => {
@@ -25,12 +25,12 @@ test("a 401 sends the browser to the login page, and the next boot restores the 
   await page.route("**/api/me/profile", (route) =>
     route.fulfill({ status: 401, json: { detail: "not signed in" } }),
   );
-  await page.goto("/trax/#/list/Paper");
-  await page.waitForURL("**/auth/login_page?next=%2Ftrax%2F");
+  await page.goto("/trax/list/Paper");
+  await page.waitForURL("**/auth/login_page?next=%2Ftrax%2Flist%2FPaper");
 
-  // Signed in again: the login page returns to /trax/ with no hash.
+  // Signed in again: the login page returns to its next.
   await page.unroute("**/api/me/profile");
-  await page.goto("/trax/");
+  await page.goto(new URL(page.url()).searchParams.get("next")!);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Papers");
-  expect(new URL(page.url()).hash).toBe("#/list/Paper");
+  expect(route(page)).toBe("#/list/Paper");
 });

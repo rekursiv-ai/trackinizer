@@ -19,7 +19,7 @@ async function open(page: Page, options: { theme?: "dark" | "light" } = {}): Pro
   await page.addInitScript(exposeEventSources);
   await setPreferences(page.request, { theme: options.theme ?? "dark" });
   await page.setViewportSize({ width: 1280, height: 800 });
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   const column = page.locator(".chat-column");
   await expect(column.getByRole("region", { name: "Chat" })).toBeVisible();
   return { column, stage: page.locator(".visual-stage"), strip: page.getByRole("button", { name: "Show Chat" }) };

@@ -82,7 +82,7 @@ test("a read the server refuses shows Copy details with the id it echoed", async
     return route.continue({ url: url.toString() });
   });
   const refused = page.waitForResponse((response) => response.url().includes("l1b_no_such_field"));
-  await page.goto("/trax/#/list/Paper");
+  await page.goto("/trax/list/Paper");
   const response = await refused;
   expect(response.status()).toBe(400);
   const alert = page.getByRole("alert");
@@ -102,7 +102,7 @@ test("a write the server refuses shows Copy details with the id it echoed", asyn
   await page.route(`**/api/inquiries/${id}/status`, (route) =>
     route.continue({ postData: JSON.stringify({ ...route.request().postDataJSON(), value: 5 }) }),
   );
-  await page.goto(`/trax/#/lookup/${id}`);
+  await page.goto(`/trax/lookup/${id}`);
   await openProperties(page);
   const status = page.getByRole("complementary", { name: "Properties" }).locator('[data-field="status"] button.prop-btn');
   await expect(status).toHaveText("Active");

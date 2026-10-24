@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, test, route } from "./fixtures";
 import { DETAIL_CHILDREN as CHILDREN, readHubs } from "./hubs";
 
 // One hub with 61 children, one of which also narrows a second parent, and a
@@ -35,7 +35,7 @@ async function create(
 
 test("a hub's detail renders every child, its Markdown and its activity", async ({ page, request }) => {
   const { self } = await (await request.get(`/api/web/get/${ids[0]}`)).json();
-  await page.goto(`/trax/#/ref/Issue/${self.seq}`);
+  await page.goto(`/trax/ref/Issue/${self.seq}`);
   await expect(heading(page)).toHaveText("Detail hub");
   const children = section(page, "Children");
   await children.getByRole("button", { name: `Show all ${CHILDREN}` }).click();
@@ -43,7 +43,7 @@ test("a hub's detail renders every child, its Markdown and its activity", async 
   await expect(children.locator(".rail-edges").first().getByRole("img", { name: "P0 Critical" })).toBeVisible();
 
   const description = page.locator('[data-field="description"]');
-  await expect(description.getByRole("link", { name: "Belief#1" })).toHaveAttribute("href", "#/ref/Belief/1");
+  await expect(description.getByRole("link", { name: "Belief#1" })).toHaveAttribute("href", "/trax/ref/Belief/1");
   await expect(description.getByRole("link", { name: "the plan" })).toHaveAttribute("href", "https://example.com/plan");
   await expect(description.locator("code")).toHaveText("Issue#1");
 
@@ -57,10 +57,10 @@ test("a link in a description to this server's route moves the tab in place, and
   const [target] = await create(request, [{ kind: "Issue", title: "Link target" }]);
   const { self: targetSelf } = await (await request.get(`/api/web/get/${target}`)).json();
   const [source] = await create(request, [
-    { kind: "Issue", title: "Link source", description: `[go](${baseURL}/trax/#/ref/Issue/${targetSelf.seq})` },
+    { kind: "Issue", title: "Link source", description: `[go](${baseURL}/trax/ref/Issue/${targetSelf.seq})` },
   ]);
   const { self } = await (await request.get(`/api/web/get/${source}`)).json();
-  await page.goto(`/trax/#/ref/Issue/${self.seq}`);
+  await page.goto(`/trax/ref/Issue/${self.seq}`);
   await expect(heading(page)).toHaveText("Link source");
   let popup = false;
   page.context().on("page", () => (popup = true));
@@ -72,7 +72,7 @@ test("a link in a description to this server's route moves the tab in place, and
 });
 
 test("a lookup link opens by id, with evidence confidence beside the author's", async ({ page }) => {
-  await page.goto(`/trax/#/lookup/${ids[CHILDREN + 2]}`);
+  await page.goto(`/trax/lookup/${ids[CHILDREN + 2]}`);
   await expect(heading(page)).toHaveText("Detail belief");
   const properties = page.getByRole("complementary", { name: "Properties" });
   await expect(properties.locator('[data-field="confidence"] dd')).toHaveText("0.90");
@@ -81,7 +81,7 @@ test("a lookup link opens by id, with evidence confidence beside the author's", 
 });
 
 test("a child names both of its parents, and a relation opens its inquiry", async ({ page }) => {
-  await page.goto(`/trax/#/lookup/${ids[1]}`);
+  await page.goto(`/trax/lookup/${ids[1]}`);
   await expect(heading(page)).toHaveText("Hub child 0");
   const parents = section(page, "Parents");
   await expect(parents.locator(".rail-peer")).toHaveCount(2);
@@ -104,10 +104,10 @@ test("Show in graph opens the graph focused on the inquiry, two hops out", async
     [{ from_index: 1, to_index: 0, edge_kind: "narrows" }],
   );
   const { self } = await (await request.get(`/api/web/get/${id}`)).json();
-  await page.goto(`/trax/#/lookup/${id}`);
+  await page.goto(`/trax/lookup/${id}`);
   await expect(heading(page)).toHaveText("Shown in the graph");
   await page.getByRole("link", { name: "Show in graph" }).click();
-  await expect.poll(() => new URL(page.url()).hash).toBe(`#/graph?focus=Issue/${self.seq}&hops=2`);
+  await expect.poll(() => route(page)).toBe(`#/graph?focus=Issue/${self.seq}&hops=2`);
   await expect(page.locator(".graph-count")).toHaveText(/\d nodes?$/);
   // The canvas cannot be read; `trackinizer.graph()` reports what it draws, selects and focuses on.
   type Drawn = { focus: string | null; selected: string | null; nodes: { id: string }[] };
@@ -140,13 +140,13 @@ test("the rail's graph preview draws two hops round the inquiry; a click opens t
     ],
   );
   const { self } = await (await request.get(`/api/web/get/${id}`)).json();
-  await page.goto(`/trax/#/lookup/${id}`);
+  await page.goto(`/trax/lookup/${id}`);
   await expect(heading(page)).toHaveText("Previewed");
   const preview = page.getByRole("link", { name: `Open in graph: Issue#${self.seq}, 2 hops` });
   await expect(preview.locator("[data-id]")).toHaveCount(4);
   await expect(preview.locator(".rail-graph-caption")).toHaveText("4 nodes within 2 hops");
   await preview.click();
-  await expect.poll(() => new URL(page.url()).hash).toBe(`#/graph?focus=Issue/${self.seq}&hops=2`);
+  await expect.poll(() => route(page)).toBe(`#/graph?focus=Issue/${self.seq}&hops=2`);
   await expect(page.locator(".graph-count")).toHaveText(/\d nodes?$/);
   type Drawn = { focus: string | null; selected: string | null };
   const drawn = () => page.evaluate(() => (window as unknown as { trackinizer: { graph(): Drawn } }).trackinizer.graph());
@@ -173,7 +173,7 @@ test("narrow, the rail stacks under the title and text, above other relations", 
     ],
   );
   await page.setViewportSize({ width: 700, height: 900 });
-  await page.goto(`/trax/#/lookup/${belief}`);
+  await page.goto(`/trax/lookup/${belief}`);
   await expect(heading(page)).toHaveText("Narrow belief");
   const parents = section(page, "Parents");
   await expect(parents.locator(".rail-peer")).toHaveCount(1);
@@ -198,7 +198,7 @@ test("an HTML Artifact opens filling its record's pane, and the record follows b
   expect(published.ok(), await published.text()).toBe(true);
   const { artifact_id: artifact } = (await published.json()) as { artifact_id: string };
   await page.setViewportSize({ width: 1600, height: 900 });
-  await page.goto(`/trax/#/lookup/${artifact}`);
+  await page.goto(`/trax/lookup/${artifact}`);
   const frame = page.locator(".artifact-html-frame");
   await expect(frame).toBeVisible();
   await expect(heading(page)).toHaveText("An HTML report (revision 1)");
@@ -227,7 +227,7 @@ test("a description that is a job's JSON result shows as a JSON view, its metric
   // An Artifact's detail asks for its published content, and this one has none:
   // the 404 shows nothing on the page, but the browser logs it.
   allowErrors(failedResource(`/api/artifacts/${artifact}/content`, 404));
-  await page.goto(`/trax/#/lookup/${artifact}`);
+  await page.goto(`/trax/lookup/${artifact}`);
   await expect(heading(page)).toHaveText("A job's result");
   const json = page.locator('[data-field="description"]').getByRole("group", { name: "JSON" });
   await expect(json.getByText('"MEASURED"')).toBeVisible();
@@ -240,7 +240,7 @@ test("a description that is a job's JSON result shows as a JSON view, its metric
   await expect(table).toBeHidden();
 
   // The highlighter's chunk and its stylesheet load with the first code block.
-  await page.goto(`/trax/#/lookup/${issue}`);
+  await page.goto(`/trax/lookup/${issue}`);
   await expect(heading(page)).toHaveText("A rerun");
   await expect(page.locator('[data-field="description"] code .hljs-keyword').first()).toHaveCSS("color", "rgb(255, 123, 114)");
 });

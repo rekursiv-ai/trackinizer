@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { ApiError } from "../api/client";
 import { getEvidenceTimeline, type EvidenceTimeline, type TimelineRecord } from "../api/timeline";
+import { currentRoute } from "../router/addressBar";
 import { Timeline } from "./Timeline";
 import { timeAxis, timelineRows, ticks } from "./timelineLayout";
 import { CanvasActionsProvider } from "./canvasActions";
@@ -161,10 +162,10 @@ test("a card click moves the page and re-centres the window on that record", asy
   vi.mocked(getEvidenceTimeline).mockResolvedValue(timeline);
   const { operate } = renderTimeline(view());
   fireEvent.click(await screen.findByRole("link", { name: /Issue#710/ }));
-  expect(window.location.hash).toBe("#/ref/Issue/710");
+  expect(currentRoute()).toBe("#/ref/Issue/710");
   expect(operate).toHaveBeenCalledWith({ kind: "show", visual_type: "trax.timeline", record_id: "Issue-710" });
   fireEvent.click(screen.getByRole("link", { name: /Experiment#655/ }));
-  expect(window.location.hash).toBe("#/ref/Experiment/655");
+  expect(currentRoute()).toBe("#/ref/Experiment/655");
   expect(operate).toHaveBeenLastCalledWith({ kind: "show", visual_type: "trax.timeline", record_id: "Experiment-655" });
 });
 

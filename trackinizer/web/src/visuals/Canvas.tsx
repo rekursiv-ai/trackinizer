@@ -16,6 +16,7 @@ import { useCanvas } from "../canvases/useCanvas";
 import { CrashBoundary } from "../app/CrashBoundary";
 import { useWorkbenchMounted, useWorkbenchSlot } from "../app/workbenchSlot";
 import { usePreferences } from "../preferences";
+import { currentRoute, goTo, onRouteChange } from "../router/addressBar";
 import { parseHash } from "../router/route";
 import { useHash } from "../router/trail";
 import { useBrowserState } from "../state/store";
@@ -126,8 +127,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   useEffect(() => followColumns(threeColumns), [threeColumns]);
   /** Whether floating `pane` is folded to its bar, as it was left. */
   const folded = (pane: (typeof panes)[number]) => rememberedTile(layout, pane.type, stage).collapsed;
-  const route = parseHash(window.location.hash, []);
-  const refRoute = /^#\/ref\/([^/?]+)\/(\d+)$/.exec(window.location.hash);
+  const route = parseHash(currentRoute(), []);
+  const refRoute = /^#\/ref\/([^/?]+)\/(\d+)$/.exec(currentRoute());
   const refKind = refRoute?.[1] ?? null;
   const refSeq = refRoute?.[2] ? Number(refRoute[2]) : null;
   const refId = useQuery({
@@ -254,12 +255,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       reopening.current = true;
       void write({ kind: "show", visual_type: PAGE, placement: "main" }).finally(() => { reopening.current = false; });
     };
-    addEventListener("hashchange", reopen);
-    addEventListener("popstate", reopen);
-    return () => {
-      removeEventListener("hashchange", reopen);
-      removeEventListener("popstate", reopen);
-    };
+    return onRouteChange(reopen);
   }, [pageClosed]);
 
   const change = useMutation({
@@ -311,8 +307,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       if (canvas) interrupt(canvas, key, target);
       return;
     }
-    if (target.page !== null && window.location.hash !== target.page) window.location.hash = target.page;
-    settle(key, target, snapshotOf(latestCanvas.current?.visuals ?? [], window.location.hash));
+    if (target.page !== null && currentRoute() !== target.page) goTo(target.page);
+    settle(key, target, snapshotOf(latestCanvas.current?.visuals ?? [], currentRoute()));
   }
 
   function stepBy(by: -1 | 1) {
@@ -338,7 +334,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   /** The tabs with the open one as it is left now: what it shows, under a sheet the graph, and its sizes. */
   function leaving(): CanvasTab[] {
     const visuals = latestCanvas.current?.visuals ?? [];
-    const now = snapshotOf(visuals, window.location.hash) ?? snapshotOf(visuals, HOME_ROUTE)!;
+    const now = snapshotOf(visuals, currentRoute()) ?? snapshotOf(visuals, HOME_ROUTE)!;
     return tabs.map((tab) => (tab.id === openTab ? leftTab(tab, now, layout) : tab));
   }
 
@@ -782,7 +778,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         <VisualPane instance={pane} canvas={canvas ?? null} onCanvasChanged={acceptCanvas}
           focused={canvas?.focused_instance === pane.id}>
           {isPage && <div className="visual-browse-content">
-            <CrashBoundary reload={() => window.location.reload()} resetKey={window.location.hash}
+            <CrashBoundary reload={() => window.location.reload()} resetKey={currentRoute()}
               frame={(crash) => <div className="view">{crash}</div>}>{children}</CrashBoundary>
           </div>}
         </VisualPane>

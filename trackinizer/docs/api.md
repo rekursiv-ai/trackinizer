@@ -545,11 +545,13 @@ still counts the records written before it, at the times they were written.
 
 `/trax/` exists when the server has a built web app: the one in
 `--app-dir DIR`, else the build packaged with trackinizer. It serves the app,
-with `DIR/index.html` at `/trax/`, to every caller the API answers: any
-signed-in role, and anyone under `--no-auth`. It refuses every other caller,
-as the API does, whether or not the server has session login: `/trax/` and
-`/trax/index.html` answer 302 to `/auth/login_page?next=<path>`, and every
-other file answers 401. `DIR` is resolved on
+with `DIR/index.html` at `/trax/` and at each of the app's routes (a path
+under `/trax/` that names no file and is not under `/trax/assets/`, such as
+`/trax/ref/Issue/7`), to every caller the API answers: any signed-in role,
+and anyone under `--no-auth`. It refuses every other caller, as the API does,
+whether or not the server has session login: `/trax/`, `/trax/index.html`
+and each route whose last part has no file extension answer 302 to
+`/auth/login_page?next=<path>`, and every other file answers 401. `DIR` is resolved on
 every request: it may be missing (404) or be a symlink swapped to a new
 build without a restart. A path that leaves `DIR`, through `..` or a
 symlink, answers 404. Every `/trax/` response, errors included, is
@@ -561,13 +563,13 @@ browsers keep it without asking again. Every other response carries
 after a new build lands.
 
 With an app, the old UI's paths lead into it: `/` answers 302 to
-`/trax/`, and `/me`, `/admin`, `/graph` and `/console` to `/trax/#/settings`,
-`/trax/#/admin`, `/trax/#/graph` and `/trax/#/console`, each with
+`/trax/`, and `/me`, `/admin`, `/graph` and `/console` to `/trax/settings`,
+`/trax/admin`, `/trax/graph` and `/trax/console`, each with
 `Cache-Control: private, no-cache`. So does `/app/`, the app's address
 before `/trax/`: `/app/<path>?<query>` answers 302 to `/trax/<path>?<query>`,
 signed in or not. A browser keeps a link's hash across a redirect whose
 `Location` has none, so `/app/#/ref/Issue/7` opens `/trax/#/ref/Issue/7`, and
-the app reads the old UI's hashes. Without one, nothing is served at those
+the app moves an old `#/...` route onto its path, `/trax/ref/Issue/7`. Without one, nothing is served at those
 paths.
 
 `/auth/login_page` is the sign-in page, served to anyone.

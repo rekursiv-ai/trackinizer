@@ -11,6 +11,7 @@ import { META } from "../detail/testing";
 import { LiveContext } from "../live";
 import { LiveHub as LiveHubClass, type LiveHub } from "../live/hub";
 import { preferences } from "../preferences";
+import { currentRoute } from "../router/addressBar";
 import { currentChatColumn, setChatFullscreen, setChatSide } from "../visuals/chatColumnState";
 import { ChatFeedContext, useChatFeed } from "../visuals/chatFeed";
 import { MetaContext } from "./boot";
@@ -117,12 +118,12 @@ test("an agent's navigation moves the page when the router knows the route, and 
   const stream = await listener();
   const record = "61d3a095-c7f1-4d27-a4c4-a5b1c218a31e";
   act(() => stream.navigate(`#/lookup/${record}`, 20));
-  expect(window.location.hash).toBe(`#/lookup/${record}`);
+  expect(currentRoute()).toBe(`#/lookup/${record}`);
   act(() => stream.navigate("#/list/Issue", 21));
-  expect(window.location.hash).toBe("#/list/Issue");
+  expect(currentRoute()).toBe("#/list/Issue");
   for (const route of ["#/nowhere", "#/list/NoSuchKind", "lookup/x", "#/ref/Issue/notanumber"]) {
     act(() => stream.navigate(route, 22));
-    expect(window.location.hash).toBe("#/list/Issue");
+    expect(currentRoute()).toBe("#/list/Issue");
   }
   expect(recentTimings().map((frame) => [frame.frame, frame.route, frame.t])).toEqual([
     ["navigate", `#/lookup/${record}`, 20], ["navigate", "#/list/Issue", 21],
@@ -224,7 +225,7 @@ test("a highlight moves neither the page nor the canvas", async () => {
   show(true, <Marks />);
   const stream = await listener();
   act(() => stream.highlight(["a"], 1));
-  expect(window.location.hash).toBe("#/list/Issue");
+  expect(currentRoute()).toBe("#/list/Issue");
   expect(client.getQueryData(["canvas", "w1"])).toBe(canvas);
   expect(recentTimings()).toEqual([]);
 });

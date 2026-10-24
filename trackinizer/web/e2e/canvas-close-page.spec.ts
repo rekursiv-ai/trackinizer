@@ -1,5 +1,5 @@
 import type { APIRequestContext } from "@playwright/test";
-import { expect, revealBar, test } from "./fixtures";
+import { expect, revealBar, test, route } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
 // The page (Browse) closes like any other tile, and the user's own navigation
@@ -29,7 +29,7 @@ async function pageAndGraph(request: APIRequestContext): Promise<void> {
 
 test("a closed page comes back with the user's next navigation", async ({ page, request }) => {
   await pageAndGraph(request);
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   const browse = page.locator(".visual-tile-browse");
   await expect(browse).toBeVisible();
 
@@ -39,12 +39,12 @@ test("a closed page comes back with the user's next navigation", async ({ page, 
 
   await page.evaluate(() => { location.hash = "#/activity"; });
   await expect(browse).toBeVisible();
-  expect(new URL(page.url()).hash).toBe("#/activity");
+  expect(route(page)).toBe("#/activity");
 });
 
 test("the Workbench section offers a closed page and brings it back", async ({ page, request }) => {
   await pageAndGraph(request);
-  await page.goto("/trax/#/list/Issue");
+  await page.goto("/trax/list/Issue");
   const browse = page.locator(".visual-tile-browse");
   await browse.getByTitle("Dismiss visual").click();
   await expect(browse).toHaveCount(0);
