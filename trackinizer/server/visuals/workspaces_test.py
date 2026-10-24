@@ -25,6 +25,7 @@ from trackinizer.server.visuals.workspaces import (
     create_workspace,
     list_workspaces,
     open_scratch,
+    remember_opened_canvas,
     set_workspace_order,
     update_workspace,
     workspace_info,
@@ -329,6 +330,85 @@ async def test_info_includes_canvases_and_defaults_legacy_canvases_to_scratch(
     )
     assert info is not None
     assert [canvas.name for canvas in info.canvases] == ["scratch-canvas"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_opened_canvas_becomes_its_workspaces_last_and_the_bar_keeps_the_rest(
+    context: tuple[PGliteEngine, Store],
+) -> None:
+    engine, store = context
+    scratch = await open_scratch(engine, store=store, user_id=_USER, email=_EMAIL)
+    research = await create_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+        title="Research",
+    )
+    await update_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+        workspace_id=research.id,
+        pinned=True,
+    )
+    other = uuid.UUID("44444444-4444-4444-4444-444444444444")
+    first, second, loose, theirs = (uuid.uuid4() for _ in range(4))
+    async with engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, 'other@example.com', 'Other', 'writer', 'active')",
+            other,
+        )
+        for canvas_id, owner, metadata in (
+            (first, _USER, {"name": "first", "workspace_id": str(research.id)}),
+            (second, _USER, {"name": "second", "workspace_id": str(research.id)}),
+            (loose, _USER, {"name": "loose"}),
+            (theirs, other, {"name": "theirs", "workspace_id": str(research.id)}),
+        ):
+            await conn.execute(
+                "INSERT INTO visual_canvases (id, user_id, metadata, state) "
+                "VALUES ($1, $2, $3, $4)",
+                canvas_id,
+                owner,
+                metadata,
+                {"visuals": []},
+            )
+
+    opened = [
+        await remember_opened_canvas(
+            engine,
+            user_id=_USER,
+            email=_EMAIL,
+            canvas_id=canvas_id,
+        )
+        for canvas_id in (first, loose, second, theirs, uuid.uuid4())
+    ]
+
+    assert opened == [True, True, True, False, False]
+    listed = {
+        entry.id: entry
+        for entry in await list_workspaces(
+            engine,
+            user_id=_USER,
+            email=_EMAIL,
+            include_hidden=True,
+        )
+    }
+    # A canvas with no workspace is Scratch's; the pin set before is kept.
+    assert listed[research.id].last_canvas_id == str(second)
+    assert listed[scratch].last_canvas_id == str(loose)
+    assert listed[research.id].pinned
+    info = await workspace_info(
+        engine,
+        user_id=_USER,
+        email=_EMAIL,
+        workspace_id=research.id,
+    )
+    assert info is not None
+    assert info.last_canvas_id == str(second)
 
 
 if __name__ == "__main__":

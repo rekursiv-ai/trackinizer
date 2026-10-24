@@ -6,7 +6,7 @@ from typing import Annotated
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from treekle import from_plain
 
 from trackinizer.server.api._deps import get_store
@@ -23,6 +23,7 @@ from trackinizer.server.visuals.workspaces import (
     create_workspace,
     list_workspaces,
     open_scratch,
+    remember_opened_canvas,
     set_workspace_order,
     update_workspace,
     workspace_info,
@@ -217,3 +218,34 @@ async def workspace_info_route(
     if result is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return result
+
+
+@router.put("/api/canvases/{canvas_id}/opened", status_code=204)
+async def remember_opened_canvas_route(
+    canvas_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> Response:
+    """Remember a canvas as the one opened last in its workspace.
+
+    Switching to the workspace opens it again, in any browser. No revision changes
+    and nothing is published.
+
+    Args:
+      canvas_id: The canvas opened.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account, which must own the canvas.
+
+    Returns:
+      response: Empty.
+
+    """
+    require_browser(identity)
+    if not await remember_opened_canvas(
+        engine_of(request),
+        user_id=identity.user_id,
+        email=identity.email,
+        canvas_id=canvas_id,
+    ):
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    return Response(status_code=204)

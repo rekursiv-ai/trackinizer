@@ -7558,7 +7558,7 @@
           },
           "workspaces": {
             "$ref": "#/components/schemas/WorkspacesPreference",
-            "description": "Your workspace bar order, pins, and hidden items."
+            "description": "Your workspace bar order, pins, and hidden items, and the canvas you opened last in each workspace."
           }
         },
         "title": "Preferences",
@@ -12350,6 +12350,18 @@
             "title": "Id",
             "type": "string"
           },
+          "last_canvas_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The canvas the user opened last here, which switching to the workspace opens; it may since be hidden, moved or gone.",
+            "title": "Last Canvas Id"
+          },
           "pinned": {
             "title": "Pinned",
             "type": "boolean"
@@ -12440,6 +12452,18 @@
             "title": "Id",
             "type": "string"
           },
+          "last_canvas_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The canvas the user opened last here, which switching to the workspace opens; it may since be hidden, moved or gone.",
+            "title": "Last Canvas Id"
+          },
           "pinned": {
             "title": "Pinned",
             "type": "boolean"
@@ -12481,6 +12505,20 @@
             "maxItems": 500,
             "title": "Hidden",
             "type": "array"
+          },
+          "last_canvas": {
+            "additionalProperties": {
+              "maxLength": 100,
+              "type": "string"
+            },
+            "default": {},
+            "description": "The canvas you opened last in each workspace, by workspace id: switching to the workspace opens it again, in any browser.",
+            "maxProperties": 500,
+            "propertyNames": {
+              "maxLength": 100
+            },
+            "title": "Last Canvas",
+            "type": "object"
           },
           "order": {
             "default": [],
@@ -14764,6 +14802,40 @@
           }
         },
         "summary": "Set Canvas Layout Route"
+      }
+    },
+    "/api/canvases/{canvas_id}/opened": {
+      "put": {
+        "description": "Remember a canvas as the one opened last in its workspace.\n\nSwitching to the workspace opens it again, in any browser. No revision changes\nand nothing is published.\n\nArgs:\n  canvas_id: The canvas opened.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  response: Empty.",
+        "operationId": "remember_opened_canvas_route_api_canvases__canvas_id__opened_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "canvas_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Canvas Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remember Opened Canvas Route"
       }
     },
     "/api/canvases/{canvas_id}/operations": {
