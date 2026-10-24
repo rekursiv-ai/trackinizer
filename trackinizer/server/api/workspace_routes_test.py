@@ -148,6 +148,19 @@ async def _missing_info_fake(
     del engine, user_id, email, workspace_id
 
 
+async def _remember_opened_fake(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    email: str,
+    canvas_id: uuid.UUID,
+    found: bool,
+) -> bool:
+    del engine
+    assert (user_id, email, canvas_id) == (_USER, _IDENTITY.email, _ID)
+    return found
+
+
 def _request() -> Request:
     """Return a route request stand-in."""
     return cast("Request", MagicMock())
@@ -366,6 +379,42 @@ async def test_info_route_returns_not_found_for_an_unowned_issue(
     monkeypatch.setattr(workspace_routes, "workspace_info", _missing_info_fake)
     with pytest.raises(HTTPException) as error:
         await workspace_routes.workspace_info_route(
+            _ID,
+            request=_request(),
+            identity=_IDENTITY,
+        )
+    assert error.value.status_code == 404
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_opened_route_answers_no_content_for_the_users_canvas_and_not_found_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = cast("DatabaseEngine", FakeEngine())
+    _route_dependencies(
+        monkeypatch,
+        engine=engine,
+        store=Store(engine, embed=StubEmbedder()),
+    )
+
+    monkeypatch.setattr(
+        workspace_routes,
+        "remember_opened_canvas",
+        partial(_remember_opened_fake, found=True),
+    )
+    response = await workspace_routes.remember_opened_canvas_route(
+        _ID,
+        request=_request(),
+        identity=_IDENTITY,
+    )
+    assert response.status_code == 204
+    monkeypatch.setattr(
+        workspace_routes,
+        "remember_opened_canvas",
+        partial(_remember_opened_fake, found=False),
+    )
+    with pytest.raises(HTTPException) as error:
+        await workspace_routes.remember_opened_canvas_route(
             _ID,
             request=_request(),
             identity=_IDENTITY,

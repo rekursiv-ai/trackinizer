@@ -22,6 +22,8 @@ from trackinizer.wire.bodies import SubmitIssue
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from asyncpg import Record
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
@@ -37,6 +39,13 @@ class WorkspaceSummary(BaseModel):
     scratch: bool
     hidden: bool
     pinned: bool
+    last_canvas_id: str | None = Field(
+        default=None,
+        description=(
+            "The canvas the user opened last here, which switching to the workspace "
+            "opens; it may since be hidden, moved or gone."
+        ),
+    )
 
 
 class WorkspaceCanvas(BaseModel):
@@ -262,6 +271,7 @@ async def list_workspaces(
             scratch_id=scratch_id,
             hidden_ids=hidden_ids,
             pinned_ids=pinned_ids,
+            last_canvas=preference.last_canvas,
             q=q,
         )
         for row in rows
@@ -398,6 +408,61 @@ async def set_workspace_order(
     )
 
 
+async def remember_opened_canvas(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    email: str,
+    canvas_id: uuid.UUID,
+) -> bool:
+    """Remember a canvas as the one the user opened last in its workspace.
+
+    Switching to the workspace opens it again, in any browser. A canvas with no
+    workspace is Scratch's. Only that workspace's entry changes.
+
+    Args:
+      engine: Database connection source.
+      user_id: The owner of the canvas and of the workspace preferences.
+      email: The user's Issue owner, whose Scratch holds a canvas with no workspace.
+      canvas_id: The canvas opened.
+
+    Returns:
+      found: Whether the user has such a canvas.
+
+    """
+    async with engine.acquire() as conn, tx(conn):
+        canvas = await conn.fetchrow(
+            "SELECT metadata->>'workspace_id' AS workspace_id FROM visual_canvases "
+            "WHERE id = $1 AND user_id = $2",
+            canvas_id,
+            user_id,
+        )
+        if canvas is None:
+            return False
+        workspace_id = from_plain(canvas["workspace_id"], str | None)
+        if workspace_id is None:
+            scratch = await _scratch_row(conn, email=email)
+            # Scratch is made when the bar is first listed; until then no bar shows it.
+            if scratch is None:
+                return True
+            workspace_id = str(from_plain(scratch["id"], uuid.UUID))
+        workspaces = await _lock_preferences(conn, user_id=user_id)
+        if workspaces.last_canvas.get(workspace_id) != str(canvas_id):
+            await _save_preferences(
+                conn,
+                user_id=user_id,
+                workspaces=workspaces.model_copy(
+                    update={
+                        "last_canvas": {
+                            **workspaces.last_canvas,
+                            workspace_id: str(canvas_id),
+                        },
+                    },
+                ),
+            )
+    return True
+
+
 async def check_workspace(
     engine: DatabaseEngine,
     *,
@@ -487,6 +552,7 @@ async def workspace_info(
         scratch=summary.scratch,
         hidden=summary.hidden,
         pinned=summary.pinned,
+        last_canvas_id=summary.last_canvas_id,
         canvases=canvases,
     )
 
@@ -560,6 +626,7 @@ def _summary(
     scratch_id: uuid.UUID | None,
     hidden_ids: set[str],
     pinned_ids: set[str],
+    last_canvas: Mapping[str, str],
     q: str | None,
 ) -> WorkspaceSummary | None:
     """Build and search one workspace summary row."""
@@ -574,6 +641,7 @@ def _summary(
         scratch=issue_id == scratch_id,
         hidden=str(issue_id) in hidden_ids,
         pinned=str(issue_id) in pinned_ids or issue_id == scratch_id,
+        last_canvas_id=last_canvas.get(str(issue_id)),
     )
 
 

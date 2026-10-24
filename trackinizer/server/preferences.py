@@ -184,6 +184,13 @@ class WorkspacesPreference(_Strict):
     order: Annotated[list[_Id], Field(max_length=500)] = []
     pinned: Annotated[list[_Id], Field(max_length=500)] = []
     hidden: Annotated[list[_Id], Field(max_length=500)] = []
+    last_canvas: Annotated[dict[_Id, _Id], Field(max_length=500)] = Field(
+        default=dict[_Id, _Id](),
+        description=(
+            "The canvas you opened last in each workspace, by workspace id: "
+            "switching to the workspace opens it again, in any browser."
+        ),
+    )
 
 
 class FieldDraft(_Strict):
@@ -340,7 +347,10 @@ class Preferences(_Strict):
     )
     workspaces: WorkspacesPreference = Field(
         default_factory=WorkspacesPreference,
-        description="Your workspace bar order, pins, and hidden items.",
+        description=(
+            "Your workspace bar order, pins, and hidden items, and the canvas you "
+            "opened last in each workspace."
+        ),
     )
     settings_artifact_id: _Id | None = Field(
         default=None,

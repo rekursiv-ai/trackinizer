@@ -615,7 +615,7 @@ _EMPTY_USER_DATA: dict[str, object] = {
     "lens": None,
     "drafts": {},
     "create_draft": None,
-    "workspaces": {"order": [], "pinned": [], "hidden": []},
+    "workspaces": {"order": [], "pinned": [], "hidden": [], "last_canvas": {}},
     "settings_artifact_id": None,
 }
 
