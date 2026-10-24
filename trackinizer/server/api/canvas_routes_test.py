@@ -87,9 +87,11 @@ from trackinizer.server.visuals.canvases import (
     SessionCampaign,
 )
 from trackinizer.server.visuals.catalog import (
+    RECORD_VISUAL,
     Canvas,
     StaticVisual,
     default_canvas,
+    offer_record_visual,
 )
 from trackinizer.server.visuals.workspaces import (
     SetCanvasWorkspace,
@@ -1573,6 +1575,63 @@ async def test_navigate_moves_the_page_without_changing_the_canvas(
             key,
         )
     assert stored in ({}, "{}")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_agents_record_takes_the_lone_pages_place_and_a_browsers_keeps_it(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An agent's record at main replaces the lone page; a browser's keeps it."""
+    client, store = pglite_route_client
+    visuals = Canvas.Config()
+    offer_record_visual(visuals)
+    monkeypatch.setattr(app.state, "visual_catalog", visuals.make(), raising=False)
+    await seed_accounts(store)
+    await seed_session(store, agent=ASSISTANT, actor=KB_ACTOR)
+    by_agent = await open_canvas(client)
+    await seed_converse(
+        client,
+        store=store,
+        canvas_id=by_agent,
+        text="show me the issue",
+    )
+    by_browser = await open_canvas(client, new=True)
+    standing: list[list[tuple[str, str]]] = []
+
+    for canvas_id, act in ((by_agent, act_as_assistant), (by_browser, browser)):
+        browser()
+        revision = await revision_of(client, canvas_id=canvas_id)
+        act()
+        shown = await client.post(
+            f"/api/canvases/{canvas_id}/operations",
+            json={
+                "revision": revision,
+                "operation": {
+                    "kind": "show",
+                    "visual_type": RECORD_VISUAL,
+                    "record_id": str(uuid.uuid4()),
+                    "placement": "main",
+                    "params": {"kind": "Issue"},
+                },
+            },
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert shown.status_code == 200, shown.text
+        state = json_loads(shown.content, dict[str, object])
+        standing.append(
+            [
+                (str(visual["type"]), str(visual["placement"]))
+                for visual in from_plain(state["visuals"], list[dict[str, object]])
+            ],
+        )
+
+    assert standing == [
+        [(RECORD_VISUAL, "main")],
+        [("trax.browse", "main"), (RECORD_VISUAL, "main")],
+    ]
 
 
 @pytest.mark.db_pglite

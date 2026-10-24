@@ -1,0 +1,113 @@
+{
+  "about": "Where a record tile opens: the one table canvas_room_test.py and a web app's own copy of the rule both read, so the two copies cannot drift. A tile named by a kind's letter and a number (I2, an Issue) is a record tile on that record; any other name is a visual of that type. A page of null is one the canvas never moved, which is Home. Each step is a hide of a tile, or the show of the record and the column it opens in.",
+  "kinds": {"I": "Issue", "E": "Experiment", "B": "Belief"},
+  "opens": [
+    {
+      "case": "the page on Home holds nothing: the first record stands alone",
+      "tiles": [["trax.browse", "main"]], "page": "#/", "focused": null,
+      "record": "I1", "steps": [["hide", "trax.browse"], ["show", "I1", "left"]]
+    },
+    {
+      "case": "a page the canvas never moved is on Home",
+      "tiles": [["trax.browse", "main"]], "page": null, "focused": null,
+      "record": "I1", "steps": [["hide", "trax.browse"], ["show", "I1", "left"]]
+    },
+    {
+      "case": "the old Home address is Home too",
+      "tiles": [["trax.browse", "main"]], "page": "#/graph", "focused": null,
+      "record": "I1", "steps": [["hide", "trax.browse"], ["show", "I1", "left"]]
+    },
+    {
+      "case": "the page alone holds the canvas for nothing: on a view of its own too, the first record takes its place",
+      "tiles": [["trax.browse", "main"]], "page": "#/console", "focused": null,
+      "record": "I1", "steps": [["hide", "trax.browse"], ["show", "I1", "left"]]
+    },
+    {
+      "case": "a floating window leaves the page alone: the first record takes its place",
+      "tiles": [["trax.browse", "main"], ["x.float", "floating"]], "page": "#/leaderboards", "focused": null,
+      "record": "I1", "steps": [["hide", "trax.browse"], ["show", "I1", "left"]]
+    },
+    {
+      "case": "the page on a view beside a record stays while its column has a free row",
+      "tiles": [["trax.browse", "main"], ["I1", "left"]], "page": "#/leaderboards", "focused": null,
+      "record": "I2", "steps": [["show", "I2", "left"]]
+    },
+    {
+      "case": "a record of the same kind stacks in its column",
+      "tiles": [["I1", "left"]], "page": "#/", "focused": null,
+      "record": "I2", "steps": [["show", "I2", "left"]]
+    },
+    {
+      "case": "another kind takes the other column",
+      "tiles": [["I1", "left"], ["I2", "left"]], "page": "#/", "focused": null,
+      "record": "E1", "steps": [["show", "E1", "side"]]
+    },
+    {
+      "case": "a third record in a column closes the column's oldest",
+      "tiles": [["I1", "left"], ["I2", "left"], ["E1", "side"]], "page": "#/", "focused": "E1",
+      "record": "I3", "steps": [["hide", "I1"], ["show", "I3", "left"]]
+    },
+    {
+      "case": "the column's oldest closes even in focus: the column shows its two newest",
+      "tiles": [["I1", "left"], ["I2", "left"], ["E1", "side"]], "page": "#/", "focused": "I1",
+      "record": "I3", "steps": [["hide", "I1"], ["show", "I3", "left"]]
+    },
+    {
+      "case": "across columns, the tile focused least recently closes and the one in focus last",
+      "tiles": [["trax.timeline", "main"], ["I1", "left"], ["I2", "left"]], "page": "#/", "focused": "trax.timeline",
+      "record": "E1", "steps": [["hide", "I1"], ["show", "E1", "left"]]
+    },
+    {
+      "case": "a new kind closes the page before it shares a column",
+      "tiles": [["trax.browse", "main"], ["I1", "left"]], "page": "#/leaderboards", "focused": null,
+      "record": "E1", "steps": [["hide", "trax.browse"], ["show", "E1", "side"]]
+    },
+    {
+      "case": "a third kind joins a column with a free row",
+      "tiles": [["I1", "left"], ["E1", "side"]], "page": "#/", "focused": null,
+      "record": "B1", "steps": [["show", "B1", "left"]]
+    },
+    {
+      "case": "a third kind on a full canvas takes the row of the tile it closes",
+      "tiles": [["I1", "left"], ["I2", "left"], ["E1", "side"], ["E2", "side"]], "page": "#/", "focused": "E2",
+      "record": "B1", "steps": [["hide", "I1"], ["show", "B1", "left"]]
+    },
+    {
+      "case": "a main visual is a column: the record takes the other",
+      "tiles": [["trax.timeline", "main"]], "page": "#/", "focused": null,
+      "record": "I1", "steps": [["show", "I1", "left"]]
+    },
+    {
+      "case": "with no column to open, a new kind shares one with a free row",
+      "tiles": [["trax.timeline", "main"], ["I1", "left"]], "page": "#/", "focused": null,
+      "record": "E1", "steps": [["show", "E1", "left"]]
+    },
+    {
+      "case": "with no row free, the oldest closes and frees a column",
+      "tiles": [["trax.timeline", "main"], ["I1", "left"], ["I2", "left"]], "page": "#/", "focused": null,
+      "record": "E1", "steps": [["hide", "trax.timeline"], ["show", "E1", "side"]]
+    },
+    {
+      "case": "a floating window counts for nothing",
+      "tiles": [["I1", "left"], ["x.float", "floating"]], "page": "#/", "focused": null,
+      "record": "I2", "steps": [["show", "I2", "left"]]
+    },
+    {
+      "case": "a record on show is shown where it stands",
+      "tiles": [["I1", "side"], ["E1", "left"]], "page": "#/", "focused": null,
+      "record": "I1", "steps": [["show", "I1", "side"]]
+    }
+  ],
+  "sequence": {
+    "case": "two Issues stack, an Experiment stands apart, and a third Issue closes the oldest (JP, 2026-10-23)",
+    "tiles": [["trax.browse", "main"]], "page": "#/",
+    "records": ["I1", "I2", "E1", "I3"],
+    "steps": [
+      [["hide", "trax.browse"], ["show", "I1", "left"]],
+      [["show", "I2", "left"]],
+      [["show", "E1", "side"]],
+      [["hide", "I1"], ["show", "I3", "left"]]
+    ],
+    "after": [["I2", "left"], ["E1", "side"], ["I3", "left"]]
+  }
+}

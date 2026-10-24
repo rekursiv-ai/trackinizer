@@ -410,6 +410,13 @@ trax canvas CANVAS_UUID theme to light
 trax canvas CANVAS_UUID chat_side to null
 ```
 
+A site whose app opens records in tiles offers `trax.record` too: one tile per
+record, its `kind` param the record's kind (`--param kind=Issue`). Shown with no
+`--placement`, it stands where the canvas's room rule puts it: over the records of
+its kind, else in a column of its own, closing what it must to keep two columns of
+two rows. A placement you name is kept, and the page closes only when it holds
+nothing (on Home, or alone on the canvas), so the record takes its place.
+
 Boxes are red rectangles on the canvas, drawn by people and agents: `mark X1,Y1
 X2,Y2` takes two corners as fractions (0 to 1) of the stage, and the box shows on
 the page the canvas is on until someone clicks it away. `--record` names the

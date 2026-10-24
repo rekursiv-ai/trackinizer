@@ -18,6 +18,7 @@ from pydantic import (
     model_validator,
 )
 
+from trackinizer.server.visuals.canvas_room import canvas_of, record_room
 from trackinizer.server.visuals.catalog import RECORD_VISUAL
 from trackinizer.wire.wire_science_chat import ChatProvider
 from trackinizer.wire.wire_sessions import RunState
@@ -1072,9 +1073,12 @@ def apply_operation(
       data: Current canvas data.
       operation: Requested visual change.
       catalog: Trusted descriptor set.
-      placed_by: Who a visual this operation adds is recorded as placed by.
+      placed_by: Who a visual this operation adds is recorded as placed by, set when
+        an agent's key sends it. A new record tile an agent shows makes room by the
+        canvas's room rule; a person's own client lays out what it asks, as a
+        restore of Back shows a record beside the page.
       author: Who asks, for a mark.
-      page: The page the canvas is on, for a mark.
+      page: The page the canvas is on, for a mark and for the room a record makes.
 
     Returns:
       state: New canvas data.
@@ -1139,14 +1143,25 @@ def apply_operation(
                 existing.params = params
             updated.focused_instance = existing.id
             return updated
+        placement = operation.placement or (
+            "main" if descriptor.default_size == "wide" else "side"
+        )
+        # A browser's own show skips the room rule: Back restores a record beside the
+        # page by showing it, and the rule would close the page.
+        if descriptor.type == RECORD_VISUAL and placed_by is not None:
+            placement = _make_room_for_record(
+                updated,
+                kind=str(params.get("kind", "")),
+                placement=operation.placement,
+                page=page,
+            )
         if len(updated.visuals) >= 12:
             raise ValueError("A canvas can show at most 12 visuals.")
         instance = VisualInstance(
             id=uuid.uuid4(),
             type=descriptor.type,
             version=descriptor.version,
-            placement=operation.placement
-            or ("main" if descriptor.default_size == "wide" else "side"),
+            placement=placement,
             record_id=operation.record_id,
             params=params,
             placed_by=placed_by,
@@ -1184,6 +1199,28 @@ def apply_operation(
         if operation.placement != "floating":
             instance.floating_rect = None
     return updated
+
+
+def _make_room_for_record(
+    data: CanvasData,
+    *,
+    kind: str,
+    placement: Placement | None,
+    page: str | None,
+) -> Placement:
+    """Close in ``data`` what an agent's new record closes, and say where it stands."""
+    room = record_room(
+        canvas_of(
+            data.model_dump(mode="json", include={"visuals", "focused_instance"})
+            | {"page": page},
+        ),
+        kind=kind,
+    )
+    # A placement the agent named is its choice, so nothing closes to make room for
+    # it; the page that holds nothing still gives the record its place.
+    closing = {tile.id for tile in (*room.idle, *(() if placement else room.hidden))}
+    data.visuals = [visual for visual in data.visuals if str(visual.id) not in closing]
+    return placement or room.column
 
 
 def _refuse_value(

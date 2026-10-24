@@ -12,6 +12,12 @@ All notable trackinizer changes are documented here. This project follows
   `/trax/`, and the browser keeps the `#/...` route, so saved links still open.
   `/`, `/me`, `/admin`, `/graph` and `/console` lead to `/trax/`. The installed app's
   id, start and scope are now `/trax/`, so a browser counts it as a new app.
+- An agent key's `show` of a `trax.record` tile makes room by the canvas's room
+  rule (`trackinizer.server.visuals.canvas_room`). With no placement, the tile
+  stands over the records of its kind, else in a column of its own, and what keeps
+  the canvas to two columns of two rows closes. A placement the agent names is kept,
+  and the page closes only when it holds nothing: on Home, or alone on the canvas.
+  A browser's own writes still apply as sent.
 
 ## 0.1.10 - 2026-10-23
 
