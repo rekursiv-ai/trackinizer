@@ -182,6 +182,66 @@ class TestRoutes:
 
         assert (single.status_code, batch.status_code) == (403, 403)
 
+    def test_a_writer_cannot_set_modified(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Refused, never silently dropped: a dropped time would store a row the
+        # importer believes is backdated. The store is never reached. A writer's
+        # ``created`` alone is a backfill, which the session backfill tests cover.
+        client, store, _engine = route_client
+        submit = AsyncMock(return_value=uuid.uuid4())
+        submit_batch = AsyncMock(return_value=[uuid.uuid4()])
+        monkeypatch.setattr(store, "submit", submit)
+        monkeypatch.setattr(store, "submit_batch", submit_batch)
+        times = {
+            "created": "2024-03-01T12:00:00+00:00",
+            "modified": "2024-03-02T12:00:00+00:00",
+        }
+
+        single = client.post("/api/inquiries/issue", json={"title": "t", **times})
+        batch = client.post(
+            "/api/inquiries/batch",
+            json={
+                "items": [
+                    {
+                        "kind": "Issue",
+                        "title": "plain",
+                        "idempotency_key": str(uuid.uuid4()),
+                    },
+                    {
+                        "kind": "Issue",
+                        "title": "t",
+                        "idempotency_key": str(uuid.uuid4()),
+                        **times,
+                    },
+                ],
+            },
+        )
+
+        assert (single.status_code, batch.status_code) == (403, 403)
+        for response in (single, batch):
+            detail = from_plain(response.json(), dict[str, object])["detail"]
+            assert "admin" in from_plain(detail, str)
+        assert (submit.await_count, submit_batch.await_count) == (0, 0)
+
+    def test_modified_before_created_is_a_422(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        r = client.post(
+            "/api/inquiries/issue",
+            json={
+                "title": "t",
+                "created": "2024-03-02T12:00:00+00:00",
+                "modified": "2024-03-01T12:00:00+00:00",
+            },
+        )
+        assert r.status_code == 422
+        assert "modified must not precede created" in r.text
+
     def test_submit_batch_route_validates_discriminator(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],

@@ -89,7 +89,8 @@ async def submit_batch_route(
     whole batch back, so no partial state is left behind. On success the
     response is ``{"ids": [...]}`` with the server-minted ids in input
     order. A failure propagates as the same HTTP error a single submit of
-    that item would raise (e.g. 409 on a conflict, 422 on bad input).
+    that item would raise (e.g. 409 on a conflict, 422 on bad input). One
+    item carrying ``modified`` from a non-admin 403s the batch.
 
     Args:
       req: SubmitBatch payload with items and edges to create atomically.
@@ -100,6 +101,7 @@ async def submit_batch_route(
       body: JSON object with "ids" key mapping to list of minted server IDs.
 
     """
+    _require_admin_to_set_modified(identity, *req.items)
     await require_unlocked(request, identity, referenced_ids(req))
     store = get_store(request)
     session_audience = _opening_audience(identity, *req.items)
@@ -142,7 +144,7 @@ async def submit_route(
     The body is validated against the matching ``SubmitX`` model. The
     ``kind`` discriminator is injected from the URL token, so callers
     never restate it and a mismatching body ``kind`` can't smuggle in a
-    different model.
+    different model. ``modified`` from a non-admin is a 403.
 
     Args:
       kind: Lowercase URL token (e.g. "issue", "experiment") selecting the submit model.
@@ -170,8 +172,20 @@ async def submit_route(
             status_code=422,
             detail=err.errors(include_context=False),
         ) from err
+    _require_admin_to_set_modified(identity, req)
     await require_unlocked(request, identity, referenced_ids(req))
     return {"id": str(await _submit_one(get_store(request), req, identity))}
+
+
+# Refused, never dropped: a silently dropped time would store a row the importer
+# believes carries its historical dates.
+def _require_admin_to_set_modified(identity: AuthIdentity, *bodies: SubmitBase) -> None:
+    """Refuse ``modified`` from any caller but an admin, with 403."""
+    if identity.role != "admin" and any(body.modified is not None for body in bodies):
+        raise HTTPException(
+            status_code=403,
+            detail="Only an admin may set modified.",
+        )
 
 
 # The default is the authenticated ``identity.email`` -- never the spoofable ``actor``

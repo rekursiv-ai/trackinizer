@@ -9664,6 +9664,18 @@
           "marginal_cost": {
             "$ref": "#/components/schemas/Cost"
           },
+          "modified": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified"
+          },
           "owner": {
             "anyOf": [
               {
@@ -9834,6 +9846,18 @@
           },
           "marginal_cost": {
             "$ref": "#/components/schemas/Cost"
+          },
+          "modified": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified"
           },
           "owner": {
             "anyOf": [
@@ -10090,6 +10114,18 @@
           "marginal_cost": {
             "$ref": "#/components/schemas/Cost"
           },
+          "modified": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified"
+          },
           "owner": {
             "anyOf": [
               {
@@ -10241,6 +10277,18 @@
           },
           "marginal_cost": {
             "$ref": "#/components/schemas/Cost"
+          },
+          "modified": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified"
           },
           "owner": {
             "anyOf": [
@@ -10425,6 +10473,18 @@
           "marginal_cost": {
             "$ref": "#/components/schemas/Cost"
           },
+          "modified": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified"
+          },
           "outcome": {
             "anyOf": [
               {
@@ -10595,6 +10655,18 @@
           },
           "marginal_cost": {
             "$ref": "#/components/schemas/Cost"
+          },
+          "modified": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified"
           },
           "narrows": {
             "items": {
@@ -10842,6 +10914,18 @@
           "marginal_cost": {
             "$ref": "#/components/schemas/Cost"
           },
+          "modified": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified"
+          },
           "owner": {
             "anyOf": [
               {
@@ -11042,6 +11126,18 @@
           "marginal_cost": {
             "$ref": "#/components/schemas/Cost"
           },
+          "modified": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified"
+          },
           "owner": {
             "anyOf": [
               {
@@ -11197,6 +11293,18 @@
           },
           "marginal_cost": {
             "$ref": "#/components/schemas/Cost"
+          },
+          "modified": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified"
           },
           "owner": {
             "anyOf": [
@@ -17709,7 +17817,7 @@
     },
     "/api/inquiries/batch": {
       "post": {
-        "description": "Submit many inquiries in one all-or-nothing transaction.\n\nEvery item commits together or none does: a single failure rolls the\nwhole batch back, so no partial state is left behind. On success the\nresponse is ``{\"ids\": [...]}`` with the server-minted ids in input\norder. A failure propagates as the same HTTP error a single submit of\nthat item would raise (e.g. 409 on a conflict, 422 on bad input).\n\nArgs:\n  req: SubmitBatch payload with items and edges to create atomically.\n  request: FastAPI request object; used to fetch the store.\n  identity: Authenticated writer; enforced by Depends(require_role(\"writer\")).\n\nReturns:\n  body: JSON object with \"ids\" key mapping to list of minted server IDs.",
+        "description": "Submit many inquiries in one all-or-nothing transaction.\n\nEvery item commits together or none does: a single failure rolls the\nwhole batch back, so no partial state is left behind. On success the\nresponse is ``{\"ids\": [...]}`` with the server-minted ids in input\norder. A failure propagates as the same HTTP error a single submit of\nthat item would raise (e.g. 409 on a conflict, 422 on bad input). One\nitem carrying ``modified`` from a non-admin 403s the batch.\n\nArgs:\n  req: SubmitBatch payload with items and edges to create atomically.\n  request: FastAPI request object; used to fetch the store.\n  identity: Authenticated writer; enforced by Depends(require_role(\"writer\")).\n\nReturns:\n  body: JSON object with \"ids\" key mapping to list of minted server IDs.",
         "operationId": "submit_batch_route_api_inquiries_batch_post",
         "requestBody": {
           "content": {
@@ -17865,7 +17973,7 @@
     },
     "/api/inquiries/{kind}": {
       "post": {
-        "description": "Create one inquiry of the URL-token ``kind``; ``201`` on success.\n\nThe body is validated against the matching ``SubmitX`` model. The\n``kind`` discriminator is injected from the URL token, so callers\nnever restate it and a mismatching body ``kind`` can't smuggle in a\ndifferent model.\n\nArgs:\n  kind: Lowercase URL token (e.g. \"issue\", \"experiment\") selecting the submit model.\n  payload: JSON body to validate and submit; discriminator kind is auto-injected.\n  request: FastAPI request object; used to fetch the store.\n  identity: Authenticated writer; enforced by Depends(require_role(\"writer\")).\n\nReturns:\n  result: JSON with server-minted fields (id, created) merged into the input.",
+        "description": "Create one inquiry of the URL-token ``kind``; ``201`` on success.\n\nThe body is validated against the matching ``SubmitX`` model. The\n``kind`` discriminator is injected from the URL token, so callers\nnever restate it and a mismatching body ``kind`` can't smuggle in a\ndifferent model. ``modified`` from a non-admin is a 403.\n\nArgs:\n  kind: Lowercase URL token (e.g. \"issue\", \"experiment\") selecting the submit model.\n  payload: JSON body to validate and submit; discriminator kind is auto-injected.\n  request: FastAPI request object; used to fetch the store.\n  identity: Authenticated writer; enforced by Depends(require_role(\"writer\")).\n\nReturns:\n  result: JSON with server-minted fields (id, created) merged into the input.",
         "operationId": "submit_route_api_inquiries__kind__post",
         "parameters": [
           {

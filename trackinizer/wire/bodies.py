@@ -1,8 +1,10 @@
 """Request bodies for inquiry submit and edit routes.
 
 Each ``SubmitX`` mirrors its dataclass minus the auto-generated fields
-(id, seq, status, marginal_cost, edge projections, modified),
-which the Store fills in or edges supply. Per-field edits share three
+(id, seq, status, marginal_cost, edge projections), which the Store fills
+in or edges supply. ``modified`` defaults to the server clock; only an admin
+may set it, with ``created``, to import past work with its real dates.
+Per-field edits share three
 uniform bodies (:class:`FieldSet`, :class:`FieldOp`,
 :class:`FieldMutation`) keyed by HTTP method; the field's concrete type
 lives in ``types/inquiries.py``, not here.
@@ -106,8 +108,9 @@ class SubmitBase(_CostFields):
     created: AwareDatetime | None = None
     """Optional historical creation instant for importing an inquiry. Requires
     an explicit timezone and cannot be in the future. Applies only to initial
-    creation; the server owns ``modified`` and the audit event's timestamp.
-    ``None`` keeps the database's current creation-time default."""
+    creation; the server owns the audit event's timestamp, and ``modified``
+    unless an admin sets it. ``None`` keeps the database's current
+    creation-time default."""
 
     @field_validator("created", mode="before")
     @classmethod
@@ -203,6 +206,23 @@ class SubmitBase(_CostFields):
         return (
             None if value is None else _reject_blank_strings(value, noun="subscribers")
         )
+
+    modified: AwareDatetime | None = None
+    """When the row was last changed, for an import of past work. ``None``
+    stamps the server clock. Admin only: the routes refuse any other caller
+    with 403. Valid only with ``created``, and never before it. The edges
+    written in the same request leave it as given."""
+
+    @model_validator(mode="after")
+    def _check_modified(self) -> Self:
+        """Refuse ``modified`` without ``created`` or before it."""
+        if self.modified is None:
+            return self
+        if self.created is None:
+            raise ValueError("modified requires created")
+        if self.modified < self.created:
+            raise ValueError("modified must not precede created")
+        return self
 
 
 # Shared by every list-of-string submit field so the "no blank entries" rule lives in
