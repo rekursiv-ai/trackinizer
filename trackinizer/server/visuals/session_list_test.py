@@ -13,8 +13,10 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.agent.types.sessions import (
+    AgentToAgentMessage,
     AssistantMessage,
     ContextState,
+    ToolCall,
     UncategorizedRecord,
     UserMessage,
 )
@@ -24,7 +26,12 @@ from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.primitives import insert_inquiry
 from trackinizer.server.store.core import Store
-from trackinizer.server.visuals.session_list import SessionList, list_own_sessions
+from trackinizer.server.visuals.session_list import (
+    LINE_CHARS,
+    LastLine,
+    SessionList,
+    list_own_sessions,
+)
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_science_chat import chat_session_id
 
@@ -316,6 +323,59 @@ async def test_the_goal_is_the_last_one_logged_and_the_first_line_a_persons(
         "Fix the CI hook",
     )
     assert (sessions[quiet].goal, sessions[quiet].first_line) == (None, None)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_last_line_is_the_last_said_on_one_line_by_whom_and_no_tool_output(
+    store: Store,
+) -> None:
+    stamp = {"$inbound": {"room": "chat-1", "source": "grace@example.com"}}
+    delivered = (
+        "[chat-1] grace@example.com: Ship   it\n"
+        "Trackinizer context (verify with trax): Issue#1"
+    )
+    answered = await _session(
+        store,
+        records=[
+            UserMessage(content="Fix the hook"),
+            AssistantMessage(content="Done:\n  two  files\n\nchanged."),
+            ToolCall(call_id="c1", name="Bash", arguments=immutable({"cmd": "ls"})),
+            AssistantMessage(content=""),
+            ContextState(kind="goal_status", extra=immutable({"attachment": {}})),
+        ],
+    )
+    typed = await _session(
+        store,
+        live_records=3,
+        records=[
+            AssistantMessage(content="Hello."),
+            UserMessage(content="Run the suite"),
+            UserMessage(content="<command-name>/clear</command-name>"),
+            # Past the manifest's live prefix: a compaction dropped it.
+            AssistantMessage(content="gone"),
+        ],
+    )
+    shared = await _session(
+        store,
+        records=[
+            AssistantMessage(content="Ready."),
+            UserMessage(content=delivered, extra=immutable(stamp)),
+        ],
+    )
+    asked = await _session(
+        store,
+        records=[AgentToAgentMessage(content="x" * 300, sender=_EMAIL)],
+    )
+    quiet = await _session(store)
+
+    sessions = {each.id: each.last_line for each in (await _list(store)).sessions}
+
+    assert sessions[answered] == LastLine(author=None, text="Done: two files changed.")
+    assert sessions[typed] == LastLine(author=_EMAIL, text="Run the suite")
+    assert sessions[shared] == LastLine(author="grace@example.com", text="Ship it")
+    assert sessions[asked] == LastLine(author=_EMAIL, text="x" * LINE_CHARS)
+    assert sessions[quiet] is None
 
 
 @pytest.mark.db_pglite

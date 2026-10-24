@@ -5928,6 +5928,32 @@
         ],
         "type": "string"
       },
+      "LastLine": {
+        "description": "The last line said in a session, a person's or the agent's, on one line.",
+        "properties": {
+          "author": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "author",
+          "text"
+        ],
+        "title": "LastLine",
+        "type": "object"
+      },
       "LineageEdge": {
         "additionalProperties": false,
         "description": "One stored relationship, with its direction and signed annotation.",
@@ -6151,6 +6177,16 @@
             "title": "Last Activity",
             "type": "string"
           },
+          "last_line": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LastLine"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "live": {
             "title": "Live",
             "type": "boolean"
@@ -6217,6 +6253,7 @@
           "produced_by",
           "goal",
           "first_line",
+          "last_line",
           "live",
           "machine",
           "state"
