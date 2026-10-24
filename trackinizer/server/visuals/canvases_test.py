@@ -203,6 +203,142 @@ def test_a_canvas_holds_one_record_tile_per_record_and_reshowing_one_focuses_it(
     assert data.focused_instance == tiles[0].id
 
 
+def _record_catalog() -> VisualCatalogBody:
+    """Return a catalog that offers the record tile, as a site's does."""
+    visuals = Canvas.Config()
+    offer_record_visual(visuals)
+    return visuals.make().catalog()
+
+
+def _record(
+    record: uuid.UUID,
+    *,
+    kind: str = "Issue",
+    placement: Placement | None = None,
+) -> ShowVisual:
+    """Return the show of ``record``'s tile, of ``kind``, at ``placement`` if any."""
+    return ShowVisual(
+        kind="show",
+        visual_type=RECORD_VISUAL,
+        placement=placement,
+        record_id=record,
+        params={"kind": kind},
+    )
+
+
+def _by_agent(
+    data: CanvasData,
+    *,
+    operation: ShowVisual,
+    catalog: VisualCatalogBody,
+    page: str | None,
+) -> CanvasData:
+    """Apply ``operation`` as an agent's key sends it, the canvas's page at ``page``."""
+    return apply_operation(
+        data,
+        operation=operation,
+        catalog=catalog,
+        placed_by="kb@x.y",
+        page=page,
+    )
+
+
+def _standing(data: CanvasData) -> list[tuple[str, str]]:
+    """Return each visual's type, or a record tile's record, and its placement."""
+    return [
+        (str(v.record_id) if v.type == RECORD_VISUAL else v.type, v.placement)
+        for v in data.visuals
+    ]
+
+
+@pytest.mark.parametrize("page", [None, "#/", "#/console"])
+def test_an_agents_record_takes_the_place_of_a_page_standing_alone(
+    page: str | None,
+) -> None:
+    """The placement the agent names is kept; the page holding nothing else closes."""
+    catalog = _record_catalog()
+    record = uuid.uuid4()
+
+    data = _by_agent(
+        initial_data(catalog),
+        operation=_record(record, placement="main"),
+        catalog=catalog,
+        page=page,
+    )
+
+    assert _standing(data) == [(str(record), "main")]
+    assert data.focused_instance == data.visuals[0].id
+
+
+def test_a_persons_own_show_keeps_the_page_beside_a_record_as_a_restore_does() -> None:
+    """A browser lays out what it asks: Back to a page beside a record restores both."""
+    catalog = _record_catalog()
+    record = uuid.uuid4()
+
+    data = apply_operation(
+        initial_data(catalog),
+        operation=_record(record, placement="left"),
+        catalog=catalog,
+        page="#/console",
+    )
+
+    assert _standing(data) == [("trax.browse", "main"), (str(record), "left")]
+
+
+def test_an_agents_record_with_no_placement_stands_where_the_room_rule_puts_it() -> (
+    None
+):
+    """Two Issues stack, an Experiment stands apart, a third Issue closes the oldest."""
+    catalog = _record_catalog()
+    first, second, third, experiment = (uuid.uuid4() for _ in range(4))
+    data = initial_data(catalog)
+
+    for record, kind in (
+        (first, "Issue"),
+        (second, "Issue"),
+        (experiment, "Experiment"),
+        (third, "Issue"),
+    ):
+        data = _by_agent(
+            data,
+            operation=_record(record, kind=kind),
+            catalog=catalog,
+            page="#/",
+        )
+
+    assert _standing(data) == [
+        (str(second), "left"),
+        (str(experiment), "side"),
+        (str(third), "left"),
+    ]
+
+
+def test_an_agents_placement_closes_nothing_but_a_page_that_holds_nothing() -> None:
+    """A page on a view beside another visual stays, and nothing closes for room."""
+    catalog = _record_catalog()
+    timeline = ShowVisual(
+        kind="show",
+        visual_type="trax.timeline",
+        placement="main",
+        record_id=uuid.uuid4(),
+    )
+    data = apply_operation(initial_data(catalog), operation=timeline, catalog=catalog)
+    record = uuid.uuid4()
+
+    data = _by_agent(
+        data,
+        operation=_record(record, placement="side"),
+        catalog=catalog,
+        page="#/console",
+    )
+
+    assert _standing(data) == [
+        ("trax.browse", "main"),
+        ("trax.timeline", "main"),
+        (str(record), "side"),
+    ]
+
+
 def test_recentring_the_context_graph_keeps_its_reach_and_highlight() -> None:
     """A show naming only a new record moves the window; its params stay."""
     catalog = default_catalog()
@@ -744,6 +880,13 @@ def test_a_campaign_setup_validates_a_partial_subset_with_a_nested_lead() -> Non
     assert (setup.budget_usd, setup.staffing, setup.repo) == (None, None, None)
 
 
+def test_a_campaign_setup_keeps_staffing_of_model_effort_count_parts() -> None:
+    """MODEL:EFFORT:COUNT parts joined by commas, each count a number, are kept."""
+    staffing = "gpt-6.1-sol:high:2, claude-opus:max:1"
+
+    assert CampaignSetup.model_validate({"staffing": staffing}).staffing == staffing
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
@@ -753,6 +896,7 @@ def test_a_campaign_setup_validates_a_partial_subset_with_a_nested_lead() -> Non
         ({"scientists": 9}, "less than or equal to 8"),
         ({"scientists": 0}, "greater than or equal to 1"),
         ({"staffing": "gpt-6.1-sol:high"}, "MODEL:EFFORT:COUNT"),
+        ({"staffing": "gpt-6.1-sol:high:two"}, "MODEL:EFFORT:COUNT"),
         ({"staffing": ""}, "at least 1"),
         ({"repo": "loop"}, "owner/name"),
         ({"extra": 1}, "Extra inputs"),
