@@ -169,18 +169,19 @@ class _BashNode(Protocol):
     """Expose the bashlex AST fields this classifier reads."""
 
     kind: str
-    parts: list[_BashNode]
     word: str
     type: str
     op: str
     input: int | None
-    output: _BashNode
-
-    heredoc: _BashNode | None
-
     value: str
-
     pos: tuple[int, int]
+
+    @property
+    def parts(self) -> Sequence[_BashNode]: ...
+    @property
+    def output(self) -> _BashNode | int | str: ...
+    @property
+    def heredoc(self) -> _BashNode | None: ...
 
 
 def lift_shell_result(
@@ -435,10 +436,7 @@ def _operation(script: str) -> Operation | None:
     if found is None:
         return None
     tree, chdir = found
-    matched = _matched_row(
-        cast(Sequence[_BashNode], tree.parts),
-        quoted=quoted,
-    )
+    matched = _matched_row(tree.parts, quoted=quoted)
     if matched is None:
         return None
     act, path, span, content, ranges = matched
@@ -607,7 +605,10 @@ def _heredoc_write(parts: Sequence[_BashNode], *, literal: bool) -> MatchedRow |
     if target is None:
         return None
     operation, path, span = target
-    delimiter = _static_word(documents[0].output)
+    output = documents[0].output
+    if isinstance(output, int | str):
+        raise TypeError("Expected not isinstance(output, int | str).")
+    delimiter = _static_word(output)
     body = documents[0].heredoc
     content = body.value if body is not None else None
     if delimiter is None or not isinstance(content, str):
@@ -659,8 +660,7 @@ def _standard_utility(executable: str) -> str | None:
 def _simple_command(script: str) -> tuple[_BashNode, str | None] | None:
     """Parse the one file-touching command a script runs, failing closed."""
     try:
-        parser = cast(_Bashlex, bashlex)
-        trees = parser.parse(script)
+        trees = bashlex.parse(script)
     except Exception:  # noqa: BLE001 -- bashlex exposes several parse failures.
         return None
     if len(trees) != 1:
@@ -671,7 +671,7 @@ def _simple_command(script: str) -> tuple[_BashNode, str | None] | None:
         # A pipeline's output is its LAST stage's, and a compound hides its
         # redirections, so neither says what one utility did to one file.
         return None
-    parts = cast(Sequence[_BashNode], trees[0].parts)
+    parts = trees[0].parts
     commands = [part for part in parts if part.kind == "command"]
     operators = [part for part in parts if part.kind == "operator"]
     if len(commands) != 2 or len(operators) != 1:
@@ -681,7 +681,7 @@ def _simple_command(script: str) -> tuple[_BashNode, str | None] | None:
         # code proves only that the READ succeeded, not the ``cd`` before it --
         # and a failed ``cd`` resolves the path somewhere else entirely.
         return None
-    leading = cast(Sequence[_BashNode], commands[0].parts)
+    leading = commands[0].parts
     if any(part.kind != "word" for part in leading):
         return None
     if len(leading) != 2 or leading[0].word != "cd":
@@ -724,8 +724,11 @@ def _single_output(
         act = "append"
     else:
         return None
-    path = _static_word(redirect.output)
-    return (act, path, redirect.output.pos) if path is not None else None
+    output = redirect.output
+    if isinstance(output, int | str):
+        raise TypeError("Expected not isinstance(output, int | str).")
+    path = _static_word(output)
+    return (act, path, output.pos) if path is not None else None
 
 
 def _write_content(executable: str, arguments: Sequence[str]) -> str | None:
@@ -1022,9 +1025,3 @@ def _stencil_command(
     rewritten = list(command)
     rewritten[source[1]] = rewrite_shell_source(source[0], result)
     return tuple(rewritten)
-
-
-class _Bashlex(Protocol):
-    """Expose the bashlex entry point this classifier calls."""
-
-    def parse(self, source: str) -> list[_BashNode]: ...
