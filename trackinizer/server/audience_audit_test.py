@@ -145,6 +145,7 @@ _PREFIXES: Final = (
     "/api/messages",
 )
 _EXACT: Final = (
+    "/api/sessions",
     "/api/web/search_sessions",
     "/api/inquiries",
     "/api/export",

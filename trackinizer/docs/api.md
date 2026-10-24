@@ -579,6 +579,7 @@ session, streams turn-grained events, and closes it; messages route back
 into a live session by routing name.
 
 ```
+GET    /api/sessions?days=N&limit=N
 POST   /api/sessions/start
 POST   /api/sessions/<uuid>/records
 GET    /api/sessions/<uuid>/records?part=N&after_idx=N&limit=N&plaintext_only=B&asker=EMAIL&chat=UUID
@@ -592,6 +593,18 @@ POST   /api/sessions/<uuid>/run-state
 POST   /api/sessions/<uuid>/reattach
 POST   /api/messages
 ```
+
+`GET /api/sessions` lists the caller's own sessions (their `account`) whose last
+turn is within `days` (1 to 365, default 14) or that are still open, newest activity
+first, at most `limit` (1 to 500, default 500), leaving out any the caller does not
+read; `more` says more matched. Each carries `last_activity` (its last turn's time,
+else when it was made), `live` (a run holds its lease now), `machine` (the live run's,
+else where it last ran since the server started), the run's `state`, `goal` (the
+last goal its CLI's log reported), `first_line` (the first line a person wrote),
+`conversation_id`, `canvas_id` and `workspace_id` (its chat's canvas, or the one it
+was placed in, and that canvas's workspace, null for Scratch) and `produced_by`, the
+Issues it was produced by, workspaces left out. `issues` lists those Issues once
+each, with the Issues they narrow or were produced by, each with its `parent_ids`.
 
 Each drained message carries the sender the server attested as `source` and,
 beside it, `source_role`, that sender's effective role (`viewer`, `writer` or

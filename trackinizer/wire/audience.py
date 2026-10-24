@@ -48,6 +48,9 @@ AUDIENCE_SHAPE: Final[str] = "^[a-z][a-z0-9_-]{0,31}$"
 
 SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
     {
+        # The caller's own sessions with each one's first line and goal, kept to the
+        # sessions the transcript test lets the caller read.
+        ("GET", "/api/sessions"),
         ("POST", "/api/sessions/start"),
         ("POST", "/api/sessions/{session_id}/audience"),
         ("POST", "/api/sessions/{session_id}/end"),
@@ -85,15 +88,15 @@ SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
 """Every route that reads, writes or sends into a session's transcript, as
 ``(method, path)``.
 
-A route belongs here when its path is under ``/api/sessions/``, ``/api/web/feed``,
-``/api/messages`` or is ``/api/web/search_sessions``, ``/api/inquiries`` (whose record
-filters match transcript text) or ``/api/export``. The audit test lists the routes
-the app registers under those and fails on any this set lacks, so a new route that
-reads a session cannot ship without being placed here, where a review asks which
-check it carries. Each one that reads takes the server's one transcript test, which
-holds a session to its audience and to who the server's organisation rule lets read
-it. Generic by-id writes (a field edit, a purge) have no path of their own; they look
-up the row's kind before they act."""
+A route belongs here when its path is ``/api/sessions`` or under ``/api/sessions/``,
+``/api/web/feed`` or ``/api/messages``, or is ``/api/web/search_sessions``,
+``/api/inquiries`` (whose record filters match transcript text) or ``/api/export``.
+The audit test lists the routes the app registers under those and fails on any this
+set lacks, so a new route that reads a session cannot ship without being placed
+here, where a review asks which check it carries. Each one that reads takes the
+server's one transcript test, which holds a session to its audience and to who the
+server's organisation rule lets read it. Generic by-id writes (a field edit, a
+purge) have no path of their own; they look up the row's kind before they act."""
 
 
 def validate_audience(value: str) -> str:

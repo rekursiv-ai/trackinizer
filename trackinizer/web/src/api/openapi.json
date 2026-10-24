@@ -6008,6 +6008,205 @@
         "title": "LineagePage",
         "type": "object"
       },
+      "ListedIssue": {
+        "description": "An Issue a listed session was produced by, or one such an Issue narrows.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "parent_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Parent Ids",
+            "type": "array"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "title",
+          "status",
+          "parent_ids"
+        ],
+        "title": "ListedIssue",
+        "type": "object"
+      },
+      "ListedSession": {
+        "description": "One of the caller's sessions, as the Console and the session switcher list it.",
+        "properties": {
+          "canvas_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canvas Id"
+          },
+          "cli": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cli"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "ended": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended"
+          },
+          "first_line": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Line"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_activity": {
+            "format": "date-time",
+            "title": "Last Activity",
+            "type": "string"
+          },
+          "live": {
+            "title": "Live",
+            "type": "boolean"
+          },
+          "machine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Machine"
+          },
+          "produced_by": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Produced By",
+            "type": "array"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "workspace_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Id"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "title",
+          "status",
+          "cli",
+          "created",
+          "ended",
+          "last_activity",
+          "conversation_id",
+          "canvas_id",
+          "workspace_id",
+          "produced_by",
+          "goal",
+          "first_line",
+          "live",
+          "machine",
+          "state"
+        ],
+        "title": "ListedSession",
+        "type": "object"
+      },
       "LiveTerminal": {
         "additionalProperties": false,
         "description": "A terminal that is open now.",
@@ -8657,6 +8856,36 @@
           "id"
         ],
         "title": "SessionEndResponse",
+        "type": "object"
+      },
+      "SessionList": {
+        "description": "The caller's sessions, newest activity first, and the Issues above them.",
+        "properties": {
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ListedIssue"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "more": {
+            "title": "More",
+            "type": "boolean"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/ListedSession"
+            },
+            "title": "Sessions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sessions",
+          "issues",
+          "more"
+        ],
+        "title": "SessionList",
         "type": "object"
       },
       "SessionPlacement": {
@@ -21607,6 +21836,61 @@
           }
         },
         "summary": "Set Venue Route"
+      }
+    },
+    "/api/sessions": {
+      "get": {
+        "description": "List the caller's sessions active in the last ``days`` days or still open.\n\nEach says whether a run drains it now and on which machine (the run's lease,\nelse where it last ran), when it last took a turn, its goal and first line, the\ncanvas and workspace it sits in, and the Issues it was produced by; the Issues\ncome once each, with the Issues they narrow or were produced by. A session the\ncaller does not read is left out.\n\nArgs:\n  request: Request carrying the database engine and the poller leases.\n  identity: The caller, whose account the sessions carry.\n  days: How far back the last activity may be.\n  limit: The most sessions to list, newest activity first.\n\nReturns:\n  listed: The sessions and their Issues, and whether more matched.",
+        "operationId": "list_sessions_route_api_sessions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": 14,
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Days",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 500,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Sessions Route"
       }
     },
     "/api/sessions/start": {
