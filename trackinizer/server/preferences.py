@@ -46,9 +46,11 @@ ASSISTANT_KEYS: Final = frozenset(
         "theme",
         "skin",
         "chat_side",
+        "app_bar",
         "highlight_mentions",
         "terminal_font_size",
         "terminal_tab_chords",
+        "terminal_placement",
         "home",
         "chat_provider",
         "chat_tool_calls",
@@ -261,6 +263,24 @@ class Preferences(_Strict):
         description="The side of the workbench Chat stands on; the sidebar takes the other.",
         json_schema_extra=SETTING,
     )
+    app_bar: Literal["top", "left"] = Field(
+        default="top",
+        description=(
+            "Where the app bar stands: along the top, or down the left side, where it "
+            "resizes and folds to its icons. A phone keeps it along the top."
+        ),
+        json_schema_extra=SETTING,
+    )
+    app_bar_width: int = Field(
+        default=220,
+        ge=160,
+        le=400,
+        description="The app bar's width in px when it stands on the left, unfolded.",
+    )
+    app_bar_folded: bool = Field(
+        default=False,
+        description="The app bar on the left folded to its icons.",
+    )
     highlight_mentions: bool = Field(
         default=True,
         description="Light up the rows the assistant's answers mention.",
@@ -278,6 +298,14 @@ class Preferences(_Strict):
             "Ctrl+T, Ctrl+W and Ctrl+Tab open, close and switch terminal tabs "
             "instead of reaching the shell (Ctrl+Shift+T, Ctrl+Shift+W and "
             "Ctrl+Shift+PageUp/PageDown always do)."
+        ),
+        json_schema_extra=SETTING,
+    )
+    terminal_placement: Literal["bottom", "side"] = Field(
+        default="bottom",
+        description=(
+            "Where the terminal opens beside the page: under it, the page's width, "
+            "or at its side."
         ),
         json_schema_extra=SETTING,
     )
@@ -332,6 +360,10 @@ class Preferences(_Strict):
     collapsed: Annotated[list[_Id], Field(max_length=500)] = Field(
         default=list[_Id](),
         description="The sections you folded, by key.",
+    )
+    dismissed: Annotated[list[_Id], Field(max_length=200)] = Field(
+        default=list[_Id](),
+        description="The notes you dismissed, by key: each stays hidden wherever it would show.",
     )
     lens: _Id | None = Field(
         default=None,

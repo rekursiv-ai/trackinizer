@@ -29,9 +29,13 @@ _DEFAULTS: dict[str, JsonValue] = {
     "theme": "dark",
     "skin": "default",
     "chat_side": "left",
+    "app_bar": "top",
+    "app_bar_width": 220,
+    "app_bar_folded": False,
     "highlight_mentions": True,
     "terminal_font_size": "13px",
     "terminal_tab_chords": False,
+    "terminal_placement": "bottom",
     "home": "graph",
     "chat_provider": "assistant",
     "chat_tool_calls": False,
@@ -42,6 +46,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "people": {},
     "read": {"boundary": None, "marks": []},
     "collapsed": [],
+    "dismissed": [],
     "lens": None,
     "drafts": {},
     "create_draft": None,
@@ -107,6 +112,25 @@ def test_the_keys_set_override_their_defaults_and_unknown_ones_are_dropped() -> 
 def test_a_value_its_key_does_not_take_is_refused() -> None:
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"chat_side": "middle"})
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"app_bar": "bottom"}, {"app_bar_width": 159}, {"app_bar_width": 401}],
+)
+def test_the_app_bar_stands_top_or_left_at_a_width_it_can_hold(
+    change: dict[str, JsonValue],
+) -> None:
+    left = Preferences.model_validate(
+        {"app_bar": "left", "app_bar_width": 400, "app_bar_folded": True},
+    )
+    assert (left.app_bar, left.app_bar_width, left.app_bar_folded) == (
+        "left",
+        400,
+        True,
+    )
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate(change)
 
 
 def test_a_skin_is_one_of_the_named_looks() -> None:
