@@ -874,7 +874,13 @@ RUN_NAME_PATTERN: Final = r"^[A-Za-z0-9][A-Za-z0-9._@#+=:-]{0,127}$"
 as a directory name. One rule, so a name the host takes never breaks its own drain."""
 
 RUN_ENDING_REFUSALS: Final = frozenset(
-    {PROVIDER_IS_ASSISTANT, PROVIDER_IS_OTHER_CLI, CHAT_RUN_LIVE, SESSION_ENDED},
+    {
+        PROVIDER_IS_CLI,
+        PROVIDER_IS_ASSISTANT,
+        PROVIDER_IS_OTHER_CLI,
+        CHAT_RUN_LIVE,
+        SESSION_ENDED,
+    },
 )
 """The refusals after which no drain of that run can succeed, so the runner stops
 the run it is polling for, instead of retrying a drain the chat will keep refusing."""

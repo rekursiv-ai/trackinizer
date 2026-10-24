@@ -314,7 +314,8 @@ def _parse_args(
         help=(
             "The shared Chat partner: a live session whose granted actor is "
             "ACTOR (or ACTOR#N) and whose API key belongs to the account EMAIL "
-            "is the Chat partner of every canvas "
+            "is the Chat partner of every canvas. EMAIL is a service account's, "
+            "NAME@service.invalid "
             "(default: $TRACKINIZER_ASSISTANT; empty means none)."
         ),
     )

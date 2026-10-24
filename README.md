@@ -105,7 +105,8 @@ children, a graph of what lies within two hops, and its activity.
 ### Chat
 
 A canvas's Chat talks to the server's shared assistant. An admin sets it with
-`trackinizer --assistant ACTOR=EMAIL`; with none live, Chat says so and sends
+`trackinizer --assistant ACTOR=EMAIL`, where `EMAIL` is a service account's
+(`NAME@service.invalid`); with none live, Chat says so and sends
 nothing. [`docs/api.md`](trackinizer/docs/api.md) has the rules.
 
 ## The model

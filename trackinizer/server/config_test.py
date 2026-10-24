@@ -273,7 +273,7 @@ class TestFromEnv:
             "TRACKINIZER_SESSION_SECRET": "s3cret",
             "TRACKINIZER_SESSION_MAX_AGE_SECONDS": "99",
             "TRACKINIZER_NO_AUTH": "1",
-            "TRACKINIZER_ASSISTANT": "kb=K@x.y",
+            "TRACKINIZER_ASSISTANT": "kb=KB@Service.Invalid",
             "TRACKINIZER_CHAT_STREAMING": "off",
         }
         for name, value in values.items():
@@ -293,7 +293,7 @@ class TestFromEnv:
             web=True,
             session_max_age_seconds=99,
             auth_disabled=True,
-            assistant=Assistant(actor="kb", email="k@x.y"),
+            assistant=Assistant(actor="kb", email="kb@service.invalid"),
             chat_streaming=False,
         )
 
@@ -411,6 +411,22 @@ class TestAssistant:
         with pytest.raises(ConfigError, match="ACTOR=EMAIL"):
             Config.from_args(_server_args(assistant=raw))
 
+    @pytest.mark.parametrize(
+        "raw",
+        ["scout=ada@example.com", "kb=kb@service.invalid.example.com"],
+    )
+    def test_a_person_is_never_the_assistant(
+        self,
+        raw: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Every key of the account is the assistant's, so it must be a program's."""
+        with pytest.raises(ConfigError, match=r"service account.*@service\.invalid"):
+            Config.from_args(_server_args(assistant=raw))
+        monkeypatch.setenv("TRACKINIZER_ASSISTANT", raw)
+        with pytest.raises(ConfigError, match="TRACKINIZER_ASSISTANT"):
+            Config.from_env()
+
     def test_blank_means_no_assistant(self) -> None:
         assert parse_assistant("") is None
         assert parse_assistant("   ") is None
@@ -418,25 +434,28 @@ class TestAssistant:
 
     def test_assistant_email_is_lowercased_like_stored_users(self) -> None:
         """users.email is stored lowercase, so the configured one must match it."""
-        assert parse_assistant("scout=Ada@Example.COM") == Assistant(
+        assert parse_assistant("scout=Scout@Service.INVALID") == Assistant(
             actor="scout",
-            email="ada@example.com",
+            email="scout@service.invalid",
         )
-        config = Config.from_args(_server_args(assistant="kb=Kb@X.Y"))
-        assert config.assistant == Assistant(actor="kb", email="kb@x.y")
+        config = Config.from_args(_server_args(assistant="kb=Kb@Service.Invalid"))
+        assert config.assistant == Assistant(actor="kb", email="kb@service.invalid")
 
     def test_the_first_equals_splits_and_whitespace_is_trimmed(self) -> None:
-        assert parse_assistant(" kb = a=b@x.y ") == Assistant(
+        assert parse_assistant(" kb = a=b@service.invalid ") == Assistant(
             actor="kb",
-            email="a=b@x.y",
+            email="a=b@service.invalid",
         )
 
     def test_environment_supplies_the_assistant(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("TRACKINIZER_ASSISTANT", "a=x@y.z")
-        assert Config.from_env().assistant == Assistant(actor="a", email="x@y.z")
+        monkeypatch.setenv("TRACKINIZER_ASSISTANT", "a=x@service.invalid")
+        assert Config.from_env().assistant == Assistant(
+            actor="a",
+            email="x@service.invalid",
+        )
 
     def test_unset_environment_means_no_assistant(
         self,

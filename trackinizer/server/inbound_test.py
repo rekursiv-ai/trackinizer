@@ -32,6 +32,28 @@ class TestInboundQueue:
         queue.mark_poller(session)
         assert queue.has_poller(session)
 
+    def test_a_refusal_is_kept_until_a_drain_is_let_in(self) -> None:
+        queue = InboundQueue(max_refusals=2)
+        session, other, third = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+        assert queue.refusal(session) is None
+        queue.refuse(session, reason="Another run is draining this chat")
+        first = queue.refusal(session)
+        assert first is not None
+        assert first.reason == "Another run is draining this chat"
+        queue.refuse(session, reason="This chat was closed")
+        again = queue.refusal(session)
+        # A new refusal is told from one a reader saw by when it was made.
+        assert again is not None
+        assert (again.reason, again.at > first.at) == ("This chat was closed", True)
+        queue.mark_poller(session)
+        assert queue.refusal(session) is None
+        queue.refuse(session, reason="a")
+        queue.refuse(other, reason="b")
+        queue.refuse(third, reason="c")
+        assert queue.refusal(session) is None
+        assert queue.refusal(third) is not None
+
     def test_active_poller_ids_lists_only_unexpired_leases(self) -> None:
         now = [100.0]
         queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])

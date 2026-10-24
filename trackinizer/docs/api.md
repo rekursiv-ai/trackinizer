@@ -1039,12 +1039,17 @@ A retry under the same key queues nothing again.
 `$TRACKINIZER_ASSISTANT`, names one assistant. A live AgentSession is the
 assistant's when its granted actor is `ACTOR` (or `ACTOR#N`, the suffix the
 server adds once a name has been used) and the API key that opened it belongs to
-the account `EMAIL`, compared lowercase. A canvas on `assistant` talks to the
+the account `EMAIL`, compared lowercase. Every key of that account acts as the
+assistant, so `EMAIL` must be a service account's (`NAME@service.invalid`): the
+server refuses to start with a person's. A canvas on `assistant` talks to the
 assistant's newest live session. `assistant` in the state is its actor, or null when
 none is configured. `partner` is computed on every read and never stored:
 `session_id`, `actor`, `cli`, `status` (`live`, `unavailable`, or `offline` for a CLI
 no run holds), `provider`, `label` (`claude · gx10`), and for a live CLI run the
-`machine`, `run_name` and `cwd` its last drain named (null otherwise).
+`machine`, `run_name` and `cwd` its last drain named (null otherwise). An offline CLI
+partner also says why the server refused the last drain by a run of the chat's own
+account: `refused`, its message, and `refused_at`, which a new refusal moves (empty and
+null when none was refused since a drain was let in).
 
 **The provider.** A canvas's `provider` (`assistant`, `claude` or `codex`) says who
 answers its Chat; a canvas stored with the retired `partner_choice` reads as

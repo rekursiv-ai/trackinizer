@@ -207,13 +207,13 @@ class TestPureFunctions:
         monkeypatch.delenv("TRACKINIZER_ASSISTANT", raising=False)
         flags, remaining = _parse_args(
             argparse.ArgumentParser(),
-            ["--assistant", "scout=kb@example.com"],
+            ["--assistant", "scout=kb@service.invalid"],
         )
 
         assert remaining == []
         assert Config.from_args(flags).assistant == Assistant(
             actor="scout",
-            email="kb@example.com",
+            email="kb@service.invalid",
         )
         assert (
             Config.from_args(_parse_args(argparse.ArgumentParser(), [])[0]).assistant
@@ -224,15 +224,21 @@ class TestPureFunctions:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("TRACKINIZER_ASSISTANT", "scout=kb@example.com")
+        monkeypatch.setenv("TRACKINIZER_ASSISTANT", "scout=kb@service.invalid")
 
         flags, _ = _parse_args(argparse.ArgumentParser(), [])
         assert Config.from_args(flags).assistant == Assistant(
             actor="scout",
-            email="kb@example.com",
+            email="kb@service.invalid",
         )
-        flags, _ = _parse_args(argparse.ArgumentParser(), ["--assistant", "s=x@y.z"])
-        assert Config.from_args(flags).assistant == Assistant(actor="s", email="x@y.z")
+        flags, _ = _parse_args(
+            argparse.ArgumentParser(),
+            ["--assistant", "s=x@service.invalid"],
+        )
+        assert Config.from_args(flags).assistant == Assistant(
+            actor="s",
+            email="x@service.invalid",
+        )
 
     def test_staff_flag_names_who_holds_the_staff_audience(
         self,

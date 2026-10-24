@@ -5,8 +5,21 @@ All notable trackinizer changes are documented here. This project follows
 
 ## Unreleased
 
+### Added
+
+- A canvas's offline CLI partner says why the server refused the last drain by a run
+  of the chat's own account (`refused`, and `refused_at`, which a new refusal
+  moves), so a person sees why a run they started never went live. A drain let in
+  clears it.
+
 ### Changed
 
+- **Breaking:** `--assistant` (`$TRACKINIZER_ASSISTANT`) must name a service account,
+  `ACTOR=NAME@service.invalid`; the server refuses to start with any other address.
+  Every key of the assistant's account acts as the assistant, so a person's address
+  made their own runs look like the assistant to their chats.
+- `RUN_ENDING_REFUSALS` holds `provider_is_cli`: a run under the assistant's account
+  never drains a chat a CLI answers.
 - The web app moved from `/app/` to `/trax/`: open `http://127.0.0.1:8765/trax/`.
   `/app/` and every path under it answer 302 to the same path and query under
   `/trax/`, and the browser keeps the `#/...` route, so saved links still open.

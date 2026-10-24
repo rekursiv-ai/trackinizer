@@ -161,7 +161,8 @@ async def cli_partner(
       partner: The live session, with the machine, detached host and folder its
         run's last drain named (:meth:`~.inbound.InboundQueue.poller_run`), or
         ``offline`` naming the session that began the chat (None for no session
-        yet), which a run attaches to.
+        yet), which a run attaches to, and why its run's last drain was refused
+        (:meth:`~.inbound.InboundQueue.refusal`).
 
     """
     offline = CanvasPartner(
@@ -211,9 +212,15 @@ async def cli_partner(
                 else f"{provider} · {where.machine}",
             },
         )
+    if not rows:
+        return offline
+    session_id = from_plain(rows[0]["id"], uuid.UUID)
+    refusal = inbound.refusal(session_id)
     return offline.model_copy(
         update={
-            "session_id": from_plain(rows[0]["id"], uuid.UUID) if rows else None,
+            "session_id": session_id,
+            "refused": "" if refusal is None else refusal.reason,
+            "refused_at": None if refusal is None else refusal.at,
         },
     )
 
