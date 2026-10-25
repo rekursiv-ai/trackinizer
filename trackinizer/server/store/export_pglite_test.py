@@ -63,6 +63,7 @@ _LEFT_OUT: Final = frozenset(
         "credit_grace",
         "device_logins",
         "gpu_box_credentials",
+        "gpu_allowance_resets",
         "gpu_issuances",
         "gpu_jobs",
         "gpu_owners",

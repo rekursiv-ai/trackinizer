@@ -85,10 +85,10 @@ async def _old_database(engine: DatabaseEngine) -> None:
             "CREATE TABLE applied_migrations (name TEXT PRIMARY KEY, "
             "applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())",
         )
-        # The baseline predates 058, the cutover under test, and the columns 060 adds,
-        # which bootstrap applies; the rest are marked applied.
+        # Bootstrap must apply the cutover and the later DDL absent from this
+        # frozen baseline; marking that DDL applied hides upgrade/fresh drift.
         for name, _ in schema_migrations():
-            if name not in {"schema.058.sql", "schema.060.sql"}:
+            if name not in {"schema.058.sql", "schema.060.sql", "schema.061.sql"}:
                 await conn.execute(
                     "INSERT INTO applied_migrations (name) VALUES ($1)",
                     name,
@@ -97,13 +97,17 @@ async def _old_database(engine: DatabaseEngine) -> None:
 
 
 async def _undo_after_canvas_rename(conn: Conn) -> None:
-    """Take off what 060 added, which the old baseline predates."""
+    """Remove later DDL before comparing the complete pre-cutover catalog."""
+    await conn.execute("DROP TABLE gpu_allowance_resets")
     await conn.execute(
         "ALTER TABLE session_liveness DROP COLUMN machine, DROP COLUMN run, "
         "DROP COLUMN cli, DROP COLUMN cwd",
     )
     await conn.execute("ALTER TABLE api_keys DROP COLUMN machine_id")
-    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.060.sql'")
+    await conn.execute(
+        "DELETE FROM applied_migrations "
+        "WHERE name IN ('schema.060.sql', 'schema.061.sql')",
+    )
 
 
 async def _snapshot(conn: Conn, *, old: bool) -> dict[str, list[dict[str, object]]]:
@@ -147,6 +151,7 @@ async def _round_trip(engine: DatabaseEngine) -> None:
     await store.bootstrap()
     async with engine.acquire() as conn:
         migrated_catalog = await _catalog(conn)
+        assert ("table", "gpu_allowance_resets", "") in migrated_catalog
         after = await _snapshot(conn, old=False)
         metadata = from_plain(after["canvases"][0]["metadata"], dict[str, object])
         state = state_from_row(after["canvases"][0])
