@@ -85,13 +85,25 @@ async def _old_database(engine: DatabaseEngine) -> None:
             "CREATE TABLE applied_migrations (name TEXT PRIMARY KEY, "
             "applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())",
         )
+        # The baseline predates 058, the cutover under test, and the columns 060 adds,
+        # which bootstrap applies; the rest are marked applied.
         for name, _ in schema_migrations():
-            if name != "schema.058.sql":
+            if name not in {"schema.058.sql", "schema.060.sql"}:
                 await conn.execute(
                     "INSERT INTO applied_migrations (name) VALUES ($1)",
                     name,
                 )
         await conn.execute((_CWD / "testdata" / "canvas_rename_seed.sql").read_text())
+
+
+async def _undo_after_canvas_rename(conn: Conn) -> None:
+    """Take off what 060 added, which the old baseline predates."""
+    await conn.execute(
+        "ALTER TABLE session_liveness DROP COLUMN machine, DROP COLUMN run, "
+        "DROP COLUMN cli, DROP COLUMN cwd",
+    )
+    await conn.execute("ALTER TABLE api_keys DROP COLUMN machine_id")
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.060.sql'")
 
 
 async def _snapshot(conn: Conn, *, old: bool) -> dict[str, list[dict[str, object]]]:
@@ -185,6 +197,7 @@ async def _round_trip(engine: DatabaseEngine) -> None:
         ]
         async with tx(conn):
             await conn.execute(load_sql("canvas_rename_down"))
+            await _undo_after_canvas_rename(conn)
         assert await _catalog(conn) == old_catalog
         assert await _snapshot(conn, old=True) == before
     await store.bootstrap()

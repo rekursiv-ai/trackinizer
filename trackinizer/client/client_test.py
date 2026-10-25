@@ -1436,7 +1436,7 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
     | {"list_machines", "get_machine", "put_machine"}
     | {"change_machine_labels", "delete_machine"}
     | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"}
-    | {"machine_runs", "disconnect_machine"}
+    | {"machine_runs", "disconnect_machine", "logout_machine"}
     | {"wait_terminals"}
     | {"exec_command", "wait_exec", "post_exec_result"}
     | {"job_submit", "job_list", "job_view", "job_grant", "job_read_grant"}

@@ -373,7 +373,13 @@ class TestMint:
         assert body["role"] == "writer"
         assert body["name"] == "host"
         assert body["open_into"] is None
-        key_id, user_id, name, secret_hash, prefix, role, pin = _api_key_insert(engine)
+        key_id, user_id, name, secret_hash, prefix, role, pin, machine = (
+            _api_key_insert(
+                engine,
+            )
+        )
+        # A service account's token names no machine: only a device login's key does.
+        assert machine is None
         assert body["id"] == str(key_id)
         assert user_id == _ACCOUNT_ID
         assert (name, role, pin) == ("host", "writer", None)
@@ -482,7 +488,7 @@ class TestMint:
         assert response.status_code == 201, response.text
         body = from_plain(response.json(), dict[str, object])
         assert body["open_into"] == "staff"
-        assert _api_key_insert(engine)[6:] == ("staff",)
+        assert _api_key_insert(engine)[6:] == ("staff", None)
 
     def test_a_domain_pattern_gives_the_account_no_staff_to_hand_a_token(
         self,
@@ -530,7 +536,7 @@ class TestMint:
         _script_mint(engine, account=_account_row())
         response = client.post(_TOKENS, json={"name": "host"})
         assert response.status_code == 201, response.text
-        assert _api_key_insert(engine)[6:] == ("open",)
+        assert _api_key_insert(engine)[6:] == ("open", None)
         wider = client.post(_TOKENS, json={"name": "wider", "open_into": "staff"})
         assert wider.status_code == 403, wider.text
 

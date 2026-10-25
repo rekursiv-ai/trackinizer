@@ -6,7 +6,10 @@ reads offline. Each drain names the run's machine (``inbound.PollerRun``), so
 the owner sees here the live runs of their account that name it, and stops them. A
 stopped run's next drain is refused with 403 ``run_stopped``, on which every run ends.
 Disconnecting a machine revokes its host, as the revoke route does, and stops every
-run that names it.
+run that names it. Logging it out also revokes the owner's keys a device login made for
+it, so nothing on the computer acts as them until a person approves a login again.
+Where each session's run last said it ran is kept (``session_liveness``), so a machine's
+past runs are listed too.
 """
 
 from __future__ import annotations
@@ -14,10 +17,10 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from treekle import from_plain
 
-from trackinizer.server.api._deps import get_hub, get_inbound
+from trackinizer.server.api._deps import get_hub, get_inbound, get_store
 from trackinizer.server.api._routes_shared import engine_of
 from trackinizer.server.api.machine_host_routes import revoke_machine
 from trackinizer.server.api.machines_routes import MachineName, refuse_reserved
@@ -25,8 +28,10 @@ from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire.wire_machines import (
     MACHINE_DISCONNECT_PATH,
+    MACHINE_LOGOUT_PATH,
     MACHINE_RUN_STOP_PATH,
     MACHINE_RUNS_PATH,
+    MachineLogout,
     MachineRun,
     MachineRuns,
 )
@@ -36,6 +41,7 @@ __all__ = [
     "disconnect_machine_route",
     "list_machine_runs_route",
     "live_runs",
+    "logout_machine_route",
     "router",
     "stop_machine_run_route",
 ]
@@ -49,23 +55,47 @@ async def list_machine_runs_route(
     name: MachineName,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
+    past: Annotated[int, Query(ge=0, le=100)] = 20,
 ) -> MachineRuns:
-    """List the caller's live runs that name one of their machines.
+    """List the caller's live runs that name one of their machines, and its past ones.
 
     Args:
       name: The machine's name.
       request: Request carrying the database engine and the inbound queue.
       identity: The machine's owner.
+      past: The most past runs to list.
 
     Returns:
-      runs: Each live run, by CLI, then host name, then session.
+      runs: Each live run, by CLI, then host name, then session; and ``past``, the
+        last ``past`` that are not live, most recently heard from first.
 
     Raises:
       NotFoundError: The caller owns no such machine.
 
     """
     owner = await _owner(request, identity, name=name)
-    return MachineRuns(runs=live_runs(request, machine=name, owner=owner))
+    live = live_runs(request, machine=name, owner=owner)
+    shown = {run.session_id for run in live}
+    before = await get_store(request).past_runs(
+        machine=name,
+        account=owner,
+        limit=past + len(shown),
+    )
+    return MachineRuns(
+        runs=live,
+        past=[
+            MachineRun(
+                session_id=run.session_id,
+                cli=run.cli,
+                run=run.run,
+                cwd=run.cwd,
+                last_seen=run.last_seen,
+                ended=run.ended,
+            )
+            for run in before
+            if run.session_id not in shown
+        ][:past],
+    )
 
 
 @router.post(MACHINE_RUN_STOP_PATH, status_code=204)
@@ -137,6 +167,48 @@ async def disconnect_machine_route(
     if runs:
         get_hub(request).nudge()
     return MachineRuns(runs=runs)
+
+
+@router.post(MACHINE_LOGOUT_PATH, response_model=MachineLogout)
+async def logout_machine_route(
+    name: MachineName,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
+) -> MachineLogout:
+    """Disconnect one of the caller's machines and revoke the keys it logged in with.
+
+    Disconnects it as the disconnect route does, then revokes the caller's live keys
+    a device login made for it (``api_keys.machine_id``). A key made another way, or
+    before keys named their machine, is not one: it is revoked in Settings.
+
+    Args:
+      name: The machine's name.
+      request: Request carrying the database engine, the hubs and the inbound queue.
+      identity: The machine's owner.
+
+    Returns:
+      logout: The runs it stopped and how many keys it revoked.
+
+    Raises:
+      NotFoundError: The caller owns no such machine.
+
+    """
+    owner = await _owner(request, identity, name=name)
+    stopped = await disconnect_machine_route(name, request, identity)
+    async with engine_of(request).acquire() as conn:
+        keys = await conn.fetch(
+            "UPDATE api_keys SET revoked_at = clock_timestamp() FROM machines "
+            "WHERE api_keys.machine_id = machines.id AND machines.name = $1 "
+            "AND machines.owner = $2 AND api_keys.user_id = $3 "
+            "AND api_keys.revoked_at IS NULL RETURNING api_keys.id",
+            name,
+            owner,
+            identity.user_id,
+        )
+    store = get_store(request)
+    for key in keys:
+        store.forget_bearer_identity_for_key(from_plain(key["id"], UUID))
+    return MachineLogout(runs=stopped.runs, keys=len(keys))
 
 
 def live_runs(request: Request, *, machine: str, owner: str) -> list[MachineRun]:

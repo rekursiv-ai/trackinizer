@@ -117,6 +117,7 @@ if TYPE_CHECKING:
         Facts,
         Machine,
         MachineDetail,
+        MachineLogout,
         MachineRun,
     )
     from trackinizer.wire.wire_metrics import (
@@ -2489,6 +2490,12 @@ class Client:
         where = wire_machines.MACHINE_DISCONNECT_PATH.format(name=quote(name, safe=""))
         response = self._request("POST", where)
         return _validate_model(wire_machines.MachineRuns, response, where).runs
+
+    def logout_machine(self, name: str) -> MachineLogout:
+        """Disconnect one of the caller's machines and revoke the keys it logged in with."""
+        where = wire_machines.MACHINE_LOGOUT_PATH.format(name=quote(name, safe=""))
+        response = self._request("POST", where)
+        return _validate_model(wire_machines.MachineLogout, response, where)
 
     def code_missing(self, owner: str, *, hashes: Sequence[str]) -> list[str]:
         """Return the blob hashes the code store lacks for ``owner``, in the order given.

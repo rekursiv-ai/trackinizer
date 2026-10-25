@@ -10,7 +10,13 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.server.api.app import app
+from trackinizer.server.api.canvas_test_support import (
+    act_as_user_agent,
+    drain,
+    start_session,
+)
 from trackinizer.server.api.conftest import (
+    TEST_API_KEY_ID,
     TEST_USER_EMAIL,
     TEST_USER_ID,
     install_identity,
@@ -25,8 +31,10 @@ from trackinizer.wire.wire_machine_host import (
 )
 from trackinizer.wire.wire_machines import (
     MACHINE_DISCONNECT_PATH,
+    MACHINE_LOGOUT_PATH,
     MACHINE_RUN_STOP_PATH,
     MACHINE_RUNS_PATH,
+    MachineLogout,
     MachineRun,
     MachineRuns,
 )
@@ -58,7 +66,7 @@ _THEIRS = uuid.UUID("22222222-2222-2222-2222-222222222222")
 async def _owner_account(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """Seed the admin the fixture acts as, who owns the machines it enrolls."""
+    """Seed the admin the fixture acts as, who owns the machines it enrolls, and its key."""
     _, store = pglite_route_client
     async with store.engine.acquire() as conn:
         await conn.execute(
@@ -66,6 +74,12 @@ async def _owner_account(
             "VALUES ($1, $2, 'admin', 'admin', 'active')",
             TEST_USER_ID,
             TEST_USER_EMAIL,
+        )
+        await conn.execute(
+            "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role) "
+            "VALUES ($1, $2, 'agent', 'test-hash', 'trax_agent', 'writer')",
+            TEST_API_KEY_ID,
+            TEST_USER_ID,
         )
     install_identity(make_test_identity(role="admin", api_key_id=None))
 
@@ -143,6 +157,70 @@ async def test_disconnect_revokes_the_host_and_stops_its_owners_runs(
     assert beat.status_code == 410
     assert _inbound().stopped(_MINE, instance="a" * 32)
     assert not _inbound().stopped(_THEIRS, instance="b" * 32)
+
+
+async def test_a_machines_past_runs_outlive_their_leases(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, _ = pglite_route_client
+    await _enroll(client, "box")
+    act_as_user_agent("writer")
+    session = await start_session(client, cli="claude")
+    polled = await drain(
+        client,
+        session_id=session,
+        cli="claude",
+        instance="d" * 32,
+        machine="box",
+    )
+    assert polled.status_code == 200, polled.text
+    _inbound().forget_poller(session)
+    install_identity(make_test_identity(role="admin", api_key_id=None))
+
+    listed = await client.get(MACHINE_RUNS_PATH.format(name="box"))
+
+    assert listed.status_code == 200, listed.text
+    runs = MachineRuns.model_validate_json(listed.text)
+    assert runs.runs == []
+    assert [(run.session_id, run.cli) for run in runs.past] == [(session, "claude")]
+    assert runs.past[0].last_seen is not None
+
+
+async def test_logout_disconnects_and_revokes_the_keys_its_logins_made_alone(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, store = pglite_route_client
+    machine_id, credential = await _joined(client, "box")
+    linked, other = uuid.uuid4(), uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        for key, machine in ((linked, machine_id), (other, None)):
+            await conn.execute(
+                "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role, "
+                "machine_id) VALUES ($1, $2, 'trax@box', 'hash', $3, 'writer', $4)",
+                key,
+                TEST_USER_ID,
+                f"trax_{key.hex[:6]}",
+                machine,
+            )
+    _live_runs()
+
+    out = await client.post(MACHINE_LOGOUT_PATH.format(name="box"))
+    beat = await client.post(
+        HEARTBEAT_PATH.format(machine_id=machine_id),
+        json={"instance": str(_INSTANCE), "host_version": "0.1"},
+        headers={"Authorization": f"Bearer {credential}"},
+    )
+
+    assert out.status_code == 200, out.text
+    logout = MachineLogout.model_validate_json(out.text)
+    assert (logout.runs, logout.keys) == ([_MY_RUN], 1)
+    assert beat.status_code == 410
+    async with store.engine.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, revoked_at IS NOT NULL AS revoked FROM api_keys WHERE id = ANY($1)",
+            [linked, other],
+        )
+    assert {row["id"]: row["revoked"] for row in rows} == {linked: True, other: False}
 
 
 _MY_RUN = MachineRun(session_id=_MINE, cli="claude", run="chat-11111111", cwd="~/w")

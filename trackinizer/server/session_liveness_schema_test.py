@@ -47,8 +47,10 @@ async def test_liveness_old_to_fresh_catalog_parity(
         fresh = {tuple(row.values()) for row in await conn.fetch(catalog)}
         assert any(row[1] == "session_liveness" for row in fresh)
         await conn.execute("DROP TABLE session_liveness")
+        # 060 adds the table's later columns, so it runs again after 032 makes it.
         await conn.execute(
-            "DELETE FROM applied_migrations WHERE name = 'schema.032.sql'",
+            "DELETE FROM applied_migrations "
+            "WHERE name IN ('schema.032.sql', 'schema.060.sql')",
         )
     await store.bootstrap()
     async with pglite_engine.acquire() as conn:

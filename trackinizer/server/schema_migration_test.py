@@ -632,7 +632,9 @@ async def test_migration_035_matches_the_baseline_machines_table(
         baseline_idx = {str(r["indexdef"]) for r in await conn.fetch(indexes)}
         assert baseline_cols, "the baseline did not create machines"
 
-        # ``machine_jobs`` (057) refers to ``machines``, so it goes first and comes back.
+        # ``machine_jobs`` (057) and ``api_keys.machine_id`` (060) refer to ``machines``,
+        # so they go first and come back.
+        await conn.execute("ALTER TABLE api_keys DROP COLUMN machine_id")
         await conn.execute(
             "DROP TABLE machine_jobs, machine_credentials, machine_enrollments, "
             "machines",
@@ -644,6 +646,7 @@ async def test_migration_035_matches_the_baseline_machines_table(
         await conn.execute(load_sql("schema.049"))
         await conn.execute(load_sql("schema.052"))
         await conn.execute(load_sql("schema.057"))
+        await conn.execute(load_sql("schema.060"))
         migrated_cols = [dict(r) for r in await conn.fetch(columns)]
         migrated_cons = {
             (r["conname"], r["def"]) for r in await conn.fetch(constraints)
@@ -712,7 +715,9 @@ async def test_migration_036_matches_the_baseline_machine_host_tables(
         baseline = {t: await _table_shape(conn, t) for t in _MACHINE_HOST_TABLES}
         assert baseline["machine_credentials"][0], "the baseline lacks the tables"
 
-        # ``machine_jobs`` (057) refers to ``machines``, so it goes first and comes back.
+        # ``machine_jobs`` (057) and ``api_keys.machine_id`` (060) refer to ``machines``,
+        # so they go first and come back.
+        await conn.execute("ALTER TABLE api_keys DROP COLUMN machine_id")
         await conn.execute(
             "DROP TABLE machine_jobs, machine_credentials, machine_enrollments, "
             "machines",
@@ -722,6 +727,7 @@ async def test_migration_036_matches_the_baseline_machine_host_tables(
         await conn.execute(load_sql("schema.049"))
         await conn.execute(load_sql("schema.052"))
         await conn.execute(load_sql("schema.057"))
+        await conn.execute(load_sql("schema.060"))
         migrated = {t: await _table_shape(conn, t) for t in _MACHINE_HOST_TABLES}
         # Replaying it over the existing tables is a no-op, not an error.
         await conn.execute(load_sql("schema.036"))
@@ -824,11 +830,13 @@ async def test_migration_040_matches_the_baseline_audience_columns(
             "ALTER TABLE users DROP COLUMN hosted_domain, DROP COLUMN google_sub, "
             "DROP COLUMN preferences",
         )
+        # ``machine_id`` (060) comes after ``open_into``, so it goes too and comes back.
         await conn.execute(
-            "ALTER TABLE api_keys DROP COLUMN open_into",
+            "ALTER TABLE api_keys DROP COLUMN open_into, DROP COLUMN machine_id",
         )
         await conn.execute(load_sql("schema.040"))
         await conn.execute(load_sql("schema.044"))
+        await conn.execute(load_sql("schema.060"))
         migrated = {t: await _table_shape(conn, t) for t in ("users", "api_keys")}
         # Replaying it over the existing columns is a no-op, not an error.
         await conn.execute(load_sql("schema.040"))
@@ -1429,6 +1437,43 @@ async def test_migration_057_matches_the_baseline_machine_jobs_table(
 
     assert migrated == baseline
     assert machine == gpu + 1
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_060_matches_the_baseline_run_places_and_key_machines(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """The columns 060 adds to ``session_liveness`` and ``api_keys`` equal the baseline's.
+
+    Drops them (as a pre-060 database lacks them), replays ``schema.060`` alone, and
+    compares both tables' shapes, the key's machine reference included.
+    """
+    await reset_schema(pglite_engine)
+    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
+    tables = ("session_liveness", "api_keys")
+    async with pglite_engine.acquire() as conn:
+        baseline = {t: await _table_shape(conn, t) for t in tables}
+        assert [c["column_name"] for c in baseline["session_liveness"][0]][-4:] == [
+            "machine",
+            "run",
+            "cli",
+            "cwd",
+        ]
+
+        for column in ("machine", "run", "cli", "cwd"):
+            await conn.execute(f"ALTER TABLE session_liveness DROP COLUMN {column}")
+        await conn.execute("ALTER TABLE api_keys DROP COLUMN machine_id")
+        await conn.execute(load_sql("schema.060"))
+        migrated = {t: await _table_shape(conn, t) for t in tables}
+        # Replaying it over the existing columns is a no-op, not an error.
+        await conn.execute(load_sql("schema.060"))
+
+    assert migrated == baseline
+    assert (
+        "api_keys_machine_id_fkey",
+        "FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE SET NULL",
+    ) in migrated["api_keys"][1]
 
 
 async def _catalog_names_aside(conn: Conn) -> list[tuple[str, str, str]]:
