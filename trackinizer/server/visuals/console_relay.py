@@ -70,7 +70,7 @@ async def relay_console_line(
       inbound: Session message queue.
       assistant: The configured assistant, if any.
       reader: The sender, as the transcript test reads them: they post into a chat
-        they read.
+        they read and started or were shared.
 
     Returns:
       delivered: None when the canvas is not the owner's; False when it has no chat,

@@ -570,7 +570,7 @@ async def test_the_audience_of_each_session_is_read_by_id(
     _, store = pglite_route_client
     no_session = uuid.uuid4()
 
-    found = await store.read_session_audiences([hidden.lead, no_session])
+    found = await store.read_push_audiences([hidden.lead, no_session])
 
     assert found == {hidden.lead: STAFF}
 

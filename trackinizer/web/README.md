@@ -464,7 +464,10 @@ with one response shape, so the fixtures take one per verb.
   see `chat_orgs` in `server/config.py`), `private` once its starter hid it, or
   `staff` once the assistant read a staff session into it; the chat's starter and
   the people it is shared with read it in every case, and a staff chat only those
-  of them who hold staff. Whoever reads a chat joins it by typing in it. A chat
+  of them who hold staff. Fewer post in it than read it, as the head's `may_post`
+  says: its starter, the people it is shared with and, under `domain`, the starter's
+  organisation. Any other reader's line is refused (403 `chat_not_shared`), and
+  this Chat shows the refusal; "Fork from here" is their way to continue. A chat
   whose head says `forks_on_typing` is one the person does not read: the server
   refuses its records and their lines, and a fork too, since a fork copies lines
   its poster reads. Chat then reads no records (and drops any read before the chat

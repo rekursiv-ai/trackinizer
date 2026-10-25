@@ -294,8 +294,8 @@ async def send_chat_line(
       inbound: Session message queue.
       assistant: The configured assistant, if any.
       reader: The poster, as the transcript test reads them: they post into a chat
-        they read, and a fork point in a session they may not read is no line, as
-        one past the end of a session is none.
+        they read and started or were shared, and a fork point in a session they may
+        not read is no line, as one past the end of a session is none.
       members: Everyone a chat the poster begins is open to besides them, as one
         reader (:func:`~trackinizer.server.audience.members_reader`); a fork
         is theirs to read, so they must read what it copies. ``None`` for no one.
@@ -314,7 +314,9 @@ async def send_chat_line(
       CanvasChatError: The canvas's chat is another conversation, or another
         canvas of the poster holds the one named.
       IdempotencyReuseError: ``key`` already posted another line.
-      ForeignChatError: The poster does not read the conversation.
+      ForeignChatError: The poster neither started the conversation nor was shared
+        it, or does not read it: of any kind, the post is refused before anything is
+        queued, and a reader forks the chat instead.
       ChatClosedError: The fork point is a line of a ``private`` or ``staff`` chat,
         whose audience a fork's copies would not keep, or of a chat ``members`` do
         not read.
@@ -2652,7 +2654,7 @@ async def _check_fork_or_membership(
     reader: SessionReader,
     members: SessionReader | None,
 ) -> None:
-    """Refuse a deleted chat, a fork of no line or a closed chat, a post unread."""
+    """Refuse a deleted chat, a fork of no line or a closed chat, a post not its own."""
     await refuse_a_deleted_chat(
         conn,
         conversation_id=conversation_id,

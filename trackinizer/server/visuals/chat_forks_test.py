@@ -1,4 +1,4 @@
-"""Tests for who shares a science chat and who deletes it."""
+"""Tests for who posts into a science chat, who shares it and who deletes it."""
 
 from __future__ import annotations
 
@@ -9,8 +9,37 @@ from trackinizer.server.visuals.chat_forks import (
     ChatRefusal,
     ChatRefusedError,
     delete_refusal,
+    may_continue,
     may_share,
 )
+
+
+@pytest.mark.parametrize(
+    ("caller", "org", "allowed"),
+    [
+        ("Ada@Example.com", None, True),
+        ("Grace@Example.com", None, True),
+        # Reading the chat, as everyone on a single server does, is no leave to post.
+        ("linus@example.com", None, False),
+        # A domain server's organisation of the starter posts, as it reads.
+        ("linus@example.com", "example.com", True),
+        ("jan@other.org", "other.org", False),
+    ],
+)
+def test_its_starter_shares_and_a_domain_servers_organisation_post_into_a_chat(
+    caller: str,
+    org: str | None,
+    allowed: bool,
+) -> None:
+    assert (
+        may_continue(
+            caller,
+            starter="Ada@Example.com",
+            shared_with=("grace@example.com",),
+            org=org,
+        )
+        is allowed
+    )
 
 
 @pytest.mark.parametrize(

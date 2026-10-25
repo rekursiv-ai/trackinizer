@@ -318,7 +318,7 @@ async def test_a_post_with_no_assistant_running_is_refused(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_second_writer_posts_into_the_first_ones_open_chat(
+async def test_a_second_writer_it_is_shared_with_posts_into_the_first_ones_open_chat(
     pglite_route_client: _Client,
 ) -> None:
     """The line joins the chat's own queue, attested to the second writer."""
@@ -338,6 +338,9 @@ async def test_a_second_writer_posts_into_the_first_ones_open_chat(
     assert [m["text"] for m in await _drained(client, session_id=kb)] == [
         "hello from ada",
     ]
+    browser()
+    shared = await client.put(f"/api/chats/{started}/shares/{OTHER_EMAIL}")
+    assert shared.status_code == 200, shared.text
 
     browser(OTHER_USER_ID, email=OTHER_EMAIL)
     second_canvas = await _canvas(client, other=True)

@@ -801,7 +801,10 @@ an unshare or an account move within 30 s. Every other change reaches every view
 A subscriber push into a session that is not `open` carries no `actor` and no
 `reason`, and its `agent_message` omits "(by ...)": those are free text a writer sets,
 and an inbound line becomes the session's next user turn. The row is still named by
-`subject_ref` and `row`, so the session reads the change from the graph.
+`subject_ref` and `row`, so the session reads the change from the graph. A science
+chat's session takes no push at all: any writer may subscribe a chat's routing name to
+a row, and its run would type the push into its starter's CLI, which only they and
+the people they share the chat with speak to.
 
 Existing sessions migrate to `open`; the migration cannot tell a campaign lead or other
 staff session a running deployment already captured from any other. After it opens, a
@@ -1081,7 +1084,9 @@ canvas names: for a CLI, the assistant's key is 409 `provider_is_cli`; for
 has one live run at a time: a `provider` operation revokes the lease of the chat's
 run of any CLI it leaves and stops that canvas owner's terminals attached to the
 chat's session, and `POST /api/terminals` with `attach` is 409 `chat_run_live` while
-another terminal or lease holds the session.
+another terminal or lease holds the session. Only the starter's canvas says who
+answers a chat, so a `provider` operation on another person's canvas that holds it
+ends none of its runs, the assistant's included.
 
 An operation body has `revision` and one `operation`: `show`, `hide`, `focus`,
 `place`, `provider`, `navigate`, `highlight`, or `chat`. The caller supplies a UUID `Idempotency-Key`
@@ -1214,8 +1219,8 @@ question.". It is queued for the chat's own session with the canvas context a
 line carries, and the assistant hears the pick as that person's line.
 
 `GET /api/chats/<uuid>` returns `{conversation_id, session_id, title, account, live,
-forks, forked_from, forks_on_typing, audience, may_hide, shared_with, may_share,
-may_delete}` and is 404
+forks, forked_from, forks_on_typing, audience, may_post, may_hide, shared_with,
+may_share, may_delete}` and is 404
 until the assistant has opened the session, and 410 `chat_deleted` once it was
 deleted (Deleting below); any signed-in user may
 read it, which is how a chat opens by link, though only its members read its
@@ -1224,6 +1229,8 @@ its starter only. Its `session_id` is the assistant's session under the id whene
 one exists, and `account` is the chat's starter (Forking below). `shared_with` lists the emails
 the chat is shared with, oldest share first,
 and is empty for anyone but its starter and an admin; `audience` is the chat's,
+`may_post` whether the caller posts into it (its starter, the people it is shared
+with and, under `domain`, its organisation, while they read it; Forking below),
 `may_hide` whether the caller may hide it or show it again (its starter, unless it
 is `staff`), and `may_share` and `may_delete` whether the caller may share it and
 delete it (Sharing and Deleting below).
@@ -1251,11 +1258,15 @@ each email domain one organisation, whose members are the people Google's `hd`
 claim names members of it (never a consumer account, whatever its address), and the
 starter's organisation is; `single` makes every user one organisation, and only a
 server whose users are all one organisation sets it. Anyone else reads none of the
-chat, and their post
-is 403
+chat. A line goes to the starter's own run, on their machine, under its sender's
+name, so only some members post into it: its starter, the people it is shared with
+and, under `domain`, the starter's organisation. Anyone else's post, of any `kind`,
+every other member's on a `single` server included, is 403
 `{"detail": {"code": "chat_not_shared", "message": ...}}` and queues
 nothing, whether the conversation is named by `conversation_id` or by the
-`Idempotency-Key` of a post that names none. The chat's starter is the account of
+`Idempotency-Key` of a post that names none; a Console relay from their canvas is
+`delivered: false`. Such a member forks the chat to continue. The chat's starter is
+the account of
 its oldest session that the assistant opened or that its own account's key opened,
 or, before any session carries the id, the
 sender of the post that began it. That one rule names the starter for a post, the

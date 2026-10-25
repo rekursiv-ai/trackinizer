@@ -356,9 +356,20 @@ async def test_individual_and_single_servers_set_who_else_reads(world: _World) -
 async def test_a_member_without_staff_neither_reads_nor_posts_in_a_staff_chat(
     world: _World,
 ) -> None:
-    """Its assistant read a staff session into it: its members who lack staff are out."""
+    """Its assistant read a staff session into it: its members who lack staff are out.
+
+    Stu holds staff, and Ann shared the chat with him, so he still posts in it.
+    """
     world.serve_chats_as("single")
     await _make_staff(world)
+    async with world.store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO science_chat_shares (conversation_id, email, shared_by) "
+            "VALUES ($1, $2, $3)",
+            world.conversation,
+            _EMAILS["stu"],
+            _EMAILS["ann"],
+        )
     read: dict[str, int] = {}
     posted: dict[str, tuple[int, bool]] = {}
     for name in ("ann", "olu", "stu"):

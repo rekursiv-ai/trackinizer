@@ -19,6 +19,8 @@ drop-if-absent, capped queues. A subscriber with no running session misses
 events; offline catch-up is the polling surface (``what_changed_for_me``),
 not this pipe. The cursor starts at task boot, so changes committed while
 the server was down are never pushed (nobody had a live poller then either).
+A science chat's session takes no push, as it takes no direct line: a chat
+hears only its starter and the people they share it with.
 
 The lifespan starts one sweep per app instance, and the server runs
 single-process, so exactly one sweep exists. That is load-bearing:
@@ -196,22 +198,27 @@ async def _deliver_change(
     bare = _change_payload(change, subject_seq, named=False)
     for subscriber in change.subscribers_snapshot:
         sessions = await store.resolve_live_sessions(subscriber)
-        audiences = await store.read_session_audiences(
+        # A science chat's session is left out: its run would type the push into
+        # its starter's CLI, which only they and the people they share it with
+        # speak to.
+        audiences = await store.read_push_audiences(
             [session_id for session_id, _rooms in sessions],
         )
         # A session that is not open takes the bare envelope: the writer's handle
         # and ``reason`` are free text, and the bridge makes an inbound line the
         # session's next user turn, so a writer who subscribed a staff lead to a
-        # row could otherwise speak to it. A missing audience reads as not open.
+        # row could otherwise speak to it. A session with no audience reads as
+        # not open.
         targets = [
             (
                 session_id,
                 Inbound(
-                    text=payload if audiences.get(session_id) == OPEN else bare,
+                    text=payload if audiences[session_id] == OPEN else bare,
                     source="trackinizer",
                 ),
             )
             for session_id, _rooms in sessions
+            if session_id in audiences
         ]
         if targets:
             delivered = inbound.send_once(_delivery_key(change.id, subscriber), targets)

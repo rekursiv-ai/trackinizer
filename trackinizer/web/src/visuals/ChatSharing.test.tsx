@@ -15,7 +15,7 @@ function head(audience: string): ChatHead {
   return {
     conversation_id: "0f1e2d3c-4b5a-4968-8776-655443322110", session_id: SESSION, title: "a chat",
     account: "me@example.com", live: true, forks: 0, forked_from: null, forks_on_typing: false,
-    audience, may_hide: true, shared_with: [], may_share: true, may_delete: true,
+    audience, may_post: true, may_hide: true, shared_with: [], may_share: true, may_delete: true,
   };
 }
 

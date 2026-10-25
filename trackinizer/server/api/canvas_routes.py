@@ -78,7 +78,7 @@ from trackinizer.server.visuals.canvases import (
     WorkspaceSuggestion,
 )
 from trackinizer.server.visuals.partners import live_chat_session
-from trackinizer.server.visuals.science_chats import read_head
+from trackinizer.server.visuals.science_chats import read_head, read_starter
 from trackinizer.server.visuals.session_placement import move_canvas_sessions
 from trackinizer.server.visuals.workspaces import (
     SetCanvasWorkspace,
@@ -772,7 +772,9 @@ async def canvas_operation_route(
     the owner cannot run now (no confirmed online machine of theirs lists the CLI) is
     409 ``provider_unavailable`` with the reason. Choosing ``claude`` or ``codex``
     gives the canvas a chat, and the chat a session, when it has none, so the
-    partner names a session for a run to attach to.
+    partner names a session for a run to attach to. A switch on a canvas that holds a
+    chat someone else started ends none of that chat's runs: its starter's canvas
+    says who answers it.
 
     Args:
       canvas_id: Canvas to change.
@@ -866,6 +868,8 @@ async def _with_chat_session(
     state: CanvasState,
 ) -> CanvasState:
     """Give a CLI canvas's chat its session, and return the canvas as it is then."""
+    if await _started_by_another(request, identity, state=state):
+        return state
     await _end_other_runs(request, identity, state=state)
     if state.provider == "assistant":
         return state
@@ -897,6 +901,27 @@ async def _with_chat_session(
         canvas_id=state.id,
         reader=session_reader(request, identity),
     )
+
+
+# The starter's own canvas says who answers a chat (``read_chat_provider``), so another
+# person's canvas that holds it changes nothing of it: a switch there ends no run of the
+# chat, the assistant's included, and the chat already has the session it began with.
+async def _started_by_another(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    state: CanvasState,
+) -> bool:
+    """Say whether the canvas holds a chat someone other than ``identity`` started."""
+    if state.conversation_id is None:
+        return False
+    async with engine_of(request).acquire() as conn:
+        starter = await read_starter(
+            conn,
+            assistant=get_assistant(request),
+            conversation_id=state.conversation_id,
+        )
+    return starter is not None and starter.lower() != identity.email.lower()
 
 
 # A chat has one live run at a time, and a switch is where a second would begin: the new

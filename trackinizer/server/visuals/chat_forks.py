@@ -1,14 +1,18 @@
-"""Who shares a science chat and who deletes it.
+"""Who posts into a science chat, who shares it and who deletes it.
 
-A science chat is its starter's. Who else reads it, and so posts in it and forks it,
-is :func:`~trackinizer.server.audience.visible_sql`'s rule, the one every read of
-a transcript takes: the people the starter shares it with, and as the server's
+A science chat is its starter's. Who else reads it is
+:func:`~trackinizer.server.audience.visible_sql`'s rule, the one every read of a
+transcript takes: the people the starter shares it with, and as the server's
 organisation mode says, the starter's organisation (``domain``) or everyone
-(``single``). Anyone else neither reads it nor posts in it, and so cannot fork it
-either: a fork opens with copies of its original's lines. A reader forks it only
-when the fork, open to its own starter's organisation, reaches no one the chat
-does not: under ``domain``, a person it is shared with from another organisation
-posts in it and does not fork it.
+(``single``). A line goes to the starter's own run, on their machine, under its
+sender's name, so fewer post into it than read it: its starter, the people they
+share it with and, under ``domain``, the starter's organisation. Any other reader,
+everyone else on a ``single`` server among them, forks it to continue, into a chat
+of their own. Anyone else neither
+reads it nor posts in it, and so cannot fork it either: a fork opens with copies of
+its original's lines. A reader forks it only when the fork, open to its own
+starter's organisation, reaches no one the chat does not: under ``domain``, a person
+it is shared with from another organisation posts in it and does not fork it.
 
 The starter shares their chat and stops sharing it. An admin only stops sharing it: a
 share lets its person read the chat, and an admin reads no one else's. One rule
@@ -19,7 +23,11 @@ posted, only an admin, or the key that opened it, does.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 
 __all__ = [
@@ -30,6 +38,7 @@ __all__ = [
     "ConversationTakenError",
     "ForeignChatError",
     "delete_refusal",
+    "may_continue",
     "may_share",
 ]
 
@@ -40,7 +49,7 @@ someone else has posted in it since."""
 
 
 class ForeignChatError(Exception):
-    """A person who may not read a chat tried to post into it."""
+    """A person who neither started a chat nor was shared it tried to post into it."""
 
 
 class ConversationTakenError(Exception):
@@ -68,6 +77,38 @@ class ChatClosedError(Exception):
     def __init__(self, code: ChatClosure) -> None:
         super().__init__(code)
         self.code: ChatClosure = code
+
+
+def may_continue(
+    caller: str,
+    *,
+    starter: str,
+    shared_with: Collection[str],
+    org: str | None,
+) -> bool:
+    """Return whether ``caller`` posts into the chat ``starter`` began, while reading it.
+
+    Args:
+      caller: The email of the person typing.
+      starter: The email of the person who started the chat.
+      shared_with: The lowercase emails the starter shared the chat with.
+      org: The caller's organisation, as the transcript test reads them
+        (:attr:`~trackinizer.server.audience.SessionReader.org`): set on a
+        ``domain`` server alone, so on any other one only a share lets anyone but
+        the starter in.
+
+    Returns:
+      continues: True for the starter, the people it is shared with, and a member of
+        the organisation of the starter's email domain; any other reader forks it
+        instead.
+
+    """
+    person = caller.lower()
+    return (
+        person == starter.lower()
+        or person in shared_with
+        or (org is not None and org == starter.lower().rpartition("@")[2])
+    )
 
 
 def may_share(caller: str, *, starter: str, admin: bool, shared: bool) -> bool:
