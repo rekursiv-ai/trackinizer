@@ -5560,8 +5560,13 @@
       },
       "HeartbeatResponse": {
         "additionalProperties": false,
-        "description": "The server's clock at the heartbeat.",
+        "description": "The server's clock at the heartbeat, and whether the host must be upgraded.",
         "properties": {
+          "host_outdated": {
+            "default": false,
+            "title": "Host Outdated",
+            "type": "boolean"
+          },
           "server_time": {
             "format": "date-time",
             "title": "Server Time",
@@ -6267,7 +6272,6 @@
         "type": "object"
       },
       "LiveTerminal": {
-        "additionalProperties": false,
         "description": "A terminal that is open now.",
         "properties": {
           "machine": {
@@ -6580,7 +6584,6 @@
         "type": "object"
       },
       "MachineRun": {
-        "additionalProperties": false,
         "description": "A live run of a CLI that names the machine, under its owner's account.\n\nThe machine is the run's own word on each poll, shown to the owner and stopped by\nthem, never a grant.",
         "properties": {
           "cli": {
@@ -11858,7 +11861,6 @@
         "type": "string"
       },
       "TerminalMachine": {
-        "additionalProperties": false,
         "description": "One machine the caller owns, and whether it can take a terminal now.",
         "properties": {
           "clis": {
@@ -11881,6 +11883,11 @@
                 "type": "null"
               }
             ]
+          },
+          "host_outdated": {
+            "default": false,
+            "title": "Host Outdated",
+            "type": "boolean"
           },
           "name": {
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
@@ -11912,7 +11919,6 @@
         "type": "object"
       },
       "TerminalMachines": {
-        "additionalProperties": false,
         "description": "The caller's machines, and their live terminals for the asked canvas.",
         "properties": {
           "machines": {
@@ -11937,7 +11943,6 @@
         "type": "object"
       },
       "TerminalOpened": {
-        "additionalProperties": false,
         "description": "A terminal was queued for the host; attach with the ticket.",
         "properties": {
           "ice_servers": {
@@ -20239,7 +20244,7 @@
     },
     "/api/machines/{machine_id}/heartbeat": {
       "post": {
-        "description": "Record that the host is alive, and what it reports about itself.\n\nOne host instance holds a machine at a time. Under ``keep`` a different instance\nis refused until the connected one has been silent for 180 seconds, then takes\nover; under ``take`` it takes over at once. ``release`` from the instance that\nholds the machine leaves it held by none, so it reads offline; from any other\ninstance it changes nothing.\n\nArgs:\n  body: The host's instance, version, claim, and facts when they changed.\n  request: Request carrying the database engine.\n  machine: The machine the credential authenticated as.\n\nReturns:\n  beat: The server's clock at the heartbeat.\n\nRaises:\n  AnotherHostConnectedError: Another instance is connected and live.\n  HTTPException: 410 when the credential was revoked after it authenticated.",
+        "description": "Record that the host is alive, and what it reports about itself.\n\nOne host instance holds a machine at a time. Under ``keep`` a different instance\nis refused until the connected one has been silent for 180 seconds, then takes\nover; under ``take`` it takes over at once. ``release`` from the instance that\nholds the machine leaves it held by none, so it reads offline; from any other\ninstance it changes nothing.\n\nArgs:\n  body: The host's instance, version, claim, and facts when they changed.\n  request: Request carrying the database engine.\n  machine: The machine the credential authenticated as.\n\nReturns:\n  beat: The server's clock at the heartbeat, and ``host_outdated`` for a host older\n    than ``MIN_HOST_VERSION`` that can read it.\n\nRaises:\n  AnotherHostConnectedError: Another instance is connected and live.\n  HTTPException: 410 when the credential was revoked after it authenticated.",
         "operationId": "heartbeat_machine_route_api_machines__machine_id__heartbeat_post",
         "parameters": [
           {

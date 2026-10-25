@@ -8,6 +8,7 @@ import pytest
 from trackinizer.wire.wire_device import (
     USER_CODE_ALPHABET,
     USER_CODE_LENGTH,
+    DeviceCode,
     DeviceCodeRequest,
     DeviceToken,
     DeviceTokenRequest,
@@ -65,6 +66,28 @@ def test_the_secrets_stay_out_of_reprs() -> None:
 def test_a_code_request_is_checked_field_by_field(fields: dict[str, str]) -> None:
     with pytest.raises(pydantic.ValidationError):
         DeviceCodeRequest.model_validate(fields)
+
+
+def test_a_login_answer_ignores_a_field_a_newer_server_added() -> None:
+    code = DeviceCode.model_validate(
+        {
+            "device_code": "d",
+            "user_code": "BCDF-GHJK",
+            "verification_uri": "https://x.y/auth/device",
+            "verification_uri_complete": "https://x.y/auth/device?code=BCDFGHJK",
+            "expires_in": 600,
+            "interval": 5,
+            "lane": 1,
+        },
+    )
+    issued = {**_KEY.model_dump(), "lane": 1}
+    token = DeviceToken.model_validate(
+        {"status": "approved", "issued": issued, "lane": 1},
+    )
+
+    assert (code.user_code, token.issued) == ("BCDF-GHJK", _KEY)
+    with pytest.raises(pydantic.ValidationError, match="Extra inputs"):
+        DeviceCodeRequest.model_validate({"client": "ok", "lane": 1})
 
 
 if __name__ == "__main__":

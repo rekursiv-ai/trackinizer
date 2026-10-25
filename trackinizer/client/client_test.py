@@ -2872,6 +2872,42 @@ class TestMachineMethods:
             with pytest.raises(ClientError, match="malformed payload"):
                 client.list_machines()
 
+    def test_a_field_a_newer_server_added_is_ignored_at_any_depth(self) -> None:
+        answer = {"machines": [{**_MACHINE_ROW, "rack": "b3"}], "cursor": "c1"}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(200, json=answer)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            machines = client.list_machines()
+
+        assert [(m.name, m.labels) for m in machines] == [("gpu-box", ["gpu", "a100"])]
+
+    def test_a_credential_answer_with_an_added_field_still_parses(self) -> None:
+        answer = {
+            "machine_id": str(_MACHINE_ID),
+            "credential": _CREDENTIAL,
+            "expires_at": None,
+        }
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(201, json=answer)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            joined = client.join_machine(
+                "gpu-box",
+                token=_ENROLLMENT_TOKEN,
+                instance=_INSTANCE,
+                host_version="0.1",
+                facts={},
+            )
+
+        assert (joined.machine_id, joined.credential) == (_MACHINE_ID, _CREDENTIAL)
+
     def test_get_machine_reads_one_and_reports_absence(self) -> None:
         answers = iter(
             (
@@ -3197,6 +3233,29 @@ class TestMachineHostMethods:
         assert seen[0].url.params["instance"] == str(_INSTANCE)
         assert seen[0].url.params["wait_sec"] == "25"
         assert seen[0].headers["Authorization"] == f"Bearer {_CREDENTIAL}"
+
+    def test_a_terminal_wait_naming_a_field_the_host_does_not_know_still_opens(
+        self,
+    ) -> None:
+        # Trackinizer 0.1.8 refused every wait once the server added ``canvas``.
+        answer = {
+            "terminal_id": str(_MACHINE_ID),
+            "opener": "ada@x.y",
+            "rows": 24,
+            "cols": 80,
+            "lane": "chat",
+        }
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(200, json=answer)
+
+        with Client("https://server", api_key=_CREDENTIAL) as client:
+            _install_mock_transport(client, handler)
+            found = client.wait_terminals(_MACHINE_ID, instance=_INSTANCE, wait_sec=25)
+
+        assert found is not None
+        assert (found.terminal_id, found.opener) == (_MACHINE_ID, "ada@x.y")
 
     def test_heartbeat_machine_surfaces_a_revoked_credential_as_410(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:

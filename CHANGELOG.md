@@ -3,17 +3,30 @@
 All notable trackinizer changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 0.1.11 - 2026-10-25
 
 ### Added
 
+- `Client.machine_runs(NAME)` lists the live runs on one of your machines, and
+  `Client.disconnect_machine(NAME)` revokes its connect and stops those runs.
 - A canvas's offline CLI partner says why the server refused the last drain by a run
   of the chat's own account (`refused`, and `refused_at`, which a new refusal
   moves), so a person sees why a run they started never went live. A drain let in
   clears it.
+- `wire_machine_host.MIN_HOST_VERSION` (0.1.10) names the oldest trackinizer a
+  machine host may run. Each machine in `GET /api/terminals/machines` carries
+  `host_outdated`, from the `host_version` its host last reported, so a page can say
+  to upgrade in place of waiting for a terminal that never opens. A heartbeat's
+  answer says `host_outdated: true` to such a host only at 0.1.11 or later, the
+  first that reads it; to any other host the answer is unchanged.
 
 ### Changed
 
+- **Breaking:** a line into a science chat is refused (403 `chat_not_shared`)
+  unless its sender started the chat, was shared it, or, on a `domain` server, is in
+  the starter's organisation; any other reader forks it. Change notifications are
+  no longer queued into a chat's session, and a provider switch ends no run of
+  another person's chat.
 - **Breaking:** `--assistant` (`$TRACKINIZER_ASSISTANT`) must name a service account,
   `ACTOR=NAME@service.invalid`; the server refuses to start with any other address.
   Every key of the assistant's account acts as the assistant, so a person's address
@@ -40,6 +53,12 @@ All notable trackinizer changes are documented here. This project follows
   the canvas to two columns of two rows closes. A placement the agent names is kept,
   and the page closes only when it holds nothing: on Home, or alone on the canvas.
   A browser's own writes still apply as sent.
+- `Client` ignores a field it does not know in a server's answer, at any depth, so a
+  server that adds one no longer breaks an older client: trackinizer 0.1.8's machine
+  host refused every terminal wait once the server sent `canvas`, and never served a
+  terminal. The server still refuses an unknown field in a request. The login's
+  answers and the terminal listing, which are read without `Client`, ignore one too.
+  Requires pydantic 2.12, which adds `model_validate(..., extra=)`.
 
 ## 0.1.10 - 2026-10-23
 

@@ -204,7 +204,10 @@ class MachineRun(BaseModel):
     them, never a grant.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # ``wire_terminals.TerminalMachines`` holds it, which the configured assistant reads
+    # without the ``Client``: it ignores a field a newer server added, as the listing
+    # does.
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     session_id: uuid.UUID
     """The session the run drains, which its chat names."""

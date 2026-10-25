@@ -19,6 +19,7 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import executed_sql, make_conn, set_field_row
+from trackinizer.server.api import machine_host_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
@@ -540,6 +541,33 @@ def test_heartbeat_locks_the_machine_then_checks_the_credential_then_updates_the
     )
 
 
+# The oldest supported host is raised to 0.2 here, above 0.1.11, the first host that
+# reads an answer naming a field it does not know.
+@pytest.mark.parametrize(
+    ("host_version", "told"),
+    [("0.1.11", True), ("0.1.9", False), ("0.2", False), ("", False)],
+)
+def test_a_heartbeat_tells_an_outdated_host_only_when_it_can_read_that(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+    host_version: str,
+    told: bool,
+) -> None:
+    client, _, engine = route_client
+    monkeypatch.setattr(machine_host_routes, "MIN_HOST_VERSION", "0.2")
+    credential = mint_secret(CREDENTIAL_PREFIX)
+    set_field_row(engine.conn, _credential_row(credential))
+    engine.conn.fetchval.side_effect = [_MACHINE_ID, True, _BEAT]
+
+    response = _heartbeat(client, credential.token, host_version=host_version)
+
+    assert response.status_code == 200
+    assert from_plain(response.json(), dict[str, object]) == {
+        "server_time": "2026-10-07T12:00:00Z",
+        **({"host_outdated": True} if told else {}),
+    }
+
+
 def test_a_heartbeat_the_instance_rule_refuses_is_409(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
@@ -651,6 +679,33 @@ def test_an_unknown_or_missing_credential_is_401_with_one_body(
 
     assert [r.status_code for r in responses] == [401, 401, 401]
     assert len({r.text for r in responses}) == 1
+    engine.conn.fetchval.assert_not_called()
+
+
+def test_a_host_request_naming_a_field_the_server_does_not_know_is_422(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    credential = mint_secret(CREDENTIAL_PREFIX)
+    set_field_row(engine.conn, _credential_row(credential))
+
+    beat = client.post(
+        HEARTBEAT_PATH.format(machine_id=_MACHINE_ID),
+        json={"instance": _INSTANCE, "host_version": "0.1", "lane": 1},
+        headers={"Authorization": f"Bearer {credential.token}"},
+    )
+    joined = client.post(
+        JOIN_PATH,
+        json={
+            "name": "dev-1",
+            "token": mint_secret(ENROLLMENT_PREFIX).token,
+            "instance": _INSTANCE,
+            "host_version": "0.1",
+            "lane": 1,
+        },
+    )
+
+    assert (beat.status_code, joined.status_code) == (422, 422)
     engine.conn.fetchval.assert_not_called()
 
 
@@ -783,8 +838,9 @@ def _heartbeat(
     *,
     facts: dict[str, object] | None = None,
     claim: str | None = None,
+    host_version: str = "0.1",
 ) -> Response:
-    body: dict[str, object] = {"instance": _INSTANCE, "host_version": "0.1"}
+    body: dict[str, object] = {"instance": _INSTANCE, "host_version": host_version}
     if facts is not None:
         body["facts"] = facts
     if claim is not None:

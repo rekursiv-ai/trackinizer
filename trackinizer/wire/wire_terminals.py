@@ -272,7 +272,9 @@ class OpenTerminal(BaseModel):
 class TerminalOpened(BaseModel):
     """A terminal was queued for the host; attach with the ticket."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # The configured assistant reads this answer without the ``Client``, which ignores
+    # a field a newer server added; forbidding one here would stop the assistant.
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     terminal_id: uuid.UUID
     ticket: str = Field(repr=False)
@@ -294,7 +296,8 @@ class TerminalTicket(BaseModel):
 class TerminalMachine(BaseModel):
     """One machine the caller owns, and whether it can take a terminal now."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # It ignores an unknown field as :class:`TerminalMachines`, which holds it, does.
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     name: str = Field(pattern=NAME_PATTERN)
     status: MachineStatus
@@ -316,11 +319,17 @@ class TerminalMachine(BaseModel):
     """Its owner's live runs that name it. They reach the server without its host, so
     the machine is still connected while one is live, whatever ``status`` says."""
 
+    host_outdated: bool = False
+    """Its host last reported a trackinizer older than the oldest this server's wire
+    supports (``wire_machine_host.MIN_HOST_VERSION``): it may never open a terminal
+    until it is upgraded."""
+
 
 class LiveTerminal(BaseModel):
     """A terminal that is open now."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # It ignores an unknown field as :class:`TerminalMachines`, which holds it, does.
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     terminal_id: uuid.UUID
     machine: str = Field(pattern=NAME_PATTERN)
@@ -331,7 +340,9 @@ class LiveTerminal(BaseModel):
 class TerminalMachines(BaseModel):
     """The caller's machines, and their live terminals for the asked canvas."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # The configured assistant reads this listing without the ``Client``, which ignores
+    # a field a newer server added; so this model and the ones it holds ignore one.
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     machines: list[TerminalMachine]
     """Newest first, by when each machine was registered."""

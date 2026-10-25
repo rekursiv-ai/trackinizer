@@ -51,14 +51,17 @@ from trackinizer.wire.wire_machine_host import (
     ENROLLMENT_PREFIX,
     HEARTBEAT_PATH,
     JOIN_PATH,
+    MIN_HOST_VERSION,
     OFFLINE_AFTER_SEC,
     REVOKE_PATH,
+    TOLERANT_HOST_VERSION,
     EnrollRequest,
     EnrollResponse,
     HeartbeatRequest,
     HeartbeatResponse,
     JoinRequest,
     JoinResponse,
+    older_than,
 )
 from trackinizer.wire.wire_machines import PERSONAL_ROLE
 
@@ -249,7 +252,14 @@ async def join_machine_route(
     )
 
 
-@router.post(HEARTBEAT_PATH, response_model=HeartbeatResponse)
+# A host before ``TOLERANT_HOST_VERSION`` refuses an answer naming a field it does not
+# know, so a false ``host_outdated`` is left out of the answer, and only a host that
+# reads it is told: an older one hears of it only from its owner's machine list.
+@router.post(
+    HEARTBEAT_PATH,
+    response_model=HeartbeatResponse,
+    response_model_exclude_defaults=True,
+)
 async def heartbeat_machine_route(
     body: HeartbeatRequest,
     request: Request,
@@ -269,7 +279,8 @@ async def heartbeat_machine_route(
       machine: The machine the credential authenticated as.
 
     Returns:
-      beat: The server's clock at the heartbeat.
+      beat: The server's clock at the heartbeat, and ``host_outdated`` for a host older
+        than ``MIN_HOST_VERSION`` that can read it.
 
     Raises:
       AnotherHostConnectedError: Another instance is connected and live.
@@ -318,7 +329,11 @@ async def heartbeat_machine_route(
         )
     if beat is None:
         raise AnotherHostConnectedError("another host is connected")
-    return HeartbeatResponse(server_time=from_plain(beat, datetime))
+    return HeartbeatResponse(
+        server_time=from_plain(beat, datetime),
+        host_outdated=older_than(body.host_version, oldest=MIN_HOST_VERSION)
+        and not older_than(body.host_version, oldest=TOLERANT_HOST_VERSION),
+    )
 
 
 @router.post(REVOKE_PATH, status_code=204)

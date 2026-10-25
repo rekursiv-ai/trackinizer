@@ -10,11 +10,14 @@ import pydantic
 import pytest
 
 from trackinizer.wire.wire_machine_host import (
+    MIN_HOST_VERSION,
     EnrollRequest,
     EnrollResponse,
     HeartbeatRequest,
+    HeartbeatResponse,
     JoinRequest,
     JoinResponse,
+    older_than,
 )
 from trackinizer.wire.wire_machines import MachineDetail
 
@@ -184,6 +187,35 @@ def test_a_listed_machine_defaults_to_never_connected() -> None:
     )
 
     assert (detail.status, detail.last_heartbeat, detail.facts) == ("never", None, {})
+
+
+@pytest.mark.parametrize(
+    ("version", "older"),
+    [
+        ("0.1.8", True),
+        ("0.1.9", True),
+        ("0.1", True),
+        ("0.1.10", False),
+        ("0.1.11", False),
+        ("0.1.11rc1", False),
+        ("0.1.11.dev3+g1a2b", False),
+        ("1.0", False),
+        ("", False),
+        ("t", False),
+    ],
+)
+def test_only_a_release_before_the_oldest_supported_is_outdated(
+    version: str,
+    older: bool,
+) -> None:
+    assert older_than(version, oldest=MIN_HOST_VERSION) is older
+
+
+def test_a_heartbeat_names_an_outdated_host_only_when_it_is_one() -> None:
+    beat = {"server_time": "2026-10-07T12:00:00Z"}
+    assert HeartbeatResponse.model_validate(beat).host_outdated is False
+    told = HeartbeatResponse.model_validate({**beat, "host_outdated": True})
+    assert told.host_outdated is True
 
 
 if __name__ == "__main__":

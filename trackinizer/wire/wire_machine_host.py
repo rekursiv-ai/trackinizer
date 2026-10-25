@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Final, Literal
 
+import re
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
@@ -33,8 +34,10 @@ __all__ = [
     "HEARTBEAT_PATH",
     "HEARTBEAT_SEC",
     "JOIN_PATH",
+    "MIN_HOST_VERSION",
     "OFFLINE_AFTER_SEC",
     "REVOKE_PATH",
+    "TOLERANT_HOST_VERSION",
     "Claim",
     "EnrollRequest",
     "EnrollResponse",
@@ -43,6 +46,7 @@ __all__ = [
     "HostVersion",
     "JoinRequest",
     "JoinResponse",
+    "older_than",
 ]
 
 CREDENTIAL_PREFIX: Final = "trax_machine_"
@@ -59,6 +63,17 @@ HEARTBEAT_SEC: Final = 15
 
 OFFLINE_AFTER_SEC: Final = 180
 """Silence after which a machine reads ``offline``."""
+
+MIN_HOST_VERSION: Final = "0.1.10"
+"""The oldest trackinizer a host may run, as its heartbeat's ``host_version`` names it.
+0.1.10 first carried today's terminal wait, with ``canvas`` and ``workspace``: 0.1.8's
+names the fields they were renamed from, so it refuses every wait from a canvas and
+never opens a terminal. 0.1.9 was never released."""
+
+TOLERANT_HOST_VERSION: Final = "0.1.11"
+"""The first trackinizer whose host ignores a field it does not know in an answer. A
+heartbeat tells only such a host that it is outdated: an older one would refuse the
+whole answer over the field, and stop serving."""
 
 ENROLL_PATH: Final = "/api/machines/enroll"
 JOIN_PATH: Final = "/api/machines/join"
@@ -160,8 +175,38 @@ class HeartbeatRequest(BaseModel):
 
 
 class HeartbeatResponse(BaseModel):
-    """The server's clock at the heartbeat."""
+    """The server's clock at the heartbeat, and whether the host must be upgraded."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     server_time: datetime
+
+    host_outdated: bool = False
+    """The host runs a trackinizer older than :data:`MIN_HOST_VERSION`. The server
+    sends it only when true, and only to a host at :data:`TOLERANT_HOST_VERSION` or
+    later."""
+
+
+def older_than(version: str, *, oldest: str) -> bool:
+    """Return whether a host's ``version`` is a release before ``oldest``.
+
+    Only the leading dotted numbers count, so ``0.1.11rc1`` and ``0.1.11.dev3`` read as
+    ``0.1.11``. A version with none, such as a source checkout's empty one, is never
+    older: nothing says the host is.
+
+    Args:
+      version: The ``host_version`` a heartbeat reported.
+      oldest: The oldest release that is not older.
+
+    Returns:
+      older: Whether ``version`` names a release before ``oldest``.
+
+    """
+    release = _release(version)
+    return bool(release) and release < _release(oldest)
+
+
+def _release(version: str) -> tuple[int, ...]:
+    """Return the leading dotted numbers of ``version``; none when it starts with none."""
+    found = re.match(r"\d+(?:\.\d+)*", version)
+    return () if found is None else tuple(int(part) for part in found[0].split("."))

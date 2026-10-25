@@ -3151,7 +3151,11 @@ def _require_uuid(value: object, where: str) -> uuid.UUID:
 
 
 # A malformed session-route response would otherwise leak a raw
-# ``pydantic.ValidationError`` past the ClientError contract.
+# ``pydantic.ValidationError`` past the ClientError contract. A field the model does
+# not know is ignored at any depth, whatever the model's own ``extra``: a model forbids
+# one so that the server refuses it in a request, but a server newer than this client
+# adds fields to its answers, and trackinizer 0.1.8's host refused every terminal wait
+# once the server added ``canvas``.
 def _validate_model[M: pydantic.BaseModel](
     model: type[M],
     response: object,
@@ -3159,7 +3163,7 @@ def _validate_model[M: pydantic.BaseModel](
 ) -> M:
     """Validate ``response`` into ``model``, wrapping pydantic errors."""
     try:
-        return model.model_validate(response)
+        return model.model_validate(response, extra="ignore")
     except pydantic.ValidationError as err:
         raise ClientError(f"{where} returned a malformed payload: {err}") from err
 
@@ -3186,9 +3190,9 @@ def _validate_secret_model[M: pydantic.BaseModel](
     response: object,
     where: str,
 ) -> M:
-    """Validate a payload that carries a secret, never quoting it in an error."""
+    """Validate as ``_validate_model``, but an error never quotes the payload."""
     try:
-        return model.model_validate(response)
+        return model.model_validate(response, extra="ignore")
     except pydantic.ValidationError:
         raise ClientError(f"{where} returned a malformed payload") from None
 

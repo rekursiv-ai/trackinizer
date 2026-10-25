@@ -59,7 +59,11 @@ from trackinizer.server.visuals.canvas_store import read_chat_provider
 from trackinizer.server.visuals.science_chats import read_starter
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire import wire_terminals
-from trackinizer.wire.wire_machine_host import OFFLINE_AFTER_SEC
+from trackinizer.wire.wire_machine_host import (
+    MIN_HOST_VERSION,
+    OFFLINE_AFTER_SEC,
+    older_than,
+)
 from trackinizer.wire.wire_science_chat import chat_conversation_id
 from trackinizer.wire.wire_service_accounts import is_service_address
 from trackinizer.wire.wire_sessions import (
@@ -406,6 +410,10 @@ async def list_terminal_machines_route(
                     request,
                     machine=from_plain(row["name"], str),
                     owner=email,
+                ),
+                "host_outdated": older_than(
+                    from_plain(row["host_version"], str),
+                    oldest=MIN_HOST_VERSION,
                 ),
             },
         )
