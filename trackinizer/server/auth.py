@@ -471,6 +471,7 @@ async def create_api_key(
     ceiling: Role,
     open_into: str | None = None,
     minter: AuthIdentity | None = None,
+    machine_id: uuid.UUID | None = None,
 ) -> tuple[uuid.UUID, str, str, Role]:
     """Insert a fresh ``api_keys`` row; return ``(key_id, secret, prefix, role)``.
 
@@ -497,6 +498,8 @@ async def create_api_key(
       open_into: The one audience the key opens sessions into; ``None`` for no pin.
       minter: The identity that presented the request, or ``None`` for the
         bootstrap seed.
+      machine_id: The machine a device login enrolled with the key, which logging
+        that machine out revokes it with; ``None`` for any other key.
 
     Returns:
       result: Tuple of (key_id, secret, prefix, role) for the new key.
@@ -521,8 +524,8 @@ async def create_api_key(
     secret_hash = hash_secret(secret)
     await conn.execute(
         "INSERT INTO api_keys "
-        "(id, user_id, name, secret_hash, prefix, role, open_into) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "(id, user_id, name, secret_hash, prefix, role, open_into, machine_id) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         key_id,
         user_id,
         name,
@@ -530,6 +533,7 @@ async def create_api_key(
         prefix,
         final_role,
         open_into,
+        machine_id,
     )
     return key_id, secret, prefix, final_role
 

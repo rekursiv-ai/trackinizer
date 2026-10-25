@@ -426,8 +426,9 @@ async def _issue(conn: Conn, *, login: _Login) -> DeviceToken:
         await conn.execute("DELETE FROM device_logins WHERE id = $1", login.id)
         return DeviceToken(status="expired_token")
     email = from_plain(approver["email"], str)
-    machine_token = (
-        ""
+    # The key names the machine it logged in, so logging that machine out revokes it.
+    machine_token, machine_id = (
+        ("", None)
         if login.machine is None
         else await _enrollment_token(conn, machine=login.machine, email=email)
     )
@@ -436,6 +437,7 @@ async def _issue(conn: Conn, *, login: _Login) -> DeviceToken:
         user_id=from_plain(login.approver, UUID),
         name=f"{login.client}@{login.host}" if login.host else login.client,
         ceiling="writer",
+        machine_id=machine_id,
     )
     await conn.execute("DELETE FROM device_logins WHERE id = $1", login.id)
     return DeviceToken(
@@ -451,8 +453,13 @@ async def _issue(conn: Conn, *, login: _Login) -> DeviceToken:
 
 # The approval made the machine theirs; it is read again here because the token cannot
 # be stored, and a machine deleted since is not enrolled again.
-async def _enrollment_token(conn: Conn, *, machine: str, email: str) -> str:
-    """Return a one-use token for the approver's machine, or refuse if it is gone."""
+async def _enrollment_token(
+    conn: Conn,
+    *,
+    machine: str,
+    email: str,
+) -> tuple[str, UUID]:
+    """Return a one-use token for the approver's machine and its id, or refuse if it is gone."""
     machine_id = await conn.fetchval(
         "SELECT id FROM machines WHERE name = $1 AND owner = $2 FOR UPDATE",
         machine,
@@ -469,7 +476,7 @@ async def _enrollment_token(conn: Conn, *, machine: str, email: str) -> str:
         machine_id=from_plain(machine_id, UUID),
         created_by=email,
     )
-    return minted.token
+    return minted.token, from_plain(machine_id, UUID)
 
 
 # Behind a TLS-terminating proxy the request's own scheme, host and path prefix are not

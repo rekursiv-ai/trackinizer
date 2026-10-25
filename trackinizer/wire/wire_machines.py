@@ -33,6 +33,7 @@ __all__ = [
     "MACHINES_PATH",
     "MACHINE_DISCONNECT_PATH",
     "MACHINE_LABELS_PATH",
+    "MACHINE_LOGOUT_PATH",
     "MACHINE_PATH",
     "MACHINE_RUNS_PATH",
     "MACHINE_RUN_STOP_PATH",
@@ -47,6 +48,7 @@ __all__ = [
     "MachineDetail",
     "MachineLabels",
     "MachineList",
+    "MachineLogout",
     "MachinePut",
     "MachineRun",
     "MachineRuns",
@@ -112,6 +114,7 @@ MACHINE_LABELS_PATH: Final = "/api/machines/{name}/labels"
 MACHINE_RUNS_PATH: Final = "/api/machines/{name}/runs"
 MACHINE_RUN_STOP_PATH: Final = "/api/machines/{name}/runs/{session_id}/stop"
 MACHINE_DISCONNECT_PATH: Final = "/api/machines/{name}/disconnect"
+MACHINE_LOGOUT_PATH: Final = "/api/machines/{name}/logout"
 
 
 class Machine(BaseModel):
@@ -198,7 +201,7 @@ class MachineLabels(BaseModel):
 
 
 class MachineRun(BaseModel):
-    """A live run of a CLI that names the machine, under its owner's account.
+    """A run of a CLI that names the machine, under its owner's account: live, or past.
 
     The machine is the run's own word on each poll, shown to the owner and stopped by
     them, never a grant.
@@ -225,10 +228,32 @@ class MachineRun(BaseModel):
     state: RunState = "idle"
     """What the run last reported of itself."""
 
+    last_seen: datetime | None = None
+    """A past run's: when its session last polled; ``None`` for a live run."""
+
+    ended: datetime | None = None
+    """A past run's: when its session ended; ``None`` while it is open."""
+
 
 class MachineRuns(BaseModel):
-    """The live runs of one of the caller's machines."""
+    """The live runs of one of the caller's machines, and the ones it had before."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     runs: list[MachineRun]
+
+    past: list[MachineRun] = Field(default_factory=list)
+    """The runs that last said they ran there and are not live, most recently heard
+    from first; empty where the route stops runs rather than lists them."""
+
+
+class MachineLogout(BaseModel):
+    """What logging a machine out stopped and revoked."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    runs: list[MachineRun]
+    """The live runs it stopped."""
+
+    keys: int
+    """How many of the caller's keys it revoked: those a device login made for it."""

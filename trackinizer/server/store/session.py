@@ -9,6 +9,7 @@ edit machinery is reused through the composed :class:`Store`.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
@@ -51,8 +52,33 @@ from trackinizer.wire.wire_sessions import FeedEvent
 
 
 __all__ = [
+    "PastRun",
+    "RunPlace",
     "_SessionMixin",
 ]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RunPlace:
+    """Where a polling run said it ran, each part the run's own word, or ``None``."""
+
+    machine: str | None = None
+    run: str | None = None
+    cli: str | None = None
+    cwd: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PastRun:
+    """A run that last said it ran on a machine, and when its session last polled."""
+
+    session_id: UUID
+    cli: str
+    run: str | None
+    cwd: str | None
+    last_seen: datetime
+    ended: datetime | None
+    """When its session ended; ``None`` while it is open."""
 
 
 _LOCK_SESSION_SQL: Final = (
@@ -71,11 +97,22 @@ _SEEN_WRITE_EVERY: Final = timedelta(minutes=1)
 """How stale a session's ``last_seen`` must be before a sign of life rewrites it."""
 
 # ``$3`` is the newest ``last_seen`` still worth rewriting. A poll starts watching a
-# session; any other sign of life only refreshes a session already watched.
+# session; any other sign of life only refreshes a session already watched. A poll also
+# keeps where the run said it ran (``$4``..``$7``), each kept until a poll names another:
+# the assistant drains a chat switched to it naming no machine, and the chat's run stays
+# among its machine's past runs. A poll that names another machine is written at once, so
+# a run whose session was polled in the last minute without one, and that ends within
+# the minute, still is.
 _SEEN_SQL: Final = (
-    "INSERT INTO session_liveness (session_id, last_seen) VALUES ($1, $2) "
-    "ON CONFLICT (session_id) DO UPDATE SET last_seen = EXCLUDED.last_seen "
-    "WHERE session_liveness.last_seen < $3"
+    "INSERT INTO session_liveness (session_id, last_seen, machine, run, cli, cwd) "
+    "VALUES ($1, $2, $4, $5, $6, $7) "
+    "ON CONFLICT (session_id) DO UPDATE SET last_seen = EXCLUDED.last_seen, "
+    "machine = COALESCE(EXCLUDED.machine, session_liveness.machine), "
+    "run = COALESCE(EXCLUDED.run, session_liveness.run), "
+    "cli = COALESCE(EXCLUDED.cli, session_liveness.cli), "
+    "cwd = COALESCE(EXCLUDED.cwd, session_liveness.cwd) "
+    "WHERE session_liveness.last_seen < $3 OR (EXCLUDED.machine IS NOT NULL "
+    "AND session_liveness.machine IS DISTINCT FROM EXCLUDED.machine)"
 )
 _SEEN_AGAIN_SQL: Final = (
     "UPDATE session_liveness SET last_seen = $2 "
@@ -446,6 +483,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         *,
         at: datetime,
         polled: bool,
+        place: RunPlace | None = None,
     ) -> None:
         """Note that ``session_id`` was heard from at ``at``.
 
@@ -455,15 +493,73 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
           polled: Whether it polled its inbound queue. A poll starts watching the
             session; anything else only refreshes one already watched, so a
             session that never polls is never closed for silence.
+          place: Where a polling run said it ran; ``None`` for a sign of life that
+            names no place.
 
         """
         async with self.engine.acquire() as conn:
+            if not polled:
+                await conn.execute(
+                    _SEEN_AGAIN_SQL,
+                    session_id,
+                    at,
+                    at - _SEEN_WRITE_EVERY,
+                )
+                return
+            where = place or RunPlace()
             await conn.execute(
-                _SEEN_SQL if polled else _SEEN_AGAIN_SQL,
+                _SEEN_SQL,
                 session_id,
                 at,
                 at - _SEEN_WRITE_EVERY,
+                where.machine,
+                where.run,
+                where.cli,
+                where.cwd,
             )
+
+    async def past_runs(
+        self,
+        *,
+        machine: str,
+        account: str,
+        limit: int,
+    ) -> list[PastRun]:
+        """Return the runs of ``account``'s sessions that last said they ran on ``machine``.
+
+        Args:
+          machine: The machine's name, as the runs named it.
+          account: Whose sessions, matched in any case.
+          limit: The most to return.
+
+        Returns:
+          runs: The most recently heard from first.
+
+        """
+        async with self.engine.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT liveness.session_id, liveness.run, liveness.cli, liveness.cwd, "
+                "liveness.last_seen, inquiries.agentsession_ended AS ended "
+                "FROM session_liveness AS liveness "
+                "JOIN inquiries ON inquiries.id = liveness.session_id "
+                "WHERE liveness.machine = $1 AND liveness.cli IS NOT NULL "
+                "AND lower(inquiries.account) = lower($2) "
+                "ORDER BY liveness.last_seen DESC, liveness.session_id LIMIT $3",
+                machine,
+                account,
+                limit,
+            )
+        return [
+            PastRun(
+                session_id=_uuid(row["session_id"]),
+                cli=from_plain(row["cli"], str),
+                run=from_plain(row["run"], str, default=None),
+                cwd=from_plain(row["cwd"], str, default=None),
+                last_seen=from_plain(row["last_seen"], datetime),
+                ended=from_plain(row["ended"], datetime, default=None),
+            )
+            for row in rows
+        ]
 
     async def silent_sessions(self, *, before: datetime) -> list[UUID]:
         """Return each live session last heard from at or before ``before``.

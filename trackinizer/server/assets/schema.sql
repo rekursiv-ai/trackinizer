@@ -945,10 +945,17 @@ CREATE TABLE IF NOT EXISTS session_slash_commands (
 -- dies while the server restarts must still be closed, and one closed for
 -- silence (``reaped``) must still be reopened if it comes back. A session that
 -- never polls has no row: with no poller, its silence means nothing. Added in 032.
+-- Where its run last said it ran (its machine, detached host, CLI and folder, each
+-- the run's own word), so a machine's past runs outlive the server's memory; added
+-- in 060.
 CREATE TABLE IF NOT EXISTS session_liveness (
     session_id  UUID PRIMARY KEY REFERENCES inquiries(id) ON DELETE CASCADE,
     last_seen   TIMESTAMPTZ NOT NULL,
-    reaped      BOOLEAN NOT NULL DEFAULT FALSE
+    reaped      BOOLEAN NOT NULL DEFAULT FALSE,
+    machine     TEXT,
+    run         TEXT,
+    cli         TEXT,
+    cwd         TEXT
 );
 
 -- The environment variables an agent launch exports, by layer (org, machine,
@@ -987,6 +994,11 @@ CREATE TABLE IF NOT EXISTS machines (
     confirmed_at   TIMESTAMPTZ,
     last_run_cwd   TEXT
 );
+
+-- The machine a device login enrolled with the key it made, so logging the machine out
+-- revokes the keys it logged in with. Here, not in ``api_keys``, which is made before
+-- ``machines``. Added in 060.
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS machine_id UUID REFERENCES machines(id) ON DELETE SET NULL;
 
 -- One-use tokens that let a host join as a machine, and the credentials it joins
 -- with. A revoked credential row is kept so the server answers it 410, not 401.

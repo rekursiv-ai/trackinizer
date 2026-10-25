@@ -48,6 +48,7 @@ from trackinizer.server.auth import (
 )
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.session_reaper import revive_if_reaped
+from trackinizer.server.store.session import RunPlace
 from trackinizer.server.visuals.canvas_store import read_chat_provider
 from trackinizer.server.visuals.partners import (
     is_assistant_session,
@@ -538,6 +539,7 @@ async def session_inbound_drain_route(
             session_id,
             at=datetime.now(UTC),
             polled=True,
+            place=RunPlace(machine=machine, run=run, cli=cli, cwd=cwd),
         )
     # Ceiling on how long the inbound drain holds a request open. Long enough that
     # a waiting caller re-arms rarely, short enough to stay under the idle timeout

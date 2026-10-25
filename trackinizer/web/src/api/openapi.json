@@ -6551,6 +6551,29 @@
         "title": "MachineList",
         "type": "object"
       },
+      "MachineLogout": {
+        "additionalProperties": false,
+        "description": "What logging a machine out stopped and revoked.",
+        "properties": {
+          "keys": {
+            "title": "Keys",
+            "type": "integer"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/MachineRun"
+            },
+            "title": "Runs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs",
+          "keys"
+        ],
+        "title": "MachineLogout",
+        "type": "object"
+      },
       "MachinePut": {
         "additionalProperties": false,
         "description": "Create a machine or change its fields; a field left out keeps its value.",
@@ -6584,7 +6607,7 @@
         "type": "object"
       },
       "MachineRun": {
-        "description": "A live run of a CLI that names the machine, under its owner's account.\n\nThe machine is the run's own word on each poll, shown to the owner and stopped by\nthem, never a grant.",
+        "description": "A run of a CLI that names the machine, under its owner's account: live, or past.\n\nThe machine is the run's own word on each poll, shown to the owner and stopped by\nthem, never a grant.",
         "properties": {
           "cli": {
             "title": "Cli",
@@ -6600,6 +6623,30 @@
               }
             ],
             "title": "Cwd"
+          },
+          "ended": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended"
+          },
+          "last_seen": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen"
           },
           "run": {
             "anyOf": [
@@ -6631,8 +6678,15 @@
       },
       "MachineRuns": {
         "additionalProperties": false,
-        "description": "The live runs of one of the caller's machines.",
+        "description": "The live runs of one of the caller's machines, and the ones it had before.",
         "properties": {
+          "past": {
+            "items": {
+              "$ref": "#/components/schemas/MachineRun"
+            },
+            "title": "Past",
+            "type": "array"
+          },
           "runs": {
             "items": {
               "$ref": "#/components/schemas/MachineRun"
@@ -20630,6 +20684,47 @@
         "summary": "Change Machine Labels Route"
       }
     },
+    "/api/machines/{name}/logout": {
+      "post": {
+        "description": "Disconnect one of the caller's machines and revoke the keys it logged in with.\n\nDisconnects it as the disconnect route does, then revokes the caller's live keys\na device login made for it (``api_keys.machine_id``). A key made another way, or\nbefore keys named their machine, is not one: it is revoked in Settings.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine, the hubs and the inbound queue.\n  identity: The machine's owner.\n\nReturns:\n  logout: The runs it stopped and how many keys it revoked.\n\nRaises:\n  NotFoundError: The caller owns no such machine.",
+        "operationId": "logout_machine_route_api_machines__name__logout_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineLogout"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Logout Machine Route"
+      }
+    },
     "/api/machines/{name}/revoke": {
       "post": {
         "description": "Take a machine out of service; revoking one already revoked is a no-op.\n\nAn admin may revoke any machine, and a writer the machines they own. The machine's\ncredential row is kept, so its host learns of the revoke by a 410 on its next\nrequest, and the terminals open on it are closed with 4410. An enrollment token not\nyet used is closed too, so a revoke is not undone by a host that joins with it.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: Admin principal, or the machine's owner.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: No such machine.\n  HTTPException: 403 when a writer names a machine that is not theirs.",
@@ -20666,7 +20761,7 @@
     },
     "/api/machines/{name}/runs": {
       "get": {
-        "description": "List the caller's live runs that name one of their machines.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine and the inbound queue.\n  identity: The machine's owner.\n\nReturns:\n  runs: Each live run, by CLI, then host name, then session.\n\nRaises:\n  NotFoundError: The caller owns no such machine.",
+        "description": "List the caller's live runs that name one of their machines, and its past ones.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine and the inbound queue.\n  identity: The machine's owner.\n  past: The most past runs to list.\n\nReturns:\n  runs: Each live run, by CLI, then host name, then session; and ``past``, the\n    last ``past`` that are not live, most recently heard from first.\n\nRaises:\n  NotFoundError: The caller owns no such machine.",
         "operationId": "list_machine_runs_route_api_machines__name__runs_get",
         "parameters": [
           {
@@ -20677,6 +20772,18 @@
               "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
               "title": "Name",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "past",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Past",
+              "type": "integer"
             }
           }
         ],

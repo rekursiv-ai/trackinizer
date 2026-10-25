@@ -814,6 +814,25 @@ async def test_a_named_machine_becomes_the_approvers_confirmed_personal_machine(
     )
 
 
+async def test_the_key_a_login_makes_names_the_machine_it_logged_in_and_no_other(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Logging the machine out revokes the keys it logged in with, so a key names it."""
+    client, store = pglite_route_client
+    await _approver(store)
+    await _approved_key(client, store, await _code(client, machine="dev-box"))
+    await _approved_key(client, store, await _code(client))
+
+    async with store.engine.acquire() as conn:
+        named = await conn.fetch(
+            "SELECT machines.name FROM api_keys LEFT JOIN machines "
+            "ON machines.id = api_keys.machine_id WHERE api_keys.user_id = $1 "
+            "AND api_keys.name LIKE 'machine-host%' ORDER BY api_keys.created_at",
+            TEST_USER_ID,
+        )
+    assert [row["name"] for row in named] == ["dev-box", None]
+
+
 async def test_the_machine_token_joins_the_machine(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
