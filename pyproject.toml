@@ -3,7 +3,7 @@
 
 [project]
 name = "trackinizer"
-version = "0.1.10"
+version = "0.1.11"
 description = "Centralized agent database for Inquiries (Issues + Artifacts)."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -35,8 +35,9 @@ dependencies = [
     "websockets>=15",
     # http client
     "httpx2>=2.12",
-    # data models
-    "pydantic>=2.0",
+    # data models. 2.12 adds `model_validate(..., extra=)`, with which `Client` ignores
+    # a field a newer server added to an answer, at any depth.
+    "pydantic>=2.12",
     # 4.10 adds PEP 728 `TypedDict(closed=True)`; `types/change_log.py` needs it.
     "typing_extensions>=4.10",
     # server/preferences.py serializes with pydantic's core directly.

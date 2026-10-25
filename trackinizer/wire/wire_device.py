@@ -123,7 +123,10 @@ class DeviceCodeRequest(BaseModel):
 class DeviceCode(BaseModel):
     """The code a program shows, and the secret it polls with."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # A login (``trax/login.py``) reads the server's answers without the ``Client``,
+    # which ignores a field a newer server added; forbidding one here would stop every
+    # older login.
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     device_code: str = Field(repr=False)
     """The poll secret; the server keeps only a hash of it."""
@@ -156,7 +159,8 @@ class DeviceTokenRequest(BaseModel):
 class IssuedKey(BaseModel):
     """The key an approval produced, shown once."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # It ignores an unknown field for the reason :class:`DeviceCode` does.
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     api_key: str = Field(repr=False)
     """The API key's secret; the server keeps only a hash of it."""
@@ -174,7 +178,8 @@ class IssuedKey(BaseModel):
 class DeviceToken(BaseModel):
     """The answer to a poll."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # It ignores an unknown field for the reason :class:`DeviceCode` does.
+    model_config = ConfigDict(extra="ignore", frozen=True)
 
     status: DeviceStatus
 

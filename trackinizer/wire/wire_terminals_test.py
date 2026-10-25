@@ -13,6 +13,7 @@ from trackinizer.wire.wire_terminals import (
     DirectSignal,
     OpenTerminal,
     TerminalMachine,
+    TerminalMachines,
     TerminalOpened,
     TerminalTicket,
     TerminalWait,
@@ -258,6 +259,29 @@ def test_a_machine_lists_the_clis_its_facts_name_and_defaults_to_none() -> None:
     assert TerminalMachine.model_validate({**machine, "confirmed": True}).clis == []
     listed = {**machine, "confirmed": True, "clis": ["claude", "codex"]}
     assert TerminalMachine.model_validate(listed).clis == ["claude", "codex"]
+
+
+def test_a_listing_and_an_open_ignore_a_field_a_newer_server_added() -> None:
+    run = {"session_id": str(uuid.UUID(int=3)), "cli": "claude", "lane": 1}
+    machine = {
+        "name": "gx10",
+        "status": "online",
+        "terminal_ready": True,
+        "confirmed": True,
+        "runs": [run],
+        "lane": 1,
+    }
+    live = {"terminal_id": str(uuid.UUID(int=2)), "machine": "gx10", "lane": 1}
+    listing = TerminalMachines.model_validate(
+        {"machines": [machine], "terminals": [live], "lane": 1},
+    )
+    opened = TerminalOpened.model_validate(
+        {"terminal_id": str(uuid.UUID(int=1)), "ticket": "t", "lane": 1},
+    )
+
+    assert [run.cli for run in listing.machines[0].runs] == ["claude"]
+    assert [term.machine for term in listing.terminals] == ["gx10"]
+    assert opened.ticket == "t"
 
 
 if __name__ == "__main__":

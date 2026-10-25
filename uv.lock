@@ -1589,7 +1589,7 @@ wheels = [
 
 [[package]]
 name = "trackinizer"
-version = "0.1.10"
+version = "0.1.11"
 source = { editable = "." }
 dependencies = [
     { name = "bashlex" },
@@ -1699,7 +1699,7 @@ requires-dist = [
     { name = "lark", specifier = ">=1.1" },
     { name = "peft", marker = "extra == 'server'", specifier = ">=0.21.0" },
     { name = "py-pglite", extras = ["asyncpg", "extensions"], marker = "extra == 'server'", specifier = ">=0.5.3" },
-    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydantic", specifier = ">=2.12" },
     { name = "pydantic-core" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "starlette", marker = "extra == 'server'", specifier = ">=0.40" },

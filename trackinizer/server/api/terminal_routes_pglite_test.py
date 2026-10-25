@@ -138,6 +138,7 @@ class _World:
         *,
         confirm: bool = True,
         facts: dict[str, object] | None = None,
+        host_version: str = "t",
     ) -> None:
         """Self-enroll ``name`` with ``cookie``'s user, join it, and confirm it."""
         enrolled = await self.call(
@@ -155,7 +156,7 @@ class _World:
                 "name": name,
                 "token": from_plain(enrolled.json(), dict[str, str])["token"],
                 "instance": str(_INSTANCE),
-                "host_version": "t",
+                "host_version": host_version,
                 "facts": facts or {},
             },
         )
@@ -615,6 +616,7 @@ async def test_the_listing_names_every_live_terminal_of_the_canvas_with_its_surf
             "confirmed": True,
             "clis": [],
             "runs": [],
+            "host_outdated": False,
         },
     ]
     not_asked = await world.open(cookie, canvas=canvas)
@@ -701,6 +703,7 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
                 "confirmed": True,
                 "clis": [],
                 "runs": [],
+                "host_outdated": False,
             },
             {
                 "name": "laptop",
@@ -709,6 +712,7 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
                 "confirmed": True,
                 "clis": [],
                 "runs": [],
+                "host_outdated": False,
             },
         ],
         "terminals": [],
@@ -1599,6 +1603,32 @@ async def test_the_machine_list_names_the_clis_its_facts_list(
 
     machines = from_plain(listed["machines"], list[dict[str, object]])
     assert machines[0]["clis"] == ["claude", "git"]
+
+
+async def test_the_machine_list_names_a_host_older_than_the_wire_supports(
+    world: _World,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, name="old", host_version="0.1.8")
+    await world.join(cookie, name="new", host_version="0.1.10")
+    await world.join(cookie, name="source", host_version="")
+
+    listed = from_plain(
+        (
+            await world.call(
+                "GET",
+                wire_terminals.TERMINAL_MACHINES_PATH,
+                headers=world.browser(cookie),
+            )
+        ).json(),
+        dict[str, object],
+    )
+
+    assert {
+        from_plain(each["name"], str): each["host_outdated"]
+        for each in from_plain(listed["machines"], list[dict[str, object]])
+    } == {"old": True, "new": False, "source": False}
 
 
 async def test_the_servers_stun_list_reaches_the_open_the_attach_and_the_host_wait(
