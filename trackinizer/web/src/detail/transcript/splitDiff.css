@@ -1,0 +1,24 @@
+/* A diff side by side (GitHub's split view) or unified, and the toggle between them.
+   Unified reuses the transcript's `.tr-diff`; these style the split table. */
+.sd-toggle { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.sd-toggle button { padding: 2px 9px; border: 0; background: var(--surface); color: var(--muted); font: 11px var(--mono); cursor: pointer; }
+.sd-toggle button + button { border-left: 1px solid var(--line); }
+.sd-toggle button[aria-pressed="true"] { background: var(--surface-raised); color: var(--text); }
+
+.sd-note { margin: 0; padding: 4px 10px; font: 11px var(--mono); color: var(--muted); white-space: pre-wrap; }
+
+/* Two halves of equal width, each a narrow number column then the line; a long line wraps in its half. */
+.sd-split { width: 100%; table-layout: fixed; border-collapse: collapse; font: 12px/1.45 var(--mono); color: var(--ink-muted); }
+.sd-split .sd-num { width: 5ch; }
+.sd-split td { padding: 0 8px; vertical-align: top; }
+.sd-split .sd-n { text-align: right; color: var(--muted); user-select: none; padding-right: 6px; }
+.sd-split .sd-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.sd-split .sd-code + .sd-n { border-left: 1px solid var(--line); }
+.sd-split .sd-del { background: var(--diff-del); }
+.sd-split .sd-add { background: var(--diff-add); }
+.sd-split .sd-empty { background: color-mix(in srgb, var(--line) 35%, transparent); }
+.sd-split .sd-mark { display: inline-block; width: 1.5ch; user-select: none; color: var(--muted); }
+.sd-split .sd-del .sd-mark { color: var(--code-keyword); }
+.sd-split .sd-add .sd-mark { color: var(--code-string); }
+.sd-split .sd-hunk td { padding: 3px 10px; color: var(--accent-hover); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.sd-more { margin: 4px 10px; font-size: 12px; color: var(--muted); }

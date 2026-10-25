@@ -9,8 +9,6 @@ import { GraphModel, PLAIN_LENS } from "../graph/model";
 import { useThemePalette } from "../graph/palette";
 import { routeHref } from "../router/addressBar";
 import { useRouter } from "../router/router";
-import { Icon } from "../ui/icons";
-import { useCanvasActions } from "../visuals/canvasActions";
 import { detailQueries, NEIGHBOURHOOD_LIMIT } from "./queries";
 import { radialLayout } from "./radial";
 
@@ -19,8 +17,7 @@ import { radialLayout } from "./radial";
  * inquiry, the inquiry in the middle and each ring a hop further out, drawn as
  * the graph draws it (`encode.ts`), each node named by its `Kind#seq` and title
  * on hover. The whole preview is one link to the graph focused there, where the
- * inquiry opens in Peek. Inside a canvas that offers the context graph, Expand
- * beside it opens that window on the inquiry, beside the page.
+ * inquiry opens in Peek.
  *
  * An inquiry with no relations has none, and in the graph's Peek, where the
  * link would lead, there is none either, as there is no Show in graph.
@@ -45,7 +42,6 @@ function Preview({ row }: { row: DetailRow }) {
   const graph = shown ? query.data : undefined;
   const name = `${row.kind}#${row.seq}`;
   const href = routeHref({ name: "graph", focus: { ref: { kind: row.kind, seq: row.seq }, hops: HOPS } });
-  const canvas = useCanvasActions();
   return (
     <div className="rail-graph">
       <a className="rail-graph-link" href={href} aria-label={`Open in graph: ${name}, ${HOPS} hops`}>
@@ -54,18 +50,6 @@ function Preview({ row }: { row: DetailRow }) {
         </svg>
         <span className="rail-graph-caption">{graph ? countText(graph.nodes.length) : "Loading the graph…"}</span>
       </a>
-      {canvas?.visualTypes.has(CONTEXT_GRAPH) ? (
-        <button
-          type="button"
-          className="icon-btn rail-graph-expand"
-          aria-label={`Expand ${name} into a context graph window`}
-          title="See it in context, in a window beside the page"
-          disabled={canvas.busy}
-          onClick={() => void canvas.operate({ kind: "show", visual_type: CONTEXT_GRAPH, record_id: row.id, placement: "main" })}
-        >
-          <Icon name="maximize" size={14} />
-        </button>
-      ) : null}
       {query.isError ? (
         <p className="rail-graph-error" role="alert">
           Could not load the graph: {query.error.message}
@@ -140,8 +124,6 @@ function countText(count: number): string {
 }
 
 const HOPS = 2;
-/** The canvas visual that shows an inquiry in context. */
-const CONTEXT_GRAPH = "trax.subgraph";
 /** The drawing's box, in the units of its `viewBox`; it scales to fit the rail, never past its height. */
 const SIZE = { width: 280, height: 190 };
 /** The preview's discs and edges, as a fraction of the graph's at 1x. */

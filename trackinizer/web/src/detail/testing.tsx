@@ -6,15 +6,12 @@ import type { Change, Detail, DetailRow, Peer } from "../api/detail";
 import type { Profile } from "../api/me";
 import { AGREED, type Sent, stubFetch } from "../api/testing";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
-import { HighlightContext, HighlightStore } from "../app/highlights";
 import { Session, SessionContext } from "../app/session";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { LiveContext } from "../live";
 import type { LiveHub } from "../live/hub";
 import { RouterProvider } from "../router/router";
 import { ToastProvider } from "../ui/toast";
-import { type ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
-import { type CanvasActions, CanvasActionsProvider } from "../visuals/canvasActions";
 import { DetailView, type DetailTarget } from ".";
 
 const ALL_KINDS = ["Issue", "Artifact", "Experiment", "Paper", "Belief", "CodeChange", "WebResult", "WebSearch", "AgentSession"];
@@ -179,9 +176,7 @@ export function serveDetails(details: readonly Detail[], confidence = 0.5): Sent
  * bound; `queryClient` is its cache, `profile` the signed-in user, `session`
  * the one a 401 would end, `commands` the registry the palette would list,
  * `hub` the live stream's, if it is to keep the detail current, `onCommit` is
- * told of each commit of the detail's tree, `highlights` is the canvas's marks,
- * none by default, `canvas` is the canvas the detail shows inside, if any, and
- * `chat` is the shell's Chat feed, if the page is to continue a chat in it.
+ * told of each commit of the detail's tree.
  */
 export function renderDetail(
   target: DetailTarget,
@@ -192,18 +187,12 @@ export function renderDetail(
     commands = new CommandRegistry(),
     hub = null,
     onCommit = () => {},
-    highlights = new HighlightStore(),
-    canvas = null,
-    chat = null,
   }: {
     profile?: Profile;
     session?: Session;
     commands?: CommandRegistry;
     hub?: LiveHub | null;
     onCommit?: () => void;
-    highlights?: HighlightStore;
-    canvas?: CanvasActions | null;
-    chat?: ChatFeed | null;
   } = {},
 ) {
   return render(
@@ -216,15 +205,9 @@ export function renderDetail(
                 <RouterProvider kinds={META.kinds}>
                   <LiveContext value={hub}>
                     <Shortcuts />
-                    <ChatFeedContext value={chat}>
-                      <CanvasActionsProvider value={canvas}>
-                        <Profiler id="detail" onRender={onCommit}>
-                          <HighlightContext value={highlights}>
-                            <DetailView target={target} />
-                          </HighlightContext>
-                        </Profiler>
-                      </CanvasActionsProvider>
-                    </ChatFeedContext>
+                    <Profiler id="detail" onRender={onCommit}>
+                      <DetailView target={target} />
+                    </Profiler>
                   </LiveContext>
                 </RouterProvider>
               </ProfileContext>

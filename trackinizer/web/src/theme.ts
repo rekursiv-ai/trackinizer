@@ -6,7 +6,7 @@ export type ThemePreference = "dark" | "light" | "system";
 /** The app's look: the default, which the theme colours, or a fixed skin (skins.css), which ignores it. */
 export type Skin = Preferences["skin"];
 
-/** Every skin, as the account menu's Appearance offers them, in order. */
+/** Every skin, as Settings' Appearance offers them, in order. */
 export const SKINS: readonly { readonly skin: Skin; readonly label: string }[] = [
   { skin: "default", label: "Default" },
   { skin: "retro", label: "Retro 70s" },
@@ -65,7 +65,7 @@ export function chooseSkin(skin: Skin): void {
 
 /**
  * The theme chosen, and the one shown (`light` or `dark`), kept current
- * wherever it is chosen: Settings and the account menu show the same.
+ * wherever it is chosen: Settings and the sidebar's theme button show the same.
  */
 export function useTheme(): { readonly choice: ThemePreference; readonly shown: "light" | "dark" } {
   const choice = usePreferences().theme;

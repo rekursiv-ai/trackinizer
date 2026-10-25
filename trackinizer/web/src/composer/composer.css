@@ -1,4 +1,4 @@
-/* A box for messages to a live agent session (Composer), on a session's detail and in the canvas's Chat. */
+/* A box for messages to a live agent session (Composer), on a session's detail and in the console. */
 .composer { display: flex; flex-direction: column; gap: 8px; }
 .composer label { font-size: 12px; color: var(--muted); }
 .composer textarea {

@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, failedResource, revealBar, setPreferences, test } from "./fixtures";
+import { expect, failedResource, setPreferences, test } from "./fixtures";
 
 // Your settings against the e2e server, where --no-auth makes every request the
 // synthetic admin no-auth@localhost. Tokens and aliases made here are this
@@ -7,12 +7,9 @@ import { expect, failedResource, revealBar, setPreferences, test } from "./fixtu
 
 const suffix = () => crypto.randomUUID().slice(0, 8);
 
-/** Settings, the sheet over the page. */
-const sheet = (page: Page) => page.getByRole("complementary", { name: "Your settings" });
-
 async function openSettings(page: Page): Promise<void> {
   await page.goto("/trax/settings");
-  await expect(sheet(page).getByRole("heading", { level: 1 })).toHaveText("Your settings");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Your settings");
 }
 
 type Listed = { name: string; prefix: string; role: string; revoked_at: string | null };
@@ -116,42 +113,16 @@ test("the user's own data follows them to a fresh browser: names, stars, saved v
   await fresh.close();
 });
 
-test("Settings opens as half a page over the page, from its left edge, and Close takes the tab back", async ({ page }) => {
-  await page.goto("/trax/list/Issue");
-  const list = page.getByRole("heading", { level: 1, name: "Issues" });
-  await expect(list).toBeVisible();
-  await (await revealBar(page)).getByRole("button", { name: /^Account: / }).click();
-  await page.getByRole("dialog", { name: "Account" }).getByRole("link", { name: "Your settings" }).click();
-  await expect(sheet(page).getByRole("heading", { level: 1 })).toHaveText("Your settings");
-  // The list stays under it, mounted, its other half in view.
-  await expect(list).toBeAttached();
-  const main = (await page.locator("main.main").boundingBox())!;
-  const half = (await sheet(page).boundingBox())!;
-  // Half the main area inside its 1 px border, and no narrower than 560 px.
-  const inner = main.width - 2;
-  expect(Math.round(half.width)).toBe(Math.round(Math.min(inner, Math.max(inner / 2, 560))));
-  // Against the main area's left edge.
-  expect(Math.round(half.x)).toBe(Math.round(main.x + 1));
-  // The sections take the sheet's width, so Close stands at their right edge.
-  const close = (await page.getByRole("link", { name: "Close settings" }).boundingBox())!;
-  const profile = (await page.getByRole("region", { name: "Profile" }).boundingBox())!;
-  expect(Math.round(close.x + close.width)).toBe(Math.round(profile.x + profile.width));
-  await page.getByRole("link", { name: "Close settings" }).click();
-  await expect(page).toHaveURL(/\/trax\/list\/Issue$/);
-  await expect(sheet(page)).toHaveCount(0);
-});
-
 /** The suite's user's preferences, as the server holds them. */
 async function storedPreferences(page: Page): Promise<{ [key: string]: unknown }> {
   return ((await (await page.request.get("/api/me/profile")).json()) as { preferences: { [key: string]: unknown } }).preferences;
 }
 
-test("a theme and terminal font size chosen in Settings follow the user to a fresh browser, which keeps neither", async ({ page, browser }) => {
+test("a theme chosen in Settings follows the user to a fresh browser, which keeps none", async ({ page, browser }) => {
   await openSettings(page);
   const appearance = page.getByRole("region", { name: "Appearance" });
   await appearance.getByRole("combobox", { name: "Theme" }).selectOption("light");
-  await appearance.getByRole("combobox", { name: "Terminal font size" }).selectOption("16px");
-  await expect.poll(() => storedPreferences(page)).toMatchObject({ theme: "light", terminal_font_size: "16px" });
+  await expect.poll(() => storedPreferences(page)).toMatchObject({ theme: "light" });
 
   const fresh = await browser.newContext();
   const other = await fresh.newPage();

@@ -169,14 +169,14 @@ for (const theme of ["dark", "light"] as const) {
       const made = await post(request, "/api/me/tokens", { name, role: "viewer" });
       expect((await request.post(`/api/me/tokens/${made.id}/revoke`)).ok()).toBe(true);
       await page.goto("/trax/settings");
-      await expect(page.getByRole("complementary", { name: "Your settings" }).getByRole("heading", { level: 1 })).toHaveText("Your settings");
+      await expect(page.getByRole("heading", { level: 1 })).toHaveText("Your settings");
       await expect(page.getByRole("region", { name: "API tokens" }).getByRole("row").filter({ hasText: name })).toContainText("revoked");
       await audit(page, theme, "Settings");
     });
 
     test("Admin", async ({ page }) => {
       await page.goto("/trax/admin");
-      await expect(page.getByRole("complementary", { name: "Admin" }).getByRole("heading", { level: 1 })).toHaveText("Admin");
+      await expect(page.getByRole("heading", { level: 1 })).toHaveText("Admin");
       await expect(page.getByRole("region", { name: "Users" }).getByRole("row").filter({ hasText: "no-auth@localhost" })).toBeVisible();
       await audit(page, theme, "Admin");
     });

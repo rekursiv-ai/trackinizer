@@ -1,6 +1,14 @@
-import type { ReactNode } from "react";
+import { createContext, type ReactNode, useContext } from "react";
+import { Icon } from "./icons";
 
-/** A view's top bar: its icon and title, then its actions. */
+/** Opens the sidebar, which is a drawer on narrow screens. */
+export const OpenDrawerContext = createContext<() => void>(() => {});
+
+/**
+ * A view's top bar: its icon and title, then its actions.
+ *
+ * On narrow screens it starts with the button that opens the sidebar.
+ */
 export function ViewHeader({
   icon,
   title,
@@ -10,8 +18,17 @@ export function ViewHeader({
   title: string;
   children?: ReactNode;
 }) {
+  const openDrawer = useContext(OpenDrawerContext);
   return (
     <header className="view-h">
+      <button
+        type="button"
+        className="icon-btn only-mobile"
+        onClick={openDrawer}
+        aria-label="Open navigation"
+      >
+        <Icon name="menu" />
+      </button>
       <h1 className="ttl">
         {icon}
         <span>{title}</span>

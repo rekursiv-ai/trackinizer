@@ -24,8 +24,6 @@ export type Palette = {
   readonly halo: string;
   /** The ring around a search match: the app's link accent. */
   readonly match: string;
-  /** The ring around what an agent pointed at: the app's amber. */
-  readonly highlight: string;
 };
 
 /** How one node is drawn: a disc of `fill`, maybe washed, ringed, maybe dotted. */
@@ -53,8 +51,8 @@ export type Standing = {
   readonly dimmed?: boolean;
   /** Two or more hops from the focus. */
   readonly far?: boolean;
-  /** `strong` for the focus and the selection, `highlight` for what an agent pointed at, `match` for a search match. */
-  readonly halo?: "strong" | "highlight" | "match" | null;
+  /** `strong` for the focus and the selection, `match` for a search match. */
+  readonly halo?: "strong" | "match" | null;
   /** Text to draw under it. */
   readonly label?: string | null;
 };
@@ -112,7 +110,7 @@ export function nodeLook(
     ring: judgement === "disproven" ? fill : (palette.status[shape.status] ?? palette.fallback),
     ringAlpha: alpha,
     dot: judgement === "proven" && !retired && !dimmed ? (palette.status.complete ?? palette.fallback) : null,
-    halo: halo === "strong" ? palette.halo : halo === "highlight" ? palette.highlight : halo === "match" ? palette.match : null,
+    halo: halo === "strong" ? palette.halo : halo === "match" ? palette.match : null,
     label: label === null ? null : { text: label.length > LABEL_CHARS ? `${label.slice(0, LABEL_CHARS - 1)}…` : label, color: palette.halo, outline: palette.background },
   };
 }
@@ -167,7 +165,6 @@ export function readPalette(
     faint: token("--g-faint"),
     halo: token("--text"),
     match: token("--accent-hover"),
-    highlight: token("--amber"),
   };
 }
 

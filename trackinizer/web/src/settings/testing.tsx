@@ -7,9 +7,7 @@ import { onTestFinished } from "vitest";
 import type { AllowlistEntry, User } from "../api/admin";
 import type { Profile, Role, Token } from "../api/me";
 import { AGREED, type Sent, stubFetch } from "../api/testing";
-import type { CanvasOperation, CanvasState } from "../api/canvases";
 import { DEFAULT_PREFERENCES, type Preferences } from "../preferences";
-import { setCanvas } from "../canvases/store";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { Session, SessionContext } from "../app/session";
 import { ToastProvider } from "../ui/toast";
@@ -126,18 +124,13 @@ export function user(id: string, email: string, fields: Partial<User> = {}): Use
  * the words of the server's unique-violation handler), a blank one (422), and a
  * missing or revoked token (404). `answers` take the next writes over; `hold`
  * holds the next write until released; reads of a path in `failing` answer
- * 503; `rows` are what the owner-names list request returns. `canvas` is
- * the user's default canvas, which an operation of a stale revision is refused
- * for (409) and a `provider` operation changes.
+ * 503; `rows` are what the owner-names list request returns.
  */
 export function serveAccount(
   caller: Profile,
-  seed: { tokens?: Token[]; users?: User[]; allowlist?: AllowlistEntry[]; canvas?: Partial<CanvasState> } = {},
+  seed: { tokens?: Token[]; users?: User[]; allowlist?: AllowlistEntry[] } = {},
 ) {
-  // A tab starts without a canvas, so a test never opens the one an earlier test left.
-  setCanvas(null);
   const server = {
-    canvas: { id: "w-ada", name: "unnamed-canvas#1", conversation_id: null, page: null, revision: 4, visuals: [], partner: null, assistant: "scout", provider: "assistant", ...seed.canvas } as CanvasState,
     tokens: seed.tokens ?? [],
     users: seed.users ?? [],
     allowlist: seed.allowlist ?? [],
@@ -148,7 +141,7 @@ export function serveAccount(
     sent: [] as Sent[],
     /** The writes sent, as `METHOD path` with the body. */
     writes: () =>
-      server.sent.filter((request) => request.method !== "GET" && request.path !== CANVAS).map(({ method, path, body }) => ({ call: `${method} ${path}`, body })),
+      server.sent.filter((request) => request.method !== "GET").map(({ method, path, body }) => ({ call: `${method} ${path}`, body })),
     reads: (path: string) => server.sent.filter((request) => request.method === "GET" && request.path === path).length,
     /** Hold the next write, then answer it as usual once the returned function is called. */
     hold: () => {
@@ -160,8 +153,7 @@ export function serveAccount(
   server.sent = stubFetch(async (request) => {
     const path = decodeURIComponent(new URL(request.url).pathname);
     if (request.method === "GET" && server.failing.has(path)) return refuse(503, "database unavailable");
-    // Opening the default canvas is a POST that changes nothing: neither a write to hold or script, nor one to count.
-    if (request.method !== "GET" && path !== CANVAS) {
+    if (request.method !== "GET") {
       await server.held.shift();
       const scripted = server.answers.shift();
       if (scripted) return scripted(request);
@@ -181,23 +173,15 @@ export function serveAccount(
   return server;
 }
 
-const CANVAS = "/api/canvases";
-
 type Server = ReturnType<typeof serveAccount>;
 
-type AccountBody = { name?: string; role?: Role; email_or_pattern?: string; enabled?: boolean; revision?: number; operation?: CanvasOperation };
+type AccountBody = { name?: string; role?: Role; email_or_pattern?: string };
 
 function answer(server: Server, caller: Profile, call: string, body: AccountBody): Response {
   const [method, path] = call.split(" ") as [string, string];
   const parts = path.split("/").slice(1);
   if (call === "GET /api/me/profile") return Response.json(caller);
-  if (call === "PUT /api/me/visual-canvas") {
-    caller.visual_canvas_enabled = body.enabled ?? false;
-    return Response.json({ enabled: caller.visual_canvas_enabled });
-  }
   if (call === "POST /api/me/settings-artifact") return Response.json({ artifact_id: "fixture-settings-artifact" });
-  if (call === `POST ${CANVAS}` || call === `GET ${CANVAS}/${server.canvas.id}`) return Response.json(server.canvas);
-  if (call === `POST /api/canvases/${server.canvas.id}/operations`) return operate(server, body);
   if (call === "GET /api/me/tokens") return Response.json({ tokens: server.tokens });
   if (call === "GET /api/admin/users") return Response.json({ users: server.users });
   if (call === "GET /api/admin/allowlist") return Response.json({ entries: server.allowlist });
@@ -241,13 +225,6 @@ function answer(server: Server, caller: Profile, call: string, body: AccountBody
     return Response.json(method === "DELETE" ? { ok: true } : { ok: true, role: body.role });
   }
   return refuse(404, `no route ${call}`);
-}
-
-function operate(server: Server, { revision, operation }: AccountBody): Response {
-  if (revision !== server.canvas.revision) return refuse(409, "revision conflict");
-  if (operation?.kind !== "provider") return refuse(422, "unsupported operation");
-  server.canvas = { ...server.canvas, revision: revision + 1, provider: operation.provider, partner: null };
-  return Response.json(server.canvas);
 }
 
 function userWrite(server: Server, caller: Profile, method: string, id: string, action: string | undefined, role: Role | undefined): Response {

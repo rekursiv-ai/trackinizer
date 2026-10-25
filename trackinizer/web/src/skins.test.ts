@@ -50,21 +50,9 @@ test.each(fixed)("in the %s skin, text, text that steps back and error text meet
   }
 });
 
-test.each(fixed)("in the %s skin, a canvas group's title and a primary button's white text read at 4.5:1", (skin) => {
+test.each(fixed)("in the %s skin, a primary button's white text reads at 4.5:1", (skin) => {
   const own = tokens(skins, `:root[data-skin="${skin}"]`);
-  for (const group of ["--group-1", "--group-2", "--group-3", "--group-4"]) {
-    expect(contrast(own.get("--on-group")!, own.get(group)!), group).toBeGreaterThanOrEqual(4.5);
-  }
   expect(contrast("#ffffff", own.get("--accent")!)).toBeGreaterThanOrEqual(4.5);
-});
-
-test("the default skin, under either theme, gives a group's title 4.5:1 too", () => {
-  for (const theme of [":root", ':root[data-theme="light"]']) {
-    const own = tokens(base, theme);
-    for (const group of ["--group-1", "--group-2", "--group-3", "--group-4"]) {
-      expect(contrast(own.get("--on-group")!, own.get(group)!), `${theme} ${group}`).toBeGreaterThanOrEqual(4.5);
-    }
-  }
 });
 
 test("every skin the menu offers has its rule, and the stylesheet holds no other", () => {

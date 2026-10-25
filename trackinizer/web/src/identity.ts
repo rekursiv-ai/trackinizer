@@ -1,7 +1,7 @@
-// What the app calls itself. A build picks one identity (TRACKINIZER_WEB_APP, read by vite.config.ts) and
-// everything a person sees of the name comes from it: the install manifest, the page title, the strings in the UI.
-// Pure data, so the build (Node) and the page (browser) read the same table.
+// What the app calls itself. Everything a person sees of the name comes from it: the install manifest, the
+// page title, the strings in the UI. Pure data, so the build (Node) and the page (browser) read the same one.
 import { APP_BASE } from "./base";
+
 /** One identity: the name and look an installed app has. */
 export type AppIdentity = {
   readonly name: string;
@@ -11,28 +11,16 @@ export type AppIdentity = {
   readonly icons: readonly { readonly src: string; readonly sizes: string; readonly type: string; readonly purpose: string }[];
 };
 
-/** What a build without a choice is. */
-export const DEFAULT_APP = "trackinizer";
-
-export const IDENTITIES: Readonly<Record<string, AppIdentity>> = {
-  [DEFAULT_APP]: {
-    name: "Trackinizer",
-    short_name: "Trackinizer",
-    theme_color: "#090a0b",
-    background_color: "#090a0b",
-    icons: [
-      { src: `${APP_BASE}icon-192.png`, sizes: "192x192", type: "image/png", purpose: "any maskable" },
-      { src: `${APP_BASE}icon-512.png`, sizes: "512x512", type: "image/png", purpose: "any maskable" },
-    ],
-  },
+export const TRACKINIZER: AppIdentity = {
+  name: "Trackinizer",
+  short_name: "Trackinizer",
+  theme_color: "#090a0b",
+  background_color: "#090a0b",
+  icons: [
+    { src: `${APP_BASE}icon-192.png`, sizes: "192x192", type: "image/png", purpose: "any maskable" },
+    { src: `${APP_BASE}icon-512.png`, sizes: "512x512", type: "image/png", purpose: "any maskable" },
+  ],
 };
-
-/** The identity a build names by key; none is the default, and a key that is not one is refused so a typo cannot ship. */
-export function identityOf(key: string | undefined): AppIdentity {
-  const found = IDENTITIES[key || DEFAULT_APP];
-  if (!found) throw new Error(`Unknown app identity ${key}; one of ${Object.keys(IDENTITIES).join(", ")}.`);
-  return found;
-}
 
 /** The web app manifest of an identity: installs as its own window over `/trax/`. */
 export function manifestOf(identity: AppIdentity) {

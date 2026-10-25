@@ -60,6 +60,18 @@ All notable trackinizer changes are documented here. This project follows
   answers and the terminal listing, which are read without `Client`, ignore one too.
   Requires pydantic 2.12, which adds `model_validate(..., extra=)`.
 
+### Removed
+
+- **Breaking:** the web app is back to the graph and its records, as the v2 release
+  had it.
+  - Gone: Chat, the agent canvas and its visuals, terminals, the top bar, the account
+    menu's other accounts, and the agent's highlights.
+  - The v2 sidebar is back, and Settings and Admin open as pages.
+  - The console keeps its feed, views and messages to live agents, and loses its
+    canvas scope and Reattach to Chat.
+  - The server's routes are unchanged. A deployment that wants Chat and the canvas
+    serves an app of its own against them.
+
 ## 0.1.10 - 2026-10-23
 
 ### Changed

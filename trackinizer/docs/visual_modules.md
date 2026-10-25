@@ -25,25 +25,21 @@ own beside the canvas.
    single source of a parameter's default and maximum; routes read those
    limits from it. Browser input is validated against the descriptor. Never
    pass browser JSON to configgle `deserialize()`.
-4. Register a renderer for the type and version in the web client, loaded with
-   a dynamic import. An unavailable renderer produces an error inside its
+4. Register a renderer for the type and version in the web app that draws the
+   canvas, loaded with a dynamic import. Trackinizer's own web app draws none. An unavailable renderer produces an error inside its
    tile. The renderer draws rows: its record is the app's anchor row, it
    gathers the app's other rows by labels and edges, and it reads what only
    the app knows from each row's `app.<app>`, which the app's writers keep in
    the shape it draws. A visual serves no data of its own: to change what it
    shows, an agent writes the rows, and moves only attention on the canvas.
-5. Regenerate the client's catalog preview and the OpenAPI schema from the
-   backend catalog so the snapshot tests and the client type check agree with
-   it.
+5. Regenerate that app's catalog preview and the OpenAPI schema from the
+   backend catalog so its snapshot tests and type check agree with it.
 
-The renderer lives in `trackinizer/web/src/visuals/registry.tsx`, and
-its type and version go in `renderer-versions.json` beside it. The preview
-snapshot is `catalog.preview.json` in the same directory.
-
-The snapshot command from the repository root is:
+The app keeps each renderer's type and version beside its registry, and a
+preview snapshot of the catalog. The catalog, from the repository root:
 
 ```sh
-uv --quiet run --frozen python -c 'from trackinizer.server.visuals.catalog import default_catalog; print(default_catalog().model_dump_json(indent=2))' > trackinizer/web/src/visuals/catalog.preview.json
+uv --quiet run --frozen python -c 'from trackinizer.server.visuals.catalog import default_catalog; print(default_catalog().model_dump_json(indent=2))'
 uv --quiet run --frozen trackinizer/web/scripts/openapi_dump.py
 ```
 
@@ -52,11 +48,11 @@ that answers 404 for `/api/visuals`. A deployed server reads the route.
 
 ## Change a canvas
 
-The canvas is on by default (Settings turns it off). `POST /api/canvases` with the
+The canvas is on by default (`PUT /api/me/visual-canvas` turns it off). `POST /api/canvases` with the
 user's browser session. It returns the default canvas id and revision.
 Besides the browser, only the server's Chat assistant may change a canvas, and
 only one whose owner has talked to it there. Its key shows a visual through the
-same operation the top bar's Workbench menu uses:
+same operation the browser's canvas controls use:
 
 ```http
 POST /api/canvases/<canvas-id>/operations

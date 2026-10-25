@@ -31,8 +31,8 @@ export function parseLine(line: string, shown: readonly FeedEvent[], to: readonl
     const room = colon < 0 ? null : part.slice(colon + 1);
     if (!actor) return { problem: `An agent's name is missing in '${part}'` };
     if (room === "") return { problem: `A room is missing in '${part}'` };
-    // A chat is the canvas's own: the server refuses a browser's message to one.
-    if (isChatHandle(actor)) return { problem: `${actor} is a chat: open its canvas to talk to it` };
+    // A science chat takes lines from its own Chat alone: the server refuses a browser's message to one.
+    if (isChatHandle(actor)) return { problem: `${actor} is a chat: only its own Chat posts to it` };
     targets.push({ actor, room });
   }
   return { targets, text };

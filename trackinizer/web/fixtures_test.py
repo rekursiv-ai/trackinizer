@@ -296,7 +296,7 @@ def _exercise(rec: _Recorder, *, url: str) -> None:
     _lock(rec, graph)
     _read_lists(rec)
     _read_rows(rec, graph)
-    _account(rec, graph)
+    _account(rec)
     _admin(rec)
     # Last: it renames the root, which a read after it would show.
     _stream(rec, target=graph["root"])
@@ -728,19 +728,8 @@ def _lock(rec: _Recorder, graph: dict[str, str]) -> None:
     _ = rec.call("admin/setInquiryLock.clear", "PUT", path, body={"locked": False})
 
 
-# The root is Issue#1, the rules once it is locked; it is unlocked again after.
-def _account(rec: _Recorder, graph: dict[str, str]) -> None:
-    """Agree to the rules, make, list, change and revoke a token, then sign out."""
-    lock = f"/api/admin/inquiries/{graph['root']}/lock"
-    _ = rec.setup("PUT", lock, body={"locked": True})
-    shown = from_plain(rec.setup("GET", "/api/me/profile"), dict[str, object])
-    _ = rec.call(
-        "me/acknowledge",
-        "PUT",
-        "/api/me/acknowledge",
-        body={"rules_version": from_plain(shown["rules_version"], str)},
-    )
-    _ = rec.setup("PUT", lock, body={"locked": False})
+def _account(rec: _Recorder) -> None:
+    """Make, list, change and revoke a token, then sign out."""
     token = from_plain(
         from_plain(
             rec.call(

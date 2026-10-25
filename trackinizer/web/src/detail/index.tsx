@@ -1,12 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { APP } from "../appName";
-import { lazy, Suspense, type ReactNode, startTransition, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { markPageDrawn } from "../debug/timings";
+import { lazy, Suspense, type ReactNode, startTransition, useEffect, useId, useMemo, useRef, useState } from "react";
 import { setInquiryLock } from "../api/admin";
 import { ApiError } from "../api/client";
 import type { Detail, DetailRow } from "../api/detail";
 import { LockedContext, useMeta, useProfile, useWriteMode } from "../app/boot";
-import { useIsHighlighted } from "../app/highlights";
 import { mayPurge, PurgeDialog } from "../bulk/Purge";
 import { useCommands } from "../commands/registry";
 import { CopyDetails } from "../debug/CopyDetails";
@@ -17,7 +15,7 @@ import { Markdown, useMarkdownWarm } from "../markdown/Markdown";
 import { ProgressiveMarkdown } from "../markdown/ProgressiveMarkdown";
 import { cachedInquiries } from "../palette/sources";
 import { RelationFlows, useRelationActions } from "../relations/flows";
-import { currentRoute, routeHref } from "../router/addressBar";
+import { routeHref } from "../router/addressBar";
 import { type Route } from "../router/route";
 import { useRouter } from "../router/router";
 import { Bar } from "../ui/bars";
@@ -37,13 +35,11 @@ import { Rail } from "./Rail";
 import { Relations } from "./Relations";
 import { dateTime, relativeTime, useMinuteClock } from "./time";
 import { Transcript } from "./transcript";
-import { conversationOf, SCIENCE_CHAT_LABEL } from "../api/chats";
-import { useContinueInChat } from "../visuals/continueChat";
 import "../writes/writes.css";
 import "./detail.css";
 
-const ArtifactContent = lazy(() => import("../visuals/Artifact").then((module) => ({ default: module.ArtifactPage })));
-const ArtifactFrame = lazy(() => import("../visuals/Artifact").then((module) => ({ default: module.ArtifactFrame })));
+const ArtifactContent = lazy(() => import("./Artifact").then((module) => ({ default: module.ArtifactPage })));
+const ArtifactFrame = lazy(() => import("./Artifact").then((module) => ({ default: module.ArtifactFrame })));
 
 /** Which inquiry a detail shows: by kind and seq, or by id. */
 export type DetailTarget = { kind: string; seq: number } | { id: string };
@@ -97,11 +93,6 @@ function DetailById({ id, kind, name }: { id: string; kind: string | null; name:
   }, [ready, shown]);
   // A row purged while open answers 404 on refetch: say so rather than show it stale.
   const gone = query.error instanceof ApiError && query.error.status === 404;
-  const drawn = !!query.data && !gone && shown;
-  // After an agent's navigation here, the page drawn with its data is what its timing mark waits for.
-  useLayoutEffect(() => {
-    if (drawn) markPageDrawn(currentRoute());
-  }, [drawn, id]);
   if (query.data && !gone && shown) {
     return (
       <Page
@@ -148,7 +139,6 @@ function Page({ detail, stale, retry }: { detail: Detail; stale: Error | null; r
           name={`${row.kind}#${row.seq}`}
           actions={
             <>
-              <ContinueInChat row={row} />
               <ShowInGraph row={row} />
               <MoreMenu detail={detail} />
               <PanelToggle panel={rail} controls={railId} />
@@ -206,22 +196,6 @@ function Page({ detail, stale, retry }: { detail: Detail; stale: Error | null; r
         </Frame>
       </RelationFlows>
     </LockedContext>
-  );
-}
-
-/**
- * Continue in Chat, on a science chat's session: Chat opens on the conversation, which anyone
- * signed in as a writer can post in. Offered only where the canvas offers Chat.
- */
-function ContinueInChat({ row }: { row: DetailRow }) {
-  const continueIn = useContinueInChat();
-  const labels = Array.isArray(row.labels) ? row.labels : [];
-  const conversation = conversationOf(typeof row.cli_session_id === "string" ? row.cli_session_id : null);
-  if (!continueIn || row.kind !== "AgentSession" || !conversation || !labels.includes(SCIENCE_CHAT_LABEL)) return null;
-  return (
-    <button type="button" className="btn ghost" onClick={() => continueIn(row.id)}>
-      Continue in Chat
-    </button>
   );
 }
 
@@ -328,9 +302,8 @@ const RAIL: PanelSpec = { id: "detail.rail", name: "parents, children and proper
 function Head({ detail, now, cost }: { detail: Detail; now: number; cost: number }) {
   const row = detail.self;
   const one = kindLook(row.kind).one;
-  const highlighted = useIsHighlighted(row.id);
   return (
-    <div className={highlighted ? "d-head is-highlighted" : "d-head"}>
+    <div className="d-head">
       <div className="eyebrow">
         <KindIcon kind={row.kind} size={13} />
         {capitalize(one)}

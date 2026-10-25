@@ -12,7 +12,6 @@ import { Icon, Logo } from "../ui/icons";
 import { ToastProvider } from "../ui/toast";
 import { EmptyState } from "../ui/view";
 import { MetaContext, ProfileContext, useBoot } from "./boot";
-import { CanvasStream } from "./canvasStream";
 import { CrashBoundary } from "./CrashBoundary";
 import { createQueryClient } from "./queryClient";
 import { Session, SessionContext } from "./session";
@@ -92,10 +91,8 @@ function Boot() {
       <MetaContext value={boot.meta}>
         <ProfileContext value={boot.profile}>
           <RouterProvider kinds={boot.meta.kinds}>
-            <LiveProvider canvas={boot.profile.visual_canvas_enabled}>
-              <CanvasStream enabled={boot.profile.visual_canvas_enabled}>
-                  <Shell />
-              </CanvasStream>
+            <LiveProvider>
+              <Shell />
             </LiveProvider>
           </RouterProvider>
         </ProfileContext>
@@ -121,15 +118,18 @@ function Boot() {
   );
 }
 
-/** The app's frame before boot: the logo in the top bar and an empty panel. */
+/** The app's frame before boot: the logo in the sidebar and an empty panel. */
 function Frame({ busy = false, children }: { busy?: boolean; children?: ReactNode }) {
   return (
     <div className="app" aria-busy={busy}>
-      <div className="topbar">
-        <span className="topbar-logo" title={APP.name}>
-          <Logo />
-        </span>
-      </div>
+      <nav className="sidebar" aria-label="Sidebar">
+        <div className="ws-row">
+          <span className="ws-switch">
+            <Logo />
+            {APP.name}
+          </span>
+        </div>
+      </nav>
       <main className="main">{children}</main>
     </div>
   );

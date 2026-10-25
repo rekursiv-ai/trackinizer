@@ -1,5 +1,5 @@
 import type { Page, Request } from "@playwright/test";
-import { expect, failedResource, revealBar, test } from "./fixtures";
+import { expect, failedResource, test } from "./fixtures";
 
 // Admin against the e2e server. --no-auth makes every request the synthetic
 // admin no-auth@localhost; playwright.config.ts seeds a second user,
@@ -10,7 +10,7 @@ const OTHER = "e2e-admin@example.com";
 
 async function openAdmin(page: Page): Promise<void> {
   await page.goto("/trax/admin");
-  await expect(page.getByRole("complementary", { name: "Admin" }).getByRole("heading", { level: 1 })).toHaveText("Admin");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Admin");
 }
 
 test("an admin changes a user's role and edits the allowlist", async ({ page, request, allowErrors }) => {
@@ -65,13 +65,10 @@ test("a viewer sees no Admin entry or command, a link to Admin is refused, and n
     if (new URL(sent.url()).pathname.startsWith("/api/admin/")) admin.push(sent);
   });
   await page.goto("/trax/list/Issue");
-  // The account names the role; its menu has Your settings and, for a viewer, no Admin.
-  await (await revealBar(page)).getByRole("button", { name: /^Account: .*, viewer$/ }).click();
-  const account = page.getByRole("dialog", { name: "Account" });
-  await expect(account.getByText("viewer")).toBeVisible();
-  await expect(account.getByRole("link", { name: "Your settings" })).toBeVisible();
-  await expect(account.getByRole("link", { name: "Admin" })).toHaveCount(0);
-  await page.keyboard.press("Escape");
+  const sidebar = page.getByRole("navigation", { name: "Sidebar" });
+  await expect(sidebar.getByText("viewer")).toBeVisible();
+  await expect(sidebar.getByRole("link", { name: "Your settings" })).toBeVisible();
+  await expect(sidebar.getByRole("link", { name: "Admin" })).toHaveCount(0);
 
   await page.keyboard.press("ControlOrMeta+k");
   const palette = page.getByRole("dialog", { name: "Command menu" });

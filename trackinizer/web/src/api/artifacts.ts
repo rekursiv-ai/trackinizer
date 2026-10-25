@@ -1,6 +1,6 @@
 import { client, send, TIMEOUT_MS, type CallOptions } from "./client";
 import type { components } from "./generated/schema";
-import type { ArtifactContentRevision } from "../visuals/Artifact";
+import type { ArtifactContentRevision } from "../detail/Artifact";
 
 type WireRevision = components["schemas"]["ArtifactContentRevision"];
 

@@ -15,7 +15,7 @@ import { listSessionParts, readSessionRecords, sendSessionMessage, type SessionP
 import { useMeta, useWriteMode } from "../../app/boot";
 import { Composer } from "../../composer/Composer";
 import { ReadFailure } from "../../ui/failure";
-import { type DiffMode, DiffModeToggle, FileDiff, useDiffMode } from "../../visuals/SplitDiff.tsx";
+import { type DiffMode, DiffModeToggle, FileDiff, useDiffMode } from "./SplitDiff.tsx";
 import { Refresh } from "../Refresh";
 import { dateTime } from "../time";
 import { placeholderHeight, useDrawnFrom } from "./drawing";

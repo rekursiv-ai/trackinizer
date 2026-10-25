@@ -5,7 +5,7 @@ import { log } from "./debug/log";
 import { sameJson } from "./state/value";
 
 /**
- * The user's preferences: theme, Chat's side, and the like, and the
+ * The user's preferences: theme, skin and the like, and the
  * user's own data: stars, saved views, names, read marks and unsent drafts. They
  * live on the server (`server/preferences.py`), on the user's row, so any browser
  * or machine finds them and an agent the user works with can change them; this
@@ -121,28 +121,13 @@ export async function choosePreferences(change: Partial<Preferences>, { keepaliv
   try {
     const saved = await turn;
     sending -= 1;
-    markUnsaved(keys, false);
     if (sending === 0) show(known({ ...DEFAULT_PREFERENCES, ...saved }));
     return true;
   } catch (error) {
     sending -= 1;
     log("warn", "preferences.not_kept", { keys: keys.join(","), error: String(error) });
-    markUnsaved(keys, true);
     return false;
   }
-}
-
-let unsaved: ReadonlySet<keyof Preferences> = new Set();
-
-/** The keys whose last send the server did not take; one it takes later clears its key. Subscribers are told. */
-export function unsavedKeys(): ReadonlySet<keyof Preferences> {
-  return unsaved;
-}
-
-function markUnsaved(keys: readonly (keyof Preferences)[], failed: boolean): void {
-  if (keys.every((key) => unsaved.has(key) === failed)) return;
-  unsaved = new Set(failed ? [...unsaved, ...keys] : [...unsaved].filter((key) => !keys.includes(key)));
-  for (const listener of [...listeners]) listener();
 }
 
 /** How long typing pauses before a change made with `choosePreferencesSoon` is sent. */
