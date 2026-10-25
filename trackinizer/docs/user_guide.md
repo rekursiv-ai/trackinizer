@@ -64,11 +64,15 @@ light up the rows it is talking about.
 
 A **chat** is one conversation with the assistant together with its own
 canvas. (The code and the Console call it a canvas.) A **workspace** groups
-the chats of one effort, and is an Issue in the graph. Chats in no workspace
-are in **Scratch**.
+the chats of one effort, and is an Issue in the graph. A chat or session with
+no other home lands in your default workspace, **Untitled workspace**.
 
 - The top bar lists your workspaces. Click one to open its pinned chat, else
   its newest; a workspace with no chat gets a new one.
+- Rename your default workspace and it is an ordinary one. The next chat or
+  session with no other home makes a new default: "Untitled workspace", or
+  "Untitled workspace 2" and so on when that title is taken.
+- A hidden workspace shows again when a chat or session lands in it.
 - **+ Workspace** makes a workspace; type its name and press Enter.
 - Double-click a workspace to rename it. Right-click it for Info, Pin, Move
   left, Move right, Rename and Hide. Drag one to reorder.
@@ -83,12 +87,13 @@ a touch screen.
   cancels). The menu under it lists this workspace's chats, pinned ones first,
   then the five most recent, each with Pin and Hide. It also has **+ New chat**
   and **Search all chats…**, which finds hidden chats too. A chat you never
-  named shows as "Scratch chat".
-- **The workspace chip** (for example "Scratch ▾") moves the chat to another
-  workspace. Type a name and press Enter: the chat moves to the workspace of
-  that name, which is created if you have none. When the server suggests a
-  workspace, a chip with its name and a question mark moves the chat there in
-  one click.
+  named shows as its goal, else its first line, as the session switcher names
+  it; "Untitled chat" before either.
+- **The workspace chip** (for example "Untitled workspace ▾") moves the chat to
+  another workspace. Type a name and press Enter: the chat moves to the
+  workspace of that name, which is created if you have none. When the server
+  suggests a workspace, a chip with its name and a question mark moves the chat
+  there in one click.
 - **The terminal icon** flips Chat over to a terminal on your own computer
   ([section 3](#3-a-terminal-on-your-own-machine)).
 - **▷ or ◁** docks Chat on the other side.
@@ -389,7 +394,7 @@ first rule that fits:
 1. the chat whose terminal you started it from, directly or over ssh;
 2. where the session was filed before, when you resume one;
 3. the workspace of your newest session on the same git branch, in a new chat;
-4. Scratch, in a new chat.
+4. your default workspace, in a new chat.
 
 On Chat's terminal side the bar says where: "Sessions land in" and the
 workspace.

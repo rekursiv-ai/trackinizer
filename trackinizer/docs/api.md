@@ -604,7 +604,8 @@ else when it was made), `live` (a run holds its lease now), `machine` (the live 
 else where it last ran since the server started), the run's `state`, `goal` (the
 last goal its CLI's log reported), `first_line` (the first line a person wrote),
 `conversation_id`, `canvas_id` and `workspace_id` (its chat's canvas, or the one it
-was placed in, and that canvas's workspace, null for Scratch) and `produced_by`, the
+was placed in, and that canvas's workspace, null for a canvas in none, which is the
+default workspace's) and `produced_by`, the
 Issues it was produced by, workspaces left out. `issues` lists those Issues once
 each, with the Issues they narrow or were produced by, each with its `parent_ids`.
 
@@ -991,7 +992,8 @@ canvas tab in order as `{id, name}` (none until a second one is made) and `tab` 
 the open one's id or null, so the top bar shows every canvas's tabs without
 reading each canvas.
 `POST /api/canvases/new` makes a canvas. An optional body `{workspace_id,
-provider}` names its workspace (else Scratch) and the provider its chat starts on
+provider}` names its workspace (else the caller's default workspace, made if they
+have none) and the provider its chat starts on
 (else the caller's `chat_provider` preference); a CLI is taken with no machine to
 run on, and nothing runs until one is picked.
 `PATCH /api/canvases/<uuid>` with `{"name"}` renames it: the name is trimmed

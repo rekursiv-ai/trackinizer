@@ -810,7 +810,7 @@ class ChooseProvider(OperationModel):
 class NewCanvas(BaseModel):
     """What a new canvas starts with: its workspace and its provider, either unset.
 
-    An unset workspace is the owner's Scratch, and an unset provider their
+    An unset workspace is the owner's default workspace, and an unset provider their
     ``chat_provider`` preference. A provider with no machine to run on is taken all
     the same: nothing runs until a machine is picked.
     """

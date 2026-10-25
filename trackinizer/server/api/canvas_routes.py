@@ -83,7 +83,7 @@ from trackinizer.server.visuals.session_placement import move_canvas_sessions
 from trackinizer.server.visuals.workspaces import (
     SetCanvasWorkspace,
     check_workspace,
-    open_scratch,
+    open_default_workspace,
 )
 from trackinizer.wire.wire_science_chat import chat_session_id
 
@@ -154,6 +154,8 @@ async def create_canvas_route(
 ) -> CanvasState:
     """Open the canvas the principal changed last, making the first if none.
 
+    The first lands in the principal's default workspace.
+
     Args:
       request: Request carrying the database engine.
       identity: Authenticated browser account.
@@ -163,19 +165,14 @@ async def create_canvas_route(
 
     """
     require_browser(identity)
-    workspace_id = await open_scratch(
+    return await open_latest_canvas(
         engine_of(request),
         store=get_store(request),
         user_id=identity.user_id,
         email=identity.email,
-    )
-    return await open_latest_canvas(
-        engine_of(request),
-        user_id=identity.user_id,
         catalog=visual_catalog(request).catalog(),
         inbound=get_inbound(request),
         assistant=get_assistant(request),
-        workspace_id=workspace_id,
     )
 
 
@@ -222,7 +219,8 @@ async def new_canvas_route(
     Args:
       request: Request carrying the database engine.
       identity: Authenticated browser account.
-      body: Optional workspace and provider; an unset workspace selects Scratch.
+      body: Optional workspace and provider; an unset workspace selects the default
+        workspace.
 
     Returns:
       state: The new canvas.
@@ -230,15 +228,14 @@ async def new_canvas_route(
     """
     require_browser(identity)
     engine = engine_of(request)
-    scratch_id = await open_scratch(
-        engine,
-        store=get_store(request),
-        user_id=identity.user_id,
-        email=identity.email,
-    )
     workspace_id = body.workspace_id if body is not None else None
     if workspace_id is None:
-        workspace_id = scratch_id
+        workspace_id = await open_default_workspace(
+            engine,
+            store=get_store(request),
+            user_id=identity.user_id,
+            email=identity.email,
+        )
     elif not await check_workspace(
         engine,
         email=identity.email,
@@ -301,7 +298,8 @@ async def canvas_for_chat_route(
 ) -> CanvasState:
     """Find the principal's canvas that holds a chat, or make one bound to it.
 
-    A chat that was deleted is 410 ``chat_deleted``, and no canvas is bound to it.
+    A canvas made for it lands in the principal's default workspace. A chat that was
+    deleted is 410 ``chat_deleted``, and no canvas is bound to it.
 
     Args:
       conversation_id: The science chat to continue.
@@ -313,20 +311,15 @@ async def canvas_for_chat_route(
 
     """
     require_browser(identity)
-    workspace_id = await open_scratch(
+    return await canvas_for_chat(
         engine_of(request),
         store=get_store(request),
         user_id=identity.user_id,
         email=identity.email,
-    )
-    return await canvas_for_chat(
-        engine_of(request),
-        user_id=identity.user_id,
         conversation_id=conversation_id,
         catalog=visual_catalog(request).catalog(),
         inbound=get_inbound(request),
         assistant=get_assistant(request),
-        workspace_id=workspace_id,
     )
 
 

@@ -44,8 +44,9 @@ async def place_session_route(
     The first rule that matches wins: the canvas the run started from, when it is the
     caller's; the placement the session already has; the workspace of the caller's
     newest earlier session on the same git branch, in a new canvas; else the caller's
-    Scratch, in a new canvas. Placing a placed session returns its placement. A
-    service account's session and a science chat are not placed: both ids are null.
+    default workspace, in a new canvas. Placing a placed session returns its
+    placement. A service account's session and a science chat are not placed: both
+    ids are null.
 
     Args:
       session_id: The session, which the caller's own key opened.

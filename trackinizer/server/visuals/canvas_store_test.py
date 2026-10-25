@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
-from unittest.mock import ANY, AsyncMock, MagicMock, call
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import asyncio
 import uuid
@@ -101,6 +101,7 @@ if TYPE_CHECKING:
 
 
 _USER: Final = uuid.UUID("11111111-1111-1111-1111-111111111111")
+_EMAIL: Final = "user@example.com"
 _CANVAS: Final = uuid.UUID("55555555-5555-5555-5555-555555555555")
 _OTHER_USER: Final = uuid.UUID("22222222-2222-2222-2222-222222222222")
 _SOURCE_SQL: Final = (
@@ -777,21 +778,21 @@ async def test_canvas_operations_and_replays_keep_canvas_flags(
 
 
 def test_open_latest_skips_hidden_canvases() -> None:
-    """The latest lookup filters hidden canvases before choosing a row."""
+    """The latest lookup filters hidden canvases; opening one makes no default."""
     engine, asked = _scripted(_ROW)
+    default = AsyncMock(return_value=_DEFAULT_WORKSPACE)
 
-    state = _open(engine)
+    state = _open(engine, default=default)
 
     assert state.id == _CANVAS
     assert asked == [(_LATEST, (_USER,))]
+    default.assert_not_awaited()
 
 
-def test_open_latest_creates_a_scratch_canvas_when_all_existing_canvases_are_hidden() -> (
-    None
-):
+def test_open_latest_makes_a_canvas_in_the_default_when_all_others_are_hidden() -> None:
     """With no visible row, the store inserts after listing existing names."""
     engine, asked = _scripted(None, None, _ROW)
-    workspace_id = uuid.uuid4()
+    default = AsyncMock(return_value=_DEFAULT_WORKSPACE)
 
     async def names(sql: str, *args: object) -> list[dict[str, object]]:
         if "FROM machines" in sql:
@@ -804,7 +805,7 @@ def test_open_latest_creates_a_scratch_canvas_when_all_existing_canvases_are_hid
         return [{"name": "unnamed-canvas#1"}]
 
     engine.conn.fetch.side_effect = names
-    state = _open(engine, workspace_id=workspace_id)
+    state = _open(engine, default=default)
 
     assert state.id == _CANVAS
     assert [sql for sql, _ in asked] == [
@@ -817,8 +818,9 @@ def test_open_latest_creates_a_scratch_canvas_when_all_existing_canvases_are_hid
         "name": "unnamed-canvas#2",
         "hidden": False,
         "pinned": False,
-        "workspace_id": str(workspace_id),
+        "workspace_id": str(_DEFAULT_WORKSPACE),
     }
+    default.assert_awaited_once()
 
 
 @pytest.mark.db_pglite
@@ -839,7 +841,9 @@ async def test_opening_a_chat_unhides_its_canvas(
 
     opened = await canvas_for_chat(
         seeded_canvas,
+        store=Store(seeded_canvas, embed=StubEmbedder()),
         user_id=_USER,
+        email=_EMAIL,
         conversation_id=conversation_id,
         catalog=default_catalog(),
         inbound=InboundQueue(),
@@ -848,6 +852,8 @@ async def test_opening_a_chat_unhides_its_canvas(
 
     assert opened.id == _CANVAS
     assert opened.hidden is False
+    async with seeded_canvas.acquire() as conn:
+        assert await conn.fetchval("SELECT count(*) FROM inquiries") == 0
 
 
 @pytest.mark.db_pglite
@@ -1879,6 +1885,7 @@ def test_moving_a_canvas_sets_workspace_and_clears_its_suggestion(
 
 
 _CANVAS: Final = uuid.UUID("22222222-2222-2222-2222-222222222222")
+_DEFAULT_WORKSPACE: Final = uuid.UUID("33333333-3333-3333-3333-333333333333")
 _LATEST: Final = (
     "SELECT id, revision, state, metadata FROM visual_canvases "
     "WHERE user_id = $1 AND coalesce((metadata->>'hidden')::boolean, FALSE) "
@@ -1897,19 +1904,23 @@ def _open(
     engine: FakeEngine,
     *,
     assistant: Assistant | None = None,
-    workspace_id: uuid.UUID | None = None,
+    default: AsyncMock | None = None,
 ) -> CanvasState:
-    """Open the latest canvas through ``engine``."""
-    return asyncio.run(
-        open_latest_canvas(
-            cast("DatabaseEngine", engine),
-            user_id=_USER,
-            catalog=default_catalog(),
-            inbound=InboundQueue(),
-            assistant=assistant,
-            workspace_id=workspace_id,
-        ),
-    )
+    """Open the latest canvas through ``engine``; ``default`` opens the default."""
+    opener = default or AsyncMock(return_value=_DEFAULT_WORKSPACE)
+    database = cast("DatabaseEngine", engine)
+    with patch.object(canvas_store, "open_default_workspace", opener):
+        return asyncio.run(
+            open_latest_canvas(
+                database,
+                store=Store(database, embed=StubEmbedder()),
+                user_id=_USER,
+                email=_EMAIL,
+                catalog=default_catalog(),
+                inbound=InboundQueue(),
+                assistant=assistant,
+            ),
+        )
 
 
 def _scripted(
@@ -1976,6 +1987,7 @@ def test_a_user_with_no_canvas_gets_the_first_one_named_and_read_back() -> None:
         "name": "unnamed-canvas#1",
         "hidden": False,
         "pinned": False,
+        "workspace_id": str(_DEFAULT_WORKSPACE),
     }
     assert CanvasData.model_validate(data).visuals[0].type == "trax.browse"
     assert asked[3] == (_LATEST, (_USER,))

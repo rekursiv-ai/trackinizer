@@ -1,10 +1,16 @@
-"""Per-user workspaces backed by owned Trackinizer Issues."""
+"""Per-user workspaces backed by owned Trackinizer Issues.
+
+One of a user's workspaces is their default: a chat or a session with no other home
+lands there. It is an ordinary workspace otherwise, and renaming it makes it one.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Literal
+from itertools import count
+from typing import TYPE_CHECKING, Final, Literal
 
+import re
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -22,12 +28,23 @@ from trackinizer.wire.bodies import SubmitIssue
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
 
     from asyncpg import Record
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
     from trackinizer.server.store.core import Store
+
+
+_DEFAULT_LABEL: Final = "scratch"
+"""The label beside ``workspace`` that marks a user's default workspace.
+
+The default was called Scratch, and every one made then carries this label; a new
+name for it would leave each of them unmarked, and a build that still calls the
+default Scratch reads the same mark.
+"""
+
+_UNTITLED: Final = re.compile(r"Untitled workspace(?: ([0-9]+))?")
 
 
 class WorkspaceSummary(BaseModel):
@@ -36,7 +53,12 @@ class WorkspaceSummary(BaseModel):
     id: uuid.UUID
     seq: int
     title: str
-    scratch: bool
+    scratch: bool = Field(
+        description=(
+            "Whether this is your default workspace, where a chat or a session with "
+            "no other home lands. Renaming it makes it an ordinary workspace."
+        ),
+    )
     hidden: bool
     pinned: bool
     last_canvas_id: str | None = Field(
@@ -130,56 +152,109 @@ class SetCanvasWorkspace(BaseModel):
     workspace_id: uuid.UUID
 
 
-class ScratchWorkspaceError(Exception):
-    """Scratch is not a workspace a user may hide."""
-
-
-async def open_scratch(
+async def open_default_workspace(
     engine: DatabaseEngine,
     *,
     store: Store,
     user_id: uuid.UUID,
     email: str,
 ) -> uuid.UUID:
-    """Find or create the user's Scratch Issue.
+    """Find or make the user's default workspace, for something with no other home.
 
     Args:
       engine: Database connection source.
-      store: Store used to submit a Scratch Issue in the locked transaction.
-      user_id: The owner of the users row to lock during creation.
+      store: Store used to submit a new default in the locked transaction.
+      user_id: The owner of the users row to lock while making one.
       email: The user's account and Issue owner.
 
     Returns:
-      issue_id: The Scratch Issue id.
+      issue_id: The default workspace's Issue id.
 
     """
     async with engine.acquire() as conn:
-        row = await _scratch_row(conn, email=email)
+        row = await _default_row(conn, email=email)
     if row is not None:
         return from_plain(row["id"], uuid.UUID)
-
     async with notify_after_commit(), engine.acquire() as conn, tx(conn):
-        user = await conn.fetchrow(
-            "SELECT id FROM users WHERE id = $1 FOR UPDATE",
-            user_id,
+        return await default_workspace_in(
+            conn,
+            store=store,
+            user_id=user_id,
+            email=email,
         )
-        if user is None:
-            raise ValueError("User not found")
-        row = await _scratch_row(conn, email=email)
-        if row is None:
-            return await store.submit_issue(
-                SubmitIssue(
-                    title="Scratch",
-                    account=email,
-                    owner=email,
-                    actor=email,
-                    labels=["workspace", "scratch"],
-                    status="active",
-                ),
-                actor=email,
-                conn=conn,
-            )
+
+
+async def default_workspace_in(
+    conn: Conn,
+    *,
+    store: Store,
+    user_id: uuid.UUID,
+    email: str,
+) -> uuid.UUID:
+    """Find or make the user's default workspace inside the caller's transaction.
+
+    The users row is locked before one is made, so two callers make one. A new one
+    is titled with :func:`next_untitled_title` over the user's own workspaces.
+
+    Args:
+      conn: A connection inside the caller's transaction.
+      store: Store used to submit a new default on ``conn``.
+      user_id: The owner of the users row to lock while making one.
+      email: The user's account and Issue owner.
+
+    Returns:
+      issue_id: The default workspace's Issue id.
+
+    Raises:
+      ValueError: The user is gone.
+
+    """
+    row = await _default_row(conn, email=email)
+    if row is not None:
         return from_plain(row["id"], uuid.UUID)
+    user = await conn.fetchrow("SELECT id FROM users WHERE id = $1 FOR UPDATE", user_id)
+    if user is None:
+        raise ValueError("User not found")
+    row = await _default_row(conn, email=email)
+    if row is not None:
+        return from_plain(row["id"], uuid.UUID)
+    titles = await conn.fetch(
+        "SELECT title FROM inquiries WHERE kind = 'Issue' AND owner = $1 "
+        "AND labels @> ARRAY['workspace']::text[]",
+        email,
+    )
+    return await store.submit_issue(
+        SubmitIssue(
+            title=next_untitled_title(from_plain(r["title"], str) for r in titles),
+            account=email,
+            owner=email,
+            actor=email,
+            labels=["workspace", _DEFAULT_LABEL],
+            status="active",
+        ),
+        actor=email,
+        conn=conn,
+    )
+
+
+def next_untitled_title(titles: Iterable[str]) -> str:
+    """Title a workspace ``Untitled workspace N`` with the lowest N no title holds.
+
+    ``Untitled workspace`` holds 1, so the first is that and the next
+    ``Untitled workspace 2``.
+
+    Args:
+      titles: The titles of the user's own workspaces.
+
+    Returns:
+      title: The lowest free title.
+
+    """
+    taken = {
+        int(match[1] or 1) for title in titles if (match := _UNTITLED.fullmatch(title))
+    }
+    number = next(n for n in count(1) if n not in taken)
+    return "Untitled workspace" if number == 1 else f"Untitled workspace {number}"
 
 
 async def create_workspace(
@@ -258,8 +333,8 @@ async def list_workspaces(
             "AND owner = $1 AND labels @> ARRAY['workspace']::text[]",
             email,
         )
-        scratch = await _scratch_row(conn, email=email)
-    scratch_id = None if scratch is None else from_plain(scratch["id"], uuid.UUID)
+        default = await _default_row(conn, email=email)
+    default_id = None if default is None else from_plain(default["id"], uuid.UUID)
     hidden_ids = set(preference.hidden)
     pinned_ids = set(preference.pinned)
     order_index = {
@@ -268,7 +343,7 @@ async def list_workspaces(
     summaries = [
         _summary(
             row,
-            scratch_id=scratch_id,
+            default_id=default_id,
             hidden_ids=hidden_ids,
             pinned_ids=pinned_ids,
             last_canvas=preference.last_canvas,
@@ -288,7 +363,6 @@ async def list_workspaces(
     found.sort(
         key=lambda item: (
             not item.pinned,
-            not item.scratch,
             order_index.get(str(item.id), len(order_index)),
             -modified_by_id[item.id].timestamp(),
         ),
@@ -309,6 +383,10 @@ async def update_workspace(
 ) -> WorkspaceSummary | None:
     """Update a workspace title or its per-user hidden and pinned flags.
 
+    A title given for the default makes it an ordinary workspace: the canvases it
+    holds by having no workspace are given its id, and it loses its mark, so the next
+    thing with no other home makes a new default.
+
     Args:
       engine: Database connection source.
       store: Store used to record a title change.
@@ -327,11 +405,13 @@ async def update_workspace(
     if not await check_workspace(engine, email=email, workspace_id=workspace_id):
         return None
     async with engine.acquire() as conn, tx(conn):
-        scratch = await _scratch_row(conn, email=email)
-        scratch_id = None if scratch is None else from_plain(scratch["id"], uuid.UUID)
+        default = await _default_row(conn, email=email)
+        promoted = (
+            checked.title is not None
+            and default is not None
+            and from_plain(default["id"], uuid.UUID) == workspace_id
+        )
         workspaces = await _lock_preferences(conn, user_id=user_id)
-        if workspace_id == scratch_id and checked.hidden is True:
-            raise ScratchWorkspaceError
         if checked.hidden is not None:
             workspaces = _toggle_id(
                 workspaces,
@@ -339,7 +419,7 @@ async def update_workspace(
                 workspace_id,
                 checked.hidden,
             )
-        if checked.pinned is not None and workspace_id != scratch_id:
+        if checked.pinned is not None:
             workspaces = _toggle_id(
                 workspaces,
                 "pinned",
@@ -351,8 +431,12 @@ async def update_workspace(
             user_id=user_id,
             workspaces=workspaces,
         )
+        if promoted:
+            await _keep_loose_canvases(conn, user_id=user_id, workspace_id=workspace_id)
     if checked.title is not None:
         await store.set_title(workspace_id, checked.title, actor=email)
+    if promoted:
+        await store.remove_label(workspace_id, _DEFAULT_LABEL, actor=email)
     entries = await list_workspaces(
         engine,
         user_id=user_id,
@@ -418,12 +502,12 @@ async def remember_opened_canvas(
     """Remember a canvas as the one the user opened last in its workspace.
 
     Switching to the workspace opens it again, in any browser. A canvas with no
-    workspace is Scratch's. Only that workspace's entry changes.
+    workspace is the default workspace's. Only that workspace's entry changes.
 
     Args:
       engine: Database connection source.
       user_id: The owner of the canvas and of the workspace preferences.
-      email: The user's Issue owner, whose Scratch holds a canvas with no workspace.
+      email: The user's Issue owner, whose default holds a canvas with no workspace.
       canvas_id: The canvas opened.
 
     Returns:
@@ -441,11 +525,12 @@ async def remember_opened_canvas(
             return False
         workspace_id = from_plain(canvas["workspace_id"], str | None)
         if workspace_id is None:
-            scratch = await _scratch_row(conn, email=email)
-            # Scratch is made when the bar is first listed; until then no bar shows it.
-            if scratch is None:
+            default = await _default_row(conn, email=email)
+            # The default is made when something lands in it; until then no bar
+            # shows a canvas with no workspace.
+            if default is None:
                 return True
-            workspace_id = str(from_plain(scratch["id"], uuid.UUID))
+            workspace_id = str(from_plain(default["id"], uuid.UUID))
         workspaces = await _lock_preferences(conn, user_id=user_id)
         if workspaces.last_canvas.get(workspace_id) != str(canvas_id):
             await _save_preferences(
@@ -521,7 +606,7 @@ async def workspace_info(
             "SELECT id, metadata FROM visual_canvases WHERE user_id = $1 "
             "AND coalesce(metadata->>'workspace_id', $2) = $3 ORDER BY modified_at DESC",
             user_id,
-            str(_uuid_or_none_from_summary(summary)),
+            str(workspace_id) if summary.scratch else None,
             str(workspace_id),
         )
         canvases: list[WorkspaceCanvas] = []
@@ -557,17 +642,61 @@ async def workspace_info(
     )
 
 
-async def _scratch_row(
+async def show_workspace(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+) -> None:
+    """Take a workspace off the user's hidden list, as a canvas made in it lands there.
+
+    One statement, so it holds against a concurrent change to the user's bar.
+
+    Args:
+      conn: The connection to write on.
+      user_id: The owner of the workspace preferences.
+      workspace_id: The workspace a canvas was made in.
+
+    """
+    await conn.execute(
+        "UPDATE users SET preferences = jsonb_set(preferences, '{workspaces,hidden}', "
+        "(preferences->'workspaces'->'hidden') - $2::text) "
+        "WHERE id = $1 AND preferences->'workspaces'->'hidden' ? $2::text",
+        user_id,
+        str(workspace_id),
+    )
+
+
+async def _default_row(
     conn: Conn,
     *,
     email: str,
 ) -> Record | None:
-    """Read the user's first Issue labeled as Scratch and a workspace."""
+    """Read the user's first Issue marked as their default workspace."""
     return await conn.fetchrow(
         "SELECT id FROM inquiries WHERE kind = 'Issue' AND owner = $1 "
-        "AND account = $1 AND labels @> ARRAY['workspace', 'scratch']::text[] "
+        "AND account = $1 AND labels @> ARRAY['workspace', $2::text] "
         "ORDER BY seq LIMIT 1",
         email,
+        _DEFAULT_LABEL,
+    )
+
+
+async def _keep_loose_canvases(
+    conn: Conn,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+) -> None:
+    """Give the user's canvases in no workspace the id of the default they sit in."""
+    # ``modified_at`` stays: nothing a person sees changed, and the canvas changed
+    # last is the one a new tab opens.
+    await conn.execute(
+        "UPDATE visual_canvases SET metadata = metadata || "
+        "jsonb_build_object('workspace_id', $2::text) "
+        "WHERE user_id = $1 AND NOT metadata ? 'workspace_id'",
+        user_id,
+        str(workspace_id),
     )
 
 
@@ -623,7 +752,7 @@ async def _save_preferences(
 def _summary(
     row: Record,
     *,
-    scratch_id: uuid.UUID | None,
+    default_id: uuid.UUID | None,
     hidden_ids: set[str],
     pinned_ids: set[str],
     last_canvas: Mapping[str, str],
@@ -638,9 +767,9 @@ def _summary(
         id=issue_id,
         seq=from_plain(row["seq"], int),
         title=title,
-        scratch=issue_id == scratch_id,
+        scratch=issue_id == default_id,
         hidden=str(issue_id) in hidden_ids,
-        pinned=str(issue_id) in pinned_ids or issue_id == scratch_id,
+        pinned=str(issue_id) in pinned_ids,
         last_canvas_id=last_canvas.get(str(issue_id)),
     )
 
@@ -658,8 +787,3 @@ def _toggle_id(
     if enabled:
         values.append(text_id)
     return preference.model_copy(update={key: values})
-
-
-def _uuid_or_none_from_summary(summary: WorkspaceSummary) -> uuid.UUID | None:
-    """Return the id only when this summary is Scratch."""
-    return summary.id if summary.scratch else None

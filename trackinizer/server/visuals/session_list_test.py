@@ -174,7 +174,7 @@ async def _canvas(
     conversation_id: uuid.UUID | None = None,
     workspace_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
-    """Store a canvas of ``user_id`` holding a chat, in a workspace or Scratch."""
+    """Store a canvas of ``user_id`` holding a chat, in a workspace or in none."""
     canvas_id = uuid.uuid4()
     metadata = {
         "name": f"canvas {canvas_id}",

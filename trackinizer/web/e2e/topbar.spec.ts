@@ -103,7 +103,7 @@ test("on a phone the bar fits the width, its controls each take a press, and Go 
   await page.getByRole("button", { name: "Open app bar" }).click();
   await expect(bar).toHaveClass(/topbar-auto-open/);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-  await bar.getByRole("navigation", { name: "Workspaces" }).getByRole("button", { name: "Scratch" }).click();
+  await bar.getByRole("navigation", { name: "Workspaces" }).getByRole("button", { name: /^Untitled workspace/ }).click();
   await bar.getByRole("button", { name: "Go to" }).click();
   const go = page.getByRole("navigation", { name: "Go to" });
   await go.getByRole("link", { name: /^Activity/ }).click();
