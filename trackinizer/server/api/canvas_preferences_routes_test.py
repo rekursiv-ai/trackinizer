@@ -56,7 +56,7 @@ _DEFAULTS = {
     "terminal_placement": "bottom",
     "home": "graph",
     "chat_provider": "assistant",
-    "chat_tool_calls": False,
+    "chat_tool_calls": True,
 }
 
 

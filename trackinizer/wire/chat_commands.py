@@ -27,11 +27,14 @@ from typing import TYPE_CHECKING, Final
 import re
 
 from trackinizer.lib.agent.catalog import models
+from trackinizer.wire.wire_science_chat import ChatModel, ChatModels
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
+    from trackinizer.lib.agent.catalog.table import ModelTable
+    from trackinizer.lib.agent.types.capability import ModelCapability
     from trackinizer.wire.wire_science_chat import ChatProvider
 
 
@@ -43,6 +46,7 @@ __all__ = [
     "Line",
     "Refused",
     "Settings",
+    "chat_models",
     "classify",
 ]
 
@@ -150,6 +154,9 @@ _EXAMPLE: Final[Mapping[ChatProvider, str]] = {
     "codex": _CODEX["default"].wire_model_id or _CODEX["default"].model_id,
 }
 _EFFORTS: Final = "low, medium, high, xhigh, max"
+_LEVELS: Final = ("low", "medium", "high", "xhigh", "max")
+"""The levels ``/effort`` takes, lowest first: ``Effort`` in ``lib/agent/harness/types.py``,
+which this package's export does not ship."""
 _BARE_MODEL: Final = (
     "Chat can't open the model menu. Type /model <name> to switch, for example "
     "/model {example}. Options: {options}."
@@ -241,6 +248,20 @@ type Classified = Line | Command | Refused | Settings
 """What :func:`classify` makes of a typed text."""
 
 
+def chat_models() -> ChatModels:
+    """Return the models Chat offers each CLI, by the catalog's roles, best first.
+
+    Returns:
+      models: Claude's by family alias and codex's by wire id, as ``/model`` takes
+        each, with the levels ``/effort`` takes with it.
+
+    """
+    return ChatModels(
+        claude=_offered(_CLAUDE, lambda row: row.model_id.rpartition("-")[0]),
+        codex=_offered(_CODEX, lambda row: row.wire_model_id or row.model_id),
+    )
+
+
 def classify(text: str, provider: ChatProvider) -> Classified:
     """Say whether ``text`` typed in a chat answered by ``provider`` is a command.
 
@@ -313,3 +334,25 @@ def _setting(verb: str, *, args: str, provider: ChatProvider) -> Settings | Refu
     if verb == "model":
         return Settings(text=f"/model {args}", model=args, effort=None)
     return Settings(text=f"/effort {args.lower()}", model=None, effort=args.lower())
+
+
+def _offered(
+    table: ModelTable,
+    name: Callable[[ModelCapability], str],
+) -> list[ChatModel]:
+    """Return the models of ``table``'s roles, each once, as ``name`` spells it."""
+    default = name(table["default"])
+    offered: dict[str, ChatModel] = {}
+    for role in _ROLES:
+        row = table[role]
+        family, _, version = row.model_id.rpartition("-")
+        offered.setdefault(
+            name(row),
+            ChatModel(
+                id=name(row),
+                label=f"{family.capitalize()} {version}",
+                efforts=[level for level in _LEVELS if level in row.thinking.effort],
+                default=name(row) == default,
+            ),
+        )
+    return list(offered.values())

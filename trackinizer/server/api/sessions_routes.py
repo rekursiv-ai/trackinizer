@@ -49,7 +49,10 @@ from trackinizer.server.auth import (
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.store.session import RunPlace
-from trackinizer.server.visuals.canvas_store import read_chat_provider
+from trackinizer.server.visuals.canvas_store import (
+    read_chat_provider,
+    read_opens_as,
+)
 from trackinizer.server.visuals.partners import (
     is_assistant_session,
     is_chat_session,
@@ -115,10 +118,11 @@ async def session_start_route(
     key that opened it may, and is 409, leaving it as it was, for a ``staff`` one. A
     session under the id of a science chat that is not ``open`` takes the chat's
     audience instead, so a chat stays ``private`` or ``staff`` whichever key opens
-    its next session. A ``cli_session_id`` of a deleted science chat
-    (``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is titled
-    ``Science chat`` whatever ``title`` says, since every key reads the row and only
-    the chat's members read its lines.
+    its next session; a chat's first session takes ``private`` when the canvas that
+    holds the chat chose it (its ``opens_as``). A ``cli_session_id`` of a deleted
+    science chat (``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is
+    titled ``Science chat`` whatever ``title`` says, since every key reads the row and
+    only the chat's members read its lines.
 
     ``attach`` re-opens that session by its id instead: it is live again if it had
     ended, its ``cli_session_id`` stays, and the run's file becomes its next part. The
@@ -1019,7 +1023,9 @@ async def _is_the_assistants_chat(
 
 # The chat's audience is taken without the hold check ``granted_audience`` makes: a
 # ``private`` or ``staff`` chat was made so by its starter or by a staff read, and the
-# key that opens its next session only joins it.
+# key that opens its next session only joins it. A chat with no session yet is opened
+# by the assistant when it hears the first line, so the access its starter chose on
+# the canvas is read here, before the session is written, never applied after it.
 async def _chat_audience(request: Request, *, cli_session_id: str | None) -> str | None:
     """Return the audience of the chat a session opens under, when it is not open."""
     conversation_id = chat_conversation_id(cli_session_id)
@@ -1031,13 +1037,17 @@ async def _chat_audience(request: Request, *, cli_session_id: str | None) -> str
             assistant=get_assistant(request),
             conversation_id=conversation_id,
         )
-        audience = from_plain(
-            await conn.fetchval(
-                "SELECT agentsession_audience FROM inquiries WHERE id = $1",
-                first,
-            ),
-            str,
-            default=None,
+        audience = (
+            await read_opens_as(conn, conversation_id=conversation_id)
+            if first is None
+            else from_plain(
+                await conn.fetchval(
+                    "SELECT agentsession_audience FROM inquiries WHERE id = $1",
+                    first,
+                ),
+                str,
+                default=None,
+            )
         )
     return None if audience == OPEN else audience
 

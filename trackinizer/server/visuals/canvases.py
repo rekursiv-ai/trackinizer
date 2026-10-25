@@ -47,6 +47,10 @@ NO_MACHINE_REASON: Final = "Connect a machine and install {cli} on it"
 """Why ``claude`` or ``codex`` is unavailable, ``{cli}`` the provider."""
 
 
+type OpensAs = Literal["open", "private"]
+"""The audiences a person may open a new chat into (``wire.audience``)."""
+
+
 class FloatingRect(BaseModel):
     """Bounded desktop coordinates for a floating canvas pane."""
 
@@ -129,6 +133,17 @@ class NewMark(BaseModel):
     """The `#/...` page it is drawn on, when its drawer knows it better than the
     canvas does (a browser's own address); else the canvas's page is used."""
 
+    window: bool = False
+    """Drawn over the whole browser window (Chat and the app's bars included), not
+    the stage: its points are fractions of the window, and it is on no ``tile``."""
+
+    @model_validator(mode="after")
+    def _window_on_no_tile(self) -> Self:
+        if self.window and self.tile is not None:
+            msg = "a box drawn over the window is on no tile"
+            raise ValueError(msg)
+        return self
+
 
 class Mark(NewMark):
     """One red box on a canvas. Its ``page`` is where it was drawn, and where it shows."""
@@ -163,6 +178,10 @@ class CanvasData(BaseModel):
 
     marks_sent: int = Field(default=0, ge=0)
     """The newest ``seq`` already handed to the canvas's agent with a Chat line."""
+
+    opens_as: OpensAs = "open"
+    """The access the canvas's next new chat opens with; it applies only until that
+    chat's first session exists. A cleared canvas keeps it, as the person last chose."""
 
     @model_validator(mode="after")
     def _drop_retired_visuals(self) -> CanvasData:
@@ -634,13 +653,14 @@ class CanvasSummary(BaseModel):
 
 
 class UpdateCanvas(BaseModel):
-    """A canvas's name or visibility and pin flags."""
+    """A canvas's name, its hidden and pinned flags, or its ``opens_as``."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = Field(default=None, max_length=1_000)
     hidden: bool | None = None
     pinned: bool | None = None
+    opens_as: OpensAs | None = None
 
     @field_validator("name")
     @classmethod
@@ -655,9 +675,14 @@ class UpdateCanvas(BaseModel):
 
     @model_validator(mode="after")
     def _requires_update(self) -> Self:
-        """Require at least one name or flag value."""
-        if self.name is None and self.hidden is None and self.pinned is None:
-            raise ValueError("At least one of name, hidden, or pinned is required.")
+        """Require at least one field."""
+        if all(
+            value is None
+            for value in (self.name, self.hidden, self.pinned, self.opens_as)
+        ):
+            raise ValueError(
+                "At least one of name, hidden, pinned, or opens_as is required.",
+            )
         return self
 
 

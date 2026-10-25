@@ -54,6 +54,7 @@ from pydantic import (
 __all__ = [
     "CHATS_PATH",
     "CHAT_ACTOR_PREFIX",
+    "CHAT_MODELS_PATH",
     "CHAT_PARTIAL_CHARS",
     "CHAT_PARTIAL_PATH",
     "CHAT_PARTIAL_TURN_PATH",
@@ -70,6 +71,8 @@ __all__ = [
     "ChatForkAt",
     "ChatHead",
     "ChatLineKind",
+    "ChatModel",
+    "ChatModels",
     "ChatPartial",
     "ChatPartialState",
     "ChatProvider",
@@ -89,6 +92,7 @@ CHAT_PATH: Final = "/api/chats/{conversation_id}"
 CHAT_SHARE_PATH: Final = "/api/chats/{conversation_id}/shares/{email}"
 CHAT_PARTIAL_PATH: Final = "/api/sessions/{session_id}/partial"
 CHAT_PARTIAL_TURN_PATH: Final = "/api/sessions/{session_id}/partial/{turn}"
+CHAT_MODELS_PATH: Final = "/api/chat-models"
 
 CHAT_PARTIAL_CHARS: Final = 16_384
 """The most text a partial carries; the assistant clips what it has written to it."""
@@ -184,6 +188,33 @@ class ChatSettings(BaseModel):
         if self.model is None and self.effort is None:
             raise ValueError("a settings post names a model, an effort, or both")
         return self
+
+
+class ChatModel(BaseModel):
+    """A model Chat offers a ``claude`` or ``codex`` chat, as ``/model`` takes it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    """What ``/model`` takes: claude's family alias, codex's wire id."""
+
+    label: str
+    """Its name on a person's screen, as ``Opus 5.5``."""
+
+    efforts: list[str]
+    """The levels ``/effort`` takes with it, lowest first; empty for a model with none."""
+
+    default: bool = False
+    """The CLI's own default, which a chat runs before any ``/model``."""
+
+
+class ChatModels(BaseModel):
+    """The models Chat offers each CLI provider, best first; the assistant takes none."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    claude: list[ChatModel]
+    codex: list[ChatModel]
 
 
 def chat_session_id(conversation_id: uuid.UUID) -> str:

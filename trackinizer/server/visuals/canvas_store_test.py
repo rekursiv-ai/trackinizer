@@ -292,6 +292,7 @@ async def test_a_session_canvas_stores_its_attachment_and_json_state() -> None:
             "marks": [],
             "marks_seq": 0,
             "marks_sent": 0,
+            "opens_as": "open",
         },
     )
 
@@ -648,6 +649,48 @@ async def test_a_cli_canvas_gets_a_chat_and_a_session_before_any_line(
         "chat": f"chat:{read.conversation_id}",
         "key": key,
     }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_cli_chats_first_session_opens_with_its_canvas_opens_as(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """A canvas that chose ``private`` opens its chat private; one that did not, open."""
+    await _seed(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    _ = await _owner_key(pglite_engine)
+    await _set_provider(pglite_engine, "claude")
+    chosen = uuid.uuid4()
+    async with pglite_engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO visual_canvases (id, user_id, metadata, state) "
+            "VALUES ($1, $2, $3, $4)",
+            chosen,
+            _USER,
+            {"name": "unnamed-canvas#2"},
+            {"visuals": [], "provider": "claude", "opens_as": "private"},
+        )
+
+    opened = {
+        canvas_id: await open_chat_session(
+            store,
+            user_id=_USER,
+            canvas_id=canvas_id,
+            assistant=None,
+        )
+        for canvas_id in (_CANVAS, chosen)
+    }
+
+    async with pglite_engine.acquire() as conn:
+        audiences = {
+            canvas_id: await conn.fetchval(
+                "SELECT agentsession_audience FROM inquiries WHERE id = $1",
+                session_id,
+            )
+            for canvas_id, session_id in opened.items()
+        }
+    assert audiences == {_CANVAS: OPEN, chosen: PRIVATE}
 
 
 @pytest.mark.db_pglite

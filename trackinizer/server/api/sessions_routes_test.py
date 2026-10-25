@@ -2101,6 +2101,45 @@ async def test_a_session_under_a_staff_chat_id_opens_staff(
 
 
 @pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_new_chats_first_session_opens_as_its_canvas_chose(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The assistant opens a new chat as the canvas of its first line chose."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    # The assistant's service session, live, so a first line is heard.
+    _ = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
+    opened: dict[str | None, object] = {}
+    for choice in (None, "private"):
+        canvas_id = await open_canvas(client, new=True)
+        if choice is not None:
+            chosen = await client.patch(
+                f"/api/canvases/{canvas_id}",
+                json={"opens_as": choice},
+            )
+            assert chosen.status_code == 200, chosen.text
+        conversation_id = conversation_of(
+            await send_chat(client, canvas_id=canvas_id, text="hello"),
+        )
+        act_as_assistant("writer")
+        started = await client.post(
+            "/api/sessions/start",
+            json={
+                "cli": "codex",
+                "actor": f"chat-{conversation_id.hex[:12]}",
+                "cli_session_id": chat_session_id(conversation_id),
+                "account": TEST_USER_EMAIL,
+            },
+        )
+        assert started.status_code == 201, started.text
+        opened[choice] = json_loads(started.content, dict[str, object])["audience"]
+
+    assert opened == {None: "open", "private": "private"}
+
+
+@pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_session_starts_on_an_app_built_by_hand_with_no_hub_or_config(
     pglite_engine: PGliteEngine,

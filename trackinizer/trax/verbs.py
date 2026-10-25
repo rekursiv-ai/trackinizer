@@ -3243,8 +3243,9 @@ def _print_marks(state: Mapping[str, object]) -> None:
         covers = from_plain(mark.get("covers"), dict[str, list[str]], default={})
         named = [labels.get(each, each) for each in covers.get("records", [])]
         named += covers.get("instances", [])
+        over = " over the window" if mark.get("window") is True else ""
         echo(
-            f"  box {mark.get('id')} by {mark.get('author')} "
+            f"  box {mark.get('id')} by {mark.get('author')}{over} "
             f"on {mark.get('page') or 'no page'} covers: {', '.join(named) or 'nothing'}",
         )
 

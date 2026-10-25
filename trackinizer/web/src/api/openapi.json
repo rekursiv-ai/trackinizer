@@ -1125,6 +1125,11 @@
             "minimum": 0.0,
             "title": "Top",
             "type": "number"
+          },
+          "window": {
+            "default": false,
+            "title": "Window",
+            "type": "boolean"
           }
         },
         "required": [
@@ -1595,6 +1600,10 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "opens_as": {
+            "$ref": "#/components/schemas/OpensAs",
+            "default": "open"
           },
           "page": {
             "anyOf": [
@@ -2331,6 +2340,65 @@
           "interrupt"
         ],
         "type": "string"
+      },
+      "ChatModel": {
+        "additionalProperties": false,
+        "description": "A model Chat offers a ``claude`` or ``codex`` chat, as ``/model`` takes it.",
+        "properties": {
+          "default": {
+            "default": false,
+            "title": "Default",
+            "type": "boolean"
+          },
+          "efforts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Efforts",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "efforts"
+        ],
+        "title": "ChatModel",
+        "type": "object"
+      },
+      "ChatModels": {
+        "additionalProperties": false,
+        "description": "The models Chat offers each CLI provider, best first; the assistant takes none.",
+        "properties": {
+          "claude": {
+            "items": {
+              "$ref": "#/components/schemas/ChatModel"
+            },
+            "title": "Claude",
+            "type": "array"
+          },
+          "codex": {
+            "items": {
+              "$ref": "#/components/schemas/ChatModel"
+            },
+            "title": "Codex",
+            "type": "array"
+          }
+        },
+        "required": [
+          "claude",
+          "codex"
+        ],
+        "title": "ChatModels",
+        "type": "object"
       },
       "ChatPartial": {
         "additionalProperties": false,
@@ -6804,6 +6872,11 @@
               }
             ],
             "title": "Tile"
+          },
+          "window": {
+            "default": false,
+            "title": "Window",
+            "type": "boolean"
           }
         },
         "required": [
@@ -7344,6 +7417,11 @@
               }
             ],
             "title": "Tile"
+          },
+          "window": {
+            "default": false,
+            "title": "Window",
+            "type": "boolean"
           }
         },
         "required": [
@@ -7462,6 +7540,13 @@
         ],
         "title": "OpenTerminal",
         "type": "object"
+      },
+      "OpensAs": {
+        "enum": [
+          "open",
+          "private"
+        ],
+        "type": "string"
       },
       "Operation": {
         "discriminator": {
@@ -7783,8 +7868,8 @@
             "x-setting": true
           },
           "chat_tool_calls": {
-            "default": false,
-            "description": "Show each tool call an agent makes in Chat as a card between the lines: what it ran, and what came back.",
+            "default": true,
+            "description": "Show the tool calls an agent makes in Chat between the lines, each run of them folded into one line that opens on what it ran and what came back.",
             "title": "Chat Tool Calls",
             "type": "boolean",
             "x-setting": true
@@ -12371,7 +12456,7 @@
       },
       "UpdateCanvas": {
         "additionalProperties": false,
-        "description": "A canvas's name or visibility and pin flags.",
+        "description": "A canvas's name, its hidden and pinned flags, or its ``opens_as``.",
         "properties": {
           "hidden": {
             "anyOf": [
@@ -12395,6 +12480,16 @@
               }
             ],
             "title": "Name"
+          },
+          "opens_as": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpensAs"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "pinned": {
             "anyOf": [
@@ -15088,7 +15183,7 @@
         "summary": "Read Canvas Route"
       },
       "patch": {
-        "description": "Rename or change flags on one of the principal's canvases.\n\nArgs:\n  canvas_id: The canvas.\n  body: A new name and/or the hidden and pinned flags.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  state: The updated canvas.",
+        "description": "Rename, change flags on, or set ``opens_as`` of one of the principal's canvases.\n\n``opens_as`` is the access, ``open`` or ``private``, that the canvas's next new\nchat's first session opens with; a chat whose first session exists keeps its own.\nNo field changes the revision.\n\nArgs:\n  canvas_id: The canvas.\n  body: A new name, the hidden and pinned flags, and ``opens_as``; any of them.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  state: The updated canvas.",
         "operationId": "rename_canvas_route_api_canvases__canvas_id__patch",
         "parameters": [
           {
@@ -15906,6 +16001,25 @@
           }
         },
         "summary": "Get Change Route"
+      }
+    },
+    "/api/chat-models": {
+      "get": {
+        "description": "List the models Chat's picker offers a ``claude`` or ``codex`` chat.\n\nA pick posts ``/model`` or ``/effort`` as a ``settings`` line, which the chat's\nrun applies; the assistant takes neither.\n\nReturns:\n  models: Each CLI's models, best first, with the effort levels each takes.",
+        "operationId": "chat_models_route_api_chat_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatModels"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Chat Models Route"
       }
     },
     "/api/chats": {
@@ -22313,7 +22427,7 @@
     },
     "/api/sessions/start": {
       "post": {
-        "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so the run\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``, or ``private`` when ``private`` asks; a pin the caller no longer holds\nis 403 ``audience_not_held``, and so is ``private`` under a pin to ``staff``. A\nresume asked to be ``private`` hides the ``open`` session it re-attaches, as the\nkey that opened it may, and is 409, leaving it as it was, for a ``staff`` one. A\nsession under the id of a science chat that is not ``open`` takes the chat's\naudience instead, so a chat stays ``private`` or ``staff`` whichever key opens\nits next session. A ``cli_session_id`` of a deleted science chat\n(``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is titled\n``Science chat`` whatever ``title`` says, since every key reads the row and only\nthe chat's members read its lines.\n\n``attach`` re-opens that session by its id instead: it is live again if it had\nended, its ``cli_session_id`` stays, and the run's file becomes its next part. The\nresponse names it as a fresh start's would. A caller who may not write the\nsession is 403, and so is one a science chat takes no run from: only its opening\nkey, the assistant's or its starter's attach to a chat. An unknown id is 404.\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, attach, started, rooms,\n    account, idempotency_key, private).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, granted actor name and\n    audience.",
+        "description": "Open a session: mint an ``AgentSession`` row and return its server id.\n\nThe session ``owner`` doubles as the routing name (``--as``). It is made\nunique among live sessions (suffix on collision); the granted name is the\nowner stamped on the row and is echoed in the response so the run\nadopts whatever it was given.\n\nThe session opens into the audience the caller's key is pinned to, else\n``open``, or ``private`` when ``private`` asks; a pin the caller no longer holds\nis 403 ``audience_not_held``, and so is ``private`` under a pin to ``staff``. A\nresume asked to be ``private`` hides the ``open`` session it re-attaches, as the\nkey that opened it may, and is 409, leaving it as it was, for a ``staff`` one. A\nsession under the id of a science chat that is not ``open`` takes the chat's\naudience instead, so a chat stays ``private`` or ``staff`` whichever key opens\nits next session; a chat's first session takes ``private`` when the canvas that\nholds the chat chose it (its ``opens_as``). A ``cli_session_id`` of a deleted\nscience chat (``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is\ntitled ``Science chat`` whatever ``title`` says, since every key reads the row and\nonly the chat's members read its lines.\n\n``attach`` re-opens that session by its id instead: it is live again if it had\nended, its ``cli_session_id`` stays, and the run's file becomes its next part. The\nresponse names it as a fresh start's would. A caller who may not write the\nsession is 403, and so is one a science chat takes no run from: only its opening\nkey, the assistant's or its starter's attach to a chat. An unknown id is 404.\n\nArgs:\n  body: Session metadata (title, cli, cli_session_id, attach, started, rooms,\n    account, idempotency_key, private).\n  request: Starlette request object.\n  identity: Authenticated user (email, api_key_id, role).\n\nReturns:\n  response: SessionStartResponse with session id, next event seq (0 for\n    new, or max(seq)+1 for resumed), cli_session_id, granted actor name and\n    audience.",
         "operationId": "session_start_route_api_sessions_start_post",
         "requestBody": {
           "content": {

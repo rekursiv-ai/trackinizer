@@ -326,10 +326,10 @@ class Preferences(_Strict):
         json_schema_extra=SETTING,
     )
     chat_tool_calls: bool = Field(
-        default=False,
+        default=True,
         description=(
-            "Show each tool call an agent makes in Chat as a card between the lines: "
-            "what it ran, and what came back."
+            "Show the tool calls an agent makes in Chat between the lines, each run of "
+            "them folded into one line that opens on what it ran and what came back."
         ),
         json_schema_extra=SETTING,
     )

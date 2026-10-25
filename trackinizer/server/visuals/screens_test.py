@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 
 import uuid
 
+from pydantic import ValidationError
+
 import pytest
 
 from trackinizer.server.visuals.canvases import (
@@ -130,6 +132,17 @@ def test_a_pinned_mark_names_its_tile_and_one_whose_tile_left_is_dropped() -> No
     assert [(m.id, m.tile) for m in wired] == [(loose.id, None), (pinned.id, graph)]
     assert (wired[1].left, wired[1].top) == (0.2, 0.1)
     assert (wired[1].right, wired[1].bottom) == (0.6, 0.5)
+
+
+def test_a_box_over_the_window_says_so_and_sits_on_no_tile() -> None:
+    window = Mark.model_validate({**_mark(tile=None).model_dump(), "window": True})
+
+    [wired] = wire_marks([window], records={}, visuals=[])
+
+    assert (wired.window, wired.tile) == (True, None)
+    assert not wire_marks([_mark(tile=None)], records={}, visuals=[])[0].window
+    with pytest.raises(ValidationError, match="over the window is on no tile"):
+        Mark.model_validate({**_mark(tile=uuid.uuid4()).model_dump(), "window": True})
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@
         "app_bar_width": 220,
         "chat_provider": "assistant",
         "chat_side": "left",
-        "chat_tool_calls": false,
+        "chat_tool_calls": true,
         "collapsed": [],
         "console_views": [],
         "create_draft": null,

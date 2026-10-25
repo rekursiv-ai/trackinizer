@@ -51,6 +51,7 @@ from trackinizer.server.visuals.canvas_store import (
     rename_canvas,
     set_canvas_flags,
     set_canvas_layout,
+    set_canvas_opens_as,
     set_canvas_page,
     set_canvas_workspace,
     set_session_campaign,
@@ -523,11 +524,15 @@ async def rename_canvas_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> CanvasState:
-    """Rename or change flags on one of the principal's canvases.
+    """Rename, change flags on, or set ``opens_as`` of one of the principal's canvases.
+
+    ``opens_as`` is the access, ``open`` or ``private``, that the canvas's next new
+    chat's first session opens with; a chat whose first session exists keeps its own.
+    No field changes the revision.
 
     Args:
       canvas_id: The canvas.
-      body: A new name and/or the hidden and pinned flags.
+      body: A new name, the hidden and pinned flags, and ``opens_as``; any of them.
       request: Request carrying the database engine.
       identity: Authenticated browser account, which must own the canvas.
 
@@ -563,6 +568,15 @@ async def rename_canvas_route(
             )
             if state is None:
                 raise HTTPException(status_code=404, detail="Canvas not found")
+        if body.opens_as is not None:
+            state = await set_canvas_opens_as(
+                engine_of(request),
+                user_id=identity.user_id,
+                canvas_id=canvas_id,
+                opens_as=body.opens_as,
+                inbound=inbound,
+                assistant=assistant,
+            )
         if state is None:
             raise HTTPException(status_code=404, detail="Canvas not found")
     except CanvasNameTakenError as error:

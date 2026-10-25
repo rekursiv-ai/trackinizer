@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal
 
 import pytest
 
@@ -14,6 +14,7 @@ from trackinizer.wire.chat_commands import (
     Line,
     Refused,
     Settings,
+    chat_models,
     classify,
 )
 
@@ -399,6 +400,37 @@ def test_a_bare_model_lists_each_model_once_though_two_roles_name_it(
     options = refused.reason.partition("Options: ")[2].rstrip(".").split(", ")
 
     assert len(options) == len(set(options))
+
+
+@pytest.mark.parametrize(
+    ("provider", "vendor"),
+    [("claude", "anthropic"), ("codex", "openai")],
+)
+def test_the_picker_offers_what_model_takes_with_each_models_efforts(
+    provider: ChatProvider,
+    vendor: Literal["anthropic", "openai"],
+) -> None:
+    listed = chat_models()
+    offered = listed.claude if provider == "claude" else listed.codex
+    table = models(vendor)
+
+    assert [model.id for model in offered if model.default] == [
+        model.id for model in offered if table[model.id] == table["default"]
+    ]
+    assert len({model.id for model in offered}) == len(offered)
+    for model in offered:
+        row = table[model.id]
+        assert classify(f"/model {model.id}", provider) == Settings(
+            text=f"/model {model.id}",
+            model=model.id,
+            effort=None,
+        )
+        assert model.label == "{} {}".format(*row.model_id.rsplit("-", 1)).capitalize()
+        assert model.efforts == [
+            level
+            for level in ("low", "medium", "high", "xhigh", "max")
+            if level in row.thinking.effort
+        ]
 
 
 if __name__ == "__main__":
