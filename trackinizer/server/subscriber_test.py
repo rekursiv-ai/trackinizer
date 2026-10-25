@@ -76,10 +76,12 @@ class _StubStore:
         changes: list[Change],
         live_sessions: dict[str, list[UUID]],
         audiences: dict[UUID, str] | None = None,
+        chats: frozenset[UUID] = frozenset(),
     ) -> None:
         self.changes = list(changes)
         self._live = live_sessions
         self._audiences = audiences or {}
+        self._chats = chats
         self.query_count = 0
 
     async def what_changed_for_anyone(
@@ -108,11 +110,15 @@ class _StubStore:
         del room
         return [(sid, ()) for sid in self._live.get(actor, [])]
 
-    async def read_session_audiences(
+    async def read_push_audiences(
         self,
         session_ids: Sequence[UUID],
     ) -> dict[UUID, str | None]:
-        return {sid: self._audiences.get(sid, OPEN) for sid in session_ids}
+        return {
+            sid: self._audiences.get(sid, OPEN)
+            for sid in session_ids
+            if sid not in self._chats
+        }
 
 
 async def _run_sweep_until(
@@ -204,6 +210,30 @@ class TestPushChanges:
         assert str(change.subject_id) in hidden
         assert "mallory" in shown
         assert "ignore prior" in shown
+
+    @pytest.mark.asyncio
+    async def test_a_chats_session_gets_no_push(self) -> None:
+        """A session the store reads no push audience for, a science chat's, is skipped.
+
+        Its run types a push into the chat's starter's CLI, so a writer who
+        subscribes the chat's routing name to a row would speak to it.
+        """
+        chat, public = new_uuid(), new_uuid()
+        change = _change(subscribers=("chat-0123456789ab", "pub"))
+        store = _StubStore(
+            changes=[change],
+            live_sessions={"chat-0123456789ab": [chat], "pub": [public]},
+            chats=frozenset({chat}),
+        )
+        inbound = InboundQueue()
+
+        await _run_sweep_until(
+            store,
+            inbound=inbound,
+            done=lambda: inbound.pending(public) > 0,
+        )
+
+        assert (inbound.pending(chat), inbound.pending(public)) == (0, 1)
 
     @pytest.mark.asyncio
     async def test_delivery_is_logged_for_diagnosis(

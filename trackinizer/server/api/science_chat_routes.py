@@ -79,11 +79,14 @@ async def post_chat_line_route(
 ) -> ChatSent:
     """Post a line to a science chat, or start one, and queue it for the assistant.
 
-    Whoever reads a chat posts into it: its starter, each person it is shared with
-    and anyone the server's ``TRACKINIZER_CHAT_ORGS`` lets in, holding its audience;
-    a viewer may not, and any other writer is refused with 403 ``chat_not_shared``,
-    whether the chat is named by ``conversation_id`` or by the ``Idempotency-Key`` of
-    a post that names none. A reader forks a chat from one of its lines (``fork``
+    A chat's starter, each person it is shared with and, when the server's
+    ``TRACKINIZER_CHAT_ORGS`` is ``domain``, the starter's organisation post into it,
+    holding its audience; a viewer may not. Anyone else, everyone else a ``single``
+    server lets read it included, is refused with 403 ``chat_not_shared`` and nothing
+    is queued, whatever the post's ``kind``, and whether the chat is named by
+    ``conversation_id`` or by the ``Idempotency-Key`` of a post that names none: a
+    line goes to the starter's own run, under its sender's name. A reader forks a
+    chat from one of its lines (``fork``
     names it); a fork from a line of a chat the poster does not read is 422, since it
     would copy lines they may not read, a fork of a ``private`` or ``staff`` chat is
     409 ``chat_fork_closed``, since its copies would not keep the audience, a fork

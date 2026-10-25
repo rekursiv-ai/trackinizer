@@ -717,23 +717,30 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             for row in rows
         ]
 
-    async def read_session_audiences(
+    async def read_push_audiences(
         self,
         session_ids: Sequence[UUID],
     ) -> dict[UUID, str | None]:
-        """Read the audience of each session in ``session_ids``.
+        """Read the audience of each of ``session_ids`` that a change push reaches.
+
+        A science chat's session takes no push. A chat takes a line only through
+        ``POST /api/chats``, which holds it to its starter and the people they share
+        it with, and its run types a push into the starter's CLI: any writer may
+        subscribe a chat's routing name to a row, and would speak to that run.
 
         Args:
           session_ids: Session ids to look up.
 
         Returns:
-          audiences: The audience by id. An id that is no session is absent.
+          audiences: The audience by id. An id that is no session, or a science
+            chat's, is absent.
 
         """
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, agentsession_audience FROM inquiries "
-                "WHERE kind = 'AgentSession' AND id = ANY($1::uuid[])",
+                "WHERE kind = 'AgentSession' AND id = ANY($1::uuid[]) "
+                "AND COALESCE(agentsession_cli_session_id, '') NOT LIKE 'chat:%'",
                 list(session_ids),
             )
         return {

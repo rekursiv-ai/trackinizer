@@ -31,7 +31,11 @@ from trackinizer.server.audience import (
 from trackinizer.server.store.deleted_chats import chat_was_deleted
 from trackinizer.server.store.session_ir import PartPrefix
 from trackinizer.server.values import vetted_sql
-from trackinizer.server.visuals.chat_forks import delete_refusal, may_share
+from trackinizer.server.visuals.chat_forks import (
+    delete_refusal,
+    may_continue,
+    may_share,
+)
 from trackinizer.types.errors import ChatDeletedError
 from trackinizer.wire.audience import OPEN, PRIVATE
 from trackinizer.wire.wire_science_chat import (
@@ -236,8 +240,8 @@ async def read_head(
     Returns:
       head: The conversation's live session, else its newest, with its starter, how
         often it was forked, what it was forked from, its audience, who it is shared
-        with, and whether the caller reads it, may hide, share or delete it; None
-        until its partner has opened it.
+        with, and whether the caller reads it, may post into, hide, share or delete
+        it; None until its partner has opened it.
 
     Raises:
       ChatDeletedError: The conversation was deleted.
@@ -283,6 +287,13 @@ async def read_head(
         forks=from_plain(forks, int, default=0),
         forked_from=None if origin is None else chat_conversation_id(str(origin)),
         forks_on_typing=not reads,
+        may_post=reads
+        and may_continue(
+            caller.email,
+            starter=found.account,
+            shared_with=shares,
+            org=reader.org,
+        ),
         audience=found.audience,
         may_hide=may_hide(
             caller.email,
@@ -629,31 +640,46 @@ async def may_post(
 ) -> bool:
     """Say whether ``poster`` may add a line to a conversation, by Chat or by a relay.
 
-    Posting is reading: a person posts into the chats whose session that began them
-    they read. A conversation no session carries yet is its first line's sender's.
+    A chat's starter, the people they share it with and, on a ``domain`` server, the
+    starter's organisation post into it while they read the session that began it
+    (:func:`~trackinizer.server.visuals.chat_forks.may_continue`); any other
+    reader forks it. A conversation no session carries yet is its first line's
+    sender's.
 
     Args:
       conn: A database connection.
       poster: The attested email of the person whose line it is.
-      reader: The poster, as the transcript test reads them.
+      reader: The poster, as the transcript test reads them, whose organisation
+        is theirs.
       conversation_id: The conversation.
       assistant: The configured assistant, if any.
       inbound: Session message queue, which knows the sender of a first line.
 
     Returns:
-      allowed: True when the poster reads the session that began the conversation,
-        or none has and no one else sent its first line.
+      allowed: True when the poster continues the conversation by
+        :func:`~trackinizer.server.visuals.chat_forks.may_continue` and reads
+        the session that began it; or when none has and no one else sent its first
+        line.
 
     """
-    first = await read_first_session(
-        conn,
-        assistant=assistant,
-        conversation_id=conversation_id,
+    began = await conn.fetchrow(
+        "SELECT began.id, began.account " + _FIRST_SESSION,
+        chat_session_id(conversation_id),
+        None if assistant is None else assistant.email,
     )
-    if first is None:
+    if began is None:
         sender = inbound.sender_of(conversation_id)
         return sender is None or sender.lower() == poster.lower()
-    return await reads_session(conn, reader=reader, session_id=first)
+    return may_continue(
+        poster,
+        starter=from_plain(began["account"], str),
+        shared_with=await read_shares(conn, conversation_id=conversation_id),
+        org=reader.org,
+    ) and await reads_session(
+        conn,
+        reader=reader,
+        session_id=from_plain(began["id"], uuid.UUID),
+    )
 
 
 async def science_chat_exists_at(

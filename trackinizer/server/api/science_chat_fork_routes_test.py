@@ -239,7 +239,11 @@ async def test_typing_in_a_chat_of_my_organisation_posts_into_it(
     assert heard["source"] == OTHER_EMAIL
     assert (await _heard(client, session_id=chat.service)) == []
     head = await _head(client, conversation=chat.conversation, email=OTHER_EMAIL)
-    assert (head["forks_on_typing"], head["forks"]) == (False, 0)
+    assert (head["forks_on_typing"], head["may_post"], head["forks"]) == (
+        False,
+        True,
+        0,
+    )
 
 
 @pytest.mark.db_pglite
@@ -441,10 +445,11 @@ async def test_consumer_domains_are_no_organisation_but_my_own_chat_stays_mine(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_single_organisation_server_never_makes_typing_a_fork(
+async def test_a_single_organisation_server_lets_every_person_fork_a_chat_not_post(
     pglite_route_client: _Client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Everyone reads every open chat there, which lets them fork it, not type in it."""
     monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
@@ -456,10 +461,16 @@ async def test_a_single_organisation_server_never_makes_typing_a_fork(
         text="jan joins in",
         conversation_id=chat.conversation,
     )
+    forked = await _fork(
+        client,
+        {"canvas_id": str(canvas_id), "text": "jan goes on alone"},
+        chat.at(1),
+    )
 
-    assert posted.status_code == 200
+    assert (posted.status_code, forked) == (403, 200)
+    assert (await _heard(client, session_id=chat.session)) == []
     head = await _head(client, conversation=chat.conversation, email=JAN)
-    assert head["forks_on_typing"] is False
+    assert (head["forks_on_typing"], head["may_post"]) == (False, False)
 
 
 @pytest.mark.db_pglite

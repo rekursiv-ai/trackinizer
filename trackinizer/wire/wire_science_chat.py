@@ -412,6 +412,12 @@ class ChatHead(BaseModel):
     people it is shared with) or ``staff`` (its members who hold ``staff``, once its
     assistant has read a staff session for one of them)."""
 
+    may_post: bool
+    """Whether the caller posts into the chat: its starter, a person it is shared
+    with or, on a ``domain`` server, a member of the starter's organisation, who
+    reads it. Any other reader's line is refused with 403 ``chat_not_shared``, and
+    they fork an ``open`` chat to continue instead."""
+
     may_hide: bool
     """Whether the caller may make the chat ``private`` or ``open`` again: its starter,
     while it is not ``staff``."""

@@ -137,13 +137,14 @@ async def test_session_audiences_keep_nulls_and_omit_unknown_sessions() -> None:
     )
     store, _ = make_store(conn)
 
-    assert await store.read_session_audiences([first, second, unknown]) == {
+    assert await store.read_push_audiences([first, second, unknown]) == {
         first: "open",
         second: None,
     }
     conn.fetch.assert_awaited_once_with(
         "SELECT id, agentsession_audience FROM inquiries "
-        "WHERE kind = 'AgentSession' AND id = ANY($1::uuid[])",
+        "WHERE kind = 'AgentSession' AND id = ANY($1::uuid[]) "
+        "AND COALESCE(agentsession_cli_session_id, '') NOT LIKE 'chat:%'",
         [first, second, unknown],
     )
 

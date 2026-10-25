@@ -156,7 +156,7 @@ afterEach(async () => {
 
 function head(conversation: string, account = ME, extra: Partial<ChatHead> = {}): ChatHead {
   return { conversation_id: conversation, session_id: `s-${conversation}`, title: "t", account, live: true, forks: 0, forked_from: null,
-    forks_on_typing: false, audience: "open", may_hide: false, shared_with: [], may_share: false, may_delete: false, ...extra };
+    forks_on_typing: false, audience: "open", may_post: true, may_hide: false, shared_with: [], may_share: false, may_delete: false, ...extra };
 }
 function record(idx: number, kind: string, payload: { [field: string]: unknown }): SessionRecord {
   return { idx, kind, payload, text: "", context_id: null, timestamp: null, model: null, ciphertext: null } as unknown as SessionRecord;

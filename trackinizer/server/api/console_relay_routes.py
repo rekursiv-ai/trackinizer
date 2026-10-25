@@ -34,7 +34,8 @@ async def console_relay_route(
     accepted it. The partner records it in the canvas's chat as a line of the
     owner's that starts with ``→ `` and answers nothing, and reads it in its next
     prompt. A retry under the same key queues nothing again. A canvas without a
-    chat, one whose chat the owner may not post into (one they do not read), or whose
+    chat, one whose chat the owner may not post into (one they neither started nor
+    were shared, or do not read), or whose
     partner is not running or has too many unread lines, answers
     ``delivered: false``: the agents are not told otherwise, so it is no error.
 

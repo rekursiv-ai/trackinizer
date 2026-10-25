@@ -117,8 +117,11 @@ server: everyone signed in, or the starter's organization, or only the starter
 and the people they share it with. A private chat is read only by its starter
 and the people they share it with. Do not type secrets into Chat.
 
-Anyone who reads a chat joins it by typing in it. **Fork from here**, on an
-answer in a public chat, starts a new chat holding the lines up to that answer.
+A chat's starter and the people they share it with post in it, and so does the
+starter's organization on a server that groups people by organization; their lines
+go to the starter's own agent. Anyone else who reads a public chat cannot post in
+it: what they type starts their own copy, a fork. **Fork from here**, on an answer
+in a public chat, starts a new chat holding the lines up to that answer.
 
 ### Talking to the assistant
 

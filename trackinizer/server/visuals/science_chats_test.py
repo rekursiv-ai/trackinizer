@@ -10,7 +10,7 @@ import uuid
 
 import pytest
 
-from trackinizer.conftest import FakeEngine, make_conn
+from trackinizer.conftest import FakeEngine, make_conn, set_field_row
 from trackinizer.server.audience import NOBODY, SessionReader, visible_sql
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.server.config import Assistant
@@ -60,7 +60,6 @@ _FIRST_SESSION: Final = (
     "ORDER BY began.created, began.id LIMIT 1"
 )
 _STARTER_SQL: Final = "SELECT began.account " + _FIRST_SESSION
-_BEGINNING_SQL: Final = "SELECT began.id " + _FIRST_SESSION
 _TOMBSTONE_SQL: Final = (
     "SELECT EXISTS (SELECT 1 FROM science_chat_tombstones WHERE conversation_id = $1)"
 )
@@ -386,6 +385,7 @@ def test_a_head_names_its_session_forks_and_origin() -> None:
         "forked_from": _ORIGIN,
         "forks_on_typing": False,
         "audience": "open",
+        "may_post": False,
         "may_hide": False,
         "shared_with": [],
         "may_share": False,
@@ -451,13 +451,17 @@ def test_the_starter_grants_shares_and_an_admin_sees_them_only_to_stop_them() ->
         _head_of("root@example.com", role="admin", shares=shares, reads=False),
         _head_of("bob@gmail.com", shares=shares),
         _head_of("jan@other.org", shares=shares, reads=False),
+        _head_of("olu@other.org", shares=shares),
     ]
 
-    assert [(h.shared_with, h.may_share, h.forks_on_typing) for h in heads] == [
-        (list(shares), True, False),
-        (list(shares), False, True),
-        ([], False, False),
-        ([], False, True),
+    assert [
+        (h.shared_with, h.may_share, h.forks_on_typing, h.may_post) for h in heads
+    ] == [
+        (list(shares), True, False, True),
+        (list(shares), False, True, False),
+        ([], False, False, True),
+        ([], False, True, False),
+        ([], False, False, False),
     ]
 
 
@@ -526,31 +530,55 @@ def test_a_new_lines_starter_is_the_databases_before_the_key_maps() -> None:
 
 
 @pytest.mark.parametrize(
-    ("answers", "sender", "allowed"),
+    ("began", "org", "reads", "sender", "allowed"),
     [
-        ([None], None, True),
-        ([None], "Bob@Example.com", True),
-        ([None], "ada@example.com", False),
-        ([_SESSION, True], "ada@example.com", True),
-        ([_SESSION, False], None, False),
+        (None, None, [], None, True),
+        (None, None, [], "Bob@Example.com", True),
+        (None, None, [], "ada@example.com", False),
+        (("Bob@Example.com", ()), None, [True], "ada@example.com", True),
+        (("ada@example.com", ("bob@example.com",)), None, [True], None, True),
+        (("ada@example.com", ()), "example.com", [True], None, True),
+        (("ada@example.com", ()), None, [], None, False),
+        (("bob@example.com", ()), None, [False], None, False),
     ],
-    ids=["nobody-began-it", "its-first-sender", "another-first-sender", "reads", "not"],
+    ids=[
+        "nobody-began-it",
+        "its-first-sender",
+        "another-first-sender",
+        "its-starter",
+        "shared-with-them",
+        "the-starters-organisation",
+        "a-reader-it-is-not-shared-with",
+        "unread",
+    ],
 )
-def test_a_post_is_a_read_of_the_session_that_began_the_chat(
-    answers: list[object],
+def test_a_post_is_its_starters_or_a_shares_who_reads_the_chat(
+    began: tuple[str, tuple[str, ...]] | None,
+    org: str | None,
+    reads: list[bool],
     sender: str | None,
     allowed: bool,
 ) -> None:
-    """Whoever reads the chat's first session posts; before one, its first sender."""
+    """The starter, its shares and a domain server's organisation post while they read.
+
+    ``began`` names the chat's starter and its shares; before a session carries the
+    chat, its first line's sender posts.
+    """
+    starter, shares = began or (None, ())
     conn: AsyncMock = make_conn()
-    conn.fetchval.side_effect = answers
+    set_field_row(
+        conn,
+        None if starter is None else {"id": _SESSION, "account": starter},
+    )
+    conn.fetch.return_value = [{"email": email} for email in shares]
+    conn.fetchval.side_effect = reads
     inbound = InboundQueue()
     if sender is not None:
         _ = inbound.send_once(
             _CONVERSATION,
             [(_SESSION, Inbound(text="first", source=sender))],
         )
-    reader = SessionReader(email="bob@example.com")
+    reader = SessionReader(email="bob@example.com", org=org)
 
     may = asyncio.run(
         may_post(
@@ -564,13 +592,14 @@ def test_a_post_is_a_read_of_the_session_that_began_the_chat(
     )
 
     assert may is allowed
-    began, *read = conn.fetchval.await_args_list
-    assert began.args == (
-        _BEGINNING_SQL,
+    assert conn.fetchrow.await_args is not None
+    assert conn.fetchrow.await_args.args == (
+        "SELECT began.id, began.account " + _FIRST_SESSION,
         chat_session_id(_CONVERSATION),
         _ASSISTANT.email,
     )
-    assert [call.args[1] for call in read] == [_SESSION] * len(read)
+    read = conn.fetchval.await_args_list
+    assert [call.args[1] for call in read] == [_SESSION] * len(reads)
 
 
 def test_shares_are_read_oldest_first_for_one_conversation() -> None:
