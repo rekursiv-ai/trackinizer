@@ -1165,6 +1165,16 @@ CREATE TABLE IF NOT EXISTS code_snapshots (
 
 -- Direct GPU jobs and the certificates and tokens issued for them: see
 -- ``schema.054.sql`` for what each table keeps. Added in 054.
+CREATE TABLE IF NOT EXISTS gpu_allowance_resets (
+    id BIGSERIAL PRIMARY KEY,
+    email TEXT NOT NULL,
+    reset_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    job_ids BIGINT[] NOT NULL
+);
+CREATE INDEX IF NOT EXISTS gpu_allowance_resets_email
+    ON gpu_allowance_resets (email);
+
 CREATE TABLE IF NOT EXISTS gpu_owners (
     id         BIGSERIAL PRIMARY KEY,
     email      TEXT NOT NULL UNIQUE,
