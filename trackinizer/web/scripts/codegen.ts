@@ -23,6 +23,7 @@ mkdirSync(generated, { recursive: true });
 writeFileSync(new URL("schema.ts", generated), header + (await clientTypes(openapi)));
 writeFileSync(new URL("fields.ts", generated), header + fieldTypeMap(openapi));
 writeFileSync(new URL("settings.ts", generated), header + settingDocs(openapi));
+
 /**
  * The `paths` and `components` types openapi-fetch checks every call against.
  *

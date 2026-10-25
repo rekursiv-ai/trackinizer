@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vitest/config";
 import { APP_BASE } from "./src/base";
-import { fillName, identityOf, manifestOf } from "./src/identity";
+import { fillName, manifestOf, TRACKINIZER } from "./src/identity";
 
 // The dev server stands in for the trackinizer server: it proxies the API and the
 // login pages to TRACKINIZER_WEB_API_URL, and signs each request with
@@ -21,9 +21,7 @@ const proxyRoute = {
   headers: token ? { Authorization: `Bearer ${token}` } : {},
 };
 
-// The app's name: TRACKINIZER_WEB_APP picks an identity from src/identity.ts, none the default. The deploy sets it.
-const app = process.env.TRACKINIZER_WEB_APP ?? "";
-const identity = identityOf(app);
+const identity = TRACKINIZER;
 
 // The commit this app is built from. The bundle carries it for Copy details
 // (src/debug/details.ts) and dist/version.json for the deploy: read at run time,
@@ -36,7 +34,7 @@ const commit = execFileSync("git", ["rev-parse", "HEAD"], {
 export default defineConfig({
   base: APP_BASE,
   plugins: [react(), versionJson(), appIdentity(), preloadFirstLoad()],
-  define: { __COMMIT__: JSON.stringify(commit), __APP__: JSON.stringify(app) },
+  define: { __COMMIT__: JSON.stringify(commit) },
   build: {
     // dist/.vite/manifest.json, from which scripts/bundle-size.ts reads what a
     // first visit loads: the entry imports React DOM and the app dynamically

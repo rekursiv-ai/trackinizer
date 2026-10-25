@@ -35,13 +35,13 @@ const activeOption = (page: Page) => palette(page).locator('[role="option"][aria
 test("focus lands in the input, keys typed at once are kept, one Escape closes, and focus returns", async ({
   page,
 }) => {
-  const bar = page.getByRole("banner", { name: "App" });
+  const sidebar = page.getByRole("navigation", { name: "Sidebar" });
   // Five fresh page loads, as the library survey ran: a palette that mounts
   // slowly loses the first keys only now and then.
   for (let run = 0; run < 5; run++) {
     await page.goto(`/trax/?run=${run}#/activity`);
     await expect(heading(page)).toHaveText("Activity");
-    const opener = bar.getByRole("link", { name: "Trackinizer, the graph" });
+    const opener = sidebar.getByRole("link", { name: "Issues" });
     await opener.focus();
     await page.keyboard.press(run % 2 ? "ControlOrMeta+p" : "ControlOrMeta+k");
     await page.keyboard.type("typed at once");
@@ -52,7 +52,7 @@ test("focus lands in the input, keys typed at once are kept, one Escape closes, 
     await expect(opener).toBeFocused();
   }
 
-  const button = bar.getByRole("button", { name: "Search" });
+  const button = sidebar.getByRole("button", { name: "Search" });
   await button.click();
   await expect(input(page)).toBeFocused();
   await page.keyboard.press("Escape");

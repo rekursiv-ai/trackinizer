@@ -40,7 +40,6 @@ export const PALETTE: Palette = {
   faint: "faint",
   halo: "halo",
   match: "match",
-  highlight: "highlight",
 };
 
 /** The server's vocabulary as far as the graph reads it: kinds, statuses and edge kinds. */

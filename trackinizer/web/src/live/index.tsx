@@ -19,7 +19,7 @@ import { Bar, StreamStatusContext } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { ActivityLive } from "./activity";
 import { DetailLive } from "./detail";
-import { attachStream, closeEarlyStream } from "./earlyStream";
+import { attachStream } from "./earlyStream";
 import { LiveHub } from "./hub";
 import { type ListSnapshot, ListLive } from "./list";
 import "./live.css";
@@ -34,18 +34,15 @@ export const LiveContext = createContext<LiveHub | null>(null);
 /**
  * Keep the app's views current: take the stream main.tsx opened (or open one),
  * follow the tab's visibility and the user's input, and say whether live
- * updates are paused. With the `canvas` on, the ids come from the canvas's
- * stream (`CanvasStream`, which calls the hub), so this opens none.
+ * updates are paused.
  */
-export function LiveProvider({ canvas = false, children }: { canvas?: boolean; children: ReactNode }) {
+export function LiveProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [hub] = useState(() => new LiveHub(queryClient));
   useEffect(() => {
     // Down until the stream first opens, so one that never does shows the paused bar too.
     hub.drop();
-    let close = () => {};
-    if (canvas) closeEarlyStream();
-    else close = attachStream(hub);
+    const close = attachStream(hub);
     const onVisibility = () => (document.hidden ? hub.hide() : hub.show());
     const onInput = () => hub.input();
     const onOnline = () => hub.online();
@@ -60,7 +57,7 @@ export function LiveProvider({ canvas = false, children }: { canvas?: boolean; c
       for (const type of INPUT_EVENTS) removeEventListener(type, onInput, { capture: true });
       hub.stop();
     };
-  }, [hub, canvas]);
+  }, [hub]);
   const status = useSyncExternalStore(hub.subscribeStatus, hub.status);
   return (
     <LiveContext value={hub}>

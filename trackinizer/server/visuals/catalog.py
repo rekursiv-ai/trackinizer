@@ -461,9 +461,9 @@ def default_catalog() -> VisualCatalogBody:
     return default_canvas().catalog()
 
 
-# The record tile is not in the default list: every web build mirrors the default
-# catalog with a renderer of its own (renderer-versions.json), and Trackinizer's app
-# draws no record tile, so only a site whose app does offers it.
+# The record tile is not in the default list: an app that draws the canvas mirrors the
+# default catalog with a renderer of its own, and only a site whose app draws a record
+# tile offers it. Trackinizer's own app draws no canvas.
 def offer_record_visual(visuals: Canvas.Config) -> None:
     """Add the record tile to a deployment's catalog, once.
 

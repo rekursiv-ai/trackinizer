@@ -4,9 +4,8 @@ import { formatRoute, type Route } from "./route";
 /**
  * The address bar and the route it holds.
  *
- * A route is how the app, its server and agents name a page: `#/ref/Issue/7`, the
- * form a canvas keeps its page in and `trax canvas navigate` takes. The address
- * is that route as a path under the app, `/trax/ref/Issue/7`, so a link is a
+ * A route is how the app, its server and agents name a page: `#/ref/Issue/7`.
+ * The address is that route as a path under the app, `/trax/ref/Issue/7`, so a link is a
  * plain URL the server answers. An old link's own `#/...` route
  * (`/trax/#/ref/Issue/7`, `/#/ref/Issue/7`) still names its page: the router
  * moves the address onto its path, in place.
@@ -18,7 +17,7 @@ const ROUTE_CHANGE = "trackinizer:routechange";
 /**
  * The route the address bar is on: an old link's `#/...`, else the path under
  * the app, with its query. The app's own address, `/trax/`, is the empty route,
- * as the empty hash was: the home page, and no page of a canvas's own.
+ * as the empty hash was: the home page.
  */
 export function currentRoute(): string {
   if (location.hash.startsWith("#/")) return location.hash;

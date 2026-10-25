@@ -67,22 +67,3 @@ test("a session the caller may flip has a Public/Private switch; another's priva
   expect(offered()).toEqual([]);
   expect(screen.getByText("Private").className).toBe("console-badge");
 });
-
-test("a chat's session that waits on the person is marked, and one whose run was taken over offers Reattach to Chat", () => {
-  const waiting = { ...session(1, "chat-3d0e9f1a1b2c", 1, 5), state: "requires_action" as const };
-  const taken = { ...session(2, "chat-4e1fa02b2c3d", 1, 3), state: "taken_over" as const };
-  const quiet = { ...session(3, "tiles-a", 1, 2), state: "running" as const };
-  const props = { picks: [], onPicks: () => {}, active: "1h" as const, onActive: null };
-  const reattached: FeedActorFacet[] = [];
-  const { rerender } = render(<AgentsSection agents={[waiting, taken, quiet]} {...props} onReattach={(agent) => reattached.push(agent)} />);
-  expect([...document.querySelectorAll(".console-row")].filter((row) => row.querySelector(".console-waiting")).map((row) => row.querySelector(".console-row-name")!.textContent))
-    .toEqual(["chat-3d0e9f1a1b2c"]);
-  expect(screen.getAllByRole("button", { name: /^Reattach / }).map((button) => [button.getAttribute("aria-label"), button.textContent])).toEqual([["Reattach chat-4e1fa02b2c3d to Chat", "Reattach to Chat"]]);
-  fireEvent.click(screen.getByRole("button", { name: "Reattach chat-4e1fa02b2c3d to Chat" }));
-  expect(reattached.map(({ actor }) => actor)).toEqual(["chat-4e1fa02b2c3d"]);
-  // The mark is read-only information; the button needs a way to reattach.
-  rerender(<AgentsSection agents={[waiting, taken, quiet]} {...props} />);
-  expect(screen.queryByRole("button", { name: /^Reattach / })).toBeNull();
-  expect(document.querySelectorAll(".console-waiting")).toHaveLength(1);
-  expect(screen.getByText("Taken over in a terminal")).toBeTruthy();
-});

@@ -23,13 +23,13 @@ export type FieldProps = {
 
 /**
  * A box for messages to live agent sessions, shared by an AgentSession's
- * detail, the canvas's Chat and the console.
+ * detail and the console.
  *
  * A draft goes under one idempotency key, which Retry sends again, so a send
  * whose answer was lost reaches the agent once; an edited draft, or the draft
  * sent to another `target`, takes a fresh key. Enter sends, and Shift+Enter (or
- * Enter while an input method composes) types a line break. Alt+Enter never sends:
- * it is Chat's full screen key. The Send button shows only on a touch screen
+ * Enter while an input method composes) types a line break. Alt+Enter never sends.
+ * The Send button shows only on a touch screen
  * (composer.css): with a keyboard, Enter is the way to send. A failure keeps the
  * draft and says `failure(error)`; a success empties the box and shows what
  * `send` resolved with. A draft `check` finds wrong (it names the problem, or
@@ -89,8 +89,8 @@ export function Composer({
   const sending = useMutation({
     mutationFn: (message: Sent) => send(message.text, message.key),
     onSuccess: (text, message) => {
-      // Sent, the draft leaves the box even if the box moved meanwhile, as Chat's does to a fork it
-      // started; a draft typed while this one was on its way stays.
+      // Sent, the draft leaves the box even if the box moved meanwhile; a draft typed while this
+      // one was on its way stays.
       message.clear();
       setSent((current) => (current?.key === message.key ? null : current));
       if (message.target === currentTarget.current) setReceipt({ text, target: message.target });

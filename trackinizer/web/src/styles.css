@@ -22,12 +22,6 @@
   --red: #d14545;
   --urgent: #f2994a;
   --violet: #9d8cf0;
-  /* The top bar's canvas groups take these in turn; --on-group is text on one. */
-  --group-1: #6ea8ee;
-  --group-2: #4cb782;
-  --group-3: #c99d55;
-  --group-4: #9d8cf0;
-  --on-group: #0b0c0d;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   --sans: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --l-provenance: #7b808a;
@@ -85,11 +79,6 @@
   --red: #b62f36;
   --urgent: #ae5717;
   --violet: #694fb0;
-  --group-1: #286fc5;
-  --group-2: #187c39;
-  --group-3: #9c651d;
-  --group-4: #694fb0;
-  --on-group: #ffffff;
   --l-provenance: #657487;
   --l-work: #657487;
   /* Text too: an agent's name in the console, a diff's added lines. */
@@ -134,19 +123,66 @@ kbd {
 }
 
 /* shell */
-/* The top bar over everything (topbar/topbar.css), the main area under it. */
-.app { display: flex; flex-direction: column; height: 100%; position: relative; }
+.app { display: grid; grid-template-columns: 244px minmax(0, 1fr); height: 100%; }
+.sidebar {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 10px 12px; overflow-y: auto; min-height: 0;
+  scrollbar-width: thin;
+}
 .main {
-  flex: 1; margin: 0 8px 8px; min-width: 0; min-height: 0;
+  margin: 8px 8px 8px 0; min-width: 0; min-height: 0;
   background: var(--bg); border: 1px solid var(--line); border-radius: var(--panel-radius);
   overflow: hidden; display: flex; flex-direction: column; position: relative;
 }
+
+/* sidebar */
+.ws-row { display: flex; align-items: center; gap: 4px; margin-bottom: 10px; }
+.ws-switch {
+  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+  padding: 5px 6px; border-radius: var(--radius); font-weight: 600; font-size: 13.5px;
+}
+a.ws-switch:hover { background: var(--surface-raised); }
+.ws-mark { width: 22px; height: 22px; flex-shrink: 0; color: var(--accent); }
+.ws-mark .ws-filament { color: var(--text); }
+/* The sidebar's compose button: here, not in create.css, which loads with the
+   create form's chunk. Its color is .icon-btn's. */
+.compose-btn { border: 1px solid var(--line-strong); background: var(--surface-raised); }
+.compose-btn:disabled { opacity: .45; cursor: default; }
 .icon-btn {
   width: 28px; height: 28px; border-radius: var(--radius); display: inline-grid; place-items: center;
   color: var(--muted); flex-shrink: 0;
 }
 .icon-btn:hover:not(:disabled), .icon-btn[aria-expanded="true"] { background: var(--surface-hover); color: var(--text); }
 .icon-btn:disabled { opacity: .45; cursor: default; }
+.nav-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  min-height: 28px; padding: 4px 8px; border-radius: var(--radius);
+  font-size: 13px; font-weight: 500; color: var(--ink-muted); text-align: left;
+}
+.nav-item .ic { color: var(--muted); }
+.nav-item:hover { background: var(--surface-raised); }
+.nav-item.is-current { background: var(--surface-hover); color: var(--text); }
+.nav-item.is-current .ic { color: var(--ink-muted); }
+.nav-item > .label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-section { margin-top: 14px; }
+.nav-section-h {
+  display: flex; align-items: center; gap: 4px; width: 100%;
+  padding: 3px 8px; font-size: 12px; font-weight: 500; color: var(--muted); border-radius: var(--radius);
+}
+.nav-section-h:hover { color: var(--ink-muted); }
+.nav-section-h .ic { transition: transform .12s; }
+.nav-section.is-collapsed .nav-section-h .ic { transform: rotate(-90deg); }
+.nav-section.is-collapsed .nav-section-body { display: none; }
+.nav-section-body { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; }
+.sidebar-foot { margin-top: auto; padding-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+/* The user, then the theme button (Sidebar.tsx's ThemeButton). */
+.foot-row { display: flex; align-items: center; gap: 4px; }
+.foot-row .me-row { flex: 1; min-width: 0; }
+.me-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  font-size: 12.5px; color: var(--ink-muted);
+}
+.me-email { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .avatar {
   display: inline-grid; place-items: center; flex-shrink: 0; border-radius: 50%;
   width: 20px; height: 20px; font-size: 10px;
@@ -156,10 +192,26 @@ kbd {
   font-size: 11px; font-weight: 500; color: var(--ink-muted); background: var(--surface-hover);
   border-radius: 999px; padding: 0 6px; line-height: 18px;
 }
-.role-chip.is-admin { color: var(--accent-hover); background: var(--accent-soft); font-weight: 600; }
-/* The logo, in the top bar and on the welcome page. */
-.ws-mark { width: 22px; height: 22px; flex-shrink: 0; color: var(--accent); }
-.ws-mark .ws-filament { color: var(--text); }
+
+/* Collapsed (Sidebar.tsx), the sidebar is a rail of its icons, VS Code's
+   activity bar's 48 px wide: the labels, the logo and the section headings
+   hide, and a rule parts each group. A link keeps its label as its name and
+   tooltip, the user's row the email. Narrow, it is the drawer, whole, either
+   way (below). Not `min-width: 761px`: a zoomed window can be 760.5 px wide,
+   and then neither the rail nor the drawer would apply. */
+@media (width > 760px) {
+  .app.sidebar-collapsed { grid-template-columns: 48px minmax(0, 1fr); }
+  .app.sidebar-collapsed .sidebar { padding: 10px 6px 12px; }
+  .app.sidebar-collapsed .ws-row { flex-direction: column; margin-bottom: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  .app.sidebar-collapsed :is(.ws-switch, .nav-section-h, .nav-item > .label, .me-email, .role-chip) { display: none; }
+  .app.sidebar-collapsed .nav-item { justify-content: center; padding: 8px 0; }
+  .app.sidebar-collapsed .nav-section { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--line); }
+  /* A section its heading folded shows its entries all the same: the heading
+     is hidden here, and nothing else could unfold them. */
+  .app.sidebar-collapsed .nav-section .nav-section-body { display: flex; margin-top: 0; }
+  .app.sidebar-collapsed .foot-row { flex-direction: column; }
+  .app.sidebar-collapsed .me-row { justify-content: center; padding: 4px 0; }
+}
 
 /* view chrome */
 .view { display: flex; flex-direction: column; min-height: 0; flex: 1; position: relative; }
@@ -171,6 +223,7 @@ kbd {
 .view-h .ttl .ic { color: var(--muted); }
 .view-h .ttl span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .spacer { flex: 1; }
+.only-mobile { display: none; }
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   min-height: 28px; padding: 3px 10px; border-radius: var(--radius);
@@ -253,8 +306,25 @@ body:has(.bulk) .toast-viewport { bottom: calc(18px + 9px + 40px + 8px + env(saf
 .toast button { color: var(--accent-hover); font-weight: 500; font-size: 12.5px; padding: 3px 6px; border-radius: 5px; }
 .toast button:hover { background: var(--surface-hover); }
 
+.drawer-scrim { display: none; }
+
 @media (max-width: 760px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  /* The drawer opens whole, collapsed or not, and has no collapse button. */
+  .sidebar .panel-toggle { display: none; }
+  /* Closed, the drawer is hidden as well as moved off screen: moved alone, its
+     links stay in the Tab order and the accessibility tree. Visibility waits for
+     the slide out before it hides, and shows at once on the way in. */
+  .sidebar {
+    position: fixed; z-index: 55; top: 0; bottom: 0; left: 0; width: 272px;
+    padding-top: calc(10px + env(safe-area-inset-top, 0px));
+    background: var(--frame); border-right: 1px solid var(--line);
+    transform: translateX(-100%); visibility: hidden; transition: transform .18s ease, visibility 0s linear .18s;
+  }
+  .app.drawer-open .sidebar { transform: none; visibility: visible; transition: transform .18s ease; }
+  .app.drawer-open .drawer-scrim { display: block; position: fixed; inset: 0; z-index: 54; background: #0009; }
   .main { margin: 0; border: 0; border-radius: 0; }
+  .only-mobile { display: inline-grid; }
   .view-h { padding-left: 10px; padding-right: 10px; }
   .toast-viewport { left: 16px; right: 16px; max-width: none; }
 }

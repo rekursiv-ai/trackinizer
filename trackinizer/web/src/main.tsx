@@ -5,12 +5,10 @@ import { installDebug, logRenderError } from "./debug/install";
 import { openEarlyStream } from "./live/earlyStream";
 import { currentRoute, followLinks } from "./router/addressBar";
 import { chunk, reloadOnChunkError } from "./router/lazy";
-import { startTrail } from "./router/trail";
 import { installTheme } from "./theme";
 
 installDebug();
 installTheme();
-startTrail();
 followLinks();
 reloadOnChunkError();
 // Before the first reads, so that it is open by the time the views mount and

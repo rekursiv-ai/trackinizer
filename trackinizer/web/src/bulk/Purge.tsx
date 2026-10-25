@@ -16,7 +16,7 @@ import "./bulk.css";
 
 /**
  * Whether the server lets this viewer purge `row`: its account, or an admin, compared without case.
- * A science chat's session is an admin's alone; its starter deletes the chat from Chat's header.
+ * A science chat's session is an admin's alone.
  */
 export function mayPurge(row: Detail["self"], viewer: { readonly email: string; readonly role: string }): boolean {
   if (viewer.role === "admin") return true;

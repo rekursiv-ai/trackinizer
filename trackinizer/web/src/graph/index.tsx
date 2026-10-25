@@ -12,7 +12,6 @@ import {
 } from "react";
 import type { Graph, GraphNode } from "../api/graph";
 import { type Meta, useMeta } from "../app/boot";
-import { useHighlighted } from "../app/highlights";
 import { isStrings, useTabState } from "../app/tabState";
 import { useCommands } from "../commands/registry";
 import "../lists/lists.css";
@@ -148,7 +147,6 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
     [nodes, shownBy, only, lit],
   );
   const matches = useMemo(() => searchNodes(drawnNodes, query), [drawnNodes, query]);
-  const highlighted = useHighlighted();
   const groups = matchGroups(matches, focusNode && focus && lit ? { node: focusNode, hops: focus.hops, lit } : null);
   const rows = groups.flatMap((group) => group.rows.slice(0, MAX_ROWS));
   const markedAt = Math.min(marked, rows.length - 1);
@@ -166,11 +164,10 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
       skipEdges: focusNode ? shownBy.skipEdges : NO_STRINGS,
       only,
       strong: new Set([focusNode?.id, selected?.id].filter((id) => id !== undefined)),
-      highlighted,
       matches: new Set(matches.map((row) => row.id)),
       labelled: new Set(roots?.groups.flatMap((group) => (group.root ? [group.key] : [])) ?? []),
     }),
-    [shownBy, lit, focusNode, only, selected, highlighted, matches, roots],
+    [shownBy, lit, focusNode, only, selected, matches, roots],
   );
 
   const focusOn = (row: GraphNode) => go({ focus: { ref: { kind: row.kind, seq: row.seq }, hops: focus?.hops ?? 1 } });

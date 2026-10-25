@@ -7,12 +7,8 @@ import { type Sent, stubFetch } from "../api/testing";
 import { MetaContext, ProfileContext } from "../app/boot";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { META, PROFILE } from "../detail/testing";
-import type { CanvasState } from "../api/canvases";
 import { DEFAULT_PREFERENCES, type Preferences, preferences, receivePreferences } from "../preferences";
-import { setCanvas } from "../canvases/store";
 import { ToastProvider } from "../ui/toast";
-import { ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
-import { forgetLayouts } from "../visuals/canvasLayout";
 import { clock, ConsoleView } from ".";
 import type { KeptView } from "./legacyViews";
 import { type Level, levelOf } from "./levels";
@@ -21,15 +17,12 @@ afterEach(async () => {
   // A view's own send answers first, or its answer would put the views back for the next test.
   await new Promise((resolve) => setTimeout(resolve, 0));
   receivePreferences(DEFAULT_PREFERENCES);
-  setCanvas(null);
-  forgetLayouts();
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   localStorage.clear();
   sessionStorage.clear();
   AUDIENCES.clear();
-  TAKEN_OVER.clear();
 });
 
 const TILES_A = "00000000-0000-4000-8000-0000000000c1";
@@ -73,9 +66,6 @@ const EVENTS = [
 /** The audience of each session its owner hid, as the fake server holds it; the rest are open. */
 const AUDIENCES = new Map<string, string>();
 
-/** The sessions whose run someone took over in a terminal, as the fake server holds them. */
-const TAKEN_OVER = new Set<string>();
-
 /**
  * Session `session`'s agent as the facets count it, last heard from `minutes`
  * before `now`. tiles-a is the signed-in person's, so they may hide it.
@@ -83,8 +73,7 @@ const TAKEN_OVER = new Set<string>();
 function facet(session: string, count: number, conversation: number, minutes: number, now: number, ended: string | null = null) {
   const last = new Date(now - minutes * 60_000).toISOString();
   const account = session === TILES_A ? PROFILE.email : "grace@example.com";
-  return { ...SESSIONS[session]!, session_id: session, count, conversation, last, ended, account, audience: AUDIENCES.get(session) ?? "open", hideable: session === TILES_A,
-    ...(TAKEN_OVER.has(session) && { state: "taken_over" as const }), ...(session === TILES_A && TAKEN_OVER.size > 0 && { state: "requires_action" as const }) };
+  return { ...SESSIONS[session]!, session_id: session, count, conversation, last, ended, account, audience: AUDIENCES.get(session) ?? "open", hideable: session === TILES_A };
 }
 
 /**
@@ -150,9 +139,6 @@ function passes(event: FeedEvent, query: URLSearchParams): boolean {
 function serve(
   message: (body: { actor: string; room: string | null }) => Response = () => Response.json({ delivered: ["s1"] }),
   events: readonly FeedEvent[] = EVENTS,
-  canvas: CanvasState | null = null,
-  relay: (body: unknown) => Response = () => Response.json({ delivered: true }),
-  forksOnTyping = false,
 ): Sent[] {
   const now = Date.now();
   return stubFetch(async (request) => {
@@ -174,29 +160,17 @@ function serve(
       return Response.json({ start: "2026-10-01T10:00:00Z", end: "2026-10-01T11:00:00Z", bucket_seconds: 3600, counts: [] });
     }
     if (url.pathname === "/api/messages") return message(await request.json());
-    const reattaching = /^\/api\/sessions\/([^/]+)\/reattach$/.exec(url.pathname);
-    if (reattaching && request.method === "POST") {
-      TAKEN_OVER.delete(reattaching[1]!);
-      return new Response(null, { status: 204 });
-    }
     const hiding = /^\/api\/sessions\/([^/]+)\/audience$/.exec(url.pathname);
     if (hiding && request.method === "POST") {
       const { audience } = (await request.json()) as { audience: string };
       AUDIENCES.set(hiding[1]!, audience);
       return Response.json({ session_id: hiding[1], audience, sessions: [hiding[1]] });
     }
-    if (canvas && url.pathname === "/api/canvases" && request.method === "POST") return Response.json(canvas);
-    if (canvas && url.pathname === `/api/canvases/${canvas.id}` && request.method === "GET") return Response.json(canvas);
-    if (canvas?.conversation_id && url.pathname === `/api/chats/${canvas.conversation_id}`) {
-      return Response.json({ conversation_id: canvas.conversation_id, session_id: CHAT_A, title: "t", account: "ada@example.com", live: true,
-        forks: 0, forked_from: null, forks_on_typing: forksOnTyping, audience: "open", may_hide: false, shared_with: [], may_share: false, may_delete: false });
-    }
-    if (canvas && url.pathname === `/api/canvases/${canvas.id}/relay`) return relay(await request.json());
     return Response.json({ detail: "not found" }, { status: 404 });
   });
 }
 
-function renderConsole(profile = PROFILE, feed: ChatFeed | null = null) {
+function renderConsole(profile = PROFILE) {
   // jsdom lays nothing out: the minimap's band has no width, so it reads no bars.
   vi.stubGlobal(
     "ResizeObserver",
@@ -213,9 +187,7 @@ function renderConsole(profile = PROFILE, feed: ChatFeed | null = null) {
           <ProfileContext value={profile}>
             <CommandRegistryContext value={new CommandRegistry()}>
               <Shortcuts />
-              <ChatFeedContext value={feed}>
-                <ConsoleView />
-              </ChatFeedContext>
+              <ConsoleView />
             </CommandRegistryContext>
           </ProfileContext>
         </MetaContext>
@@ -247,7 +219,7 @@ const MESSAGES = "AgentToAgentMessage,AssistantMessage,ContextState,UserMessage"
 /** Messages' read: only the conversation, no kind. */
 const CONVERSATION = { conversation: "true" };
 
-/** Where the console opens outside a named canvas: the person's own sessions. */
+/** Where the console opens: the person's own sessions. */
 const MINE = { whose: "mine" };
 
 /** Where a kept view that picks agents, rooms or CLIs opens: every session the person reads. */
@@ -805,9 +777,7 @@ test("a viewer reads the console but gets no send box", async () => {
   expect(user!.querySelector(".console-actor")!.tagName).toBe("B");
 });
 
-const CANVAS: CanvasState = {
-  id: "w1", name: "my work", conversation_id: "3d0e9f1a-1b2c-4d5e-8f60-7a8b9c0d1e2f", page: null, revision: 1, focused_instance: null, visuals: [],
-};
+/** Two science chats' sessions, whose records the feed carries as any session's. */
 const OWN_CHAT = "chat-3d0e9f1a1b2c";
 const OTHER_CHAT = "chat-aaaabbbbcccc";
 const CHAT_A = "00000000-0000-4000-8000-0000000000d1";
@@ -822,72 +792,25 @@ const WITH_CHATS = [
   said(8, CHAT_B, "AssistantMessage", { content: "In another chat." }, "In another chat."),
 ];
 
-/** A user with the canvas, whose console has a canvas to be scoped to. */
-const CANVAS_USER = { ...PROFILE, visual_canvas_enabled: true };
-
 /** Each read of one kind, by one of its parameters. */
 const paramOf = (sent: readonly Sent[], path: string, name: string) =>
   sent.filter((request) => request.path === path).map((request) => new URLSearchParams(request.query).get(name));
 
-/** The reads of one kind, by their `canvas` parameter. */
-const canvasOf = (sent: readonly Sent[], path: string) => paramOf(sent, path, "canvas");
-
-/** Each feed and facets read since `sent` was last emptied, as its canvas and whose sessions it keeps. */
+/** Whose sessions each feed and facets read since `sent` was last emptied keeps. */
 const scopesOf = (sent: readonly Sent[]) =>
-  new Set(["/api/web/feed", "/api/web/feed/facets"].flatMap((path) => {
-    const whose = paramOf(sent, path, "whose");
-    return canvasOf(sent, path).map((canvas, k) => `${canvas}|${whose[k]}`);
-  }));
+  new Set(["/api/web/feed", "/api/web/feed/facets"].flatMap((path) => paramOf(sent, path, "whose")));
 
 /** The scope's buttons, as named, and which is pressed. */
 const scopeButtons = () =>
   within(screen.getByRole("group", { name: "Scope" })).getAllByRole("button").map((button) => [button.textContent, button.getAttribute("aria-pressed")]);
 
-test("opened inside a canvas, the console reads its agents, whoever's they are; Everyone widens it, This canvas narrows it again", async () => {
-  setCanvas("w1");
-  const sent = serve(undefined, EVENTS, CANVAS);
-  renderConsole(CANVAS_USER);
-  await lines(3);
-  const scope = within(screen.getByRole("group", { name: "Scope" }));
-  expect(scopeButtons()).toEqual([["This canvas", "true"], ["Mine", "false"], ["My campaigns", "false"], ["Everyone", "false"]]);
-  // A canvas's agents are the assistant's sessions, under no person's account.
-  expect(scopesOf(sent)).toEqual(new Set(["w1|everyone"]));
-
-  sent.length = 0;
-  fireEvent.click(scope.getByRole("button", { name: "Everyone" }));
-  await waitFor(() => expect(canvasOf(sent, "/api/web/feed").length).toBeGreaterThan(0));
-  await waitFor(() => expect(canvasOf(sent, "/api/web/feed/facets").length).toBeGreaterThan(0));
-  expect(scope.getByRole("button", { name: "Everyone" }).getAttribute("aria-pressed")).toBe("true");
-  expect(scopesOf(sent)).toEqual(new Set(["null|everyone"]));
-
-  sent.length = 0;
-  fireEvent.click(scope.getByRole("button", { name: "This canvas" }));
-  await waitFor(() => expect(canvasOf(sent, "/api/web/feed").length).toBeGreaterThan(0));
-  expect(new Set(canvasOf(sent, "/api/web/feed"))).toEqual(new Set(["w1"]));
-});
-
-test("opened inside an unnamed canvas, the console reads the person's own sessions; This canvas narrows it to the canvas's", async () => {
-  setCanvas("w1");
-  const sent = serve(undefined, EVENTS, { ...CANVAS, name: "unnamed-canvas#3" });
-  renderConsole(CANVAS_USER);
-  await lines(3);
-  const scope = within(screen.getByRole("group", { name: "Scope" }));
-  expect(scope.getByRole("button", { name: "Mine" }).getAttribute("aria-pressed")).toBe("true");
-  expect(scopesOf(sent)).toEqual(new Set(["null|mine"]));
-
-  sent.length = 0;
-  fireEvent.click(scope.getByRole("button", { name: "This canvas" }));
-  await waitFor(() => expect(canvasOf(sent, "/api/web/feed").length).toBeGreaterThan(0));
-  expect(new Set(canvasOf(sent, "/api/web/feed"))).toEqual(new Set(["w1"]));
-});
-
-test("with no canvas the scope offers no This canvas, and the console reads the person's own sessions", async () => {
+test("the console opens on the person's own sessions: Mine, then My campaigns and Everyone", async () => {
   const sent = serve();
   renderConsole();
   await lines(3);
   expect(scopeButtons()).toEqual([["Mine", "true"], ["My campaigns", "false"], ["Everyone", "false"]]);
-  await waitFor(() => expect(canvasOf(sent, "/api/web/feed/facets").length).toBeGreaterThan(0));
-  expect(scopesOf(sent)).toEqual(new Set(["null|mine"]));
+  await waitFor(() => expect(paramOf(sent, "/api/web/feed/facets", "whose").length).toBeGreaterThan(0));
+  expect(scopesOf(sent)).toEqual(new Set(["mine"]));
 });
 
 test("My campaigns reads the sessions of the campaigns the person launched, and Everyone every one they read", async () => {
@@ -900,7 +823,7 @@ test("My campaigns reads the sessions of the campaigns the person launched, and 
     fireEvent.click(scope.getByRole("button", { name }));
     await waitFor(() => expect(paramOf(sent, "/api/web/feed", "whose")).toContain(whose));
     await waitFor(() => expect(paramOf(sent, "/api/web/feed/facets", "whose")).toContain(whose));
-    expect(scopesOf(sent)).toEqual(new Set([`null|${whose}`]));
+    expect(scopesOf(sent)).toEqual(new Set([whose]));
   }
 });
 
@@ -978,136 +901,20 @@ test("a switch the server refuses says why in words for its code, and the sessio
   expect(feedReads(sent)).toHaveLength(reads);
 });
 
-test("the canvas's own chat is hidden from the widened console, and no chat is offered to message", async () => {
-  setCanvas("w1");
-  serve(undefined, WITH_CHATS, CANVAS);
-  const feed = new ChatFeed();
-  renderConsole(CANVAS_USER, feed);
-  await lines(4);
-  fireEvent.click(within(screen.getByRole("group", { name: "Scope" })).getByRole("button", { name: "Everyone" }));
-  // Every line but the canvas's own chat's: three of Messages, and the other canvas's chat.
-  const shown = await waitFor(() => {
-    const found = [...document.querySelectorAll<HTMLElement>(".console-line")];
-    expect(found.map((one) => one.textContent).join("|")).toContain("In another chat.");
-    return found;
-  });
-  expect(shown.map((one) => one.textContent).join("|")).not.toContain("In my own chat.");
-  // The other canvas's chat is no agent to message: its name is no button, and it offers its canvas.
-  expect(screen.queryByLabelText(`Message ${OTHER_CHAT}`)).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Open canvas" }));
-  // The chat's session is asked of Chat, which opens the user's canvas for it.
-  expect(feed.snapshot().request).toMatchObject({ sessionId: CHAT_B });
-  // Neither chat is in the agents the rail lists to pick for sending.
-  expect(agentBoxes().some((name) => name?.includes(OWN_CHAT))).toBe(false);
-});
-
-test("a line to a chat, named or by @*, is refused: it is the canvas's to talk to", async () => {
-  setCanvas("w1");
-  const sent = serve(undefined, WITH_CHATS, CANVAS);
-  renderConsole(CANVAS_USER);
-  await lines(4);
-  fireEvent.click(within(screen.getByRole("group", { name: "Scope" })).getByRole("button", { name: "Everyone" }));
+test("a line to a chat, named or by @*, is refused: only its own Chat posts to it", async () => {
+  const sent = serve(undefined, WITH_CHATS);
+  renderConsole();
   await screen.findByText("In another chat.");
   const box = screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(box, { target: { value: `@${OTHER_CHAT} hello` } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  expect((await screen.findByRole("alert")).textContent).toBe(`${OTHER_CHAT} is a chat: open its canvas to talk to it`);
+  expect((await screen.findByRole("alert")).textContent).toBe(`${OTHER_CHAT} is a chat: only its own Chat posts to it`);
   fireEvent.change(box, { target: { value: "@* hello" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   await waitFor(() => expect(document.querySelector(".composer-receipt")).not.toBeNull());
   const told = sent.filter((request) => request.path === "/api/messages").map((request) => (request.body as { actor: string }).actor);
   expect(told).not.toContain(OTHER_CHAT);
   expect(told).not.toContain(OWN_CHAT);
-});
-
-test("a line settles per target, then the canvas's chat is told once with the targets that took it, under one key", async () => {
-  setCanvas("w1");
-  const sent = serve(({ actor }) => Response.json({ delivered: actor === "claude" ? [] : ["s1"] }), EVENTS, CANVAS);
-  renderConsole(CANVAS_USER);
-  await lines(3);
-  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@tiles-a:ops,@claude rerun the suite" } });
-  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  await waitFor(() => expect(document.querySelector(".composer-receipt")).not.toBeNull());
-  const relays = sent.filter((request) => request.path === "/api/canvases/w1/relay");
-  expect(relays).toHaveLength(1);
-  // claude had no live session: it took nothing, and the chat is not told it was.
-  expect(relays[0]!.body).toEqual({ targets: [{ actor: "tiles-a", room: "ops" }], text: "rerun the suite" });
-  expect(relays[0]!.headers["idempotency-key"]).toMatch(/^[0-9a-f-]{36}$/);
-  // The relay went after every message was answered.
-  const order = sent.map((request) => request.path);
-  expect(order.lastIndexOf("/api/messages")).toBeLessThan(order.indexOf("/api/canvases/w1/relay"));
-  expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session; no live session for @claude");
-});
-
-test("a send that failed for a target tells the chat nothing; Retry sends again under the same keys and tells it once", async () => {
-  setCanvas("w1");
-  let refuse = true;
-  const sent = serve(
-    ({ actor }) => (refuse && actor === "claude" ? Response.json({ detail: "statement timeout" }, { status: 500 }) : Response.json({ delivered: ["s1"] })),
-    EVENTS,
-    CANVAS,
-  );
-  renderConsole(CANVAS_USER);
-  await lines(3);
-  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@tiles-a:ops,@claude rerun the suite" } });
-  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  await screen.findByRole("alert");
-  expect(sent.filter((request) => request.path === "/api/canvases/w1/relay")).toHaveLength(0);
-  refuse = false;
-  fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
-  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 2 sessions"));
-  const relays = sent.filter((request) => request.path === "/api/canvases/w1/relay");
-  expect(relays).toHaveLength(1);
-  expect(relays[0]!.body).toEqual({ targets: [{ actor: "tiles-a", room: "ops" }, { actor: "claude", room: null }], text: "rerun the suite" });
-});
-
-test("a chat that was not told is said quietly, whether the server says so or the relay fails; the send itself still succeeded", async () => {
-  setCanvas("w1");
-  serve(undefined, EVENTS, CANVAS, () => Response.json({ delivered: false }));
-  renderConsole(CANVAS_USER);
-  await lines(3);
-  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@claude go" } });
-  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session; Chat not told"));
-  cleanup();
-  serve(undefined, EVENTS, CANVAS, () => Response.json({ detail: "down" }, { status: 500 }));
-  renderConsole(CANVAS_USER);
-  await lines(3);
-  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@claude go" } });
-  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session; Chat not told"));
-  expect(screen.queryByRole("alert")).toBeNull();
-});
-
-test("a canvas whose chat the person does not read is not told, and says so", async () => {
-  setCanvas("w1");
-  const sent = serve(undefined, EVENTS, CANVAS, undefined, true);
-  renderConsole(CANVAS_USER);
-  await lines(3);
-  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@claude go" } });
-  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session; Chat not told"));
-  expect(sent.filter((request) => request.path.endsWith("/relay"))).toHaveLength(0);
-});
-
-test("no relay goes when no agent took the line, or when there is no canvas", async () => {
-  setCanvas("w1");
-  let sent = serve(() => Response.json({ delivered: [] }), EVENTS, CANVAS);
-  renderConsole(CANVAS_USER);
-  await lines(3);
-  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@claude go" } });
-  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  await waitFor(() => expect(document.querySelector(".composer-receipt")).not.toBeNull());
-  expect(sent.filter((request) => request.path.endsWith("/relay"))).toHaveLength(0);
-  cleanup();
-  setCanvas(null);
-  sent = serve();
-  renderConsole(CANVAS_USER);
-  await lines(3);
-  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@claude go" } });
-  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session"));
-  expect(sent.filter((request) => request.path.endsWith("/relay"))).toHaveLength(0);
 });
 
 test("the box names its targets: Message lead-2, or each of several, never a count", async () => {
@@ -1123,34 +930,4 @@ test("the box names its targets: Message lead-2, or each of several, never a cou
   fireEvent.click(agents.getByRole("button", { name: "Pick tiles-*" }));
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toBe(
     "Message tiles-a:ops, tiles-a:lab… (@agent, @agent:room and @* still work)"));
-});
-
-test("a session whose run was taken over in a terminal offers Reattach to Chat, which reopens it and reads the agents again", async () => {
-  TAKEN_OVER.add(CLAUDE);
-  const sent = serve();
-  renderConsole();
-  await lines(3);
-  const reattach = await rail("Agents").findByRole("button", { name: "Reattach claude to Chat" });
-  expect(rail("Agents").getByText("Taken over in a terminal")).toBeTruthy();
-  // The same session in the console shows it waits, by the server's word.
-  expect(document.querySelectorAll(".console-waiting")).toHaveLength(1);
-  fireEvent.click(reattach);
-  expect(await screen.findByText("Reattached claude to Chat.")).toBeTruthy();
-  const posts = sent.filter((request) => request.path.endsWith("/reattach"));
-  expect(posts.map((request) => [request.path, request.headers["idempotency-key"]])).toEqual([[`/api/sessions/${CLAUDE}/reattach`, expect.any(String)]]);
-  await waitFor(() => expect(rail("Agents").queryByRole("button", { name: "Reattach claude to Chat" })).toBeNull());
-});
-
-test("a reattach the server refuses says why, and the session keeps its button", async () => {
-  TAKEN_OVER.add(CLAUDE);
-  serve();
-  renderConsole();
-  await lines(3);
-  const answer = globalThis.fetch;
-  vi.stubGlobal("fetch", async (request: Request) => (new URL(request.url).pathname.endsWith("/reattach")
-    ? Response.json({ detail: "Only the person who started this chat can do that.", code: "chat_not_starter" }, { status: 403 })
-    : answer(request)));
-  fireEvent.click(await rail("Agents").findByRole("button", { name: "Reattach claude to Chat" }));
-  expect(await screen.findByText("Only the person who started this chat can do that.")).toBeTruthy();
-  expect(rail("Agents").getByRole("button", { name: "Reattach claude to Chat" })).toBeTruthy();
 });

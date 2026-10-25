@@ -1,14 +1,6 @@
 /* Your settings and Admin, from the design mock ("settings: yours and
    admin", ".st"). The names list, the suggestions and the notes are ours. */
 .st { padding: 8px 24px 80px; display: flex; flex-direction: column; gap: 18px; }
-/* Settings and Admin open as a sheet over the page (Shell, ChatColumn), half its width, from the
-   page's left edge: Chat and the page stay in view beside it, and the sections take the sheet's
-   width. Close stands at their edge. */
-.sheet {
-  position: absolute; z-index: 25; top: 0; bottom: 0; left: 0; display: flex; flex-direction: column;
-  width: min(100%, max(50%, 560px)); background: var(--bg); border-right: 1px solid var(--line); box-shadow: 0 8px 32px #0006;
-}
-.sheet .view-h { padding-right: 24px; }
 .st-sec { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--surface); overflow-x: auto; }
 .st-h { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
 .st-h > div { flex: 1; min-width: 0; }
@@ -27,9 +19,6 @@
 .st-form, .st-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
 .st-form .field { height: 30px; flex: 1; min-width: 180px; }
 .st-form .st-role { height: 30px; flex: 0 0 auto; min-width: 0; }
-.st-campaign { margin-bottom: 10px; }
-.st-campaign .st-campaign-text { width: 100%; min-height: 160px; height: auto; padding: 8px; resize: vertical; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; margin-bottom: 8px; }
-.st-actions { margin: 10px 0 0; }
 .st-secret { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; font-size: 12.5px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .st-secret code { font-family: var(--mono); color: var(--text); word-break: break-all; }
 
@@ -67,20 +56,9 @@
   .st-kv > span:first-child { width: 110px; }
 }
 .st-theme { min-width: 130px; margin-left: auto; padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface-raised); }
-.st-canvas-choice { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
-.st-canvas-choice input { accent-color: var(--accent); }
-.copy-command { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-raised); }
-.copy-command code { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
 /* The preferences document: monospace, as wide as its section, each line one setting or its comment. */
 .st-doc {
   width: 100%; margin: 8px 0; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px;
   background: var(--surface-raised); color: var(--text); font: 12.5px/1.5 var(--mono); resize: vertical;
 }
 .st-doc-problems { margin: 0 0 8px; padding-left: 18px; font-size: 12.5px; color: var(--error-text); }
-/* GitHub repositories: each linked installation, Unlink at its right, then its
-   repositories, one a line, each with its pull-request choice and that write's state. */
-.st-gh { border-top: 1px solid var(--line); padding-top: 10px; margin-bottom: 10px; }
-.st-gh-unlink { margin-left: auto; }
-.st-gh-repos { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.st-gh-repos li { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; }
-.st-gh-repos .mono { flex: 1; min-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -232,17 +232,6 @@ export async function setSessionAudience(sessionId: string, audience: SessionAud
   );
 }
 
-/**
- * Send `POST /api/sessions/{id}/end`: close a session and release its queue and open
- * asks. The run draining a chat's session is told (409 `session_ended`) and
- * stops. 409 when the session had ended already.
- */
-export async function endSession(sessionId: string): Promise<components["schemas"]["SessionEndResponse"]> {
-  return send(TIMEOUT_MS.write, undefined, (signal) =>
-    client.POST("/api/sessions/{session_id}/end", { params: { path: { session_id: sessionId } }, body: {}, signal }),
-  );
-}
-
 /** Where a routed message goes: an agent's routing name, in one of its rooms or `null` for its only one. */
 export type MessageTarget = { readonly actor: string; readonly room: string | null };
 

@@ -52,12 +52,6 @@ export type Profile = {
  */
 export type OrgMode = "single" | "domain" | "individual";
 
-/** What `PUT /api/me/acknowledge` answers: when the caller agreed, and to which rules version. */
-export type Acknowledgement = {
-  readonly acknowledged_at: string;
-  readonly acknowledged_rules_version: string;
-};
-
 /** One of the caller's API tokens, as `GET /api/me/tokens` lists it: never its secret. */
 export type Token = {
   readonly id: string;
@@ -86,19 +80,6 @@ export async function getProfile({ signal }: CallOptions = {}): Promise<Profile>
 }
 
 /**
- * Record that the caller agreed to the alpha rules as they stand now.
- *
- * A browser session only: an API key is refused with 403. `rulesVersion` is the
- * version the user was shown; the server answers 409 when the rules have changed
- * since, so an agreement never covers rules the user did not read.
- */
-export async function acknowledgeRules(rulesVersion: string): Promise<Acknowledgement> {
-  return send(TIMEOUT_MS.write, undefined, (signal) =>
-    client.PUT("/api/me/acknowledge", { body: { rules_version: rulesVersion }, signal }),
-  );
-}
-
-/**
  * Change some of the caller's preferences: a value sets its key, and the keys left
  * out keep theirs. Answers every key after the change; a key or value the server
  * does not take is an `ApiError` (422) and changes nothing.
@@ -113,13 +94,6 @@ export async function setPreferences(
   );
   // The schema marks each key optional, as it has a default; the server fills every one.
   return saved as Required<components["schemas"]["Preferences"]>;
-}
-
-/** Persist the account's opt-in for the agent-guided canvas. */
-export async function setVisualCanvasPreference(enabled: boolean): Promise<{ enabled: boolean }> {
-  return send(TIMEOUT_MS.write, undefined, (signal) =>
-    client.PUT("/api/me/visual-canvas", { body: { enabled }, signal }),
-  );
 }
 
 /** Fetch the caller's tokens, revoked ones included. */

@@ -1,14 +1,5 @@
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
-import { resetCanvas } from "./canvasState";
 import { expect, failedResource, test, streamOpened } from "./fixtures";
-
-// The default path: the canvas is on, so the tab's stream is the canvas's.
-test.use({ canvas: true });
-
-// A canvas that an earlier spec bound to a chat would load that chat here.
-test.beforeEach(async ({ request }) => {
-  await resetCanvas(request);
-});
 
 // Messaging a live AgentSession from the foot of its transcript. The test stands
 // in for the session's run: a drain that returns at once (`GET

@@ -3,7 +3,7 @@ import { stubFetch } from "../api/testing";
 import { legacyViewsKey } from "../console/legacyViews";
 import type { Draft } from "../create/draft";
 import { DEFAULT_PREFERENCES, type Preferences, preferences, receivePreferences } from "../preferences";
-import { adoptLocalUserData, forgetFieldDraftHere, keepCreateDraftHere, keepFieldDraftHere } from "./local";
+import { adoptLocalUserData, keepCreateDraftHere, keepFieldDraftHere } from "./local";
 import { EMPTY_STATE, storageKey } from "./value";
 
 const EMAIL = "ada@example.com";
@@ -183,28 +183,6 @@ test("a draft kept as the session ends joins the ones already kept, and storage 
   });
   expect(() => keepFieldDraftHere(EMAIL, "i3:title", { text: "C", base: null })).not.toThrow();
   expect(() => keepCreateDraftHere(EMAIL, CREATE)).not.toThrow();
-  vi.restoreAllMocks();
-});
-
-test("forgetting a held draft drops only that key, the last one the whole entry", () => {
-  keepFieldDraftHere(EMAIL, "i1:title", { text: "A", base: null });
-  keepFieldDraftHere(EMAIL, "i2:title", { text: "B", base: null });
-  forgetFieldDraftHere(EMAIL, "i1:title");
-  forgetFieldDraftHere("other@example.com", "i2:title");
-  expect(JSON.parse(localStorage.getItem(`trackinizer.v2.drafts.${EMAIL}`)!)).toEqual({ "i2:title": { text: "B", base: null } });
-  forgetFieldDraftHere(EMAIL, "i2:title");
-  expect(localStorage.getItem(`trackinizer.v2.drafts.${EMAIL}`)).toBeNull();
-  forgetFieldDraftHere(EMAIL, "i2:title");
-  expect(localStorage.length).toBe(0);
-});
-
-test("forgetting a draft that is not held writes nothing", () => {
-  keepFieldDraftHere(EMAIL, "i1:title", { text: "A", base: null });
-  const set = vi.spyOn(Storage.prototype, "setItem");
-  const remove = vi.spyOn(Storage.prototype, "removeItem");
-  forgetFieldDraftHere(EMAIL, "i9:title");
-  expect(set).not.toHaveBeenCalled();
-  expect(remove).not.toHaveBeenCalled();
   vi.restoreAllMocks();
 });
 

@@ -34,12 +34,6 @@ import { abortStream, STREAM_ROUTES, STREAM_URL, streamOpened } from "../fixture
 
 test.describe.configure({ mode: "serial" });
 
-// The canvas is on by default, and its Chat pane (360 px), its toolbar and a pane
-// header (70 px) take room from the page. This screen leaves the page the 1035 x
-// 650 it had on the default 1280 x 720, so what the suite measures (the width rows
-// wrap at, the height they scroll in) is the page's, not the screen's.
-test.use({ viewport: { width: 1640, height: 790 } });
-
 let server: LiveServer;
 let writer: Writer;
 /** Every test's measurements, logged as one JSON line when the suite ends. */
@@ -48,13 +42,11 @@ const measured: { [test: string]: unknown } = {};
 let whenPaused: Probed | undefined;
 
 /** The stream's route, as `page.route` matches it. */
-// The page's live stream, whichever it uses: the canvas's events stream (the default) or /api/web/subscribe (opted out).
 const SUBSCRIBE = STREAM_ROUTES;
 
 test.beforeAll(async () => {
   test.setTimeout(180_000);
   server = await LiveServer.start();
-  // No Issue is locked on this server, so no rules are in force and the welcome flow never stands over a page.
   writer = new Writer(server.url);
 });
 
@@ -783,7 +775,7 @@ async function holdThings(page: Page): Promise<{ peeked: string; pointer: { x: n
   for (const key of ["j", "j", "j", "x", "j", "x", "k"]) await page.keyboard.press(key);
   await expect(page.locator(".row-line.is-selected")).toHaveCount(2);
   const box = (await page.locator(".view .scroll").boundingBox())!;
-  // Left of where the peek opens, in a page a Chat pane has narrowed: the peek takes up to 45% of the page, from the right.
+  // Left of where the peek opens: the peek takes up to 45% of the page, from the right.
   const pointer = { x: box.x + Math.min(box.width / 3, 120), y: box.y + box.height / 2 };
   await page.mouse.move(pointer.x, pointer.y);
   await page.mouse.wheel(0, 80);

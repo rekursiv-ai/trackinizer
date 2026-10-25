@@ -4,9 +4,6 @@ import { promisify } from "node:util";
 import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, test, streamOpened } from "./fixtures";
 
-// The default path: the canvas is on, so the tab's stream is the canvas's.
-test.use({ canvas: true });
-
 // Live updates against the e2e server: a second client, the Python one, writes
 // while the page watches. Each test filters a list to a label of its own, so
 // rows other spec files create never match it.

@@ -11,10 +11,9 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { chatHandleOf, getChatHead, isChatHandle } from "../api/chats";
+import { isChatHandle } from "../api/chats";
 import { ApiError } from "../api/client";
 import { newUuid } from "../api/idempotency";
-import { relayToCanvas } from "../api/canvasManagement";
 import {
   type FeedActorFacet,
   type FeedEvent,
@@ -29,7 +28,7 @@ import {
   setSessionAudience,
   type Whose,
 } from "../api/sessions";
-import { useMeta, useProfile, useWriteMode } from "../app/boot";
+import { useMeta, useWriteMode } from "../app/boot";
 import { useCommands } from "../commands/registry";
 import { Composer } from "../composer/Composer";
 import { useDrawnFrom } from "../detail/transcript/drawing";
@@ -52,10 +51,6 @@ import { MentionField } from "./MentionField";
 import { Minimap } from "./Minimap";
 import { parseLine, receipt, targetName } from "./send";
 import { useViews } from "./views";
-import { UNNAMED } from "../canvases/names";
-import { useCanvas } from "../canvases/useCanvas";
-import { useContinueInChat } from "../visuals/continueChat";
-import { useReattach } from "../visuals/reattach";
 import { ViewsSection } from "./ViewsRail";
 import "./console.css";
 
@@ -74,9 +69,8 @@ import "./console.css";
  * window only finds agents: a pattern picks among every agent the facets have
  * listed while the console is open (`remember`), so a narrower window drops none.
  *
- * Every read is scoped: to a canvas's agents, or by whose sessions they are
- * (`Whose`): the person's own (Mine, where the console opens outside a named
- * canvas), those of the campaigns they launched, or every one the server lets
+ * Every read is scoped by whose sessions they are (`Whose`): the person's own
+ * (Mine), those of the campaigns they launched, or every one the server lets
  * them read. Sessions their owners made private are left out unless Show private
  * is on; the person flips one of their own between Public and Private in the rail.
  *
@@ -96,34 +90,23 @@ export function ConsoleView() {
   const rail = usePanel(RAIL);
   useCommands([panelCommand(rail)]);
   const [active, setActive] = useState<Active>("1h");
-  // Each canvas and view opens on its own scope (`openingScope`), kept while it stays open whatever the view picks
-  // later; one control switches it, for the canvas and view it was switched in.
-  // Only a user with the canvas has canvases; the first read waits for the one this tab shows, so no feed is read unscoped first.
-  const profile = useProfile();
-  const canvasRead = useCanvas({ enabled: profile.visual_canvas_enabled });
-  const canvas = canvasRead.data ?? null;
-  const scopeKey = `${canvas?.id ?? ""} ${view.id}`;
-  const [scopeFor, setScopeFor] = useState<{ readonly key: string; readonly scope: Scope } | null>(null);
-  const scope: Scope = scopeFor?.key === scopeKey ? scopeFor.scope : openingScope(canvas, view);
-  if (scopeFor?.key !== scopeKey) setScopeFor({ key: scopeKey, scope });
-  const canvasId = scope === "canvas" ? canvas?.id : undefined;
+  // Each view opens on its own scope (`openingScope`), kept while it stays open whatever the view picks later;
+  // one control switches it, for the view it was switched in.
+  const [scopeFor, setScopeFor] = useState<{ readonly key: string; readonly scope: Whose } | null>(null);
+  const scope: Whose = scopeFor?.key === view.id ? scopeFor.scope : openingScope(view);
+  if (scopeFor?.key !== view.id) setScopeFor({ key: view.id, scope });
   const [showHidden, setShowHidden] = useState(false);
-  // A canvas's agents are the assistant's, under no person's account, so its scope reads whoever's they are.
-  const reach: FeedFilters = { ...(canvasId ? { canvas: canvasId } : {}), whose: scope === "canvas" ? "everyone" : scope, ...(showHidden ? { hidden: true } : {}) };
-  // The canvas's own chat is the Chat column, not an agent: widened, its lines are hidden and it is no target.
-  const ownChat = canvas?.conversation_id ? chatHandleOf(canvas.conversation_id) : null;
-  const facets = useFacets(view.range, active, canvasRead.isLoading ? null : { ...EVERY_AGENT, ...reach });
-  const agents = useMemo(() => (facets.data?.actors ?? []).filter(({ actor }) => actor !== ownChat), [facets.data, ownChat]);
+  const reach: FeedFilters = { whose: scope, ...(showHidden ? { hidden: true } : {}) };
+  const facets = useFacets(view.range, active, { ...EVERY_AGENT, ...reach });
+  const agents = useMemo(() => facets.data?.actors ?? [], [facets.data]);
   const seen = useSeen(agents);
   // A pattern picks among the agents the facets know, so its feed waits for them.
-  const waiting = canvasRead.isLoading || (!facets.data && [...view.agents, ...view.rooms].some((pick) => pick.includes("*")));
+  const waiting = !facets.data && [...view.agents, ...view.rooms].some((pick) => pick.includes("*"));
   const picks = waiting ? undefined : feedFilter(view, seen);
   const filter = picks && { ...picks, ...reach };
   // Bumped by a hide or an unhide, which changes what every read lists: the feed is then read afresh.
   const [reread, setReread] = useState(0);
   const hide = useHide(() => setReread((n) => n + 1));
-  const toast = useToast();
-  const { reattach, busy: reattaching } = useReattach(useCallback((message: string) => toast(message, { failed: true }), [toast]));
   const feed = useFeed(view.range, filter, view.level, reread);
   const state = useSyncExternalStore(feed?.subscribe ?? noSubscription, feed?.getSnapshot ?? emptyFeed);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -140,8 +123,8 @@ export function ConsoleView() {
     };
   }, [feed, hub, view.range.live]);
   const visible = useMemo(
-    () => state.held.filter(({ event }) => levelOf(event) <= view.level && event.actor !== ownChat),
-    [state.held, view.level, ownChat],
+    () => state.held.filter(({ event }) => levelOf(event) <= view.level),
+    [state.held, view.level],
   );
   // Counted under the view's picks, its records by kind are its own; with no picks, it is the read above.
   const counting = useFacets(view.range, active, filter ? { actor: filter.actor, room: filter.room, cli: filter.cli, ...reach } : null);
@@ -156,7 +139,7 @@ export function ConsoleView() {
     : [];
   const showing = shown(view, seen);
   const rooms = picked(view.rooms, roomsOf(seen));
-  // Only agents are told things from here: a chat's own box is its canvas's.
+  // Only agents are told things from here: the server refuses a line to a chat.
   const targets = showing.everyone ? [] : toTargets(showing.agents.filter(({ actor }) => !isChatHandle(actor)), rooms);
   // The chips left out of each view, by its id.
   const [leftOut, setLeftOut] = useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
@@ -171,24 +154,12 @@ export function ConsoleView() {
   // The line whose agent was last clicked, for the message box to address; stable, so the lines stay memoised.
   const [adding, setAdding] = useState<{ readonly line: FeedEvent } | null>(null);
   const mention = useCallback((line: FeedEvent) => setAdding({ line }), []);
-  const continueIn = useContinueInChat();
 
   async function send(line: string, key: string): Promise<string> {
     const route = routes.current.get(key) ?? routeOf(line, shownEvents, to);
     routes.current.set(key, route);
     const results = await Promise.allSettled(route.targets.map((target) => sendRoutedMessage(target.target, route.text, target.key)));
-    const sent = receipt(route.targets.map(({ target }) => target), results);
-    // The canvas's chat is told once, what went to the agents that took it. A send that failed
-    // for a target threw above, so a Retry sends every target again under its keys, and tells it then.
-    const accepted = route.targets.filter((_, k) => {
-      const result = results[k];
-      return result?.status === "fulfilled" && result.value.delivered.length > 0;
-    }).map(({ target }) => target);
-    if (!canvas || !accepted.length) return sent;
-    // Only a chat the person posts into is told: the canvas may hold one it forks by typing, which is not theirs to speak into.
-    const told = await ownsChat(canvas.conversation_id)
-      && await relayToCanvas(canvas.id, accepted, route.text, route.relayKey).catch(() => false);
-    return told ? sent : `${sent}; Chat not told`;
+    return receipt(route.targets.map(({ target }) => target), results);
   }
 
   return (
@@ -211,8 +182,6 @@ export function ConsoleView() {
             active={active}
             onActive={view.range.live ? setActive : null}
             onHide={hide}
-            onReattach={mode === "enabled" ? (agent) => void reattach(agent.session_id).then((done) => done && toast(`Reattached ${agent.actor} to Chat.`)) : null}
-            reattaching={reattaching}
           />
           <PickSection
             label="Rooms"
@@ -235,13 +204,8 @@ export function ConsoleView() {
             </div>
             <RangeControls key={JSON.stringify(view.range)} range={view.range} onRange={(range) => change({ ...view, range })} />
             <div className="console-seg" role="group" aria-label="Scope">
-              {canvas ? (
-                <button type="button" aria-pressed={scope === "canvas"} title="Only the agents this canvas's chat started" onClick={() => setScopeFor({ key: scopeKey, scope: "canvas" })}>
-                  This canvas
-                </button>
-              ) : null}
               {WHOSE.map(({ whose, label, title }) => (
-                <button key={whose} type="button" aria-pressed={scope === whose} title={title} onClick={() => setScopeFor({ key: scopeKey, scope: whose })}>
+                <button key={whose} type="button" aria-pressed={scope === whose} title={title} onClick={() => setScopeFor({ key: view.id, scope: whose })}>
                   {label}
                 </button>
               ))}
@@ -283,7 +247,6 @@ export function ConsoleView() {
               held={visible}
               kinds={kinds}
               onMention={mode === "hidden" ? null : mention}
-              onContinue={continueIn}
               scroller={scroller}
               stick={stick}
             />
@@ -451,19 +414,15 @@ function useFacets(range: Range, active: Active, scope: FeedFilters | null) {
 /** A facets read of every agent, room and CLI. */
 const EVERY_AGENT: FeedFilters = { actor: [], room: [], cli: [] };
 
-/** What the console reads: a canvas's agents, or whose sessions among those the person reads. */
-type Scope = "canvas" | Whose;
-
 /**
- * The scope a canvas and a view open on: a named canvas's agents; else Everyone for a view that picks agents,
- * rooms or CLIs, which names them whoever's they are, often a campaign's or a colleague's; else Mine.
+ * The scope a view opens on: Everyone for a view that picks agents, rooms or CLIs, which names them whoever's
+ * they are, often a campaign's or a colleague's; else Mine.
  */
-function openingScope(canvas: { readonly name: string } | null, view: Selection): Scope {
-  if (canvas && !UNNAMED.test(canvas.name)) return "canvas";
+function openingScope(view: Selection): Whose {
   return view.agents.length || view.rooms.length || view.clis.length ? "everyone" : "mine";
 }
 
-/** The scope's choices besides This canvas, each with what it reads. */
+/** The scope's choices, each with what it reads. */
 const WHOSE: readonly { readonly whose: Whose; readonly label: string; readonly title: string }[] = [
   { whose: "mine", label: "Mine", title: "The sessions under your account" },
   { whose: "campaigns", label: "My campaigns", title: "The sessions of the campaigns you launched" },
@@ -514,14 +473,12 @@ function Lines({
   held,
   kinds,
   onMention,
-  onContinue,
   scroller,
   stick,
 }: {
   held: readonly Held[];
   kinds: readonly string[];
   onMention: ((line: FeedEvent) => void) | null;
-  onContinue: ((sessionId: string) => void) | null;
   scroller: RefObject<HTMLDivElement | null>;
   stick: RefObject<boolean>;
 }) {
@@ -532,7 +489,7 @@ function Lines({
   });
   return (
     <ol className="console-lines">
-      {held.map((one) => (one.n >= from ? <ConsoleLine key={one.key} held={one} kinds={kinds} onMention={onMention} onContinue={onContinue} /> : null))}
+      {held.map((one) => (one.n >= from ? <ConsoleLine key={one.key} held={one} kinds={kinds} onMention={onMention} /> : null))}
     </ol>
   );
 }
@@ -552,12 +509,10 @@ export const ConsoleLine = memo(function ConsoleLine({
   held,
   kinds,
   onMention,
-  onContinue = null,
 }: {
   held: Held;
   kinds: readonly string[];
   onMention: ((line: FeedEvent) => void) | null;
-  onContinue?: ((sessionId: string) => void) | null;
 }) {
   const { event, record } = held;
   const drawn = recordView(record);
@@ -577,11 +532,6 @@ export const ConsoleLine = memo(function ConsoleLine({
             {event.actor}
           </b>
         )}
-        {onContinue && isChatHandle(event.actor) ? (
-          <button type="button" className="btn ghost console-continue" onClick={() => onContinue(event.session_id)}>
-            Open canvas
-          </button>
-        ) : null}
       </div>
       <div className="turn-h">
         {event.rooms?.length ? (
@@ -642,15 +592,13 @@ function RangeControls({ range, onRange }: { range: Range; onRange: (range: Rang
 type Route = {
   readonly text: string;
   readonly targets: readonly { readonly target: MessageTarget; readonly key: string }[];
-  /** The key the canvas's chat is told under, so a Retry tells it once. */
-  readonly relayKey: string;
 };
 
 /** `line` read against the events `shown` and the To targets (`parseLine`), each under a fresh key; a line it cannot send throws why. */
 function routeOf(line: string, shown: readonly FeedEvent[], to: readonly MessageTarget[]): Route {
   const parsed = parseLine(line, shown, to);
   if ("problem" in parsed) throw new Error(parsed.problem);
-  return { text: parsed.text, targets: parsed.targets.map((target) => ({ target, key: newUuid() })), relayKey: newUuid() };
+  return { text: parsed.text, targets: parsed.targets.map((target) => ({ target, key: newUuid() })) };
 }
 
 /** Each CLI among `agents`, with its records, the busiest first. */
@@ -694,13 +642,3 @@ function emptyFeed(): FeedState {
 }
 
 const CLOCK = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
-
-/** Whether the person's typing joins this conversation: its head says they read it. */
-async function ownsChat(conversation: string | null): Promise<boolean> {
-  if (conversation === null) return false;
-  try {
-    return (await getChatHead(conversation))?.forks_on_typing === false;
-  } catch {
-    return false;
-  }
-}

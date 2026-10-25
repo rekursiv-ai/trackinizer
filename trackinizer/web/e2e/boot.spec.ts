@@ -1,12 +1,10 @@
-import { expect, failedResource, revealBar, test, route } from "./fixtures";
+import { expect, failedResource, test, route } from "./fixtures";
 
 // The server runs with --no-auth, so every request is the synthetic admin.
 test("the shell boots and shows the signed-in profile", async ({ page }) => {
   await page.goto("/trax/");
   await expect(page).toHaveTitle("Trackinizer");
-  // The account is its avatar until the pointer rests on it; then the address and the role show.
-  const me = (await revealBar(page)).getByRole("button", { name: "Account: no-auth@localhost, admin" });
-  await me.hover();
+  const me = page.getByLabel("Signed in");
   await expect(me.getByText("no-auth@localhost")).toBeVisible();
   await expect(me.getByText("admin", { exact: true })).toBeVisible();
   const favicon = await page.locator('link[rel="icon"]').getAttribute("href");

@@ -41,12 +41,6 @@ export default defineConfig({
       // The bootstrap writes that user's token here, not into the real
       // per-user data directory.
       TRACKINIZER_BOOTSTRAP_TOKEN_FILE: join(tmpdir(), `trackinizer-web-e2e-${port}-bootstrap-token`),
-      // Two notes on what the server provides, which the top bar's Machines menu
-      // lists (e2e/machines-menu.spec.ts).
-      TRACKINIZER_COMPUTE: JSON.stringify([
-        { name: "GPU jobs", about: "Campaigns send their GPU work to a shared queue; nothing to connect." },
-        { name: "Workspace box", about: "Each chat's assistant gets a shell of its own, made for the canvas." },
-      ]),
     },
     url: `http://127.0.0.1:${port}/trax/`,
     // Another checkout's server on this port would serve a different build.
