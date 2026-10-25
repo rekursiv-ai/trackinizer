@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING
 
 import asyncio
@@ -14,17 +15,20 @@ import pytest_asyncio
 
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.preferences import WorkspacesPreference
 from trackinizer.server.store.core import Store
+from trackinizer.server.visuals.canvas_store import new_canvas
+from trackinizer.server.visuals.catalog import default_catalog
 from trackinizer.server.visuals.workspaces import (
-    ScratchWorkspaceError,
     UpdateWorkspace,
     WorkspaceOrder,
     _toggle_id,
     check_workspace,
     create_workspace,
     list_workspaces,
-    open_scratch,
+    next_untitled_title,
+    open_default_workspace,
     remember_opened_canvas,
     set_workspace_order,
     update_workspace,
@@ -63,6 +67,23 @@ def test_workspace_update_and_order_models_refuse_empty_or_duplicate_changes() -
         WorkspaceOrder(ids=[_USER, _USER])
 
 
+@pytest.mark.parametrize(
+    ("titles", "expected"),
+    [
+        ([], "Untitled workspace"),
+        (["Untitled workspace"], "Untitled workspace 2"),
+        (["Untitled workspace", "Untitled workspace 3"], "Untitled workspace 2"),
+        (["Untitled workspace 2", "Research"], "Untitled workspace"),
+        (["untitled workspace", "Untitled workspace 2x"], "Untitled workspace"),
+    ],
+)
+def test_an_untitled_workspace_takes_the_lowest_number_not_taken(
+    titles: list[str],
+    expected: str,
+) -> None:
+    assert next_untitled_title(titles) == expected
+
+
 @pytest_asyncio.fixture(loop_scope="session")
 async def context(
     pglite_engine: PGliteEngine,
@@ -83,13 +104,13 @@ async def context(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_two_first_calls_create_one_scratch_issue(
+async def test_two_first_calls_make_one_untitled_default(
     context: tuple[PGliteEngine, Store],
 ) -> None:
     engine, store = context
     first, second = await asyncio.gather(
-        open_scratch(engine, store=store, user_id=_USER, email=_EMAIL),
-        open_scratch(engine, store=store, user_id=_USER, email=_EMAIL),
+        open_default_workspace(engine, store=store, user_id=_USER, email=_EMAIL),
+        open_default_workspace(engine, store=store, user_id=_USER, email=_EMAIL),
     )
     assert first == second
     async with engine.acquire() as conn:
@@ -98,16 +119,24 @@ async def test_two_first_calls_create_one_scratch_issue(
             "AND labels @> ARRAY['workspace', 'scratch']::text[]",
             _EMAIL,
         )
+    issue = await store.get_inquiry(first)
     assert count == 1
+    assert issue is not None
+    assert issue.title == "Untitled workspace"
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_open_scratch_fast_path_does_not_write_preferences_or_create_an_issue(
+async def test_opening_the_default_again_writes_no_preference_and_makes_no_issue(
     context: tuple[PGliteEngine, Store],
 ) -> None:
     engine, store = context
-    first = await open_scratch(engine, store=store, user_id=_USER, email=_EMAIL)
+    first = await open_default_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+    )
     async with engine.acquire() as conn:
         before = await conn.fetchrow(
             "SELECT preferences, xmin::text AS version FROM users WHERE id = $1",
@@ -120,7 +149,12 @@ async def test_open_scratch_fast_path_does_not_write_preferences_or_create_an_is
             _EMAIL,
         )
 
-    second = await open_scratch(engine, store=store, user_id=_USER, email=_EMAIL)
+    second = await open_default_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+    )
 
     async with engine.acquire() as conn:
         after = await conn.fetchrow(
@@ -175,7 +209,12 @@ async def test_listing_searches_and_orders_pins_and_hidden_workspaces(
     context: tuple[PGliteEngine, Store],
 ) -> None:
     engine, store = context
-    scratch = await open_scratch(engine, store=store, user_id=_USER, email=_EMAIL)
+    default = await open_default_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+    )
     alpha = await create_workspace(
         engine,
         store=store,
@@ -212,37 +251,199 @@ async def test_listing_searches_and_orders_pins_and_hidden_workspaces(
         include_hidden=True,
     )
     assert [item.id for item in visible] == [alpha.id]
-    assert [item.id for item in all_streams] == [scratch, beta.id, alpha.id]
-    assert all_streams[1].hidden
-    assert all_streams[1].pinned
+    # The default sorts as any workspace does: not pinned, so after the pins, oldest.
+    assert [item.id for item in all_streams] == [beta.id, alpha.id, default]
+    assert all_streams[0].hidden
+    assert all_streams[0].pinned
+    assert (all_streams[2].scratch, all_streams[2].pinned) == (True, False)
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_scratch_cannot_be_hidden_but_can_be_pinned(
+async def test_the_default_hides_and_pins_as_any_workspace_does(
     context: tuple[PGliteEngine, Store],
 ) -> None:
     engine, store = context
-    scratch = await open_scratch(engine, store=store, user_id=_USER, email=_EMAIL)
-    with pytest.raises(ScratchWorkspaceError):
+    default = await open_default_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+    )
+    change = partial(
+        update_workspace,
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+        workspace_id=default,
+    )
+
+    hidden = await change(hidden=True)
+    pinned = await change(pinned=True)
+    unpinned = await change(pinned=False)
+    shown = await list_workspaces(engine, user_id=_USER, email=_EMAIL)
+
+    assert hidden is not None
+    assert pinned is not None
+    assert unpinned is not None
+    assert (hidden.hidden, pinned.pinned, unpinned.pinned) == (True, True, False)
+    assert hidden.scratch
+    assert shown == []
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_renaming_the_default_promotes_it_with_its_canvases(
+    context: tuple[PGliteEngine, Store],
+) -> None:
+    """A renamed default is ordinary and keeps every canvas it held; the next is new."""
+    engine, store = context
+    first = await open_default_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+    )
+    loose = uuid.uuid4()
+    async with engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO visual_canvases (id, user_id, metadata, state) "
+            "VALUES ($1, $2, $3, $4)",
+            loose,
+            _USER,
+            {"name": "loose"},
+            {"visuals": []},
+        )
+
+    renamed = await update_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+        workspace_id=first,
+        title="Research",
+    )
+    second = await open_default_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+    )
+    kept = await workspace_info(
+        engine,
+        user_id=_USER,
+        email=_EMAIL,
+        workspace_id=first,
+    )
+    fresh = await workspace_info(
+        engine,
+        user_id=_USER,
+        email=_EMAIL,
+        workspace_id=second,
+    )
+    issue = await store.get_inquiry(first)
+
+    assert renamed is not None
+    assert (renamed.title, renamed.scratch) == ("Research", False)
+    assert issue is not None
+    assert issue.labels == ("workspace",)
+    assert second != first
+    assert kept is not None
+    assert fresh is not None
+    assert [canvas.id for canvas in kept.canvases] == [loose]
+    assert (fresh.title, fresh.scratch, fresh.canvases) == (
+        "Untitled workspace",
+        True,
+        [],
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_next_default_skips_the_numbers_the_users_own_workspaces_hold(
+    context: tuple[PGliteEngine, Store],
+) -> None:
+    engine, store = context
+    for title in ("Untitled workspace", "Untitled workspace 3"):
+        await create_workspace(
+            engine,
+            store=store,
+            user_id=_USER,
+            email=_EMAIL,
+            title=title,
+        )
+    await store.submit_issue(
+        SubmitIssue(
+            title="Untitled workspace 2",
+            account="other@example.com",
+            owner="other@example.com",
+            labels=["workspace"],
+        ),
+        actor="other@example.com",
+    )
+
+    default = await open_default_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+    )
+
+    issue = await store.get_inquiry(default)
+    assert issue is not None
+    assert issue.title == "Untitled workspace 2"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_canvas_made_in_a_hidden_workspace_shows_it_again(
+    context: tuple[PGliteEngine, Store],
+) -> None:
+    """Nothing lands out of sight; a hidden workspace no canvas lands in stays hidden."""
+    engine, store = context
+    default = await open_default_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+    )
+    other = await create_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+        title="Other",
+    )
+    for workspace_id in (default, other.id):
         await update_workspace(
             engine,
             store=store,
             user_id=_USER,
             email=_EMAIL,
-            workspace_id=scratch,
+            workspace_id=workspace_id,
             hidden=True,
         )
-    updated = await update_workspace(
+
+    await new_canvas(
         engine,
-        store=store,
+        user_id=_USER,
+        catalog=default_catalog(),
+        inbound=InboundQueue(),
+        assistant=None,
+        workspace_id=default,
+    )
+
+    listed = await list_workspaces(
+        engine,
         user_id=_USER,
         email=_EMAIL,
-        workspace_id=scratch,
-        pinned=False,
+        include_hidden=True,
     )
-    assert updated is not None
-    assert updated.pinned
+    assert {entry.id: entry.hidden for entry in listed} == {
+        default: False,
+        other.id: True,
+    }
 
 
 @pytest.mark.db_pglite
@@ -308,28 +509,48 @@ async def test_foreign_and_unlabelled_issues_are_not_workspaces(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_info_includes_canvases_and_defaults_legacy_canvases_to_scratch(
+async def test_info_includes_canvases_and_puts_one_in_no_workspace_in_the_default(
     context: tuple[PGliteEngine, Store],
 ) -> None:
     engine, store = context
-    scratch = await open_scratch(engine, store=store, user_id=_USER, email=_EMAIL)
+    default = await open_default_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+    )
+    other = await create_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+        title="Other",
+    )
     async with engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO visual_canvases (id, user_id, metadata, state) "
             "VALUES ($1, $2, $3, $4)",
             uuid.uuid4(),
             _USER,
-            {"name": "scratch-canvas"},
+            {"name": "loose-canvas"},
             {"visuals": []},
         )
     info = await workspace_info(
         engine,
         user_id=_USER,
         email=_EMAIL,
-        workspace_id=scratch,
+        workspace_id=default,
+    )
+    elsewhere = await workspace_info(
+        engine,
+        user_id=_USER,
+        email=_EMAIL,
+        workspace_id=other.id,
     )
     assert info is not None
-    assert [canvas.name for canvas in info.canvases] == ["scratch-canvas"]
+    assert elsewhere is not None
+    assert [canvas.name for canvas in info.canvases] == ["loose-canvas"]
+    assert elsewhere.canvases == []
 
 
 @pytest.mark.db_pglite
@@ -338,7 +559,12 @@ async def test_an_opened_canvas_becomes_its_workspaces_last_and_the_bar_keeps_th
     context: tuple[PGliteEngine, Store],
 ) -> None:
     engine, store = context
-    scratch = await open_scratch(engine, store=store, user_id=_USER, email=_EMAIL)
+    default = await open_default_workspace(
+        engine,
+        store=store,
+        user_id=_USER,
+        email=_EMAIL,
+    )
     research = await create_workspace(
         engine,
         store=store,
@@ -397,9 +623,9 @@ async def test_an_opened_canvas_becomes_its_workspaces_last_and_the_bar_keeps_th
             include_hidden=True,
         )
     }
-    # A canvas with no workspace is Scratch's; the pin set before is kept.
+    # A canvas with no workspace is the default's; the pin set before is kept.
     assert listed[research.id].last_canvas_id == str(second)
-    assert listed[scratch].last_canvas_id == str(loose)
+    assert listed[default].last_canvas_id == str(loose)
     assert listed[research.id].pinned
     info = await workspace_info(
         engine,

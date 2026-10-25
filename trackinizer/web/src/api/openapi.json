@@ -7214,7 +7214,7 @@
       },
       "NewCanvas": {
         "additionalProperties": false,
-        "description": "What a new canvas starts with: its workspace and its provider, either unset.\n\nAn unset workspace is the owner's Scratch, and an unset provider their\n``chat_provider`` preference. A provider with no machine to run on is taken all\nthe same: nothing runs until a machine is picked.",
+        "description": "What a new canvas starts with: its workspace and its provider, either unset.\n\nAn unset workspace is the owner's default workspace, and an unset provider their\n``chat_provider`` preference. A provider with no machine to run on is taken all\nthe same: nothing runs until a machine is picked.",
         "properties": {
           "provider": {
             "anyOf": [
@@ -12877,6 +12877,7 @@
             "type": "boolean"
           },
           "scratch": {
+            "description": "Whether this is your default workspace, where a chat or a session with no other home lands. Renaming it makes it an ordinary workspace.",
             "title": "Scratch",
             "type": "boolean"
           },
@@ -12979,6 +12980,7 @@
             "type": "boolean"
           },
           "scratch": {
+            "description": "Whether this is your default workspace, where a chat or a session with no other home lands. Renaming it makes it an ordinary workspace.",
             "title": "Scratch",
             "type": "boolean"
           },
@@ -14686,7 +14688,7 @@
         "summary": "List Canvases Route"
       },
       "post": {
-        "description": "Open the canvas the principal changed last, making the first if none.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: The principal's canvas changed last.",
+        "description": "Open the canvas the principal changed last, making the first if none.\n\nThe first lands in the principal's default workspace.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: The principal's canvas changed last.",
         "operationId": "create_canvas_route_api_canvases_post",
         "responses": {
           "200": {
@@ -14705,7 +14707,7 @@
     },
     "/api/canvases/for-chat/{conversation_id}": {
       "post": {
-        "description": "Find the principal's canvas that holds a chat, or make one bound to it.\n\nA chat that was deleted is 410 ``chat_deleted``, and no canvas is bound to it.\n\nArgs:\n  conversation_id: The science chat to continue.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: The canvas that holds the chat.",
+        "description": "Find the principal's canvas that holds a chat, or make one bound to it.\n\nA canvas made for it lands in the principal's default workspace. A chat that was\ndeleted is 410 ``chat_deleted``, and no canvas is bound to it.\n\nArgs:\n  conversation_id: The science chat to continue.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: The canvas that holds the chat.",
         "operationId": "canvas_for_chat_route_api_canvases_for_chat__conversation_id__post",
         "parameters": [
           {
@@ -14937,7 +14939,7 @@
     },
     "/api/canvases/new": {
       "post": {
-        "description": "Make a canvas named with the lowest free ``unnamed-canvas#N``.\n\nIt starts on the ``provider`` the body names, else on the caller's\n``chat_provider`` preference. A provider with no machine to run on is taken all\nthe same: nothing runs until a machine is picked. A ``claude`` or ``codex``\ncanvas is given its chat and the chat's session at once, which its partner\nnames, so a run can be started attached to it before any line.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n  body: Optional workspace and provider; an unset workspace selects Scratch.\n\nReturns:\n  state: The new canvas.",
+        "description": "Make a canvas named with the lowest free ``unnamed-canvas#N``.\n\nIt starts on the ``provider`` the body names, else on the caller's\n``chat_provider`` preference. A provider with no machine to run on is taken all\nthe same: nothing runs until a machine is picked. A ``claude`` or ``codex``\ncanvas is given its chat and the chat's session at once, which its partner\nnames, so a run can be started attached to it before any line.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n  body: Optional workspace and provider; an unset workspace selects the default\n    workspace.\n\nReturns:\n  state: The new canvas.",
         "operationId": "new_canvas_route_api_canvases_new_post",
         "requestBody": {
           "content": {
@@ -22741,7 +22743,7 @@
     },
     "/api/sessions/{session_id}/place": {
       "post": {
-        "description": "Place a session in the caller's workspace and a canvas; the server decides.\n\nThe first rule that matches wins: the canvas the run started from, when it is the\ncaller's; the placement the session already has; the workspace of the caller's\nnewest earlier session on the same git branch, in a new canvas; else the caller's\nScratch, in a new canvas. Placing a placed session returns its placement. A\nservice account's session and a science chat are not placed: both ids are null.\n\nArgs:\n  session_id: The session, which the caller's own key opened.\n  body: The canvas the run started from, and its git checkout.\n  request: Request carrying the database engine and store.\n  identity: The session's own account and key.\n\nReturns:\n  placement: The workspace and canvas of the session.",
+        "description": "Place a session in the caller's workspace and a canvas; the server decides.\n\nThe first rule that matches wins: the canvas the run started from, when it is the\ncaller's; the placement the session already has; the workspace of the caller's\nnewest earlier session on the same git branch, in a new canvas; else the caller's\ndefault workspace, in a new canvas. Placing a placed session returns its\nplacement. A service account's session and a science chat are not placed: both\nids are null.\n\nArgs:\n  session_id: The session, which the caller's own key opened.\n  body: The canvas the run started from, and its git checkout.\n  request: Request carrying the database engine and store.\n  identity: The session's own account and key.\n\nReturns:\n  placement: The workspace and canvas of the session.",
         "operationId": "place_session_route_api_sessions__session_id__place_post",
         "parameters": [
           {
@@ -25240,7 +25242,7 @@
     },
     "/api/workspaces": {
       "get": {
-        "description": "List the caller's workspaces, optionally searching and including hidden.\n\nArgs:\n  request: Request carrying the database engine and store.\n  identity: Authenticated browser account.\n  q: Optional title substring.\n  hidden: Whether to include hidden workspaces.\n  asker: The account the assistant reads for, when supplied.\n\nReturns:\n  workspaces: Matching workspaces in bar order.",
+        "description": "List the caller's workspaces, optionally searching and including hidden.\n\nListing makes no default workspace: one is made when something lands in it.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n  q: Optional title substring.\n  hidden: Whether to include hidden workspaces.\n  asker: The account the assistant reads for, when supplied.\n\nReturns:\n  workspaces: Matching workspaces in bar order.",
         "operationId": "list_workspaces_route_api_workspaces_get",
         "parameters": [
           {
@@ -25436,7 +25438,7 @@
         "summary": "Workspace Info Route"
       },
       "patch": {
-        "description": "Rename or change visibility and pin state on an owned workspace.\n\nArgs:\n  workspace_id: Issue to update.\n  body: Title and/or hidden and pinned changes.\n  request: Request carrying the database engine and store.\n  identity: Authenticated browser account.\n\nReturns:\n  workspace: The updated Issue summary.",
+        "description": "Rename or change visibility and pin state on an owned workspace.\n\nRenaming the default workspace makes it an ordinary one.\n\nArgs:\n  workspace_id: Issue to update.\n  body: Title and/or hidden and pinned changes.\n  request: Request carrying the database engine and store.\n  identity: Authenticated browser account.\n\nReturns:\n  workspace: The updated Issue summary.",
         "operationId": "update_workspace_route_api_workspaces__workspace_id__patch",
         "parameters": [
           {
@@ -25470,9 +25472,6 @@
               }
             },
             "description": "Successful Response"
-          },
-          "409": {
-            "description": "Scratch cannot be hidden."
           },
           "422": {
             "content": {

@@ -15,14 +15,12 @@ from trackinizer.server.api.session_access import resolve_asker
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.workspaces import (
     CreateWorkspace,
-    ScratchWorkspaceError,
     UpdateWorkspace,
     WorkspaceInfo,
     WorkspaceOrder,
     WorkspaceSummary,
     create_workspace,
     list_workspaces,
-    open_scratch,
     remember_opened_canvas,
     set_workspace_order,
     update_workspace,
@@ -43,8 +41,10 @@ async def list_workspaces_route(
 ) -> list[WorkspaceSummary]:
     """List the caller's workspaces, optionally searching and including hidden.
 
+    Listing makes no default workspace: one is made when something lands in it.
+
     Args:
-      request: Request carrying the database engine and store.
+      request: Request carrying the database engine.
       identity: Authenticated browser account.
       q: Optional title substring.
       hidden: Whether to include hidden workspaces.
@@ -75,12 +75,6 @@ async def list_workspaces_route(
         if resolved_id is None:
             return []
         user_id = from_plain(resolved_id, uuid.UUID)
-    await open_scratch(
-        engine,
-        store=get_store(request),
-        user_id=user_id,
-        email=email,
-    )
     return await list_workspaces(
         engine,
         user_id=user_id,
@@ -146,11 +140,7 @@ async def set_workspace_order_route(
     return entries
 
 
-@router.patch(
-    "/api/workspaces/{workspace_id}",
-    response_model=WorkspaceSummary,
-    responses={409: {"description": "Scratch cannot be hidden."}},
-)
+@router.patch("/api/workspaces/{workspace_id}", response_model=WorkspaceSummary)
 async def update_workspace_route(
     workspace_id: uuid.UUID,
     body: UpdateWorkspace,
@@ -158,6 +148,8 @@ async def update_workspace_route(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> WorkspaceSummary:
     """Rename or change visibility and pin state on an owned workspace.
+
+    Renaming the default workspace makes it an ordinary one.
 
     Args:
       workspace_id: Issue to update.
@@ -170,22 +162,16 @@ async def update_workspace_route(
 
     """
     require_browser(identity)
-    try:
-        summary = await update_workspace(
-            engine_of(request),
-            store=get_store(request),
-            user_id=identity.user_id,
-            email=identity.email,
-            workspace_id=workspace_id,
-            title=body.title,
-            hidden=body.hidden,
-            pinned=body.pinned,
-        )
-    except ScratchWorkspaceError as error:
-        raise HTTPException(
-            status_code=409,
-            detail="Scratch cannot be hidden",
-        ) from error
+    summary = await update_workspace(
+        engine_of(request),
+        store=get_store(request),
+        user_id=identity.user_id,
+        email=identity.email,
+        workspace_id=workspace_id,
+        title=body.title,
+        hidden=body.hidden,
+        pinned=body.pinned,
+    )
     if summary is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return summary

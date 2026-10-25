@@ -25,6 +25,7 @@ from trackinizer.server.preferences import (
     write_preferences,
 )
 from trackinizer.server.store.deleted_chats import (
+    chat_was_deleted,
     refuse_a_deleted_chat,
     session_was_purged,
 )
@@ -84,7 +85,11 @@ from trackinizer.server.visuals.screens import (
     read_screen,
     wire_marks,
 )
-from trackinizer.server.visuals.workspaces import check_workspace, open_scratch
+from trackinizer.server.visuals.workspaces import (
+    check_workspace,
+    open_default_workspace,
+    show_workspace,
+)
 from trackinizer.types.errors import ChatDeletedError, ConflictError
 from trackinizer.wire.audience import OPEN
 from trackinizer.wire.bodies import SubmitAgentSession, SubmitArtifact
@@ -637,37 +642,49 @@ async def read_chat_provider(
 async def open_latest_canvas(
     engine: DatabaseEngine,
     *,
+    store: Store,
     user_id: uuid.UUID,
+    email: str,
     catalog: VisualCatalogBody,
     inbound: InboundQueue,
     assistant: Assistant | None,
-    workspace_id: uuid.UUID | None = None,
 ) -> CanvasState:
     """Return the canvas the user changed last, creating the first once.
 
     Hidden canvases do not reopen from the canvas list. If none remain visible, a
-    new canvas is made. Two first requests that race read the visible winner.
+    new canvas is made in the user's default workspace, which is made only then.
+    Two first requests that race read the visible winner.
 
     Args:
       engine: Database connection source.
+      store: Store that makes the default workspace if a canvas lands in it.
       user_id: Owner of the canvases.
+      email: The owner's account, which owns the default workspace.
       catalog: Trusted visual definitions and the initial selection.
       inbound: In-process poller leases.
       assistant: The configured assistant, if any.
-      workspace_id: Workspace for a newly created first canvas, if set.
 
     Returns:
       state: The existing or newly created canvas, with its partner.
 
     """
+    latest = vetted_sql(
+        _SELECT_CANVAS,
+        "WHERE user_id = $1 AND coalesce((metadata->>'hidden')::boolean, FALSE) "
+        "= FALSE AND NOT metadata ? 'session_id' "
+        "ORDER BY modified_at DESC, id DESC LIMIT 1",
+    )
     async with engine.acquire() as conn:
-        latest = vetted_sql(
-            _SELECT_CANVAS,
-            "WHERE user_id = $1 AND coalesce((metadata->>'hidden')::boolean, FALSE) "
-            "= FALSE AND NOT metadata ? 'session_id' "
-            "ORDER BY modified_at DESC, id DESC LIMIT 1",
-        )
         row = await conn.fetchrow(latest, user_id)
+    workspace_id = None
+    if row is None:
+        workspace_id = await open_default_workspace(
+            engine,
+            store=store,
+            user_id=user_id,
+            email=email,
+        )
+    async with engine.acquire() as conn:
         if row is None:
             names = await conn.fetch(
                 "SELECT metadata->>'name' AS name FROM visual_canvases "
@@ -871,23 +888,27 @@ async def clear_chat_canvas(
 async def canvas_for_chat(
     engine: DatabaseEngine,
     *,
+    store: Store,
     user_id: uuid.UUID,
+    email: str,
     conversation_id: uuid.UUID,
     catalog: VisualCatalogBody,
     inbound: InboundQueue,
     assistant: Assistant | None,
-    workspace_id: uuid.UUID | None = None,
 ) -> CanvasState:
     """Find the user's canvas that holds a conversation, or make one bound to it.
 
+    A canvas made for it lands in the user's default workspace, made only then.
+
     Args:
       engine: Database connection source.
+      store: Store that makes the default workspace if a canvas lands in it.
       user_id: Owner of the canvas.
+      email: The owner's account, which owns the default workspace.
       conversation_id: The science chat to continue.
       catalog: Trusted visual definitions and the initial selection.
       inbound: In-process poller leases.
       assistant: The configured assistant, if any.
-      workspace_id: Workspace for a newly created chat canvas, if set.
 
     Returns:
       state: The canvas that holds the conversation, with its partner.
@@ -896,6 +917,25 @@ async def canvas_for_chat(
       ChatDeletedError: The conversation was deleted.
 
     """
+    async with engine.acquire() as conn:
+        held = await _chat_canvas_row(
+            conn,
+            user_id=user_id,
+            conversation_id=conversation_id,
+        )
+        # A deleted chat is refused below, with nothing landed for it.
+        lands = held is None and not await chat_was_deleted(
+            conn,
+            conversation_id=conversation_id,
+        )
+    workspace_id = None
+    if lands:
+        workspace_id = await open_default_workspace(
+            engine,
+            store=store,
+            user_id=user_id,
+            email=email,
+        )
     async with engine.acquire() as conn, tx(conn):
         await refuse_a_deleted_chat(conn, conversation_id=conversation_id)
         row = await _chat_canvas_row(
@@ -1512,7 +1552,7 @@ async def settings_refs_for_chat(
             str(conversation_id),
         )
     if row is None:
-        workspace_id = await open_scratch(
+        workspace_id = await open_default_workspace(
             store.engine,
             store=store,
             user_id=user_id,
@@ -1546,7 +1586,7 @@ async def settings_refs_for_chat(
                 )
     workspace_id = canvas.workspace_id
     if workspace_id is None:
-        workspace_id = await open_scratch(
+        workspace_id = await open_default_workspace(
             store.engine,
             store=store,
             user_id=user_id,
@@ -2839,7 +2879,7 @@ async def _insert_canvas(
         session_id=session_id,
         clear_key=clear_key,
     )
-    return await conn.fetchrow(
+    row = await conn.fetchrow(
         vetted_sql(
             "INSERT INTO visual_canvases (id, user_id, metadata, state) "
             "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
@@ -2850,6 +2890,11 @@ async def _insert_canvas(
         canvas.model_dump(mode="json", exclude_none=True),
         data.model_dump(mode="json"),
     )
+    # Nothing lands out of sight: a session that follows its git branch, or anything
+    # with no other home, can land in a workspace its owner hid.
+    if row is not None and workspace_id is not None:
+        await show_workspace(conn, user_id=user_id, workspace_id=workspace_id)
+    return row
 
 
 # A racing create can take the name between the read and the insert, so the name is

@@ -15,9 +15,12 @@ import uuid
 
 from treekle import from_plain
 
-from trackinizer.server.notify import tx
+from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.visuals.canvas_store import new_session_canvas
-from trackinizer.server.visuals.workspaces import check_workspace, open_scratch
+from trackinizer.server.visuals.workspaces import (
+    check_workspace,
+    default_workspace_in,
+)
 from trackinizer.wire.wire_science_chat import CHAT_SESSION_PREFIX
 from trackinizer.wire.wire_service_accounts import is_service_address
 from trackinizer.wire.wire_sessions import (
@@ -96,10 +99,11 @@ async def place_session(
     2. The session is already placed, or has a canvas made for it: keep them.
     3. The caller's newest earlier session on the same git branch has a workspace:
        that workspace, in a new canvas.
-    4. The caller's Scratch workspace, in a new canvas.
+    4. The caller's default workspace, in a new canvas.
 
-    Placing a placed session returns its placement. The labels and the edge follow
-    the canvas's commit, so a retry converges.
+    The default is made only for a session that lands in it. Placing a placed
+    session returns its placement. The labels and the edge follow the canvas's
+    commit, so a retry converges.
 
     Args:
       engine: Database connection source.
@@ -118,8 +122,7 @@ async def place_session(
     if not is_placed(session):
         return SessionPlacement()
     label = None if body.git is None else git_label(body.git)
-    scratch = await open_scratch(engine, store=store, user_id=user_id, email=email)
-    async with engine.acquire() as conn, tx(conn):
+    async with notify_after_commit(), engine.acquire() as conn, tx(conn):
         # Held to the commit, so two placements of one session make one canvas.
         await conn.execute(
             "SELECT 1 FROM inquiries WHERE id = $1 FOR UPDATE",
@@ -132,8 +135,14 @@ async def place_session(
             email=email,
             canvas=body.canvas,
             git=label,
-            scratch=scratch,
         )
+        if workspace_id is None:
+            workspace_id = await default_workspace_in(
+                conn,
+                store=store,
+                user_id=user_id,
+                email=email,
+            )
         if canvas_id is None:
             canvas_id = await new_session_canvas(
                 conn,
@@ -253,9 +262,8 @@ async def _decide(
     email: str,
     canvas: uuid.UUID | None,
     git: str | None,
-    scratch: uuid.UUID,
-) -> tuple[uuid.UUID, uuid.UUID | None]:
-    """Apply the four rules; the canvas is ``None`` when a new one is to be made."""
+) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    """Apply the four rules; None is the default workspace, or a new canvas to make."""
     if canvas is not None:
         row = await conn.fetchrow(
             "SELECT metadata->>'workspace_id' AS workspace FROM visual_canvases "
@@ -265,7 +273,7 @@ async def _decide(
         )
         if row is not None:
             owned = await _owned(conn, email=email, workspace=row["workspace"])
-            return owned or scratch, canvas
+            return owned, canvas
     edge = await conn.fetchval(_WORKSPACE_EDGES, session.id)
     made = await conn.fetchval(
         "SELECT id FROM visual_canvases WHERE user_id = $1 "
@@ -282,7 +290,7 @@ async def _decide(
         ),
     )
     if edge is not None or made is not None:
-        workspace = from_plain(edge, uuid.UUID) if edge is not None else scratch
+        workspace = None if edge is None else from_plain(edge, uuid.UUID)
         return workspace, None if made is None else from_plain(made, uuid.UUID)
     if git is not None:
         earlier = await conn.fetchval(
@@ -301,7 +309,7 @@ async def _decide(
         )
         if earlier is not None:
             return from_plain(earlier, uuid.UUID), None
-    return scratch, None
+    return None, None
 
 
 async def _owned(

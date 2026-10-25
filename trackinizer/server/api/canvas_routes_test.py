@@ -95,7 +95,7 @@ from trackinizer.server.visuals.catalog import (
 )
 from trackinizer.server.visuals.workspaces import (
     SetCanvasWorkspace,
-    open_scratch,
+    open_default_workspace,
 )
 from trackinizer.wire.wire_science_chat import (
     SCIENCE_CHAT_LABEL,
@@ -142,18 +142,18 @@ async def _clear_chat_fake(
     return results.pop(0)
 
 
-async def _open_scratch_fake(
+async def _open_default_fake(
     engine: DatabaseEngine,
     *,
     store: Store,
     user_id: uuid.UUID,
     email: str,
     calls: list[tuple[str, object]],
-    scratch_id: uuid.UUID,
+    default_id: uuid.UUID,
 ) -> uuid.UUID:
     del engine, store, user_id, email
-    calls.append(("scratch", None))
-    return scratch_id
+    calls.append(("default", None))
+    return default_id
 
 
 async def _check_workspace_fake(
@@ -2161,7 +2161,7 @@ async def _seed_settings_chat(
     monkeypatch: pytest.MonkeyPatch,
     legacy: bool,
 ) -> _SettingsChat:
-    """Prepare a chat with its Scratch and personal settings rows already pinned."""
+    """Prepare a chat with its default workspace and personal settings rows pinned."""
     monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
     await seed_accounts(store)
     conversation_id = uuid.uuid4()
@@ -2171,7 +2171,7 @@ async def _seed_settings_chat(
         user_id=TEST_USER_ID,
         conversation_id=conversation_id,
     )
-    await open_scratch(
+    await open_default_workspace(
         store.engine,
         store=store,
         user_id=TEST_USER_ID,
@@ -2410,7 +2410,7 @@ async def test_assistant_settings_refs_include_the_head_session(
 async def test_settings_refs_for_chat_return_the_pinned_rows(
     settings_chat: _SettingsChat,
 ) -> None:
-    """The store resolves Scratch, the chat session, and personal settings."""
+    """The store resolves the default workspace, the chat session and settings."""
     refs = await settings_refs_for_chat(
         settings_chat.store,
         user_id=TEST_USER_ID,
@@ -2588,12 +2588,12 @@ def _fake_visual_catalog(request: Request) -> Canvas:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_new_canvas_selects_a_workspace_after_opening_scratch(
+async def test_new_canvas_in_a_chosen_workspace_opens_no_default(
     monkeypatch: pytest.MonkeyPatch,
     pglite_engine: PGliteEngine,
 ) -> None:
     calls: list[tuple[str, object]] = []
-    scratch_id, chosen_id = uuid.uuid4(), uuid.uuid4()
+    default_id, chosen_id = uuid.uuid4(), uuid.uuid4()
     store = Store(pglite_engine, embed=StubEmbedder())
     _patch_canvas_route_dependencies(
         monkeypatch,
@@ -2611,8 +2611,8 @@ async def test_new_canvas_selects_a_workspace_after_opening_scratch(
 
     monkeypatch.setattr(
         canvas_routes,
-        "open_scratch",
-        partial(_open_scratch_fake, calls=calls, scratch_id=scratch_id),
+        "open_default_workspace",
+        partial(_open_default_fake, calls=calls, default_id=default_id),
     )
     monkeypatch.setattr(
         canvas_routes,
@@ -2633,7 +2633,6 @@ async def test_new_canvas_selects_a_workspace_after_opening_scratch(
 
     assert made == state
     assert calls == [
-        ("scratch", None),
         ("check", None),
         ("new", chosen_id),
         ("provider", "codex"),
@@ -2642,12 +2641,12 @@ async def test_new_canvas_selects_a_workspace_after_opening_scratch(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_new_canvas_defaults_to_the_scratch_workspace(
+async def test_new_canvas_defaults_to_the_default_workspace(
     monkeypatch: pytest.MonkeyPatch,
     pglite_engine: PGliteEngine,
 ) -> None:
     calls: list[tuple[str, object]] = []
-    scratch_id = uuid.uuid4()
+    default_id = uuid.uuid4()
     store = Store(pglite_engine, embed=StubEmbedder())
     _patch_canvas_route_dependencies(
         monkeypatch,
@@ -2666,8 +2665,8 @@ async def test_new_canvas_defaults_to_the_scratch_workspace(
 
     monkeypatch.setattr(
         canvas_routes,
-        "open_scratch",
-        partial(_open_scratch_fake, calls=[], scratch_id=scratch_id),
+        "open_default_workspace",
+        partial(_open_default_fake, calls=[], default_id=default_id),
     )
     monkeypatch.setattr(
         canvas_routes,
@@ -2680,7 +2679,57 @@ async def test_new_canvas_defaults_to_the_scratch_workspace(
         identity=make_test_identity(api_key_id=None),
     )
 
-    assert calls == [("new", scratch_id)]
+    assert calls == [("new", default_id)]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_only_a_canvas_made_with_no_workspace_makes_the_next_default(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Opening the app, a chat or a workspace's new canvas leaves a renamed default."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    conversation_id = uuid.uuid4()
+    await seed_science_chat(store, conversation_id=conversation_id)
+    browser()
+    first = json_loads((await client.post("/api/canvases")).content, dict[str, object])
+    default = from_plain(first["workspace_id"], str)
+    bound = await client.post(f"/api/canvases/for-chat/{conversation_id}")
+    renamed = await client.patch(f"/api/workspaces/{default}", json={"title": "Paper"})
+    other = json_loads(
+        (await client.post("/api/workspaces", json={"title": "Other"})).content,
+        dict[str, object],
+    )
+
+    opened = [
+        await client.post("/api/canvases"),
+        await client.post(f"/api/canvases/for-chat/{conversation_id}"),
+        await client.post("/api/canvases/new", json={"workspace_id": other["id"]}),
+    ]
+    before = await _default_titles(store)
+    landed = json_loads(
+        (await client.post("/api/canvases/new")).content,
+        dict[str, object],
+    )
+
+    assert (bound.status_code, renamed.status_code) == (200, 200)
+    assert [answer.status_code for answer in opened] == [200, 200, 200]
+    assert before == []
+    assert await _default_titles(store) == [
+        (from_plain(landed["workspace_id"], str), "Untitled workspace"),
+    ]
+    assert landed["workspace_id"] != default
+
+
+async def _default_titles(store: Store) -> list[tuple[str, str]]:
+    """Return the id and title of each Issue that marks a default workspace."""
+    async with store.engine.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id::text AS id, title FROM inquiries "
+            "WHERE labels @> ARRAY['workspace', 'scratch']::text[] ORDER BY seq",
+        )
+    return [(from_plain(row["id"], str), from_plain(row["title"], str)) for row in rows]
 
 
 @pytest.mark.db_pglite

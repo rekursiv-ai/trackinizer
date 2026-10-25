@@ -31,15 +31,16 @@ import pytest_asyncio
 from trackinizer.lib import postgres
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.notify import NOTIFY_CHANNEL
-from trackinizer.server.sql import load_sql
+from trackinizer.server.notify import NOTIFY_CHANNEL, tx
+from trackinizer.server.sql import load_sql, schema_migrations
 from trackinizer.server.store.core import Store
 from trackinizer.types.change_log import Change
+from trackinizer.wire.bodies import SubmitIssue
 from trackinizer.wire.filters import NON_NULLABLE_COLUMNS
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
 
@@ -1928,6 +1929,233 @@ async def test_migration_051_gives_a_part_the_key_that_opened_it(
     assert migrated == fresh
     assert held is None
     assert kept == key
+
+
+_KEPT_USER = uuid.UUID(int=0x5901)
+_NAMED_USER = uuid.UUID(int=0x5902)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_059_makes_scratch_the_default_and_promotes_a_renamed_one(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """A 058 database's Scratch comes out the default, "Untitled workspace".
+
+    A Scratch someone renamed was named, so it is promoted as a rename now promotes:
+    it keeps its title, loses the mark, and keeps its canvases in no workspace. Each
+    change is logged, the new title is embedded, and a replay changes nothing.
+    """
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    ids = await _seed_scratches(store)
+    async with pglite_engine.acquire() as conn:
+        embedded_before = await _same_embedding(conn, ids["kept"], ids["reference"])
+
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        workspaces = await _workspace_marks(conn, ids)
+        canvases = await _canvas_workspaces(conn)
+        embedded_after = await _same_embedding(conn, ids["kept"], ids["reference"])
+        logged = await conn.fetch(
+            "SELECT subject_id, kind, old_title, new_title, old_labels, new_labels "
+            "FROM change_log WHERE actor = 'schema.059' ORDER BY kind DESC",
+        )
+        await conn.execute(load_sql("schema.059"))
+        replayed = await conn.fetchval(
+            "SELECT count(*) FROM change_log WHERE actor = 'schema.059'",
+        )
+
+    assert workspaces == {
+        "kept": ("Untitled workspace", ["workspace", "scratch"]),
+        "named": ("Inbox", ["workspace"]),
+        "ordinary": ("Scratch", ["workspace"]),
+    }
+    assert canvases == {
+        ids["kept_loose"]: None,
+        ids["named_loose"]: str(ids["named"]),
+        ids["named_placed"]: str(ids["reference"]),
+    }
+    assert (embedded_before, embedded_after) == (False, True)
+    assert [tuple(row) for row in logged] == [
+        (ids["kept"], "title", "Scratch", "Untitled workspace", None, None),
+        (ids["named"], "labels", None, None, ["workspace", "scratch"], ["workspace"]),
+    ]
+    assert replayed == len(logged)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_default_workspace_rollback_puts_scratch_back(
+    pglite_engine: postgres.PGliteEngine,
+) -> None:
+    """The operator's rollback returns each untitled default to Scratch, shown.
+
+    The Scratch the migration promoted is marked again; a later default that is not a
+    person's first stays as the old build would list it. Startup never runs the
+    rollback, and the next boot migrates again.
+    """
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    ids = await _seed_scratches(store)
+    await store.bootstrap()
+    ids["later"] = await store.submit_issue(
+        SubmitIssue(
+            title="Untitled workspace 2",
+            account="named@x.y",
+            owner="named@x.y",
+            labels=["workspace", "scratch"],
+            status="active",
+        ),
+        actor="named@x.y",
+    )
+    async with pglite_engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET preferences = jsonb_build_object('workspaces', "
+            "jsonb_build_object('hidden', jsonb_build_array($2::text, $3::text))) "
+            "WHERE id = $1",
+            _KEPT_USER,
+            str(ids["kept"]),
+            str(ids["ordinary"]),
+        )
+        async with tx(conn):
+            await conn.execute(load_sql("default_workspace_down"))
+        rolled = await _workspace_marks(conn, ids)
+        hidden = await conn.fetchval(
+            "SELECT preferences->'workspaces'->'hidden' FROM users WHERE id = $1",
+            _KEPT_USER,
+        )
+        ledger = await conn.fetchval(
+            "SELECT count(*) FROM applied_migrations WHERE name = 'schema.059.sql'",
+        )
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        again = await _workspace_marks(conn, ids)
+
+    assert rolled == {
+        "kept": ("Scratch", ["workspace", "scratch"]),
+        "named": ("Inbox", ["workspace", "scratch"]),
+        "ordinary": ("Scratch", ["workspace"]),
+        "later": ("Untitled workspace 2", ["workspace", "scratch"]),
+    }
+    assert from_plain(hidden, list[str]) == [str(ids["ordinary"])]
+    assert ledger == 0
+    assert again == {
+        "kept": ("Untitled workspace", ["workspace", "scratch"]),
+        "named": ("Inbox", ["workspace"]),
+        "ordinary": ("Scratch", ["workspace"]),
+        "later": ("Untitled workspace 2", ["workspace", "scratch"]),
+    }
+    assert "default_workspace_down.sql" not in {name for name, _ in schema_migrations()}
+
+
+# The decoys are a workspace titled Scratch without the mark and one titled "Untitled
+# workspace", whose embedding a re-titled Scratch must come to share.
+async def _seed_scratches(store: Store) -> dict[str, uuid.UUID]:
+    """Make two people's Scratch as a 058 server left it, one renamed, and decoys."""
+    async with store.engine.acquire() as conn:
+        for user_id, email in ((_KEPT_USER, "kept@x.y"), (_NAMED_USER, "named@x.y")):
+            await conn.execute(
+                "INSERT INTO users (id, email, name, role, status) "
+                "VALUES ($1, $2, 'Person', 'writer', 'active')",
+                user_id,
+                email,
+            )
+    ids = {
+        name: await store.submit_issue(
+            SubmitIssue(
+                title=title,
+                account=email,
+                owner=email,
+                labels=labels,
+                status="active",
+            ),
+            actor=email,
+        )
+        for name, email, title, labels in (
+            ("kept", "kept@x.y", "Scratch", ["workspace", "scratch"]),
+            ("named", "named@x.y", "Inbox", ["workspace", "scratch"]),
+            ("ordinary", "kept@x.y", "Scratch", ["workspace"]),
+            ("reference", "named@x.y", "Untitled workspace", ["workspace"]),
+        )
+    }
+    async with store.engine.acquire() as conn:
+        for name, user_id, metadata in (
+            ("kept_loose", _KEPT_USER, {"name": "kept-loose"}),
+            ("named_loose", _NAMED_USER, {"name": "named-loose"}),
+            (
+                "named_placed",
+                _NAMED_USER,
+                {"name": "named-placed", "workspace_id": str(ids["reference"])},
+            ),
+        ):
+            ids[name] = uuid.uuid4()
+            await conn.execute(
+                "INSERT INTO visual_canvases (id, user_id, metadata, state) "
+                "VALUES ($1, $2, $3, $4)",
+                ids[name],
+                user_id,
+                metadata,
+                {"visuals": []},
+            )
+        await conn.execute(
+            "DELETE FROM applied_migrations WHERE name = 'schema.059.sql'",
+        )
+    return ids
+
+
+async def _workspace_marks(
+    conn: Conn,
+    ids: Mapping[str, uuid.UUID],
+) -> dict[str, tuple[str, list[str]]]:
+    """Read the title and labels of each seeded workspace, by its seed name."""
+    names = {
+        ids[name]: name
+        for name in ("kept", "named", "ordinary", "later")
+        if name in ids
+    }
+    rows = await conn.fetch(
+        "SELECT id, title, labels FROM inquiries WHERE id = ANY($1::uuid[])",
+        list(names),
+    )
+    return {
+        names[from_plain(row["id"], uuid.UUID)]: (
+            from_plain(row["title"], str),
+            from_plain(row["labels"], list[str]),
+        )
+        for row in rows
+    }
+
+
+async def _canvas_workspaces(conn: Conn) -> dict[uuid.UUID, str | None]:
+    """Read every canvas's stored workspace id."""
+    rows = await conn.fetch(
+        "SELECT id, metadata->>'workspace_id' AS workspace FROM visual_canvases",
+    )
+    return {
+        from_plain(row["id"], uuid.UUID): from_plain(
+            row["workspace"],
+            str,
+            default=None,
+        )
+        for row in rows
+    }
+
+
+async def _same_embedding(conn: Conn, first: uuid.UUID, second: uuid.UUID) -> bool:
+    """Say whether two inquiries hold the same embedding, as equal titles do."""
+    return from_plain(
+        await conn.fetchval(
+            "SELECT a.embedding::text = b.embedding::text "
+            "FROM inquiry_embeddings AS a JOIN inquiry_embeddings AS b "
+            "ON a.model = b.model WHERE a.inquiry_id = $1 AND b.inquiry_id = $2",
+            first,
+            second,
+        ),
+        bool,
+    )
 
 
 if __name__ == "__main__":

@@ -109,12 +109,24 @@ async def _canvas_workspace(store: Store, canvas: object) -> str | None:
     return None if found is None else from_plain(found, str)
 
 
+async def _defaults(store: Store) -> int:
+    """Count the Issues marked as someone's default workspace."""
+    async with store.engine.acquire() as conn:
+        return from_plain(
+            await conn.fetchval(
+                "SELECT count(*) FROM inquiries "
+                "WHERE labels @> ARRAY['workspace', 'scratch']::text[]",
+            ),
+            int,
+        )
+
+
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_session_with_nothing_else_lands_in_scratch_in_a_new_canvas(
+async def test_a_session_with_nothing_else_lands_in_the_default_in_a_new_canvas(
     pglite_route_client: _Client,
 ) -> None:
-    """Rule 4: Scratch, one new canvas named for the session, one edge, one label."""
+    """Rule 4: the default workspace, one new canvas for the session, one edge, label."""
     client, store = pglite_route_client
     await seed_accounts(store)
     session = await seed_session(store, USER_AGENT, actor="Agent", cli="claude")
@@ -122,9 +134,12 @@ async def test_a_session_with_nothing_else_lands_in_scratch_in_a_new_canvas(
     placed = await _place(client, session)
 
     canvas = from_plain(placed["canvas_id"], str)
-    assert await _edges(store, session) == [
+    default = await store.get_inquiry(
         uuid.UUID(from_plain(placed["workspace_id"], str)),
-    ]
+    )
+    assert default is not None
+    assert default.title == "Untitled workspace"
+    assert await _edges(store, session) == [default.id]
     assert await _labels(store, session) == [f"canvas:{canvas}"]
     assert await _canvas_workspace(store, canvas) == placed["workspace_id"]
     async with store.engine.acquire() as conn:
@@ -135,6 +150,28 @@ async def test_a_session_with_nothing_else_lands_in_scratch_in_a_new_canvas(
         )
     assert canvas is not None
     assert (canvas["name"], canvas["made_for"]) == ("Agent claude", str(session))
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_session_landing_in_a_hidden_default_shows_it_again(
+    pglite_route_client: _Client,
+) -> None:
+    """Nothing lands out of sight: the hidden default is back in the bar."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    first = await _place(client, await seed_session(store, USER_AGENT, actor="a"))
+    default = from_plain(first["workspace_id"], str)
+    browser()
+    hidden = await client.patch(f"/api/workspaces/{default}", json={"hidden": True})
+
+    later = await _place(client, await seed_session(store, USER_AGENT, actor="b"))
+
+    browser()
+    bar = json_loads((await client.get("/api/workspaces")).content, list[object])
+    assert hidden.status_code == 200, hidden.text
+    assert later["workspace_id"] == default
+    assert [from_plain(entry, dict[str, object])["id"] for entry in bar] == [default]
 
 
 @pytest.mark.db_pglite
@@ -219,7 +256,10 @@ async def _earlier_on_branch(store: Store, workspace: uuid.UUID) -> None:
 async def test_the_same_branch_returns_to_the_workspace_of_its_last_session(
     pglite_route_client: _Client,
 ) -> None:
-    """Rule 3: a new canvas in the workspace of the earlier session on the branch."""
+    """Rule 3: a new canvas in the workspace of the earlier session on the branch.
+
+    No default workspace is made: only a session that lands in it makes one.
+    """
     client, store = pglite_route_client
     await seed_accounts(store)
     workspace = await _workspace(client, "Branch work")
@@ -230,6 +270,7 @@ async def test_the_same_branch_returns_to_the_workspace_of_its_last_session(
 
     assert placed["workspace_id"] == str(workspace)
     assert await _edges(store, later) == [workspace]
+    assert await _defaults(store) == 0
     assert await _canvases(store) == [placed["canvas_id"]]
 
 
@@ -238,7 +279,7 @@ async def test_the_same_branch_returns_to_the_workspace_of_its_last_session(
 async def test_another_branch_does_not_return_to_it(
     pglite_route_client: _Client,
 ) -> None:
-    """Rule 3 needs the same origin and branch; else Scratch."""
+    """Rule 3 needs the same origin and branch; else the default workspace."""
     client, store = pglite_route_client
     await seed_accounts(store)
     workspace = await _workspace(client, "Branch work")
@@ -306,7 +347,7 @@ async def test_a_backfilled_session_inherits_only_from_earlier_branch_history(
     else:
         assigned = await store.get_inquiry(uuid.UUID(str(placed["workspace_id"])))
         assert assigned is not None
-        assert assigned.title == "Scratch"
+        assert assigned.title == "Untitled workspace"
     assert placed["workspace_id"] != str(recent)
 
 

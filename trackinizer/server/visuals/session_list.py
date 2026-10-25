@@ -78,7 +78,8 @@ class ListedSession(BaseModel):
     """The caller's canvas it sits in: its chat's, or the one it was placed in."""
 
     workspace_id: uuid.UUID | None
-    """That canvas's workspace; None for Scratch, and for a session on no canvas."""
+    """That canvas's workspace; None for one in none, which is the default
+    workspace's, and for a session on no canvas."""
 
     produced_by: list[uuid.UUID]
     """The Issues it was produced by, workspaces left out, as ``issues`` lists them."""

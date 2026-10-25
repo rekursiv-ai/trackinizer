@@ -14,6 +14,7 @@ from fastapi.routing import APIRoute
 import pytest
 
 from trackinizer.conftest import FakeEngine
+from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api import workspace_routes
 from trackinizer.server.api.app import ROUTERS
 from trackinizer.server.api.session_access import Asker
@@ -22,8 +23,6 @@ from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.server.visuals.workspaces import (
     CreateWorkspace,
-    ScratchWorkspaceError,
-    UpdateWorkspace,
     WorkspaceOrder,
     WorkspaceSummary,
 )
@@ -52,21 +51,6 @@ _SUMMARY = WorkspaceSummary(
     hidden=False,
     pinned=False,
 )
-
-
-async def _open_scratch_fake(
-    engine: DatabaseEngine,
-    *,
-    store: object,
-    user_id: uuid.UUID,
-    email: str,
-    events: list[object],
-    event: object,
-    result: uuid.UUID,
-) -> uuid.UUID:
-    del engine, store, user_id, email
-    events.append(event)
-    return result
 
 
 async def _list_workspaces_fake(
@@ -121,21 +105,6 @@ async def _missing_order_fake(
     ids: list[uuid.UUID],
 ) -> None:
     del engine, user_id, email, ids
-
-
-async def _scratch_update_fake(
-    engine: DatabaseEngine,
-    *,
-    store: object,
-    user_id: uuid.UUID,
-    email: str,
-    workspace_id: uuid.UUID,
-    title: str | None = None,
-    hidden: bool | None = None,
-    pinned: bool | None = None,
-) -> WorkspaceSummary | None:
-    del engine, store, user_id, email, workspace_id, title, hidden, pinned
-    raise ScratchWorkspaceError
 
 
 async def _missing_info_fake(
@@ -203,42 +172,33 @@ def test_workspace_order_route_precedes_dynamic_id_routes() -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_list_route_opens_scratch_before_returning_the_bar(
+async def test_listing_the_bar_makes_no_default_workspace(
     monkeypatch: pytest.MonkeyPatch,
     pglite_engine: PGliteEngine,
 ) -> None:
+    """Only something that lands makes the default, so a renamed one stays alone."""
+    await reset_schema(pglite_engine)
     store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    async with pglite_engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, $2, 'User', 'writer', 'active')",
+            _USER,
+            _IDENTITY.email,
+        )
     _route_dependencies(monkeypatch, engine=pglite_engine, store=store)
-    order: list[object] = []
 
-    monkeypatch.setattr(
-        workspace_routes,
-        "open_scratch",
-        partial(
-            _open_scratch_fake,
-            events=order,
-            event="scratch",
-            result=_ID,
-        ),
-    )
-    monkeypatch.setattr(
-        workspace_routes,
-        "list_workspaces",
-        partial(
-            _list_workspaces_fake,
-            events=order,
-            event="list",
-            result=[_SUMMARY],
-        ),
-    )
     result = await workspace_routes.list_workspaces_route(
         request=_request(),
         identity=_IDENTITY,
-        q="Res",
         hidden=True,
     )
-    assert result == [_SUMMARY]
-    assert order == ["scratch", "list"]
+
+    async with pglite_engine.acquire() as conn:
+        issues = await conn.fetchval("SELECT count(*) FROM inquiries")
+    assert result == []
+    assert issues == 0
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -268,16 +228,6 @@ async def test_assistant_workspace_list_resolves_the_asker(
     called: list[object] = []
     monkeypatch.setattr(
         workspace_routes,
-        "open_scratch",
-        partial(
-            _open_scratch_fake,
-            events=called,
-            event=("scratch", _ASKER, "user@example.com"),
-            result=_ID,
-        ),
-    )
-    monkeypatch.setattr(
-        workspace_routes,
         "list_workspaces",
         partial(
             _list_workspaces_fake,
@@ -292,10 +242,7 @@ async def test_assistant_workspace_list_resolves_the_asker(
         asker="user@example.com",
     )
 
-    assert called == [
-        ("scratch", _ASKER, "user@example.com"),
-        ("list", _ASKER, "user@example.com", None, False),
-    ]
+    assert called == [("list", _ASKER, "user@example.com", None, False)]
 
 
 @pytest.mark.db_pglite
@@ -345,26 +292,6 @@ async def test_order_route_returns_not_found_for_another_users_id(
             identity=_IDENTITY,
         )
     assert error.value.status_code == 404
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_patch_route_maps_scratch_hide_to_conflict(
-    monkeypatch: pytest.MonkeyPatch,
-    pglite_engine: PGliteEngine,
-) -> None:
-    store = Store(pglite_engine, embed=StubEmbedder())
-    _route_dependencies(monkeypatch, engine=pglite_engine, store=store)
-
-    monkeypatch.setattr(workspace_routes, "update_workspace", _scratch_update_fake)
-    with pytest.raises(HTTPException) as error:
-        await workspace_routes.update_workspace_route(
-            _ID,
-            UpdateWorkspace(hidden=True),
-            request=_request(),
-            identity=_IDENTITY,
-        )
-    assert error.value.status_code == 409
 
 
 @pytest.mark.db_pglite
