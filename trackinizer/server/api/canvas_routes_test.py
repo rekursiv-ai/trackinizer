@@ -565,6 +565,56 @@ async def test_canvas_patch_hides_pins_and_updates_atomically_with_its_name(
     assert foreign.status_code == 404
 
 
+def _opens_as(response: httpx2.Response) -> tuple[object, object]:
+    """Return the ``opens_as`` and revision of the canvas a route answered with."""
+    assert response.status_code == 200, response.text
+    state = json_loads(response.content, dict[str, object])
+    return state["opens_as"], state["revision"]
+
+
+async def _draw(client: httpx2.AsyncClient, path: str, *, key: str) -> httpx2.Response:
+    """Draw one box on the canvas at ``path`` under the idempotency ``key``."""
+    return await client.post(
+        f"{path}/operations",
+        json={
+            "revision": 0,
+            "operation": {
+                "kind": "mark",
+                "mark": {"points": [{"x": 0.1, "y": 0.1}, {"x": 0.2, "y": 0.2}]},
+            },
+        },
+        headers={"Idempotency-Key": key},
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_canvas_patch_sets_opens_as_which_reads_operations_and_replays_keep(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The owner's choice is returned with no revision, and stays through operations."""
+    client, store = pglite_route_client
+    path = f"/api/canvases/{await _canvas(client, store)}"
+    key = str(uuid.uuid4())
+
+    assert _opens_as(await client.get(path)) == ("open", 0)
+    assert _opens_as(await _draw(client, path, key=key)) == ("open", 1)
+    chosen = await client.patch(path, json={"opens_as": "private"})
+    assert _opens_as(chosen) == ("private", 1)
+    assert _opens_as(await _draw(client, path, key=key)) == ("private", 1), "a replay"
+    assert _opens_as(await _draw(client, path, key=str(uuid.uuid4()))) == (
+        "private",
+        2,
+    )
+    assert _opens_as(await client.get(path)) == ("private", 2)
+    assert (await client.patch(path, json={"opens_as": "staff"})).status_code == 422
+
+    browser(OTHER_USER_ID, email=OTHER_EMAIL)
+    assert (await client.patch(path, json={"opens_as": "open"})).status_code == 404
+    browser()
+    assert _opens_as(await client.get(path)) == ("private", 2)
+
+
 def test_clear_chat_route_passes_owner_and_key_and_returns_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

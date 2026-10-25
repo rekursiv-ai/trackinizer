@@ -562,7 +562,7 @@ class TestProfile:
             "terminal_placement": "bottom",
             "home": "graph",
             "chat_provider": "assistant",
-            "chat_tool_calls": False,
+            "chat_tool_calls": True,
             **_EMPTY_USER_DATA,
         }
         assert body["acknowledged_at"] == _WHEN.isoformat()
@@ -652,7 +652,7 @@ class TestPreferences:
             "terminal_placement": "bottom",
             "home": "graph",
             "chat_provider": "assistant",
-            "chat_tool_calls": False,
+            "chat_tool_calls": True,
             **_EMPTY_USER_DATA,
         }
         call = engine.conn.fetchrow.call_args

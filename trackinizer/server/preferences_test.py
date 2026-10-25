@@ -38,7 +38,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "terminal_placement": "bottom",
     "home": "graph",
     "chat_provider": "assistant",
-    "chat_tool_calls": False,
+    "chat_tool_calls": True,
     "stars": [],
     "views": [],
     "console_views": [],
@@ -199,30 +199,30 @@ async def test_a_write_sets_the_chat_provider_a_new_chat_starts_on() -> None:
         )
 
 
-def test_tool_calls_in_chat_are_off_until_the_user_turns_them_on() -> None:
-    assert stored_preferences(None).chat_tool_calls is False
-    assert stored_preferences({"chat_tool_calls": True}).chat_tool_calls is True
+def test_tool_calls_in_chat_are_on_until_the_user_turns_them_off() -> None:
+    assert stored_preferences(None).chat_tool_calls is True
+    assert stored_preferences({"chat_tool_calls": False}).chat_tool_calls is False
     assert "chat_tool_calls" in ASSISTANT_KEYS
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"chat_tool_calls": "yes"})
 
 
 @pytest.mark.asyncio
-async def test_a_write_turns_tool_calls_in_chat_on_and_back_to_the_default() -> None:
+async def test_a_write_turns_tool_calls_in_chat_off_and_back_to_the_default() -> None:
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"chat_tool_calls": True}})
+    conn.fetchrow = AsyncMock(return_value={"preferences": {"chat_tool_calls": False}})
     written = await write_preferences(
         cast("Conn", conn),
         user_id=_USER,
-        change={"chat_tool_calls": True},
+        change={"chat_tool_calls": False},
     )
     assert written is not None
-    assert written.chat_tool_calls is True
+    assert written.chat_tool_calls is False
     conn.fetchrow.assert_awaited_once_with(
         "UPDATE users SET preferences = "
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
-        {"chat_tool_calls": True},
+        {"chat_tool_calls": False},
         ["chat_style"],
         _USER,
     )
@@ -233,7 +233,7 @@ async def test_a_write_turns_tool_calls_in_chat_on_and_back_to_the_default() -> 
         change={"theme": "light", "chat_tool_calls": None},
     )
     assert reset is not None
-    assert reset.chat_tool_calls is False
+    assert reset.chat_tool_calls is True
     conn.fetchrow.assert_awaited_once_with(
         "UPDATE users SET preferences = "
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "

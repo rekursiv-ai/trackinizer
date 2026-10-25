@@ -3649,7 +3649,7 @@ class _CanvasClient:
                     "page": "#/graph",
                     "covers": {"records": [record], "instances": ["inst-1"]},
                 },
-                {"id": "m2", "author": "jp", "covers": {}},
+                {"id": "m2", "author": "jp", "covers": {}, "window": True},
             ],
         }
 
@@ -4388,7 +4388,7 @@ def test_canvas_mark_refuses_a_malformed_command(
     assert client.operations == []
 
 
-def test_canvas_prints_each_box_with_its_id_page_and_what_it_covers(
+def test_canvas_prints_each_box_with_its_id_page_what_it_covers_and_a_window_s_own(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     client = _CanvasClient()
@@ -4398,7 +4398,7 @@ def test_canvas_prints_each_box_with_its_id_page_and_what_it_covers(
     lines = capsys.readouterr().out.splitlines()
     assert lines[-2:] == [
         "  box m1 by agent on #/graph covers: Experiment#12 Measured tails, inst-1",
-        "  box m2 by jp on no page covers: nothing",
+        "  box m2 by jp over the window on no page covers: nothing",
     ]
 
 

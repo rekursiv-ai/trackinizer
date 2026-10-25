@@ -184,6 +184,7 @@ def wire_marks(
             author=mark.author,
             page=mark.page,
             tile=None if mark.tile is None else on_canvas[mark.tile],
+            window=mark.window,
             left=min(p.x for p in mark.points),
             top=min(p.y for p in mark.points),
             right=max(p.x for p in mark.points),

@@ -48,11 +48,14 @@ from trackinizer.server.visuals.chat_forks import (
 )
 from trackinizer.server.visuals.chat_shares import delete_chat, set_share
 from trackinizer.server.visuals.science_chats import read_conversation, read_head
+from trackinizer.wire.chat_commands import chat_models
 from trackinizer.wire.wire_science_chat import (
+    CHAT_MODELS_PATH,
     CHAT_PATH,
     CHAT_SHARE_PATH,
     CHATS_PATH,
     ChatHead,
+    ChatModels,
     ChatSend,
     ChatSent,
 )
@@ -202,6 +205,24 @@ async def post_chat_line_route(
     if sent is None:
         raise HTTPException(status_code=404, detail="Canvas not found")
     return sent
+
+
+@router.get(
+    CHAT_MODELS_PATH,
+    response_model=ChatModels,
+    dependencies=[Depends(require_role("viewer"))],
+)
+async def chat_models_route() -> ChatModels:
+    """List the models Chat's picker offers a ``claude`` or ``codex`` chat.
+
+    A pick posts ``/model`` or ``/effort`` as a ``settings`` line, which the chat's
+    run applies; the assistant takes neither.
+
+    Returns:
+      models: Each CLI's models, best first, with the effort levels each takes.
+
+    """
+    return chat_models()
 
 
 @router.get(CHAT_PATH, response_model=ChatHead)

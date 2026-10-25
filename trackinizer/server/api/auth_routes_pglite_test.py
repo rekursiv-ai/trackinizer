@@ -270,7 +270,7 @@ _DEFAULTS: dict[str, object] = {
     "terminal_placement": "bottom",
     "home": "graph",
     "chat_provider": "assistant",
-    "chat_tool_calls": False,
+    "chat_tool_calls": True,
     "stars": [],
     "views": [],
     "console_views": [],

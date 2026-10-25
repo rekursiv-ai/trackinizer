@@ -419,7 +419,10 @@ nothing (on Home, or alone on the canvas), so the record takes its place.
 
 Boxes are red rectangles on the canvas, drawn by people and agents: `mark X1,Y1
 X2,Y2` takes two corners as fractions (0 to 1) of the stage, and the box shows on
-the page the canvas is on until someone clicks it away. `--record` names the
+the page the canvas is on until someone clicks it away. A person's capture may
+instead be a box over the whole browser window (`window`, "over the window" in the
+listing), Chat and the app's bars included, its corners fractions of the window; a
+picture of the canvas shows the whole window. `--record` names the
 records it points at. `trax canvas CANVAS_UUID` lists every box with its id,
 page and the records and visuals under it, and a Chat line carries the boxes drawn
 since the last one. A recorded Claude run started in a canvas hears

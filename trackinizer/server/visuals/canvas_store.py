@@ -130,6 +130,7 @@ if TYPE_CHECKING:
     from trackinizer.server.auth import Role
     from trackinizer.server.config import Assistant
     from trackinizer.server.store.core import Store
+    from trackinizer.server.visuals.canvases import OpensAs
     from trackinizer.server.visuals.catalog import VisualCatalogBody
     from trackinizer.wire.wire_science_chat import ChatForkAt
 
@@ -558,8 +559,9 @@ async def open_chat_session(
     """Give a CLI canvas's chat a session a run can attach to, before any line.
 
     A canvas without a chat is bound to a new conversation first. A chat that has a
-    session keeps it: the run attaches to that one. An ``assistant`` canvas is left
-    as it is, since the assistant opens its chat's session when it hears the chat.
+    session keeps it: the run attaches to that one. A new session opens with the
+    canvas's ``opens_as``. An ``assistant`` canvas is left as it is, since the
+    assistant opens its chat's session when it hears the chat.
 
     Args:
       store: The store.
@@ -596,6 +598,7 @@ async def open_chat_session(
             user_id=user_id,
             conversation_id=conversation_id,
             provider=state.provider,
+            audience=state.opens_as,
             assistant=assistant,
         )
 
@@ -639,6 +642,29 @@ async def read_chat_provider(
     if stored is None:
         return "assistant"
     return CanvasData.model_validate(stored).provider
+
+
+# Before its first session no session names a chat's starter, so every canvas that holds
+# it is asked: in practice the one its first line was posted from, which bound it. Any
+# of them choosing ``private`` is enough, since a choice can only narrow who reads it.
+async def read_opens_as(conn: Conn, *, conversation_id: uuid.UUID) -> OpensAs:
+    """Say the access a chat with no first session yet opens with: its canvas's choice.
+
+    Args:
+      conn: A database connection.
+      conversation_id: The chat.
+
+    Returns:
+      opens_as: ``private`` when a canvas that holds the chat chose it, else ``open``.
+
+    """
+    private = await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM visual_canvases "
+        "WHERE metadata ->> 'conversation_id' = $1 AND state ->> 'opens_as' = $2)",
+        str(conversation_id),
+        "private",
+    )
+    return "private" if private else "open"
 
 
 async def open_latest_canvas(
@@ -1311,6 +1337,54 @@ async def set_canvas_flags(
         )
 
 
+async def set_canvas_opens_as(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    canvas_id: uuid.UUID,
+    opens_as: OpensAs,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> CanvasState | None:
+    """Set the access an owned canvas's next new chat opens with.
+
+    No revision changes, as for a flag. The statement merges the one key, and an
+    operation rewrites the state only under the row lock it read it with, so neither
+    undoes the other. A chat that already has its first session keeps its access.
+
+    Args:
+      engine: Database connection source.
+      user_id: Owner of the canvas.
+      canvas_id: The canvas.
+      opens_as: ``open`` or ``private``.
+      inbound: In-process poller leases.
+      assistant: The configured assistant, if any.
+
+    Returns:
+      state: The updated canvas with its partner, or None when not owned.
+
+    """
+    async with engine.acquire() as conn:
+        row = await conn.fetchrow(
+            vetted_sql(
+                "UPDATE visual_canvases SET state = state || ",
+                "jsonb_build_object('opens_as', $3::text), ",
+                "modified_at = clock_timestamp() WHERE id = $1 AND user_id = $2",
+                _RETURNING_CANVAS,
+            ),
+            canvas_id,
+            user_id,
+            opens_as,
+        )
+        return await _with_partner(
+            conn,
+            row=row,
+            user_id=user_id,
+            inbound=inbound,
+            assistant=assistant,
+        )
+
+
 async def set_canvas_workspace(
     engine: DatabaseEngine,
     *,
@@ -1847,7 +1921,8 @@ async def apply_canvas_operation(
             if receipt["request_hash"] != request_hash:
                 raise ReplayConflictError(await with_partner(state=current))
             # The receipt keeps the provider it was applied under; the partner is
-            # computed from the provider now.
+            # computed from the provider now. ``opens_as`` is written with no
+            # revision, so the receipt's may predate the person's last choice.
             replay = (
                 current
                 if isinstance(
@@ -1866,7 +1941,9 @@ async def apply_canvas_operation(
                         "workspace_id": current.workspace_id,
                         "session_id": current.session_id,
                     },
-                ).model_copy(update={"provider": current.provider})
+                ).model_copy(
+                    update={"provider": current.provider, "opens_as": current.opens_as},
+                )
             )
             return AppliedOperation(
                 state=await with_partner(state=replay),
@@ -2038,6 +2115,7 @@ def state_from_row(row: Mapping[str, object]) -> CanvasState:
         marks=data.marks,
         marks_seq=data.marks_seq,
         marks_sent=data.marks_sent,
+        opens_as=data.opens_as,
     )
 
 
@@ -2248,9 +2326,10 @@ async def _open_chat_session(
     user_id: uuid.UUID,
     conversation_id: uuid.UUID,
     provider: ChatProvider,
+    audience: OpensAs,
     assistant: Assistant | None,
 ) -> uuid.UUID | None:
-    """Return the chat's first session, opening one for its owner when it has none."""
+    """Return the chat's first session, opening one into ``audience`` if it has none."""
     began = await read_first_session(
         conn,
         assistant=assistant,
@@ -2271,7 +2350,7 @@ async def _open_chat_session(
             cli_session_id=chat_session_id(conversation_id),
             labels=[SCIENCE_CHAT_LABEL],
         ),
-        audience=OPEN,
+        audience=audience,
         api_key_id=from_plain(opener["key"], uuid.UUID),
         actor=email,
         conn=conn,
@@ -2724,6 +2803,7 @@ def _data_of(state: CanvasState) -> CanvasData:
         marks=state.marks,
         marks_seq=state.marks_seq,
         marks_sent=state.marks_sent,
+        opens_as=state.opens_as,
     )
 
 
@@ -2772,6 +2852,7 @@ async def _write_data(
         marks=data.marks,
         marks_seq=data.marks_seq,
         marks_sent=data.marks_sent,
+        opens_as=data.opens_as,
     )
     await conn.execute(
         "UPDATE visual_canvases SET revision = $2, state = $3, "
