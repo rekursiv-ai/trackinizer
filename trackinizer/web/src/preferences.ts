@@ -18,6 +18,12 @@ export type Preferences = Required<components["schemas"]["Preferences"]>;
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: "dark",
   skin: "default",
+  scanlines: true,
+  terminal_colors: {
+    text: "#00ff00", background: "#000000", bold: null, bold_is_bright: true,
+    palette: ["#171421", "#c01c28", "#26a269", "#a2734c", "#12488b", "#a347ba", "#2aa1b3", "#d0cfcc",
+      "#5e5c64", "#f66151", "#33d17a", "#e9ad0c", "#2a7bde", "#c061cb", "#33c7de", "#ffffff"],
+  },
   chat_side: "left",
   app_bar: "top",
   app_bar_width: 220,
