@@ -4,7 +4,7 @@ Each CLI ships one ``Adapter`` saying where its session log lives and which
 reader turns that log into records. The session runner stays CLI-agnostic and
 drives every adapter through this protocol.
 
-The records themselves are the shared IR (``trackinizer.lib.agent.types.sessions``),
+The records themselves are the shared IR (``trackinizer.sagent.session.types``),
 not a trackinizer-specific shape: one vocabulary reads a session, stores it,
 and writes it back out as any CLI's native format.
 """

@@ -21,7 +21,7 @@ import pytest
 from trackinizer.lib.agent.sessions import gemini
 from trackinizer.lib.agent.sessions.convert import _dropped, detect_format
 from trackinizer.lib.agent.sessions.testdata.mistype import mistyped, unread, without
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AssistantMessage,
     ContextClear,
     IncompleteRecord,

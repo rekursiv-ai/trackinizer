@@ -3,6 +3,33 @@
 All notable trackinizer changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.1.12 - 2026-10-26
+
+### Added
+
+- Admins reset a person's GPU allowance from Settings.
+- Chat shows each turn's tool calls folded and an "Edited N files" card with
+  each file's diff; a Changes tab lists every file a session read, edited or
+  wrote. Stop and Interrupt turn cancel the assistant's turn in flight
+  (`kind: "interrupt"`).
+
+### Changed
+
+- **Breaking:** the server refuses an append whose records name a class by the
+  retired `lib.agent.types` modules (426, code `client_outdated`): a client
+  older than this release is told to upgrade, and its run keeps capturing to
+  a local file.
+- **Breaking:** the session record and model vocabulary moved from
+  `trackinizer.lib.agent.types` to `trackinizer.sagent`
+  (`trackinizer.sagent.session.types`, `trackinizer.sagent.model.capability`,
+  `trackinizer.sagent.model.cost`). Import the classes from there.
+- Requires treekle 0.3.3. Session records are written and read with
+  `default_concrete_types`, so a tuple field is a JSON array; rows written by
+  0.1.11 still read.
+- Records loaded from serialized documents are rebuilt through their
+  constructors, so their validation runs.
+- The wheel no longer ships `trackinizer.lib.agent.sessions.testdata`.
+
 ## 0.1.11 - 2026-10-25
 
 ### Added

@@ -1,7 +1,8 @@
 """Normalize and denormalize sessions as the provider-neutral JSON form.
 
 The adapter whose wire format is the IR itself: one JSON array of records,
-each written by :func:`~trackinizer.lib.agent.types.stored.to_stored`, so a session
+each written by ``to_plain`` with :data:`~trackinizer.sagent.session.types.CONCRETE_TYPES`
+-- its JSON fields as the plain objects the provider sent -- so a session
 converted to this format and back carries every semantic record rather than a
 provider projection of one. A file written before records carried codec tags
 reads too.
@@ -18,10 +19,9 @@ from typing import TYPE_CHECKING, TextIO
 
 import json
 
-from treekle import json_loads
+from treekle import json_loads, to_plain
 
-from trackinizer.lib.agent.types.sessions import SessionRecord
-from trackinizer.lib.agent.types.stored import to_stored
+from trackinizer.sagent.session.types import CONCRETE_TYPES, SessionRecord
 
 
 if TYPE_CHECKING:
@@ -44,7 +44,11 @@ def normalize(stream: TextIO) -> Iterator[SessionRecord]:
     # Each record carries its own ``py/object`` tag, which is what selects the
     # union member -- so the whole list decodes as the annotated type rather
     # than one class named up front.
-    yield from json_loads(stream.read(), list[SessionRecord])
+    yield from json_loads(
+        stream.read(),
+        list[SessionRecord],
+        default_concrete_types=CONCRETE_TYPES,
+    )
 
 
 def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
@@ -58,7 +62,14 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
     # Compact, not indented: this is a storage and transport form, and
     # indenting a 273 MB session spent 33 MB on whitespace alone.
     json.dump(
-        [to_stored(record) for record in records],
+        [
+            to_plain(
+                record,
+                sort=False,
+                default_concrete_types=CONCRETE_TYPES,
+            )
+            for record in records
+        ],
         stream,
         ensure_ascii=False,
         separators=(",", ":"),

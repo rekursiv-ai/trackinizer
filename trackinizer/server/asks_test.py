@@ -15,9 +15,9 @@ import asyncio
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import AssistantMessage, SystemMessage
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.runs.asks import opened_record, resolved_record
+from trackinizer.sagent.session.types import AssistantMessage, SystemMessage
 from trackinizer.server.asks import (
     ASKS_PART,
     _released,

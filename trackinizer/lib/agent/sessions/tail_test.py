@@ -12,7 +12,7 @@ import threading
 import pytest
 
 from trackinizer.lib.agent.sessions import tail
-from trackinizer.lib.agent.types.sessions import SessionRecord, TurnContext, UserMessage
+from trackinizer.sagent.session.types import SessionRecord, TurnContext, UserMessage
 
 
 if TYPE_CHECKING:

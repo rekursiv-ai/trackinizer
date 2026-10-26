@@ -23,6 +23,7 @@ from trackinizer.wire.json_types import JSON, UtcDatetime
 
 
 __all__ = [
+    "CLIENT_OUTDATED",
     "MAX_RECORD_BATCH",
     "AppendRecordsRequest",
     "AppendRecordsResponse",
@@ -38,6 +39,10 @@ __all__ = [
     "session_records_path",
 ]
 
+
+CLIENT_OUTDATED: Final = "client_outdated"
+"""The ``code`` of a 426 append refused because a record names its class by a module
+the session vocabulary has left, as a client older than the move writes it."""
 
 MAX_RECORD_BATCH: Final = 1_000
 """Records one append may carry.

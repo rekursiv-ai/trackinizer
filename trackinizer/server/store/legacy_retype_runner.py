@@ -52,7 +52,7 @@ import json
 
 from treekle import from_plain, json_loads, mutable
 
-from trackinizer.lib.agent.types.sessions import UncategorizedRecord
+from trackinizer.sagent.session.types import UncategorizedRecord
 from trackinizer.server.notify import tx
 from trackinizer.server.store.legacy_retype import (
     LEGACY_KINDS,

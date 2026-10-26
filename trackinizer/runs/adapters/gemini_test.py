@@ -11,8 +11,8 @@ import hashlib
 if TYPE_CHECKING:
     import pytest
 
-from trackinizer.lib.agent.types.sessions import UserMessage
 from trackinizer.runs.adapters.gemini import GeminiAdapter
+from trackinizer.sagent.session.types import UserMessage
 
 
 class TestSessionDiscovery:

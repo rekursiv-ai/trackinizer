@@ -17,7 +17,7 @@ from trackinizer.client.conversation import (
     placed,
     projected,
 )
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     ContextClear,

@@ -20,7 +20,7 @@ from trackinizer.lib.agent.sessions.shell_results import (
     rewrite_shell_source,
 )
 from trackinizer.lib.agent.sessions.udiff import render_udiff
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     FileEditResult,
     FileReadResult,
     FileWriteResult,

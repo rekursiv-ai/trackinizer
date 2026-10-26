@@ -12,7 +12,7 @@ from treekle import from_plain, immutable, json_loads
 
 import pytest
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     UserMessage,

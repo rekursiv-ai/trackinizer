@@ -12,7 +12,7 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     ToolCall,

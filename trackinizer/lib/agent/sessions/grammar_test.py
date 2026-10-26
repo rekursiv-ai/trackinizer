@@ -24,7 +24,7 @@ import json
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, gemini
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     ContextClear,
     SessionRecord,
     TurnContext,

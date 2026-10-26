@@ -23,8 +23,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import UserMessage
 from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow

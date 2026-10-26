@@ -20,7 +20,7 @@ from treekle import from_plain, immutable
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import UserMessage
+from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import ASSISTANT_CONFIG
 from trackinizer.server.api.conftest import (

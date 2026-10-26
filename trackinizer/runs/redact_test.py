@@ -9,15 +9,16 @@ import base64
 import json
 import time
 
+from treekle import from_plain
+
 import pytest
 
-from trackinizer.lib.agent.types.sessions import Attachment, UserMessage
-from trackinizer.lib.agent.types.stored import from_stored
 from trackinizer.runs.redact import (
     Redactor,
     redact_body,
     redactor_from_environ,
 )
+from trackinizer.sagent.session.types import CONCRETE_TYPES, Attachment, UserMessage
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import RecordBody
 
@@ -312,7 +313,11 @@ def test_a_secret_in_a_text_attachment_is_redacted_in_its_stored_bytes() -> None
     body = _body_of(message)
     assert canary not in body.model_dump_json()
     out = redact_body(body, redactor=Redactor({"API_KEY": canary}))
-    assert from_stored(out.payload, UserMessage) == UserMessage(
+    assert from_plain(
+        out.payload,
+        UserMessage,
+        default_concrete_types=CONCRETE_TYPES,
+    ) == UserMessage(
         content="see the file",
         attachments=(
             Attachment(mime_descriptor="text/plain", data=b"key=[redacted:API_KEY]\n"),
@@ -332,7 +337,11 @@ def test_a_secret_in_binary_attachment_bytes_is_replaced_and_the_rest_kept() -> 
         ),
     )
     out = redact_body(_body_of(message), redactor=Redactor({"API_KEY": canary}))
-    assert from_stored(out.payload, UserMessage) == UserMessage(
+    assert from_plain(
+        out.payload,
+        UserMessage,
+        default_concrete_types=CONCRETE_TYPES,
+    ) == UserMessage(
         attachments=(
             Attachment(
                 mime_descriptor="image/png",
@@ -347,7 +356,10 @@ def test_attachment_bytes_without_a_secret_are_kept_as_they_are() -> None:
         attachments=(Attachment(mime_descriptor="image/png", data=b"\x00\xff\x80"),),
     )
     out = redact_body(_body_of(message), redactor=Redactor({"K": "sk-live-12345678"}))
-    assert from_stored(out.payload, UserMessage) == message
+    assert (
+        from_plain(out.payload, UserMessage, default_concrete_types=CONCRETE_TYPES)
+        == message
+    )
 
 
 def test_a_bytes_tag_that_is_not_base64_is_redacted_as_text() -> None:

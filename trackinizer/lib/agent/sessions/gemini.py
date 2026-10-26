@@ -28,7 +28,7 @@ from treekle import (
 
 from trackinizer.lib.agent.sessions.provider_fields import read_or_default
 from trackinizer.lib.agent.sessions.unmodeled import extract_unmodeled_fields
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AssistantMessage,
     ContextClear,
     IncompleteRecord,

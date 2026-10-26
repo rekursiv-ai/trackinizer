@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.agent.types.sessions import UncategorizedRecord
+from trackinizer.sagent.session.types import UncategorizedRecord
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import RecordBody
 

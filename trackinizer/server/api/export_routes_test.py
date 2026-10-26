@@ -7,9 +7,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-import json
-
-from treekle import from_plain, json_loads, to_plain
+from treekle import from_plain, json_dumps, json_loads
 
 import asyncpg
 import pytest
@@ -262,7 +260,7 @@ def test_label_ordering_is_a_client_error(
 ) -> None:
     """The real store rejects unsupported operators before opening a connection."""
     client, _store, engine = route_client
-    raw = json.dumps(to_plain({"field": "labels", "op": op, "value": "x"}))
+    raw = json_dumps({"field": "labels", "op": op, "value": "x"})
 
     response = client.get(EXPORT_API_PATH, params=_selector_of(raw))
 

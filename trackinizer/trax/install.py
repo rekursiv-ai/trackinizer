@@ -15,14 +15,13 @@ from typing import Final, Literal, TypedDict, cast
 import ctypes
 import errno
 import hashlib
-import json
 import os
 import platform
 import shutil
 import stat
 import tempfile
 
-from treekle import json_loads, to_plain
+from treekle import json_dumps, json_loads
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -549,7 +548,7 @@ def _install_tree(
             created_parents=parents,
         )
         (replacement / ".trax-install.json").write_text(
-            json.dumps(to_plain(replacement_receipt)) + "\n",
+            json_dumps(replacement_receipt, target=_Receipt) + "\n",
         )
         _quarantine(destination, previous=previous, receipt=receipt, boundary=boundary)
         _publish(replacement, destination=destination, previous=previous)

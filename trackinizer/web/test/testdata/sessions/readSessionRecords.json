@@ -32,13 +32,11 @@
           "kind": "UserMessage",
           "model": null,
           "payload": {
-            "attachments": {
-              "py/tuple": []
-            },
+            "attachments": [],
             "content": "What does **Issue#1** ask for?",
             "context_id": null,
             "extra": {},
-            "py/object": "trackinizer.lib.agent.types.sessions.UserMessage",
+            "py/object": "trackinizer.sagent.session.types.UserMessage",
             "timestamp": null
           },
           "text": "What does **Issue#1** ask for?",
@@ -58,7 +56,7 @@
             "context_id": null,
             "extra": {},
             "name": "Bash",
-            "py/object": "trackinizer.lib.agent.types.sessions.ToolCall",
+            "py/object": "trackinizer.sagent.session.types.ToolCall",
             "timestamp": null
           },
           "text": "Bash\ntrax issue 1",
@@ -71,13 +69,11 @@
           "kind": "AssistantMessage",
           "model": null,
           "payload": {
-            "attachments": {
-              "py/tuple": []
-            },
+            "attachments": [],
             "content": "Fixtures for the web app.",
             "context_id": null,
             "extra": {},
-            "py/object": "trackinizer.lib.agent.types.sessions.AssistantMessage",
+            "py/object": "trackinizer.sagent.session.types.AssistantMessage",
             "timestamp": null
           },
           "text": "Fixtures for the web app.",

@@ -33,7 +33,7 @@ import json
 
 from treekle import ReadError, from_plain, immutable, json_loads
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AgentToAgentMessage,
     AnyToolResult,

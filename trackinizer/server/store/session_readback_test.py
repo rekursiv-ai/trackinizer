@@ -32,7 +32,7 @@ import pytest_asyncio
 
 from trackinizer.lib.agent.sessions import claude, codex
 from trackinizer.lib.agent.sessions.tail import Tail
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     SessionRecord,
     Thinking,
     TurnContext,

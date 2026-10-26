@@ -130,7 +130,7 @@ When changing Trackinizer, keep the skill aligned with the owning contracts:
 - Treat `types/inquiries.py`, `types/edges.py`, `types/change_log.py`, and
   `types/session_records.py` as the DB/domain source of truth. API docs
   explain the wire surface; types win on names and structure. The record
-  VOCABULARY is not trackinizer's: it is `trackinizer.lib.agent.types.sessions`.
+  VOCABULARY is not trackinizer's: it is `trackinizer.sagent.session.types`.
 - Follow `docs/api.md` and `docs/api_session_records.md` for API naming.
   Do not invent aliases or parallel names.
 - Preserve the `session_records` asymmetry: it is deliberately outside

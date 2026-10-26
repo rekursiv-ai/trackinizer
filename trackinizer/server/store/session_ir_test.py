@@ -18,7 +18,7 @@ from treekle import immutable, json_loads
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     SessionRecord,
     Thinking,
     ToolCall,

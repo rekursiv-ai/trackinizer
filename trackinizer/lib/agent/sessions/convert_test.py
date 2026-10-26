@@ -342,8 +342,7 @@ def test_convert_reports_a_malformed_normalized_payload(tmp_path: Path) -> None:
     # A tagged record whose field holds the wrong type, inside the array the
     # wire format now is: the document parses as JSON and still cannot decode.
     path.write_text(
-        '[{"py/object":"trackinizer.lib.agent.types.sessions.TurnContext",'
-        '"context_id":"seven"}]',
+        '[{"py/object":"trackinizer.sagent.session.types.TurnContext","context_id":"seven"}]',
     )
 
     malformed = convert_file(path, "json", "claude", False).error or ""

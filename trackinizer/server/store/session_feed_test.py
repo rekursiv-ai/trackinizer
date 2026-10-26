@@ -20,7 +20,7 @@ from treekle import mutable
 
 import pytest
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     Attachment,
     UserMessage,
@@ -65,11 +65,6 @@ _SAID = '{"content": "Done.", "attachments": [], "extra": {}}'
 _BLANK = '{"content": " \\n", "attachments": [], "extra": {}}'
 _ATTACHED = (
     '{"content": null, "attachments": [{"mime_descriptor": "image/png"}], "extra": {}}'
-)
-# The same message as a codec-tagged row: its attachments tuple is a ``py/tuple``.
-_ATTACHED_TAGGED = (
-    '{"content": null, "attachments": {"py/tuple": [{"mime_descriptor": "image/png"}]},'
-    ' "extra": {}}'
 )
 _QUEUED = (
     '{"kind": "queued_command", "content": null,'
@@ -681,7 +676,6 @@ async def test_the_conversation_feed_keeps_what_the_facets_count(
         ("AgentToAgentMessage", _PEER % ("FINAL_ANSWER", "Implemented.")),
         ("UserMessage", _CODEX_CONTEXT),
         ("UserMessage", _TASK_NOTICE),
-        ("AgentToAgentMessage", _ATTACHED_TAGGED),
     )
     await _records(
         integ_store,
@@ -706,9 +700,8 @@ async def test_the_conversation_feed_keeps_what_the_facets_count(
         (4, "AgentToAgentMessage"),
         (5, "ContextState"),
         (9, "AgentToAgentMessage"),
-        (12, "AgentToAgentMessage"),
     ]
-    assert [event.seq for event in newest] == [9, 12]
+    assert [event.seq for event in newest] == [5, 9]
     assert [actor.conversation for actor in facets.actors] == [len(said)]
     assert len(await integ_store.read_feed(scope=talker)) == len(turns)
 

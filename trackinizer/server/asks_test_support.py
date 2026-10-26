@@ -22,7 +22,7 @@ from trackinizer.types.session_records import SessionRecordRow
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from trackinizer.lib.agent.types.sessions import SessionRecord
+    from trackinizer.sagent.session.types import SessionRecord
     from trackinizer.server.store.core import Store
 
 

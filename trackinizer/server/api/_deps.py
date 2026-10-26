@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, cast
 
 import dataclasses
-import datetime
+import datetime as dt
 import functools
 import uuid
 
@@ -358,7 +358,7 @@ def _jsonable(value: object) -> object:
         return {
             key: _jsonable(item) for key, item in cast(dict[str, object], value).items()
         }
-    if isinstance(value, datetime.datetime | datetime.date):
+    if isinstance(value, dt.datetime | dt.date):
         # ISO-8601, never ``str(datetime)``: that yields a space separator
         # which Python re-parses happily and other languages reject.
         return value.isoformat()

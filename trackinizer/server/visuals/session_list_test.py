@@ -12,7 +12,8 @@ from treekle import immutable
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     ContextState,
@@ -20,7 +21,6 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
@@ -39,8 +39,8 @@ from trackinizer.wire.wire_science_chat import chat_session_id
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
 
-    from trackinizer.lib.agent.types.sessions import SessionRecord
     from trackinizer.lib.postgres import PGliteEngine
+    from trackinizer.sagent.session.types import SessionRecord
 
 
 _USER: Final = uuid.UUID("11111111-1111-1111-1111-111111111111")

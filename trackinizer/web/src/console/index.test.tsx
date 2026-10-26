@@ -48,7 +48,7 @@ function said(seq: number, session: string, kind: string, message: { [field: str
     kind,
     created: `2026-10-01T10:00:0${seq}Z`,
     model: "m",
-    message: { "py/object": `trackinizer.lib.agent.types.sessions.${kind}`, ...message },
+    message: { "py/object": `trackinizer.sagent.session.types.${kind}`, ...message },
     text,
   };
 }

@@ -45,7 +45,7 @@ The spike also found two load-bearing bugs in the harness, fixed first
 This document was written against a **turn-grained** capture: one
 `agent_session_events` row per turn, holding one member of an 8-member
 `Message` union. That union is retired. Sessions are now stored as the
-shared session IR (`trackinizer.lib.agent.types.sessions`) -- 21 concrete record
+shared session IR (`trackinizer.sagent.session.types`) -- 21 concrete record
 types, byte-exact round-trip -- in `session_records`, keyed
 `(session_id, part, idx)`. See
 [`private/sessions.md`](private/sessions.md) for that migration's design

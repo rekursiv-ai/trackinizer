@@ -25,8 +25,8 @@ import httpx2
 import pytest
 
 from trackinizer.conftest import set_field_row
-from trackinizer.lib.agent.types.sessions import UserMessage
 from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.api import sessions_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (

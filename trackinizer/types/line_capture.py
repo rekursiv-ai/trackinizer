@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Final
 
 import logging
 
-from trackinizer.lib.agent.types.sessions import ContextClear, TurnContext
+from trackinizer.sagent.session.types import ContextClear, TurnContext
 from trackinizer.types.streams import Stdout, TraxRecord
 
 

@@ -21,7 +21,7 @@ from treekle import from_plain, immutable
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import UserMessage
+from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.api.conftest import install_identity, make_test_identity
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.audience import OPEN, STAFF

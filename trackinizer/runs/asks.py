@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol
 
 from treekle import PlainTree, from_plain
 
-from trackinizer.lib.agent.types.sessions import SystemMessage
+from trackinizer.sagent.session.types import SystemMessage
 
 
 if TYPE_CHECKING:

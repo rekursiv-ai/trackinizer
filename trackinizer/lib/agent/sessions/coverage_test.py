@@ -17,7 +17,7 @@ from io import StringIO
 from typing import TYPE_CHECKING
 
 from trackinizer.lib.agent.sessions import claude, codex
-from trackinizer.lib.agent.types.sessions import SessionRecord, UncategorizedRecord
+from trackinizer.sagent.session.types import SessionRecord, UncategorizedRecord
 
 
 if TYPE_CHECKING:

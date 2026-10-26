@@ -42,7 +42,7 @@ class TestLosslessFields:
         source = {"value": 1}
         state = read_field_keeping_invalid(source, "value", float)
         stored = extract_unmodeled_fields(source, fields={"value": state})
-        assert isinstance(state, float)
+        assert (state, type(state)) == (1, int)
 
         restored = restore_unmodeled_fields(stored, {"value": state})
         assert restored == source

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Final
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AgentToAgentMessage,
     AssistantMessage,

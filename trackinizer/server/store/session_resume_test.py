@@ -23,7 +23,7 @@ from trackinizer.lib.agent.sessions import (
     codex,
 )
 from trackinizer.lib.agent.sessions.tail import Tail
-from trackinizer.lib.agent.types.sessions import SessionRecord, Thinking
+from trackinizer.sagent.session.types import SessionRecord, Thinking
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow

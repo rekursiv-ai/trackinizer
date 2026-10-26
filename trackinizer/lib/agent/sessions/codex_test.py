@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Final
 
 import json
 
-from treekle import MutablePlainTree, from_plain, json_loads
+from treekle import MutablePlainTree, from_plain, json_loads, mutable
 
 import pytest
 
@@ -17,7 +17,7 @@ from trackinizer.lib.agent.sessions import codex
 from trackinizer.lib.agent.sessions.codex import _grouped
 from trackinizer.lib.agent.sessions.testdata.mistype import mistyped, unread, without
 from trackinizer.lib.agent.sessions.udiff import parse_udiff, render_udiff
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     Attachment,
@@ -1023,7 +1023,7 @@ def test_a_patch_diff_is_stored_once() -> None:
     assert isinstance(record, FileEditResult)
 
     assert render_udiff(record.edits) == diff
-    assert diff not in json.dumps(dict(record.extra)), (
+    assert diff not in json.dumps(mutable(record.extra)), (
         "the diff is on the record already"
     )
 

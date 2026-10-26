@@ -11,7 +11,7 @@ function record(kind: string, payload: { [field: string]: unknown } = {}, text =
     context_id: null,
     timestamp: null,
     model: null,
-    payload: { "py/object": `trackinizer.lib.agent.types.sessions.${kind}`, ...payload },
+    payload: { "py/object": `trackinizer.sagent.session.types.${kind}`, ...payload },
     text,
     ciphertext: null,
   };
@@ -107,13 +107,13 @@ test("a file's language is its extension, or its name when it has none", () => {
   expect(["/w/a.PY", "src/x.test.tsx", "Makefile", "dir.d/README", ""].map(languageOf)).toEqual(["py", "tsx", "makefile", "readme", ""]);
 });
 
-test("a tool row reads tagged tuples as it reads plain arrays", () => {
+test("a tool row reads its stored arrays", () => {
   const view = (kind: string, payload: { [field: string]: unknown }) => recordView(record(kind, payload));
-  const codex = view("ShellCommandResult", { command: { "py/tuple": ["/bin/bash", "-lc", "date -u"] }, stdout: "now", stderr: "", exit_code: 0 });
+  const codex = view("ShellCommandResult", { command: ["/bin/bash", "-lc", "date -u"], stdout: "now", stderr: "", exit_code: 0 });
   expect(toolSummary(null, codex)).toMatchObject({ verb: "Ran", target: "date -u", outcome: "1 line" });
   const splice = { before: "a\nb\n", after: "c\n", lead: null, trail: null, start: null, count: null };
-  const edit = view("FileEditResult", { path: "src/b.ts", edits: { "py/tuple": [splice] } });
+  const edit = view("FileEditResult", { path: "src/b.ts", edits: [splice] });
   expect(toolSummary(null, edit)).toMatchObject({ tool: "edit", verb: "Edited", target: "src/b.ts", outcome: "+1 −2", language: "ts" });
-  const found = { "py/tuple": [{ url: "https://a.b/", title: "A", snippet: "" }] };
+  const found = [{ url: "https://a.b/", title: "A", snippet: "" }];
   expect(toolSummary(null, view("WebSearchResults", { query: "pglite", content: found }))).toMatchObject({ verb: "Searched the web", target: "pglite", outcome: "1 result" });
 });

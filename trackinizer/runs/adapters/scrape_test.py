@@ -11,12 +11,12 @@ from __future__ import annotations
 
 from io import StringIO
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.runs.adapters import scrape
+from trackinizer.sagent.session.types import (
     ContextClear,
     TurnContext,
     UserMessage,
 )
-from trackinizer.runs.adapters import scrape
 from trackinizer.types.line_capture import normalize
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
