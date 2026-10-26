@@ -45,6 +45,8 @@ ASSISTANT_KEYS: Final = frozenset(
     {
         "theme",
         "skin",
+        "scanlines",
+        "terminal_colors",
         "chat_side",
         "app_bar",
         "highlight_mentions",
@@ -68,6 +70,27 @@ preferences document, with its description as the comment above it."""
 _Id = Annotated[str, StringConstraints(max_length=100)]
 _Name = Annotated[str, StringConstraints(max_length=200)]
 _Text = Annotated[str, StringConstraints(max_length=100_000)]
+_Colour = Annotated[str, StringConstraints(pattern=r"^#[0-9a-f]{6}$")]
+
+GNOME_PALETTE: Final = (
+    "#171421",
+    "#c01c28",
+    "#26a269",
+    "#a2734c",
+    "#12488b",
+    "#a347ba",
+    "#2aa1b3",
+    "#d0cfcc",
+    "#5e5c64",
+    "#f66151",
+    "#33d17a",
+    "#e9ad0c",
+    "#2a7bde",
+    "#c061cb",
+    "#33c7de",
+    "#ffffff",
+)
+"""GNOME Terminal 3.58's "GNOME" palette, ANSI colours 0 to 15 (``docs/retro_ui.md``)."""
 
 
 def _instant(text: str) -> datetime:
@@ -220,6 +243,34 @@ class DraftRelation(_Strict):
     target: RelationTarget
 
 
+class TerminalColors(_Strict):
+    """A terminal's colours, as GNOME Terminal's profile names them, each one given.
+
+    A write replaces the whole object, as it does any top-level key.
+    """
+
+    text: _Colour
+    background: _Colour
+    bold: _Colour | None
+    """Bold text's colour; None draws bold in the text colour."""
+
+    palette: Annotated[list[_Colour], Field(min_length=16, max_length=16)]
+    """ANSI colours 0 to 15: eight normal, then their eight bright forms."""
+
+    bold_is_bright: bool
+    """Bold text in colours 0 to 7 shows in 8 to 15."""
+
+
+_GREEN_ON_BLACK: Final = TerminalColors(
+    text="#00ff00",
+    background="#000000",
+    bold=None,
+    palette=list(GNOME_PALETTE),
+    bold_is_bright=True,
+)
+"""GNOME Terminal's "Green on black" over its GNOME palette, bold drawn bright."""
+
+
 class CreateDraft(_Strict):
     """The create form's unsent inquiry."""
 
@@ -255,6 +306,24 @@ class Preferences(_Strict):
         default="default",
         description=(
             "The app's look: default, or one of the fixed skins, which ignore theme."
+        ),
+        json_schema_extra=SETTING,
+    )
+    scanlines: bool = Field(
+        default=True,
+        description=(
+            "The Hacker skin's scanlines and glow, as a CRT draws them; off, its "
+            "text is crisp."
+        ),
+        json_schema_extra=SETTING,
+    )
+    terminal_colors: TerminalColors = Field(
+        default=_GREEN_ON_BLACK,
+        description=(
+            "The browser terminal's colours, which the Hacker skin draws in too: "
+            "text, background and bold, the 16-colour palette (ANSI 0 to 15), and "
+            "whether bold text in colours 0 to 7 shows in 8 to 15. GNOME Terminal's "
+            "Green on black over its GNOME palette until changed."
         ),
         json_schema_extra=SETTING,
     )

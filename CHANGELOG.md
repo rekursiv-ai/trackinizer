@@ -3,6 +3,13 @@
 All notable trackinizer changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- The `scanlines` preference (on by default): the Hacker skin's scanlines and
+  glow, which the user and their assistant can turn off.
+
 ## 0.1.12 - 2026-10-26
 
 ### Added

@@ -7978,6 +7978,13 @@
             "$ref": "#/components/schemas/ReadState",
             "description": "The notifications you have read: a boundary time, and changes marked one by one after it."
           },
+          "scanlines": {
+            "default": true,
+            "description": "The Hacker skin's scanlines and glow, as a CRT draws them; off, its text is crisp.",
+            "title": "Scanlines",
+            "type": "boolean",
+            "x-setting": true
+          },
           "settings_artifact_id": {
             "anyOf": [
               {
@@ -8019,6 +8026,34 @@
             "maxItems": 2000,
             "title": "Stars",
             "type": "array"
+          },
+          "terminal_colors": {
+            "$ref": "#/components/schemas/TerminalColors",
+            "default": {
+              "background": "#000000",
+              "bold_is_bright": true,
+              "palette": [
+                "#171421",
+                "#c01c28",
+                "#26a269",
+                "#a2734c",
+                "#12488b",
+                "#a347ba",
+                "#2aa1b3",
+                "#d0cfcc",
+                "#5e5c64",
+                "#f66151",
+                "#33d17a",
+                "#e9ad0c",
+                "#2a7bde",
+                "#c061cb",
+                "#33c7de",
+                "#ffffff"
+              ],
+              "text": "#00ff00"
+            },
+            "description": "The browser terminal's colours, which the Hacker skin draws in too: text, background and bold, the 16-colour palette (ANSI 0 to 15), and whether bold text in colours 0 to 7 shows in 8 to 15. GNOME Terminal's Green on black over its GNOME palette until changed.",
+            "x-setting": true
           },
           "terminal_font_size": {
             "default": "13px",
@@ -11990,6 +12025,57 @@
           "type"
         ],
         "title": "TabVisual",
+        "type": "object"
+      },
+      "TerminalColors": {
+        "additionalProperties": false,
+        "description": "A terminal's colours, as GNOME Terminal's profile names them, each one given.\n\nA write replaces the whole object, as it does any top-level key.",
+        "properties": {
+          "background": {
+            "pattern": "^#[0-9a-f]{6}$",
+            "title": "Background",
+            "type": "string"
+          },
+          "bold": {
+            "anyOf": [
+              {
+                "pattern": "^#[0-9a-f]{6}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bold"
+          },
+          "bold_is_bright": {
+            "title": "Bold Is Bright",
+            "type": "boolean"
+          },
+          "palette": {
+            "items": {
+              "pattern": "^#[0-9a-f]{6}$",
+              "type": "string"
+            },
+            "maxItems": 16,
+            "minItems": 16,
+            "title": "Palette",
+            "type": "array"
+          },
+          "text": {
+            "pattern": "^#[0-9a-f]{6}$",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "background",
+          "bold",
+          "palette",
+          "bold_is_bright"
+        ],
+        "title": "TerminalColors",
         "type": "object"
       },
       "TerminalCommand": {

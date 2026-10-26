@@ -28,6 +28,31 @@ if TYPE_CHECKING:
 _DEFAULTS: dict[str, JsonValue] = {
     "theme": "dark",
     "skin": "default",
+    "scanlines": True,
+    "terminal_colors": {
+        "text": "#00ff00",
+        "background": "#000000",
+        "bold": None,
+        "palette": [
+            "#171421",
+            "#c01c28",
+            "#26a269",
+            "#a2734c",
+            "#12488b",
+            "#a347ba",
+            "#2aa1b3",
+            "#d0cfcc",
+            "#5e5c64",
+            "#f66151",
+            "#33d17a",
+            "#e9ad0c",
+            "#2a7bde",
+            "#c061cb",
+            "#33c7de",
+            "#ffffff",
+        ],
+        "bold_is_bright": True,
+    },
     "chat_side": "left",
     "app_bar": "top",
     "app_bar_width": 220,
@@ -137,6 +162,50 @@ def test_a_skin_is_one_of_the_named_looks() -> None:
     assert Preferences.model_validate({"skin": "dos"}).skin == "dos"
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"skin": "cyber"})
+
+
+def test_terminal_colors_are_gnome_green_on_black_until_changed_and_hold_a_terminals_shape() -> (
+    None
+):
+    colors = stored_preferences(None).terminal_colors
+    assert (colors.text, colors.background, colors.bold) == ("#00ff00", "#000000", None)
+    assert (colors.palette[1], colors.palette[14], colors.bold_is_bright) == (
+        "#c01c28",
+        "#33c7de",
+        True,
+    )
+    assert "terminal_colors" in ASSISTANT_KEYS
+    whole = colors.model_dump()
+    tango = ["#2e3436", *["#cc0000"] * 15]
+    chosen = Preferences.model_validate(
+        {"terminal_colors": {**whole, "palette": tango, "bold": "#ffffff"}},
+    ).terminal_colors
+    assert (chosen.palette, chosen.bold, chosen.text) == (tango, "#ffffff", "#00ff00")
+    for wrong in (
+        {**whole, "palette": tango[:15]},
+        {**whole, "palette": [*tango, "#000000"]},
+        {**whole, "text": "green"},
+        {**whole, "background": "#FFFFFF"},
+        {**whole, "bold": "#fff"},
+        {**whole, "cursor": "#ffffff"},
+        {"palette": tango},
+    ):
+        with pytest.raises(pydantic.ValidationError):
+            Preferences.model_validate({"terminal_colors": wrong})
+
+
+def test_terminal_colors_default_is_a_copy_each_time() -> None:
+    first = stored_preferences(None).terminal_colors
+    first.palette[0] = "#ffffff"
+    assert stored_preferences(None).terminal_colors.palette[0] == "#171421"
+
+
+def test_scanlines_are_on_until_the_user_turns_them_off() -> None:
+    assert stored_preferences(None).scanlines is True
+    assert stored_preferences({"scanlines": False}).scanlines is False
+    assert "scanlines" in ASSISTANT_KEYS
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"scanlines": "off"})
 
 
 def test_workspace_preferences_keep_order_pin_visibility_and_last_canvas() -> None:
