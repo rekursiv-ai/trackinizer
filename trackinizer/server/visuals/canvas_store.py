@@ -283,7 +283,8 @@ async def send_chat_line(
     card the assistant asked comes from the person the card asked (its starter's when
     it names nobody), queued for the chat's own session, where the card is, with the
     page, trail and marks a line carries: the assistant hears the pick as that
-    person's line. A run taken over in a terminal takes no post of any kind.
+    person's line. An ``interrupt`` to the assistant is queued there too, where its
+    turn runs. A run taken over in a terminal takes no post of any kind.
 
     Args:
       store: The store, which opens and fills a fork's session.
@@ -309,7 +310,8 @@ async def send_chat_line(
       CanvasSessionUnavailableError: The canvas has no live partner.
       ProviderOfflineError: The canvas's provider is a CLI and no run of it holds
         the chat, or the forker has no key to open a fork's session for it with, or an
-        ``answer`` is posted to an assistant chat the assistant does not have open.
+        ``answer`` or ``interrupt`` is posted to an assistant chat the assistant does
+        not have open.
       ChatTakenOverError: The chat's run was taken over in a terminal.
       PartnerBusyError: The queue the line would join is full.
       CanvasChatError: The canvas's chat is another conversation, or another
@@ -329,7 +331,7 @@ async def send_chat_line(
       AnswerNotOwnerError: An ``answer`` came from someone other than the chat's
         starter.
       ValueError: The fork names no line of a science chat, or an ``assistant``
-        canvas is sent a post that is not a line or an answer.
+        canvas is sent a post that is not a line, an answer or an interrupt.
 
     """
     async with store.engine.acquire() as conn, tx(conn):
@@ -2197,30 +2199,33 @@ async def _post_target(
             conversation_id=conversation_id,
         )
         return chat, chat
-    if body.kind == "answer":
+    if body.kind in {"answer", "interrupt"}:
         # A card the assistant asks in a chat is answered in that chat's own session:
         # the cards are released when it closes the chat, so no other session has one.
-        card = await chat_line_target(
+        # A turn runs only in a chat the assistant has open, so it is stopped there too.
+        chat = await chat_line_target(
             conn,
             inbound=inbound,
             assistant=assistant,
             provider=provider,
             conversation_id=conversation_id,
         )
-        if card is None:
+        if chat is None:
             raise ProviderOfflineError("The assistant does not have this chat open")
-        await _check_asker_answers(
-            conn,
-            body=body,
-            session_id=card,
-            assistant=assistant,
-            conversation_id=conversation_id,
-            poster=poster,
-        )
-        return card, card
+        if body.kind == "answer":
+            await _check_asker_answers(
+                conn,
+                body=body,
+                session_id=chat,
+                assistant=assistant,
+                conversation_id=conversation_id,
+                poster=poster,
+            )
+        return chat, chat
     if body.kind != "line":
         raise ValueError(
-            f"The assistant takes a person's line or an answer, not a {body.kind}",
+            "The assistant takes a person's line, an answer or an interrupt, "
+            f"not a {body.kind}",
         )
     partner = await shared_partner(conn, inbound=inbound, assistant=assistant)
     if partner is None or partner.session_id is None or partner.status != "live":

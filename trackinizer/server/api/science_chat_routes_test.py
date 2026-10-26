@@ -1499,7 +1499,7 @@ async def test_a_line_into_a_closed_assistant_chat_goes_to_the_assistants_servic
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_the_assistant_takes_a_persons_line_or_an_answer_and_nothing_else(
+async def test_the_assistant_takes_a_line_an_answer_or_an_interrupt_and_nothing_else(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
@@ -1515,8 +1515,9 @@ async def test_the_assistant_takes_a_persons_line_or_an_answer_and_nothing_else(
     )
 
     assert refused.status_code == 422
-    assert "The assistant takes a person's line or an answer, not a command" in (
-        refused.text
+    assert (
+        "The assistant takes a person's line, an answer or an interrupt, not a command"
+        in refused.text
     )
     assert await _drained(client, session_id=kb) == []
 
@@ -1563,10 +1564,51 @@ async def test_an_answer_to_the_assistants_card_reaches_the_chat_it_asked_in(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_an_answer_to_a_chat_the_assistant_has_not_open_is_refused(
+async def test_an_interrupt_reaches_the_chat_the_assistants_turn_runs_in(
     pglite_route_client: _Client,
 ) -> None:
-    """Its cards are released when it closes the chat, so there is nothing to answer."""
+    """It is queued for the chat's own session, with no page, trail or marks."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    await seed_session(store, ASSISTANT, actor=KB_ACTOR)
+    canvas_id = await _canvas(client)
+    browser()
+    conversation = conversation_of(
+        await send_chat(client, canvas_id=canvas_id, text="hello"),
+    )
+    chat = await seed_science_chat(store, conversation_id=conversation)
+
+    stopped = await _post(
+        client,
+        canvas_id=canvas_id,
+        text="interrupt",
+        kind="interrupt",
+    )
+
+    assert stopped.status_code == 200, stopped.text
+    assert ChatSent.model_validate_json(stopped.content).session_id == chat
+    heard = await _drained(client, session_id=chat)
+    assert [(m["text"], m["kind"], m["context"]) for m in heard] == [
+        ("interrupt", "interrupt", None),
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("kind", "text", "payload"),
+    [
+        ("answer", "Blue", {"prompt_id": "q1", "option": "2"}),
+        ("interrupt", "interrupt", None),
+    ],
+)
+async def test_an_answer_or_interrupt_to_a_chat_the_assistant_has_not_open_is_refused(
+    pglite_route_client: _Client,
+    kind: str,
+    text: str,
+    payload: dict[str, object] | None,
+) -> None:
+    """Its cards are released, and its turn ends, when it closes the chat."""
     client, store = pglite_route_client
     await seed_accounts(store)
     kb = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
@@ -1575,9 +1617,9 @@ async def test_an_answer_to_a_chat_the_assistant_has_not_open_is_refused(
     refused = await _post(
         client,
         canvas_id=canvas_id,
-        text="Blue",
-        kind="answer",
-        payload={"prompt_id": "q1", "option": "2"},
+        text=text,
+        kind=kind,
+        payload=payload,
     )
 
     assert refused.status_code == 409, refused.text

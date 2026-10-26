@@ -1157,11 +1157,12 @@ payload}`; `text` holds a non-space
 character and at most 16,384 characters, and `canvas_id` is the poster's own
 canvas. `kind` is `line` by default, or `command`, `answer`, `settings` or
 `interrupt`, with `payload` as `POST /api/sessions/<uuid>/inbound` takes it (a stale
-browser's `science` reads as `line`). An `assistant` canvas takes a `line` or an
-`answer` (422 otherwise), an `answer` being a choice on a card the assistant asked,
-queued for the chat's own session and given by the chat's starter alone, as on a
-`claude` or `codex` canvas (403 `answer_not_owner`); it is 409
-`provider_offline` while the assistant does not have the chat open. A `claude` or
+browser's `science` reads as `line`). An `assistant` canvas takes a `line`, an
+`answer` or an `interrupt` (422 otherwise), an `answer` being a choice on a card the
+assistant asked, given by the chat's starter alone, as on a `claude` or `codex`
+canvas (403 `answer_not_owner`), and an `interrupt` stopping the turn it is on. Each
+is queued for the chat's own session, and is 409 `provider_offline` while the
+assistant does not have the chat open. A `claude` or
 `codex` canvas queues the post on the chat's session its run drains, with only a
 `line` carrying the canvas context, and while that run is taken over in a terminal
 refuses every post with 409 `chat_taken_over`. A canvas holds one chat: with none, the line's conversation becomes its

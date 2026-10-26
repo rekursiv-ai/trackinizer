@@ -181,8 +181,9 @@ async def test_a_sharers_post_goes_by_the_chats_provider_not_their_canvases(
     posted = await _bob_says(client, chat, canvas=bob_canvas, text="thanks")
 
     assert command.status_code == 422, command.text
-    assert "The assistant takes a person's line or an answer, not a command" in (
-        command.text
+    assert (
+        "The assistant takes a person's line, an answer or an interrupt, not a command"
+        in command.text
     )
     assert posted.status_code == 200
     heard = await _heard(client, chat.session)
