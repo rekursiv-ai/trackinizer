@@ -109,10 +109,11 @@ async def post_chat_line_route(
     queues nothing again.
 
     The poster's canvas's provider answers, or in a chat someone else started, the
-    provider of its starter's canvas. ``assistant`` takes a ``line`` or an ``answer``
-    (422 for any other ``kind``); an ``answer`` is a choice on a card the assistant
-    asked, queued for the chat's own session, and is 409 ``provider_offline`` while the
-    assistant does not have the chat open. For ``claude`` or ``codex`` the post, with
+    provider of its starter's canvas. ``assistant`` takes a ``line``, an ``answer`` or
+    an ``interrupt`` (422 for any other ``kind``); an ``answer`` is a choice on a card
+    the assistant asked, and an ``interrupt`` stops the turn it is on, each queued for
+    the chat's own session and 409 ``provider_offline`` while the assistant does not
+    have the chat open. For ``claude`` or ``codex`` the post, with
     its ``kind`` and ``payload``, joins the queue of the chat's session that the CLI's
     run drains; with no such run live it is 409 ``provider_offline``, and while the run
     reports ``taken_over``, its CLI opened in a terminal, it is 409 ``chat_taken_over``

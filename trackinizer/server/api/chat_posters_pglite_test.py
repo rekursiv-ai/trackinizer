@@ -179,7 +179,7 @@ async def test_a_domain_server_lets_the_starters_organisation_post_as_it_reads(
             client,
             poster=CAL,
             canvas=chat.canvases[CAL],
-            kind="interrupt" if provider != "assistant" else "line",
+            kind="interrupt",
             conversation=chat.conversation,
         ),
         DEE: await _post(
@@ -196,10 +196,7 @@ async def test_a_domain_server_lets_the_starters_organisation_post_as_it_reads(
 
     assert posted == {CAL: (200, None), DEE: _NOT_SHARED}
     assert relayed == {CAL: True, DEE: False}
-    assert _queued(chat.session) == [
-        (CAL, "interrupt" if provider != "assistant" else "line"),
-        (CAL, "line"),
-    ]
+    assert _queued(chat.session) == [(CAL, "interrupt"), (CAL, "line")]
 
 
 @pytest.mark.db_pglite
@@ -504,7 +501,7 @@ def _answer(poster: str, *, kind: str, provider: str) -> tuple[int, str | None]:
         return _NOT_SHARED
     if kind == "answer" and poster == BEA:
         return 403, "answer_not_owner"
-    if provider == "assistant" and kind not in {"line", "answer"}:
+    if provider == "assistant" and kind not in {"line", "answer", "interrupt"}:
         return 422, None
     return 200, None
 
