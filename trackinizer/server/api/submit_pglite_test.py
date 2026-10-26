@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import datetime
+import datetime as dt
 import uuid
 
 from treekle import from_plain
@@ -32,10 +32,10 @@ if TYPE_CHECKING:
 
 type _Client = tuple[httpx2.AsyncClient, Store]
 
-_CREATED = datetime.datetime(2024, 3, 1, 12, 30, tzinfo=datetime.UTC)
+_CREATED = dt.datetime(2024, 3, 1, 12, 30, tzinfo=dt.UTC)
 # PGlite's clock ticks in whole milliseconds, so a stamp can read up to 1 ms before a
 # microsecond Python reading taken just ahead of it.
-_TICK = datetime.timedelta(milliseconds=1)
+_TICK = dt.timedelta(milliseconds=1)
 
 
 @pytest.mark.db_pglite
@@ -44,7 +44,7 @@ async def test_an_admin_backdates_one_row(pglite_route_client: _Client) -> None:
     client, store = pglite_route_client
     await seed_accounts(store)
     broader = await _post(client, "issue", {"title": "broader"}, role="writer")
-    modified = _CREATED + datetime.timedelta(days=3)
+    modified = _CREATED + dt.timedelta(days=3)
     body = {
         "title": "old",
         "created": _CREATED.isoformat(),
@@ -53,7 +53,7 @@ async def test_an_admin_backdates_one_row(pglite_route_client: _Client) -> None:
         "narrows": [[str(broader), None]],
         "idempotency_key": str(uuid.uuid4()),
     }
-    before = datetime.datetime.now(datetime.UTC) - _TICK
+    before = dt.datetime.now(dt.UTC) - _TICK
 
     made = await _post(client, "issue", body, role="admin")
     retried = await _post(client, "issue", body, role="admin")
@@ -68,8 +68,8 @@ async def test_an_admin_backdates_one_row(pglite_route_client: _Client) -> None:
 async def test_an_admin_backdates_a_batch(pglite_route_client: _Client) -> None:
     client, store = pglite_route_client
     await seed_accounts(store)
-    later = _CREATED + datetime.timedelta(hours=5)
-    finished = later + datetime.timedelta(days=1)
+    later = _CREATED + dt.timedelta(hours=5)
+    finished = later + dt.timedelta(days=1)
     batch = {
         "items": [
             {
@@ -91,7 +91,7 @@ async def test_an_admin_backdates_a_batch(pglite_route_client: _Client) -> None:
     }
 
     install_identity(make_test_identity(role="admin", api_key_id=None))
-    before = datetime.datetime.now(datetime.UTC) - _TICK
+    before = dt.datetime.now(dt.UTC) - _TICK
     first = await client.post("/api/inquiries/batch", json=batch)
     retry = await client.post("/api/inquiries/batch", json=batch)
 
@@ -123,7 +123,7 @@ async def test_a_retried_batch_keeps_a_later_edit(pglite_route_client: _Client) 
                 "kind": "Issue",
                 "title": "old",
                 "created": _CREATED.isoformat(),
-                "modified": (_CREATED + datetime.timedelta(days=1)).isoformat(),
+                "modified": (_CREATED + dt.timedelta(days=1)).isoformat(),
                 "idempotency_key": str(uuid.uuid4()),
             },
         ],
@@ -149,7 +149,7 @@ async def test_a_writer_cannot_set_modified(pglite_route_client: _Client) -> Non
     install_identity(make_test_identity(role="writer", api_key_id=None))
     times = {
         "created": _CREATED.isoformat(),
-        "modified": (_CREATED + datetime.timedelta(days=1)).isoformat(),
+        "modified": (_CREATED + dt.timedelta(days=1)).isoformat(),
     }
 
     single = await client.post("/api/inquiries/issue", json={"title": "t", **times})
@@ -178,11 +178,11 @@ async def test_a_writer_cannot_set_modified(pglite_route_client: _Client) -> Non
 async def test_no_times_stamp_the_wall_clock(pglite_route_client: _Client) -> None:
     client, store = pglite_route_client
     await seed_accounts(store)
-    before = datetime.datetime.now(datetime.UTC) - _TICK
+    before = dt.datetime.now(dt.UTC) - _TICK
 
     made = await _post(client, "issue", {"title": "now"}, role="writer")
 
-    after = datetime.datetime.now(datetime.UTC) + _TICK
+    after = dt.datetime.now(dt.UTC) + _TICK
     created, modified = await _times(store, made)
     change_time = await _created_change_time(store, made)
     assert before <= created <= modified <= after
@@ -207,21 +207,21 @@ async def _post(
 async def _times(
     store: Store,
     row_id: uuid.UUID,
-) -> tuple[datetime.datetime, datetime.datetime]:
+) -> tuple[dt.datetime, dt.datetime]:
     """Read back one row's ``created`` and ``modified``."""
     row = await store.get_inquiry(row_id)
     assert row is not None
     return row.created, row.modified
 
 
-async def _created_change_time(store: Store, row_id: uuid.UUID) -> datetime.datetime:
+async def _created_change_time(store: Store, row_id: uuid.UUID) -> dt.datetime:
     """Read the time on ``row_id``'s ``created`` change."""
     async with store.engine.acquire() as conn:
         found = await conn.fetchval(
             "SELECT created FROM change_log WHERE subject_id = $1 AND kind = 'created'",
             row_id,
         )
-    return from_plain(found, datetime.datetime)
+    return from_plain(found, dt.datetime)
 
 
 if __name__ == "__main__":

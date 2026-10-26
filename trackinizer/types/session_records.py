@@ -34,9 +34,10 @@ from datetime import datetime
 from typing import Final, Self
 from uuid import UUID
 
-from treekle import PlainTree, immutable, mutable
+from treekle import PlainTree, from_plain, to_plain
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
+    CONCRETE_TYPES,
     AgentStatusResult,
     AgentToAgentMessage,
     AssistantMessage,
@@ -59,7 +60,6 @@ from trackinizer.lib.agent.types.sessions import (
     WebFetchResult,
     WebSearchResults,
 )
-from trackinizer.lib.agent.types.stored import from_stored, to_stored
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
 
@@ -139,7 +139,9 @@ class SessionRecordRow:
     not self-join per row. A projection, never read back into a record."""
 
     payload: Mapping[str, PlainTree]
-    """Frozen :func:`to_stored` data, tagged by record type, without ciphertext."""
+    """The record as frozen plain data, its JSON fields untagged as
+    :data:`~trackinizer.sagent.session.types.CONCRETE_TYPES` writes them, without
+    ciphertext."""
 
     text: str = ""
     """The search projection; see :func:`search_text`."""
@@ -180,6 +182,14 @@ class SessionRecordRow:
             else record
         )
         raw = getattr(record, "timestamp", None)
+        payload = to_plain(
+            stored,
+            mutable=False,
+            sort=False,
+            default_concrete_types=CONCRETE_TYPES,
+        )
+        if not isinstance(payload, Mapping):
+            raise TypeError(f"{type(record).__name__} does not store as a JSON object")
         return cls(
             session_id=session_id,
             part=part,
@@ -188,7 +198,7 @@ class SessionRecordRow:
             context_id=getattr(record, "context_id", None),
             timestamp=_parsed(raw if isinstance(raw, str) else None),
             model=model,
-            payload=immutable(to_stored(stored)),
+            payload=payload,
             text=search_text(record),
             ciphertext=encrypted if isinstance(encrypted, str) and encrypted else None,
         )
@@ -196,9 +206,8 @@ class SessionRecordRow:
     def record(self) -> TraxRecord:
         """Rebuild the record this row stores.
 
-        Read by :func:`from_stored`, which takes both the tagged shape and the
-        plain one rows were written in before, and freezes each ``JSON`` field
-        as the provider readers build it.
+        Read under :data:`~trackinizer.sagent.session.types.CONCRETE_TYPES`, each
+        ``JSON`` field frozen as the record holds it.
 
         Ciphertext is NOT spliced here: this type holds one row, and the bytes
         live in another table. A reader that fetched them calls
@@ -208,7 +217,11 @@ class SessionRecordRow:
           record: Decoded TraxRecord of the appropriate subtype.
 
         """
-        return from_stored(mutable(self.payload), _class_for(self.kind))
+        return from_plain(
+            self.payload,
+            _class_for(self.kind),
+            default_concrete_types=CONCRETE_TYPES,
+        )
 
 
 def _parts(record: object) -> tuple[str, ...]:

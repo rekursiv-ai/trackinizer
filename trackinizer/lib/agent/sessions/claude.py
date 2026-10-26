@@ -55,8 +55,8 @@ from trackinizer.lib.agent.sessions.unmodeled import (
     restore_unmodeled_fields,
     same_json_value,
 )
-from trackinizer.lib.agent.types.capability import ThinkingEffort
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.model.capability import ThinkingEffort
+from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AnyToolResult,
     AssistantMessage,
@@ -2726,7 +2726,7 @@ def _typed_result(
             timestamp=timestamp,
             call_id=call_id,
             query=query if isinstance(query, str) else None,
-            duration_sec=duration if isinstance(duration, float) else None,
+            duration_sec=duration if isinstance(duration, int | float) else None,
             content=tuple(_search_rows(rows)),
             extra=immutable(
                 _result_extra(
@@ -2750,7 +2750,7 @@ def _typed_result(
         code = read_field_keeping_invalid(result, "code", int)
         duration = read_field_keeping_invalid(result, "durationMs", float)
         size = read_field_keeping_invalid(result, "bytes", int)
-        if isinstance(duration, float):
+        if isinstance(duration, int | float):
             shape["duration_ms"] = cast(PlainTree, result["durationMs"])
         return WebFetchResult(
             timestamp=timestamp,
@@ -2758,7 +2758,7 @@ def _typed_result(
             url=url if isinstance(url, str) else None,
             content=content_state if isinstance(content_state, str) else None,
             code=code if isinstance(code, int) else None,
-            duration_sec=duration / 1000 if isinstance(duration, float) else None,
+            duration_sec=duration / 1000 if isinstance(duration, int | float) else None,
             size=size if isinstance(size, int) else None,
             extra=immutable(
                 _result_extra(
@@ -2789,7 +2789,7 @@ def _typed_result(
         duration = read_field_keeping_invalid(result, "totalDurationMs", float)
         tool_calls = read_field_keeping_invalid(result, "totalToolUseCount", int)
         output_file = read_field_keeping_invalid(result, "outputFile", str)
-        if isinstance(duration, float):
+        if isinstance(duration, int | float):
             shape["duration_ms"] = cast(PlainTree, result["totalDurationMs"])
         # A subagent answers in blocks, never a bare string, so its prose is
         # joined here and the block wrapper noted for the writer.
@@ -2818,7 +2818,7 @@ def _typed_result(
             model=model if isinstance(model, str) else None,
             state=state if isinstance(state, str) else None,
             tokens=tokens if isinstance(tokens, int) else None,
-            duration_sec=duration / 1000 if isinstance(duration, float) else None,
+            duration_sec=duration / 1000 if isinstance(duration, int | float) else None,
             tool_calls=tool_calls if isinstance(tool_calls, int) else None,
             output_file=output_file if isinstance(output_file, str) else None,
             extra=immutable(

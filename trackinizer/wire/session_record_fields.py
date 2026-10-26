@@ -19,7 +19,7 @@ from typing import Final
 
 import re
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AgentToAgentMessage,
     AssistantMessage,

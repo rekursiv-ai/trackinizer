@@ -12,14 +12,14 @@ from treekle import from_plain, immutable, json_loads
 
 import pytest
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.runs.asks import Ask, Option, opened_record
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     ToolCall,
     UncategorizedToolResult,
     UserMessage,
 )
-from trackinizer.runs.asks import Ask, Option, opened_record
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,
@@ -68,7 +68,7 @@ if TYPE_CHECKING:
 
     import httpx2
 
-    from trackinizer.lib.agent.types.sessions import SessionRecord
+    from trackinizer.sagent.session.types import SessionRecord
     from trackinizer.server.store.core import Store
 
 

@@ -20,7 +20,7 @@ from treekle import MutablePlainTree, PlainTree, from_plain, json_loads
 
 from trackinizer.client.conversation import delivery_of
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     ToolCall,

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, Literal
+from importlib.resources import files
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from trackinizer.lib.agent.catalog import models
+from trackinizer.sagent.providers.table import ModelTable
 from trackinizer.wire.chat_commands import (
     COMMAND_CHARS,
     KNOWN_VERBS,
@@ -47,8 +48,14 @@ def _menu(verb: str) -> Refused:
     )
 
 
-_CLAUDE: Final = models("anthropic")
-_CODEX: Final = models("openai")
+_CLAUDE: Final = ModelTable.from_yaml(
+    files("trackinizer.sagent.providers.anthropic") / "anthropic.yaml",
+    provider="anthropic",
+)
+_CODEX: Final = ModelTable.from_yaml(
+    files("trackinizer.sagent.providers.openai") / "openai.yaml",
+    provider="openai",
+)
 _ROLES: Final = ("best", "default", "everyday", "utility")
 _CLAUDE_ALIASES: Final = list(
     dict.fromkeys(_CLAUDE[role].model_id.rpartition("-")[0] for role in _ROLES),
@@ -402,17 +409,13 @@ def test_a_bare_model_lists_each_model_once_though_two_roles_name_it(
     assert len(options) == len(set(options))
 
 
-@pytest.mark.parametrize(
-    ("provider", "vendor"),
-    [("claude", "anthropic"), ("codex", "openai")],
-)
+@pytest.mark.parametrize("provider", ["claude", "codex"])
 def test_the_picker_offers_what_model_takes_with_each_models_efforts(
     provider: ChatProvider,
-    vendor: Literal["anthropic", "openai"],
 ) -> None:
     listed = chat_models()
     offered = listed.claude if provider == "claude" else listed.codex
-    table = models(vendor)
+    table = _CLAUDE if provider == "claude" else _CODEX
 
     assert [model.id for model in offered if model.default] == [
         model.id for model in offered if table[model.id] == table["default"]

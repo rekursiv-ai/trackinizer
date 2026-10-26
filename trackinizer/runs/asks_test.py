@@ -15,7 +15,7 @@ import asyncio
 import inspect
 import json
 
-from treekle import PlainTree, from_plain
+from treekle import PlainTree, from_plain, mutable
 
 import pytest
 
@@ -116,7 +116,7 @@ def test_opened_record_carries_every_field() -> None:
 
 def test_opened_record_survives_a_json_round_trip() -> None:
     record = opened_record(_command_ask(), at=_AT)
-    assert json.loads(json.dumps(record.extra)) == dict(record.extra)
+    assert json.loads(json.dumps(mutable(record.extra))) == mutable(record.extra)
 
 
 def test_claude_permission_keeps_todays_fields() -> None:

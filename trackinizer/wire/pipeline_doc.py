@@ -20,13 +20,12 @@ import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, Literal
 
-import json
 import re
 
-from treekle import from_plain, json_loads
+from treekle import json_dumps, json_loads
 
 
 if TYPE_CHECKING:
@@ -140,9 +139,18 @@ class PipelineDoc:
 
 
 def dump_pipeline(doc: PipelineDoc) -> str:
-    """Return the document as the compact JSON text, keys sorted, of an Artifact."""
-    return json.dumps(
-        from_plain(asdict(doc), dict[str, object]),
+    """Return the document as the compact JSON text an Artifact's description holds.
+
+    Args:
+      doc: The document.
+
+    Returns:
+      text: Plain objects, arrays and scalars with no type tags, keys sorted.
+
+    """
+    return json_dumps(
+        doc,
+        target=PipelineDoc,
         separators=(",", ":"),
         sort_keys=True,
     )
@@ -162,7 +170,13 @@ def load_pipeline(text: str) -> PipelineDoc:
         field it does not know, a bound broken, or a flow to a stage it does not hold.
 
     """
-    return json_loads(text, PipelineDoc)
+    doc = json_loads(text, PipelineDoc)
+    # A read restores state as written; building again runs each bound check.
+    return replace(
+        doc,
+        stages=tuple(replace(stage) for stage in doc.stages),
+        flows=tuple(replace(flow) for flow in doc.flows),
+    )
 
 
 def stage_of_path(doc: PipelineDoc, path: str) -> str:

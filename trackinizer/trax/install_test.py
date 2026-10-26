@@ -6,10 +6,9 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import json
 import shutil
 
-from treekle import json_loads, to_plain
+from treekle import json_dumps, json_loads
 
 import pytest
 
@@ -514,7 +513,7 @@ def test_invalid_receipt_cannot_authorize_removal(
         receipt.rename(external)
         receipt.symlink_to(external)
     else:
-        receipt.write_text(json.dumps(to_plain(fields)))
+        receipt.write_text(json_dumps(fields))
     assert install_module.check_skills(TARGETS["claude"]).status == "unmanaged"
     with pytest.raises(InstallError, match="unmanaged"):
         uninstall(TARGETS["claude"])

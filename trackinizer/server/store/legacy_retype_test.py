@@ -15,7 +15,7 @@ from treekle import immutable
 
 import pytest
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     ContextCompaction,

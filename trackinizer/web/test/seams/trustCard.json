@@ -5,9 +5,7 @@
   "kind": "SystemMessage",
   "model": null,
   "payload": {
-    "attachments": {
-      "py/tuple": []
-    },
+    "attachments": [],
     "content": "claude waits for trust in ~/proj",
     "context_id": null,
     "extra": {
@@ -27,7 +25,7 @@
         "type": "trust"
       }
     },
-    "py/object": "trackinizer.lib.agent.types.sessions.SystemMessage",
+    "py/object": "trackinizer.sagent.session.types.SystemMessage",
     "subtype": "interaction",
     "timestamp": "2026-10-20T00:00:00+00:00"
   },

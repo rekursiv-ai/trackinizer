@@ -22,7 +22,7 @@ import time
 
 from treekle import from_plain, immutable
 
-from trackinizer.lib.agent.types.sessions import SystemMessage
+from trackinizer.sagent.session.types import SystemMessage
 from trackinizer.types.errors import ConflictError
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_science_chat import CHAT_SESSION_PREFIX

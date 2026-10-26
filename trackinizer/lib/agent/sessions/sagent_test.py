@@ -15,7 +15,7 @@ import pytest
 from trackinizer.lib.agent.sessions import sagent
 from trackinizer.lib.agent.sessions.convert import detect_format, main
 from trackinizer.lib.agent.sessions.testdata.mistype import mistyped
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AgentToAgentMessage,
     AssistantMessage,

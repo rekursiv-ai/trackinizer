@@ -8,13 +8,13 @@ from uuid import UUID
 import pytest
 
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.agent.types.sessions import UncategorizedRecord, UserMessage
 from trackinizer.runs.refusal import (
     REFUSED_KIND,
     is_refusal,
     send_isolating,
     stand_in,
 )
+from trackinizer.sagent.session.types import UncategorizedRecord, UserMessage
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import RecordBody
 

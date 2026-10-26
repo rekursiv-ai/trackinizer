@@ -85,7 +85,7 @@ import shlex
 from treekle import from_plain, immutable, mutable
 
 from trackinizer.lib.agent.sessions.udiff import parse_udiff
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     FileEditResult,
     FileReadResult,
     FileWriteResult,

@@ -22,7 +22,7 @@ from trackinizer.lib.agent.sessions.testdata.capture import (
     _emit,
     _scrub_secrets,
 )
-from trackinizer.lib.agent.types.sessions import SessionRecord, UncategorizedRecord
+from trackinizer.sagent.session.types import SessionRecord, UncategorizedRecord
 
 
 if TYPE_CHECKING:

@@ -20,7 +20,7 @@ from treekle import immutable
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     ContextCompaction,
     SessionRecord,
     ShellCommandResult,

@@ -18,7 +18,7 @@ import pytest
 from trackinizer.lib.agent.sessions import claude
 from trackinizer.lib.agent.sessions.claude import _group
 from trackinizer.lib.agent.sessions.testdata.mistype import mistyped, unread, without
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AgentToAgentMessage,
     AssistantMessage,

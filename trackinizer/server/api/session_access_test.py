@@ -21,7 +21,7 @@ from treekle import from_plain, json_loads
 import pytest
 
 from trackinizer.conftest import make_conn, make_store, set_field_row
-from trackinizer.lib.agent.types.sessions import AgentToAgentMessage
+from trackinizer.sagent.session.types import AgentToAgentMessage
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT_CONFIG,

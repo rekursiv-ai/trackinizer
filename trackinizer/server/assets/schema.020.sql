@@ -47,7 +47,10 @@ END IF;
 --
 -- The ``py/object`` tag is REQUIRED -- ``DataclassCodec`` dispatches on it and
 -- an untagged payload does not decode at all. ``schema_backfill_test.py`` pins
--- the dotted name against what the codec emits.
+-- the dotted name against what the codec emits. A database that ran this file
+-- before the class moved holds ``trackinizer.lib.agent.types.sessions.`` instead; the
+-- ledger skips an applied file by name alone, so this text never reruns there,
+-- and the operator's tag rewrite renames those rows.
 --
 -- ``jsonb_build_object`` then cast to ``json``: the builder exists only in
 -- jsonb, while the column is ``json`` to preserve key order for byte-exact
@@ -63,7 +66,7 @@ INSERT INTO session_records
     (session_id, part, idx, kind, timestamp, created, model, payload, text)
 SELECT session_id, -1, seq, 'UncategorizedRecord', timestamp, created, model,
        jsonb_build_object(
-           'py/object', 'trackinizer.lib.agent.types.sessions.UncategorizedRecord',
+           'py/object', 'trackinizer.sagent.session.types.UncategorizedRecord',
            'context_id', NULL,
            'timestamp', NULL,
            'kind', 'legacy/' || kind,

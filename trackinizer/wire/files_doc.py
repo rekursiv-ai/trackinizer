@@ -24,12 +24,10 @@ import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, replace
 from typing import Final, Literal
 
-import json
-
-from treekle import from_plain, json_loads
+from treekle import json_dumps, json_loads
 
 
 __all__ = [
@@ -152,7 +150,7 @@ def dump_files(doc: FilesDoc) -> str:
         as it is.
 
     """
-    return json.dumps(from_plain(asdict(doc), dict[str, object]), separators=(",", ":"))
+    return json_dumps(doc, target=FilesDoc, sort=False, separators=(",", ":"))
 
 
 def load_files(text: str) -> FilesDoc:
@@ -170,4 +168,6 @@ def load_files(text: str) -> FilesDoc:
         no files.
 
     """
-    return json_loads(text, FilesDoc)
+    doc = json_loads(text, FilesDoc)
+    # A read restores state as written; building again runs each bound check.
+    return replace(doc, copied=tuple(replace(tree) for tree in doc.copied))

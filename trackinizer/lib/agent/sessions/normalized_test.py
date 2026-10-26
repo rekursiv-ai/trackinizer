@@ -6,12 +6,14 @@ from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+import json
+
 from treekle import from_plain, json_loads
 
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, normalized
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     Attachment,
@@ -101,12 +103,14 @@ def test_session_json_keeps_a_nested_residual_verbatim() -> None:
     nested = {"a": [{"b": {"c": [1, 2.5, True, None, "x"]}}]}
     stream = StringIO()
 
-    normalized.denormalize([TurnContext(extra=nested)], stream)
+    written = TurnContext(extra=nested)
+    normalized.denormalize([written], stream)
     stream.seek(0)
 
     context = next(iter(normalized.normalize(stream)))
     assert isinstance(context, TurnContext)
-    assert context.extra == nested
+    assert context == written
+    assert json.loads(stream.getvalue())[0]["extra"] == nested
 
 
 def test_session_json_is_a_bare_array_of_tagged_records() -> None:

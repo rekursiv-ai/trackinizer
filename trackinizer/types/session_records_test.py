@@ -16,7 +16,7 @@ from treekle import from_plain, immutable, mutable
 
 import pytest
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AgentToAgentMessage,
     AssistantMessage,

@@ -17,12 +17,12 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, executed_sql, make_conn
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     UserMessage,
 )
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.audience import NOBODY, reader_for
 from trackinizer.server.config import Assistant
 from trackinizer.server.embedders.stub import StubEmbedder
@@ -91,8 +91,8 @@ if TYPE_CHECKING:
 
     from asyncpg import Record
 
-    from trackinizer.lib.agent.types.sessions import SessionRecord
     from trackinizer.lib.postgres import Conn, DatabaseEngine, PGliteEngine
+    from trackinizer.sagent.session.types import SessionRecord
     from trackinizer.wire.wire_science_chat import (
         ChatLineKind,
         ChatProvider,

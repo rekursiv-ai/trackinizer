@@ -9,7 +9,7 @@ ingest endpoints, and their wire shapes. Sources of truth:
 `wire/wire_session_ir.py` + `wire/wire_sessions.py` (the wire bodies).
 
 The record vocabulary itself is NOT trackinizer's: it is the shared session
-IR, `trackinizer.lib.agent.types.sessions`. One vocabulary reads a session, stores
+IR, `trackinizer.sagent.session.types`. One vocabulary reads a session, stores
 it, and writes it back out as any CLI's native format, so this doc describes
 where records live rather than what they mean.
 

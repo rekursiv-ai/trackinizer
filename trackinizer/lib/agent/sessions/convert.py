@@ -1,7 +1,7 @@
 """Convert agent sessions between native formats and the normalized form.
 
 Every conversion routes through the normalized model: an input is normalized
-to a stream of :class:`~trackinizer.lib.agent.types.sessions.SessionRecord`, then
+to a stream of :class:`~trackinizer.sagent.session.types.SessionRecord`, then
 denormalized to the requested target. Converting to the source's own format is
 therefore a losslessness check, which is what ``verify`` reports.
 
@@ -39,11 +39,11 @@ from treekle import json_loads
 
 from trackinizer.lib.agent.sessions import claude, codex, gemini, normalized, sagent
 from trackinizer.lib.agent.sessions.fuse import chain, fuse, names_of, unfuse
-from trackinizer.lib.agent.types.sessions import IncompleteRecord
+from trackinizer.sagent.session.types import IncompleteRecord
 
 
 if TYPE_CHECKING:
-    from trackinizer.lib.agent.types.sessions import SessionRecord
+    from trackinizer.sagent.session.types import SessionRecord
 
 
 type Format = str

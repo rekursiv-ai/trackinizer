@@ -22,19 +22,19 @@ import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib.resources import files
 from typing import TYPE_CHECKING, Final
 
 import re
 
-from trackinizer.lib.agent.catalog import models
+from trackinizer.sagent.providers.table import ModelTable
 from trackinizer.wire.wire_science_chat import ChatModel, ChatModels
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from trackinizer.lib.agent.catalog.table import ModelTable
-    from trackinizer.lib.agent.types.capability import ModelCapability
+    from trackinizer.sagent.model.capability import ModelCapability
     from trackinizer.wire.wire_science_chat import ChatProvider
 
 
@@ -130,11 +130,17 @@ _SETTING_CHARS: Final = {"model": 120, "effort": 20}
 
 # Where the options come from: the catalog's roles, in the order best, default,
 # everyday, utility. Claude's are each role's family alias; codex's are each role's
-# ``wire_model_id``. The levels are ``Effort`` in ``lib/agent/harness/types.py``,
+# ``wire_model_id``. The levels are ``Effort`` in ``sagent/harness/types.py``,
 # which both CLIs take.
 _ROLES: Final = ("best", "default", "everyday", "utility")
-_CLAUDE: Final = models("anthropic")
-_CODEX: Final = models("openai")
+_CLAUDE: Final = ModelTable.from_yaml(
+    files("trackinizer.sagent.providers.anthropic") / "anthropic.yaml",
+    provider="anthropic",
+)
+_CODEX: Final = ModelTable.from_yaml(
+    files("trackinizer.sagent.providers.openai") / "openai.yaml",
+    provider="openai",
+)
 # Two roles may name one model, which is listed once.
 _CLAUDE_ALIASES: Final = tuple(
     dict.fromkeys(_CLAUDE[role].model_id.rpartition("-")[0] for role in _ROLES),

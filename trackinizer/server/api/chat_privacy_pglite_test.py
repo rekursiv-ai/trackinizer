@@ -22,7 +22,7 @@ import httpx2
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import AgentToAgentMessage, AssistantMessage
+from trackinizer.sagent.session.types import AgentToAgentMessage, AssistantMessage
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     Agent,

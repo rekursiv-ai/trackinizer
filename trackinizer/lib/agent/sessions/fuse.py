@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING
 
 from treekle import from_plain, immutable
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     ContextClear,
     SessionRecord,
     TurnContext,

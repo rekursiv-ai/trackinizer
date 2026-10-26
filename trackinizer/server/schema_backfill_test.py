@@ -14,13 +14,12 @@ from uuid import UUID, uuid4
 
 import json
 
-from treekle import from_plain, immutable, mutable
+from treekle import from_plain, immutable, mutable, to_plain
 
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import UncategorizedRecord
-from trackinizer.lib.agent.types.stored import to_stored
+from trackinizer.sagent.session.types import CONCRETE_TYPES, UncategorizedRecord
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow
@@ -168,10 +167,15 @@ def test_the_dotted_tag_matches_what_the_codec_emits() -> None:
     No database: the claim is about the MIGRATION TEXT agreeing with what the
     codec emits, which is decidable by reading both.
     """
-    emitted = from_plain(to_stored(UncategorizedRecord(kind="x")), dict[str, object])
+    emitted = from_plain(
+        to_plain(
+            UncategorizedRecord(kind="x"),
+            default_concrete_types=CONCRETE_TYPES,
+        ),
+        dict[str, object],
+    )
     assert (
-        emitted["py/object"]
-        == "trackinizer.lib.agent.types.sessions.UncategorizedRecord"
+        emitted["py/object"] == "trackinizer.sagent.session.types.UncategorizedRecord"
     )
     assert str(emitted["py/object"]) in (_CWD / "assets" / "schema.020.sql").read_text(
         encoding="utf-8",

@@ -3,7 +3,7 @@
 
 [project]
 name = "trackinizer"
-version = "0.1.11"
+version = "0.1.12"
 description = "Centralized agent database for Inquiries (Issues + Artifacts)."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -31,7 +31,9 @@ dependencies = [
     # database driver, web framework or torch. The rule for what stays here:
     # whatever `trax/`, `client/`, `wire/` or `types/` import at all, directly or
     # through `lib/`, at import time or later.
-    "treekle>=0.3.1",
+    # 0.3.3 adds `default_concrete_types`, `target` and `classes`, which session
+    # records and the wire documents are written and read with.
+    "treekle>=0.3.3",
     "websockets>=15",
     # http client
     "httpx2>=2.12",
@@ -50,13 +52,13 @@ dependencies = [
     "watchdog>=6.0.0 ; sys_platform == 'darwin'",
     # shell parsing: lifts a captured `cat`/`echo >` into a typed file result.
     # The agent runner's session capture does this on the client, through
-    # `lib/agent/sessions/shell_results.py`; without it every such command is
+    # `sagent/session/shell_results.py`; without it every such command is
     # left unlifted, silently.
     "bashlex>=0.18",
     # lazy imports
     "wrapt",
     # the model catalog: `wire/chat_commands.py` reads its roles, and
-    # `lib/agent/catalog/loader.py` loads them from YAML.
+    # `sagent/providers/table.py` loads them from YAML.
     "pyyaml>=6.0",
 ]
 

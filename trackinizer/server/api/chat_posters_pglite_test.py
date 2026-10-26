@@ -24,7 +24,7 @@ from treekle import from_plain, json_loads
 
 import pytest
 
-from trackinizer.lib.agent.types.sessions import AgentToAgentMessage, AssistantMessage
+from trackinizer.sagent.session.types import AgentToAgentMessage, AssistantMessage
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,

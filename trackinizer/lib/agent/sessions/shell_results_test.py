@@ -13,7 +13,7 @@ from trackinizer.lib.agent.sessions.shell_results import (
     shell_result_for_replay,
 )
 from trackinizer.lib.agent.sessions.udiff import render_udiff
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     FileEditResult,
     FileReadResult,
     FileWriteResult,

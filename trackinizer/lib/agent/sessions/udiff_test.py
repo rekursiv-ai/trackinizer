@@ -16,7 +16,7 @@ import pytest
 
 from trackinizer.lib.agent.sessions import udiff
 from trackinizer.lib.agent.sessions.udiff import parse_udiff, render_udiff
-from trackinizer.lib.agent.types.sessions import Splice
+from trackinizer.sagent.session.types import Splice
 
 
 def diffs() -> tuple[tuple[str, str], ...]:

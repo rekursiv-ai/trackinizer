@@ -40,7 +40,7 @@ import httpx2
 import pytest
 
 from trackinizer.client.client import Client
-from trackinizer.lib.agent.types.sessions import AssistantMessage, ToolCall, UserMessage
+from trackinizer.sagent.session.types import AssistantMessage, ToolCall, UserMessage
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody

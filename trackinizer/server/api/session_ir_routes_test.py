@@ -21,7 +21,7 @@ from treekle import from_plain, immutable
 import httpx2
 import pytest
 
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     SessionRecord,
@@ -40,7 +40,7 @@ from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.store.session_ir import RecentSessionTurn, SessionManifest
 from trackinizer.types.inquiries import AgentSession, Issue
 from trackinizer.types.session_records import SessionRecordRow
-from trackinizer.wire.wire_session_ir import RecordBody
+from trackinizer.wire.wire_session_ir import CLIENT_OUTDATED, RecordBody
 
 
 if TYPE_CHECKING:
@@ -472,6 +472,107 @@ class TestViewerOwnedCapture:
 
         assert response.status_code == (200 if owns_session else 403), response.text
         assert append.await_count == int(owns_session)
+
+
+def _user_message(module: str) -> dict[str, object]:
+    """Return a stored ``UserMessage`` payload naming its class in ``module``."""
+    return {"py/object": f"{module}UserMessage", "content": "hi", "extra": {}}
+
+
+def _append_one(client: TestClient, *, kind: str, payload: object) -> httpx2.Response:
+    """Post one record of ``kind`` holding ``payload`` to a fresh part."""
+    return client.post(
+        f"/api/sessions/{uuid.uuid4()}/records",
+        json={
+            "name": "s.jsonl",
+            "manifest": {"name": "s.jsonl", "ir_id": str(uuid.uuid4())},
+            "records": [{"idx": 0, "kind": kind, "payload": payload}],
+        },
+    )
+
+
+class TestRetiredRecordFormat:
+    """A client older than the record vocabulary's move is told to update."""
+
+    # The export renames ``trackinizer.lib.agent`` to ``trackinizer.lib.agent``, so a case
+    # per package root would be two identical cases in the public tree.
+    @pytest.mark.parametrize(
+        ("kind", "payload"),
+        [
+            ("UserMessage", _user_message("trackinizer.lib.agent.types.sessions.")),
+            (
+                "ContextClear",
+                {
+                    "py/object": "trackinizer.sagent.session.types.ContextClear",
+                    "history": [_user_message("trackinizer.lib.agent.types.sessions.")],
+                },
+            ),
+        ],
+        ids=["record", "nested"],
+    )
+    def test_a_record_naming_a_retired_module_is_refused_before_any_write(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        kind: str,
+        payload: dict[str, object],
+    ) -> None:
+        """426 ``client_outdated``: an old client's sink shows the message and keeps the run."""
+        client, store, _engine = route_client
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
+        )
+        manifest = AsyncMock(return_value=0)
+        append = AsyncMock(return_value=(1, 0, 0))
+        monkeypatch.setattr(store, "upsert_session_manifest", manifest)
+        monkeypatch.setattr(store, "append_session_records", append)
+
+        response = _append_one(client, kind=kind, payload=payload)
+
+        assert response.status_code == 426, response.text
+        detail = from_plain(response.json(), dict[str, dict[str, str]])["detail"]
+        assert detail["code"] == CLIENT_OUTDATED
+        manifest.assert_not_awaited()
+        append.assert_not_awaited()
+
+    def test_a_record_in_the_current_vocabulary_is_appended(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Text that only mentions the old module is no class tag."""
+        client, store, _engine = route_client
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
+        )
+        monkeypatch.setattr(store, "upsert_session_manifest", AsyncMock(return_value=0))
+        append = AsyncMock(return_value=(1, 0, 0))
+        monkeypatch.setattr(store, "append_session_records", append)
+        payload = {
+            **_user_message("trackinizer.sagent.session.types."),
+            "content": "see trackinizer.lib.agent.types.sessions.UserMessage",
+        }
+
+        response = _append_one(client, kind="UserMessage", payload=payload)
+
+        assert response.status_code == 200, response.text
+        append.assert_awaited_once()
 
 
 class TestLegacyPart:

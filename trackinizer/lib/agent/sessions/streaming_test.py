@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
     from trackinizer.lib.agent.sessions.convert import _Adapter
-    from trackinizer.lib.agent.types.sessions import SessionRecord
+    from trackinizer.sagent.session.types import SessionRecord
 
 
 class _TrackedLine(str):

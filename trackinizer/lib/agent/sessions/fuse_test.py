@@ -13,7 +13,7 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, fuse
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AssistantMessage,
     ContextClear,
     ContextCompaction,

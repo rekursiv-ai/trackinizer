@@ -45,8 +45,8 @@ from trackinizer.lib.agent.sessions.unmodeled import (
     read_field_keeping_invalid,
     restore_unmodeled_fields,
 )
-from trackinizer.lib.agent.types.capability import SummaryKind, ThinkingEffort
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.model.capability import SummaryKind, ThinkingEffort
+from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AgentToAgentMessage,
     AnyToolResult,
@@ -366,7 +366,8 @@ def _write_line(
     record: dict[str, object] = dict(mutable(template))
     if include_timestamp:
         if not template or "timestamp" in record:
-            record["timestamp"] = timestamp
+            # A mistyped timestamp is the log's own JSON, held frozen.
+            record["timestamp"] = mutable(timestamp)
     else:
         record.pop("timestamp", None)
     if ordinal is not None and not template:

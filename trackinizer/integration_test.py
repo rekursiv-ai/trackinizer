@@ -21,7 +21,7 @@ import httpx2
 import pytest
 
 from trackinizer.conftest import new_uuid
-from trackinizer.lib.agent.types.sessions import UserMessage
+from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server import web
 from trackinizer.server.api import (
     edit,

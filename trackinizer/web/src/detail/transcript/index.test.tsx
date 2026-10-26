@@ -323,7 +323,7 @@ function captured(idx: number, kind: string, payload: { [field: string]: unknown
     context_id: null,
     timestamp: "2026-10-01T10:00:00Z",
     model: "claude-opus-5-5",
-    payload: { "py/object": `trackinizer.lib.agent.types.sessions.${kind}`, ...payload },
+    payload: { "py/object": `trackinizer.sagent.session.types.${kind}`, ...payload },
     text,
     ciphertext: null,
   };
@@ -529,7 +529,7 @@ test("a shell result shows its command and exit code, and stderr apart from stdo
 });
 test("a file edit counts its lines added and removed, and shows each line numbered and coloured in its file's language (B9)", async () => {
   const splice = (before: string, after: string, lead: string | null = null, start: number | null = null) => ({
-    "py/object": "trackinizer.lib.agent.types.sessions.Splice",
+    "py/object": "trackinizer.sagent.session.types.Splice",
     before,
     after,
     lead,
@@ -602,12 +602,12 @@ test("a web search says what it asked and how many results came; each result's t
       duration_sec: 1.2,
       content: [
           {
-            "py/object": "trackinizer.lib.agent.types.sessions.WebSearchResult",
+            "py/object": "trackinizer.sagent.session.types.WebSearchResult",
             url: "https://docs.python.org/3/library/time.html#time.monotonic",
             title: "time -- Time access and conversions",
             snippet: "Return the value of a monotonic clock.",
           },
-          { "py/object": "trackinizer.lib.agent.types.sessions.WebSearchResult", url: "javascript:alert(1)", title: "Not a page", snippet: "Refused." },
+          { "py/object": "trackinizer.sagent.session.types.WebSearchResult", url: "javascript:alert(1)", title: "Not a page", snippet: "Refused." },
         ],
     }, "python monotonic clock flaky test\ntime -- Time access and conversions\nNot a page\nReturn the value of a monotonic clock.\nRefused."),
   ]);
@@ -680,7 +680,7 @@ test("harness tags such as <system-reminder> fold apart from the prose around th
 });
 
 test("a message's attachments show as a chip naming each one's type and size, and nothing is fetched (B14)", async () => {
-  const attachment = (mime: string, b64: string) => ({ "py/object": "trackinizer.lib.agent.types.sessions.Attachment", mime_descriptor: mime, data: b64 });
+  const attachment = (mime: string, b64: string) => ({ "py/object": "trackinizer.sagent.session.types.Attachment", mime_descriptor: mime, data: { "py/b64": b64 } });
   await renderRecords(
     [
       captured(0, "UserMessage", { content: "Here is the CI failure:", attachments: [attachment("image/png", "A".repeat(2868))] }, "Here is the CI failure:"),
@@ -697,7 +697,7 @@ test("a message's attachments show as a chip naming each one's type and size, an
 });
 
 test("a tool result's attachments, and a long system message's, show as a chip too, and nothing is fetched (CR-05)", async () => {
-  const png = { "py/object": "trackinizer.lib.agent.types.sessions.Attachment", mime_descriptor: "image/png", data: "A".repeat(2868) };
+  const png = { "py/object": "trackinizer.sagent.session.types.Attachment", mime_descriptor: "image/png", data: { "py/b64": "A".repeat(2868) } };
   const prompt = `You are Codex.\n${"- Be concise.\n".repeat(80)}`;
   await renderRecords(
     [
@@ -1249,11 +1249,11 @@ test("a draft survives a live refetch, and the composer goes once the session en
   expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
 });
 
-test("tagged rows render as plain rows do: a shell command, a web search and attachments", async () => {
-  const result = (url: string, title: string) => ({ "py/object": "trackinizer.lib.agent.types.sessions.WebSearchResult", url, title, snippet: "Snip." });
-  const png = { "py/object": "trackinizer.lib.agent.types.sessions.Attachment", mime_descriptor: "image/png", data: { "py/b64": "A".repeat(2868) } };
+test("stored rows render: a shell command, a web search and attachments", async () => {
+  const result = (url: string, title: string) => ({ "py/object": "trackinizer.sagent.session.types.WebSearchResult", url, title, snippet: "Snip." });
+  const png = { "py/object": "trackinizer.sagent.session.types.Attachment", mime_descriptor: "image/png", data: { "py/b64": "A".repeat(2868) } };
   const shell = await renderRecords([
-    captured(0, "ShellCommandResult", { call_id: "t1", extra: {}, command: { "py/tuple": ["bash", "-lc", "ls -la"] }, stdout: "a.py\n", stderr: "", exit_code: 0 }),
+    captured(0, "ShellCommandResult", { call_id: "t1", extra: {}, command: ["bash", "-lc", "ls -la"], stdout: "a.py\n", stderr: "", exit_code: 0 }),
   ]);
   expect(shell.querySelector(".tool-arg")!.textContent).toBe("ls -la");
   cleanup();
@@ -1263,12 +1263,12 @@ test("tagged rows render as plain rows do: a shell command, a web search and att
       extra: {},
       query: "monotonic",
       duration_sec: 1.2,
-      content: { "py/tuple": [result("https://docs.python.org/3/", "Docs"), result("javascript:alert(1)", "Not a page")] },
+      content: [result("https://docs.python.org/3/", "Docs"), result("javascript:alert(1)", "Not a page")],
     }),
   ]);
   expect(search.querySelector(".tr-outcome")!.textContent).toBe("2 results");
   cleanup();
-  const message = await renderRecords([captured(0, "UserMessage", { content: "See:", attachments: { "py/tuple": [png, png] } }, "See:")]);
+  const message = await renderRecords([captured(0, "UserMessage", { content: "See:", attachments: [png, png] }, "See:")]);
   expect(message.querySelector(".tr-chip")!.textContent).toBe("2 attachments (image/png, 2.1 KB; image/png, 2.1 KB)");
   expect(document.querySelector("img")).toBeNull();
 });

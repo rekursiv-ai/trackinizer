@@ -28,7 +28,7 @@ from trackinizer.client.context_window import (
 )
 from trackinizer.client.conversation import Placed, Segment, lines
 from trackinizer.lib.agent.sessions import claude, codex, sagent
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     ContextClear,
@@ -42,7 +42,7 @@ from trackinizer.lib.agent.types.sessions import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from trackinizer.lib.agent.types.sessions import SessionRecord
+    from trackinizer.sagent.session.types import SessionRecord
 
 
 _SESSION = "11111111-1111-1111-1111-111111111111"

@@ -31,7 +31,7 @@ from typing import Final, TextIO, override
 import queue
 import threading
 
-from trackinizer.lib.agent.types.sessions import TurnContext
+from trackinizer.sagent.session.types import TurnContext
 
 
 __all__ = ["Tail"]

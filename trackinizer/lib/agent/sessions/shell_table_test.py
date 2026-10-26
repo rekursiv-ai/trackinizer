@@ -29,7 +29,7 @@ import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex
 from trackinizer.lib.agent.sessions.udiff import render_udiff
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     FileEditResult,
     FileReadResult,
     FileWriteResult,

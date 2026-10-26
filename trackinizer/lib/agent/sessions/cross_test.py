@@ -22,7 +22,7 @@ import pytest
 from trackinizer.lib.agent.sessions import claude, codex, gemini
 from trackinizer.lib.agent.sessions.convert import detect_format
 from trackinizer.lib.agent.sessions.fuse import chain
-from trackinizer.lib.agent.types.sessions import (
+from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AssistantMessage,
     FileEditResult,
