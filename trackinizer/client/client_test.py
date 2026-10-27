@@ -2368,6 +2368,8 @@ class TestSessionMethods:
             },
             "trail": [],
             "marks": [],
+            # A server from before uploads sends none: the line has no files.
+            "attachments": [],
             "relay": None,
         }
 

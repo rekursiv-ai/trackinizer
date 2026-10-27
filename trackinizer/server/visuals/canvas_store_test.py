@@ -348,6 +348,7 @@ async def test_a_line_carries_its_screen_and_only_the_latest_unsent_marks(
         page="#/console",
         trail=["#/list/Issue"],
         fork=fork,
+        attachments=["/home/user/uploads/shot.png"],
     )
     conversation = uuid.uuid4()
     context = await canvas_store._line_context(
@@ -363,6 +364,7 @@ async def test_a_line_carries_its_screen_and_only_the_latest_unsent_marks(
     assert context.continuation_record_id == continuation
     assert context.agent_instructions == "Inspect the selected task"
     assert context.fork == fork
+    assert context.attachments == ["/home/user/uploads/shot.png"]
     assert context.page is not None
     assert context.page.route == "#/console"
     assert [page.route for page in context.trail] == ["#/list/Issue"]

@@ -199,6 +199,10 @@ class AnswerNotOwnerError(Exception):
     """An answer to a run's prompt came from someone other than the run's owner."""
 
 
+class UploadsUnsupportedError(Exception):
+    """The chat's provider takes no files: only the assistant's box does, for now."""
+
+
 class PartnerBusyError(Exception):
     """The partner's inbound queue is full, so a message would evict an unread one."""
 
@@ -229,6 +233,17 @@ class AppliedOperation:
     restored_page: bool = False
     """A ``navigate`` found the page closed and showed it again, so the canvas
     changed and its new state is to be published."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UploadTarget:
+    """The chat a poster's files go with."""
+
+    conversation_id: uuid.UUID | None
+    """The chat; ``None`` before the canvas's first line starts one."""
+
+    workspace_id: uuid.UUID
+    """The canvas's workspace, or the poster's default: what names their box."""
 
 
 async def send_chat_line(
@@ -330,6 +345,8 @@ async def send_chat_line(
         from Chat; the message says why. It is a ``ValueError``.
       AnswerNotOwnerError: An ``answer`` came from someone other than the chat's
         starter.
+      UploadsUnsupportedError: The line names attachments and its provider is not
+        the assistant, whose box alone takes files for now.
       ValueError: The fork names no line of a science chat, or an ``assistant``
         canvas is sent a post that is not a line, an answer or an interrupt.
 
@@ -368,6 +385,8 @@ async def send_chat_line(
             poster=source,
             assistant=assistant,
         )
+        if body.attachments and provider != "assistant":
+            raise UploadsUnsupportedError(f"A {provider} chat takes no files yet")
         if body.kind == "line":
             match classify(body.text, provider):
                 case Command(text=text):
@@ -466,6 +485,7 @@ async def send_chat_line(
                     str(body.fork),
                     body.kind,
                     json.dumps(body.payload, sort_keys=True),
+                    json.dumps(body.attachments),
                 ),
             ).encode(),
         ).hexdigest()
@@ -492,6 +512,91 @@ async def send_chat_line(
         conversation_id=conversation_id,
         session_id=chat,
         canvas_id=canvas_id,
+    )
+
+
+async def check_chat_upload(
+    store: Store,
+    *,
+    user_id: uuid.UUID,
+    canvas_id: uuid.UUID,
+    conversation_id: uuid.UUID | None,
+    source: str,
+    assistant: Assistant | None,
+    inbound: InboundQueue,
+    reader: SessionReader,
+) -> UploadTarget | None:
+    """Say which chat files go with, if the poster may post a line there.
+
+    The rule is :func:`send_chat_line`'s, so whoever may post a line may upload for
+    it and no one else: the canvas is the poster's own; a chat it names, or the one
+    the canvas holds, is not deleted and is the poster's to post into; and its
+    provider is the assistant, whose box alone takes files for now. A canvas with no
+    chat yet uploads for the chat its first line will start.
+
+    Args:
+      store: The store.
+      user_id: Authenticated browser account.
+      canvas_id: The canvas the line would be sent from.
+      conversation_id: The chat the page names, if any.
+      source: Attested browser principal email.
+      assistant: The configured assistant, if any.
+      inbound: Session message queue, which knows the sender of a first line.
+      reader: The poster, as the transcript test reads them.
+
+    Returns:
+      target: The chat the files go with and the workspace that names the poster's
+        box, as a chat's settings name it; ``None`` for a foreign canvas.
+
+    Raises:
+      CanvasChatError: The canvas holds another chat than the one named.
+      ChatDeletedError: The chat was deleted.
+      ForeignChatError: The poster may not post into the chat.
+      UploadsUnsupportedError: The chat's provider is not the assistant.
+
+    """
+    async with store.engine.acquire() as conn:
+        row = await conn.fetchrow(
+            vetted_sql(_SELECT_CANVAS, "WHERE id = $1 AND user_id = $2"),
+            canvas_id,
+            user_id,
+        )
+        if row is None:
+            return None
+        state = state_from_row(cast("Mapping[str, object]", row))
+        if None not in {conversation_id, state.conversation_id} and (
+            conversation_id != state.conversation_id
+        ):
+            raise CanvasChatError("This canvas's chat is another conversation")
+        chat = conversation_id or state.conversation_id
+        provider = state.provider
+        if chat is not None:
+            await refuse_a_deleted_chat(conn, conversation_id=chat, forked_from=None)
+            await _check_poster(
+                conn,
+                conversation_id=chat,
+                email=source,
+                assistant=assistant,
+                inbound=inbound,
+                reader=reader,
+            )
+            provider = await chat_answerer(
+                conn,
+                state=state,
+                conversation_id=chat,
+                poster=source,
+                assistant=assistant,
+            )
+    if provider != "assistant":
+        raise UploadsUnsupportedError(f"A {provider} chat takes no files yet")
+    return UploadTarget(
+        conversation_id=chat,
+        workspace_id=await _workspace_or_default(
+            store,
+            user_id=user_id,
+            email=source,
+            workspace_id=state.workspace_id,
+        ),
     )
 
 
@@ -1631,15 +1736,14 @@ async def settings_refs_for_chat(
             str(conversation_id),
         )
     if row is None:
-        workspace_id = await open_default_workspace(
-            store.engine,
-            store=store,
-            user_id=user_id,
-            email=email,
-        )
         return CanvasSettingsRefs(
             session_id=session_id,
-            workspace_issue_id=workspace_id,
+            workspace_issue_id=await _workspace_or_default(
+                store,
+                user_id=user_id,
+                email=email,
+                workspace_id=None,
+            ),
             personal_artifact_id=await open_personal_settings(store, email=email),
         )
     stored = from_plain(row["metadata"], dict[str, object])
@@ -1663,24 +1767,14 @@ async def settings_refs_for_chat(
                     canvas_id,
                     user_id,
                 )
-    workspace_id = canvas.workspace_id
-    # The assistant keys the asker's box by this workspace. A canvas placed before
-    # placement checked ownership can hold another person's, whose box the asker's
-    # line would then run on.
-    if workspace_id is None or not await check_workspace(
-        store.engine,
-        email=email,
-        workspace_id=workspace_id,
-    ):
-        workspace_id = await open_default_workspace(
-            store.engine,
-            store=store,
-            user_id=user_id,
-            email=email,
-        )
     return CanvasSettingsRefs(
         canvas_id=canvas_id,
-        workspace_issue_id=workspace_id,
+        workspace_issue_id=await _workspace_or_default(
+            store,
+            user_id=user_id,
+            email=email,
+            workspace_id=canvas.workspace_id,
+        ),
         session_id=session_id,
         personal_artifact_id=await open_personal_settings(store, email=email),
         name=canvas.name,
@@ -2325,6 +2419,7 @@ async def _line_context(
             records=await read_covered_records(conn, marks=unsent, reader=reader),
             visuals=screen.visuals,
         ),
+        attachments=body.attachments,
     )
 
 
@@ -2781,17 +2876,14 @@ async def _check_fork_or_membership(
     ):
         raise ChatClosedError("chat_fork_wider")
     if body.fork is None:
-        if not await may_post(
+        await _check_poster(
             conn,
-            poster=email,
-            reader=reader,
             conversation_id=conversation_id,
+            email=email,
             assistant=assistant,
             inbound=inbound,
-        ):
-            raise ForeignChatError(
-                "This chat is not shared with you; fork it to continue",
-            )
+            reader=reader,
+        )
         return
     starter = await read_line_starter(
         conn,
@@ -2802,6 +2894,29 @@ async def _check_fork_or_membership(
     if starter is not None and starter.lower() != email.lower():
         raise ConversationTakenError(
             "This conversation already exists; fork under a new key",
+        )
+
+
+async def _check_poster(
+    conn: Conn,
+    *,
+    conversation_id: uuid.UUID,
+    email: str,
+    assistant: Assistant | None,
+    inbound: InboundQueue,
+    reader: SessionReader,
+) -> None:
+    """Refuse a poster the chat is not theirs to post into, by :func:`may_post`."""
+    if not await may_post(
+        conn,
+        poster=email,
+        reader=reader,
+        conversation_id=conversation_id,
+        assistant=assistant,
+        inbound=inbound,
+    ):
+        raise ForeignChatError(
+            "This chat is not shared with you; fork it to continue",
         )
 
 
@@ -3054,4 +3169,31 @@ async def _with_partner(
         owner_id=user_id,
         inbound=inbound,
         assistant=assistant,
+    )
+
+
+# The assistant keys a writer's box by the workspace a chat's settings name, so a chat's
+# settings and an upload ask name the same box only while both resolve it here.
+async def _workspace_or_default(
+    store: Store,
+    *,
+    user_id: uuid.UUID,
+    email: str,
+    workspace_id: uuid.UUID | None,
+) -> uuid.UUID:
+    """Return the canvas's workspace if the user owns it, else their default."""
+    # The assistant keys the user's box by this workspace. A canvas placed before
+    # placement checked ownership can hold another person's, whose box the user's
+    # line, or the upload links signed for it, would then reach.
+    if workspace_id is not None and await check_workspace(
+        store.engine,
+        email=email,
+        workspace_id=workspace_id,
+    ):
+        return workspace_id
+    return await open_default_workspace(
+        store.engine,
+        store=store,
+        user_id=user_id,
+        email=email,
     )

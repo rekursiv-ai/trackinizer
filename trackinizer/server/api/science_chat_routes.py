@@ -37,6 +37,7 @@ from trackinizer.server.visuals.canvas_store import (
     CommandRefusedError,
     PartnerBusyError,
     ProviderOfflineError,
+    UploadsUnsupportedError,
     read_canvas,
     send_chat_line,
 )
@@ -134,6 +135,11 @@ async def post_chat_line_route(
     and marks. Anyone else is 403 ``answer_not_owner``, and nothing is queued. It names
     the option taken (``{prompt_id, option}``), or in the older form a ``decision``.
 
+    A ``line`` may name ``attachments``, the box paths of files the poster uploaded
+    for it (``POST /api/chats/uploads``); they reach the assistant in the line's
+    context. A chat whose provider is not the assistant is 409
+    ``uploads_unsupported`` for a line that names any, and nothing is queued.
+
     Args:
       body: The line, the poster's canvas, and the conversation to post into or the
         line to fork; neither continues the canvas's chat, else starts one, named by
@@ -175,6 +181,11 @@ async def post_chat_line_route(
         raise HTTPException(
             status_code=403,
             detail={"code": "answer_not_owner", "message": str(error)},
+        ) from error
+    except UploadsUnsupportedError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "uploads_unsupported", "message": str(error)},
         ) from error
     except CommandRefusedError as error:
         raise HTTPException(

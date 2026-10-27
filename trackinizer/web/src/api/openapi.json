@@ -796,6 +796,9 @@
         "title": "BatchEdge",
         "type": "object"
       },
+      "BoxPath": {
+        "type": "string"
+      },
       "CampaignLead": {
         "additionalProperties": false,
         "description": "The lead's model and effort in a canvas's campaign setup; either may be unset.",
@@ -1153,6 +1156,13 @@
               }
             ],
             "title": "Agent Instructions"
+          },
+          "attachments": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Attachments",
+            "type": "array"
           },
           "canvas_id": {
             "format": "uuid",
@@ -2467,6 +2477,14 @@
         "additionalProperties": false,
         "description": "One line a signed-in writer posts to a science chat from their canvas.",
         "properties": {
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/BoxPath"
+            },
+            "maxItems": 20,
+            "title": "Attachments",
+            "type": "array"
+          },
           "canvas_id": {
             "format": "uuid",
             "title": "Canvas Id",
@@ -2579,6 +2597,110 @@
           "session_id"
         ],
         "title": "ChatSent",
+        "type": "object"
+      },
+      "ChatUploadAsk": {
+        "additionalProperties": false,
+        "description": "A page's ask for upload links, from the canvas a line would be posted from.",
+        "properties": {
+          "canvas_id": {
+            "format": "uuid",
+            "title": "Canvas Id",
+            "type": "string"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/ChatUploadFile"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "canvas_id",
+          "files"
+        ],
+        "title": "ChatUploadAsk",
+        "type": "object"
+      },
+      "ChatUploadFile": {
+        "additionalProperties": false,
+        "description": "One file the page is about to upload, as the person's computer names it.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "minimum": 0.0,
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "size"
+        ],
+        "title": "ChatUploadFile",
+        "type": "object"
+      },
+      "ChatUploadGrant": {
+        "additionalProperties": false,
+        "description": "What the page is given: a slot per file it asked for, in its order.",
+        "properties": {
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/ChatUploadSlot"
+            },
+            "maxItems": 20,
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "title": "ChatUploadGrant",
+        "type": "object"
+      },
+      "ChatUploadSlot": {
+        "additionalProperties": false,
+        "description": "Where one file goes: its box path, and the link the page sends it to.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "$ref": "#/components/schemas/BoxPath"
+          },
+          "url": {
+            "maxLength": 4096,
+            "pattern": "^https://[^\\s]+$",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path",
+          "url"
+        ],
+        "title": "ChatUploadSlot",
         "type": "object"
       },
       "ChatWindow": {
@@ -12635,6 +12757,103 @@
         "title": "UpdateWorkspace",
         "type": "object"
       },
+      "UploadAnswer": {
+        "additionalProperties": false,
+        "description": "The assistant's answer to an ask: a slot per file, or why there are none.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "files": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatUploadSlot"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Files"
+          }
+        },
+        "title": "UploadAnswer",
+        "type": "object"
+      },
+      "UploadAsk": {
+        "additionalProperties": false,
+        "description": "An ask as the assistant is handed it: who asks, from where, and for what.",
+        "properties": {
+          "asker": {
+            "title": "Asker",
+            "type": "string"
+          },
+          "asker_role": {
+            "title": "Asker Role",
+            "type": "string"
+          },
+          "canvas_id": {
+            "format": "uuid",
+            "title": "Canvas Id",
+            "type": "string"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/ChatUploadFile"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Files",
+            "type": "array"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "canvas_id",
+          "conversation_id",
+          "workspace_id",
+          "asker",
+          "asker_role",
+          "files"
+        ],
+        "title": "UploadAsk",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -16110,7 +16329,7 @@
     },
     "/api/chats": {
       "post": {
-        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nA chat's starter, each person it is shared with and, when the server's\n``TRACKINIZER_CHAT_ORGS`` is ``domain``, the starter's organisation post into it,\nholding its audience; a viewer may not. Anyone else, everyone else a ``single``\nserver lets read it included, is refused with 403 ``chat_not_shared`` and nothing\nis queued, whatever the post's ``kind``, and whether the chat is named by\n``conversation_id`` or by the ``Idempotency-Key`` of a post that names none: a\nline goes to the starter's own run, under its sender's name. A reader forks a\nchat from one of its lines (``fork``\nnames it); a fork from a line of a chat the poster does not read is 422, since it\nwould copy lines they may not read, a fork of a ``private`` or ``staff`` chat is\n409 ``chat_fork_closed``, since its copies would not keep the audience, a fork\nthat the poster's organisation would read and the chat's readers do not\ninclude is 409 ``chat_fork_wider``, and a fork whose key names a conversation\nsomeone else began is refused with 409. A\nline under the id of a\ndeleted chat, named or as a fork's key, or a fork from a line of one, is refused\nwith 410 ``chat_deleted``: no chat starts under that id again. A canvas holds one\nchat: its first line binds the canvas to the line's conversation, and a line\nnaming another conversation is refused with 409, as is one for a conversation\nanother canvas of the poster holds. A fork goes to a new canvas, copied from\nthe one it was sent from and named in the answer's ``canvas_id``. The line's\nposter is the attested identity, never anything in the body. The answer is the\nconversation id at once: the conversation's session appears when the assistant\nopens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key\nqueues nothing again.\n\nThe poster's canvas's provider answers, or in a chat someone else started, the\nprovider of its starter's canvas. ``assistant`` takes a ``line``, an ``answer`` or\nan ``interrupt`` (422 for any other ``kind``); an ``answer`` is a choice on a card\nthe assistant asked, and an ``interrupt`` stops the turn it is on, each queued for\nthe chat's own session and 409 ``provider_offline`` while the assistant does not\nhave the chat open. For ``claude`` or ``codex`` the post, with\nits ``kind`` and ``payload``, joins the queue of the chat's session that the CLI's\nrun drains; with no such run live it is 409 ``provider_offline``, and while the run\nreports ``taken_over``, its CLI opened in a terminal, it is 409 ``chat_taken_over``\nwith nothing queued: reattach first. A fork from a ``claude`` or\n``codex`` canvas is one too: its new session is opened at once and its line\nwaits there for the run the person starts.\n\nA ``line`` that starts with a known slash command of claude or codex is judged\nby the chat's provider, not the poster's canvas. One the provider runs from\nChat (``/goal``, and claude's ``/compact``) is queued as a ``command``, typed\nbare, with no page, trail or marks; ``/model <name>`` and ``/effort <level>``\nare queued as a ``settings`` post the same way (bare, they are refused); any\nother is 422 ``command_refused`` with the reason in ``message``, and nothing is queued. Every other ``/`` line stays a\nline. An ``answer`` for ``claude`` or ``codex`` is the chat's starter's alone, the\nrun's owner, since it runs a tool or grants trust on their machine. An ``answer``\nto the assistant's card is the person's the card asked (``input.asker``, else the\nstarter's), since it lists their own choices, and it carries a line's page, trail\nand marks. Anyone else is 403 ``answer_not_owner``, and nothing is queued. It names\nthe option taken (``{prompt_id, option}``), or in the older form a ``decision``.\n\nArgs:\n  body: The line, the poster's canvas, and the conversation to post into or the\n    line to fork; neither continues the canvas's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the canvas it went to, and its session when the line\n    was queued on it.",
+        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nA chat's starter, each person it is shared with and, when the server's\n``TRACKINIZER_CHAT_ORGS`` is ``domain``, the starter's organisation post into it,\nholding its audience; a viewer may not. Anyone else, everyone else a ``single``\nserver lets read it included, is refused with 403 ``chat_not_shared`` and nothing\nis queued, whatever the post's ``kind``, and whether the chat is named by\n``conversation_id`` or by the ``Idempotency-Key`` of a post that names none: a\nline goes to the starter's own run, under its sender's name. A reader forks a\nchat from one of its lines (``fork``\nnames it); a fork from a line of a chat the poster does not read is 422, since it\nwould copy lines they may not read, a fork of a ``private`` or ``staff`` chat is\n409 ``chat_fork_closed``, since its copies would not keep the audience, a fork\nthat the poster's organisation would read and the chat's readers do not\ninclude is 409 ``chat_fork_wider``, and a fork whose key names a conversation\nsomeone else began is refused with 409. A\nline under the id of a\ndeleted chat, named or as a fork's key, or a fork from a line of one, is refused\nwith 410 ``chat_deleted``: no chat starts under that id again. A canvas holds one\nchat: its first line binds the canvas to the line's conversation, and a line\nnaming another conversation is refused with 409, as is one for a conversation\nanother canvas of the poster holds. A fork goes to a new canvas, copied from\nthe one it was sent from and named in the answer's ``canvas_id``. The line's\nposter is the attested identity, never anything in the body. The answer is the\nconversation id at once: the conversation's session appears when the assistant\nopens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key\nqueues nothing again.\n\nThe poster's canvas's provider answers, or in a chat someone else started, the\nprovider of its starter's canvas. ``assistant`` takes a ``line``, an ``answer`` or\nan ``interrupt`` (422 for any other ``kind``); an ``answer`` is a choice on a card\nthe assistant asked, and an ``interrupt`` stops the turn it is on, each queued for\nthe chat's own session and 409 ``provider_offline`` while the assistant does not\nhave the chat open. For ``claude`` or ``codex`` the post, with\nits ``kind`` and ``payload``, joins the queue of the chat's session that the CLI's\nrun drains; with no such run live it is 409 ``provider_offline``, and while the run\nreports ``taken_over``, its CLI opened in a terminal, it is 409 ``chat_taken_over``\nwith nothing queued: reattach first. A fork from a ``claude`` or\n``codex`` canvas is one too: its new session is opened at once and its line\nwaits there for the run the person starts.\n\nA ``line`` that starts with a known slash command of claude or codex is judged\nby the chat's provider, not the poster's canvas. One the provider runs from\nChat (``/goal``, and claude's ``/compact``) is queued as a ``command``, typed\nbare, with no page, trail or marks; ``/model <name>`` and ``/effort <level>``\nare queued as a ``settings`` post the same way (bare, they are refused); any\nother is 422 ``command_refused`` with the reason in ``message``, and nothing is queued. Every other ``/`` line stays a\nline. An ``answer`` for ``claude`` or ``codex`` is the chat's starter's alone, the\nrun's owner, since it runs a tool or grants trust on their machine. An ``answer``\nto the assistant's card is the person's the card asked (``input.asker``, else the\nstarter's), since it lists their own choices, and it carries a line's page, trail\nand marks. Anyone else is 403 ``answer_not_owner``, and nothing is queued. It names\nthe option taken (``{prompt_id, option}``), or in the older form a ``decision``.\n\nA ``line`` may name ``attachments``, the box paths of files the poster uploaded\nfor it (``POST /api/chats/uploads``); they reach the assistant in the line's\ncontext. A chat whose provider is not the assistant is 409\n``uploads_unsupported`` for a line that names any, and nothing is queued.\n\nArgs:\n  body: The line, the poster's canvas, and the conversation to post into or the\n    line to fork; neither continues the canvas's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the canvas it went to, and its session when the line\n    was queued on it.",
         "operationId": "post_chat_line_route_api_chats_post",
         "parameters": [
           {
@@ -16157,6 +16376,146 @@
           }
         },
         "summary": "Post Chat Line Route"
+      }
+    },
+    "/api/chats/uploads": {
+      "post": {
+        "description": "Ask the assistant for a link per file to its box, for a line of this chat.\n\nWhoever may post a line to the chat from this canvas may ask, and no one else:\na foreign canvas is 404, a chat not the poster's to post into is 403\n``chat_not_shared``, a deleted one 410, a chat other than the one the canvas\nholds 409, and a chat whose provider is not the assistant 409\n``uploads_unsupported``. The ask waits for the assistant, which\nsigns one link per file for the poster's box: an assistant that does not\nanswer in time is 503 ``uploads_unavailable``, and its refusal is 409\n``upload_refused`` with its reason in ``message``. While as many asks as the\nrelay holds are waiting, another is 503 ``uploads_busy`` at once. Nothing is\nstored.\n\nArgs:\n  body: The canvas, the chat, and each file's name and size.\n  request: Request carrying the store, the inbound queue and the relay.\n  identity: The signed-in writer, who must own the canvas.\n\nReturns:\n  grant: A box path and a link per file, in the order asked.",
+        "operationId": "ask_chat_uploads_route_api_chats_uploads_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatUploadAsk"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatUploadGrant"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "The chat's provider takes no files, or the assistant refused (code ``uploads_unsupported`` or ``upload_refused``)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "No assistant answered, or too many asks are waiting (code ``uploads_unavailable`` or ``uploads_busy``)."
+          }
+        },
+        "summary": "Ask Chat Uploads Route"
+      }
+    },
+    "/api/chats/uploads/wait": {
+      "get": {
+        "description": "Take the oldest ask for upload links, holding the request until one comes.\n\nThe configured assistant's key alone, since it alone signs links to the boxes;\nanyone else is 403.\n\nArgs:\n  request: Request carrying the relay.\n  identity: The assistant's key.\n  wait_sec: The longest to hold the request.\n\nReturns:\n  ask: Who asks, from which canvas and chat, for which files; ``None`` when\n    none came in time.",
+        "operationId": "wait_chat_upload_route_api_chats_uploads_wait_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "wait_sec",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 25,
+              "minimum": 0,
+              "title": "Wait Sec",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/UploadAsk"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Wait Chat Upload Route Api Chats Uploads Wait Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Wait Chat Upload Route"
+      }
+    },
+    "/api/chats/uploads/{request_id}": {
+      "post": {
+        "description": "Answer an ask the assistant was handed: a slot per file, or why there are none.\n\nThe assistant's key alone (403 otherwise). The first answer to an ask is taken;\na later one, or one for an ask whose page gave up, is 404.\n\nArgs:\n  request_id: The ask's id, as the wait handed it.\n  body: The slots, or the reason.\n  request: Request carrying the relay.\n  identity: The assistant's key.\n\nReturns:\n  response: Empty.",
+        "operationId": "answer_chat_upload_route_api_chats_uploads__request_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UploadAnswer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Answer Chat Upload Route"
       }
     },
     "/api/chats/{conversation_id}": {

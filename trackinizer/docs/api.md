@@ -1129,6 +1129,9 @@ GET    /api/chats/<uuid>
 DELETE /api/chats/<uuid>
 PUT    /api/chats/<uuid>/shares/<email>
 DELETE /api/chats/<uuid>/shares/<email>
+POST   /api/chats/uploads
+GET    /api/chats/uploads/wait
+POST   /api/chats/uploads/<uuid>
 GET    /api/sessions/<uuid>/partial
 PUT    /api/sessions/<uuid>/partial
 DELETE /api/sessions/<uuid>/partial/<turn>
@@ -1153,7 +1156,7 @@ is theirs (Deleting below).
 
 `POST /api/chats` (browser only, writer role, with an `Idempotency-Key`) posts a
 line. The body is `{canvas_id, text, conversation_id, page, trail, kind,
-payload}`; `text` holds a non-space
+payload, attachments}`; `text` holds a non-space
 character and at most 16,384 characters, and `canvas_id` is the poster's own
 canvas. `kind` is `line` by default, or `command`, `answer`, `settings` or
 `interrupt`, with `payload` as `POST /api/sessions/<uuid>/inbound` takes it (a stale
@@ -1218,6 +1221,33 @@ prompts from their machine."}}`, and nothing is queued. An `answer` to a card th
 person's own choices: anyone else is the same 403, "Only <asker> can answer this
 question.". It is queued for the chat's own session with the canvas context a
 line carries, and the assistant hears the pick as that person's line.
+
+Uploads. A page puts files into the assistant's workspace box for a line, and the
+bytes go from the page to the box, never through the server.
+`POST /api/chats/uploads` (browser only, writer role) takes `{canvas_id,
+conversation_id, files: [{name, size}]}`, 1 to 20 files, each a name with no folder
+(no `/`, `\`, control character, `.` or `..`, at most 255 characters) asked once.
+Whoever may post a line to the chat from that canvas may ask, by the rule above: a
+foreign canvas is 404, a chat not theirs to post into 403 `chat_not_shared`, a
+deleted one 410, a chat other than the one the canvas holds 409, and a chat whose
+provider is not `assistant` 409 `uploads_unsupported` (a canvas with no chat yet
+asks for the chat its first line starts). The request is held, in memory and never stored, until the assistant
+answers: `{files: [{name, path, url}]}`, a box path and a link signed for that path
+alone per file, in the order asked; the page sends each file to its link as the
+multipart field `file`. An assistant that does not answer within 15 s is 503
+`uploads_unavailable`, its refusal 409 `upload_refused` with its reason in
+`message`, and slots for other files than those asked 502; while 64 asks are
+already waiting, another is 503 `uploads_busy` at once. A `line` then names the
+box paths in `attachments` (at most 20 absolute, normal paths of at most 512
+characters; 422 otherwise, and on any other `kind`), which reach the assistant in
+the line's context; on a `claude` or `codex` chat such a line is 409
+`uploads_unsupported` and nothing is queued. The assistant's key alone holds
+`GET /api/chats/uploads/wait?wait_sec=N` (0 to 25, default 20) for the next ask,
+`{request_id, canvas_id, conversation_id, workspace_id, asker, asker_role, files}`
+or `null`, where `workspace_id` is the canvas's workspace or the asker's default, as
+a chat's settings name it (`workspace_issue_id`), so it names the asker's box; and
+answers it with `POST /api/chats/uploads/<request_id>` and `{files}` or `{error}`
+(204; 404 for an ask answered, given up or unknown); any other caller is 403.
 
 `GET /api/chats/<uuid>` returns `{conversation_id, session_id, title, account, live,
 forks, forked_from, forks_on_typing, audience, may_post, may_hide, shared_with,
