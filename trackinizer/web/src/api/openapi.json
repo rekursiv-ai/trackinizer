@@ -2221,6 +2221,55 @@
         "title": "Change",
         "type": "object"
       },
+      "ChatFileAsk": {
+        "additionalProperties": false,
+        "description": "A page's ask about one file it uploaded: a download link, or its removal.",
+        "properties": {
+          "canvas_id": {
+            "format": "uuid",
+            "title": "Canvas Id",
+            "type": "string"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "path": {
+            "$ref": "#/components/schemas/BoxPath"
+          }
+        },
+        "required": [
+          "canvas_id",
+          "path"
+        ],
+        "title": "ChatFileAsk",
+        "type": "object"
+      },
+      "ChatFileLink": {
+        "additionalProperties": false,
+        "description": "A download link to one file the asker uploaded, signed for its path alone.",
+        "properties": {
+          "url": {
+            "maxLength": 4096,
+            "pattern": "^https://[^\\s]+$",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "ChatFileLink",
+        "type": "object"
+      },
       "ChatForkAt": {
         "additionalProperties": false,
         "description": "A line of a science chat's session, which a fork starts from.",
@@ -2641,6 +2690,11 @@
         "additionalProperties": false,
         "description": "One file the page is about to upload, as the person's computer names it.",
         "properties": {
+          "dataset": {
+            "default": false,
+            "title": "Dataset",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -12759,7 +12813,7 @@
       },
       "UploadAnswer": {
         "additionalProperties": false,
-        "description": "The assistant's answer to an ask: a slot per file, or why there are none.",
+        "description": "The assistant's answer to an ask: what its action asked for, or why not.",
         "properties": {
           "error": {
             "anyOf": [
@@ -12788,6 +12842,31 @@
               }
             ],
             "title": "Files"
+          },
+          "removed": {
+            "anyOf": [
+              {
+                "const": true,
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Removed"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "pattern": "^https://[^\\s]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
           }
         },
         "title": "UploadAnswer",
@@ -12797,6 +12876,16 @@
         "additionalProperties": false,
         "description": "An ask as the assistant is handed it: who asks, from where, and for what.",
         "properties": {
+          "action": {
+            "default": "upload",
+            "enum": [
+              "upload",
+              "link",
+              "remove"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
           "asker": {
             "title": "Asker",
             "type": "string"
@@ -12827,9 +12916,18 @@
               "$ref": "#/components/schemas/ChatUploadFile"
             },
             "maxItems": 20,
-            "minItems": 1,
             "title": "Files",
             "type": "array"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BoxPath"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "request_id": {
             "format": "uuid",
@@ -12848,8 +12946,7 @@
           "conversation_id",
           "workspace_id",
           "asker",
-          "asker_role",
-          "files"
+          "asker_role"
         ],
         "title": "UploadAsk",
         "type": "object"
@@ -16376,6 +16473,89 @@
           }
         },
         "summary": "Post Chat Line Route"
+      }
+    },
+    "/api/chats/files/link": {
+      "post": {
+        "description": "Ask the assistant for a download link to a file the poster uploaded.\n\nAsked as an upload is, by the same rule and with the same refusals; the assistant\nsigns a link for the poster's own box alone, so only they download the file, and\nrefuses a path that is not one of their uploads or datasets.\n\nArgs:\n  body: The canvas, the chat, and the file's box path.\n  request: Request carrying the store, the inbound queue and the relay.\n  identity: The signed-in writer, who must own the canvas.\n\nReturns:\n  link: The download link, signed for the path alone.",
+        "operationId": "link_chat_file_route_api_chats_files_link_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatFileAsk"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatFileLink"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "The chat's provider takes no files, or the assistant refused (code ``uploads_unsupported`` or ``upload_refused``)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "No assistant answered, or too many asks are waiting (code ``uploads_unavailable`` or ``uploads_busy``)."
+          }
+        },
+        "summary": "Link Chat File Route"
+      }
+    },
+    "/api/chats/files/remove": {
+      "post": {
+        "description": "Ask the assistant to remove a file the poster uploaded, as a cancel does.\n\nAsked as an upload is, by the same rule and with the same refusals; the assistant\nremoves only a file under the poster's own uploads or datasets.\n\nArgs:\n  body: The canvas, the chat, and the file's box path.\n  request: Request carrying the store, the inbound queue and the relay.\n  identity: The signed-in writer, who must own the canvas.\n\nReturns:\n  response: Empty, once the file is gone.",
+        "operationId": "remove_chat_file_route_api_chats_files_remove_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatFileAsk"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "The chat's provider takes no files, or the assistant refused (code ``uploads_unsupported`` or ``upload_refused``)."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "No assistant answered, or too many asks are waiting (code ``uploads_unavailable`` or ``uploads_busy``)."
+          }
+        },
+        "summary": "Remove Chat File Route"
       }
     },
     "/api/chats/uploads": {

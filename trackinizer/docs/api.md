@@ -1130,6 +1130,8 @@ DELETE /api/chats/<uuid>
 PUT    /api/chats/<uuid>/shares/<email>
 DELETE /api/chats/<uuid>/shares/<email>
 POST   /api/chats/uploads
+POST   /api/chats/files/link
+POST   /api/chats/files/remove
 GET    /api/chats/uploads/wait
 POST   /api/chats/uploads/<uuid>
 GET    /api/sessions/<uuid>/partial
@@ -1225,8 +1227,10 @@ line carries, and the assistant hears the pick as that person's line.
 Uploads. A page puts files into the assistant's workspace box for a line, and the
 bytes go from the page to the box, never through the server.
 `POST /api/chats/uploads` (browser only, writer role) takes `{canvas_id,
-conversation_id, files: [{name, size}]}`, 1 to 20 files, each a name with no folder
-(no `/`, `\`, control character, `.` or `..`, at most 255 characters) asked once.
+conversation_id, files: [{name, size, dataset}]}`, 1 to 20 files, each a name with no
+folder (no `/`, `\`, control character, `.` or `..`, at most 255 characters) asked
+once; `dataset` (default false) asks for it as a dataset, which the assistant keeps in
+a folder of its own.
 Whoever may post a line to the chat from that canvas may ask, by the rule above: a
 foreign canvas is 404, a chat not theirs to post into 403 `chat_not_shared`, a
 deleted one 410, a chat other than the one the canvas holds 409, and a chat whose
@@ -1243,11 +1247,20 @@ characters; 422 otherwise, and on any other `kind`), which reach the assistant i
 the line's context; on a `claude` or `codex` chat such a line is 409
 `uploads_unsupported` and nothing is queued. The assistant's key alone holds
 `GET /api/chats/uploads/wait?wait_sec=N` (0 to 25, default 20) for the next ask,
-`{request_id, canvas_id, conversation_id, workspace_id, asker, asker_role, files}`
-or `null`, where `workspace_id` is the canvas's workspace or the asker's default, as
-a chat's settings name it (`workspace_issue_id`), so it names the asker's box; and
-answers it with `POST /api/chats/uploads/<request_id>` and `{files}` or `{error}`
-(204; 404 for an ask answered, given up or unknown); any other caller is 403.
+`{request_id, canvas_id, conversation_id, workspace_id, asker, asker_role, action,
+files, path}` or `null`, where `workspace_id` is the canvas's workspace or the asker's
+default, as a chat's settings name it (`workspace_issue_id`), so it names the asker's
+box; and answers it with `POST /api/chats/uploads/<request_id>` and one of `{files}`,
+`{url}`, `{removed: true}` or `{error}` (204; 404 for an ask answered, given up or
+unknown); any other caller is 403.
+
+A file the page uploaded is asked about by its box path, `{canvas_id,
+conversation_id, path}`, by the same rule and with the same refusals as an upload:
+`POST /api/chats/files/link` answers `{url}`, a download link signed for that path
+alone, and `POST /api/chats/files/remove` answers 204 once the file is gone, as when an
+upload is cancelled. Each is relayed as an ask whose `action` is `link` or `remove`
+(an upload's is `upload`) and names `path` and no files; an answer of the wrong kind is
+502.
 
 `GET /api/chats/<uuid>` returns `{conversation_id, session_id, title, account, live,
 forks, forked_from, forks_on_typing, audience, may_post, may_hide, shared_with,

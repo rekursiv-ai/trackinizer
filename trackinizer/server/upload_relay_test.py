@@ -66,6 +66,34 @@ async def test_the_assistant_takes_an_ask_and_its_answer_ends_the_pages_wait() -
 
 
 @pytest.mark.asyncio
+async def test_a_link_ask_carries_its_action_and_path_to_the_assistant() -> None:
+    relay = UploadRelay(timeout_sec=5)
+    linked = UploadAnswer(url="https://box.invalid/files?path=/home/user/a.png")
+    asked = asyncio.create_task(
+        relay.ask(
+            canvas_id=uuid.UUID(int=1),
+            conversation_id=None,
+            workspace_id=_WORKSPACE,
+            asker="ada@example.com",
+            asker_role="writer",
+            action="link",
+            path="/home/user/uploads/0a1b2c3d/a.png",
+        ),
+    )
+
+    taken = await relay.wait(wait_sec=5)
+
+    assert taken is not None
+    assert (taken.action, taken.path, taken.files) == (
+        "link",
+        "/home/user/uploads/0a1b2c3d/a.png",
+        [],
+    )
+    assert relay.answer(taken.request_id, linked)
+    assert await asked == linked
+
+
+@pytest.mark.asyncio
 async def test_an_ask_made_before_the_assistant_waits_is_handed_at_once() -> None:
     relay = UploadRelay(timeout_sec=5)
     asked = asyncio.create_task(_ask(relay))

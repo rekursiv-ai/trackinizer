@@ -36,6 +36,8 @@ from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.upload_relay import UploadRelay
 from trackinizer.server.visuals.workspaces import open_default_workspace
 from trackinizer.wire.wire_chat_uploads import (
+    CHAT_FILE_LINK_PATH,
+    CHAT_FILE_REMOVE_PATH,
     CHAT_UPLOADS_PATH,
     CHAT_UPLOADS_WAIT_PATH,
     ChatUploadFile,
@@ -418,6 +420,146 @@ async def test_an_ask_naming_no_file_or_a_folder_is_refused(
     )
     for files in refused:
         assert (await _ask(client, canvas_id=canvas_id, files=files)).status_code == 422
+    assert await uploads_served.wait(wait_sec=0.01) is None
+
+
+# -- A file the poster uploaded: a link to it, and its removal.
+
+_UPLOADED = "/home/user/uploads/0a1b2c3d/shot.png"
+
+
+async def _about(
+    client: httpx2.AsyncClient,
+    relay: UploadRelay,
+    *,
+    route: str,
+    canvas_id: uuid.UUID,
+    answer: UploadAnswer,
+) -> tuple[httpx2.Response, UploadAsk]:
+    """Ask about the uploaded file as the page while the assistant answers."""
+    page = asyncio.create_task(
+        client.post(route, json={"canvas_id": str(canvas_id), "path": _UPLOADED}),
+    )
+    taken = await relay.wait(wait_sec=5)
+    assert taken is not None
+    assert relay.answer(taken.request_id, answer)
+    return await page, taken
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_poster_gets_a_download_link_to_a_file_they_uploaded(
+    pglite_route_client: _Client,
+    uploads_served: UploadRelay,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    canvas_id = await open_canvas(client)
+    url = f"https://box.invalid/files?path={_UPLOADED}"
+
+    linked, taken = await _about(
+        client,
+        uploads_served,
+        route=CHAT_FILE_LINK_PATH,
+        canvas_id=canvas_id,
+        answer=UploadAnswer(url=url),
+    )
+
+    assert linked.status_code == 200
+    assert json_loads(linked.content, dict[str, object]) == {"url": url}
+    assert (taken.action, taken.path, taken.asker) == (
+        "link",
+        _UPLOADED,
+        TEST_USER_EMAIL,
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_poster_removes_a_file_they_uploaded(
+    pglite_route_client: _Client,
+    uploads_served: UploadRelay,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    canvas_id = await open_canvas(client)
+
+    removed, taken = await _about(
+        client,
+        uploads_served,
+        route=CHAT_FILE_REMOVE_PATH,
+        canvas_id=canvas_id,
+        answer=UploadAnswer(removed=True),
+    )
+
+    assert (removed.status_code, removed.content) == (204, b"")
+    assert (taken.action, taken.path) == ("remove", _UPLOADED)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_link_or_removal_the_assistant_refuses_or_answers_wrongly_says_so(
+    pglite_route_client: _Client,
+    uploads_served: UploadRelay,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    canvas_id = await open_canvas(client)
+
+    refused, _ = await _about(
+        client,
+        uploads_served,
+        route=CHAT_FILE_LINK_PATH,
+        canvas_id=canvas_id,
+        answer=UploadAnswer(error="Not one of your uploads."),
+    )
+    wrong_link, _ = await _about(
+        client,
+        uploads_served,
+        route=CHAT_FILE_LINK_PATH,
+        canvas_id=canvas_id,
+        answer=UploadAnswer(removed=True),
+    )
+    wrong_removal, _ = await _about(
+        client,
+        uploads_served,
+        route=CHAT_FILE_REMOVE_PATH,
+        canvas_id=canvas_id,
+        answer=UploadAnswer(url=f"https://box.invalid/files?path={_UPLOADED}"),
+    )
+
+    assert (refused.status_code, _code(refused)) == (409, "upload_refused")
+    assert (wrong_link.status_code, wrong_removal.status_code) == (502, 502)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_link_or_removal_follows_the_rule_an_upload_does(
+    pglite_route_client: _Client,
+    uploads_served: UploadRelay,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    claude = await _cli_canvas(store, provider="claude")
+    browser()
+
+    for route in (CHAT_FILE_LINK_PATH, CHAT_FILE_REMOVE_PATH):
+        foreign = await client.post(
+            route,
+            json={"canvas_id": str(uuid.uuid4()), "path": _UPLOADED},
+        )
+        cli = await client.post(
+            route,
+            json={"canvas_id": str(claude), "path": _UPLOADED},
+        )
+        bad = await client.post(
+            route,
+            json={"canvas_id": str(claude), "path": "uploads/shot.png"},
+        )
+
+        assert foreign.status_code == 404
+        assert (cli.status_code, _code(cli)) == (409, "uploads_unsupported")
+        assert bad.status_code == 422
     assert await uploads_served.wait(wait_sec=0.01) is None
 
 
