@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import fields
-from types import MappingProxyType
-from typing import Final
+from dataclasses import fields, replace
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
@@ -15,29 +14,33 @@ from trackinizer.sagent.model.capability import (
     PruningPolicy,
     ThinkingCapability,
 )
-from trackinizer.sagent.model.cost import PriceCatalog, PriceKey, TokenPrice
+from trackinizer.sagent.model.cost import (
+    PriceCatalog,
+    PriceKey,
+    ServiceTier,
+    TokenPrice,
+)
+
+
+if TYPE_CHECKING:
+    from trackinizer.sagent.model.capability import ThinkingEffort
+
+
+def _price(request: float) -> TokenPrice:
+    return TokenPrice(
+        request=request,
+        response=0.0,
+        cache_write=0.0,
+        cache_write_1h=0.0,
+        cache_read=0.0,
+    )
 
 
 def _row() -> ModelCapability:
     return ModelCapability(
         model_id="m",
-        context=MappingProxyType(
-            {
-                "": ModelLimits(max_request_tokens=200_000),
-                "+1m": ModelLimits(max_request_tokens=1_000_000),
-            },
-        ),
-        prices=PriceCatalog(
-            {
-                PriceKey("auto"): TokenPrice(
-                    request=5.0,
-                    response=0.0,
-                    cache_write=0.0,
-                    cache_write_1h=0.0,
-                    cache_read=0.0,
-                ),
-            },
-        ),
+        limits=ModelLimits(max_request_tokens=1_000_000),
+        prices=PriceCatalog({PriceKey("auto"): _price(5.0)}),
         thinking=ThinkingCapability(
             effort=frozenset({"none", "low", "high"}),
             budget=frozenset({"none", "auto"}),
@@ -62,7 +65,7 @@ _OFF = ModelCapability(
 )
 
 _UNOFFERED: Final = (
-    ("context", "+200k"),
+    ("context", -1),
     ("thinking_effort", "medium"),
     ("thinking_budget", "fixed"),
     ("thinking_output", "text"),
@@ -77,7 +80,7 @@ _UNOFFERED: Final = (
 
 def test_every_field_is_default_constructible() -> None:
     assert ModelCapability().model_id == ""
-    assert ModelSettings().context == ""
+    assert ModelSettings().context == 0
 
 
 def test_a_bare_transport_keeps_the_axis_a_row_cannot_know() -> None:
@@ -120,14 +123,14 @@ def test_the_meet_passes_model_facts_through() -> None:
         model_id="m",
         knowledge_cutoff="2026-01",
         effort_as_level=True,
-        context=_row().context,
+        limits=_row().limits,
         prices=_row().prices,
     )
     met = row & ModelCapability(model_id="t", effort_as_level=False)
     assert met.model_id == "m"
     assert met.knowledge_cutoff == "2026-01"
     assert met.effort_as_level is True
-    assert met.context.keys() == {"", "+1m"}
+    assert met.limits == _row().limits
     assert met.prices == _row().prices
 
 
@@ -146,7 +149,7 @@ def test_the_transport_declares_retries_and_auth() -> None:
 def test_a_valid_selection_constructs() -> None:
     settings = ModelSettings(
         capability=_row(),
-        context="+1m",
+        context=200_000,
         thinking_effort="high",
         thinking_budget="auto",
         thinking_output="redacted",
@@ -216,33 +219,50 @@ def test_the_capability_itself_is_assignable() -> None:
     assert settings.thinking_effort == "high"
 
 
-def test_capability_assignment_renarrows_context_and_all_axes() -> None:
-    settings = ModelSettings.narrowest(_row(), context="+1m")
+def test_capability_assignment_renarrows_every_axis_and_keeps_the_size() -> None:
+    """The compaction size is the caller's, not the model's to withhold."""
+    settings = ModelSettings.narrowest(_row(), context=200_000)
     settings.thinking_effort = "high"
     settings.capability = _OFF
     assert settings.capability == _OFF
-    assert settings.context == ""
+    assert settings.context == 200_000
     assert settings.limits == ModelLimits()
     assert settings.thinking_effort == "none"
     assert settings.cache_ttl_sec == 0.0
 
 
+@pytest.mark.parametrize(
+    ("request_tokens", "context_tokens", "shared"),
+    [(200_000, 0, 200_000), (272_000, 1_050_000, 1_050_000), (0, 0, 0)],
+)
+def test_the_context_is_the_request_window_unless_stated(
+    request_tokens: int,
+    context_tokens: int,
+    shared: int,
+) -> None:
+    limits = ModelLimits(
+        max_request_tokens=request_tokens,
+        max_context_tokens=context_tokens,
+    )
+    assert limits.context_tokens == shared
+
+
 def test_capability_assignment_keeps_what_the_new_one_still_offers() -> None:
-    settings = ModelSettings.narrowest(_row(), context="+1m")
+    settings = ModelSettings.narrowest(_row(), context=200_000)
     settings.thinking_effort = "high"
     settings.service_tier = "priority"
     settings.capability = _row()
-    assert settings.context == "+1m"
+    assert settings.context == 200_000
     assert settings.thinking_effort == "high"
     assert settings.service_tier == "priority"
 
 
 def test_invalid_capability_assignment_leaves_settings_unchanged() -> None:
-    settings = ModelSettings.narrowest(_row(), context="+1m")
+    settings = ModelSettings.narrowest(_row(), context=200_000)
     with pytest.raises(ValueError, match="cache_ttl_sec offers nothing"):
         settings.capability = ModelCapability(cache_ttl_sec=frozenset())
     assert settings.capability == _row()
-    assert settings.context == "+1m"
+    assert settings.context == 200_000
 
 
 # ---- take / adopt ----------------------------------------------------------
@@ -274,10 +294,10 @@ def test_take_names_every_unknown_axis_sorted() -> None:
         ModelSettings().take(beta=1, alpha=2)
 
 
-def test_take_keeps_the_context_when_asked_for_an_unoffered_one() -> None:
-    settings = ModelSettings.narrowest(_row(), context="+1m")
-    settings.take(context="+200k")
-    assert settings.context == "+1m"
+def test_take_falls_back_to_the_whole_window_for_a_negative_size() -> None:
+    settings = ModelSettings.narrowest(_row(), context=200_000)
+    settings.take(context=-1)
+    assert settings.context == 0
 
 
 def test_adopt_carries_the_selection_across_a_swap() -> None:
@@ -287,18 +307,19 @@ def test_adopt_carries_the_selection_across_a_swap() -> None:
         thinking_effort="high",
         service_tier="priority",
     )
-    new = ModelSettings(capability=_row(), cache_ttl_sec=300.0, context="+1m")
+    new = ModelSettings(capability=_row(), cache_ttl_sec=300.0)
     new.adopt(old)
     assert new.thinking_effort == "high"
     assert new.service_tier == "priority"
     assert new.cache_ttl_sec == 3600.0
 
 
-def test_adopt_keeps_the_incoming_context_tag() -> None:
-    old = ModelSettings(capability=_row(), cache_ttl_sec=300.0, context="")
-    new = ModelSettings(capability=_row(), cache_ttl_sec=300.0, context="+1m")
+def test_adopt_keeps_the_incoming_size() -> None:
+    """The incoming model's name may have chosen its size, as ``opus+small``."""
+    old = ModelSettings(capability=_row(), cache_ttl_sec=300.0, context=258_000)
+    new = ModelSettings(capability=_row(), cache_ttl_sec=300.0, context=100_000)
     new.adopt(old)
-    assert new.context == "+1m"
+    assert new.context == 100_000
 
 
 def test_adopt_drops_a_knob_the_new_model_rejects() -> None:
@@ -324,9 +345,34 @@ def test_narrowest_selects_the_shortest_cache_offered() -> None:
 
 
 def test_narrowest_carries_the_context_and_capability() -> None:
-    settings = ModelSettings.narrowest(_row(), context="+1m")
-    assert settings.context == "+1m"
+    settings = ModelSettings.narrowest(_row(), context=200_000)
+    assert settings.context == 200_000
     assert settings.capability == _row()
+
+
+@pytest.mark.parametrize(
+    ("default", "effort"),
+    [
+        (None, "none"),
+        ("none", "none"),
+        ("high", "high"),
+        ("medium", "low"),
+        ("min", "low"),
+    ],
+    ids=["unset", "none", "offered", "nearest-below", "nearest-above"],
+)
+def test_narrowest_starts_at_the_default_effort_the_row_offers(
+    default: ThinkingEffort | None,
+    effort: str,
+) -> None:
+    row = replace(_row(), default_effort=default)
+    assert ModelSettings.narrowest(row).thinking_effort == effort
+
+
+def test_the_meet_keeps_the_rows_default_effort() -> None:
+    row = replace(_row(), default_effort="high")
+    assert (row & ModelCapability()).default_effort == "high"
+    assert hash(row) != hash(_row())
 
 
 def test_narrowest_climbs_an_axis_that_withholds_its_unset_value() -> None:
@@ -375,21 +421,86 @@ def test_narrowest_names_an_empty_axis(axis: str, capability: ModelCapability) -
         ModelSettings.narrowest(capability)
 
 
-def test_limits_follow_the_selected_context() -> None:
+def test_the_limits_are_the_models_whatever_size_is_chosen() -> None:
     row = _row()
-    assert ModelSettings.narrowest(row).limits.max_request_tokens == 200_000
-    settings = ModelSettings.narrowest(row, context="+1m")
-    assert settings.limits.max_request_tokens == 1_000_000
+    assert ModelSettings.narrowest(row).limits == row.limits
+    assert ModelSettings.narrowest(row, context=200_000).limits == row.limits
 
 
-def test_equal_capabilities_hash_equal_regardless_of_mapping_order() -> None:
-    a = ModelCapability(
-        context=MappingProxyType({"": ModelLimits(), "+1m": ModelLimits()}),
+@pytest.mark.parametrize(
+    ("context", "window"),
+    [(0, 1_000_000), (258_000, 258_000), (2_000_000, 1_000_000)],
+)
+def test_the_window_is_the_chosen_size_within_the_models(
+    context: int,
+    window: int,
+) -> None:
+    assert ModelSettings.narrowest(_row(), context=context).window == window
+
+
+def _banded(*cards: tuple[ServiceTier, int]) -> ModelCapability:
+    """Return a 1M-token model priced at each ``(tier, threshold)``, base cards too."""
+    tiers = {tier for tier, _ in cards}
+    prices = {PriceKey(tier): _price(1.0) for tier in tiers} | {
+        PriceKey(tier, threshold): _price(2.0) for tier, threshold in cards
+    }
+    return ModelCapability(
+        limits=ModelLimits(max_request_tokens=1_000_000),
+        prices=PriceCatalog(prices),
+        service_tier=frozenset({"auto", "default", "priority"}),
     )
-    b = ModelCapability(
-        context=MappingProxyType({"+1m": ModelLimits(), "": ModelLimits()}),
-    )
-    assert hash(a) == hash(b)
+
+
+def test_the_bands_are_where_a_tiers_price_rises() -> None:
+    row = _banded(("auto", 256_000), ("auto", 32_000), ("priority", 272_000))
+    assert row.bands("auto") == (32_000, 256_000)
+    assert row.bands("priority") == (272_000,)
+    # A tier no card names is priced as ``auto``.
+    assert row.bands("default") == (32_000, 256_000)
+    assert _row().bands("auto") == ()
+
+
+def test_a_band_at_or_past_the_window_is_none() -> None:
+    assert _banded(("auto", 1_000_000), ("auto", 2_000_000)).bands("auto") == ()
+
+
+@pytest.mark.parametrize(
+    ("cards", "small", "mid"),
+    [
+        ((("auto", 32_000), ("auto", 256_000)), 32_000, 256_000),
+        ((("auto", 272_000),), 272_000, 0),
+        ((), 0, 0),
+    ],
+    ids=["two-bands", "one-band", "none"],
+)
+def test_small_and_mid_are_the_first_and_second_band_else_the_window(
+    cards: tuple[tuple[ServiceTier, int], ...],
+    small: int,
+    mid: int,
+) -> None:
+    row = _banded(*cards)
+    assert row.size("small", tier="auto") == small
+    assert row.size("mid", tier="auto") == mid
+    assert row.size("large", tier="auto") == 0
+
+
+@pytest.mark.parametrize(
+    ("context", "tag"),
+    [
+        (0, ""),
+        (32_000, "+small"),
+        (256_000, "+mid"),
+        (258_000, "+258k"),
+        (2_000_000, "+2m"),
+        (258_123, "+258123"),
+    ],
+)
+def test_the_tag_names_the_size_as_a_model_id_does(context: int, tag: str) -> None:
+    row = _banded(("auto", 32_000), ("auto", 256_000))
+    assert ModelSettings.narrowest(row, context=context).tag == tag
+
+
+def test_equal_capabilities_hash_equal() -> None:
     assert hash(_row()) == hash(_row())
     assert hash(_row()) != hash(ModelCapability())
 
@@ -403,9 +514,9 @@ def test_the_meet_cannot_grant() -> None:
     assert met.thinking.effort == frozenset({"none"})
 
 
-def test_the_meet_passes_context_and_prices_through() -> None:
+def test_the_meet_passes_limits_and_prices_through() -> None:
     met = _row() & ModelCapability()
-    assert met.context.keys() == {"", "+1m"}
+    assert met.limits == _row().limits
     assert met.prices == _row().prices
 
 
@@ -420,9 +531,9 @@ def test_defaults_construct_against_a_default_capability() -> None:
     ModelSettings(capability=ModelCapability())
 
 
-def test_an_unoffered_context_is_rejected() -> None:
-    with pytest.raises(ValueError, match="context='\\+200k'"):
-        ModelSettings(capability=_row(), cache_ttl_sec=300.0, context="+200k")
+def test_a_negative_size_is_rejected() -> None:
+    with pytest.raises(ValueError, match="context=-1 is not offered"):
+        ModelSettings(capability=_row(), cache_ttl_sec=300.0, context=-1)
 
 
 def test_a_boolean_axis_validates_by_membership() -> None:
@@ -448,8 +559,8 @@ def test_narrowest_selects_the_cache_the_wire_already_ships() -> None:
     assert ModelSettings.narrowest(only_long).cache_ttl_sec == 3600.0
 
 
-def test_narrowest_carries_the_context_the_id_selected() -> None:
-    assert ModelSettings.narrowest(_row(), context="+1m").context == "+1m"
+def test_narrowest_carries_the_size_the_id_selected() -> None:
+    assert ModelSettings.narrowest(_row(), context=100_000).context == 100_000
 
 
 def test_narrowest_carries_the_capability_it_narrowed() -> None:
@@ -477,16 +588,6 @@ def test_narrowest_rejects_an_empty_axis() -> None:
         ModelSettings.narrowest(
             ModelCapability(thinking=ThinkingCapability(effort=frozenset())),
         )
-
-
-def test_limits_are_derived_not_cached() -> None:
-    """A cached row let a spec claim one context and carry another's."""
-    row = _row()
-    assert ModelSettings.narrowest(row).limits.max_request_tokens == 200_000
-    assert (
-        ModelSettings.narrowest(row, context="+1m").limits.max_request_tokens
-        == 1_000_000
-    )
 
 
 def test_settings_over_an_empty_axis_cannot_be_constructed() -> None:

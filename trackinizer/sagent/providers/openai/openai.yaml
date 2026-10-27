@@ -10,18 +10,13 @@ roles:
   utility: luna
 
 reference:
+  default_effort: high
   approx_chars_per_token: 3.71
-  context:
-    max:
-      max_request_tokens: 922_000
-      max_response_tokens: 128_000
-      max_request_bytes: 536_870_912
-      max_image_edge_px: 65_535
-    min:
-      max_request_tokens: 272_000
-      max_response_tokens: 128_000
-      max_request_bytes: 536_870_912
-      max_image_edge_px: 65_535
+  limits:
+    max_request_tokens: 1_050_000
+    max_response_tokens: 128_000
+    max_request_bytes: 536_870_912
+    max_image_edge_px: 65_535
   thinking:
     effort: [none]
     budget: [none]
@@ -35,15 +30,10 @@ profiles:
       output: [none, text]
 
   gpt_6:
-    context:
-      max:
-        max_request_tokens: 922_000
-        max_response_tokens: 128_000
-        max_request_bytes: 536_870_912
-      min:
-        max_request_tokens: 272_000
-        max_response_tokens: 128_000
-        max_request_bytes: 536_870_912
+    limits:
+      max_request_tokens: 1_050_000
+      max_response_tokens: 128_000
+      max_request_bytes: 536_870_912
     thinking:
       effort: [none, low, medium, high, xhigh, max]
       budget: [none, auto]
@@ -56,154 +46,131 @@ profiles:
       output: [none, text]
 
   gpt_5_5:
-    context:
-      max:
-        max_request_tokens: 1_050_000
-        max_response_tokens: 128_000
-        max_request_bytes: 536_870_912
-        max_image_edge_px: 6_000
-      min:
-        max_request_tokens: 272_000
-        max_response_tokens: 128_000
-        max_request_bytes: 536_870_912
-        max_image_edge_px: 6_000
+    limits:
+      max_request_tokens: 1_050_000
+      max_response_tokens: 128_000
+      max_request_bytes: 536_870_912
+      max_image_edge_px: 6_000
     thinking:
       effort: [none, low, medium, high, xhigh]
       budget: [none, auto]
       output: [none, text]
 
   gpt_pro_1m:
-    context:
-      max:
-        max_request_tokens: 1_050_000
-        max_response_tokens: 128_000
-        max_request_bytes: 536_870_912
-      min:
-        max_request_tokens: 272_000
-        max_response_tokens: 128_000
-        max_request_bytes: 536_870_912
+    limits:
+      max_request_tokens: 1_050_000
+      max_response_tokens: 128_000
+      max_request_bytes: 536_870_912
     thinking:
       effort: [medium, high, xhigh]
       budget: [none, auto]
       output: [none, text]
 
   gpt_5_4:
-    context:
-      max:
-        max_request_tokens: 1_050_000
-        max_response_tokens: 128_000
-        max_request_bytes: 536_870_912
-        max_image_edge_px: 2_048
-      min:
-        max_request_tokens: 272_000
-        max_response_tokens: 128_000
-        max_request_bytes: 536_870_912
-        max_image_edge_px: 2_048
+    limits:
+      max_request_tokens: 1_050_000
+      max_response_tokens: 128_000
+      max_request_bytes: 536_870_912
+      max_image_edge_px: 2_048
     thinking:
       effort: [none, low, medium, high, xhigh]
       budget: [none, auto]
       output: [none, text]
 
   gpt_mini_5_4:
-    context:
-      max:
-        max_request_tokens: 272_000
-        max_response_tokens: 128_000
-        max_request_bytes: 536_870_912
-        max_image_edge_px: 2_048
+    limits:
+      max_request_tokens: 272_000
+      max_context_tokens: 400_000
+      max_response_tokens: 128_000
+      max_request_bytes: 536_870_912
+      max_image_edge_px: 2_048
     thinking:
       effort: [none, low, medium, high, xhigh]
       budget: [none, auto]
       output: [none, text]
 
   gpt_5_2:
-    context:
-      max:
-        max_request_tokens: 400_000
-        max_response_tokens: 128_000
-        max_request_bytes: 536_870_912
-        max_image_edge_px: 2_048
+    limits:
+      max_request_tokens: 272_000
+      max_context_tokens: 400_000
+      max_response_tokens: 128_000
+      max_request_bytes: 536_870_912
+      max_image_edge_px: 2_048
     thinking:
       effort: [none, low, medium, high, xhigh]
       budget: [none, auto]
       output: [none, text]
 
   gpt_pro_400k:
-    context:
-      max:
-        max_request_tokens: 400_000
-        max_response_tokens: 128_000
-        max_request_bytes: 536_870_912
+    limits:
+      max_request_tokens: 272_000
+      max_context_tokens: 400_000
+      max_response_tokens: 128_000
+      max_request_bytes: 536_870_912
     thinking:
       effort: [medium, high, xhigh]
       budget: [none, auto]
       output: [none, text]
 
   gpt_5_1:
-    context:
-      max:
-        max_request_tokens: 400_000
-        max_response_tokens: 128_000
-        max_request_bytes: 536_870_912
-        max_image_edge_px: 2_048
+    limits:
+      max_request_tokens: 272_000
+      max_context_tokens: 400_000
+      max_response_tokens: 128_000
+      max_request_bytes: 536_870_912
+      max_image_edge_px: 2_048
     thinking:
       effort: [none, low, medium, high]
       budget: [none, auto]
       output: [none, text]
 
   o_series:
-    context:
-      max:
-        max_request_tokens: 200_000
-        max_response_tokens: 100_000
-        max_request_bytes: 536_870_912
-        max_image_edge_px: 2_048
+    limits:
+      max_request_tokens: 200_000
+      max_response_tokens: 100_000
+      max_request_bytes: 536_870_912
+      max_image_edge_px: 2_048
     thinking:
       effort: [low, medium, high]
       budget: [none, auto]
       output: [none, text]
 
   o_series_text:
-    context:
-      max:
-        max_request_tokens: 200_000
-        max_response_tokens: 100_000
-        max_request_bytes: 536_870_912
+    limits:
+      max_request_tokens: 200_000
+      max_response_tokens: 100_000
+      max_request_bytes: 536_870_912
     thinking:
       effort: [low, medium, high]
       budget: [none, auto]
       output: [none, text]
 
   gpt_4_1:
-    context:
-      max:
-        max_request_tokens: 1_047_576
-        max_response_tokens: 32_768
-        max_request_bytes: 536_870_912
-        max_image_edge_px: 2_048
+    limits:
+      max_request_tokens: 1_047_576
+      max_response_tokens: 32_768
+      max_request_bytes: 536_870_912
+      max_image_edge_px: 2_048
 
   gpt_omni:
-    context:
-      max:
-        max_request_tokens: 128_000
-        max_response_tokens: 16_384
-        max_request_bytes: 536_870_912
-        max_image_edge_px: 2_048
+    limits:
+      max_request_tokens: 128_000
+      max_response_tokens: 16_384
+      max_request_bytes: 536_870_912
+      max_image_edge_px: 2_048
 
   gpt_turbo:
-    context:
-      max:
-        max_request_tokens: 128_000
-        max_response_tokens: 4_096
-        max_request_bytes: 536_870_912
-        max_image_edge_px: 2_048
+    limits:
+      max_request_tokens: 128_000
+      max_response_tokens: 4_096
+      max_request_bytes: 536_870_912
+      max_image_edge_px: 2_048
 
   gpt_4:
-    context:
-      max:
-        max_request_tokens: 8_192
-        max_response_tokens: 8_192
-        max_request_bytes: 536_870_912
+    limits:
+      max_request_tokens: 8_192
+      max_response_tokens: 8_192
+      max_request_bytes: 536_870_912
 
 models:
 - model_id: astra-6.0
@@ -988,157 +955,136 @@ providers:
     retries_internally: true
     account_auth: true
     service_tier: [auto, priority]
-    context:
-      max:
-        max_request_tokens: 272_000
-        max_response_tokens: 32_000
-        max_request_bytes: 536_870_912
-        max_image_edge_px: 65_535
+    limits:
+      max_request_tokens: 272_000
+      max_response_tokens: 32_000
+      max_request_bytes: 536_870_912
+      max_image_edge_px: 65_535
     models:
       astra-6.0:
       sol-6.1:
       sol-6.0:
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
       luna-6.0:
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
       sol-5.6:
       gpt-5.6:
       luna-5.6:
       terra-5.6:
       gpt-5.5:
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 6_000
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 6_000
       gpt-pro-5.5:
         service_tier: [auto]
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
       gpt-5.4:
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 2_048
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 2_048
       gpt-pro-5.4:
         service_tier: [auto]
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
       gpt-mini-5.4:
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 2_048
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 2_048
       gpt-nano-5.4:
         service_tier: [auto]
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 2_048
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 2_048
       gpt-5.2:
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 2_048
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 2_048
       gpt-pro-5.2:
         service_tier: [auto]
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
       gpt-5.1:
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 2_048
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 2_048
       o-1.0:
         service_tier: [auto]
-        context:
-          max:
-            max_request_tokens: 200_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 2_048
+        limits:
+          max_request_tokens: 200_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 2_048
       o-mini-3.0:
         service_tier: [auto]
-        context:
-          max:
-            max_request_tokens: 200_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
+        limits:
+          max_request_tokens: 200_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
       gpt-4.1:
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 2_048
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 2_048
       gpt-mini-4.1:
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 2_048
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 2_048
       gpt-nano-4.1:
-        context:
-          max:
-            max_request_tokens: 272_000
-            max_response_tokens: 32_000
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 2_048
+        limits:
+          max_request_tokens: 272_000
+          max_response_tokens: 32_000
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 2_048
       gpt-omni-4.0:
-        context:
-          max:
-            max_request_tokens: 128_000
-            max_response_tokens: 16_384
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 2_048
+        limits:
+          max_request_tokens: 128_000
+          max_response_tokens: 16_384
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 2_048
       gpt-omni-mini-4.0:
-        context:
-          max:
-            max_request_tokens: 128_000
-            max_response_tokens: 16_384
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 2_048
+        limits:
+          max_request_tokens: 128_000
+          max_response_tokens: 16_384
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 2_048
       gpt-turbo-4.0:
         service_tier: [auto]
-        context:
-          max:
-            max_request_tokens: 128_000
-            max_response_tokens: 4_096
-            max_request_bytes: 536_870_912
-            max_image_edge_px: 2_048
+        limits:
+          max_request_tokens: 128_000
+          max_response_tokens: 4_096
+          max_request_bytes: 536_870_912
+          max_image_edge_px: 2_048
       gpt-4.0:
         service_tier: [auto]
-        context:
-          max:
-            max_request_tokens: 8_192
-            max_response_tokens: 8_192
-            max_request_bytes: 536_870_912
+        limits:
+          max_request_tokens: 8_192
+          max_response_tokens: 8_192
+          max_request_bytes: 536_870_912

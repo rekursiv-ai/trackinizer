@@ -18,14 +18,12 @@ from trackinizer.sagent.model.capability import (
 )
 from trackinizer.sagent.model.cost import PriceCatalog, PriceKey, TokenPrice
 from trackinizer.sagent.model.exceptions import UnknownModelError, UnsupportedTagError
-from trackinizer.sagent.providers.table import ModelTable
+from trackinizer.sagent.providers.table import ModelTable, ModelTags, split_tags
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from pathlib import Path
-
-    from trackinizer.sagent.model.capability import ContextTag
 
 
 _FREE = {
@@ -48,8 +46,16 @@ def _row(
     model_id: str = "opus-4.8",
     *,
     wire_model_id: str | None = None,
-    context: dict[ContextTag, ModelLimits] | None = None,
+    window: int = 1_000_000,
+    bands: tuple[int, ...] = (),
 ) -> ModelCapability:
+    free = TokenPrice(
+        request=0.0,
+        response=0.0,
+        cache_write=0.0,
+        cache_write_1h=0.0,
+        cache_read=0.0,
+    )
     return ModelCapability(
         model_id=model_id,
         wire_model_id=(
@@ -57,23 +63,9 @@ def _row(
             if wire_model_id is None
             else wire_model_id
         ),
-        context=MappingProxyType(
-            context
-            or {
-                "": ModelLimits(max_request_tokens=200_000),
-                "+1m": ModelLimits(max_request_tokens=1_000_000),
-            },
-        ),
+        limits=ModelLimits(max_request_tokens=window),
         prices=PriceCatalog(
-            {
-                PriceKey("auto"): TokenPrice(
-                    request=0.0,
-                    response=0.0,
-                    cache_write=0.0,
-                    cache_write_1h=0.0,
-                    cache_read=0.0,
-                ),
-            },
+            {PriceKey("auto", band): free for band in (0, *bands)},
         ),
     )
 
@@ -249,24 +241,25 @@ def test_families_may_interleave() -> None:
 # ---- resolve -----------------------------------------------------------------
 
 
-def test_resolve_returns_the_row_and_settings_for_its_window() -> None:
-    capability, settings = _table().resolve("opus-4.8+1m")
+def test_resolve_returns_the_row_and_settings_for_its_size() -> None:
+    capability, settings = _table().resolve("opus-4.8+258k")
     assert capability.model_id == "opus-4.8"
     assert settings.capability is capability
-    assert settings.context == "+1m"
-    assert settings.limits.max_request_tokens == 1_000_000
+    assert settings.context == 258_000
+    assert settings.window == 258_000
     _, untagged = _table().resolve("opus-4.8")
-    assert untagged.context == ""
+    assert untagged.context == 0
+    assert untagged.window == 1_000_000
 
 
-@pytest.mark.parametrize("model_id", ["opus-5+1M", "opus-5+1m", "utility+1m"])
+@pytest.mark.parametrize("model_id", ["opus-5+258K", "opus-5+258k", "utility+258k"])
 def test_resolve_follows_roles_families_and_tags_in_any_case(model_id: str) -> None:
     table = ModelTable(
         rows=(_row("opus-5.5"), _row("sonnet-4.6")),
         roles={"utility": "sonnet"},
     )
     capability, settings = table.resolve(model_id)
-    assert settings.context == "+1m"
+    assert settings.context == 258_000
     assert capability.model_id == (
         "sonnet-4.6" if "utility" in model_id else "opus-5.5"
     )
@@ -274,48 +267,52 @@ def test_resolve_follows_roles_families_and_tags_in_any_case(model_id: str) -> N
 
 def test_a_repeated_tag_is_one_tag() -> None:
     _, settings = _table().resolve("opus+1m+1M")
-    assert settings.context == "+1m"
+    assert settings.context == 1_000_000
 
 
 @pytest.mark.parametrize(
-    ("tag", "default_tokens", "tagged_tokens", "expected"),
+    ("tag", "bands", "context"),
     [
-        ("+max", 200_000, 1_000_000, "+1m"),
-        ("+min", 200_000, 1_000_000, ""),
-        ("+max", 1_000_000, 200_000, ""),
-        ("+min", 1_000_000, 200_000, "+1m"),
+        ("+small", (32_000, 256_000), 32_000),
+        ("+mid", (32_000, 256_000), 256_000),
+        ("+large", (32_000, 256_000), 0),
+        ("+small", (272_000,), 272_000),
+        ("+mid", (272_000,), 0),
+        ("+small", (), 0),
     ],
 )
-def test_max_and_min_select_the_widest_and_narrowest_window(
+def test_small_mid_and_large_read_the_price_bands(
     tag: str,
-    default_tokens: int,
-    tagged_tokens: int,
-    expected: ContextTag,
+    bands: tuple[int, ...],
+    context: int,
 ) -> None:
-    row = _row(
-        context={
-            "+1m": ModelLimits(max_request_tokens=tagged_tokens),
-            "": ModelLimits(max_request_tokens=default_tokens),
-        },
-    )
-    capability, settings = ModelTable(rows=(row,)).resolve(f"opus-4.8{tag}")
-    assert settings.context == expected
-    assert capability is row
-
-
-@pytest.mark.parametrize("tag", ["+max", "+min"])
-def test_max_and_min_of_a_single_window_are_that_window(tag: str) -> None:
-    row = _row(context={"": ModelLimits()})
+    row = _row(bands=bands)
     _, settings = ModelTable(rows=(row,)).resolve(f"opus-4.8{tag}")
-    assert settings.context == ""
+    assert settings.context == context
+
+
+@pytest.mark.parametrize(
+    ("tag", "tokens"),
+    [
+        ("+200k", 200_000),
+        ("+272k", 272_000),
+        ("+1m", 1_000_000),
+        ("+2m", 2_000_000),
+        ("+258123", 258_123),
+    ],
+)
+def test_a_size_tag_is_that_many_tokens(tag: str, tokens: int) -> None:
+    _, settings = _table().resolve(f"opus-4.8{tag}")
+    assert settings.context == tokens
+    assert settings.window == min(tokens, 1_000_000)
 
 
 @pytest.mark.parametrize(
     ("suffix", "named"),
     [
-        ("+max+min", "+max, +min"),
-        ("+max+1m", "+1m, +max"),
-        ("+200k+min", "+200k, +min"),
+        ("+large+small", "+large, +small"),
+        ("+large+1m", "+1m, +large"),
+        ("+200k+small", "+200k, +small"),
         ("+1m+200k", "+1m, +200k"),
     ],
 )
@@ -325,38 +322,65 @@ def test_conflicting_tags_are_rejected(suffix: str, named: str) -> None:
         _table().resolve(f"opus-4.8{suffix}")
 
 
-def test_a_window_the_model_lacks_is_rejected_naming_those_it_offers() -> None:
-    row = _row(
-        context={
-            "": ModelLimits(max_request_tokens=128_000),
-            "+1m": ModelLimits(max_request_tokens=1_000_000),
-            "+200k": ModelLimits(max_request_tokens=200_000),
-        },
-    )
-    with pytest.raises(UnsupportedTagError) as raised:
-        ModelTable(rows=(row,)).resolve("opus-4.8+272k")
-    assert str(raised.value) == (
-        "Model 'opus-4.8+272k' has no +272k context; it offers: +1m, +200k."
-    )
-    bare = ModelTable(rows=(_row(context={"": ModelLimits()}),))
-    with pytest.raises(UnsupportedTagError, match="it offers: none"):
-        bare.resolve("opus-4.8+200k")
+@pytest.mark.parametrize(
+    ("name", "tags"),
+    [
+        ("opus", ModelTags(model="opus")),
+        ("opus+1m+high", ModelTags(model="opus+1m", context=1_000_000, effort="high")),
+        ("opus+HIGH+1M", ModelTags(model="opus+1M", context=1_000_000, effort="high")),
+        (
+            "opus+high+258k",
+            ModelTags(model="opus+258k", context=258_000, effort="high"),
+        ),
+        ("opus+max", ModelTags(model="opus", effort="max")),
+        ("opus+min", ModelTags(model="opus", effort="min")),
+        ("opus+large", ModelTags(model="opus+large", context="large")),
+        ("opus+mid", ModelTags(model="opus+mid", context="mid")),
+        (
+            "opus+small+none",
+            ModelTags(model="opus+small", context="small", effort="none"),
+        ),
+        (
+            "opus+fast+1m+high",
+            ModelTags(
+                model="opus+1m",
+                context=1_000_000,
+                effort="high",
+                service_tier="priority",
+            ),
+        ),
+        ("opus+flex", ModelTags(model="opus", service_tier="flex")),
+        ("Org/M+cuda+medium", ModelTags(model="Org/M+cuda", effort="medium")),
+        ("Org/M+medium+cuda", ModelTags(model="Org/M+cuda", effort="medium")),
+        (
+            "opus+high budget=auto  output=text",
+            ModelTags(
+                model="opus",
+                effort="high",
+                choices={"budget": "auto", "output": "text"},
+            ),
+        ),
+    ],
+)
+def test_split_tags_lifts_effort_and_tier_from_anywhere_and_names_the_size(
+    name: str,
+    tags: ModelTags,
+) -> None:
+    assert split_tags(name) == tags
 
 
-def test_1m_names_a_default_window_that_already_spans_it() -> None:
-    row = _row(context={"": ModelLimits(max_request_tokens=1_000_000)})
-    table = ModelTable(rows=(row,))
-    capability, settings = table.resolve("opus-4.8+1m")
-    assert settings.context == "+1m"
-    assert settings.limits == row.context[""]
-    untagged, _ = table.resolve("opus-4.8")
-    assert untagged.context.keys() == {""}
-    short = ModelTable(
-        rows=(_row(context={"": ModelLimits(max_request_tokens=999_999)}),),
-    )
-    with pytest.raises(UnsupportedTagError):
-        short.resolve("opus-4.8+1m")
-    assert capability.context.keys() == {"", "+1m"}
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("opus+high+low", "'opus+high+low' names two efforts: high, low"),
+        ("opus+flex+fast", "'opus+flex+fast' names two service tiers: flex, priority"),
+        ("opus auto", "'opus auto' names 'auto', not a CHOICE=VALUE"),
+        ("opus a=1 a=2", "'opus a=1 a=2' names 'a' twice"),
+    ],
+)
+def test_split_tags_refuses_two_of_one_kind(name: str, message: str) -> None:
+    with pytest.raises(UnsupportedTagError, match=f"^{re.escape(message)}$"):
+        split_tags(name)
 
 
 def test_an_unknown_model_names_the_known_models_and_roles() -> None:
@@ -379,7 +403,7 @@ def _write(
 ) -> Path:
     """Write a catalog whose reference supplies one window and every axis."""
     reference = {
-        "context": {"max": {"max_request_tokens": 1000}},
+        "limits": {"max_request_tokens": 1000},
         "thinking": _THINKING,
     }
     served = {
@@ -412,8 +436,7 @@ def test_from_yaml_layers_reference_profile_model_section_and_entry(
 roles: {default: example}
 reference:
   approx_chars_per_token: 3.5
-  context:
-    max: {max_request_tokens: 1_000}
+  limits: {max_request_tokens: 1_000}
   thinking: {effort: [none], budget: [none], output: [none]}
 profiles:
   base:
@@ -452,7 +475,7 @@ providers:
     assert row.wire_model_id == "vendor-example"
     assert row.approx_chars_per_token == 3.5
     assert row.knowledge_cutoff == "May 2025"
-    assert row.context[""].max_request_tokens == 1000
+    assert row.limits.max_request_tokens == 1000
     # The section's ``thinking`` replaces only the axes it names.
     assert row.thinking == ThinkingCapability(
         effort=frozenset({"none", "low"}),
@@ -487,6 +510,42 @@ providers:
             cache_read=0.3,
         ),
     }
+
+
+@pytest.mark.parametrize(
+    ("layers", "effort"),
+    [
+        ({}, None),
+        ({"reference": "high"}, "high"),
+        ({"reference": "high", "vendor": "low"}, "low"),
+        ({"reference": "high", "model": "low"}, "low"),
+        ({"reference": "high", "vendor": "high", "model": "low"}, "high"),
+        ({"vendor": "high", "model": "high", "entry": "low"}, "low"),
+    ],
+    ids=["unset", "reference", "provider", "model", "provider-over-model", "entry"],
+)
+def test_the_default_effort_layers_like_any_field(
+    tmp_path: Path,
+    layers: dict[str, str],
+    effort: str | None,
+) -> None:
+    def given(layer: str) -> dict[str, object]:
+        return {"default_effort": layers[layer]} if layer in layers else {}
+
+    entry = {"models": {"example-1.0": given("entry")}} if "entry" in layers else {}
+    path = _write(
+        tmp_path / "x.yaml",
+        _model() | given("model"),
+        vendor=given("vendor") | entry,
+        extra={
+            "reference": {
+                "limits": {"max_request_tokens": 1000},
+                "thinking": _THINKING,
+                **given("reference"),
+            },
+        },
+    )
+    assert _load(path)["example"].default_effort == effort
 
 
 def test_a_section_may_narrow_the_tiers_offered(tmp_path: Path) -> None:
@@ -524,42 +583,6 @@ def test_a_card_starts_on_its_effective_date(tmp_path: Path, quoted: bool) -> No
     )
 
 
-@pytest.mark.parametrize(("default", "other"), [("max", "+200k"), ("min", "+1m")])
-def test_the_default_window_is_untagged_and_the_other_tagged_by_size(
-    tmp_path: Path,
-    default: str,
-    other: ContextTag,
-) -> None:
-    context = {
-        "max": {"max_request_tokens": 1_000_000},
-        "min": {"max_request_tokens": 200_000},
-    }
-    path = _write(tmp_path / "x.yaml", _model(default_context=default, context=context))
-    row = _load(path)["example"]
-    assert row.context.keys() == {"", other}
-    assert row.context[""].max_request_tokens == (
-        1_000_000 if default == "max" else 200_000
-    )
-
-
-@pytest.mark.parametrize(("default", "tag"), [("max", "+min"), ("min", "+max")])
-def test_a_window_of_no_known_size_is_tagged_max_or_min(
-    tmp_path: Path,
-    default: str,
-    tag: ContextTag,
-) -> None:
-    context = {
-        "max": {"max_request_tokens": 922_000},
-        "min": {"max_request_tokens": 123_456},
-    }
-    path = _write(tmp_path / "x.yaml", _model(default_context=default, context=context))
-    table = _load(path)
-    assert table["example"].context.keys() == {"", tag}
-    for alias, expected in (("+max", 922_000), ("+min", 123_456)):
-        _, settings = table.resolve(f"example{alias}")
-        assert settings.limits.max_request_tokens == expected
-
-
 @pytest.mark.parametrize(
     ("models", "sections", "message"),
     [
@@ -582,24 +605,8 @@ def test_a_window_of_no_known_size_is_tagged_max_or_min(
             _exactly(_WHOLE),
         ),
         ([_model()], {"profiles": {"p": {"typo": True}}}, "typo"),
-        ([_model(context={"wide": {}})], {}, "a context other than max or min"),
-        (
-            [_model(context={"min": {"max_request_tokens": 1}})],
-            {},
-            "has no default context",
-        ),
-        (
-            [
-                _model(
-                    context={
-                        "max": {"max_request_tokens": 200_000},
-                        "min": {"max_request_tokens": 1_000_000},
-                    },
-                ),
-            ],
-            {},
-            "max context smaller than its min",
-        ),
+        ([_model(context={"large": {}})], {}, "context"),
+        ([_model(default_context="large")], {}, "default_context"),
         ([_model()], {"unknown": True}, "unknown"),
     ],
 )
@@ -619,14 +626,45 @@ def test_a_catalog_that_breaks_a_rule_is_rejected(
     [
         "max_request_tokens",
         "max_response_tokens",
+        "max_context_tokens",
         "max_request_bytes",
         "max_image_edge_px",
         "max_image_bytes",
     ],
 )
 def test_a_negative_limit_is_rejected(tmp_path: Path, limit: str) -> None:
-    path = _write(tmp_path / "x.yaml", _model(context={"max": {limit: -1}}))
+    path = _write(tmp_path / "x.yaml", _model(limits={limit: -1}))
     with pytest.raises(ValueError, match="negative limit"):
+        _load(path)
+
+
+def test_a_window_states_its_input_output_and_shared_ceilings(tmp_path: Path) -> None:
+    window = {
+        "max_request_tokens": 272_000,
+        "max_response_tokens": 128_000,
+        "max_context_tokens": 400_000,
+        "truncates_at_context": False,
+    }
+    path = _write(tmp_path / "x.yaml", _model(limits=window))
+    assert _load(path)["example"].limits == ModelLimits(
+        max_request_tokens=272_000,
+        max_response_tokens=128_000,
+        max_context_tokens=400_000,
+        truncates_at_context=False,
+    )
+
+
+def test_an_unstated_window_behavior_stays_unknown(tmp_path: Path) -> None:
+    path = _write(tmp_path / "x.yaml", _model())
+    limits = _load(path)["example"].limits
+    assert limits.max_context_tokens == 0
+    assert limits.truncates_at_context is None
+
+
+def test_a_shared_window_smaller_than_its_input_is_rejected(tmp_path: Path) -> None:
+    window = {"max_request_tokens": 272_000, "max_context_tokens": 200_000}
+    path = _write(tmp_path / "x.yaml", _model(limits=window))
+    with pytest.raises(ValueError, match="context smaller than its request"):
         _load(path)
 
 
@@ -757,7 +795,7 @@ def test_a_section_listing_no_models_serves_none(tmp_path: Path) -> None:
 def test_a_catalog_without_thinking_offers_none(tmp_path: Path) -> None:
     path = tmp_path / "x.yaml"
     path.write_text(
-        "models:\n- {model_id: a-1.0, context: {max: {}}, prices: [{request: 0,"
+        "models:\n- {model_id: a-1.0, limits: {}, prices: [{request: 0,"
         " response: 0, cache_write: 0, cache_write_1h: 0, cache_read: 0}]}\n"
         "providers: {vendor: {models: {a-1.0: }}}\n",
     )
@@ -804,20 +842,20 @@ def test_small_positive_estimates_and_units_are_valid(
     assert row.prices[PriceKey("auto")].tokens_per_unit == unit
 
 
-def test_equal_max_and_min_windows_are_valid(tmp_path: Path) -> None:
-    context = {"max": {"max_request_tokens": 5}, "min": {"max_request_tokens": 5}}
-    path = _write(tmp_path / "x.yaml", _model(context=context))
-    assert _load(path)["example"].context.keys() == {"", "+min"}
-
-
-def test_a_272k_window_is_tagged_by_its_size(tmp_path: Path) -> None:
-    context = {
-        "max": {"max_request_tokens": 400_000},
-        "min": {"max_request_tokens": 272_000},
-    }
-    path = _write(tmp_path / "x.yaml", _model(context=context))
-    _, settings = _load(path).resolve("example+272k")
-    assert settings.limits.max_request_tokens == 272_000
+def test_small_is_the_top_of_the_cheapest_price_band(tmp_path: Path) -> None:
+    """GPT's 1.05M window bills double past 272k: ``+small`` stays below that."""
+    cheap, dear = (
+        dict(_FREE),
+        _FREE | {"request": 1.0, "effective_prompt_tokens": 272_000},
+    )
+    path = _write(
+        tmp_path / "x.yaml",
+        _model(limits={"max_request_tokens": 1_050_000}, prices=[cheap, dear]),
+    )
+    _, settings = _load(path).resolve("example+small")
+    assert settings.context == 272_000
+    assert settings.window == 272_000
+    assert settings.limits.max_request_tokens == 1_050_000
 
 
 @pytest.mark.parametrize("model_id", ["opus-x.5", "opus-5.x", "opus-5."])
