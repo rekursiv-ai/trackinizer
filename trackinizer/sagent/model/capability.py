@@ -461,19 +461,16 @@ class ModelSettings:
           ValueError: An axis offers nothing at all.
 
         """
-        default = capability.default_effort
-        efforts = literal_members(ThinkingEffort)
-        # A default the row lacks falls to the nearest level below it, then above,
-        # and only then to ``none``, which stops the reasoning.
-        at = efforts.index(default) if default is not None else 0
-        ladder = (*efforts[at:0:-1], *efforts[at + 1 :], efforts[0]) if at else efforts
         return cls(
             capability=capability,
             context=context,
             thinking_effort=_lowest(
                 "thinking_effort",
                 capability.thinking.effort,
-                ladder,
+                _effort_ladder(
+                    capability.default_effort,
+                    literal_members(ThinkingEffort),
+                ),
             ),
             thinking_budget=_lowest(
                 "thinking_budget",
@@ -583,6 +580,17 @@ def _reject_unoffered(capability: ModelCapability, name: str, value: object) -> 
     # which do not order against each other.
     offered = ", ".join(sorted(repr(v) for v in _allowed(capability, name)))
     raise ValueError(f"{name}={value!r} is not offered by {model}; allowed: {offered}")
+
+
+# A default the row lacks falls to the nearest level below it, then above, and only then
+# to ``none``, which stops the reasoning.
+def _effort_ladder(
+    default: ThinkingEffort | None,
+    efforts: tuple[ThinkingEffort, ...],
+) -> tuple[ThinkingEffort, ...]:
+    """Return ``efforts`` in the order a row's selection tries them."""
+    at = efforts.index(default) if default is not None else 0
+    return (*efforts[at:0:-1], *efforts[at + 1 :], efforts[0]) if at else efforts
 
 
 def _lowest[T](name: str, offered: Collection[T], ladder: Sequence[T]) -> T:

@@ -440,7 +440,7 @@ def test_the_window_is_the_chosen_size_within_the_models(
 
 def _banded(*cards: tuple[ServiceTier, int]) -> ModelCapability:
     """Return a 1M-token model priced at each ``(tier, threshold)``, base cards too."""
-    tiers = {tier for tier, _ in cards}
+    tiers: set[ServiceTier] = {tier for tier, _ in cards}
     prices = {PriceKey(tier): _price(1.0) for tier in tiers} | {
         PriceKey(tier, threshold): _price(2.0) for tier, threshold in cards
     }

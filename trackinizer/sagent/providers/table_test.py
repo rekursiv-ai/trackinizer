@@ -879,6 +879,23 @@ def test_a_family_with_a_major_reaches_a_hyphenated_family() -> None:
     assert table["flash-lite-3"].model_id == "flash-lite-3.5"
 
 
+def test_a_section_s_roles_replace_the_document_s_it_names(tmp_path: Path) -> None:
+    """A provider that serves no ``pro`` defaults to what it does serve."""
+    path = _write(
+        tmp_path / "x.yaml",
+        _model("pro-1.0"),
+        _model("flash-1.0"),
+        vendor={"roles": {"default": "flash"}},
+        extra={"roles": {"default": "pro", "utility": "flash"}},
+    )
+    table = _load(path)
+    assert (table["default"].model_id, table["utility"].model_id) == (
+        "flash-1.0",
+        "flash-1.0",
+    )
+    assert table["best"].model_id == "flash-1.0"
+
+
 @pytest.mark.parametrize("target", ["local-model", "claude-opus-4-8"])
 def test_a_role_may_name_an_unversioned_id_or_a_vendor_id(target: str) -> None:
     table = ModelTable(rows=(_row(), _row("local-model")), roles={"default": target})
