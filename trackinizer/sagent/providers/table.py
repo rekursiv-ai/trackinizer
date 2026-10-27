@@ -30,6 +30,7 @@ from trackinizer.sagent.model.capability import (
     ModelCapability,
     ModelLimits,
     ModelSettings,
+    ThinkingBudget,
     ThinkingCapability,
     ThinkingEffort,
     literal_members,
@@ -436,6 +437,7 @@ class _CapabilityProfile:
     thinking: ThinkingCapability = field(default_factory=ThinkingCapability)
     effort_as_level: bool = False
     default_effort: ThinkingEffort | None = None
+    default_budget: ThinkingBudget | None = None
     cache_ttl_sec: frozenset[float] = frozenset({0.0})
     manage_context_server_side: frozenset[bool] = frozenset({False, True})
     retries_internally: bool = False
@@ -492,6 +494,7 @@ def _model(
         thinking=row.thinking,
         effort_as_level=row.effort_as_level,
         default_effort=row.default_effort,
+        default_budget=row.default_budget,
         prices=catalog,
         service_tier=catalog.service_tiers
         if row.service_tier is None

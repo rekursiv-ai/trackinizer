@@ -548,6 +548,22 @@ def test_the_default_effort_layers_like_any_field(
     assert _load(path)["example"].default_effort == effort
 
 
+def test_the_default_budget_layers_like_any_field(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path / "x.yaml",
+        _model() | {"default_budget": "auto"},
+        vendor={"models": {"example-1.0": {"default_budget": "fixed"}}},
+        extra={
+            "reference": {
+                "limits": {"max_request_tokens": 1000},
+                "thinking": _THINKING,
+                "default_budget": "none",
+            },
+        },
+    )
+    assert _load(path)["example"].default_budget == "fixed"
+
+
 def test_a_section_may_narrow_the_tiers_offered(tmp_path: Path) -> None:
     cards = [dict(_FREE), _FREE | {"service_tier": "priority"}]
     path = _write(tmp_path / "x.yaml", _model(prices=cards))

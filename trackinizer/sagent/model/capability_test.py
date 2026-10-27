@@ -23,7 +23,7 @@ from trackinizer.sagent.model.cost import (
 
 
 if TYPE_CHECKING:
-    from trackinizer.sagent.model.capability import ThinkingEffort
+    from trackinizer.sagent.model.capability import ThinkingBudget, ThinkingEffort
 
 
 def _price(request: float) -> TokenPrice:
@@ -372,6 +372,38 @@ def test_narrowest_starts_at_the_default_effort_the_row_offers(
 def test_the_meet_keeps_the_rows_default_effort() -> None:
     row = replace(_row(), default_effort="high")
     assert (row & ModelCapability()).default_effort == "high"
+    assert hash(row) != hash(_row())
+
+
+@pytest.mark.parametrize(
+    ("default", "budget"),
+    [(None, "none"), ("none", "none"), ("auto", "auto"), ("fixed", "fixed")],
+    ids=["unset", "none", "auto", "fixed"],
+)
+def test_narrowest_starts_at_the_default_budget(
+    default: ThinkingBudget | None,
+    budget: str,
+) -> None:
+    row = replace(
+        _row(),
+        thinking=replace(_row().thinking, budget=frozenset({"none", "auto", "fixed"})),
+        default_budget=default,
+    )
+    assert ModelSettings.narrowest(row).thinking_budget == budget
+
+
+def test_a_default_budget_the_row_lacks_falls_to_the_lowest_it_offers() -> None:
+    row = replace(
+        _row(),
+        thinking=replace(_row().thinking, budget=frozenset({"none", "fixed"})),
+        default_budget="auto",
+    )
+    assert ModelSettings.narrowest(row).thinking_budget == "none"
+
+
+def test_the_meet_keeps_the_rows_default_budget() -> None:
+    row = replace(_row(), default_budget="auto")
+    assert (row & ModelCapability()).default_budget == "auto"
     assert hash(row) != hash(_row())
 
 
