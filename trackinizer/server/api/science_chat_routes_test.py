@@ -641,7 +641,8 @@ async def test_without_an_assistant_there_are_no_chats(
 def test_no_route_edits_a_chat_but_posting_sharing_and_deleting_it_whole() -> None:
     """A chat's lines are its posters': no route rewrites one.
 
-    The upload routes hand out links to the assistant's box and touch no line.
+    The upload and file routes ask the assistant about files in a box and touch no
+    line.
     """
     chat_routes = [
         (path, methods)
@@ -650,6 +651,8 @@ def test_no_route_edits_a_chat_but_posting_sharing_and_deleting_it_whole() -> No
     ]
     assert sorted((path, sorted(methods)) for path, methods in chat_routes) == [
         ("/api/chats", ["POST"]),
+        ("/api/chats/files/link", ["POST"]),
+        ("/api/chats/files/remove", ["POST"]),
         ("/api/chats/uploads", ["POST"]),
         ("/api/chats/uploads/wait", ["GET"]),
         ("/api/chats/uploads/{request_id}", ["POST"]),

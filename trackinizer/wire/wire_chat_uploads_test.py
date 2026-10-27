@@ -8,9 +8,13 @@ import pydantic
 import pytest
 
 from trackinizer.wire.wire_chat_uploads import (
+    ChatFileAsk,
+    ChatFileLink,
     ChatUploadAsk,
+    ChatUploadFile,
     ChatUploadGrant,
     UploadAnswer,
+    UploadAsk,
     box_path,
 )
 
@@ -108,6 +112,82 @@ def test_a_box_path_is_absolute_normal_and_one_line(path: str, kept: bool) -> No
     else:
         with pytest.raises(ValueError, match="box path"):
             box_path(path)
+
+
+def test_a_file_is_for_the_message_unless_it_is_asked_as_a_dataset() -> None:
+    assert not ChatUploadFile(name="runs.zip", size=1).dataset
+    assert ChatUploadFile(name="runs.zip", size=1, dataset=True).dataset
+
+
+_ASK = {
+    "request_id": str(uuid.UUID(int=2)),
+    "canvas_id": str(_CANVAS),
+    "conversation_id": None,
+    "workspace_id": str(uuid.UUID(int=3)),
+    "asker": "ada@example.com",
+    "asker_role": "writer",
+}
+
+
+def test_an_upload_ask_names_files_and_a_link_or_remove_ask_names_one_path() -> None:
+    upload = UploadAsk.model_validate(_ASK | {"files": [{"name": "a.png", "size": 1}]})
+    link = UploadAsk.model_validate(
+        _ASK | {"action": "link", "path": "/home/user/uploads/0a1b2c3d/a.png"},
+    )
+    remove = UploadAsk.model_validate(
+        _ASK | {"action": "remove", "path": "/home/user/uploads/0a1b2c3d/a.png"},
+    )
+
+    assert (upload.action, upload.path) == ("upload", None)
+    assert (link.action, link.files) == ("link", [])
+    assert remove.action == "remove"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"files": []},
+        {"files": [{"name": "a.png", "size": 1}], "path": "/home/user/a.png"},
+        {"action": "link"},
+        {"action": "remove", "path": "relative.png"},
+        {"action": "link", "path": "/a.png", "files": [{"name": "a.png", "size": 1}]},
+        {"action": "rename", "path": "/a.png"},
+    ],
+)
+def test_an_ask_that_mixes_or_misses_its_actions_parts_is_refused(
+    change: dict[str, object],
+) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        UploadAsk.model_validate(_ASK | change)
+
+
+def test_an_answer_is_exactly_one_of_slots_a_link_a_removal_or_a_reason() -> None:
+    url = "https://49983-sbx.e2b.app/files?path=%2Fhome%2Fuser%2Fa.png"
+    assert UploadAnswer.model_validate({"url": url}).url == url
+    assert UploadAnswer.model_validate({"removed": True}).removed
+
+    refused: tuple[dict[str, object], ...] = (
+        {"url": url, "removed": True},
+        {"url": url, "error": "no"},
+        {"removed": True, "files": []},
+        {"url": "http://insecure.example/a"},
+    )
+    for each in refused:
+        with pytest.raises(pydantic.ValidationError):
+            UploadAnswer.model_validate(each)
+
+
+def test_a_page_asks_for_a_link_or_a_removal_by_one_box_path() -> None:
+    ask = ChatFileAsk.model_validate(
+        {"canvas_id": str(_CANVAS), "path": "/home/user/uploads/0a1b2c3d/a.png"},
+    )
+
+    assert ask.conversation_id is None
+    for bad in ("uploads/a.png", "/home/user/../.ssh/id_rsa"):
+        with pytest.raises(pydantic.ValidationError):
+            ChatFileAsk.model_validate({"canvas_id": str(_CANVAS), "path": bad})
+    with pytest.raises(pydantic.ValidationError):
+        ChatFileLink.model_validate({"url": "javascript:alert(1)"})
 
 
 if __name__ == "__main__":

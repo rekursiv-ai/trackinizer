@@ -1,6 +1,7 @@
-"""Hand a page's ask for upload links to the assistant, and its answer back.
+"""Hand a page's ask about its files to the assistant, and its answer back.
 
-The assistant signs the links, since only it reaches the workspace boxes; the server
+An ask is for upload links, a download link, or a removal. The assistant does each,
+since only it reaches the workspace boxes; the server
 only knows who may post. A page's ask waits here, in memory like the capture relay,
 until the assistant's held wait takes it and its answer arrives. Nothing is stored,
 and the server runs single-process, as the event hub already requires. An ask no
@@ -11,7 +12,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID, uuid4
 
 import asyncio
@@ -59,7 +60,9 @@ class UploadRelay:
         workspace_id: UUID,
         asker: str,
         asker_role: str,
-        files: Sequence[ChatUploadFile],
+        action: Literal["upload", "link", "remove"] = "upload",
+        files: Sequence[ChatUploadFile] = (),
+        path: str | None = None,
     ) -> UploadAnswer:
         """Queue an ask for the assistant and wait for its answer.
 
@@ -69,10 +72,12 @@ class UploadRelay:
           workspace_id: The workspace that names the asker's box.
           asker: The asker's attested email.
           asker_role: The asker's attested role.
-          files: The files asked for.
+          action: What is asked: upload links, a download link, or a removal.
+          files: The files an upload asks links for.
+          path: The file a link or a removal is for.
 
         Returns:
-          answer: The assistant's slots, or its reason for none.
+          answer: The assistant's answer for the action, or its reason for none.
 
         Raises:
           TimeoutError: The assistant did not take and answer it in time.
@@ -88,7 +93,9 @@ class UploadRelay:
             workspace_id=workspace_id,
             asker=asker,
             asker_role=asker_role,
+            action=action,
             files=list(files),
+            path=path,
         )
         answered = asyncio.Future[UploadAnswer]()
         self._answers[ask.request_id] = answered

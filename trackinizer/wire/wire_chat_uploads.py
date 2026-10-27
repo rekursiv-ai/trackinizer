@@ -14,6 +14,11 @@ The page then sends each file to its link and names the box paths in its line's
 ``attachments`` (:class:`~trackinizer.wire.wire_science_chat.ChatSend`), which
 reach the assistant in the line's context. Nothing of an upload is stored here.
 
+The same relay carries the page's two other asks about a file it uploaded, each by its
+box path and answered by the assistant the same way: a download link for it
+(:data:`CHAT_FILE_LINK_PATH`, answered with a ``url``), and its removal, as when an
+upload is cancelled part way (:data:`CHAT_FILE_REMOVE_PATH`, answered ``removed``).
+
 This package is part of the publishable client distribution, so it must not
 import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 """
@@ -21,7 +26,7 @@ import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Annotated, Final, Self
+from typing import Annotated, Final, Literal, Self
 
 import re
 import uuid
@@ -30,12 +35,16 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 
 
 __all__ = [
+    "CHAT_FILE_LINK_PATH",
+    "CHAT_FILE_REMOVE_PATH",
     "CHAT_UPLOADS_PATH",
     "CHAT_UPLOADS_WAIT_PATH",
     "CHAT_UPLOAD_ANSWER_PATH",
     "MAX_UPLOAD_FILES",
     "UPLOADS_WAIT_MAX_SEC",
     "BoxPath",
+    "ChatFileAsk",
+    "ChatFileLink",
     "ChatUploadAsk",
     "ChatUploadFile",
     "ChatUploadGrant",
@@ -55,6 +64,14 @@ ask, or ``null`` when none came. The configured assistant's key alone."""
 
 CHAT_UPLOAD_ANSWER_PATH: Final = "/api/chats/uploads/{request_id}"
 """``POST``: the assistant's :class:`UploadAnswer` to an ask it was handed."""
+
+CHAT_FILE_LINK_PATH: Final = "/api/chats/files/link"
+"""``POST`` a :class:`ChatFileAsk`: a download link to a file the asker uploaded, as a
+:class:`ChatFileLink`; held until the assistant answers."""
+
+CHAT_FILE_REMOVE_PATH: Final = "/api/chats/files/remove"
+"""``POST`` a :class:`ChatFileAsk`: remove a file the asker uploaded; 204 once the
+assistant removed it."""
 
 MAX_UPLOAD_FILES: Final = 20
 """Files one ask, and one line's ``attachments``, may name."""
@@ -113,6 +130,10 @@ class ChatUploadFile(BaseModel):
     size: int = Field(ge=0)
     """Its size in bytes, as the page read it."""
 
+    dataset: bool = False
+    """Whether the person asked for it as a dataset, which the assistant keeps in a
+    folder of its own where campaigns read data, unpacked once its line is sent."""
+
 
 class ChatUploadAsk(BaseModel):
     """A page's ask for upload links, from the canvas a line would be posted from."""
@@ -156,7 +177,50 @@ class UploadAsk(BaseModel):
     asker_role: str
     """The asker's role as the server attested it: ``writer`` or ``admin``."""
 
-    files: list[ChatUploadFile] = Field(min_length=1, max_length=MAX_UPLOAD_FILES)
+    action: Literal["upload", "link", "remove"] = "upload"
+    """What is asked: upload links for ``files``, or a download link for ``path``, or
+    the removal of ``path``."""
+
+    files: list[ChatUploadFile] = Field(
+        default_factory=list,
+        max_length=MAX_UPLOAD_FILES,
+    )
+    """The files an upload asks links for; none for the other actions."""
+
+    path: BoxPath | None = None
+    """The file a link or a removal is for; ``None`` for an upload."""
+
+    @model_validator(mode="after")
+    def _fits_the_action(self) -> Self:
+        """Require files for an upload, and one path, with no files, for the others."""
+        if self.action == "upload" and (not self.files or self.path is not None):
+            raise ValueError("an upload names files and no path")
+        if self.action != "upload" and (self.path is None or self.files):
+            raise ValueError(f"a {self.action} names one path and no files")
+        return self
+
+
+class ChatFileAsk(BaseModel):
+    """A page's ask about one file it uploaded: a download link, or its removal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    canvas_id: uuid.UUID
+    """The poster's own canvas."""
+
+    conversation_id: uuid.UUID | None = None
+    """The chat the file went with; none uses the canvas's."""
+
+    path: BoxPath
+    """The file's box path, as its upload slot named it."""
+
+
+class ChatFileLink(BaseModel):
+    """A download link to one file the asker uploaded, signed for its path alone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(max_length=4_096, pattern=r"^https://[^\s]+$")
 
 
 class ChatUploadSlot(BaseModel):
@@ -172,7 +236,7 @@ class ChatUploadSlot(BaseModel):
 
 
 class UploadAnswer(BaseModel):
-    """The assistant's answer to an ask: a slot per file, or why there are none."""
+    """The assistant's answer to an ask: what its action asked for, or why not."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -180,13 +244,26 @@ class UploadAnswer(BaseModel):
         default=None,
         max_length=MAX_UPLOAD_FILES,
     )
+    """An upload's slots, one per file."""
+
+    url: str | None = Field(
+        default=None,
+        max_length=4_096,
+        pattern=r"^https://[^\s]+$",
+    )
+    """A link's download link."""
+
+    removed: Literal[True] | None = None
+    """A removal done."""
+
     error: Annotated[str, Field(min_length=1, max_length=300)] | None = None
 
     @model_validator(mode="after")
     def _one_of(self) -> Self:
-        """Require exactly one of the slots and the reason."""
-        if (self.files is None) == (self.error is None):
-            raise ValueError("send files or an error, not both or neither")
+        """Require exactly one of the slots, the link, the removal and the reason."""
+        given = [self.files, self.url, self.removed, self.error]
+        if sum(each is not None for each in given) != 1:
+            raise ValueError("send one of files, url, removed or error")
         return self
 
 
