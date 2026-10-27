@@ -152,6 +152,25 @@ def test_a_fork_starts_from_a_line_only() -> None:
         )
 
 
+def test_a_line_carries_up_to_twenty_box_paths_and_no_other_kind_any() -> None:
+    paths = [f"/home/user/uploads/{n}.png" for n in range(20)]
+    assert ChatSend(canvas_id=_CANVAS, text="see", attachments=paths).attachments == (
+        paths
+    )
+    assert ChatSend(canvas_id=_CANVAS, text="see").attachments == []
+
+    for refused in (
+        {"attachments": [*paths, "/home/user/uploads/20.png"]},
+        {"attachments": ["uploads/a.png"]},
+        {"attachments": ["/home/user/../a.png"]},
+        {"attachments": ["/a.png"], "kind": "interrupt"},
+    ):
+        with pytest.raises(ValidationError):
+            ChatSend.model_validate(
+                {"canvas_id": str(_CANVAS), "text": "see"} | refused,
+            )
+
+
 @pytest.mark.parametrize("text", ["", " ", "\n\t "])
 def test_a_line_must_hold_a_non_space_character(text: str) -> None:
     """Whitespace alone is nothing to send."""

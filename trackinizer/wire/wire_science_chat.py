@@ -50,6 +50,8 @@ from pydantic import (
     model_validator,
 )
 
+from trackinizer.wire.wire_chat_uploads import MAX_UPLOAD_FILES, BoxPath
+
 
 __all__ = [
     "CHATS_PATH",
@@ -340,6 +342,14 @@ class ChatSend(BaseModel):
     )
     """The addresses the sender came through before it, oldest first."""
 
+    attachments: list[BoxPath] = Field(
+        default_factory=list,
+        max_length=MAX_UPLOAD_FILES,
+    )
+    """Box paths of the files the sender uploaded for this line
+    (:mod:`~trackinizer.wire.wire_chat_uploads`); a ``line`` alone carries
+    them."""
+
     # The web sent ``"science"`` here, the conversation's kind, until the field named
     # the post's; a browser not yet reloaded still does, and its line is a line.
     @field_validator("kind", mode="before")
@@ -354,6 +364,8 @@ class ChatSend(BaseModel):
             raise ValueError("a fork starts a new conversation; it cannot name one")
         if self.fork is not None and self.kind != "line":
             raise ValueError("a fork starts from a person's line")
+        if self.attachments and self.kind != "line":
+            raise ValueError(f"a {self.kind} post carries no attachments")
         return self
 
     # The payload's own error is raised as a ValueError: a ValidationError raised in

@@ -686,6 +686,10 @@ class CanvasMessageContext(BaseModel):
     marks: list[CanvasMark] = Field(default_factory=list)
     """The boxes drawn on the canvas since its last line, oldest first."""
 
+    attachments: list[str] = Field(default_factory=list)
+    """Box paths of the files the sender uploaded for the line, as it named them;
+    a client that predates the field ignores it."""
+
     relay: ConsoleRelay | None = None
     """Set when the message is not a question for the partner but a note of what the
     person told agents from the Console; the message text is the relay's text."""

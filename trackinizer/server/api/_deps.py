@@ -16,6 +16,7 @@ from trackinizer.server.chat_partials import ChatPartials
 from trackinizer.server.config import Config
 from trackinizer.server.execs import ExecHub
 from trackinizer.server.terminals import Terminal, TerminalHub
+from trackinizer.server.upload_relay import UploadRelay
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
 
@@ -167,6 +168,23 @@ def get_relay(request: Request) -> CaptureRelay:
     relay: object = getattr(app.state, "relay", None)
     if not isinstance(relay, CaptureRelay):
         relay = app.state.relay = CaptureRelay()
+    return relay
+
+
+def get_uploads(request: Request) -> UploadRelay:
+    """Return the chat-upload relay held on the app state, made on first use.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The UploadRelay.
+
+    """
+    app = cast("FastAPI", request.app)
+    relay: object = getattr(app.state, "uploads", None)
+    if not isinstance(relay, UploadRelay):
+        relay = app.state.uploads = UploadRelay()
     return relay
 
 
