@@ -308,7 +308,8 @@ def neutral(
 ) -> list[Placed]:
     """Turn placed records into one provider-neutral conversation.
 
-    Kept: people's lines as :class:`AgentToAgentMessage`, and answers and tool records
+    Kept: people's lines as :class:`AgentToAgentMessage`, with the box paths of the
+    files their sender attached (``extra["attachments"]``), and answers and tool records
     each tagged with the provider that gave them. A switch between answering providers
     becomes a :class:`SystemMessage` marker, placed where the record that switched is.
     Dropped: every :class:`ContextClear`, whose summary opens the window instead,
@@ -511,11 +512,14 @@ def _neutral(
     """Return the provider-neutral form of one record, or None when only its CLI can state it."""
     tag = immutable({"provider": provider})
     if isinstance(record, AgentToAgentMessage):
+        attached = record.extra.get("attachments")
         return AgentToAgentMessage(
             timestamp=record.timestamp,
             content=record.content,
             sender=record.sender or "unknown",
-            extra=tag,
+            extra=tag
+            if attached is None
+            else immutable({**tag, "attachments": attached}),
         )
     if isinstance(record, UserMessage):
         return _person(record, tag=tag, terminal_user=terminal_user)

@@ -252,6 +252,38 @@ def test_every_person_line_keeps_its_stamp_and_the_provider_that_held_it() -> No
     assert all(record.timestamp is not None for record in people)
 
 
+def test_a_person_line_keeps_the_files_attached_to_it() -> None:
+    """A line names the box paths of the files its sender uploaded with it."""
+    shot = "/home/user/uploads/0a1b2c3d/shot.png"
+    spoken = _neutral_of(
+        [
+            _segment(
+                0,
+                "bot",
+                [
+                    AgentToAgentMessage(
+                        timestamp=_at(1),
+                        content="what is in this?",
+                        sender="ada@example.com",
+                        extra=immutable({"attachments": [shot]}),
+                    ),
+                    AgentToAgentMessage(
+                        timestamp=_at(2),
+                        content="and this?",
+                        sender="ada@example.com",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    people = [each for each in spoken if isinstance(each, AgentToAgentMessage)]
+    assert [record.extra for record in people] == [
+        {"provider": "bot", "attachments": (shot,)},
+        {"provider": "bot"},
+    ]
+
+
 def test_a_compaction_summary_is_nobodys_line_and_no_record_of_the_conversation() -> (
     None
 ):
