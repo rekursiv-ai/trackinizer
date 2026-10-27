@@ -174,6 +174,9 @@ class ModelCapability:
     default_effort: ThinkingEffort | None = None
     """The vendor's effort when none is sent, where a new model starts; ``None`` is the lowest."""
 
+    default_budget: ThinkingBudget | None = None
+    """Whether the vendor thinks when told nothing, where a new model starts; ``None`` is the lowest."""
+
     # Only ``auto``, a request naming no tier, is universal; a transport with no
     # tier parameter narrows the meet to it.
     service_tier: frozenset[ServiceTier] = frozenset({"auto", "default"})
@@ -280,6 +283,7 @@ class ModelCapability:
                 self.thinking,
                 self.effort_as_level,
                 self.default_effort,
+                self.default_budget,
                 self.service_tier,
                 self.manage_context_server_side,
                 self.cache_ttl_sec,
@@ -475,7 +479,10 @@ class ModelSettings:
             thinking_budget=_lowest(
                 "thinking_budget",
                 capability.thinking.budget,
-                literal_members(ThinkingBudget),
+                _default_first(
+                    capability.default_budget,
+                    literal_members(ThinkingBudget),
+                ),
             ),
             thinking_output=_lowest(
                 "thinking_output",
@@ -591,6 +598,11 @@ def _effort_ladder(
     """Return ``efforts`` in the order a row's selection tries them."""
     at = efforts.index(default) if default is not None else 0
     return (*efforts[at:0:-1], *efforts[at + 1 :], efforts[0]) if at else efforts
+
+
+def _default_first[T](default: T | None, ladder: tuple[T, ...]) -> tuple[T, ...]:
+    """Return ``ladder`` with ``default``, when one is given, tried first."""
+    return ladder if default is None else (default, *ladder)
 
 
 def _lowest[T](name: str, offered: Collection[T], ladder: Sequence[T]) -> T:

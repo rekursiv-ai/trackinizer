@@ -12,7 +12,10 @@ roles:
   utility: haiku
 
 reference:
+  # What Claude Code sends each model unasked; read from its requests:
+  # adaptive thinking, or a fixed budget to the models that lack it.
   default_effort: high
+  default_budget: auto
   approx_chars_per_token: 2.38
   limits:
     max_request_tokens: 1_000_000
@@ -42,6 +45,7 @@ profiles:
       output: [none, text, redacted]
 
   extended_200k:
+    default_budget: fixed
     approx_chars_per_token: 3.12
     limits:
       max_request_tokens: 200_000
@@ -56,6 +60,8 @@ profiles:
       output: [none, text, redacted]
 
   fixed:
+    default_effort: none
+    default_budget: fixed
     approx_chars_per_token: 3.12
     limits:
       max_request_tokens: 200_000
@@ -116,6 +122,7 @@ models:
 
 - model_id: opus-5.5
   wire_model_id: claude-opus-5-5
+  default_effort: medium
   knowledge_cutoff: June 2026
   prices:
   - service_tier: auto
@@ -167,6 +174,7 @@ models:
 
 - model_id: opus-4.7
   wire_model_id: claude-opus-4-7
+  default_effort: xhigh
   knowledge_cutoff: January 2026
   prices:
   - service_tier: auto
@@ -202,6 +210,7 @@ models:
 
 - model_id: sonnet-5.5
   wire_model_id: claude-sonnet-5-5
+  default_effort: medium
   knowledge_cutoff: June 2026
   prices:
   - service_tier: auto
@@ -255,6 +264,7 @@ models:
 
 - model_id: haiku-5.5
   wire_model_id: claude-haiku-5-5
+  default_effort: medium
   knowledge_cutoff: June 2026
   prices:
   - service_tier: auto
@@ -326,6 +336,7 @@ providers:
       haiku-5.5:
       haiku-4.5:
   anthropic-cli:
+    default_effort: none
     thinking:
       effort: [none]
       output: [none, text]

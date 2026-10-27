@@ -10,13 +10,20 @@ roles:
   utility: luna
 
 reference:
-  default_effort: high
+  # What Codex picks unasked where it serves the model, else the API's own.
+  # A model that can reason does unasked; the wire has no budget to send.
+  default_effort: medium
+  default_budget: auto
   approx_chars_per_token: 3.71
+  # A 1.05M window takes input only up to the room a full reply needs, whatever
+  # max_output_tokens says; a reply asked past the window is served and cut.
   limits:
-    max_request_tokens: 1_050_000
+    max_request_tokens: 921_000
+    max_context_tokens: 1_050_000
     max_response_tokens: 128_000
     max_request_bytes: 536_870_912
     max_image_edge_px: 65_535
+    truncates_at_context: true
   thinking:
     effort: [none]
     budget: [none]
@@ -31,9 +38,11 @@ profiles:
 
   gpt_6:
     limits:
-      max_request_tokens: 1_050_000
+      max_request_tokens: 921_000
+      max_context_tokens: 1_050_000
       max_response_tokens: 128_000
       max_request_bytes: 536_870_912
+      truncates_at_context: true
     thinking:
       effort: [none, low, medium, high, xhigh, max]
       budget: [none, auto]
@@ -47,10 +56,12 @@ profiles:
 
   gpt_5_5:
     limits:
-      max_request_tokens: 1_050_000
+      max_request_tokens: 921_000
+      max_context_tokens: 1_050_000
       max_response_tokens: 128_000
       max_request_bytes: 536_870_912
       max_image_edge_px: 6_000
+      truncates_at_context: true
     thinking:
       effort: [none, low, medium, high, xhigh]
       budget: [none, auto]
@@ -58,44 +69,53 @@ profiles:
 
   gpt_pro_1m:
     limits:
-      max_request_tokens: 1_050_000
+      max_request_tokens: 921_000
+      max_context_tokens: 1_050_000
       max_response_tokens: 128_000
       max_request_bytes: 536_870_912
+      truncates_at_context: true
     thinking:
       effort: [medium, high, xhigh]
       budget: [none, auto]
       output: [none, text]
 
   gpt_5_4:
+    default_effort: none
     limits:
-      max_request_tokens: 1_050_000
+      max_request_tokens: 921_000
+      max_context_tokens: 1_050_000
       max_response_tokens: 128_000
       max_request_bytes: 536_870_912
       max_image_edge_px: 2_048
+      truncates_at_context: true
     thinking:
       effort: [none, low, medium, high, xhigh]
       budget: [none, auto]
       output: [none, text]
 
   gpt_mini_5_4:
+    default_effort: none
     limits:
       max_request_tokens: 272_000
       max_context_tokens: 400_000
       max_response_tokens: 128_000
       max_request_bytes: 536_870_912
       max_image_edge_px: 2_048
+      truncates_at_context: true
     thinking:
       effort: [none, low, medium, high, xhigh]
       budget: [none, auto]
       output: [none, text]
 
   gpt_5_2:
+    default_effort: none
     limits:
       max_request_tokens: 272_000
       max_context_tokens: 400_000
       max_response_tokens: 128_000
       max_request_bytes: 536_870_912
       max_image_edge_px: 2_048
+      truncates_at_context: true
     thinking:
       effort: [none, low, medium, high, xhigh]
       budget: [none, auto]
@@ -107,70 +127,46 @@ profiles:
       max_context_tokens: 400_000
       max_response_tokens: 128_000
       max_request_bytes: 536_870_912
+      truncates_at_context: true
     thinking:
       effort: [medium, high, xhigh]
       budget: [none, auto]
       output: [none, text]
 
   gpt_5_1:
+    default_effort: none
     limits:
       max_request_tokens: 272_000
       max_context_tokens: 400_000
       max_response_tokens: 128_000
       max_request_bytes: 536_870_912
       max_image_edge_px: 2_048
+      truncates_at_context: true
     thinking:
       effort: [none, low, medium, high]
       budget: [none, auto]
       output: [none, text]
 
-  o_series:
-    limits:
-      max_request_tokens: 200_000
-      max_response_tokens: 100_000
-      max_request_bytes: 536_870_912
-      max_image_edge_px: 2_048
-    thinking:
-      effort: [low, medium, high]
-      budget: [none, auto]
-      output: [none, text]
-
-  o_series_text:
-    limits:
-      max_request_tokens: 200_000
-      max_response_tokens: 100_000
-      max_request_bytes: 536_870_912
-    thinking:
-      effort: [low, medium, high]
-      budget: [none, auto]
-      output: [none, text]
-
   gpt_4_1:
+    default_effort: none
+    default_budget: none
     limits:
       max_request_tokens: 1_047_576
       max_response_tokens: 32_768
       max_request_bytes: 536_870_912
       max_image_edge_px: 2_048
+      truncates_at_context: true
 
+  # gpt-4o-mini served 120,014 input tokens beside max_output_tokens 16,384.
   gpt_omni:
+    default_effort: none
+    default_budget: none
     limits:
       max_request_tokens: 128_000
       max_response_tokens: 16_384
       max_request_bytes: 536_870_912
       max_image_edge_px: 2_048
-
-  gpt_turbo:
-    limits:
-      max_request_tokens: 128_000
-      max_response_tokens: 4_096
-      max_request_bytes: 536_870_912
-      max_image_edge_px: 2_048
-
-  gpt_4:
-    limits:
-      max_request_tokens: 8_192
-      max_response_tokens: 8_192
-      max_request_bytes: 536_870_912
+      truncates_at_context: true
 
 models:
 - model_id: astra-6.0
@@ -233,6 +229,7 @@ models:
 
 - model_id: sol-6.1
   wire_model_id: gpt-6.1-sol
+  default_effort: low
   profile: reasoning_only
   knowledge_cutoff: April 30, 2026
   prices:
@@ -368,6 +365,7 @@ models:
 
 - model_id: sol-5.6
   wire_model_id: gpt-5.6-sol
+  default_effort: low
   profile: gpt_5_6
   knowledge_cutoff: February 16, 2026
   prices:
@@ -586,6 +584,7 @@ models:
 
 - model_id: gpt-pro-5.5
   wire_model_id: gpt-5.5-pro
+  default_effort: high
   profile: gpt_pro_1m
   knowledge_cutoff: December 1, 2025
   prices:
@@ -781,30 +780,6 @@ models:
     cache_write_1h: 0.0
     cache_read: 0.25
 
-- model_id: o-1.0
-  wire_model_id: o1
-  profile: o_series
-  knowledge_cutoff: October 1, 2023
-  prices:
-  - service_tier: auto
-    request: 15.0
-    response: 60.0
-    cache_write: 0.0
-    cache_write_1h: 0.0
-    cache_read: 7.5
-
-- model_id: o-mini-3.0
-  wire_model_id: o3-mini
-  profile: o_series_text
-  knowledge_cutoff: October 1, 2023
-  prices:
-  - service_tier: auto
-    request: 1.1
-    response: 4.4
-    cache_write: 0.0
-    cache_write_1h: 0.0
-    cache_read: 0.55
-
 - model_id: gpt-4.1
   wire_model_id: gpt-4.1
   profile: gpt_4_1
@@ -840,24 +815,6 @@ models:
     cache_write: 0.0
     cache_write_1h: 0.0
     cache_read: 0.175
-
-- model_id: gpt-nano-4.1
-  wire_model_id: gpt-4.1-nano
-  profile: gpt_4_1
-  knowledge_cutoff: June 1, 2024
-  prices:
-  - service_tier: auto
-    request: 0.1
-    response: 0.4
-    cache_write: 0.0
-    cache_write_1h: 0.0
-    cache_read: 0.025
-  - service_tier: priority
-    request: 0.2
-    response: 0.8
-    cache_write: 0.0
-    cache_write_1h: 0.0
-    cache_read: 0.05
 
 - model_id: gpt-omni-4.0
   wire_model_id: gpt-4o
@@ -895,30 +852,6 @@ models:
     cache_write_1h: 0.0
     cache_read: 0.125
 
-- model_id: gpt-turbo-4.0
-  wire_model_id: gpt-4-turbo
-  profile: gpt_turbo
-  knowledge_cutoff: December 1, 2023
-  prices:
-  - service_tier: auto
-    request: 10.0
-    response: 30.0
-    cache_write: 0.0
-    cache_write_1h: 0.0
-    cache_read: 0.0
-
-- model_id: gpt-4.0
-  wire_model_id: gpt-4
-  profile: gpt_4
-  knowledge_cutoff: December 1, 2023
-  prices:
-  - service_tier: auto
-    request: 30.0
-    response: 60.0
-    cache_write: 0.0
-    cache_write_1h: 0.0
-    cache_read: 0.0
-
 # The ChatGPT endpoint serves at most 272k tokens in and 32k out, whatever the
 # model's own window, and no tier but priority beyond the default.
 providers:
@@ -942,15 +875,10 @@ providers:
       gpt-5.2:
       gpt-pro-5.2:
       gpt-5.1:
-      o-1.0:
-      o-mini-3.0:
       gpt-4.1:
       gpt-mini-4.1:
-      gpt-nano-4.1:
       gpt-omni-4.0:
       gpt-omni-mini-4.0:
-      gpt-turbo-4.0:
-      gpt-4.0:
   openai-sub:
     retries_internally: true
     account_auth: true
@@ -960,6 +888,7 @@ providers:
       max_response_tokens: 32_000
       max_request_bytes: 536_870_912
       max_image_edge_px: 65_535
+      truncates_at_context: true
     models:
       astra-6.0:
       sol-6.1:
@@ -968,11 +897,13 @@ providers:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
+          truncates_at_context: true
       luna-6.0:
         limits:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
+          truncates_at_context: true
       sol-5.6:
       gpt-5.6:
       luna-5.6:
@@ -982,6 +913,7 @@ providers:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
+          truncates_at_context: true
           max_image_edge_px: 6_000
       gpt-pro-5.5:
         service_tier: [auto]
@@ -989,11 +921,13 @@ providers:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
+          truncates_at_context: true
       gpt-5.4:
         limits:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
+          truncates_at_context: true
           max_image_edge_px: 2_048
       gpt-pro-5.4:
         service_tier: [auto]
@@ -1001,11 +935,13 @@ providers:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
+          truncates_at_context: true
       gpt-mini-5.4:
         limits:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
+          truncates_at_context: true
           max_image_edge_px: 2_048
       gpt-nano-5.4:
         service_tier: [auto]
@@ -1013,12 +949,14 @@ providers:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
+          truncates_at_context: true
           max_image_edge_px: 2_048
       gpt-5.2:
         limits:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
+          truncates_at_context: true
           max_image_edge_px: 2_048
       gpt-pro-5.2:
         service_tier: [auto]
@@ -1026,65 +964,39 @@ providers:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
+          truncates_at_context: true
       gpt-5.1:
         limits:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
+          truncates_at_context: true
           max_image_edge_px: 2_048
-      o-1.0:
-        service_tier: [auto]
-        limits:
-          max_request_tokens: 200_000
-          max_response_tokens: 32_000
-          max_request_bytes: 536_870_912
-          max_image_edge_px: 2_048
-      o-mini-3.0:
-        service_tier: [auto]
-        limits:
-          max_request_tokens: 200_000
-          max_response_tokens: 32_000
-          max_request_bytes: 536_870_912
       gpt-4.1:
         limits:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
+          truncates_at_context: true
           max_image_edge_px: 2_048
       gpt-mini-4.1:
         limits:
           max_request_tokens: 272_000
           max_response_tokens: 32_000
           max_request_bytes: 536_870_912
-          max_image_edge_px: 2_048
-      gpt-nano-4.1:
-        limits:
-          max_request_tokens: 272_000
-          max_response_tokens: 32_000
-          max_request_bytes: 536_870_912
+          truncates_at_context: true
           max_image_edge_px: 2_048
       gpt-omni-4.0:
         limits:
           max_request_tokens: 128_000
           max_response_tokens: 16_384
           max_request_bytes: 536_870_912
+          truncates_at_context: true
           max_image_edge_px: 2_048
       gpt-omni-mini-4.0:
         limits:
           max_request_tokens: 128_000
           max_response_tokens: 16_384
           max_request_bytes: 536_870_912
+          truncates_at_context: true
           max_image_edge_px: 2_048
-      gpt-turbo-4.0:
-        service_tier: [auto]
-        limits:
-          max_request_tokens: 128_000
-          max_response_tokens: 4_096
-          max_request_bytes: 536_870_912
-          max_image_edge_px: 2_048
-      gpt-4.0:
-        service_tier: [auto]
-        limits:
-          max_request_tokens: 8_192
-          max_response_tokens: 8_192
-          max_request_bytes: 536_870_912
