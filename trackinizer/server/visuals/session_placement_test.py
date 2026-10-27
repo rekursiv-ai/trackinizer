@@ -10,6 +10,7 @@ import uuid
 import pytest
 
 from trackinizer.conftest import FakeEngine
+from trackinizer.server.visuals import session_placement
 from trackinizer.server.visuals.session_placement import (
     is_placed,
     move_canvas_sessions,
@@ -18,7 +19,7 @@ from trackinizer.types.inquiries import AgentSession
 
 
 if TYPE_CHECKING:
-    from trackinizer.lib.postgres import DatabaseEngine
+    from trackinizer.lib.postgres import Conn, DatabaseEngine
     from trackinizer.server.store.core import Store
 
 
@@ -107,6 +108,32 @@ def test_a_canvas_move_leaves_each_session_one_edge_to_the_new_workspace() -> No
         ("remove", session, old, "produced_by", key, "ada@example.com"),
         ("add", session, new, "produced_by", key, "ada@example.com"),
     ]
+
+
+@pytest.mark.parametrize("owned", [True, False], ids=["own", "another-users"])
+def test_a_placed_sessions_workspace_is_kept_only_when_the_caller_owns_it(
+    owned: bool,
+) -> None:
+    """An edge to a workspace is checked against the caller's email before it is kept."""
+    workspace = uuid.uuid4()
+    engine = FakeEngine()
+    engine.conn.fetchval.side_effect = [workspace, None, workspace if owned else None]
+    session = AgentSession(title="run", account="ada@example.com", cli="claude")
+
+    decided = asyncio.run(
+        session_placement._decide(
+            cast("Conn", engine.conn),
+            session=session,
+            user_id=uuid.uuid4(),
+            email="ada@example.com",
+            canvas=None,
+            git=None,
+        ),
+    )
+
+    assert decided == (workspace if owned else None, None)
+    _, *checked = engine.conn.fetchval.await_args_list[2].args
+    assert checked == [str(workspace), "ada@example.com"]
 
 
 if __name__ == "__main__":

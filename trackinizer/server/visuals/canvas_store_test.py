@@ -1343,6 +1343,7 @@ def test_settings_refs_carry_the_stored_workspace_suggestion(
             },
         },
     )
+    conn.fetchval = AsyncMock(return_value=1)
     personal_settings = AsyncMock(return_value=personal)
     monkeypatch.setattr(canvas_store, "open_personal_settings", personal_settings)
     store = Store(cast("DatabaseEngine", FakeEngine(conn)), embed=StubEmbedder())
@@ -1399,6 +1400,7 @@ def test_settings_refs_drop_a_suggestion_of_the_workspace_the_chat_is_in(
             },
         },
     )
+    conn.fetchval = AsyncMock(return_value=1)
     monkeypatch.setattr(
         canvas_store,
         "open_personal_settings",
@@ -1418,6 +1420,52 @@ def test_settings_refs_drop_a_suggestion_of_the_workspace_the_chat_is_in(
 
     assert refs.workspace_issue_id == workspace_id
     assert refs.suggestion is None
+
+
+def test_settings_refs_name_the_askers_default_for_a_workspace_they_do_not_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A canvas's stored workspace of another person's gives way to the asker's own."""
+    conversation_id, theirs, default = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    conn: AsyncMock = make_conn()
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "id": _CANVAS,
+            "metadata": {
+                "name": "Charm",
+                "conversation_id": str(conversation_id),
+                "workspace_id": str(theirs),
+            },
+        },
+    )
+    opened = AsyncMock(return_value=default)
+    monkeypatch.setattr(canvas_store, "open_default_workspace", opened)
+    monkeypatch.setattr(
+        canvas_store,
+        "open_personal_settings",
+        AsyncMock(return_value=uuid.uuid4()),
+    )
+    store = Store(cast("DatabaseEngine", FakeEngine(conn)), embed=StubEmbedder())
+
+    refs = asyncio.run(
+        settings_refs_for_chat(
+            store,
+            user_id=_USER,
+            email="user@example.com",
+            conversation_id=conversation_id,
+            session_id=None,
+        ),
+    )
+
+    assert refs.workspace_issue_id == default
+    _, *owned = conn.fetchval.await_args_list[0].args
+    assert owned == [theirs, "user@example.com"]
+    assert opened.await_args is not None
+    assert opened.await_args.kwargs == {
+        "store": store,
+        "user_id": _USER,
+        "email": "user@example.com",
+    }
 
 
 def test_a_settings_artifact_is_submitted_as_its_owners_pinned_row() -> None:

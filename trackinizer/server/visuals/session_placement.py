@@ -96,7 +96,8 @@ async def place_session(
     """Place ``session`` by the first rule that matches, and record it.
 
     1. ``body.canvas`` is the caller's canvas: that canvas and its workspace.
-    2. The session is already placed, or has a canvas made for it: keep them.
+    2. The session is already placed, or has a canvas made for it: keep them. A
+       workspace the caller does not own is not kept; the default takes its place.
     3. The caller's newest earlier session on the same git branch has a workspace:
        that workspace, in a new canvas.
     4. The caller's default workspace, in a new canvas.
@@ -290,7 +291,13 @@ async def _decide(
         ),
     )
     if edge is not None or made is not None:
-        workspace = None if edge is None else from_plain(edge, uuid.UUID)
+        # Any writer may draw an edge to any Issue, so an edge alone would place the
+        # canvas, and the box its chat runs on, in another person's workspace.
+        workspace = (
+            None
+            if edge is None
+            else await _owned(conn, email=email, workspace=str(edge))
+        )
         return workspace, None if made is None else from_plain(made, uuid.UUID)
     if git is not None:
         earlier = await conn.fetchval(
