@@ -109,7 +109,7 @@ class ModelTable(Mapping[str, ModelCapability]):
         model, the provider's section, and the section's entry for the model.
         Each replaces whole fields, except that the section's ``thinking``
         replaces only the axes it names. A model the section does not list is
-        not served.
+        not served. The section's ``roles`` replace the document's it names.
 
         Args:
           path: The vendor's YAML document.
@@ -136,6 +136,8 @@ class ModelTable(Mapping[str, ModelCapability]):
             section.pop("models", {}),
             dict[str, dict[str, object] | None],
         )
+        # A provider serving other models than the vendor's own names its own.
+        roles = document.roles | from_plain(section.pop("roles", {}), dict[str, str])
         ids = [from_plain(raw.get("model_id"), str) for raw in document.models]
         if unknown := sorted(set(listed) - set(ids)):
             raise ValueError(f"Provider {provider!r} lists unknown models: {unknown}.")
@@ -149,7 +151,7 @@ class ModelTable(Mapping[str, ModelCapability]):
             for raw, model_id in zip(document.models, ids, strict=True)
             if model_id in listed
         )
-        return cls(rows=rows, roles=document.roles)
+        return cls(rows=rows, roles=roles)
 
     @override
     def __getitem__(self, key: str) -> ModelCapability:
