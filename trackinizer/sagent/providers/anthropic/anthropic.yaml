@@ -12,69 +12,58 @@ roles:
   utility: haiku
 
 reference:
+  default_effort: high
   approx_chars_per_token: 2.38
-  context:
-    max:
-      max_request_tokens: 1_000_000
-      max_response_tokens: 128_000
-      max_request_bytes: 33_554_432
-      max_image_edge_px: 2_576
-      max_image_bytes: 7_500_000
-    min:
-      max_request_tokens: 200_000
-      max_response_tokens: 128_000
-      max_request_bytes: 33_554_432
-      max_image_edge_px: 2_576
-      max_image_bytes: 7_500_000
+  limits:
+    max_request_tokens: 1_000_000
+    max_response_tokens: 128_000
+    max_request_bytes: 33_554_432
+    max_image_edge_px: 2_576
+    max_image_bytes: 7_500_000
+    truncates_at_context: true
   thinking:
-    effort: [none, low, medium, high, xhigh, max]
+    effort: [low, medium, high, xhigh, max]
     budget: [none, auto]
     output: [none, text, redacted]
 
 profiles:
   extended:
     approx_chars_per_token: 3.12
-    context:
-      max:
-        max_request_tokens: 1_000_000
-        max_response_tokens: 128_000
-        max_request_bytes: 33_554_432
-        max_image_edge_px: 1_568
-        max_image_bytes: 7_500_000
-      min:
-        max_request_tokens: 200_000
-        max_response_tokens: 128_000
-        max_request_bytes: 33_554_432
-        max_image_edge_px: 1_568
-        max_image_bytes: 7_500_000
+    limits:
+      max_request_tokens: 1_000_000
+      max_response_tokens: 128_000
+      max_request_bytes: 33_554_432
+      max_image_edge_px: 1_568
+      max_image_bytes: 7_500_000
+      truncates_at_context: true
     thinking:
-      effort: [none, low, medium, high, max]
+      effort: [low, medium, high, max]
       budget: [none, auto, fixed]
       output: [none, text, redacted]
 
   extended_200k:
     approx_chars_per_token: 3.12
-    context:
-      max:
-        max_request_tokens: 200_000
-        max_response_tokens: 64_000
-        max_request_bytes: 33_554_432
-        max_image_edge_px: 1_568
-        max_image_bytes: 7_500_000
+    limits:
+      max_request_tokens: 200_000
+      max_response_tokens: 64_000
+      max_request_bytes: 33_554_432
+      max_image_edge_px: 1_568
+      max_image_bytes: 7_500_000
+      truncates_at_context: true
     thinking:
-      effort: [none, low, medium, high]
+      effort: [low, medium, high]
       budget: [none, fixed]
       output: [none, text, redacted]
 
   fixed:
     approx_chars_per_token: 3.12
-    context:
-      max:
-        max_request_tokens: 200_000
-        max_response_tokens: 64_000
-        max_request_bytes: 33_554_432
-        max_image_edge_px: 1_568
-        max_image_bytes: 7_500_000
+    limits:
+      max_request_tokens: 200_000
+      max_response_tokens: 64_000
+      max_request_bytes: 33_554_432
+      max_image_edge_px: 1_568
+      max_image_bytes: 7_500_000
+      truncates_at_context: true
     thinking:
       effort: [none]
       budget: [none, fixed]

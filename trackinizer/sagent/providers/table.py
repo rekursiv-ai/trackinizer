@@ -7,13 +7,13 @@ Typical usage example:
   table["claude-opus-5-5"]                  # The vendor's id.
   table["default"]                          # A role: best, default, everyday, utility.
   table["opus"], table["opus-5"]            # The newest of the family.
-  capability, settings = table.resolve("opus+1m")
+  capability, settings = table.resolve("opus+small")  # Below its first price band.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Self, cast, override
@@ -26,11 +26,12 @@ from treekle import from_plain
 import yaml
 
 from trackinizer.sagent.model.capability import (
-    ContextTag,
+    ContextSize,
     ModelCapability,
     ModelLimits,
     ModelSettings,
     ThinkingCapability,
+    ThinkingEffort,
     literal_members,
 )
 from trackinizer.sagent.model.cost import (
@@ -48,6 +49,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ModelTable",
+    "ModelTags",
+    "split_tags",
 ]
 
 
@@ -186,61 +189,47 @@ class ModelTable(Mapping[str, ModelCapability]):
         return next((row for row in self.rows if row.wire_model_id == name), None)
 
     def resolve(self, model_id: str) -> tuple[ModelCapability, ModelSettings]:
-        """Return the model a name means, and settings selecting its context window.
+        """Return the model a name means, and settings selecting its context's size.
 
         Args:
-          model_id: An exact name, vendor id, role, or family, with any context
-            tags trailing it (``opus+1m``).
+          model_id: An exact name, vendor id, role, or family, with any size tag
+            trailing it: ``opus+small`` (below its first price band), ``+mid``,
+            ``+large``, or a count such as ``+258k``.
 
         Returns:
-          capability: The row, with a ``+1m`` window when its default spans one.
-          settings: The least-committing settings, selecting the named window.
+          capability: The row.
+          settings: The least-committing settings, at the named size.
 
         Raises:
           UnknownModelError: No row answers to the name.
-          UnsupportedTagError: The tags conflict, or name a window it lacks.
+          UnsupportedTagError: Two size tags conflict.
 
         """
-        # Trailing tags, in any order and any case: ``opus+1M`` is ``opus`` at ``+1m``.
-        base, found = model_id, set[ContextTag]()
-        while (tag := _trailing_tag(base)) is not None:
-            found.add(tag)
+        # Trailing tags, in any order and any case: ``opus+258K`` is ``opus`` at ``+258k``.
+        base, found = model_id, dict[str, ContextSize | int]()
+        while (trailing := _trailing_size(base)) is not None:
+            tag, size = trailing
+            found[tag] = size
             base = base[: -len(tag)]
-        tags = sorted(found)
-        if len(tags) > 1:
+        if len(found) > 1:
             raise UnsupportedTagError(
-                f"Model {model_id!r} selects conflicting contexts: {', '.join(tags)}.",
+                f"Model {model_id!r} selects conflicting contexts:"
+                f" {', '.join(sorted(found))}.",
             )
-        context: ContextTag = tags[0] if tags else ""
         capability = self.get(base)
         if capability is None:
             known = ", ".join([*self, *self.roles])
             raise UnknownModelError(
                 f"Unknown model {model_id!r}; known models: {known}.",
             )
-        if context in ("+max", "+min"):
-            sizes: dict[ContextTag, int] = {
-                t: limits.max_request_tokens for t, limits in capability.context.items()
-            }
-            context = (max if context == "+max" else min)(sizes, key=sizes.__getitem__)
-        # A window the default context already spans needs no row of its own.
-        if (
-            context == "+1m"
-            and context not in capability.context
-            and capability.context[""].max_request_tokens >= 1_000_000
-        ):
-            capability = replace(
-                capability,
-                context=MappingProxyType(
-                    {**capability.context, "+1m": capability.context[""]},
-                ),
+        settings = ModelSettings.narrowest(capability)
+        for size in found.values():
+            settings.context = (
+                size
+                if isinstance(size, int)
+                else capability.size(size, tier=settings.service_tier)
             )
-        if context not in capability.context:
-            windows = ", ".join(sorted(t for t in capability.context if t)) or "none"
-            raise UnsupportedTagError(
-                f"Model {model_id!r} has no {context} context; it offers: {windows}.",
-            )
-        return capability, ModelSettings.narrowest(capability, context=context)
+        return capability, settings
 
     def _resolved(self, key: str) -> ModelCapability | None:
         """Return the row ``key`` names: by exact name or vendor id, then role or family."""
@@ -261,10 +250,107 @@ class ModelTable(Mapping[str, ModelCapability]):
         )
 
 
-def _trailing_tag(name: str) -> ContextTag | None:
-    """Return the context tag ``name`` ends with, in any case, if any."""
-    tags = cast(tuple[ContextTag, ...], literal_members(ContextTag))
-    return next((tag for tag in tags if tag and name.lower().endswith(tag)), None)
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ModelTags:
+    """What a model's name says besides the model: its context's size, effort, and tier."""
+
+    model: str
+    """The name without its effort and tier tags; its size tag stays."""
+
+    context: ContextSize | int | None = None
+    """The size it names, as ``small`` or ``258_000``; ``None`` for none."""
+
+    effort: ThinkingEffort | None = None
+    """The effort it names; ``None`` for none."""
+
+    service_tier: ServiceTier | None = None
+    """The tier it names, ``+fast`` being ``priority``; ``None`` for none."""
+
+    choices: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType[str, str]({}),
+    )
+    """Each ``CHOICE=VALUE`` after the name, as typed: ``{"budget": "auto"}``."""
+
+
+def split_tags(name: str) -> ModelTags:
+    """Lift the effort and tier tags off ``name``, and say which size it names.
+
+    Tags follow the model in any order and case: ``opus+fast+258k+high``. Each
+    word belongs to one kind, so position decides nothing: ``+small``,
+    ``+mid``, ``+large``, and ``+258k`` name a size, ``+max`` and ``+min`` an
+    effort. A word of no kind, such as SelfHosted's ``+cuda``, stays in the name.
+    Choices follow after spaces, as ``describe`` spells them: ``budget=auto``.
+
+    Args:
+      name: ``MODEL[+TAG...] [CHOICE=VALUE...]``, with any provider prefix.
+
+    Returns:
+      tags: The name without its effort and tier, and what the tags named.
+
+    Raises:
+      UnsupportedTagError: Two tags name an effort, or two a tier; a word after
+        the name is no ``CHOICE=VALUE``, or names a choice twice.
+
+    """
+    efforts = cast(tuple[ThinkingEffort, ...], literal_members(ThinkingEffort))
+    tiers = cast(tuple[ServiceTier, ...], literal_members(ServiceTier))
+    spec, *after = name.split()
+    choices: dict[str, str] = {}
+    for word in after:
+        choice, equals, value = word.partition("=")
+        if not equals:
+            raise UnsupportedTagError(f"{name!r} names {word!r}, not a CHOICE=VALUE")
+        if choice in choices:
+            raise UnsupportedTagError(f"{name!r} names {choice!r} twice")
+        choices[choice] = value
+    model, *words = spec.split("+")
+    kept: list[str] = [model]
+    context: ContextSize | int | None = None
+    effort: list[ThinkingEffort] = []
+    tier: list[ServiceTier] = []
+    for raw in words:
+        word = "priority" if raw.lower() == "fast" else raw.lower()
+        size = _size(word)
+        if size is not None:
+            if context is None:
+                context = size
+            kept.append(raw)
+        elif word in efforts:
+            effort.append(efforts[efforts.index(word)])
+        elif word in tiers:
+            tier.append(tiers[tiers.index(word)])
+        else:
+            kept.append(raw)
+    for kind, found in (("efforts", effort), ("service tiers", tier)):
+        if len(found) > 1:
+            raise UnsupportedTagError(
+                f"{name!r} names two {kind}: {', '.join(found)}",
+            )
+    return ModelTags(
+        model="+".join(kept),
+        context=context,
+        effort=effort[0] if effort else None,
+        service_tier=tier[0] if tier else None,
+        choices=MappingProxyType(choices),
+    )
+
+
+def _size(word: str) -> ContextSize | int | None:
+    """Return the size ``word`` names: ``small``, ``mid``, ``large``, or ``258k``."""
+    sizes = cast(tuple[ContextSize, ...], literal_members(ContextSize))
+    if word in sizes:
+        return sizes[sizes.index(word)]
+    counted = re.fullmatch(r"([1-9][0-9]*)([km]?)", word)
+    if counted is None:
+        return None
+    return int(counted[1]) * {"": 1, "k": 1_000, "m": 1_000_000}[counted[2]]
+
+
+def _trailing_size(name: str) -> tuple[str, ContextSize | int] | None:
+    """Return the size tag ``name`` ends with, lowered, and its size; ``None`` if none."""
+    head, plus, word = name.rpartition("+")
+    size = _size(word.lower()) if plus and head else None
+    return None if size is None else (f"+{word.lower()}", size)
 
 
 def _family_version(model_id: str) -> tuple[str, tuple[int, int]] | None:
@@ -344,10 +430,10 @@ class _CapabilityProfile:
 
     knowledge_cutoff: str | None = None
     approx_chars_per_token: float = 4.0
-    default_context: str = "max"
-    context: dict[str, ModelLimits] = field(default_factory=dict)
+    limits: ModelLimits = field(default_factory=ModelLimits)
     thinking: ThinkingCapability = field(default_factory=ThinkingCapability)
     effort_as_level: bool = False
+    default_effort: ThinkingEffort | None = None
     cache_ttl_sec: frozenset[float] = frozenset({0.0})
     manage_context_server_side: frozenset[bool] = frozenset({False, True})
     retries_internally: bool = False
@@ -382,7 +468,7 @@ def _model(
     row = from_plain(values, _ModelRow)
     if _family_version(row.model_id) is None:
         raise ValueError(f"Model id {row.model_id!r} is not family-major.minor.")
-    context = _contexts(row)
+    _check_limits(row)
     if (
         not row.prices
         or not row.thinking.effort
@@ -400,9 +486,10 @@ def _model(
         wire_model_id=row.wire_model_id,
         knowledge_cutoff=row.knowledge_cutoff,
         approx_chars_per_token=row.approx_chars_per_token,
-        context=MappingProxyType(context),
+        limits=row.limits,
         thinking=row.thinking,
         effort_as_level=row.effort_as_level,
+        default_effort=row.default_effort,
         prices=catalog,
         service_tier=catalog.service_tiers
         if row.service_tier is None
@@ -432,47 +519,25 @@ class _ModelRow(_CapabilityProfile):
     wire_model_id: str = ""
 
 
-def _contexts(row: _ModelRow) -> dict[ContextTag, ModelLimits]:
-    """Return the row's windows by tag: the default as ``""``, the other by size."""
-    if any(tag not in {"max", "min"} for tag in row.context):
-        raise ValueError(
-            f"Model {row.model_id!r} names a context other than max or min.",
-        )
-    if row.default_context not in row.context:
-        raise ValueError(f"Model {row.model_id!r} has no default context.")
+def _check_limits(row: _ModelRow) -> None:
+    """Reject a negative limit, or a shared window smaller than its input."""
+    limits = row.limits
     if (
-        "max" in row.context
-        and "min" in row.context
-        and row.context["max"].max_request_tokens
-        < row.context["min"].max_request_tokens
-    ):
-        raise ValueError(
-            f"Model {row.model_id!r} has a max context smaller than its min.",
+        min(
+            limits.max_request_tokens,
+            limits.max_response_tokens,
+            limits.max_context_tokens,
+            limits.max_request_bytes,
+            limits.max_image_edge_px,
+            limits.max_image_bytes,
         )
-    sizes: dict[int, ContextTag] = {
-        200_000: "+200k",
-        272_000: "+272k",
-        1_000_000: "+1m",
-    }
-    context: dict[ContextTag, ModelLimits] = {}
-    for preset, limits in row.context.items():
-        if (
-            min(
-                limits.max_request_tokens,
-                limits.max_response_tokens,
-                limits.max_request_bytes,
-                limits.max_image_edge_px,
-                limits.max_image_bytes,
-            )
-            < 0
-        ):
-            raise ValueError(f"Model {row.model_id!r} has a negative limit.")
-        if preset == row.default_context:
-            context[""] = limits
-        else:
-            fallback: ContextTag = "+max" if preset == "max" else "+min"
-            context[sizes.get(limits.max_request_tokens, fallback)] = limits
-    return context
+        < 0
+    ):
+        raise ValueError(f"Model {row.model_id!r} has a negative limit.")
+    if 0 < limits.max_context_tokens < limits.max_request_tokens:
+        raise ValueError(
+            f"Model {row.model_id!r} has a context smaller than its request.",
+        )
 
 
 def _prices(row: _ModelRow) -> PriceCatalog:

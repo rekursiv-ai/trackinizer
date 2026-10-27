@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from types import MappingProxyType
 from typing import Final, Literal, cast, override
 
@@ -129,10 +130,27 @@ class TurnContext:
             f"Tools you may call: {', '.join(self.tools) or 'none'}"
             if self.tools is not None
             else "",
-            f"Current time: {self.timestamp}" if self.timestamp is not None else "",
+            f"Current time: {_local(self.timestamp)}"
+            if self.timestamp is not None
+            else "",
             self.agents_md if self.agents_md is not None else "",
         )
         return "\n".join(line for line in lines if line)
+
+
+# The model greets by the time of day where the user is, so the offset alone is not
+# enough: the zone's name says which day and hour it is there.
+def _local(timestamp: str) -> str:
+    """Return an ISO 8601 time as ``Mon 2026-10-26 17:44 -07:00 (PDT)``, here; else as is."""
+    try:
+        when = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return timestamp
+    if when.tzinfo is None:
+        return timestamp
+    here = when.astimezone()
+    offset = here.strftime("%z")
+    return f"{here:%a %Y-%m-%d %H:%M} {offset[:3]}:{offset[3:]} ({here.tzname()})"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

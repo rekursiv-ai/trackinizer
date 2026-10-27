@@ -10,18 +10,16 @@ from __future__ import annotations
 
 from collections.abc import (
     Collection,
-    Mapping,
     Sequence,
 )
 from dataclasses import dataclass, field, fields, replace
-from types import MappingProxyType
 from typing import Literal, Self, TypeAliasType, cast, get_args, override
 
 from trackinizer.sagent.model.cost import PriceCatalog, ServiceTier
 
 
 __all__ = [
-    "ContextTag",
+    "ContextSize",
     "ModelCapability",
     "ModelLimits",
     "ModelSettings",
@@ -58,14 +56,12 @@ type ThinkingOutput = Literal[
     "redacted",
 ]
 
-type ContextTag = Literal[
-    "",
-    "+200k",
-    "+272k",
-    "+1m",
-    "+max",
-    "+min",
+type ContextSize = Literal[
+    "small",
+    "mid",
+    "large",
 ]
+"""A context size named by price: below the first band, the second, or the whole window."""
 
 type SummaryKind = Literal[
     "none",
@@ -83,13 +79,20 @@ type Permission = Literal[
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ModelLimits:
-    """Hard ceilings for one context configuration of one model."""
+    """Hard ceilings of one model's window."""
 
     max_request_tokens: int = 0
     """Input tokens the model accepts; ``0`` means unknown."""
 
     max_response_tokens: int = 0
-    """Output tokens the model can generate in one response."""
+    """Output tokens the model can generate in one response, thinking included."""
+
+    max_context_tokens: int = 0
+    """Input and output together; ``0`` means ``max_request_tokens`` bounds both."""
+
+    truncates_at_context: bool | None = None
+    """Whether input plus ``max_tokens`` past the context is accepted and the reply
+    stopped there (``True``) or the request rejected (``False``); ``None`` is unknown."""
 
     max_request_bytes: int = 0
     """HTTP wire ceiling, distinct from the token window; ``0`` = none."""
@@ -101,7 +104,12 @@ class ModelLimits:
     """Per-image byte cap after resize; ``0`` = no cap."""
 
     request_betas: frozenset[str] = frozenset()
-    """Vendor beta features required by this context configuration."""
+    """Vendor beta features every request needs."""
+
+    @property
+    def context_tokens(self) -> int:
+        """Return what input and output may hold together."""
+        return self.max_context_tokens or self.max_request_tokens
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -151,10 +159,8 @@ class ModelCapability:
     approx_chars_per_token: float = 4.0
     """Measured text-token estimate for this model's tokenizer."""
 
-    context: Mapping[ContextTag, ModelLimits] = field(
-        default_factory=lambda: MappingProxyType({"": ModelLimits()}),
-    )
-    """Limits per selectable context tag; its KEYS are the allowed set."""
+    limits: ModelLimits = field(default_factory=ModelLimits)
+    """The model's window, whatever share of it a caller chooses to fill."""
 
     prices: PriceCatalog = field(default_factory=PriceCatalog)
     """USD rates, keyed by service tier and request-size threshold."""
@@ -164,6 +170,9 @@ class ModelCapability:
 
     effort_as_level: bool = False
     """Whether the wire takes a named effort level (Gemini ``thinkingLevel``), not a budget."""
+
+    default_effort: ThinkingEffort | None = None
+    """The vendor's effort when none is sent, where a new model starts; ``None`` is the lowest."""
 
     # Only ``auto``, a request naming no tier, is universal; a transport with no
     # tier parameter narrows the meet to it.
@@ -190,6 +199,47 @@ class ModelCapability:
 
     account_auth: bool = False
     """Whether this transport bills an account rather than an API key."""
+
+    def bands(self, tier: ServiceTier) -> tuple[int, ...]:
+        """Return the prompt sizes past which ``tier``'s price rises, within the window.
+
+        Args:
+          tier: The service tier; one no card names is priced as ``auto``.
+
+        Returns:
+          thresholds: Ascending, each below the window.
+
+        """
+        priced = {key.service_tier for key in self.prices}
+        rated = tier if tier in priced else "auto"
+        window = self.limits.max_request_tokens
+        return tuple(
+            sorted(
+                {
+                    key.effective_prompt_tokens
+                    for key in self.prices
+                    if key.service_tier == rated
+                    and key.effective_prompt_tokens > 0
+                    and (window <= 0 or key.effective_prompt_tokens < window)
+                },
+            ),
+        )
+
+    def size(self, name: ContextSize, *, tier: ServiceTier) -> int:
+        """Return the context ``name`` means at ``tier``: a band's top, else the window.
+
+        Args:
+          name: ``small`` below the first band, ``mid`` below the second,
+            ``large`` the whole window.
+          tier: The service tier whose bands it reads.
+
+        Returns:
+          tokens: The size; ``0`` for the whole window.
+
+        """
+        bands = self.bands(tier)
+        at = ("small", "mid").index(name) if name != "large" else len(bands)
+        return bands[at] if at < len(bands) else 0
 
     def __and__(self, other: ModelCapability) -> Self:
         """Narrow to what BOTH offer -- a catalog row met with a transport.
@@ -225,10 +275,11 @@ class ModelCapability:
                 self.wire_model_id,
                 self.knowledge_cutoff,
                 self.approx_chars_per_token,
-                frozenset(self.context.items()),
+                self.limits,
                 frozenset(self.prices.items()),
                 self.thinking,
                 self.effort_as_level,
+                self.default_effort,
                 self.service_tier,
                 self.manage_context_server_side,
                 self.cache_ttl_sec,
@@ -258,8 +309,8 @@ class PruningPolicy:
     expiry: float = 1.0
     """``λ``: an unused result expires once its rent reaches ``λ`` times the cost of fetching it again."""
 
-    keep_tools: frozenset[str] = frozenset()
-    """Tools whose results are never pruned."""
+    keep_tools: frozenset[str] = frozenset({"Skill"})
+    """Tools whose results are never pruned; a skill's steps stay while it runs."""
 
 
 @dataclass(slots=True, kw_only=True)
@@ -278,8 +329,8 @@ class ModelSettings:
     a setter has no other way to reach it, and a caller who had to pass it
     could pass a different one than the model was built from.
 
-    Choices only. A derived value does not belong here: the selected
-    context's ceilings are :meth:`limits`, not a field.
+    Choices only. A derived value does not belong here: the window the
+    context fills is :attr:`window`, not a field.
     """
 
     # DECLARED FIRST so ``__init__`` binds it before any axis: the setter
@@ -288,8 +339,8 @@ class ModelSettings:
     capability: ModelCapability = field(default_factory=ModelCapability)
     """What the transport offers. Not an axis -- nothing selects it."""
 
-    context: ContextTag = ""
-    """Selected context window."""
+    context: int = 0
+    """Tokens the context may fill before it is compacted; ``0`` for the whole window."""
 
     thinking_effort: ThinkingEffort = "none"
     """Selected effort level."""
@@ -331,12 +382,7 @@ class ModelSettings:
         """
         if name == "capability" and hasattr(self, "capability"):
             assert isinstance(value, ModelCapability)
-            context = (
-                self.context
-                if self.context in value.context
-                else _lowest("context", value.context, literal_members(ContextTag))
-            )
-            narrowed = type(self).narrowest(value, context=context)
+            narrowed = type(self).narrowest(value, context=self.context)
             narrowed.adopt(self)
             object.__setattr__(self, name, value)
             for f in fields(self):
@@ -351,9 +397,9 @@ class ModelSettings:
         """Take every choice of ``other`` this capability still offers.
 
         The model-swap path: a swap keeps what the user selected. Excludes
-        ``context``, because the incoming model id already named its own
-        window -- overwriting it would undo the selection the swap was
-        performed to make.
+        ``context``, because the incoming model id may name its own size
+        (``opus+small``) -- overwriting it would undo the selection the swap
+        was performed to make.
 
         Args:
           other: The outgoing model's settings.
@@ -385,7 +431,7 @@ class ModelSettings:
         unknown = sorted(set(choices) - names)
         if unknown:
             raise ValueError(f"not settings axes: {', '.join(unknown)}")
-        narrow = type(self).narrowest(self.capability, context=self.context)
+        narrow = type(self).narrowest(self.capability)
         for name, wanted in choices.items():
             offered = _offers(self.capability, name, wanted)
             setattr(self, name, wanted if offered else getattr(narrow, name))
@@ -395,7 +441,7 @@ class ModelSettings:
         cls,
         capability: ModelCapability,
         *,
-        context: ContextTag = "",
+        context: int = 0,
     ) -> Self:
         """Return the least-committing selection ``capability`` offers.
 
@@ -406,7 +452,7 @@ class ModelSettings:
 
         Args:
           capability: What the transport offers.
-          context: The context tag the model id selected.
+          context: The size the model id selected; ``0`` for the whole window.
 
         Returns:
           settings: The lowest rung of every ladder that survives.
@@ -415,13 +461,19 @@ class ModelSettings:
           ValueError: An axis offers nothing at all.
 
         """
+        default = capability.default_effort
+        efforts = literal_members(ThinkingEffort)
+        # A default the row lacks falls to the nearest level below it, then above,
+        # and only then to ``none``, which stops the reasoning.
+        at = efforts.index(default) if default is not None else 0
+        ladder = (*efforts[at:0:-1], *efforts[at + 1 :], efforts[0]) if at else efforts
         return cls(
             capability=capability,
             context=context,
             thinking_effort=_lowest(
                 "thinking_effort",
                 capability.thinking.effort,
-                literal_members(ThinkingEffort),
+                ladder,
             ),
             thinking_budget=_lowest(
                 "thinking_budget",
@@ -452,8 +504,29 @@ class ModelSettings:
 
     @property
     def limits(self) -> ModelLimits:
-        """Ceilings the selected context tag carries."""
-        return self.capability.context[self.context]
+        """The model's window."""
+        return self.capability.limits
+
+    @property
+    def window(self) -> int:
+        """Tokens the context may fill: the chosen size, within the model's window."""
+        window = self.limits.max_request_tokens
+        if not self.context:
+            return window
+        return min(self.context, window) if window > 0 else self.context
+
+    @property
+    def tag(self) -> str:
+        """The size as a model id names it: ``+small``, ``+258k``; blank for the window."""
+        if not self.context:
+            return ""
+        for name in ("small", "mid"):
+            if self.capability.size(name, tier=self.service_tier) == self.context:
+                return f"+{name}"
+        for unit, scale in (("m", 1_000_000), ("k", 1_000)):
+            if self.context % scale == 0:
+                return f"+{self.context // scale}{unit}"
+        return f"+{self.context}"
 
 
 def literal_members[T](alias: object) -> tuple[T, ...]:
@@ -490,7 +563,10 @@ def _allowed(capability: ModelCapability, name: str) -> Collection[object]:
 
 def _offers(capability: ModelCapability, name: str, value: object) -> bool:
     """Whether ``capability`` allows ``value`` on the axis ``name``."""
-    # Pruning is the caller's policy, not something a model offers.
+    # Pruning and the context's size are the caller's policy, not offers a
+    # model makes; a size past the window is held to it.
+    if name == "context":
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
     return name == "pruning" or value in _allowed(capability, name)
 
 
@@ -498,6 +574,10 @@ def _reject_unoffered(capability: ModelCapability, name: str, value: object) -> 
     """Raise unless ``capability`` offers ``value`` on the axis ``name``."""
     if _offers(capability, name, value):
         return
+    if name == "context":
+        raise ValueError(
+            f"context={value!r} is not offered; a size is tokens, 0 or more",
+        )
     model = capability.model_id or "this model"
     # ``repr`` before ``sorted``: these sets mix strings, floats, and bools,
     # which do not order against each other.

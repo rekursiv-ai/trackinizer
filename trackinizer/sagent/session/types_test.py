@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import fields, is_dataclass
 from types import MappingProxyType
 from typing import cast
 
 import json
+import time
 
 from treekle import from_plain, json_dumps, json_loads, to_plain
 
@@ -96,6 +97,17 @@ def _every_record() -> list[SessionRecord]:
     ]
 
 
+@pytest.fixture
+def pacific(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Run in Los Angeles' time zone."""
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+@pytest.mark.usefixtures("pacific")
 def test_turn_context_text_states_each_setting_on_its_own_line() -> None:
     context = TurnContext(
         cwd="/w",
@@ -108,9 +120,23 @@ def test_turn_context_text_states_each_setting_on_its_own_line() -> None:
         "Working directory: /w\n"
         "Platform: linux\n"
         "Model: opus\n"
-        "Current time: 2026-10-23T00:00:00Z\n"
+        "Current time: Thu 2026-10-22 17:00 -07:00 (PDT)\n"
         "Be terse."
     )
+
+
+@pytest.mark.usefixtures("pacific")
+@pytest.mark.parametrize(
+    ("timestamp", "shown"),
+    [
+        ("2026-12-01T08:30:00+00:00", "Tue 2026-12-01 00:30 -08:00 (PST)"),
+        ("2026-10-23T09:00:00", "2026-10-23T09:00:00"),
+        ("yesterday", "yesterday"),
+    ],
+    ids=["winter", "no-offset", "no-time"],
+)
+def test_the_time_reads_where_the_user_is(timestamp: str, shown: str) -> None:
+    assert TurnContext(timestamp=timestamp).text() == f"Current time: {shown}"
 
 
 def test_turn_context_text_skips_what_it_does_not_state() -> None:
