@@ -235,6 +235,38 @@ async def test_another_users_canvas_id_is_never_joined(
     assert await _labels(store, session) == [f"canvas:{placed['canvas_id']}"]
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_edge_to_another_users_workspace_never_places_a_session_in_it(
+    pglite_route_client: _Client,
+) -> None:
+    """Rule 2 keeps only an owned workspace; the caller's default replaces the edge."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    browser(OTHER_USER_ID, email=OTHER_EMAIL)
+    made = await client.post("/api/workspaces", json={"title": "Theirs"})
+    assert made.status_code == 200, made.text
+    theirs = uuid.UUID(
+        from_plain(json_loads(made.content, dict[str, object])["id"], str),
+    )
+    session = await seed_session(store, USER_AGENT)
+    _ = await store.add_edge(
+        from_id=session,
+        to_id=theirs,
+        edge_kind="produced_by",
+        actor=USER_AGENT.email,
+    )
+
+    placed = await _place(client, session)
+
+    workspace = uuid.UUID(from_plain(placed["workspace_id"], str))
+    default = await store.get_inquiry(workspace)
+    assert default is not None
+    assert default.owner == USER_AGENT.email
+    assert await _canvas_workspace(store, placed["canvas_id"]) == str(workspace)
+    assert await _edges(store, session) == [workspace]
+
+
 async def _earlier_on_branch(store: Store, workspace: uuid.UUID) -> None:
     """Seed an earlier session of the user's on the `main` branch, in ``workspace``."""
     earlier = await seed_session(

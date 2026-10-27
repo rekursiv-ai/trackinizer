@@ -1619,7 +1619,8 @@ async def settings_refs_for_chat(
       session_id: Its head AgentSession, if it has one.
 
     Returns:
-      refs: The workspace, session, personal Artifact and canvas metadata.
+      refs: The workspace (the canvas's if the asker owns it, else their default),
+        session, personal Artifact and canvas metadata.
 
     """
     async with store.engine.acquire() as conn:
@@ -1663,7 +1664,14 @@ async def settings_refs_for_chat(
                     user_id,
                 )
     workspace_id = canvas.workspace_id
-    if workspace_id is None:
+    # The assistant keys the asker's box by this workspace. A canvas placed before
+    # placement checked ownership can hold another person's, whose box the asker's
+    # line would then run on.
+    if workspace_id is None or not await check_workspace(
+        store.engine,
+        email=email,
+        workspace_id=workspace_id,
+    ):
         workspace_id = await open_default_workspace(
             store.engine,
             store=store,

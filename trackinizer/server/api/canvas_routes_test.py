@@ -2478,6 +2478,44 @@ async def test_settings_refs_for_chat_return_the_pinned_rows(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_a_canvas_holding_another_users_workspace_names_the_askers_own(
+    settings_chat: _SettingsChat,
+) -> None:
+    """The assistant keys the asker's box by a workspace they own, never another's."""
+    store = settings_chat.store
+    theirs = await open_default_workspace(
+        store.engine,
+        store=store,
+        user_id=OTHER_USER_ID,
+        email=OTHER_EMAIL,
+    )
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE visual_canvases SET metadata = metadata || "
+            "jsonb_build_object('workspace_id', $2::text) WHERE id = $1",
+            settings_chat.canvas_id,
+            str(theirs),
+        )
+    act_as_assistant("writer")
+
+    response = await settings_chat.client.get(
+        f"/api/canvases/for-chat/{settings_chat.conversation_id}/settings",
+        params={"asker": TEST_USER_EMAIL},
+    )
+
+    assert response.status_code == 200, response.text
+    mine = await open_default_workspace(
+        store.engine,
+        store=store,
+        user_id=TEST_USER_ID,
+        email=TEST_USER_EMAIL,
+    )
+    refs = json_loads(response.content, dict[str, object])
+    assert refs["workspace_issue_id"] == str(mine)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_assistant_reads_settings_of_a_canvas_holding_a_suggestion(
     settings_chat: _SettingsChat,
 ) -> None:
