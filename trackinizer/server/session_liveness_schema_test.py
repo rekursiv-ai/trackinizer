@@ -1,4 +1,4 @@
-"""Migration 032 leaves the full database catalog equal to fresh bootstrap."""
+"""Additive migrations leave the full database catalog equal to fresh bootstrap."""
 
 from __future__ import annotations
 
@@ -17,10 +17,28 @@ if TYPE_CHECKING:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("old_shape", "migrations", "migration"),
+    [
+        (
+            "DROP TABLE session_liveness",
+            ["schema.032.sql", "schema.060.sql"],
+            "schema.032.sql",
+        ),
+        (
+            "ALTER TABLE gpu_jobs DROP COLUMN requested_node",
+            ["schema.062.sql"],
+            "schema.062.sql",
+        ),
+    ],
+)
 async def test_liveness_old_to_fresh_catalog_parity(
     pglite_engine: PGliteEngine,
+    old_shape: str,
+    migrations: list[str],
+    migration: str,
 ) -> None:
-    """An old database receiving migration 032 has the full fresh schema."""
+    """An old database receiving its migration has the full fresh schema."""
     await reset_schema(pglite_engine)
     store = Store(pglite_engine, embed=StubEmbedder())
     await store.bootstrap()
@@ -46,17 +64,18 @@ async def test_liveness_old_to_fresh_catalog_parity(
     async with pglite_engine.acquire() as conn:
         fresh = {tuple(row.values()) for row in await conn.fetch(catalog)}
         assert any(row[1] == "session_liveness" for row in fresh)
-        await conn.execute("DROP TABLE session_liveness")
+        await conn.execute(old_shape)
         # 060 adds the table's later columns, so it runs again after 032 makes it.
         await conn.execute(
-            "DELETE FROM applied_migrations "
-            "WHERE name IN ('schema.032.sql', 'schema.060.sql')",
+            "DELETE FROM applied_migrations WHERE name = ANY($1::text[])",
+            migrations,
         )
     await store.bootstrap()
     async with pglite_engine.acquire() as conn:
         migrated = {tuple(row.values()) for row in await conn.fetch(catalog)}
         recorded = await conn.fetchval(
-            "SELECT count(*) FROM applied_migrations WHERE name = 'schema.032.sql'",
+            "SELECT count(*) FROM applied_migrations WHERE name = $1",
+            migration,
         )
     assert migrated == fresh
     assert recorded == 1

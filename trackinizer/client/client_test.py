@@ -3600,6 +3600,7 @@ class TestJobMethods:
             "label": "t",
             "argv": ["python", "x.py"],
             "commit": _JOB_COMMIT,
+            "node": None,
         }
         assert (job.id, job.state, job.upload_serial) == (7, "queued", 3)
 
