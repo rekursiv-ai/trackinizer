@@ -10,6 +10,7 @@
       "api_key_id": null,
       "email": "no-auth@localhost",
       "last_login": null,
+      "machine": null,
       "name": "no-auth",
       "open_audiences": [
         "open",

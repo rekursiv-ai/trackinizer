@@ -1436,7 +1436,7 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
     | {"list_machines", "get_machine", "put_machine"}
     | {"change_machine_labels", "delete_machine"}
     | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"}
-    | {"machine_runs", "disconnect_machine", "logout_machine"}
+    | {"machine_runs", "stop_machine_run", "disconnect_machine", "logout_machine"}
     | {"wait_terminals"}
     | {"exec_command", "wait_exec", "post_exec_result"}
     | {"job_submit", "job_list", "job_view", "job_grant", "job_read_grant"}
@@ -3335,6 +3335,28 @@ class TestMachineHostMethods:
         ]
         assert [each.run for each in listed] == [each.run for each in stopped]
         assert listed[0].run == "chat-11111111"
+
+    def test_stopping_a_run_posts_to_its_machine_and_session_and_reports_absence(
+        self,
+    ) -> None:
+        session = uuid.UUID("11111111-1111-1111-1111-111111111111")
+        statuses = iter((204, 404))
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(next(statuses), json={"detail": "no live run"})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            assert client.stop_machine_run("gpu-box", session) is None
+            with pytest.raises(ClientError) as err:
+                client.stop_machine_run("gpu-box", session)
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("POST", f"/api/machines/gpu-box/runs/{session}/stop"),
+        ] * 2
+        assert err.value.status_code == 404
 
 
 class TestTerminalMethods:
