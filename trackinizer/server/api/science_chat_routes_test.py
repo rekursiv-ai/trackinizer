@@ -1072,6 +1072,38 @@ async def test_a_line_carries_the_records_of_the_page_trail_and_visuals(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize(
+    ("chosen", "heard"),
+    [(None, "lead"), ("sagent", "sagent")],
+)
+async def test_a_line_to_the_assistant_carries_the_prompt_its_poster_chose(
+    pglite_route_client: _Client,
+    chosen: str | None,
+    heard: str,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    act_as_assistant()
+    kb = await start_session(client, actor=KB_ACTOR)
+    canvas_id = await _canvas(client)
+    if chosen is not None:
+        browser()
+        changed = await client.patch(
+            "/api/me/preferences",
+            json={"assistant_prompt": chosen},
+        )
+        assert changed.status_code == 200
+
+    sent = await send_chat(client, canvas_id=canvas_id, text="hello")
+
+    assert sent.status_code == 200
+    [line] = await _drained(client, session_id=kb)
+    context = from_plain(line["context"], dict[str, object])
+    assert context["assistant_prompt"] == heard
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
     "screen",
     [
         {"page": "not a route"},

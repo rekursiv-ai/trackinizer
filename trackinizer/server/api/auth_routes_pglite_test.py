@@ -295,6 +295,8 @@ _DEFAULTS: dict[str, object] = {
     "terminal_placement": "bottom",
     "home": "graph",
     "chat_provider": "assistant",
+    "assistant_prompt": "lead",
+    "cli_folder": "",
     "chat_tool_calls": True,
     "stars": [],
     "views": [],

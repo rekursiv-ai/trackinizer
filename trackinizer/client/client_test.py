@@ -2371,6 +2371,8 @@ class TestSessionMethods:
             # A server from before uploads sends none: the line has no files.
             "attachments": [],
             "relay": None,
+            # A server from before the choice sends none: the poster chose nothing.
+            "assistant_prompt": None,
         }
 
     def test_inbound_drain_preserves_a_console_relay(self) -> None:

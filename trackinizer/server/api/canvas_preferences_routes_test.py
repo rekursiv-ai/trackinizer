@@ -81,6 +81,8 @@ _DEFAULTS = {
     "terminal_placement": "bottom",
     "home": "graph",
     "chat_provider": "assistant",
+    "assistant_prompt": "lead",
+    "cli_folder": "",
     "chat_tool_calls": True,
 }
 

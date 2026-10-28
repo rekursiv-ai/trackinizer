@@ -104,6 +104,7 @@ from trackinizer.wire.wire_science_chat import (
     CHAT_TITLE,
     FORK_EDGE_LABEL,
     SCIENCE_CHAT_LABEL,
+    AssistantPrompt,
     ChatAnswer,
     ChatProvider,
     ChatSend,
@@ -299,7 +300,9 @@ async def send_chat_line(
     it names nobody), queued for the chat's own session, where the card is, with the
     page, trail and marks a line carries: the assistant hears the pick as that
     person's line. An ``interrupt`` to the assistant is queued there too, where its
-    turn runs. A run taken over in a terminal takes no post of any kind.
+    turn runs. A line or answer to the assistant also carries the system prompt its
+    poster chose (their ``assistant_prompt`` preference), which a conversation's agent
+    starts on. A run taken over in a terminal takes no post of any kind.
 
     Args:
       store: The store, which opens and fills a fork's session.
@@ -459,6 +462,9 @@ async def send_chat_line(
                 canvas_id=canvas_id,
                 conversation_id=conversation_id,
                 reader=reader,
+                assistant_prompt=await _chosen_prompt(conn, user_id=user_id)
+                if provider == "assistant"
+                else None,
             )
             # An answer to the assistant's card is heard as the person's line.
             if body.kind == "line"
@@ -2388,6 +2394,8 @@ async def _check_starter_answers(
         raise AnswerNotOwnerError(f"Only {starter} {words}.")
 
 
+# ``assistant_prompt`` is the system prompt the poster chose for the assistant, for a
+# line to it; ``None`` for a line to a run.
 async def _line_context(
     conn: Conn,
     *,
@@ -2396,6 +2404,7 @@ async def _line_context(
     canvas_id: uuid.UUID,
     conversation_id: uuid.UUID,
     reader: SessionReader,
+    assistant_prompt: AssistantPrompt | None,
 ) -> CanvasMessageContext:
     """Describe what the poster saw as they sent a line: page, trail and new marks."""
     screen = await read_screen(
@@ -2420,6 +2429,7 @@ async def _line_context(
             visuals=screen.visuals,
         ),
         attachments=body.attachments,
+        assistant_prompt=assistant_prompt,
     )
 
 
@@ -2481,6 +2491,13 @@ async def _preferred_provider(conn: Conn, *, user_id: uuid.UUID) -> ChatProvider
     return stored_preferences(
         await conn.fetchval("SELECT preferences FROM users WHERE id = $1", user_id),
     ).chat_provider
+
+
+async def _chosen_prompt(conn: Conn, *, user_id: uuid.UUID) -> AssistantPrompt:
+    """Return the system prompt ``user_id`` chose for the assistant."""
+    return stored_preferences(
+        await conn.fetchval("SELECT preferences FROM users WHERE id = $1", user_id),
+    ).assistant_prompt
 
 
 async def _bind_chat(

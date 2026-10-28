@@ -692,6 +692,13 @@
         "title": "ArtifactSectionDraft",
         "type": "object"
       },
+      "AssistantPrompt": {
+        "enum": [
+          "lead",
+          "sagent"
+        ],
+        "type": "string"
+      },
       "AudienceName": {
         "type": "string"
       },
@@ -1156,6 +1163,16 @@
               }
             ],
             "title": "Agent Instructions"
+          },
+          "assistant_prompt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssistantPrompt"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "attachments": {
             "items": {
@@ -8030,6 +8047,12 @@
             "title": "App Bar Width",
             "type": "integer"
           },
+          "assistant_prompt": {
+            "$ref": "#/components/schemas/AssistantPrompt",
+            "default": "lead",
+            "description": "The assistant's system prompt in a chat you start: its own lead prompt, or sagent's with a note of the canvas, as claude and codex are told of it. A chat keeps the one it started on.",
+            "x-setting": true
+          },
           "chat_provider": {
             "$ref": "#/components/schemas/ChatProvider",
             "default": "assistant",
@@ -8052,6 +8075,15 @@
             "description": "Show the tool calls an agent makes in Chat between the lines, each run of them folded into one line that opens on what it ran and what came back.",
             "title": "Chat Tool Calls",
             "type": "boolean",
+            "x-setting": true
+          },
+          "cli_folder": {
+            "default": "",
+            "description": "The folder a claude or codex run that Chat starts works in, on whichever machine it starts: ~/... under your home, or a full path. Empty for your home directory.",
+            "maxLength": 1024,
+            "pattern": "^([/~][^\\x00-\\x1f\\x7f]*)?$",
+            "title": "Cli Folder",
+            "type": "string",
             "x-setting": true
           },
           "collapsed": {

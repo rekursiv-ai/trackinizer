@@ -358,6 +358,7 @@ async def test_a_line_carries_its_screen_and_only_the_latest_unsent_marks(
         canvas_id=_CANVAS,
         conversation_id=conversation,
         reader=NOBODY,
+        assistant_prompt="sagent",
     )
     assert context.canvas_id == _CANVAS
     assert context.conversation_id == conversation
@@ -365,6 +366,7 @@ async def test_a_line_carries_its_screen_and_only_the_latest_unsent_marks(
     assert context.agent_instructions == "Inspect the selected task"
     assert context.fork == fork
     assert context.attachments == ["/home/user/uploads/shot.png"]
+    assert context.assistant_prompt == "sagent"
     assert context.page is not None
     assert context.page.route == "#/console"
     assert [page.route for page in context.trail] == ["#/list/Issue"]
