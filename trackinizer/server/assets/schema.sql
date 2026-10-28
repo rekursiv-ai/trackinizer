@@ -1244,7 +1244,8 @@ CREATE TABLE IF NOT EXISTS gpu_jobs (
     manifest           JSONB,
     reason             TEXT NOT NULL DEFAULT '',
     claimed_until      TIMESTAMPTZ,
-    box_credential_id  UUID REFERENCES gpu_box_credentials(id)
+    box_credential_id  UUID REFERENCES gpu_box_credentials(id),
+    requested_node     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS gpu_jobs_email_created

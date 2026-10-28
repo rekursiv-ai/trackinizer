@@ -1311,8 +1311,8 @@ async def test_migration_054_matches_the_baseline_gpu_tables(
     """The three GPU tables 054 builds equal the fresh-install ones.
 
     Bootstrap builds the baseline shape. This drops the tables (as a pre-054 database
-    lacks them), replays ``schema.054`` alone, and compares every column, constraint
-    and index of each against what the baseline produced.
+    lacks them), replays 054 and the later job migrations, and compares every column,
+    constraint and index of each against what the baseline produced.
     """
     await reset_schema(pglite_engine)
     await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
@@ -1326,9 +1326,10 @@ async def test_migration_054_matches_the_baseline_gpu_tables(
             "DROP TABLE machine_jobs, gpu_issuances, gpu_jobs, gpu_owners",
         )
         await conn.execute(load_sql("schema.054"))
-        # 056 adds the column the baseline's ``gpu_jobs`` ends with.
+        # Later migrations add the columns the baseline's ``gpu_jobs`` ends with.
         await conn.execute(load_sql("schema.056"))
         await conn.execute(load_sql("schema.057"))
+        await conn.execute(load_sql("schema.062"))
         migrated = {t: await _table_shape(conn, t) for t in _GPU_TABLES}
         # Replaying it over the existing tables is a no-op, not an error.
         await conn.execute(load_sql("schema.054"))
@@ -1380,8 +1381,8 @@ async def test_migration_056_matches_the_baseline_box_credentials(
 ) -> None:
     """The box-credential table and the job column 056 adds equal the baseline's.
 
-    Drops the column and the table (as a pre-056 database lacks them), replays
-    ``schema.056`` alone, and compares both tables' shapes against the baseline.
+    Drops the table and job columns added since 056, replays 056 and 062, and
+    compares both tables' shapes against the baseline, including column order.
     """
     await reset_schema(pglite_engine)
     await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
@@ -1390,9 +1391,13 @@ async def test_migration_056_matches_the_baseline_box_credentials(
         baseline = {t: await _table_shape(conn, t) for t in tables}
         assert baseline["gpu_box_credentials"][0], "the baseline lacks the table"
 
-        await conn.execute("ALTER TABLE gpu_jobs DROP COLUMN box_credential_id")
+        await conn.execute(
+            "ALTER TABLE gpu_jobs DROP COLUMN box_credential_id, "
+            "DROP COLUMN requested_node",
+        )
         await conn.execute("DROP TABLE gpu_box_credentials")
         await conn.execute(load_sql("schema.056"))
+        await conn.execute(load_sql("schema.062"))
         migrated = {t: await _table_shape(conn, t) for t in tables}
         # Replaying it over the existing table is a no-op, not an error.
         await conn.execute(load_sql("schema.056"))

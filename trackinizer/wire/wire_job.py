@@ -187,6 +187,9 @@ class SubmitBody(BaseModel):
     commit: CommitSha
     """The snapshot commit the dev box will upload."""
 
+    node: NodeName | None = None
+    """Require this node; ``None`` lets the broker choose."""
+
     @field_validator("argv")
     @classmethod
     def _short(cls, value: list[str]) -> list[str]:
@@ -201,6 +204,7 @@ class JobView(BaseModel):
     id: int
     state: JobState
     node: str | None
+    requested_node: str | None = None
     gpus: int
     minutes: int
     label: str

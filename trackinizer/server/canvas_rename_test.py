@@ -88,7 +88,12 @@ async def _old_database(engine: DatabaseEngine) -> None:
         # Bootstrap must apply the cutover and the later DDL absent from this
         # frozen baseline; marking that DDL applied hides upgrade/fresh drift.
         for name, _ in schema_migrations():
-            if name not in {"schema.058.sql", "schema.060.sql", "schema.061.sql"}:
+            if name not in {
+                "schema.058.sql",
+                "schema.060.sql",
+                "schema.061.sql",
+                "schema.062.sql",
+            }:
                 await conn.execute(
                     "INSERT INTO applied_migrations (name) VALUES ($1)",
                     name,
@@ -98,6 +103,7 @@ async def _old_database(engine: DatabaseEngine) -> None:
 
 async def _undo_after_canvas_rename(conn: Conn) -> None:
     """Remove later DDL before comparing the complete pre-cutover catalog."""
+    await conn.execute("ALTER TABLE gpu_jobs DROP COLUMN requested_node")
     await conn.execute("DROP TABLE gpu_allowance_resets")
     await conn.execute(
         "ALTER TABLE session_liveness DROP COLUMN machine, DROP COLUMN run, "
@@ -106,7 +112,7 @@ async def _undo_after_canvas_rename(conn: Conn) -> None:
     await conn.execute("ALTER TABLE api_keys DROP COLUMN machine_id")
     await conn.execute(
         "DELETE FROM applied_migrations "
-        "WHERE name IN ('schema.060.sql', 'schema.061.sql')",
+        "WHERE name IN ('schema.060.sql', 'schema.061.sql', 'schema.062.sql')",
     )
 
 
