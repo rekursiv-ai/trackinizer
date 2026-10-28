@@ -19,6 +19,10 @@ equal that module's ``Frame`` values; a test holds them equal.
   (u32 status).
 - Server to host: ``INPUT``, ``RESIZE``, ``STOP``. Host to server: ``OUTPUT``, ``EXIT``.
 
+A terminal of kind ``files`` carries no shell: the host answers the file requests
+the browser sends as ``INPUT`` with ``OUTPUT``, over the same legs, ring and limits.
+The server never reads either; the host defines them.
+
 A direct link (a WebRTC data channel between the browser and the host) is set up
 over these same sockets. The server forwards ``SIGNAL`` (a :class:`DirectSignal`)
 and the browser's ``ROUTE`` (u8 route, u64 offset) without reading them. The host
@@ -99,6 +103,7 @@ __all__ = [
     "LiveTerminal",
     "OpenTerminal",
     "TerminalCommand",
+    "TerminalKind",
     "TerminalMachine",
     "TerminalMachines",
     "TerminalOpened",
@@ -219,6 +224,9 @@ type IceServers = Annotated[
 type TerminalCommand = Literal["claude", "codex"]
 """A CLI a terminal may start in place of a login shell; the host allows two."""
 
+type TerminalKind = Literal["shell", "files"]
+"""What a terminal carries: a shell, or the host's answers to file requests."""
+
 type RunFolder = Annotated[
     str,
     Field(max_length=1_024, pattern=r"^[/~][^\x00-\x1f\x7f]*$"),
@@ -259,6 +267,9 @@ class OpenTerminal(BaseModel):
     cwd: RunFolder | None = None
     """The run's folder on the machine, absolute or ``~``; needs ``command``."""
 
+    kind: TerminalKind = "shell"
+    """``files`` starts no shell: the host answers file requests on it instead."""
+
     @model_validator(mode="after")
     def _run_fields_need_a_command(self) -> Self:
         """Refuse an ``attach``, ``run_name`` or ``cwd`` that names no CLI."""
@@ -266,6 +277,17 @@ class OpenTerminal(BaseModel):
             self.attach is not None or self.run_name is not None or self.cwd is not None
         ):
             raise ValueError("attach, run_name and cwd need a command")
+        return self
+
+    # A files terminal belongs to no canvas, so a canvas's listing never offers it as a
+    # shell to re-attach; with no command it names no run either.
+    @model_validator(mode="after")
+    def _files_name_no_run(self) -> Self:
+        """Refuse a ``files`` terminal that names a CLI or a canvas."""
+        if self.kind == "files" and (
+            self.command is not None or self.canvas is not None
+        ):
+            raise ValueError("a files terminal takes no command or canvas")
         return self
 
 
@@ -323,6 +345,9 @@ class TerminalMachine(BaseModel):
     """Its host last reported a trackinizer older than the oldest this server's wire
     supports (``wire_machine_host.MIN_HOST_VERSION``): it may never open a terminal
     until it is upgraded."""
+
+    files: bool = False
+    """Its facts say its host answers a ``files`` terminal."""
 
 
 class LiveTerminal(BaseModel):
@@ -382,6 +407,11 @@ class TerminalWait(BaseModel):
 
     cwd: RunFolder | None = None
     """As :attr:`OpenTerminal.cwd`: the folder the run starts in, on this machine."""
+
+    # Absent for a shell, so a host on an older wire, which refuses a key it does not
+    # know, still opens one; only a host whose facts say ``files`` is sent one.
+    kind: Literal["files"] | None = None
+    """``files``: answer file requests in place of starting a shell."""
 
 
 class DirectSignal(BaseModel):

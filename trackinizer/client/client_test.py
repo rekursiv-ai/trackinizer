@@ -3417,8 +3417,6 @@ class TestTerminalMethods:
             "rows": 40,
             "cols": 120,
             "canvas": str(canvas),
-            "requested_by": None,
-            "surface": None,
             "command": "claude",
             "attach": str(_INSTANCE),
             "run_name": "campaign-issue-7",

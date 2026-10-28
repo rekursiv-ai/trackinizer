@@ -9,6 +9,10 @@ All notable trackinizer changes are documented here. This project follows
 
 - The `scanlines` preference (on by default): the Hacker skin's scanlines and
   glow, which the user and their assistant can turn off.
+- A terminal of kind `files` (`POST /api/terminals` with `kind: "files"`): no
+  shell, but the host's answers to the owner's file requests, over the same
+  relay or direct link. Only a machine whose facts say `files` opens one (409
+  `files_not_enabled` otherwise), and the machine listing says which do.
 
 ## 0.1.12 - 2026-10-26
 

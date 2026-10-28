@@ -7660,6 +7660,10 @@
               }
             ]
           },
+          "kind": {
+            "$ref": "#/components/schemas/TerminalKind",
+            "default": "shell"
+          },
           "machine": {
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
             "title": "Machine",
@@ -12261,6 +12265,13 @@
         ],
         "type": "string"
       },
+      "TerminalKind": {
+        "enum": [
+          "shell",
+          "files"
+        ],
+        "type": "string"
+      },
       "TerminalMachine": {
         "description": "One machine the caller owns, and whether it can take a terminal now.",
         "properties": {
@@ -12284,6 +12295,11 @@
                 "type": "null"
               }
             ]
+          },
+          "files": {
+            "default": false,
+            "title": "Files",
+            "type": "boolean"
           },
           "host_outdated": {
             "default": false,
@@ -12438,6 +12454,18 @@
           },
           "ice_servers": {
             "$ref": "#/components/schemas/IceServers"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "const": "files",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
           },
           "opener": {
             "title": "Opener",
@@ -24029,7 +24057,7 @@
     },
     "/api/terminals": {
       "post": {
-        "description": "Open a terminal on one of the caller's machines.\n\nA browser session opens the owner's terminal. The configured assistant may open\nonly a detached campaign run for an attested writer or admin named as ``asker``;\nevery other key, service account or foreign origin is refused. The machine must\nbe online and its host must have asked for terminals within 45 seconds\n(the machine host does by default). Attach with the ticket within 30 seconds.\n\nArgs:\n  body: The machine, the terminal's size, and the canvas it opens from.\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n  asker: The person the configured assistant starts a campaign for.\n\nReturns:\n  opened: The terminal id and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for an untrusted key, a service account or a foreign origin;\n    404 for no such machine of the asker, or canvas; 409 ``terminal_unconfirmed`` until the\n    owner confirms a machine a key enrolled, ``cli_not_installed`` when the machine's\n    facts do not list the CLI asked for, ``terminal_not_enabled`` when the host is\n    not asking, ``chat_run_live`` when a run is already attached to the ``attach``\n    session, whether opened here or started by hand; 429 ``terminal_limit`` past 10\n    opens a minute. Every terminal route answers 403 on a server with authentication\n    off.",
+        "description": "Open a terminal on one of the caller's machines.\n\nA browser session opens the owner's terminal. The configured assistant may open\nonly a detached campaign run for an attested writer or admin named as ``asker``;\nevery other key, service account or foreign origin is refused. The machine must\nbe online and its host must have asked for terminals within 45 seconds\n(the machine host does by default). Attach with the ticket within 30 seconds.\n\nArgs:\n  body: The machine, the terminal's size, and the canvas it opens from.\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n  asker: The person the configured assistant starts a campaign for.\n\nReturns:\n  opened: The terminal id and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for an untrusted key, a service account or a foreign origin;\n    404 for no such machine of the asker, or canvas; 409 ``terminal_unconfirmed`` until the\n    owner confirms a machine a key enrolled, ``cli_not_installed`` when the machine's\n    facts do not list the CLI asked for, ``files_not_enabled`` for a ``files``\n    terminal when they do not say ``files``, ``terminal_not_enabled`` when the host\n    is not asking, ``chat_run_live`` when a run is already attached to the ``attach``\n    session, whether opened here or started by hand; 429 ``terminal_limit`` past 10\n    opens a minute. Every terminal route answers 403 on a server with authentication\n    off.",
         "operationId": "open_terminal_route_api_terminals_post",
         "parameters": [
           {

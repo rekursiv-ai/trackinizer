@@ -1567,10 +1567,11 @@ terminals within 45 seconds (the machine host does by default), else 409
 `terminal_not_enabled`. A canvas may hold any number of terminals; a user's 11th
 open within a minute answers 429. Every terminal refusal answers
 `detail: {code, message}`: `terminal_forbidden`, `terminal_not_enabled`,
-`terminal_unconfirmed`, `terminal_limit`, `cli_not_installed` and `chat_run_live`.
+`terminal_unconfirmed`, `terminal_limit`, `cli_not_installed`, `files_not_enabled` and
+`chat_run_live`.
 
 `POST /api/terminals` takes `{machine, rows, cols, canvas?, surface?, command?,
-attach?, run_name?, cwd?}` and returns `{terminal_id, ticket}`. `command` is `claude` or
+attach?, run_name?, cwd?, kind?}` and returns `{terminal_id, ticket}`. `command` is `claude` or
 `codex`: the terminal starts the runner of that CLI in place of a login shell, and
 any other value is 422. `attach` (the AgentSession the run re-opens), `run_name`
 (the detached run's name, which the runner's `attach NAME` reaches) and `cwd` need a
@@ -1584,7 +1585,14 @@ and a folder that is not there ends the terminal with one line saying so. The ho
 `wait` returns the same four fields, leaving out each one that is null, so a host on
 an older wire still opens a login shell. Each machine in
 `GET /api/terminals/machines` carries `clis`, the CLIs its facts name, so a picker
-offers only what is installed. `surface` names the view that opened it;
+offers only what is installed, and `files`, whether its facts say `files`.
+
+`kind` is `shell` (the default) or `files`. A `files` terminal starts no shell: the
+host answers file requests the browser sends as `INPUT` with `OUTPUT`, over the same
+sockets, ring and limits, and the server reads neither. It takes no `canvas` and no
+`command` (422), only from the owner's browser, on a machine whose facts say `files`,
+else 409 `files_not_enabled`. The host's `wait` carries `kind: files` for one and no
+`kind` for a shell. `surface` names the view that opened it;
 `GET /api/terminals/machines?canvas=ID` lists the caller's live terminals for
 that canvas as `terminals` (`terminal_id`, `machine`, `surface`), oldest first. The
 ticket is 256 random bits, valid once for 30 seconds; it never travels in a URL.
