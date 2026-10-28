@@ -120,9 +120,7 @@ class ModelTable(Mapping[str, ModelCapability]):
           table: The section's models, validated, and the document's roles.
 
         """
-        text = path.read_text()
-        _validate_yaml(yaml.compose(text, Loader=yaml.SafeLoader), seen=set())
-        document = from_plain(yaml.safe_load(text), _CatalogDocument)
+        document = from_plain(_load(path.read_text()), _CatalogDocument)
         for layer in (document.reference, *document.profiles.values()):
             _require_whole_thinking(layer)
         # Read only to validate: a bad profile fails here, not at the first
@@ -380,6 +378,17 @@ def _in_family(model_id: str, *, name: str) -> bool:
         return True
     head, _, major = name.rpartition("-")
     return head == family and (version == major or version.startswith(f"{major}."))
+
+
+def _load(text: str) -> object:
+    """Return the YAML document ``text``, refused if ``_validate_yaml`` refuses it."""
+    loader = (yaml.CSafeLoader if yaml.__with_libyaml__ else yaml.SafeLoader)(text)
+    try:
+        node = loader.get_single_node()
+        _validate_yaml(node, seen=set())
+        return None if node is None else loader.construct_document(node)
+    finally:
+        loader.dispose()
 
 
 def _validate_yaml(node: yaml.Node | None, *, seen: set[int]) -> None:
