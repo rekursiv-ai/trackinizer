@@ -2491,6 +2491,28 @@ class Client:
         response = self._request("GET", where)
         return _validate_model(wire_machines.MachineRuns, response, where).runs
 
+    def stop_machine_run(self, name: str, session_id: uuid.UUID) -> None:
+        """Stop one of the caller's live runs on one of their machines.
+
+        Its next drain is refused, so the run ends within one drain's hold.
+
+        Args:
+          name: The machine the run names.
+          session_id: The session the run drains.
+
+        Raises:
+          ClientError: 404 when the caller owns no such machine, or no live run of
+            theirs on it drains that session.
+
+        """
+        self._request(
+            "POST",
+            wire_machines.MACHINE_RUN_STOP_PATH.format(
+                name=quote(name, safe=""),
+                session_id=session_id,
+            ),
+        )
+
     def disconnect_machine(self, name: str) -> list[MachineRun]:
         """Revoke a machine's host and stop its owner's live runs; return those stopped."""
         where = wire_machines.MACHINE_DISCONNECT_PATH.format(name=quote(name, safe=""))

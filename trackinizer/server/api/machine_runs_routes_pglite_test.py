@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, cast
 
 import uuid
 
+from treekle import json_loads
+
 import pytest
 import pytest_asyncio
 
@@ -221,6 +223,27 @@ async def test_logout_disconnects_and_revokes_the_keys_its_logins_made_alone(
             [linked, other],
         )
     assert {row["id"]: row["revoked"] for row in rows} == {linked: True, other: False}
+
+
+async def test_a_key_names_the_machine_whose_logout_revokes_it(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, store = pglite_route_client
+    machine_id, _ = await _joined(client, "box")
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET machine_id = $1 WHERE id = $2",
+            machine_id,
+            TEST_API_KEY_ID,
+        )
+    named: list[object] = []
+    for key in (TEST_API_KEY_ID, None):
+        install_identity(make_test_identity(role="admin", api_key_id=key))
+        profile = await client.get("/api/me/profile")
+        assert profile.status_code == 200, profile.text
+        named.append(json_loads(profile.text, dict[str, object]).get("machine"))
+
+    assert named == ["box", None]
 
 
 _MY_RUN = MachineRun(session_id=_MINE, cli="claude", run="chat-11111111", cwd="~/w")
