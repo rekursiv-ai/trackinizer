@@ -205,8 +205,11 @@ class _World:
         attach: uuid.UUID | None = None,
         run_name: str | None = None,
         cwd: str | None = None,
+        kind: str | None = None,
     ) -> httpx2.Response:
         body: dict[str, object] = {"machine": machine, "rows": 24, "cols": 80}
+        if kind is not None:
+            body["kind"] = kind
         if surface is not None:
             body["surface"] = surface
         if requested_by is not None:
@@ -617,6 +620,7 @@ async def test_the_listing_names_every_live_terminal_of_the_canvas_with_its_surf
             "clis": [],
             "runs": [],
             "host_outdated": False,
+            "files": False,
         },
     ]
     not_asked = await world.open(cookie, canvas=canvas)
@@ -704,6 +708,7 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
                 "clis": [],
                 "runs": [],
                 "host_outdated": False,
+                "files": False,
             },
             {
                 "name": "laptop",
@@ -713,6 +718,7 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
                 "clis": [],
                 "runs": [],
                 "host_outdated": False,
+                "files": False,
             },
         ],
         "terminals": [],
@@ -1470,6 +1476,48 @@ async def test_a_run_opens_only_where_the_machine_facts_list_its_cli(
     _opened(await world.open(cookie))
 
 
+async def test_files_open_only_where_the_facts_say_files_and_the_host_is_told(
+    world: _World,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, name="old")
+    await world.join(cookie, name="new", facts={"files": True})
+    await world.wait()
+
+    refused = await world.open(cookie, machine="old", kind="files")
+    _opened(await world.open(cookie, machine="new", kind="files"))
+    files = from_plain((await world.wait()).json(), dict[str, object])
+    _opened(await world.open(cookie, machine="new"))
+    shell = from_plain((await world.wait()).json(), dict[str, object])
+
+    assert (refused.status_code, _code(refused)) == (409, "files_not_enabled")
+    assert files["kind"] == "files"
+    # A shell's wait names no kind, so a host on an older wire, which refuses a key it
+    # does not know, still opens it.
+    assert "kind" not in shell
+
+
+async def test_files_open_from_no_canvas_and_never_for_a_key(world: _World) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, facts={"files": True, "clis": ["claude"]})
+    await world.wait()
+    canvas, _ = await world.canvas(ada)
+
+    on_canvas = await world.open(cookie, canvas=canvas, kind="files")
+    run = await world.open(cookie, command="claude", kind="files")
+    keyed = await world.call(
+        "POST",
+        wire_terminals.TERMINALS_PATH,
+        headers={"Authorization": f"Bearer {await world.key(ada)}", "Origin": _ORIGIN},
+        body={"machine": "gx10", "rows": 24, "cols": 80, "kind": "files"},
+    )
+
+    assert (on_canvas.status_code, run.status_code) == (422, 422)
+    assert (keyed.status_code, _code(keyed)) == (403, "terminal_forbidden")
+
+
 async def test_the_host_is_handed_each_run_with_its_session_and_its_name(
     world: _World,
 ) -> None:
@@ -1603,6 +1651,29 @@ async def test_the_machine_list_names_the_clis_its_facts_list(
 
     machines = from_plain(listed["machines"], list[dict[str, object]])
     assert machines[0]["clis"] == ["claude", "git"]
+
+
+async def test_the_machine_list_says_which_hosts_serve_files(world: _World) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, name="old")
+    await world.join(cookie, name="new", facts={"files": True})
+
+    listed = from_plain(
+        (
+            await world.call(
+                "GET",
+                wire_terminals.TERMINAL_MACHINES_PATH,
+                headers=world.browser(cookie),
+            )
+        ).json(),
+        dict[str, object],
+    )
+
+    assert {
+        from_plain(each["name"], str): each["files"]
+        for each in from_plain(listed["machines"], list[dict[str, object]])
+    } == {"old": False, "new": True}
 
 
 async def test_the_machine_list_names_a_host_older_than_the_wire_supports(

@@ -2366,7 +2366,13 @@ class Client:
 
         """
         where = wire_terminals.TERMINALS_PATH
-        response = self._request("POST", where, body=body.model_dump(mode="json"))
+        # A server on an older wire refuses a key it does not know, so a field left at
+        # its default, such as a shell's ``kind``, is not sent.
+        response = self._request(
+            "POST",
+            where,
+            body=body.model_dump(mode="json", exclude_defaults=True),
+        )
         return _validate_model(wire_terminals.TerminalOpened, response, where)
 
     def exec_command(

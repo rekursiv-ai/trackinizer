@@ -6,6 +6,8 @@ that person's machine. Opening asks the hub (``server/terminals.py``) to queue t
 terminal for the machine's host, which holds a ``GET`` on the wait route and dials the
 host WebSocket. The browser dials the browser WebSocket and sends ``ATTACH`` with the
 one-use ticket the open returned. The hub relays; the owner's last run folder is kept.
+A ``files`` terminal opens and relays the same way, on a machine whose facts say
+``files``; its host answers file requests on it instead of starting a shell.
 
 A WebSocket cannot answer 404 or 410 after the handshake, so both sockets accept, and
 then refuse with a close code (``wire_terminals``).
@@ -139,24 +141,31 @@ async def open_terminal_route(
       HTTPException: 403 for an untrusted key, a service account or a foreign origin;
         404 for no such machine of the asker, or canvas; 409 ``terminal_unconfirmed`` until the
         owner confirms a machine a key enrolled, ``cli_not_installed`` when the machine's
-        facts do not list the CLI asked for, ``terminal_not_enabled`` when the host is
-        not asking, ``chat_run_live`` when a run is already attached to the ``attach``
+        facts do not list the CLI asked for, ``files_not_enabled`` for a ``files``
+        terminal when they do not say ``files``, ``terminal_not_enabled`` when the host
+        is not asking, ``chat_run_live`` when a run is already attached to the ``attach``
         session, whether opened here or started by hand; 429 ``terminal_limit`` past 10
         opens a minute. Every terminal route answers 403 on a server with authentication
         off.
 
     """
     owner = await _terminal_owner(request, identity, asker=asker, body=body)
-    machine_id, clis = await _owned_machine(
+    machine_id, facts = await _owned_machine(
         request,
         replace(identity, email=owner),
         name=body.machine,
     )
-    if body.command is not None and body.command not in clis:
+    if body.command is not None and body.command not in _clis_of(facts):
         raise _refused(
             409,
             code="cli_not_installed",
             message=f"the host reports no {body.command} on its PATH",
+        )
+    if body.kind == "files" and not _serves_files(facts):
+        raise _refused(
+            409,
+            code="files_not_enabled",
+            message=f"the host on {body.machine} is too old to serve files; update it",
         )
     workspace = await _canvas_workspace(
         request,
@@ -192,6 +201,7 @@ async def open_terminal_route(
                     attach=body.attach,
                     run_name=body.run_name,
                     cwd=body.cwd,
+                    kind=body.kind,
                 ),
             ),
         )
@@ -310,8 +320,8 @@ async def reattach_session_route(
             message="the server does not know where this chat's run was; start one "
             "from Chat",
         )
-    machine_id, clis = await _owned_machine(request, identity, name=machine)
-    if provider not in clis:
+    machine_id, facts = await _owned_machine(request, identity, name=machine)
+    if provider not in _clis_of(facts):
         raise _refused(
             409,
             code="cli_not_installed",
@@ -415,6 +425,7 @@ async def list_terminal_machines_route(
                     from_plain(row["host_version"], str),
                     oldest=MIN_HOST_VERSION,
                 ),
+                "files": _serves_files(row["facts"]),
             },
         )
         for row in sorted(
@@ -822,8 +833,8 @@ async def _owned_machine(
     identity: AuthIdentity,
     *,
     name: str,
-) -> tuple[UUID, list[str]]:
-    """Return the id and CLIs of the caller's online machine with a live credential."""
+) -> tuple[UUID, object]:
+    """Return the id and facts of the caller's online machine with a live credential."""
     async with engine_of(request).acquire() as conn:
         machine = await conn.fetchrow(
             "SELECT m.id, m.facts, m.confirmed_at IS NOT NULL AS confirmed "
@@ -844,7 +855,7 @@ async def _owned_machine(
             code="terminal_unconfirmed",
             message="confirm this machine first",
         )
-    return from_plain(machine["id"], UUID), _clis_of(machine["facts"])
+    return from_plain(machine["id"], UUID), machine["facts"]
 
 
 def _clis_of(facts: object) -> list[str]:
@@ -859,6 +870,14 @@ def _clis_of(facts: object) -> list[str]:
         )
     except ReadError:
         return []
+
+
+def _serves_files(facts: object) -> bool:
+    """Return whether a machine's facts say its host answers a ``files`` terminal."""
+    try:
+        return from_plain(facts, dict[str, object]).get("files") is True
+    except ReadError:
+        return False
 
 
 async def _canvas_workspace(
@@ -1001,5 +1020,6 @@ async def _next_terminal(
         attach=term.attach,
         run_name=term.run_name,
         cwd=term.cwd,
+        kind="files" if term.kind == "files" else None,
         ice_servers=list(hub.ice_servers),
     )

@@ -118,6 +118,9 @@ class Terminal:
     cwd: str | None = None
     """The folder the run starts in, as the browser named it; the host resolves it."""
 
+    kind: wire_terminals.TerminalKind = "shell"
+    """A shell, or the host's answers to file requests."""
+
     detached_at: float | None = None
     """When no browser was attached since; ``None`` while one is."""
 
@@ -178,6 +181,7 @@ class Opening:
     attach: UUID | None = None
     run_name: str | None = None
     cwd: str | None = None
+    kind: wire_terminals.TerminalKind = "shell"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -345,6 +349,7 @@ class TerminalHub:
             attach=opening.attach,
             run_name=run_name,
             cwd=opening.cwd,
+            kind=opening.kind,
             detached_at=now,
             last_input_at=now,
         )

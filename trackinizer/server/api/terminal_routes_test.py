@@ -2,7 +2,7 @@
 
 The routes end to end are in ``terminal_routes_pglite_test.py`` over PGlite. These tests
 need no database, so they pin each branch of the lookup that decides whether a terminal
-may open, and which CLIs its machine offers.
+may open, which CLIs its machine offers, and whether it serves files.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def _request(conn: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> Request:
     return Request({"type": "http", "app": app})
 
 
-async def test_a_confirmed_machine_is_returned_with_the_clis_its_facts_list(
+async def test_a_confirmed_machine_is_returned_with_its_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = AsyncMock()
@@ -62,7 +62,7 @@ async def test_a_confirmed_machine_is_returned_with_the_clis_its_facts_list(
         name="gx10",
     )
 
-    assert found == (_MACHINE, ["claude", "git"])
+    assert found == (_MACHINE, {"clis": ["claude", "git"]})
 
 
 async def test_the_lookup_asks_for_an_online_machine_of_the_caller_with_a_credential(
@@ -138,44 +138,25 @@ async def test_a_machine_the_caller_does_not_own_or_that_is_offline_is_not_found
     assert str(missing.value) == "no terminal-capable machine gx10"
 
 
-async def test_facts_without_a_cli_list_offer_no_cli(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    conn = AsyncMock()
-    conn.fetchrow.return_value = {
-        "id": str(_MACHINE),
-        "facts": {"os": "linux", "cpus": 20},
-        "confirmed": True,
-    }
-
-    _, clis = await terminal_routes._owned_machine(
-        _request(conn, monkeypatch),
-        _IDENTITY,
-        name="gx10",
-    )
-
-    assert clis == []
+async def test_facts_list_the_clis_and_none_without_a_list() -> None:
+    assert terminal_routes._clis_of({"clis": ["claude", "git"]}) == ["claude", "git"]
+    assert terminal_routes._clis_of({"os": "linux", "cpus": 20}) == []
 
 
 @pytest.mark.parametrize("listed", ["claude", True, 3])
-async def test_facts_whose_cli_list_is_not_a_list_offer_no_cli(
-    listed: object,
-    monkeypatch: pytest.MonkeyPatch,
+async def test_facts_whose_cli_list_is_not_a_list_offer_no_cli(listed: object) -> None:
+    assert terminal_routes._clis_of({"clis": listed}) == []
+
+
+@pytest.mark.parametrize(
+    ("facts", "serves"),
+    [({"files": True}, True), ({"files": "yes"}, False), ({}, False), (None, False)],
+)
+async def test_only_facts_that_say_files_serve_a_files_terminal(
+    facts: object,
+    serves: bool,
 ) -> None:
-    conn = AsyncMock()
-    conn.fetchrow.return_value = {
-        "id": str(_MACHINE),
-        "facts": {"clis": listed},
-        "confirmed": True,
-    }
-
-    _, clis = await terminal_routes._owned_machine(
-        _request(conn, monkeypatch),
-        _IDENTITY,
-        name="gx10",
-    )
-
-    assert clis == []
+    assert terminal_routes._serves_files(facts) is serves
 
 
 async def _alive(term: Terminal) -> bool:

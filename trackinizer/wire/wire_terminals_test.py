@@ -212,6 +212,25 @@ def test_a_command_outside_the_two_clis_is_refused(command: str) -> None:
         OpenTerminal.model_validate({**base, "command": command})
 
 
+def test_an_open_is_a_shell_unless_it_asks_for_files() -> None:
+    base = {"machine": "gx10", "rows": 24, "cols": 80}
+    assert OpenTerminal.model_validate(base).kind == "shell"
+    assert OpenTerminal.model_validate({**base, "kind": "files"}).kind == "files"
+    with pytest.raises(pydantic.ValidationError):
+        OpenTerminal.model_validate({**base, "kind": "exec"})
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"command": "claude"}, {"canvas": str(uuid.UUID(int=1))}],
+)
+def test_a_files_open_names_no_command_or_canvas(extra: dict[str, object]) -> None:
+    base = {"machine": "gx10", "rows": 24, "cols": 80, **extra}
+    assert OpenTerminal.model_validate(base)
+    with pytest.raises(pydantic.ValidationError):
+        OpenTerminal.model_validate({**base, "kind": "files"})
+
+
 @pytest.mark.parametrize("run_name", ["Bad Name", "-leading", "x" * 64, ""])
 def test_a_run_name_matches_the_machine_name_pattern(run_name: str) -> None:
     base = {"machine": "gx10", "rows": 24, "cols": 80, "command": "claude"}
@@ -252,6 +271,15 @@ def test_the_host_is_handed_the_folder_its_run_starts_in() -> None:
     assert plain.cwd is None
     with pytest.raises(pydantic.ValidationError):
         TerminalWait.model_validate({**wait, "cwd": "loop"})
+
+
+def test_only_a_files_wait_names_its_kind() -> None:
+    wait = {"terminal_id": uuid.UUID(int=1), "opener": "a@x.y", "rows": 1, "cols": 1}
+    assert TerminalWait.model_validate({**wait, "kind": "files"}).kind == "files"
+    # A host on an older wire refuses a key it does not know, so a shell names none.
+    assert "kind" not in TerminalWait.model_validate(wait).model_dump(exclude_none=True)
+    with pytest.raises(pydantic.ValidationError):
+        TerminalWait.model_validate({**wait, "kind": "shell"})
 
 
 def test_a_machine_lists_the_clis_its_facts_name_and_defaults_to_none() -> None:
