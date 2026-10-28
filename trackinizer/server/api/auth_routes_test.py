@@ -587,6 +587,8 @@ class TestProfile:
             "terminal_placement": "bottom",
             "home": "graph",
             "chat_provider": "assistant",
+            "assistant_prompt": "lead",
+            "cli_folder": "",
             "chat_tool_calls": True,
             **_EMPTY_USER_DATA,
         }
@@ -702,6 +704,8 @@ class TestPreferences:
             "terminal_placement": "bottom",
             "home": "graph",
             "chat_provider": "assistant",
+            "assistant_prompt": "lead",
+            "cli_folder": "",
             "chat_tool_calls": True,
             **_EMPTY_USER_DATA,
         }

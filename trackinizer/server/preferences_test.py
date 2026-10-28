@@ -63,6 +63,8 @@ _DEFAULTS: dict[str, JsonValue] = {
     "terminal_placement": "bottom",
     "home": "graph",
     "chat_provider": "assistant",
+    "assistant_prompt": "lead",
+    "cli_folder": "",
     "chat_tool_calls": True,
     "stars": [],
     "views": [],
@@ -208,6 +210,16 @@ def test_scanlines_are_on_until_the_user_turns_them_off() -> None:
         Preferences.model_validate({"scanlines": "off"})
 
 
+def test_the_assistant_runs_on_its_lead_prompt_until_the_user_picks_sagents() -> None:
+    assert stored_preferences(None).assistant_prompt == "lead"
+    assert (
+        stored_preferences({"assistant_prompt": "sagent"}).assistant_prompt == "sagent"
+    )
+    assert "assistant_prompt" in ASSISTANT_KEYS
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"assistant_prompt": "claude"})
+
+
 def test_workspace_preferences_keep_order_pin_visibility_and_last_canvas() -> None:
     saved = {
         "order": ["22222222-2222-2222-2222-222222222222"],
@@ -239,6 +251,17 @@ def test_a_new_chat_starts_on_the_assistant_unless_the_user_picked_a_cli() -> No
     assert stored_preferences({"chat_provider": "codex"}).chat_provider == "codex"
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"chat_provider": "gemini"})
+
+
+@pytest.mark.parametrize("folder", ["", "~", "~/work/web", "/srv/repo"])
+def test_a_run_folder_is_home_or_a_path_a_run_takes(folder: str) -> None:
+    assert stored_preferences({"cli_folder": folder}).cli_folder == folder
+
+
+@pytest.mark.parametrize("folder", ["work/web", "~/a\nb", "/" + "a" * 1_024])
+def test_a_run_folder_a_run_would_refuse_is_refused(folder: str) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"cli_folder": folder})
 
 
 @pytest.mark.asyncio
@@ -448,6 +471,16 @@ def test_a_console_window_may_be_open_or_end_where_it_starts(
         {"console_views": [{**_CONSOLE_VIEW, "range": window}]},
     )
     assert kept.console_views[0].range.model_dump() == window
+
+
+def test_a_time_with_no_offset_is_refused_and_says_why() -> None:
+    with pytest.raises(pydantic.ValidationError) as refused:
+        Preferences.model_validate(
+            {"console_views": [{**_CONSOLE_VIEW, "created": "2026-10-01T09:00:00"}]},
+        )
+    assert [error["msg"] for error in refused.value.errors()] == [
+        "Value error, is a time with no offset",
+    ]
 
 
 def _key_of(change: dict[str, JsonValue]) -> str:

@@ -13,6 +13,9 @@ All notable trackinizer changes are documented here. This project follows
   shell, but the host's answers to the owner's file requests, over the same
   relay or direct link. Only a machine whose facts say `files` opens one (409
   `files_not_enabled` otherwise), and the machine listing says which do.
+- The `assistant_prompt` preference (`lead` by default, or `sagent`): the
+  assistant's system prompt in a chat the user starts. A line to the assistant
+  carries the poster's choice as `CanvasMessageContext.assistant_prompt`.
 
 ## 0.1.12 - 2026-10-26
 

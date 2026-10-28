@@ -69,6 +69,7 @@ __all__ = [
     "FORK_POINT_PREFIX",
     "POSTER_LABEL_PREFIX",
     "SCIENCE_CHAT_LABEL",
+    "AssistantPrompt",
     "ChatAnswer",
     "ChatForkAt",
     "ChatHead",
@@ -136,6 +137,16 @@ Values:
   claude: The person's own claude agent run on a machine of theirs, attached to
     the chat's session.
   codex: The same with codex.
+"""
+
+
+type AssistantPrompt = Literal["lead", "sagent"]
+"""The assistant's system prompt in a conversation, as its poster chose it.
+
+Values:
+  lead: The assistant's own lead prompt.
+  sagent: sagent's system prompt, followed by a note of the canvas like the one a
+    claude or codex run is given, in place of the lead prompt.
 """
 
 

@@ -28,7 +28,8 @@ import asyncio
 import contextlib
 import os
 import shutil
-import signal
+
+from trackinizer.lib.posix.child import Child
 
 
 if TYPE_CHECKING:
@@ -67,7 +68,7 @@ class Piped:
         self._cwd = cwd
         self._env = dict(env or {})
         self._terminate_grace_sec = terminate_grace_sec
-        self._process: asyncio.subprocess.Process | None = None
+        self._child: Child | None = None
 
     async def __aenter__(self) -> Self:
         """Spawn the child and return the handle driving it.
@@ -98,17 +99,18 @@ class Piped:
         binary = shutil.which(self._argv[0])
         if binary is None:
             raise FileNotFoundError(self._argv[0])
-        self._process = await asyncio.create_subprocess_exec(
+        self._child = await Child.start(
             binary,
             *self._argv[1:],
+            # Its own process group, so terminate reaches a child that spawned
+            # children of its own -- a shell wrapper leaves orphans otherwise.
+            group=True,
+            grace_sec=self._terminate_grace_sec,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=self._cwd,
             env={**os.environ, **self._env} if self._env else None,
-            # Its own process group, so terminate reaches a child that spawned
-            # children of its own -- a shell wrapper leaves orphans otherwise.
-            start_new_session=True,
         )
 
     async def write(self, data: bytes) -> bool:
@@ -121,7 +123,7 @@ class Piped:
           written: Whether the bytes reached the child.
 
         """
-        process = self._process
+        process = None if self._child is None else self._child.process
         if process is None or process.stdin is None:
             return False
         try:
@@ -143,9 +145,9 @@ class Piped:
           chunk: The stream a chunk crossed, and its bytes.
 
         """
-        process = self._process
-        if process is None:
+        if self._child is None:
             return
+        process = self._child.process
         chunks: asyncio.Queue[tuple[Stream, bytes] | None] = asyncio.Queue()
         readers = [
             asyncio.create_task(_pump(name, reader, chunks))
@@ -174,35 +176,21 @@ class Piped:
 
     async def terminate(self) -> None:
         """Stop the child's process group; safe to call repeatedly."""
-        process = self._process
-        if process is None or process.returncode is not None:
-            return
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        with contextlib.suppress(TimeoutError):
-            _ = await asyncio.wait_for(
-                process.wait(),
-                timeout=self._terminate_grace_sec,
-            )
-            return
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        if self._child is not None:
+            _ = await self._child.stop()
 
     async def wait(self) -> int:
-        """Reap the child and return its exit status.
+        """Return the child's exit status once it has exited, its pipes open or not.
 
         Returns:
-          result: The int.
+          status: Its exit status; negative for the signal that ended it.
 
         """
-        process = self._process
-        if process is None:
-            return 0
-        return await process.wait()
+        return 0 if self._child is None else await self._child.exited()
 
     def close_stdin(self) -> None:
         """Close the child's stdin, so a reader-until-EOF child can finish."""
-        process = self._process
+        process = None if self._child is None else self._child.process
         if process is None or process.stdin is None:
             return
         with contextlib.suppress(BrokenPipeError, RuntimeError):

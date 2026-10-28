@@ -28,7 +28,7 @@ from pydantic import (
 from pydantic_core import to_json
 from treekle import from_plain
 
-from trackinizer.wire.wire_science_chat import ChatProvider
+from trackinizer.wire.wire_science_chat import AssistantPrompt, ChatProvider
 
 
 if TYPE_CHECKING:
@@ -55,6 +55,8 @@ ASSISTANT_KEYS: Final = frozenset(
         "terminal_placement",
         "home",
         "chat_provider",
+        "assistant_prompt",
+        "cli_folder",
         "chat_tool_calls",
     },
 )
@@ -391,6 +393,28 @@ class Preferences(_Strict):
         description=(
             "The provider a new chat starts on: the assistant, or claude or codex run on "
             "a machine of yours."
+        ),
+        json_schema_extra=SETTING,
+    )
+    assistant_prompt: AssistantPrompt = Field(
+        default="lead",
+        description=(
+            "The assistant's system prompt in a chat you start: its own lead prompt, "
+            "or sagent's with a note of the canvas, as claude and codex are told of it. "
+            "A chat keeps the one it started on."
+        ),
+        json_schema_extra=SETTING,
+    )
+    # A run's folder as a run takes it (``RunFolder``), or none.
+    cli_folder: Annotated[
+        str,
+        StringConstraints(max_length=1_024, pattern=r"^([/~][^\x00-\x1f\x7f]*)?$"),
+    ] = Field(
+        default="",
+        description=(
+            "The folder a claude or codex run that Chat starts works in, on whichever "
+            "machine it starts: ~/... under your home, or a full path. Empty for your "
+            "home directory."
         ),
         json_schema_extra=SETTING,
     )

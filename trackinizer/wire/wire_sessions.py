@@ -26,7 +26,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from trackinizer.wire.json_types import JSON, UtcDatetime
-from trackinizer.wire.wire_science_chat import ChatForkAt
+from trackinizer.wire.wire_science_chat import AssistantPrompt, ChatForkAt
 
 
 _MAX_MESSAGE_CHARS: Final = 16_384
@@ -693,6 +693,11 @@ class CanvasMessageContext(BaseModel):
     relay: ConsoleRelay | None = None
     """Set when the message is not a question for the partner but a note of what the
     person told agents from the Console; the message text is the relay's text."""
+
+    assistant_prompt: AssistantPrompt | None = None
+    """The system prompt the sender chose for the assistant, set on a line to it. A
+    conversation's agent starts on the one its first line chose; ``None`` for a line
+    to a run."""
 
 
 class InboundDrainItem(BaseModel):
