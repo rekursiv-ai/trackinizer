@@ -631,6 +631,7 @@ def test_edge_metadata_labels_to_resolves_csv() -> None:
     edge = actions[0]
     assert isinstance(edge, EdgeAction)
     assert edge.metadata.get("labels") == ["a", "b"]
+    assert edge.metadata.get("label_ops") == [("to", "a"), ("to", "b")]
 
 
 def test_edge_valence_default_is_marked_injected() -> None:
@@ -739,7 +740,7 @@ def test_edge_metadata_labels_del_removes_value() -> None:
     )
     edge = actions[0]
     assert isinstance(edge, EdgeAction)
-    assert edge.metadata.get("labels") == []
+    assert edge.metadata.get("label_ops") == [("add", "a"), ("del", "a")]
 
 
 def test_edge_metadata_labels_del_resolves_csv() -> None:
@@ -760,7 +761,13 @@ def test_edge_metadata_labels_del_resolves_csv() -> None:
     )
     edge = actions[0]
     assert isinstance(edge, EdgeAction)
-    assert edge.metadata.get("labels") == ["b"]
+    assert edge.metadata.get("label_ops") == [
+        ("add", "a"),
+        ("add", "b"),
+        ("add", "c"),
+        ("del", "a"),
+        ("del", "c"),
+    ]
 
 
 @pytest.mark.parametrize("tokens", [["label", "noop"], ["label", "noop", "x"]])
