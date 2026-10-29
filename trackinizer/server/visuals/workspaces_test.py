@@ -27,7 +27,7 @@ from trackinizer.server.visuals.workspaces import (
     check_workspace,
     create_workspace,
     list_workspaces,
-    next_untitled_title,
+    next_workspace_title,
     open_default_workspace,
     remember_opened_canvas,
     set_workspace_order,
@@ -70,18 +70,18 @@ def test_workspace_update_and_order_models_refuse_empty_or_duplicate_changes() -
 @pytest.mark.parametrize(
     ("titles", "expected"),
     [
-        ([], "Untitled workspace"),
-        (["Untitled workspace"], "Untitled workspace 2"),
-        (["Untitled workspace", "Untitled workspace 3"], "Untitled workspace 2"),
-        (["Untitled workspace 2", "Research"], "Untitled workspace"),
-        (["untitled workspace", "Untitled workspace 2x"], "Untitled workspace"),
+        ([], "Workspace 1"),
+        (["Workspace 1"], "Workspace 2"),
+        (["Workspace 1", "Workspace 3"], "Workspace 2"),
+        (["Workspace 2", "Research"], "Workspace 1"),
+        (["workspace 1", "Workspace 1x", "Untitled workspace"], "Workspace 1"),
     ],
 )
-def test_an_untitled_workspace_takes_the_lowest_number_not_taken(
+def test_a_new_default_takes_the_lowest_workspace_number_not_taken(
     titles: list[str],
     expected: str,
 ) -> None:
-    assert next_untitled_title(titles) == expected
+    assert next_workspace_title(titles) == expected
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -104,7 +104,7 @@ async def context(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_two_first_calls_make_one_untitled_default(
+async def test_two_first_calls_make_one_default(
     context: tuple[PGliteEngine, Store],
 ) -> None:
     engine, store = context
@@ -122,7 +122,7 @@ async def test_two_first_calls_make_one_untitled_default(
     issue = await store.get_inquiry(first)
     assert count == 1
     assert issue is not None
-    assert issue.title == "Untitled workspace"
+    assert issue.title == "Workspace 1"
 
 
 @pytest.mark.db_pglite
@@ -251,11 +251,11 @@ async def test_listing_searches_and_orders_pins_and_hidden_workspaces(
         include_hidden=True,
     )
     assert [item.id for item in visible] == [alpha.id]
-    # The default sorts as any workspace does: not pinned, so after the pins, oldest.
-    assert [item.id for item in all_streams] == [beta.id, alpha.id, default]
+    # The default sorts as any workspace does: not pinned, so after the pins, first made.
+    assert [item.id for item in all_streams] == [beta.id, default, alpha.id]
     assert all_streams[0].hidden
     assert all_streams[0].pinned
-    assert (all_streams[2].scratch, all_streams[2].pinned) == (True, False)
+    assert (all_streams[1].scratch, all_streams[1].pinned) == (True, False)
 
 
 @pytest.mark.db_pglite
@@ -353,7 +353,7 @@ async def test_renaming_the_default_promotes_it_with_its_canvases(
     assert fresh is not None
     assert [canvas.id for canvas in kept.canvases] == [loose]
     assert (fresh.title, fresh.scratch, fresh.canvases) == (
-        "Untitled workspace",
+        "Workspace 1",
         True,
         [],
     )
@@ -365,7 +365,7 @@ async def test_the_next_default_skips_the_numbers_the_users_own_workspaces_hold(
     context: tuple[PGliteEngine, Store],
 ) -> None:
     engine, store = context
-    for title in ("Untitled workspace", "Untitled workspace 3"):
+    for title in ("Workspace 1", "Workspace 3"):
         await create_workspace(
             engine,
             store=store,
@@ -375,7 +375,7 @@ async def test_the_next_default_skips_the_numbers_the_users_own_workspaces_hold(
         )
     await store.submit_issue(
         SubmitIssue(
-            title="Untitled workspace 2",
+            title="Workspace 2",
             account="other@example.com",
             owner="other@example.com",
             labels=["workspace"],
@@ -392,7 +392,7 @@ async def test_the_next_default_skips_the_numbers_the_users_own_workspaces_hold(
 
     issue = await store.get_inquiry(default)
     assert issue is not None
-    assert issue.title == "Untitled workspace 2"
+    assert issue.title == "Workspace 2"
 
 
 @pytest.mark.db_pglite
@@ -474,6 +474,23 @@ async def test_order_is_saved_and_foreign_or_duplicate_ids_are_refused(
     )
     assert ordered is not None
     assert [item.id for item in ordered[:2]] == [second.id, first.id]
+    # Those the saved order does not hold yet open at the right end, as they were made.
+    later = [
+        await create_workspace(
+            engine,
+            store=store,
+            user_id=_USER,
+            email=_EMAIL,
+            title=title,
+        )
+        for title in ("Third", "Fourth")
+    ]
+    listed = await list_workspaces(engine, user_id=_USER, email=_EMAIL)
+    assert [item.id for item in listed] == [
+        second.id,
+        first.id,
+        *(made.id for made in later),
+    ]
     assert (
         await set_workspace_order(
             engine,

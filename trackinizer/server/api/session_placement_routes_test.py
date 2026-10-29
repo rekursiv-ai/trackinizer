@@ -138,7 +138,7 @@ async def test_a_session_with_nothing_else_lands_in_the_default_in_a_new_canvas(
         uuid.UUID(from_plain(placed["workspace_id"], str)),
     )
     assert default is not None
-    assert default.title == "Untitled workspace"
+    assert default.title == "Workspace 1"
     assert await _edges(store, session) == [default.id]
     assert await _labels(store, session) == [f"canvas:{canvas}"]
     assert await _canvas_workspace(store, canvas) == placed["workspace_id"]
@@ -379,7 +379,7 @@ async def test_a_backfilled_session_inherits_only_from_earlier_branch_history(
     else:
         assigned = await store.get_inquiry(uuid.UUID(str(placed["workspace_id"])))
         assert assigned is not None
-        assert assigned.title == "Untitled workspace"
+        assert assigned.title == "Workspace 1"
     assert placed["workspace_id"] != str(recent)
 
 

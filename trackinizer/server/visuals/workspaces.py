@@ -6,11 +6,9 @@ lands there. It is an ordinary workspace otherwise, and renaming it makes it one
 
 from __future__ import annotations
 
-from datetime import datetime
 from itertools import count
 from typing import TYPE_CHECKING, Final, Literal
 
-import re
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -43,8 +41,6 @@ The default was called Scratch, and every one made then carries this label; a ne
 name for it would leave each of them unmarked, and a build that still calls the
 default Scratch reads the same mark.
 """
-
-_UNTITLED: Final = re.compile(r"Untitled workspace(?: ([0-9]+))?")
 
 
 class WorkspaceSummary(BaseModel):
@@ -194,7 +190,7 @@ async def default_workspace_in(
     """Find or make the user's default workspace inside the caller's transaction.
 
     The users row is locked before one is made, so two callers make one. A new one
-    is titled with :func:`next_untitled_title` over the user's own workspaces.
+    is titled with :func:`next_workspace_title` over the user's own workspaces.
 
     Args:
       conn: A connection inside the caller's transaction.
@@ -225,7 +221,7 @@ async def default_workspace_in(
     )
     return await store.submit_issue(
         SubmitIssue(
-            title=next_untitled_title(from_plain(r["title"], str) for r in titles),
+            title=next_workspace_title(from_plain(r["title"], str) for r in titles),
             account=email,
             owner=email,
             actor=email,
@@ -237,11 +233,11 @@ async def default_workspace_in(
     )
 
 
-def next_untitled_title(titles: Iterable[str]) -> str:
-    """Title a workspace ``Untitled workspace N`` with the lowest N no title holds.
+def next_workspace_title(titles: Iterable[str]) -> str:
+    """Title a workspace ``Workspace N`` with the lowest N no title holds.
 
-    ``Untitled workspace`` holds 1, so the first is that and the next
-    ``Untitled workspace 2``.
+    A client naming the workspaces it makes follows the same rule, so a default and
+    a new workspace never take the same title.
 
     Args:
       titles: The titles of the user's own workspaces.
@@ -250,11 +246,8 @@ def next_untitled_title(titles: Iterable[str]) -> str:
       title: The lowest free title.
 
     """
-    taken = {
-        int(match[1] or 1) for title in titles if (match := _UNTITLED.fullmatch(title))
-    }
-    number = next(n for n in count(1) if n not in taken)
-    return "Untitled workspace" if number == 1 else f"Untitled workspace {number}"
+    taken = set(titles)
+    return next(title for n in count(1) if (title := f"Workspace {n}") not in taken)
 
 
 async def create_workspace(
@@ -307,7 +300,10 @@ async def list_workspaces(
     q: str | None = None,
     include_hidden: bool = False,
 ) -> list[WorkspaceSummary]:
-    """List owned workspace Issues in pin, saved-order, then newest order.
+    """List owned workspace Issues in pin, saved-order, then creation order.
+
+    One the saved order does not hold yet, as a new one, comes after those it does,
+    so a new workspace opens at the bar's right end, as a browser's new tab does.
 
     Args:
       engine: Database connection source.
@@ -329,7 +325,7 @@ async def list_workspaces(
             return []
         preference = stored_preferences(user["preferences"]).workspaces
         rows = await conn.fetch(
-            "SELECT id, seq, title, modified FROM inquiries WHERE kind = 'Issue' "
+            "SELECT id, seq, title FROM inquiries WHERE kind = 'Issue' "
             "AND owner = $1 AND labels @> ARRAY['workspace']::text[]",
             email,
         )
@@ -356,15 +352,11 @@ async def list_workspaces(
         for summary in summaries
         if summary is not None and (include_hidden or not summary.hidden)
     ]
-    modified_by_id = {
-        from_plain(row["id"], uuid.UUID): from_plain(row["modified"], datetime)
-        for row in rows
-    }
     found.sort(
         key=lambda item: (
             not item.pinned,
             order_index.get(str(item.id), len(order_index)),
-            -modified_by_id[item.id].timestamp(),
+            item.seq,
         ),
     )
     return found
