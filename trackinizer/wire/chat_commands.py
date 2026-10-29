@@ -26,13 +26,12 @@ from typing import TYPE_CHECKING, Final
 
 import re
 
-from trackinizer.sagent.providers.anthropic.api import Anthropic
-from trackinizer.sagent.providers.openai.api import OpenAI
+from trackinizer.sagent.providers import anthropic, openai
 from trackinizer.wire.wire_science_chat import ChatModel, ChatModels
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Mapping
 
     from trackinizer.sagent.model.capability import ModelCapability
     from trackinizer.sagent.providers.table import ModelTable
@@ -129,31 +128,10 @@ _MENU: Final = (
 _SETTING_CHARS: Final = {"model": 120, "effort": 20}
 """The longest argument of ``/model`` and ``/effort``: the limits of ``ChatSettings``."""
 
-# Where the options come from: the catalog's roles, in the order best, default,
-# everyday, utility. Claude's are each role's family alias; codex's are each role's
-# ``wire_model_id``. The levels are ``Effort`` in ``sagent/harness/types.py``,
-# which both CLIs take.
+# The options are the catalog's roles, in the order best, default, everyday,
+# utility. The levels are ``Effort`` in ``sagent/harness/types.py``, which both
+# CLIs take.
 _ROLES: Final = ("best", "default", "everyday", "utility")
-_CLAUDE: Final = Anthropic.models()
-_CODEX: Final = OpenAI.models()
-# Two roles may name one model, which is listed once.
-_CLAUDE_ALIASES: Final = tuple(
-    dict.fromkeys(_CLAUDE[role].model_id.rpartition("-")[0] for role in _ROLES),
-)
-_CLAUDE_FULL_ID: Final = _CLAUDE["default"].wire_model_id or _CLAUDE["default"].model_id
-_CODEX_IDS: Final = tuple(
-    dict.fromkeys(
-        _CODEX[role].wire_model_id or _CODEX[role].model_id for role in _ROLES
-    ),
-)
-_MODELS: Final[Mapping[ChatProvider, str]] = {
-    "claude": f"{', '.join(_CLAUDE_ALIASES)}, or a full id such as {_CLAUDE_FULL_ID}",
-    "codex": ", ".join(_CODEX_IDS),
-}
-_EXAMPLE: Final[Mapping[ChatProvider, str]] = {
-    "claude": _CLAUDE["default"].model_id.rpartition("-")[0],
-    "codex": _CODEX["default"].wire_model_id or _CODEX["default"].model_id,
-}
 _EFFORTS: Final = "low, medium, high, xhigh, max"
 _LEVELS: Final = ("low", "medium", "high", "xhigh", "max")
 """The levels ``/effort`` takes, lowest first: ``Effort`` in ``lib/agent/harness/types.py``,
@@ -257,10 +235,7 @@ def chat_models() -> ChatModels:
         each, with the levels ``/effort`` takes with it.
 
     """
-    return ChatModels(
-        claude=_offered(_CLAUDE, lambda row: row.model_id.rpartition("-")[0]),
-        codex=_offered(_CODEX, lambda row: row.wire_model_id or row.model_id),
-    )
+    return ChatModels(claude=_offered("claude"), codex=_offered("codex"))
 
 
 def classify(text: str, provider: ChatProvider) -> Classified:
@@ -323,12 +298,7 @@ def _setting(verb: str, *, args: str, provider: ChatProvider) -> Settings | Refu
     """Return ``/model`` or ``/effort`` with its one argument, or why it is refused."""
     if not args:
         return Refused(
-            reason=_BARE_EFFORT
-            if verb == "effort"
-            else _BARE_MODEL.format(
-                example=_EXAMPLE[provider],
-                options=_MODELS[provider],
-            ),
+            reason=_BARE_EFFORT if verb == "effort" else _bare_model(provider),
         )
     if len(args.split()) > 1 or len(args) > _SETTING_CHARS[verb]:
         return Refused(reason=_ONE_TOKEN[verb])
@@ -337,23 +307,51 @@ def _setting(verb: str, *, args: str, provider: ChatProvider) -> Settings | Refu
     return Settings(text=f"/effort {args.lower()}", model=None, effort=args.lower())
 
 
-def _offered(
-    table: ModelTable,
-    name: Callable[[ModelCapability], str],
-) -> list[ChatModel]:
-    """Return the models of ``table``'s roles, each once, as ``name`` spells it."""
-    default = name(table["default"])
+def _bare_model(provider: ChatProvider) -> str:
+    """Return why a bare ``/model`` is refused, with the names it takes."""
+    table = _table(provider)
+    default = table["default"]
+    # Two roles may name one model, which is listed once.
+    options = ", ".join(dict.fromkeys(_name(provider, table[role]) for role in _ROLES))
+    if provider == "claude":
+        options += f", or a full id such as {default.wire_model_id or default.model_id}"
+    return _BARE_MODEL.format(example=_name(provider, default), options=options)
+
+
+def _offered(provider: ChatProvider) -> list[ChatModel]:
+    """Return the models of the provider's roles, each once, as ``/model`` takes it."""
+    table = _table(provider)
+    default = _name(provider, table["default"])
     offered: dict[str, ChatModel] = {}
     for role in _ROLES:
         row = table[role]
+        name = _name(provider, row)
         family, _, version = row.model_id.rpartition("-")
         offered.setdefault(
-            name(row),
+            name,
             ChatModel(
-                id=name(row),
+                id=name,
                 label=f"{family.capitalize()} {version}",
                 efforts=[level for level in _LEVELS if level in row.thinking_effort],
-                default=name(row) == default,
+                default=name == default,
             ),
         )
     return list(offered.values())
+
+
+def _table(provider: ChatProvider) -> ModelTable:
+    """Return the models the provider's CLI serves: its own catalog section."""
+    match provider:
+        case "claude":
+            return anthropic.models("anthropic-cli")
+        case "codex":
+            return openai.models("openai-sub")
+        case "assistant":
+            raise ValueError("The assistant takes no /model.")
+
+
+def _name(provider: ChatProvider, row: ModelCapability) -> str:
+    """Return what ``/model`` takes for ``row``: claude's family alias, codex's id."""
+    if provider == "claude":
+        return row.model_id.rpartition("-")[0]
+    return row.wire_model_id or row.model_id
