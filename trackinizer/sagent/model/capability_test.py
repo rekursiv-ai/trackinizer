@@ -14,7 +14,6 @@ from trackinizer.sagent.model.capability import (
     ModelLimits,
     ModelSettings,
     literal_members,
-    parse_context_size,
 )
 from trackinizer.sagent.model.context import ContextSize, ContextSizeName
 from trackinizer.sagent.model.cost import PriceCatalog, PriceCondition, TokenPrice
@@ -51,7 +50,7 @@ def _row(prices: PriceCatalog | None = None) -> ModelCapability:
         default=ModelSettings(
             thinking_effort="low",
             cache_ttl_sec=300.0,
-            context_size=catalog["auto", "large"],
+            context_size=catalog["auto", "fullcontext"],
         ),
     )
 
@@ -127,21 +126,25 @@ def test_fit_keeps_each_choice_offered_and_defaults_the_rest() -> None:
 
 def test_fit_keeps_a_named_size_named_on_the_new_model() -> None:
     wide, narrow = _row(_banded(272_000)), _row(_banded(100_000, window=200_000))
-    small = replace(wide.default, context_size=wide.prices["auto", "small"])
-    assert narrow.fit(small, was=wide).context_size == _size("small", 100_000, "100k")
+    small = replace(wide.default, context_size=wide.prices["auto", "smallcontext"])
+    assert narrow.fit(small, was=wide).context_size == _size(
+        "smallcontext",
+        100_000,
+        "100k",
+    )
 
 
 def test_fit_keeps_a_counted_size_a_count_within_the_window() -> None:
     wide, narrow = _row(_banded(272_000)), _row(_banded(window=200_000))
     counted = replace(wide.default, context_size=wide.prices["auto", 300_000])
     assert narrow.fit(counted, was=wide).context_size == _size(
-        "large",
+        "fullcontext",
         200_000,
         "200k",
     )
     counted = replace(wide.default, context_size=wide.prices["auto", 150_000])
     assert narrow.fit(counted, was=wide).context_size == _size(
-        "large",
+        "fullcontext",
         150_000,
         "150k",
     )
@@ -159,11 +162,11 @@ def test_fit_to_a_tier_sizes_the_context_at_that_tier() -> None:
         window=1_000_000,
     )
     row = _row(prices)
-    small = replace(row.default, context_size=prices["auto", "small"])
+    small = replace(row.default, context_size=prices["auto", "smallcontext"])
     fast = row.fit(small, was=row, service_tier="priority")
     assert (fast.service_tier, fast.context_size) == (
         "priority",
-        _size("large", 1_000_000, "1m"),
+        _size("fullcontext", 1_000_000, "1m"),
     )
 
 
@@ -175,28 +178,12 @@ def test_fit_falls_back_to_the_default_tier_when_one_is_not_offered() -> None:
 # ---- names ------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("word", "parsed"),
-    [
-        ("small", "small"),
-        ("large", "large"),
-        ("258k", 258_000),
-        ("1m", 1_000_000),
-        ("258123", 258_123),
-        ("0", None),
-        ("fast", None),
-        ("1.5m", None),
-    ],
-)
-def test_a_word_parses_as_a_name_or_a_count(
-    word: str,
-    parsed: str | int | None,
-) -> None:
-    assert parse_context_size(word) == parsed
-
-
 def test_literal_members_reads_the_size_names_in_order() -> None:
-    assert literal_members(ContextSizeName) == ("small", "mid", "large")
+    assert literal_members(ContextSizeName) == (
+        "smallcontext",
+        "midcontext",
+        "fullcontext",
+    )
 
 
 if __name__ == "__main__":

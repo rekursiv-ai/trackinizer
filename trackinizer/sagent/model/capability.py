@@ -4,7 +4,7 @@ model = catalog["anthropic"]["opus"]
 model.capability.thinking_effort                    # every effort level offered
 model.capability.default                            # what a new model starts with
 model.settings.context_size.tokens
-model.capability.prices["auto", "small"]            # the size ``small`` names
+model.capability.prices["auto", "smallcontext"]         # the size ``smallcontext`` names
 """
 
 from __future__ import annotations
@@ -12,9 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, TypeAliasType, cast, get_args
 
-import re
-
-from trackinizer.sagent.model.context import ContextSize, ContextSizeName
+from trackinizer.sagent.model.context import ContextSize
 from trackinizer.sagent.model.cost import PriceCatalog, ServiceTier
 
 
@@ -33,7 +31,6 @@ __all__ = [
     "ThinkingEffort",
     "ThinkingOutput",
     "literal_members",
-    "parse_context_size",
 ]
 
 
@@ -251,25 +248,6 @@ class ModelCapability:
             context_size=self.prices[tier, size.context_name if named else size.tokens],
             pruning=settings.pruning,
         )
-
-
-def parse_context_size(word: str) -> ContextSizeName | int | None:
-    """Return the size ``word`` names: ``small``, ``mid``, ``large``, or ``258k`` as tokens.
-
-    Args:
-      word: One tag, lowered, without its ``+``.
-
-    Returns:
-      size: A name or a count; ``None`` if ``word`` names none.
-
-    """
-    names = cast(tuple[ContextSizeName, ...], literal_members(ContextSizeName))
-    if word in names:
-        return names[names.index(word)]
-    counted = re.fullmatch(r"([1-9][0-9]*)([km]?)", word)
-    if counted is None:
-        return None
-    return int(counted[1]) * {"": 1, "k": 1_000, "m": 1_000_000}[counted[2]]
 
 
 def literal_members[T](alias: object) -> tuple[T, ...]:

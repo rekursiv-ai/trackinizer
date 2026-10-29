@@ -1371,7 +1371,7 @@ wheels = [
 [[package]]
 name = "rekursiv-ai-typings"
 version = "0.1.11"
-source = { git = "https://github.com/rekursiv-ai/typings?branch=main#416be9fae67e6bb5ff41fc0a31f9da2dd6d2751e" }
+source = { git = "https://github.com/rekursiv-ai/typings?branch=main#f11aa075102f4935a114a84a4fa3ceff72d9de7b" }
 
 [[package]]
 name = "rich"
@@ -1645,6 +1645,7 @@ dev = [
     { name = "rekursiv-ai-typings" },
     { name = "ruff" },
     { name = "tqdm" },
+    { name = "trackinizer", extra = ["server"] },
     { name = "ty" },
 ]
 lint = [
@@ -1667,6 +1668,7 @@ pre-commit = [
     { name = "pytest-xdist" },
     { name = "rekursiv-ai-typings" },
     { name = "ruff" },
+    { name = "trackinizer", extra = ["server"] },
     { name = "ty" },
 ]
 test = [
@@ -1678,6 +1680,7 @@ test = [
     { name = "pytest-postgresql" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
+    { name = "trackinizer", extra = ["server"] },
 ]
 typecheck = [
     { name = "asyncpg-stubs" },
@@ -1739,6 +1742,7 @@ dev = [
     { name = "rekursiv-ai-typings", git = "https://github.com/rekursiv-ai/typings?branch=main" },
     { name = "ruff" },
     { name = "tqdm" },
+    { name = "trackinizer", extras = ["server"] },
     { name = "ty", specifier = ">=0.0.84" },
 ]
 lint = [
@@ -1761,6 +1765,7 @@ pre-commit = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "rekursiv-ai-typings", git = "https://github.com/rekursiv-ai/typings?branch=main" },
     { name = "ruff" },
+    { name = "trackinizer", extras = ["server"] },
     { name = "ty", specifier = ">=0.0.84" },
 ]
 test = [
@@ -1772,6 +1777,7 @@ test = [
     { name = "pytest-postgresql", specifier = ">=9.0" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
+    { name = "trackinizer", extras = ["server"] },
 ]
 typecheck = [
     { name = "asyncpg-stubs", specifier = ">=0.31.2" },

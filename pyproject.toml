@@ -87,6 +87,8 @@ test = [
     "hypothesis>=6.155.1",
     "pytest-asyncio>=1.3.0",
     "pytest-postgresql>=9.0",
+    # The server's tests import its packages; CI syncs groups, never extras.
+    "trackinizer[server]",
 ]
 typecheck = [
     "basedpyright>=1.40.1",

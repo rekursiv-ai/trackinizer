@@ -185,20 +185,23 @@ def test_a_catalog_is_default_constructible_and_hashable() -> None:
 @pytest.mark.parametrize(
     ("tops", "sizes"),
     [
-        ((), [_size("large", 1_000_000, "1m")]),
+        ((), [_size("fullcontext", 1_000_000, "1m")]),
         (
             (272_000,),
-            [_size("small", 272_000, "272k"), _size("large", 1_000_000, "1m")],
+            [
+                _size("smallcontext", 272_000, "272k"),
+                _size("fullcontext", 1_000_000, "1m"),
+            ],
         ),
         (
             (32_000, 256_000),
             [
-                _size("small", 32_000, "32k"),
-                _size("mid", 256_000, "256k"),
-                _size("large", 1_000_000, "1m"),
+                _size("smallcontext", 32_000, "32k"),
+                _size("midcontext", 256_000, "256k"),
+                _size("fullcontext", 1_000_000, "1m"),
             ],
         ),
-        ((2_000_000,), [_size("large", 1_000_000, "1m")]),
+        ((2_000_000,), [_size("fullcontext", 1_000_000, "1m")]),
     ],
     ids=["flat", "one-band", "two-bands", "band-past-the-window"],
 )
@@ -212,13 +215,13 @@ def test_small_and_mid_are_the_band_tops_and_large_the_window(
 @pytest.mark.parametrize(
     ("spec", "size"),
     [
-        ("small", _size("small", 32_000, "32k")),
-        ("mid", _size("mid", 256_000, "256k")),
-        ("large", _size("large", 1_000_000, "1m")),
-        (32_000, _size("small", 32_000, "32k")),
-        (100_000, _size("mid", 100_000, "100k")),
-        (258_123, _size("large", 258_123, "258123")),
-        (2_000_000, _size("large", 1_000_000, "1m")),
+        ("smallcontext", _size("smallcontext", 32_000, "32k")),
+        ("midcontext", _size("midcontext", 256_000, "256k")),
+        ("fullcontext", _size("fullcontext", 1_000_000, "1m")),
+        (32_000, _size("smallcontext", 32_000, "32k")),
+        (100_000, _size("midcontext", 100_000, "100k")),
+        (258_123, _size("fullcontext", 258_123, "258123")),
+        (2_000_000, _size("fullcontext", 1_000_000, "1m")),
     ],
 )
 def test_a_size_resolves_by_name_or_as_a_count_held_to_the_window(
@@ -229,7 +232,7 @@ def test_a_size_resolves_by_name_or_as_a_count_held_to_the_window(
 
 
 def test_a_name_no_band_reaches_is_the_window() -> None:
-    assert _banded()["auto", "small"] == _size("large", 1_000_000, "1m")
+    assert _banded()["auto", "smallcontext"] == _size("fullcontext", 1_000_000, "1m")
 
 
 def test_a_count_below_one_is_no_size() -> None:
@@ -239,7 +242,7 @@ def test_a_count_below_one_is_no_size() -> None:
 
 def test_default_names_and_bills_as_auto() -> None:
     catalog = _banded(272_000)
-    assert catalog["default", "small"] == catalog["auto", "small"]
+    assert catalog["default", "smallcontext"] == catalog["auto", "smallcontext"]
     assert catalog["default", 1, date.min] == catalog["auto", 1, date.min]
     assert catalog.service_tiers == {"auto", "default"}
 
@@ -256,7 +259,7 @@ def test_a_prompt_pays_its_bands_price(prompt: int, rate: float) -> None:
 
 
 def test_a_named_size_is_priced_at_its_tokens() -> None:
-    assert _banded(272_000)["auto", "small", date.min].request == 0.0
+    assert _banded(272_000)["auto", "smallcontext", date.min].request == 0.0
 
 
 def test_the_latest_price_in_effect_applies() -> None:
