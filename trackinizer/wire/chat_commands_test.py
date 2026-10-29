@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from importlib.resources import files
 from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from trackinizer.sagent.providers.table import ModelTable
+from trackinizer.sagent.providers.anthropic.api import Anthropic
+from trackinizer.sagent.providers.openai.api import OpenAI
 from trackinizer.wire.chat_commands import (
     COMMAND_CHARS,
     KNOWN_VERBS,
@@ -48,14 +48,8 @@ def _menu(verb: str) -> Refused:
     )
 
 
-_CLAUDE: Final = ModelTable.from_yaml(
-    files("trackinizer.sagent.providers.anthropic") / "anthropic.yaml",
-    provider="anthropic",
-)
-_CODEX: Final = ModelTable.from_yaml(
-    files("trackinizer.sagent.providers.openai") / "openai.yaml",
-    provider="openai",
-)
+_CLAUDE: Final = Anthropic.models()
+_CODEX: Final = OpenAI.models()
 _ROLES: Final = ("best", "default", "everyday", "utility")
 _CLAUDE_ALIASES: Final = list(
     dict.fromkeys(_CLAUDE[role].model_id.rpartition("-")[0] for role in _ROLES),

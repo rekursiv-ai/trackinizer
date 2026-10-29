@@ -89,6 +89,8 @@ test = [
     "pytest-postgresql>=9.0",
     # The server's tests import its packages; CI syncs groups, never extras.
     "trackinizer[server]",
+    # web/hatch_build_test.py imports the build hook, which subclasses hatchling's.
+    "hatchling>=1.32.4",
 ]
 typecheck = [
     "basedpyright>=1.40.1",
@@ -96,6 +98,7 @@ typecheck = [
     "ty>=0.0.84",
     "rekursiv-ai-typings>=0.1.11",
     "asyncpg-stubs>=0.31.2",
+    "hatchling>=1.32.4",  # web/hatch_build.py subscripts its one-parameter BuildHookInterface.
 ]
 "pre-commit" = [
     "pre-commit>=4.6",
