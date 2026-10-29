@@ -25,13 +25,15 @@ textarea.field { height: auto; min-height: 84px; padding: 8px 10px; resize: vert
 .ed-form .ed-json { min-height: 140px; }
 .pop-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--muted); }
 
-/* Text that opens as an editor on a click; its Edit button shows on hover and focus. */
+/* Text that opens as an editor on a double-click or its Edit button. The button
+   always shows below the text, its icon in line with the text's left edge, and
+   quiet until the text is hovered. */
 .ed-text { position: relative; }
 .ed-text:not(.off) { cursor: text; }
 .ed-text:not(.off) > [data-field="description"] { margin: 0 -10px; padding: 6px 10px; border-radius: 8px; transition: background .12s; }
 .ed-text:not(.off):hover > [data-field="description"], .ed-text:not(.off):hover > .callout { background: var(--surface-raised); }
-.ed-open { position: absolute; top: 2px; right: 2px; opacity: 0; }
-.ed-text:hover > .ed-open, .ed-open:focus-visible { opacity: 1; }
+.btn.ed-open { margin: 4px 0 0 -8px; min-height: 24px; padding: 2px 8px; gap: 5px; color: var(--muted); cursor: pointer; }
+.ed-text:not(.off):hover > .ed-open { border-color: var(--line-strong); background: var(--surface-hover); color: var(--text); }
 .ed-open:disabled { display: none; }
 
 .md-edit { display: flex; flex-direction: column; gap: 8px; }
@@ -71,4 +73,13 @@ textarea.field { height: auto; min-height: 84px; padding: 8px 10px; resize: vert
   resize: none; field-sizing: content; background: var(--surface-raised); box-shadow: 0 0 0 1px var(--line-strong);
   outline: none; color: var(--text);
 }
+/* The title's and the description's Copy, over their top right corner as a code
+   block's is: shown on hover or focus, and always where nothing hovers. */
+.d-title-row { position: relative; }
+.icon-btn.ed-copy {
+  position: absolute; top: 2px; right: 2px; width: 26px; height: 26px;
+  background: var(--surface); border: 1px solid var(--line); opacity: 0;
+}
+.d-title-row:hover > .ed-copy, .ed-text:hover > .ed-copy, .icon-btn.ed-copy:focus-visible { opacity: 1; }
+@media (hover: none) { .icon-btn.ed-copy { opacity: 1; } }
 .ed-reason { min-height: 84px; }

@@ -299,7 +299,7 @@ test("a viewer sees values without editors; offline, the editors are off", async
   expect(buttons.every((button) => button.hasAttribute("disabled"))).toBe(true);
   expect(within(screen.getByRole("heading", { level: 1 })).getByRole("button").hasAttribute("disabled")).toBe(true);
   act(() => {
-    fireEvent.click(screen.getByText("Body"));
+    fireEvent.doubleClick(screen.getByText("Body"));
   });
   expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull();
 });

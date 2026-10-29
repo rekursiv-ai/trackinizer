@@ -27,9 +27,9 @@
 }
 .md-code:hover > .md-copy, .md-copy:focus-visible { opacity: 1; }
 @media (hover: none) { .md-copy { opacity: 1; } }
-/* An editable field's Edit button (.ed-open) holds its top right corner, over a
-   first block's Copy: that Copy sits beside it. */
-.ed-text .md-code:first-child > .md-copy { right: 34px; }
+/* The description's Copy (.ed-copy) holds its top right corner, over a first code
+   block's Copy: that Copy sits beside it. */
+.ed-text > [data-field="description"] .md-code:first-child > .md-copy { right: 34px; }
 .md blockquote { padding-left: 12px; border-left: 2px solid var(--line-strong); color: var(--muted); }
 .md table { border-collapse: collapse; font-size: 13px; display: block; overflow-x: auto; }
 .md th, .md td { border: 1px solid var(--line); padding: 4px 10px; text-align: left; }

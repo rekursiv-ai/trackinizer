@@ -98,7 +98,7 @@ test("the user's own data follows them to a fresh browser: names, stars, saved v
 
   const kept = page.waitForResponse((response) => response.request().method() === "PATCH" && response.url().endsWith("/api/me/preferences") && (response.request().postData() ?? "").includes("drafts"));
   await page.goto(`/trax/lookup/${id}`);
-  await page.getByText("First words.").click();
+  await page.getByText("First words.").dblclick();
   await page.getByRole("textbox", { name: "Description" }).pressSequentially(" My draft.");
   expect((await kept).ok()).toBe(true);
 
