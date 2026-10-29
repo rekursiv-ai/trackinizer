@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Final
 import pytest
 
 from trackinizer.sagent.providers import anthropic, openai
+from trackinizer.sagent.providers.table import models
 from trackinizer.wire.chat_commands import (
     COMMAND_CHARS,
     KNOWN_VERBS,
@@ -47,8 +48,8 @@ def _menu(verb: str) -> Refused:
     )
 
 
-_CLAUDE: Final = anthropic.models("anthropic-cli")
-_CODEX: Final = openai.models("openai-sub")
+_CLAUDE: Final = models(anthropic, section="anthropic-cli")
+_CODEX: Final = models(openai, section="openai-sub")
 _ROLES: Final = ("best", "default", "everyday", "utility")
 _CLAUDE_ALIASES: Final = list(
     dict.fromkeys(_CLAUDE[role].model_id.rpartition("-")[0] for role in _ROLES),
