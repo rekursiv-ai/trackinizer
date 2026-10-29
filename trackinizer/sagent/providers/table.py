@@ -12,8 +12,8 @@ Typical usage example:
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Collection, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Self, cast, override
@@ -26,18 +26,19 @@ from treekle import from_plain
 import yaml
 
 from trackinizer.sagent.model.capability import (
-    ContextSize,
     ModelCapability,
     ModelLimits,
     ModelSettings,
     ThinkingBudget,
-    ThinkingCapability,
     ThinkingEffort,
+    ThinkingOutput,
     literal_members,
+    parse_context_size,
 )
+from trackinizer.sagent.model.context import ContextSizeName
 from trackinizer.sagent.model.cost import (
     PriceCatalog,
-    PriceKey,
+    PriceCondition,
     ServiceTier,
     TokenPrice,
 )
@@ -199,7 +200,7 @@ class ModelTable(Mapping[str, ModelCapability]):
 
         Returns:
           capability: The row.
-          settings: The least-committing settings, at the named size.
+          settings: The row's defaults, at the named size.
 
         Raises:
           UnknownModelError: No row answers to the name.
@@ -207,7 +208,7 @@ class ModelTable(Mapping[str, ModelCapability]):
 
         """
         # Trailing tags, in any order and any case: ``opus+258K`` is ``opus`` at ``+258k``.
-        base, found = model_id, dict[str, ContextSize | int]()
+        base, found = model_id, dict[str, ContextSizeName | int]()
         while (trailing := _trailing_size(base)) is not None:
             tag, size = trailing
             found[tag] = size
@@ -223,12 +224,11 @@ class ModelTable(Mapping[str, ModelCapability]):
             raise UnknownModelError(
                 f"Unknown model {model_id!r}; known models: {known}.",
             )
-        settings = ModelSettings.narrowest(capability)
+        settings = capability.default
         for size in found.values():
-            settings.context = (
-                size
-                if isinstance(size, int)
-                else capability.size(size, tier=settings.service_tier)
+            settings = replace(
+                settings,
+                context_size=capability.prices[settings.service_tier, size],
             )
         return capability, settings
 
@@ -258,7 +258,7 @@ class ModelTags:
     model: str
     """The name without its effort and tier tags; its size tag stays."""
 
-    context: ContextSize | int | None = None
+    context: ContextSizeName | int | None = None
     """The size it names, as ``small`` or ``258_000``; ``None`` for none."""
 
     effort: ThinkingEffort | None = None
@@ -306,12 +306,12 @@ def split_tags(name: str) -> ModelTags:
         choices[choice] = value
     model, *words = spec.split("+")
     kept: list[str] = [model]
-    context: ContextSize | int | None = None
+    context: ContextSizeName | int | None = None
     effort: list[ThinkingEffort] = []
     tier: list[ServiceTier] = []
     for raw in words:
         word = "priority" if raw.lower() == "fast" else raw.lower()
-        size = _size(word)
+        size = parse_context_size(word)
         if size is not None:
             if context is None:
                 context = size
@@ -336,21 +336,10 @@ def split_tags(name: str) -> ModelTags:
     )
 
 
-def _size(word: str) -> ContextSize | int | None:
-    """Return the size ``word`` names: ``small``, ``mid``, ``large``, or ``258k``."""
-    sizes = cast(tuple[ContextSize, ...], literal_members(ContextSize))
-    if word in sizes:
-        return sizes[sizes.index(word)]
-    counted = re.fullmatch(r"([1-9][0-9]*)([km]?)", word)
-    if counted is None:
-        return None
-    return int(counted[1]) * {"": 1, "k": 1_000, "m": 1_000_000}[counted[2]]
-
-
-def _trailing_size(name: str) -> tuple[str, ContextSize | int] | None:
+def _trailing_size(name: str) -> tuple[str, ContextSizeName | int] | None:
     """Return the size tag ``name`` ends with, lowered, and its size; ``None`` if none."""
     head, plus, word = name.rpartition("+")
-    size = _size(word.lower()) if plus and head else None
+    size = parse_context_size(word.lower()) if plus and head else None
     return None if size is None else (f"+{word.lower()}", size)
 
 
@@ -437,16 +426,32 @@ def _require_whole_thinking(layer: dict[str, object]) -> None:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class _Thinking:
+    """The reasoning a row offers, axis by axis, as the catalog states it."""
+
+    effort: frozenset[ThinkingEffort] = frozenset({"none"})
+    budget: frozenset[ThinkingBudget] = frozenset({"none"})
+    output: frozenset[ThinkingOutput] = frozenset({"none"})
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _CapabilityProfile:
     """Model facts several rows share; no identity, prices, or profile of its own."""
 
     knowledge_cutoff: str | None = None
     approx_chars_per_token: float = 4.0
     limits: ModelLimits = field(default_factory=ModelLimits)
-    thinking: ThinkingCapability = field(default_factory=ThinkingCapability)
+    thinking: _Thinking = field(default_factory=_Thinking)
     effort_as_level: bool = False
-    default_effort: ThinkingEffort | None = None
-    default_budget: ThinkingBudget | None = None
+    thinking_effort_default: ThinkingEffort | None = None
+    """The vendor's effort when none is sent; ``None`` is the lowest offered."""
+
+    thinking_budget_default: ThinkingBudget | None = None
+    """Whether the vendor thinks when told nothing; ``None`` is the lowest offered."""
+
+    context_size_default: str | int = "large"
+    """The size a bare id starts at: ``small``, ``mid``, ``large``, or a count."""
+
     cache_ttl_sec: frozenset[float] = frozenset({0.0})
     manage_context_server_side: frozenset[bool] = frozenset({False, True})
     retries_internally: bool = False
@@ -493,26 +498,95 @@ def _model(
         raise ValueError(
             f"Catalog model {row.model_id!r} is missing a price or setting.",
         )
-    catalog = _prices(row)
+    prices = _prices(row)
+    tiers = prices.service_tiers if row.service_tier is None else row.service_tier
+    tier = _lowest("service_tier", tiers, literal_members(ServiceTier))
+    size = (
+        parse_context_size(row.context_size_default.lower())
+        if isinstance(row.context_size_default, str)
+        else row.context_size_default
+    )
+    if size is None or (isinstance(size, int) and size < 1):
+        raise ValueError(
+            f"Model {row.model_id!r} has a bad context_size_default:"
+            f" {row.context_size_default!r}.",
+        )
     return ModelCapability(
         model_id=row.model_id,
         wire_model_id=row.wire_model_id,
         knowledge_cutoff=row.knowledge_cutoff,
         approx_chars_per_token=row.approx_chars_per_token,
         limits=row.limits,
-        thinking=row.thinking,
+        thinking_effort=row.thinking.effort,
+        thinking_budget=row.thinking.budget,
+        thinking_output=row.thinking.output,
         effort_as_level=row.effort_as_level,
-        default_effort=row.default_effort,
-        default_budget=row.default_budget,
-        prices=catalog,
-        service_tier=catalog.service_tiers
-        if row.service_tier is None
-        else row.service_tier,
+        prices=prices,
+        service_tier=tiers,
         cache_ttl_sec=row.cache_ttl_sec,
         manage_context_server_side=row.manage_context_server_side,
         retries_internally=row.retries_internally,
         account_auth=row.account_auth,
+        default=ModelSettings(
+            thinking_effort=_lowest(
+                "thinking_effort",
+                row.thinking.effort,
+                _effort_ladder(
+                    row.thinking_effort_default,
+                    literal_members(ThinkingEffort),
+                ),
+            ),
+            thinking_budget=_lowest(
+                "thinking_budget",
+                row.thinking.budget,
+                _default_first(
+                    row.thinking_budget_default,
+                    literal_members(ThinkingBudget),
+                ),
+            ),
+            thinking_output=_lowest(
+                "thinking_output",
+                row.thinking.output,
+                literal_members(ThinkingOutput),
+            ),
+            service_tier=tier,
+            cache_ttl_sec=_lowest(
+                "cache_ttl_sec",
+                row.cache_ttl_sec,
+                sorted(row.cache_ttl_sec),
+            ),
+            manage_context_server_side=_lowest(
+                "manage_context_server_side",
+                row.manage_context_server_side,
+                (False, True),
+            ),
+            context_size=prices[tier, size],
+        ),
     )
+
+
+# A default the row lacks falls to the nearest level below it, then above, and only then
+# to ``none``, which stops the reasoning.
+def _effort_ladder(
+    default: ThinkingEffort | None,
+    efforts: tuple[ThinkingEffort, ...],
+) -> tuple[ThinkingEffort, ...]:
+    """Return ``efforts`` in the order a row's default tries them."""
+    at = efforts.index(default) if default is not None else 0
+    return (*efforts[at:0:-1], *efforts[at + 1 :], efforts[0]) if at else efforts
+
+
+def _default_first[T](default: T | None, ladder: tuple[T, ...]) -> tuple[T, ...]:
+    """Return ``ladder`` with ``default``, when one is given, tried first."""
+    return ladder if default is None else (default, *ladder)
+
+
+def _lowest[T](name: str, offered: Collection[T], ladder: Sequence[T]) -> T:
+    """Return the first rung of ``ladder`` that ``offered`` contains."""
+    for rung in ladder:
+        if rung in offered:
+            return rung
+    raise ValueError(f"{name} offers nothing selectable: {offered!r}")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -521,6 +595,8 @@ class _PriceRow(TokenPrice):
 
     service_tier: ServiceTier = "auto"
     effective_prompt_tokens: int = 0
+    """Prompts larger than this; ``0`` is every prompt."""
+
     effective_date: str | date = "0001-01-01"
 
 
@@ -556,7 +632,13 @@ def _check_limits(row: _ModelRow) -> None:
 
 def _prices(row: _ModelRow) -> PriceCatalog:
     """Return the row's rate cards, keyed by tier, prompt band, and start date."""
-    prices: dict[PriceKey, TokenPrice] = {}
+    # A card applies to prompts larger than its threshold, up to the next one's.
+    thresholds: dict[ServiceTier, list[int]] = {}
+    for card in row.prices:
+        thresholds.setdefault(card.service_tier, []).append(
+            card.effective_prompt_tokens,
+        )
+    prices: dict[PriceCondition, TokenPrice] = {}
     for card in row.prices:
         rates = (
             card.request,
@@ -573,10 +655,18 @@ def _prices(row: _ModelRow) -> PriceCatalog:
             or any(rate < 0 or not math.isfinite(rate) for rate in rates)
         ):
             raise ValueError(f"Model {row.model_id!r} has an invalid price.")
-        key = PriceKey(
-            card.service_tier,
-            card.effective_prompt_tokens,
-            date.fromisoformat(card.effective_date)
+        above = card.effective_prompt_tokens
+        ceil = min(
+            (t for t in thresholds[card.service_tier] if t > above),
+            default=None,
+        )
+        key = PriceCondition(
+            service_tier=card.service_tier,
+            token_size_range=(
+                above + 1 if above else 0,
+                math.inf if ceil is None else ceil + 1,
+            ),
+            effective_date=date.fromisoformat(card.effective_date)
             if isinstance(card.effective_date, str)
             else card.effective_date,
         )
@@ -590,13 +680,17 @@ def _prices(row: _ModelRow) -> PriceCatalog:
             cache_read=card.cache_read,
             tokens_per_unit=card.tokens_per_unit,
         )
-    # ``rate`` raises for a request no card covers; only an undated card with
-    # no prompt band covers every prompt on every day.
-    tiers: set[ServiceTier] = {key.service_tier for key in prices}
-    for tier in tiers:
-        if PriceKey(tier) not in prices:
+    # A lookup raises for a request no card covers; only an undated card with
+    # no prompt band covers every small prompt on every day.
+    for tier in thresholds:
+        if not any(
+            c.service_tier == tier
+            and c.token_size_range[0] == 0
+            and c.effective_date == date.min
+            for c in prices
+        ):
             raise ValueError(
                 f"Model {row.model_id!r} has no base card for tier {tier!r}"
                 " (no prompt band, no effective date).",
             )
-    return PriceCatalog(prices)
+    return PriceCatalog(prices=prices, window=row.limits.max_request_tokens)

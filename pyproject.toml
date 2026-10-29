@@ -33,7 +33,8 @@ dependencies = [
     # through `lib/`, at import time or later.
     # 0.3.3 adds `default_concrete_types`, `target` and `classes`, which session
     # records and the wire documents are written and read with.
-    "treekle>=0.3.3",
+    # 0.4.1 leaves dataclass fields at their defaults out of trees.
+    "treekle>=0.4.1",
     "websockets>=15",
     # http client
     "httpx2>=2.12",
@@ -91,7 +92,7 @@ typecheck = [
     "basedpyright>=1.40.1",
     "pyrefly>=1.4.0",
     "ty>=0.0.84",
-    "rekursiv-ai-typings>=0.1.6",
+    "rekursiv-ai-typings>=0.1.11",
     "asyncpg-stubs>=0.31.2",
 ]
 "pre-commit" = [

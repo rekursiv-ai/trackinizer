@@ -5,9 +5,7 @@
   "kind": "SystemMessage",
   "model": null,
   "payload": {
-    "attachments": [],
     "content": "claude waits for trust in ~/proj",
-    "context_id": null,
     "extra": {
       "$interaction": {
         "cli": "claude",

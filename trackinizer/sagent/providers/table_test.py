@@ -6,6 +6,8 @@ from datetime import date
 from types import MappingProxyType
 from typing import TYPE_CHECKING, override
 
+import itertools
+import math
 import re
 
 import pytest
@@ -14,9 +16,9 @@ import yaml
 from trackinizer.sagent.model.capability import (
     ModelCapability,
     ModelLimits,
-    ThinkingCapability,
+    ModelSettings,
 )
-from trackinizer.sagent.model.cost import PriceCatalog, PriceKey, TokenPrice
+from trackinizer.sagent.model.cost import PriceCatalog, PriceCondition, TokenPrice
 from trackinizer.sagent.model.exceptions import UnknownModelError, UnsupportedTagError
 from trackinizer.sagent.providers.table import ModelTable, ModelTags, split_tags
 
@@ -34,6 +36,11 @@ _FREE = {
     "cache_read": 0.0,
 }
 _THINKING = {"effort": ["none"], "budget": ["none"], "output": ["none"]}
+_EVERY = {
+    "effort": ["none", "low", "high"],
+    "budget": ["none", "auto", "fixed"],
+    "output": ["none"],
+}
 _WHOLE = "A catalog's thinking must state effort, budget, and output."
 _ALIASES = "Catalogs may not use YAML aliases."
 
@@ -49,12 +56,13 @@ def _row(
     window: int = 1_000_000,
     bands: tuple[int, ...] = (),
 ) -> ModelCapability:
-    free = TokenPrice(
-        request=0.0,
-        response=0.0,
-        cache_write=0.0,
-        cache_write_1h=0.0,
-        cache_read=0.0,
+    edges: tuple[int | float, ...] = (0, *(band + 1 for band in bands), math.inf)
+    prices = PriceCatalog(
+        prices={
+            PriceCondition(token_size_range=(int(lo), hi)): TokenPrice()
+            for lo, hi in itertools.pairwise(edges)
+        },
+        window=window,
     )
     return ModelCapability(
         model_id=model_id,
@@ -64,9 +72,8 @@ def _row(
             else wire_model_id
         ),
         limits=ModelLimits(max_request_tokens=window),
-        prices=PriceCatalog(
-            {PriceKey("auto", band): free for band in (0, *bands)},
-        ),
+        prices=prices,
+        default=ModelSettings(context_size=prices["auto", "large"]),
     )
 
 
@@ -244,12 +251,9 @@ def test_families_may_interleave() -> None:
 def test_resolve_returns_the_row_and_settings_for_its_size() -> None:
     capability, settings = _table().resolve("opus-4.8+258k")
     assert capability.model_id == "opus-4.8"
-    assert settings.capability is capability
-    assert settings.context == 258_000
-    assert settings.window == 258_000
+    assert settings.context_size.tokens == 258_000
     _, untagged = _table().resolve("opus-4.8")
-    assert untagged.context == 0
-    assert untagged.window == 1_000_000
+    assert untagged == capability.default
 
 
 @pytest.mark.parametrize("model_id", ["opus-5+258K", "opus-5+258k", "utility+258k"])
@@ -259,7 +263,7 @@ def test_resolve_follows_roles_families_and_tags_in_any_case(model_id: str) -> N
         roles={"utility": "sonnet"},
     )
     capability, settings = table.resolve(model_id)
-    assert settings.context == 258_000
+    assert settings.context_size.tokens == 258_000
     assert capability.model_id == (
         "sonnet-4.6" if "utility" in model_id else "opus-5.5"
     )
@@ -267,7 +271,7 @@ def test_resolve_follows_roles_families_and_tags_in_any_case(model_id: str) -> N
 
 def test_a_repeated_tag_is_one_tag() -> None:
     _, settings = _table().resolve("opus+1m+1M")
-    assert settings.context == 1_000_000
+    assert settings.context_size.tokens == 1_000_000
 
 
 @pytest.mark.parametrize(
@@ -275,10 +279,10 @@ def test_a_repeated_tag_is_one_tag() -> None:
     [
         ("+small", (32_000, 256_000), 32_000),
         ("+mid", (32_000, 256_000), 256_000),
-        ("+large", (32_000, 256_000), 0),
+        ("+large", (32_000, 256_000), 1_000_000),
         ("+small", (272_000,), 272_000),
-        ("+mid", (272_000,), 0),
-        ("+small", (), 0),
+        ("+mid", (272_000,), 1_000_000),
+        ("+small", (), 1_000_000),
     ],
 )
 def test_small_mid_and_large_read_the_price_bands(
@@ -288,7 +292,7 @@ def test_small_mid_and_large_read_the_price_bands(
 ) -> None:
     row = _row(bands=bands)
     _, settings = ModelTable(rows=(row,)).resolve(f"opus-4.8{tag}")
-    assert settings.context == context
+    assert settings.context_size.tokens == context
 
 
 @pytest.mark.parametrize(
@@ -297,14 +301,16 @@ def test_small_mid_and_large_read_the_price_bands(
         ("+200k", 200_000),
         ("+272k", 272_000),
         ("+1m", 1_000_000),
-        ("+2m", 2_000_000),
+        ("+2m", 1_000_000),
         ("+258123", 258_123),
     ],
 )
-def test_a_size_tag_is_that_many_tokens(tag: str, tokens: int) -> None:
+def test_a_size_tag_is_that_many_tokens_within_the_window(
+    tag: str,
+    tokens: int,
+) -> None:
     _, settings = _table().resolve(f"opus-4.8{tag}")
-    assert settings.context == tokens
-    assert settings.window == min(tokens, 1_000_000)
+    assert settings.context_size.tokens == tokens
 
 
 @pytest.mark.parametrize(
@@ -477,45 +483,40 @@ providers:
     assert row.knowledge_cutoff == "May 2025"
     assert row.limits.max_request_tokens == 1000
     # The section's ``thinking`` replaces only the axes it names.
-    assert row.thinking == ThinkingCapability(
-        effort=frozenset({"none", "low"}),
-        budget=frozenset({"none", "auto"}),
-        output=frozenset({"none", "text"}),
+    assert (row.thinking_effort, row.thinking_budget, row.thinking_output) == (
+        {"none", "low"},
+        {"none", "auto"},
+        {"none", "text"},
     )
     assert row.effort_as_level
     assert row.retries_internally
     assert row.account_auth
     assert row.service_tier == {"auto", "default", "priority"}
-    assert dict(row.prices) == {
-        PriceKey("auto"): TokenPrice(
+    assert row.prices.window == 1000
+    # A card applies to prompts past its threshold, up to the next card's.
+    assert dict(row.prices.prices) == {
+        PriceCondition(): TokenPrice(
             request=1.0,
             response=2.0,
-            cache_write=0.0,
-            cache_write_1h=0.0,
             cache_read=0.1,
             tokens_per_unit=1000,
         ),
-        PriceKey("priority"): TokenPrice(
-            request=2.0,
-            response=4.0,
-            cache_write=0.0,
-            cache_write_1h=0.0,
-            cache_read=0.2,
-        ),
-        PriceKey("priority", 100, date(2026, 10, 7)): TokenPrice(
-            request=3.0,
-            response=6.0,
-            cache_write=0.0,
-            cache_write_1h=0.0,
-            cache_read=0.3,
-        ),
+        PriceCondition(
+            service_tier="priority",
+            token_size_range=(0, 101),
+        ): TokenPrice(request=2.0, response=4.0, cache_read=0.2),
+        PriceCondition(
+            service_tier="priority",
+            token_size_range=(101, math.inf),
+            effective_date=date(2026, 10, 7),
+        ): TokenPrice(request=3.0, response=6.0, cache_read=0.3),
     }
 
 
 @pytest.mark.parametrize(
     ("layers", "effort"),
     [
-        ({}, None),
+        ({}, "none"),
         ({"reference": "high"}, "high"),
         ({"reference": "high", "vendor": "low"}, "low"),
         ({"reference": "high", "model": "low"}, "low"),
@@ -527,10 +528,10 @@ providers:
 def test_the_default_effort_layers_like_any_field(
     tmp_path: Path,
     layers: dict[str, str],
-    effort: str | None,
+    effort: str,
 ) -> None:
     def given(layer: str) -> dict[str, object]:
-        return {"default_effort": layers[layer]} if layer in layers else {}
+        return {"thinking_effort_default": layers[layer]} if layer in layers else {}
 
     entry = {"models": {"example-1.0": given("entry")}} if "entry" in layers else {}
     path = _write(
@@ -540,28 +541,75 @@ def test_the_default_effort_layers_like_any_field(
         extra={
             "reference": {
                 "limits": {"max_request_tokens": 1000},
-                "thinking": _THINKING,
+                "thinking": _EVERY,
                 **given("reference"),
             },
         },
     )
-    assert _load(path)["example"].default_effort == effort
+    assert _load(path)["example"].default.thinking_effort == effort
 
 
 def test_the_default_budget_layers_like_any_field(tmp_path: Path) -> None:
     path = _write(
         tmp_path / "x.yaml",
-        _model() | {"default_budget": "auto"},
-        vendor={"models": {"example-1.0": {"default_budget": "fixed"}}},
+        _model() | {"thinking_budget_default": "auto"},
+        vendor={"models": {"example-1.0": {"thinking_budget_default": "fixed"}}},
+        extra={
+            "reference": {
+                "limits": {"max_request_tokens": 1000},
+                "thinking": _EVERY,
+                "thinking_budget_default": "none",
+            },
+        },
+    )
+    assert _load(path)["example"].default.thinking_budget == "fixed"
+
+
+@pytest.mark.parametrize(
+    ("default", "effort"),
+    [("medium", "low"), ("max", "high"), ("min", "low")],
+    ids=["nearest-below", "nearest-below-top", "nearest-above"],
+)
+def test_a_default_effort_the_row_lacks_falls_to_its_nearest_level(
+    tmp_path: Path,
+    default: str,
+    effort: str,
+) -> None:
+    path = _write(
+        tmp_path / "x.yaml",
+        _model(thinking=_EVERY, thinking_effort_default=default),
+    )
+    assert _load(path)["example"].default.thinking_effort == effort
+
+
+@pytest.mark.parametrize(
+    ("default", "context"),
+    [(None, 1000), ("large", 1000), ("small", 400), (700, 700)],
+    ids=["unset", "large", "small", "count"],
+)
+def test_a_row_names_the_size_a_bare_id_starts_at(
+    tmp_path: Path,
+    default: str | int | None,
+    context: int,
+) -> None:
+    banded = [dict(_FREE), _FREE | {"effective_prompt_tokens": 400}]
+    given: dict[str, object] = (
+        {} if default is None else {"context_size_default": default}
+    )
+    path = _write(
+        tmp_path / "x.yaml",
+        _model(prices=banded) | given,
         extra={
             "reference": {
                 "limits": {"max_request_tokens": 1000},
                 "thinking": _THINKING,
-                "default_budget": "none",
             },
         },
     )
-    assert _load(path)["example"].default_budget == "fixed"
+    _, settings = _load(path).resolve("example-1.0")
+    assert settings.context_size.tokens == context
+    _, tagged = _load(path).resolve("example-1.0+300")
+    assert tagged.context_size.tokens == 300
 
 
 def test_a_section_may_narrow_the_tiers_offered(tmp_path: Path) -> None:
@@ -589,14 +637,8 @@ def test_a_card_starts_on_its_effective_date(tmp_path: Path, quoted: bool) -> No
     )
     path.write_text(text)
     prices = _load(path)["example"].prices
-    assert (
-        prices.rate(service_tier="auto", prompt_tokens=1, at=date(2026, 10, 6)).request
-        == 0.0
-    )
-    assert (
-        prices.rate(service_tier="auto", prompt_tokens=1, at=date(2026, 10, 7)).request
-        == 1.0
-    )
+    assert prices["auto", 1, date(2026, 10, 6)].request == 0.0
+    assert prices["auto", 1, date(2026, 10, 7)].request == 1.0
 
 
 @pytest.mark.parametrize(
@@ -622,7 +664,9 @@ def test_a_card_starts_on_its_effective_date(tmp_path: Path, quoted: bool) -> No
         ),
         ([_model()], {"profiles": {"p": {"typo": True}}}, "typo"),
         ([_model(context={"large": {}})], {}, "context"),
-        ([_model(default_context="large")], {}, "default_context"),
+        ([_model(context_size_default="huge")], {}, "context_size_default"),
+        ([_model(context_size_default=0)], {}, "context_size_default"),
+        ([_model(cache_ttl_sec=[])], {}, "^cache_ttl_sec offers nothing selectable"),
         ([_model()], {"unknown": True}, "unknown"),
     ],
 )
@@ -750,7 +794,7 @@ def test_every_priced_tier_needs_a_base_card(
 
 def test_a_card_given_twice_is_rejected(tmp_path: Path) -> None:
     path = _write(tmp_path / "x.yaml", _model(prices=[dict(_FREE), dict(_FREE)]))
-    with pytest.raises(ValueError, match="prices PriceKey"):
+    with pytest.raises(ValueError, match="prices PriceCondition"):
         _load(path)
 
 
@@ -815,7 +859,12 @@ def test_a_catalog_without_thinking_offers_none(tmp_path: Path) -> None:
         " response: 0, cache_write: 0, cache_write_1h: 0, cache_read: 0}]}\n"
         "providers: {vendor: {models: {a-1.0: }}}\n",
     )
-    assert _load(path)["a"].thinking == ThinkingCapability()
+    row = _load(path)["a"]
+    assert (row.thinking_effort, row.thinking_budget, row.thinking_output) == (
+        {"none"},
+        {"none"},
+        {"none"},
+    )
 
 
 def test_a_section_narrows_each_thinking_axis_and_states_transport_facts(
@@ -833,10 +882,10 @@ def test_a_section_narrows_each_thinking_axis_and_states_transport_facts(
     }
     path = _write(tmp_path / "x.yaml", _model(thinking=thinking), vendor=vendor)
     row = _load(path)["example"]
-    assert row.thinking == ThinkingCapability(
-        effort=frozenset({"none", "high"}),
-        budget=frozenset({"none"}),
-        output=frozenset({"text"}),
+    assert (row.thinking_effort, row.thinking_budget, row.thinking_output) == (
+        {"none", "high"},
+        {"none"},
+        {"text"},
     )
     assert row.cache_ttl_sec == {300.0, 3600.0}
     assert row.manage_context_server_side == {True}
@@ -855,7 +904,7 @@ def test_small_positive_estimates_and_units_are_valid(
     )
     row = _load(path)["example"]
     assert row.approx_chars_per_token == estimate
-    assert row.prices[PriceKey("auto")].tokens_per_unit == unit
+    assert row.prices["auto", 1, date.min].tokens_per_unit == unit
 
 
 def test_small_is_the_top_of_the_cheapest_price_band(tmp_path: Path) -> None:
@@ -868,10 +917,12 @@ def test_small_is_the_top_of_the_cheapest_price_band(tmp_path: Path) -> None:
         tmp_path / "x.yaml",
         _model(limits={"max_request_tokens": 1_050_000}, prices=[cheap, dear]),
     )
-    _, settings = _load(path).resolve("example+small")
-    assert settings.context == 272_000
-    assert settings.window == 272_000
-    assert settings.limits.max_request_tokens == 1_050_000
+    capability, settings = _load(path).resolve("example+small")
+    assert settings.context_size.tokens == 272_000
+    assert capability.limits.max_request_tokens == 1_050_000
+    # Vendors publish "prompts > 272k": exactly 272k is still the base band.
+    assert capability.prices["auto", 272_000, date.min].request == 0.0
+    assert capability.prices["auto", 272_001, date.min].request == 1.0
 
 
 @pytest.mark.parametrize("model_id", ["opus-x.5", "opus-5.x", "opus-5."])

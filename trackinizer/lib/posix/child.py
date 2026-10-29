@@ -17,7 +17,7 @@ Typical usage example:
 from __future__ import annotations
 
 from asyncio.subprocess import Process
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import IO, TYPE_CHECKING, Self
 
 import asyncio
@@ -37,7 +37,7 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(slots=True, kw_only=True)
 class Child:
     """A process this program started, and the process group it leads if asked to.
 
@@ -45,13 +45,15 @@ class Child:
       process: The process, whose pipes the caller reads and writes.
       group: Whether it leads a process group of its own, which ``stop`` ends
         whole: the jobs it started too, whether or not it is still running.
-      grace_sec: How long ``stop`` gives it, after TERM, before KILL.
+      grace_sec: How long ``stop`` gives it, after TERM, before KILL; ``0``
+        kills it outright, sending no TERM.
 
     """
 
     process: Process
     group: bool
     grace_sec: float
+    _stopped: int | None = field(default=None, init=False)
 
     # Each option spelled out: an open ``TypedDict`` of them cannot be unpacked
     # into ``create_subprocess_exec``, whose other keywords it would admit.
@@ -104,8 +106,9 @@ class Child:
         try:
             process = await asyncio.shield(starting)
         except asyncio.CancelledError:
-            # A start that failed left nothing to stop.
-            with contextlib.suppress(OSError):
+            # A start that failed left nothing to stop, and its error is not
+            # the caller's: the cancel is.
+            with contextlib.suppress(Exception):
                 await cls(process=await starting, group=group, grace_sec=0.0).stop()
             raise
         return cls(process=process, group=group, grace_sec=grace_sec)
@@ -140,25 +143,31 @@ class Child:
         """
         return await finish(self._stop())
 
+    # Stopped once, the group is not signalled again: its id may by then name
+    # another group.
     async def _stop(self) -> int:
-        if self.process.returncode is None:
+        if self._stopped is not None:
+            return self._stopped
+        if self.process.returncode is None and self.grace_sec > 0:
             self._signal(signal.SIGTERM)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.exited(), timeout=self.grace_sec)
         # A group outlives its leader while any job in it runs.
         if self.group or self.process.returncode is None:
             self._signal(signal.SIGKILL)
-        return await self.exited()
+        self._stopped = await self.exited()
+        return self._stopped
 
     def _signal(self, sig: int) -> None:
         """Send ``sig`` to the group, else to the process; one that has gone is fine."""
         if self.group:
-            # Failing, the group has gone: signal the process alone.
-            with contextlib.suppress(ProcessLookupError):
+            # Failing, the group has gone, or its jobs run as another user:
+            # signal the process alone.
+            with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(self.process.pid, sig)
                 return
         if self.process.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
                 self.process.send_signal(sig)
 
 

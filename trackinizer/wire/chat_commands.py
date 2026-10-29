@@ -357,7 +357,7 @@ def _offered(
             ChatModel(
                 id=name(row),
                 label=f"{family.capitalize()} {version}",
-                efforts=[level for level in _LEVELS if level in row.thinking.effort],
+                efforts=[level for level in _LEVELS if level in row.thinking_effort],
                 default=name(row) == default,
             ),
         )
