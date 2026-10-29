@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Final
 import re
 
 from trackinizer.sagent.providers import anthropic, openai
+from trackinizer.sagent.providers.table import models
 from trackinizer.wire.wire_science_chat import ChatModel, ChatModels
 
 
@@ -343,9 +344,9 @@ def _table(provider: ChatProvider) -> ModelTable:
     """Return the models the provider's CLI serves: its own catalog section."""
     match provider:
         case "claude":
-            return anthropic.models("anthropic-cli")
+            return models(anthropic, section="anthropic-cli")
         case "codex":
-            return openai.models("openai-sub")
+            return models(openai, section="openai-sub")
         case "assistant":
             raise ValueError("The assistant takes no /model.")
 
