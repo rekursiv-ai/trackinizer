@@ -445,9 +445,9 @@ def choice_field(choice: str) -> ModelSettingName:
       KeyError: A line spells no such choice.
 
     """
-    for field in _choices():
-        if choice in (field, field.removeprefix("thinking_")):
-            return field
+    for name in _choices():
+        if choice in (name, name.removeprefix("thinking_")):
+            return name
     raise KeyError(choice)
 
 
