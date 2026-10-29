@@ -12,8 +12,8 @@ roles:
 reference:
   # What Codex picks unasked where it serves the model, else the API's own.
   # A model that can reason does unasked; the wire has no budget to send.
-  default_effort: medium
-  default_budget: auto
+  thinking_effort_default: medium
+  thinking_budget_default: auto
   approx_chars_per_token: 3.71
   # A 1.05M window takes input only up to the room a full reply needs, whatever
   # max_output_tokens says; a reply asked past the window is served and cut.
@@ -80,7 +80,7 @@ profiles:
       output: [none, text]
 
   gpt_5_4:
-    default_effort: none
+    thinking_effort_default: none
     limits:
       max_request_tokens: 921_000
       max_context_tokens: 1_050_000
@@ -94,7 +94,7 @@ profiles:
       output: [none, text]
 
   gpt_mini_5_4:
-    default_effort: none
+    thinking_effort_default: none
     limits:
       max_request_tokens: 272_000
       max_context_tokens: 400_000
@@ -108,7 +108,7 @@ profiles:
       output: [none, text]
 
   gpt_5_2:
-    default_effort: none
+    thinking_effort_default: none
     limits:
       max_request_tokens: 272_000
       max_context_tokens: 400_000
@@ -134,7 +134,7 @@ profiles:
       output: [none, text]
 
   gpt_5_1:
-    default_effort: none
+    thinking_effort_default: none
     limits:
       max_request_tokens: 272_000
       max_context_tokens: 400_000
@@ -148,8 +148,8 @@ profiles:
       output: [none, text]
 
   gpt_4_1:
-    default_effort: none
-    default_budget: none
+    thinking_effort_default: none
+    thinking_budget_default: none
     limits:
       max_request_tokens: 1_047_576
       max_response_tokens: 32_768
@@ -159,8 +159,8 @@ profiles:
 
   # gpt-4o-mini served 120,014 input tokens beside max_output_tokens 16,384.
   gpt_omni:
-    default_effort: none
-    default_budget: none
+    thinking_effort_default: none
+    thinking_budget_default: none
     limits:
       max_request_tokens: 128_000
       max_response_tokens: 16_384
@@ -229,7 +229,7 @@ models:
 
 - model_id: sol-6.1
   wire_model_id: gpt-6.1-sol
-  default_effort: low
+  thinking_effort_default: low
   profile: reasoning_only
   knowledge_cutoff: April 30, 2026
   prices:
@@ -365,7 +365,7 @@ models:
 
 - model_id: sol-5.6
   wire_model_id: gpt-5.6-sol
-  default_effort: low
+  thinking_effort_default: low
   profile: gpt_5_6
   knowledge_cutoff: February 16, 2026
   prices:
@@ -584,7 +584,7 @@ models:
 
 - model_id: gpt-pro-5.5
   wire_model_id: gpt-5.5-pro
-  default_effort: high
+  thinking_effort_default: high
   profile: gpt_pro_1m
   knowledge_cutoff: December 1, 2025
   prices:

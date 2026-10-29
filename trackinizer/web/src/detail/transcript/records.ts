@@ -96,6 +96,16 @@ export type DiffLine = { readonly kind: "hunk" | "ctx" | "del" | "add"; readonly
 
 type Fields = { readonly [field: string]: unknown };
 
+/**
+ * The defaults, from `trackinizer/sagent/session/types.py`, of the fields this view tells apart by
+ * whether they are there: the server stores a record with each field at its default left out.
+ */
+const FIELD_DEFAULTS: { readonly [kind: string]: Fields } = {
+  ShellCommandResult: { stdout: "", stderr: "" },
+  FileEditResult: { edits: [] },
+  WebSearchResults: { content: [] },
+};
+
 /** What `record` shows, read from its kind and payload. */
 export function recordView(record: SessionRecord): RecordView {
   const payload = record.payload ?? {};
@@ -428,7 +438,7 @@ export function clipLines(
 
 /** How `record` shows but its attachments, read from its kind and payload. */
 function shapeOf(record: SessionRecord): Shape {
-  const payload = record.payload ?? {};
+  const payload = { ...FIELD_DEFAULTS[record.kind], ...record.payload };
   const field = (name: string) => stringField(payload, name);
   const extra = isFields(payload.extra) ? payload.extra : {};
   // Claude keeps a tool result's block beside the record (`_read_tool_result`

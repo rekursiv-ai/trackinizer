@@ -138,15 +138,26 @@ test("bookkeeping is the harness's records; a legacy turn and a model change are
   expect(recordView(records[4]!)).toEqual({ shape: "note", label: "Model: b", meta: "", attachments: "", tool: null, failed: false });
 });
 
+test("a result written with its defaults left out shows as one written in full", () => {
+  // The server stores a record with each field at its default left out (`to_plain`).
+  const cases: [string, { [field: string]: unknown }, { [field: string]: unknown }][] = [
+    ["ShellCommandResult", { command: ["true"], exit_code: 0 }, { stdout: "", stderr: "" }],
+    ["FileEditResult", { path: "a.py" }, { edits: [] }],
+    ["WebSearchResults", { query: "pglite" }, { content: [] }],
+  ];
+  for (const [kind, written, defaults] of cases) {
+    expect(recordView(record(kind, written))).toEqual(recordView(record(kind, { ...written, ...defaults })));
+  }
+});
+
 test("a tool result shows its text, where it acted, and whether it failed", () => {
-  expect(recordView(record("ShellCommandResult", { exit_code: 2 }, "no such file"))).toEqual({
-    shape: "output",
+  expect(recordView(record("ShellCommandResult", { stderr: "no such file", exit_code: 2 }, "no such file"))).toMatchObject({
+    shape: "shell",
     label: "Shell command",
-    source: "",
-    meta: "",
-    text: "no such file",
+    stdout: "",
+    stderr: "no such file",
+    exit: 2,
     failed: true,
-    attachments: "",
     tool: "command",
   });
   expect(recordView(record("FileReadResult", { path: "/work/a.py" }, "print(1)"))).toMatchObject({

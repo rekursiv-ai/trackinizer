@@ -5,9 +5,7 @@
   "kind": "SystemMessage",
   "model": null,
   "payload": {
-    "attachments": [],
     "content": "/goal ship it",
-    "context_id": null,
     "extra": {
       "$command": {
         "args": "ship it",

@@ -7,26 +7,24 @@ along with the deadlock a naive one-stream-at-a-time reader would hit.
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 from typing import IO, TYPE_CHECKING
 from unittest.mock import patch
 
 import asyncio
-import contextlib
-import os
 import signal
 import sys
-import time
 
 import pytest
 
+from trackinizer.lib.posix.pids import gone_within, kill_and_reap, written_pid
 from trackinizer.lib.posix.pipes import Piped, Stream
 
 
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
-    from collections.abc import Collection, Iterator, Mapping, Sequence
+    from collections.abc import Collection, Iterator, Mapping
+    from pathlib import Path
 
 
 @pytest.fixture
@@ -34,9 +32,7 @@ def started() -> Iterator[list[int]]:
     """Collect the pids a test starts; whatever still runs at teardown is killed."""
     pids: list[int] = []
     yield pids
-    for pid in pids:
-        with contextlib.suppress(ProcessLookupError):
-            os.kill(pid, signal.SIGKILL)
+    kill_and_reap(pids)
 
 
 def test_stdout_and_stderr_arrive_on_their_own_streams() -> None:
@@ -179,10 +175,10 @@ async def test_terminate_kills_a_child_that_ignores_term_after_the_grace(
         terminate_grace_sec=0.05,
     )
     await child.start()
-    started.append(await _written_pid(tmp_path / "shell.pid"))
+    started.append(await written_pid(tmp_path / "shell.pid"))
     await asyncio.wait_for(child.terminate(), timeout=5)
     assert await child.wait() == -signal.SIGKILL
-    assert await _gone_within(started)
+    assert await gone_within(started)
 
 
 @pytest.mark.asyncio
@@ -196,9 +192,9 @@ async def test_terminate_ends_a_job_that_ignores_term_after_its_shell_exits(
         cwd=tmp_path,
         terminate_grace_sec=0.05,
     ) as child:
-        started.append(await _written_pid(tmp_path / "job.pid"))
+        started.append(await written_pid(tmp_path / "job.pid"))
         await asyncio.wait_for(child.terminate(), timeout=5)
-    assert await _gone_within(started)
+    assert await gone_within(started)
 
 
 @pytest.mark.asyncio
@@ -240,12 +236,12 @@ async def test_a_cancel_while_the_child_starts_stops_it_and_its_jobs(
     starting = asyncio.create_task(
         Piped(["sh", "-c", "sleep 60 & echo $! > job.pid; wait"], cwd=tmp_path).start(),
     )
-    started.append(await _written_pid(tmp_path / "job.pid"))
+    started.append(await written_pid(tmp_path / "job.pid"))
     starting.cancel()
     handed.set()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(starting, timeout=5)
-    assert await _gone_within(started)
+    assert await gone_within(started)
 
 
 @pytest.mark.asyncio
@@ -259,13 +255,13 @@ async def test_a_terminate_cancelled_midway_still_ends_the_child(
         terminate_grace_sec=0.05,
     )
     await child.start()
-    started.append(await _written_pid(tmp_path / "shell.pid"))
+    started.append(await written_pid(tmp_path / "shell.pid"))
     terminating = asyncio.create_task(child.terminate())
     await asyncio.sleep(0.01)
     terminating.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(terminating, timeout=5)
-    assert await _gone_within(started)
+    assert await gone_within(started)
 
 
 @pytest.mark.asyncio
@@ -278,7 +274,7 @@ async def test_wait_returns_while_a_job_that_left_the_group_holds_the_pipes(
         ["sh", "-c", "setsid sleep 60 & echo $! > job.pid"],
         cwd=tmp_path,
     ) as child:
-        started.append(await _written_pid(tmp_path / "job.pid"))
+        started.append(await written_pid(tmp_path / "job.pid"))
         assert await asyncio.wait_for(child.wait(), timeout=5) == 0
 
 
@@ -319,46 +315,6 @@ class _FakeChild:
 
     def __init__(self, *, stdin: object) -> None:
         self.process = SimpleNamespace(stdin=stdin, stdout=None, stderr=None)
-
-
-async def _written_pid(path: Path) -> int:
-    """Wait until ``path`` holds a pid, then return it."""
-    async with asyncio.timeout(5):
-        while True:
-            text = _read(path)
-            if text:
-                return int(text)
-            await asyncio.sleep(0.01)
-
-
-def _read(path: Path) -> str:
-    """Return ``path``'s text, stripped; empty until it is written."""
-    return path.read_text().strip() if path.exists() else ""
-
-
-def _running(pid: int) -> bool:
-    """Whether ``pid`` runs; a zombie, which waits only to be reaped, does not."""
-    stat = Path(f"/proc/{pid}/stat")
-    if stat.parent.parent.is_dir():
-        try:
-            return stat.read_text().split(") ", 1)[1][0] != "Z"
-        except FileNotFoundError:
-            return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-async def _gone_within(pids: Sequence[int], *, seconds: float = 3.0) -> bool:
-    """Whether every process in ``pids`` has ended within ``seconds``."""
-    deadline = time.monotonic() + seconds
-    while any(_running(pid) for pid in pids):
-        if time.monotonic() > deadline:
-            return False
-        await asyncio.sleep(0.01)
-    return True
 
 
 if __name__ == "__main__":

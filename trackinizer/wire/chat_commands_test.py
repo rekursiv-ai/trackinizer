@@ -432,7 +432,7 @@ def test_the_picker_offers_what_model_takes_with_each_models_efforts(
         assert model.efforts == [
             level
             for level in ("low", "medium", "high", "xhigh", "max")
-            if level in row.thinking.effort
+            if level in row.thinking_effort
         ]
 
 

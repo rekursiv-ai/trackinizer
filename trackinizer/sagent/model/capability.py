@@ -1,25 +1,28 @@
-"""What a model allows, and what one model instance chose.
+"""What a model offers, where it starts, and what one model instance chose.
 
 model = catalog["anthropic"]["opus"]
-model.capability.thinking.effort        # every effort level allowed
-model.settings.thinking_effort = "high" # ValueError if not allowed
-model.settings.limits.max_request_tokens
+model.capability.thinking_effort                    # every effort level offered
+model.capability.default                            # what a new model starts with
+model.settings.context_size.tokens
+model.capability.prices["auto", "small"]            # the size ``small`` names
 """
 
 from __future__ import annotations
 
-from collections.abc import (
-    Collection,
-    Sequence,
-)
-from dataclasses import dataclass, field, fields, replace
-from typing import Literal, Self, TypeAliasType, cast, get_args, override
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal, TypeAliasType, cast, get_args
 
+import re
+
+from trackinizer.sagent.model.context import ContextSize, ContextSizeName
 from trackinizer.sagent.model.cost import PriceCatalog, ServiceTier
 
 
+if TYPE_CHECKING:
+    from collections.abc import Collection
+
+
 __all__ = [
-    "ContextSize",
     "ModelCapability",
     "ModelLimits",
     "ModelSettings",
@@ -27,10 +30,10 @@ __all__ = [
     "PruningPolicy",
     "SummaryKind",
     "ThinkingBudget",
-    "ThinkingCapability",
     "ThinkingEffort",
     "ThinkingOutput",
     "literal_members",
+    "parse_context_size",
 ]
 
 
@@ -55,13 +58,6 @@ type ThinkingOutput = Literal[
     "text",
     "redacted",
 ]
-
-type ContextSize = Literal[
-    "small",
-    "mid",
-    "large",
-]
-"""A context size named by price: below the first band, the second, or the whole window."""
 
 type SummaryKind = Literal[
     "none",
@@ -113,187 +109,6 @@ class ModelLimits:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ThinkingCapability:
-    """Reasoning knobs one model or transport accepts, one set per axis."""
-
-    effort: frozenset[ThinkingEffort] = frozenset({"none"})
-    """Effort levels accepted."""
-
-    budget: frozenset[ThinkingBudget] = frozenset({"none"})
-    """Budget modes accepted."""
-
-    output: frozenset[ThinkingOutput] = frozenset({"none"})
-    """Reasoning-visibility modes accepted."""
-
-    def __and__(self, other: ThinkingCapability) -> ThinkingCapability:
-        """Narrow each axis to what BOTH offer."""
-        return ThinkingCapability(
-            effort=self.effort & other.effort,
-            budget=self.budget & other.budget,
-            output=self.output & other.output,
-        )
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ModelCapability:
-    """What one model offers: every value a caller may select.
-
-    One catalog row, or one transport's restrictions. ``prices``,
-    ``effort_as_level``, and the trailing transport facts have no
-    :class:`ModelSettings` counterpart -- nothing selects a price, a wire
-    spelling, a retry policy, or an auth mode.
-
-    ``temperature`` is absent: its domain is a continuous range, so it cannot
-    join the membership check. A provider that sends one sets it itself.
-    """
-
-    model_id: str = ""
-    """Our normalized model id, without option tags."""
-
-    wire_model_id: str = ""
-    """Vendor id when it differs from :attr:`model_id`; blank means identical."""
-
-    knowledge_cutoff: str | None = None
-    """Vendor-published knowledge cutoff, formatted for the system prompt."""
-
-    approx_chars_per_token: float = 4.0
-    """Measured text-token estimate for this model's tokenizer."""
-
-    limits: ModelLimits = field(default_factory=ModelLimits)
-    """The model's window, whatever share of it a caller chooses to fill."""
-
-    prices: PriceCatalog = field(default_factory=PriceCatalog)
-    """USD rates, keyed by service tier and request-size threshold."""
-
-    thinking: ThinkingCapability = field(default_factory=ThinkingCapability)
-    """Reasoning effort, budget, and visibility this transport accepts."""
-
-    effort_as_level: bool = False
-    """Whether the wire takes a named effort level (Gemini ``thinkingLevel``), not a budget."""
-
-    default_effort: ThinkingEffort | None = None
-    """The vendor's effort when none is sent, where a new model starts; ``None`` is the lowest."""
-
-    default_budget: ThinkingBudget | None = None
-    """Whether the vendor thinks when told nothing, where a new model starts; ``None`` is the lowest."""
-
-    # Only ``auto``, a request naming no tier, is universal; a transport with no
-    # tier parameter narrows the meet to it.
-    service_tier: frozenset[ServiceTier] = frozenset({"auto", "default"})
-    """Speed and price tiers this transport accepts."""
-
-    # Defaults to BOTH values, not to its unset one: a model row does not know
-    # whether the server rolls history, and ``&`` can only remove -- so a row
-    # asserting ``{False}`` would pin every transport and empty the meet.
-    manage_context_server_side: frozenset[bool] = frozenset({False, True})
-    """Whether the server may roll history under quota pressure."""
-
-    # The three below are DECLARED by the transport, not narrowed from the row:
-    # a catalog row cannot know who bills it, who retries it, or whether the
-    # request path writes a cache breakpoint, so ``&`` takes the transport's
-    # answer rather than intersecting with a meaningless one.
-    # A set, not a ceiling: vendors sell discrete lifetimes (``5m``, ``1h``). A
-    # transport that always caches omits ``0``, so "do not cache" is unselectable.
-    cache_ttl_sec: frozenset[float] = frozenset({0.0})
-    """Prompt-cache lifetimes this transport accepts, in seconds."""
-
-    retries_internally: bool = False
-    """Whether the transport retries transient failures on its own."""
-
-    account_auth: bool = False
-    """Whether this transport bills an account rather than an API key."""
-
-    def bands(self, tier: ServiceTier) -> tuple[int, ...]:
-        """Return the prompt sizes past which ``tier``'s price rises, within the window.
-
-        Args:
-          tier: The service tier; one no card names is priced as ``auto``.
-
-        Returns:
-          thresholds: Ascending, each below the window.
-
-        """
-        priced = {key.service_tier for key in self.prices}
-        rated = tier if tier in priced else "auto"
-        window = self.limits.max_request_tokens
-        return tuple(
-            sorted(
-                {
-                    key.effective_prompt_tokens
-                    for key in self.prices
-                    if key.service_tier == rated
-                    and key.effective_prompt_tokens > 0
-                    and (window <= 0 or key.effective_prompt_tokens < window)
-                },
-            ),
-        )
-
-    def size(self, name: ContextSize, *, tier: ServiceTier) -> int:
-        """Return the context ``name`` means at ``tier``: a band's top, else the window.
-
-        Args:
-          name: ``small`` below the first band, ``mid`` below the second,
-            ``large`` the whole window.
-          tier: The service tier whose bands it reads.
-
-        Returns:
-          tokens: The size; ``0`` for the whole window.
-
-        """
-        bands = self.bands(tier)
-        at = ("small", "mid").index(name) if name != "large" else len(bands)
-        return bands[at] if at < len(bands) else 0
-
-    def __and__(self, other: ModelCapability) -> Self:
-        """Narrow to what BOTH offer -- a catalog row met with a transport.
-
-        Args:
-          other: The transport's restrictions.
-
-        Returns:
-          narrowed: What survives on both sides.
-
-        """
-        # Model facts pass through: a transport
-        # restricts which knobs it may send, never which windows a model has
-        # or what it costs.
-        return replace(
-            self,
-            thinking=self.thinking & other.thinking,
-            service_tier=self.service_tier & other.service_tier,
-            manage_context_server_side=(
-                self.manage_context_server_side & other.manage_context_server_side
-            ),
-            cache_ttl_sec=other.cache_ttl_sec,
-            retries_internally=other.retries_internally,
-            account_auth=other.account_auth,
-        )
-
-    @override
-    def __hash__(self) -> int:
-        """Hash capability values, independent of mapping insertion order."""
-        return hash(
-            (
-                self.model_id,
-                self.wire_model_id,
-                self.knowledge_cutoff,
-                self.approx_chars_per_token,
-                self.limits,
-                frozenset(self.prices.items()),
-                self.thinking,
-                self.effort_as_level,
-                self.default_effort,
-                self.default_budget,
-                self.service_tier,
-                self.manage_context_server_side,
-                self.cache_ttl_sec,
-                self.retries_internally,
-                self.account_auth,
-            ),
-        )
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
 class PruningPolicy:
     """Which old tool output may be replaced by a stub, to keep the context small.
 
@@ -317,220 +132,144 @@ class PruningPolicy:
     """Tools whose results are never pruned; a skill's steps stay while it runs."""
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ModelSettings:
-    """What one model instance chose, within what its capability offers.
-
-    MUTABLE, and the sole owner of these axes. A caller that keeps its own
-    copy of a knob has to re-derive "is this still offered?" on every model
-    swap, and each such copy drifted: an ``Agent`` field shadowing
-    ``thinking_effort`` was set by ``/effort`` and never read by the wire
-    builders, so the selected level silently never shipped.
-
-    Every axis validates ON ASSIGNMENT against :attr:`capability`, so
-    ``settings.thinking_budget = "auto"`` raises on a model that cannot
-    think. That is why the capability is a field rather than an argument:
-    a setter has no other way to reach it, and a caller who had to pass it
-    could pass a different one than the model was built from.
-
-    Choices only. A derived value does not belong here: the window the
-    context fills is :attr:`window`, not a field.
-    """
-
-    # DECLARED FIRST so ``__init__`` binds it before any axis: the setter
-    # below reads it to validate, and a later position leaves the first axis
-    # assignment reaching an unset attribute.
-    capability: ModelCapability = field(default_factory=ModelCapability)
-    """What the transport offers. Not an axis -- nothing selects it."""
-
-    context: int = 0
-    """Tokens the context may fill before it is compacted; ``0`` for the whole window."""
+    """What one model instance chose, each choice resolved."""
 
     thinking_effort: ThinkingEffort = "none"
-    """Selected effort level."""
-
     thinking_budget: ThinkingBudget = "none"
-    """Selected budget mode."""
-
     thinking_output: ThinkingOutput = "none"
-    """Selected reasoning visibility."""
-
     service_tier: ServiceTier = "auto"
-    """Selected speed/price tier."""
-
     cache_ttl_sec: float = 0.0
-    """Selected prompt-cache lifetime, in seconds."""
-
     manage_context_server_side: bool = False
-    """Whether the server was asked to roll history."""
+    context_size: ContextSize = field(default_factory=ContextSize)
+    pruning: PruningPolicy | None = field(default_factory=PruningPolicy)
 
-    pruning: PruningPolicy | None = PruningPolicy()
-    """Which old tool results may be dropped; ``None`` never drops them. Any model takes it."""
 
-    @override
-    def __setattr__(self, name: str, value: object) -> None:
-        """Reject an axis value :attr:`capability` does not offer.
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ModelCapability:
+    """What one model offers, where it starts, and what it costs."""
 
-        Assignment is the API -- ``settings.thinking_budget = "auto"`` --
-        so the check lives here rather than in a method a caller can route
-        around. ``capability`` itself is exempt: it is the authority, not a
-        choice. Swapping it atomically re-narrows every axis and context.
+    thinking_effort: frozenset[ThinkingEffort] = frozenset({"none"})
+    thinking_budget: frozenset[ThinkingBudget] = frozenset({"none"})
+    thinking_output: frozenset[ThinkingOutput] = frozenset({"none"})
+    service_tier: frozenset[ServiceTier] = frozenset({"auto", "default"})
+    manage_context_server_side: frozenset[bool] = frozenset({False, True})
+    cache_ttl_sec: frozenset[float] = frozenset({0.0})
+    default: ModelSettings = field(default_factory=ModelSettings)
+
+    model_id: str = ""
+    wire_model_id: str = ""
+    knowledge_cutoff: str | None = None
+    approx_chars_per_token: float = 4.0
+    limits: ModelLimits = field(default_factory=ModelLimits)
+    prices: PriceCatalog = field(default_factory=PriceCatalog)
+    effort_as_level: bool = False
+    retries_internally: bool = False
+    account_auth: bool = False
+
+    def check(self, settings: ModelSettings) -> None:
+        """Raise unless this model offers every choice in ``settings``.
 
         Args:
-          name: Attribute being set.
-          value: Its new value.
+          settings: The choices to check.
 
         Raises:
-          ValueError: ``value`` is outside what :attr:`capability` allows.
+          ValueError: A choice this model does not offer, named with what it does.
 
         """
-        if name == "capability" and hasattr(self, "capability"):
-            assert isinstance(value, ModelCapability)
-            narrowed = type(self).narrowest(value, context=self.context)
-            narrowed.adopt(self)
-            object.__setattr__(self, name, value)
-            for f in fields(self):
-                if f.name != "capability":
-                    object.__setattr__(self, f.name, getattr(narrowed, f.name))
-            return
-        if name != "capability":
-            _reject_unoffered(self.capability, name, value)
-        object.__setattr__(self, name, value)
+        for name, value, offered in (
+            ("thinking_effort", settings.thinking_effort, self.thinking_effort),
+            ("thinking_budget", settings.thinking_budget, self.thinking_budget),
+            ("thinking_output", settings.thinking_output, self.thinking_output),
+            ("service_tier", settings.service_tier, self.service_tier),
+            ("cache_ttl_sec", settings.cache_ttl_sec, self.cache_ttl_sec),
+            (
+                "manage_context_server_side",
+                settings.manage_context_server_side,
+                self.manage_context_server_side,
+            ),
+        ):
+            _check_offered(self.model_id, name, value, offered)
 
-    def adopt(self, other: Self) -> None:
-        """Take every choice of ``other`` this capability still offers.
-
-        The model-swap path: a swap keeps what the user selected. Excludes
-        ``context``, because the incoming model id may name its own size
-        (``opus+small``) -- overwriting it would undo the selection the swap
-        was performed to make.
-
-        Args:
-          other: The outgoing model's settings.
-
-        """
-        choices: dict[str, object] = {}
-        for f in fields(self):
-            if f.name not in ("capability", "context"):
-                choices[f.name] = getattr(other, f.name)
-        self.take(**choices)
-
-    def take(self, **choices: object) -> None:
-        """Apply each of ``choices`` this capability offers; drop the rest.
-
-        The lenient counterpart to assignment, and the ONLY way to cross
-        capabilities: a knob the incoming model rejects is not merely stale,
-        it ships on the next request and earns a 400 -- but a swap or a
-        resume must not FAIL on it either. Each unoffered axis falls back to
-        the lowest rung this capability does offer.
-
-        Args:
-          choices: Field name to desired value.
-
-        Raises:
-          ValueError: A name is not an axis of this class.
-
-        """
-        names = {f.name for f in fields(self)} - {"capability"}
-        unknown = sorted(set(choices) - names)
-        if unknown:
-            raise ValueError(f"not settings axes: {', '.join(unknown)}")
-        narrow = type(self).narrowest(self.capability)
-        for name, wanted in choices.items():
-            offered = _offers(self.capability, name, wanted)
-            setattr(self, name, wanted if offered else getattr(narrow, name))
-
-    @classmethod
-    def narrowest(
-        cls,
-        capability: ModelCapability,
+    def fit(
+        self,
+        settings: ModelSettings,
         *,
-        context: int = 0,
-    ) -> Self:
-        """Return the least-committing selection ``capability`` offers.
+        was: ModelCapability,
+        service_tier: ServiceTier | None = None,
+    ) -> ModelSettings:
+        """Return ``settings`` as this model takes them, at ``service_tier``.
 
-        The field defaults are not it: a row can withhold the unset value of
-        an axis (Model Studio's ``-thinking`` ids reject "do not think", a CLI
-        transport requires server-side history), and a default-constructed
-        settings object is then unbuildable against that row.
+        Each choice this model offers is kept, the rest are its defaults. A size
+        ``was`` named stays named; a size counted stays that count, within the window.
 
         Args:
-          capability: What the transport offers.
-          context: The size the model id selected; ``0`` for the whole window.
+          settings: Choices made on ``was``.
+          was: The model they were made on; this one, to change only the tier.
+          service_tier: The tier to move to; ``None`` keeps the one chosen.
 
         Returns:
-          settings: The lowest rung of every ladder that survives.
-
-        Raises:
-          ValueError: An axis offers nothing at all.
+          settings: Each choice offered here.
 
         """
-        return cls(
-            capability=capability,
-            context=context,
-            thinking_effort=_lowest(
-                "thinking_effort",
-                capability.thinking.effort,
-                _effort_ladder(
-                    capability.default_effort,
-                    literal_members(ThinkingEffort),
-                ),
+        d = self.default
+        tier: ServiceTier = _kept(
+            service_tier or settings.service_tier,
+            self.service_tier,
+            d.service_tier,
+        )
+        size = settings.context_size
+        named = was.prices[settings.service_tier, size.context_name] == size
+        return ModelSettings(
+            thinking_effort=_kept(
+                settings.thinking_effort,
+                self.thinking_effort,
+                d.thinking_effort,
             ),
-            thinking_budget=_lowest(
-                "thinking_budget",
-                capability.thinking.budget,
-                _default_first(
-                    capability.default_budget,
-                    literal_members(ThinkingBudget),
-                ),
+            thinking_budget=_kept(
+                settings.thinking_budget,
+                self.thinking_budget,
+                d.thinking_budget,
             ),
-            thinking_output=_lowest(
-                "thinking_output",
-                capability.thinking.output,
-                literal_members(ThinkingOutput),
+            thinking_output=_kept(
+                settings.thinking_output,
+                self.thinking_output,
+                d.thinking_output,
             ),
-            service_tier=_lowest(
-                "service_tier",
-                capability.service_tier,
-                literal_members(ServiceTier),
+            service_tier=tier,
+            cache_ttl_sec=_kept(
+                settings.cache_ttl_sec,
+                self.cache_ttl_sec,
+                d.cache_ttl_sec,
             ),
-            cache_ttl_sec=_lowest(
-                "cache_ttl_sec",
-                capability.cache_ttl_sec,
-                sorted(capability.cache_ttl_sec),
+            manage_context_server_side=_kept(
+                settings.manage_context_server_side,
+                self.manage_context_server_side,
+                d.manage_context_server_side,
             ),
-            manage_context_server_side=_lowest(
-                "manage_context_server_side",
-                capability.manage_context_server_side,
-                (False, True),
-            ),
+            context_size=self.prices[tier, size.context_name if named else size.tokens],
+            pruning=settings.pruning,
         )
 
-    @property
-    def limits(self) -> ModelLimits:
-        """The model's window."""
-        return self.capability.limits
 
-    @property
-    def window(self) -> int:
-        """Tokens the context may fill: the chosen size, within the model's window."""
-        window = self.limits.max_request_tokens
-        if not self.context:
-            return window
-        return min(self.context, window) if window > 0 else self.context
+def parse_context_size(word: str) -> ContextSizeName | int | None:
+    """Return the size ``word`` names: ``small``, ``mid``, ``large``, or ``258k`` as tokens.
 
-    @property
-    def tag(self) -> str:
-        """The size as a model id names it: ``+small``, ``+258k``; blank for the window."""
-        if not self.context:
-            return ""
-        for name in ("small", "mid"):
-            if self.capability.size(name, tier=self.service_tier) == self.context:
-                return f"+{name}"
-        for unit, scale in (("m", 1_000_000), ("k", 1_000)):
-            if self.context % scale == 0:
-                return f"+{self.context // scale}{unit}"
-        return f"+{self.context}"
+    Args:
+      word: One tag, lowered, without its ``+``.
+
+    Returns:
+      size: A name or a count; ``None`` if ``word`` names none.
+
+    """
+    names = cast(tuple[ContextSizeName, ...], literal_members(ContextSizeName))
+    if word in names:
+        return names[names.index(word)]
+    counted = re.fullmatch(r"([1-9][0-9]*)([km]?)", word)
+    if counted is None:
+        return None
+    return int(counted[1]) * {"": 1, "k": 1_000, "m": 1_000_000}[counted[2]]
 
 
 def literal_members[T](alias: object) -> tuple[T, ...]:
@@ -552,62 +291,24 @@ def literal_members[T](alias: object) -> tuple[T, ...]:
     )
 
 
-def _allowed(capability: ModelCapability, name: str) -> Collection[object]:
-    """Return the set ``capability`` offers for the settings axis ``name``."""
-    match name:
-        case "thinking_effort":
-            return capability.thinking.effort
-        case "thinking_budget":
-            return capability.thinking.budget
-        case "thinking_output":
-            return capability.thinking.output
-        case _:
-            return cast(Collection[object], getattr(capability, name))
+def _kept[T](value: T, offered: Collection[T], default: T) -> T:
+    """Return ``value`` if ``offered`` holds it, else ``default``."""
+    return value if value in offered else default
 
 
-def _offers(capability: ModelCapability, name: str, value: object) -> bool:
-    """Whether ``capability`` allows ``value`` on the axis ``name``."""
-    # Pruning and the context's size are the caller's policy, not offers a
-    # model makes; a size past the window is held to it.
-    if name == "context":
-        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-    return name == "pruning" or value in _allowed(capability, name)
-
-
-def _reject_unoffered(capability: ModelCapability, name: str, value: object) -> None:
-    """Raise unless ``capability`` offers ``value`` on the axis ``name``."""
-    if _offers(capability, name, value):
+def _check_offered(
+    model_id: str,
+    name: str,
+    value: object,
+    offered: Collection[object],
+) -> None:
+    """Raise unless ``offered`` holds ``value``."""
+    if value in offered:
         return
-    if name == "context":
-        raise ValueError(
-            f"context={value!r} is not offered; a size is tokens, 0 or more",
-        )
-    model = capability.model_id or "this model"
     # ``repr`` before ``sorted``: these sets mix strings, floats, and bools,
     # which do not order against each other.
-    offered = ", ".join(sorted(repr(v) for v in _allowed(capability, name)))
-    raise ValueError(f"{name}={value!r} is not offered by {model}; allowed: {offered}")
-
-
-# A default the row lacks falls to the nearest level below it, then above, and only then
-# to ``none``, which stops the reasoning.
-def _effort_ladder(
-    default: ThinkingEffort | None,
-    efforts: tuple[ThinkingEffort, ...],
-) -> tuple[ThinkingEffort, ...]:
-    """Return ``efforts`` in the order a row's selection tries them."""
-    at = efforts.index(default) if default is not None else 0
-    return (*efforts[at:0:-1], *efforts[at + 1 :], efforts[0]) if at else efforts
-
-
-def _default_first[T](default: T | None, ladder: tuple[T, ...]) -> tuple[T, ...]:
-    """Return ``ladder`` with ``default``, when one is given, tried first."""
-    return ladder if default is None else (default, *ladder)
-
-
-def _lowest[T](name: str, offered: Collection[T], ladder: Sequence[T]) -> T:
-    """Return the first rung of ``ladder`` that ``offered`` contains."""
-    for rung in ladder:
-        if rung in offered:
-            return rung
-    raise ValueError(f"{name} offers nothing selectable: {offered!r}")
+    allowed = ", ".join(sorted(repr(v) for v in offered))
+    raise ValueError(
+        f"{name}={value!r} is not offered by {model_id or 'this model'};"
+        f" allowed: {allowed}",
+    )

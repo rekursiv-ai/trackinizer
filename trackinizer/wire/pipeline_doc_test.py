@@ -53,12 +53,11 @@ def test_the_json_is_compact_sorted_and_holds_exactly_the_contract_keys() -> Non
     text = dump_pipeline(replace(_doc(), flows=(Flow(source="data", target="train"),)))
 
     assert text == (
-        '{"base":"iter-00","flows":[{"label":"","source":"data","target":"train"}],'
-        '"kind":"pipeline",'
+        '{"base":"iter-00","flows":[{"source":"data","target":"train"}],'
         '"stages":[{"id":"data","keys":["data."],"name":"Data",'
         '"paths":["data/","load.py"],"role":"Does data."},'
         '{"id":"train","keys":["optim.","seed"],"name":"Train",'
-        '"paths":["train.py"],"role":"Does train."}],"version":1}'
+        '"paths":["train.py"],"role":"Does train."}]}'
     )
 
 

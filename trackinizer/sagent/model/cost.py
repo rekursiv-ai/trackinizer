@@ -1,21 +1,27 @@
-"""Token counts, prices, and what a request cost.
+"""Token counts, prices and the context sizes they name, and what a request cost.
 
 tokens = TokenCount(request=1_000, response=200, cache_read=5_000)
-cost = model.capability.prices.cost(tokens, service_tier="auto", at=today)
+prices = model.capability.prices
+prices["auto", "small"]                 # the size ``small`` names
+cost = prices["auto", tokens.prompt, today] * tokens
 cost.total                              # USD
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import date
-from typing import Literal, NamedTuple, Self, override
+from typing import Literal, Self, overload, override
+
+import math
+
+from trackinizer.sagent.model.context import ContextSize, ContextSizeName
 
 
 __all__ = [
     "PriceCatalog",
-    "PriceKey",
+    "PriceCondition",
     "ServiceTier",
     "TokenCost",
     "TokenCount",
@@ -142,12 +148,15 @@ class TokenCost(TokenStats[float]):
     cache_read: float = 0.0
 
 
-# No defaults on the rates: a meter left unstated would bill $0, which is how
-# an unpriced cache pool went free. A vendor that charges nothing says ``0.0``.
 @dataclass(frozen=True, slots=True, kw_only=True)
 class TokenPrice(TokenStats[float]):
     """USD per ``tokens_per_unit`` tokens, by meter, as the vendor publishes it."""
 
+    request: float = 0.0
+    response: float = 0.0
+    cache_write: float = 0.0
+    cache_write_1h: float = 0.0
+    cache_read: float = 0.0
     tokens_per_unit: int = 1_000_000
     """Tokens each rate is quoted per; vendors publish per million."""
 
@@ -165,122 +174,172 @@ class TokenPrice(TokenStats[float]):
     __rmul__ = __mul__
 
 
-class PriceKey(NamedTuple):
-    """The conditions under which one ``TokenPrice`` applies."""
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PriceCondition:
+    """When one price applies."""
 
-    service_tier: ServiceTier
-    """Tier that was served; ``auto`` is the vendor's standard rate."""
-
-    effective_prompt_tokens: int = 0
-    """Applies to prompts LARGER than this; the lowest band covers every size."""
+    service_tier: ServiceTier = "auto"
+    token_size_range: tuple[int, int | float] = (0, math.inf)
+    """``[floor, ceil)``: prompts of at least ``floor`` tokens and fewer than ``ceil``."""
 
     effective_date: date = date.min
-    """Applies to requests on or after this date."""
 
 
-class PriceCatalog(Mapping[PriceKey, TokenPrice]):
-    """A model's published price table.
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PriceCatalog:
+    """A model's prices, and the context sizes they name.
 
-    Indexing is exact, like any mapping; :meth:`rate` answers "which price
-    did this request pay", and raises rather than guess when nothing does.
+    ``catalog[tier, size]`` resolves ``small``, ``mid``, ``large``, or a count
+    to a :class:`ContextSize`; ``catalog[tier, tokens, at]`` is the price of a
+    prompt of ``tokens`` on ``at``.
     """
 
-    def __init__(self, prices: Mapping[PriceKey, TokenPrice] | None = None) -> None:
-        """Build the catalog.
+    prices: Mapping[PriceCondition, TokenPrice] = field(
+        default_factory=dict[PriceCondition, TokenPrice],
+    )
+    window: int = 0
+    """The most the model takes in, which ``large`` names; ``0`` is unknown."""
 
-        Args:
-          prices: Every published (tier, band, date) and its rates.
-
-        """
-        self._prices: dict[PriceKey, TokenPrice] = dict(sorted((prices or {}).items()))
+    @override
+    def __hash__(self) -> int:
+        return hash((frozenset(self.prices.items()), self.window))
 
     @property
     def service_tiers(self) -> frozenset[ServiceTier]:
-        """Tiers this table prices, plus ``default`` wherever ``auto`` is priced.
-
-        ``default`` is the explicit request for the standard tier, so it
-        bills whatever ``auto`` bills.
-        """
-        tiers: set[ServiceTier] = {key.service_tier for key in self._prices}
+        """The tiers priced, and ``default`` wherever ``auto`` is: it bills as ``auto``."""
+        tiers: set[ServiceTier] = {c.service_tier for c in self.prices}
         if "auto" in tiers:
             tiers.add("default")
         return frozenset(tiers)
 
-    def rate(
+    @overload
+    def __getitem__(
         self,
-        *,
-        service_tier: ServiceTier,
-        prompt_tokens: int,
-        at: date,
-    ) -> TokenPrice:
-        """Return the price one request paid.
+        key: tuple[ServiceTier, ContextSizeName | int],
+    ) -> ContextSize: ...
 
-        Args:
-          service_tier: Tier the server reports it served.
-          prompt_tokens: The request's whole prompt, every cache pool included.
-          at: Day the request was served.
+    @overload
+    def __getitem__(
+        self,
+        key: tuple[ServiceTier, ContextSizeName | int, date],
+    ) -> TokenPrice: ...
 
-        Returns:
-          price: The latest-effective rate of the prompt's size band.
+    def __getitem__(
+        self,
+        key: tuple[ServiceTier, ContextSizeName | int]
+        | tuple[ServiceTier, ContextSizeName | int, date],
+    ) -> ContextSize | TokenPrice:
+        """Return the size ``key`` names at its tier, or a prompt's price on a date.
 
         Raises:
-          KeyError: Nothing prices this tier on this date.
+          KeyError: A size below 1 token, or no price in effect.
 
         """
-        tier: ServiceTier = "auto" if service_tier == "default" else service_tier
-        # A key sorts by (tier, band, date), so the last match is the highest
-        # band the prompt exceeds, at its latest effective date. The base
-        # band (0) matches every prompt, an empty one included.
-        matches = [
-            key
-            for key in self._prices
-            if key.service_tier == tier
-            and key.effective_date <= at
-            and (
-                key.effective_prompt_tokens < prompt_tokens
-                or key.effective_prompt_tokens == 0
-            )
-        ]
-        if not matches:
-            raise KeyError(PriceKey(tier, prompt_tokens, at))
-        return self._prices[matches[-1]]
+        if len(key) == 2:
+            size = _get_context_size(self.prices, key[0], key[1], window=self.window)
+            if size is None:
+                raise KeyError(key)
+            return size
+        tier, spec, at = key
+        tokens = spec if isinstance(spec, int) else self[tier, spec].tokens
+        price = _get_price(self.prices, tier, tokens, at=at)
+        if price is None:
+            raise KeyError(key)
+        return price
 
-    def cost(
-        self,
-        tokens: TokenCount,
-        *,
-        service_tier: ServiceTier,
-        at: date,
-    ) -> TokenCost:
-        """Price ONE request's ``tokens`` at the band its whole prompt selects.
+    def sizes(self, tier: ServiceTier) -> tuple[ContextSize, ...]:
+        """Return the sizes ``tier`` names, ascending: ``small``, ``mid``, then ``large``.
 
         Args:
-          tokens: One request's usage. Summing requests first would size the
-              band from the session rather than the request.
-          service_tier: Tier the server reports it served.
-          at: Day the request was served.
+          tier: The service tier whose bands name them.
 
         Returns:
-          cost: USD, by meter.
+          sizes: Each band's largest prompt, then the window.
 
         """
-        return (
-            self.rate(service_tier=service_tier, prompt_tokens=tokens.prompt, at=at)
-            * tokens
-        )
+        return tuple(_get_context_sizes(self.prices, tier, window=self.window).values())
 
-    @override
-    def __getitem__(self, key: PriceKey) -> TokenPrice:
-        return self._prices[key]
 
-    @override
-    def __iter__(self) -> Iterator[PriceKey]:
-        return iter(self._prices)
+def _get_context_sizes(
+    prices: Mapping[PriceCondition, TokenPrice],
+    tier: ServiceTier,
+    *,
+    window: int,
+) -> dict[ContextSizeName, ContextSize]:
+    """Return ``tier``'s named sizes: each band's largest prompt, then ``window``."""
+    priced: ServiceTier = "auto" if tier == "default" else tier
+    tops = sorted(
+        {
+            int(ceil) - 1
+            for c in prices
+            if c.service_tier == priced
+            and not math.isinf(ceil := c.token_size_range[1])
+            and (window <= 0 or ceil <= window)
+        },
+    )
+    named: tuple[ContextSizeName, ...] = ("small", "mid")[: len(tops)]
+    return {
+        **{
+            name: ContextSize(
+                context_name=name,
+                tokens=top,
+                display_name=_tokens_to_display_name(top),
+            )
+            for name, top in zip(named, tops, strict=False)
+        },
+        "large": ContextSize(
+            context_name="large",
+            tokens=window,
+            display_name=_tokens_to_display_name(window),
+        ),
+    }
 
-    @override
-    def __len__(self) -> int:
-        return len(self._prices)
 
-    @override
-    def __repr__(self) -> str:
-        return f"{type(self).__name__}({self._prices!r})"
+def _get_context_size(
+    prices: Mapping[PriceCondition, TokenPrice],
+    tier: ServiceTier,
+    spec: ContextSizeName | int,
+    *,
+    window: int,
+) -> ContextSize | None:
+    """Return the size ``spec`` names at ``tier``; ``None`` for a count below 1."""
+    sizes = _get_context_sizes(prices, tier, window=window)
+    if isinstance(spec, str):
+        return sizes.get(spec, sizes["large"])
+    if spec < 1:
+        return None
+    tokens = min(spec, window) if window > 0 else spec
+    ascending: Sequence[ContextSize] = tuple(sizes.values())
+    band = next((s for s in ascending if tokens <= s.tokens), sizes["large"])
+    return ContextSize(
+        context_name=band.context_name,
+        tokens=tokens,
+        display_name=_tokens_to_display_name(tokens),
+    )
+
+
+def _get_price(
+    prices: Mapping[PriceCondition, TokenPrice],
+    tier: ServiceTier,
+    prompt_tokens: int,
+    *,
+    at: date,
+) -> TokenPrice | None:
+    """Return the price of ``prompt_tokens`` at ``tier`` on ``at``; ``None`` if none holds."""
+    priced: ServiceTier = "auto" if tier == "default" else tier
+    held = [
+        c
+        for c in prices
+        if c.service_tier == priced
+        and c.token_size_range[0] <= prompt_tokens < c.token_size_range[1]
+        and c.effective_date <= at
+    ]
+    return prices[max(held, key=lambda c: c.effective_date)] if held else None
+
+
+def _tokens_to_display_name(tokens: int) -> str:
+    """Return ``tokens`` as a person reads it: ``1m``, ``258k``, ``258123``."""
+    for unit, scale in (("m", 1_000_000), ("k", 1_000)):
+        if tokens and tokens % scale == 0:
+            return f"{tokens // scale}{unit}"
+    return str(tokens)
