@@ -23,6 +23,7 @@ import pytest
 from trackinizer.conftest import new_uuid
 from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server import web
+from trackinizer.server.access_policy import DefaultPolicy
 from trackinizer.server.api import (
     edit,
     metrics_routes,
@@ -5075,9 +5076,9 @@ class TestIntegrationAuth:
         monkeypatch.setenv(BOOTSTRAP_ADMIN_ENV, "admin@example.com")
         monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(token_file))
         async with integ_store.engine.acquire() as conn:
-            await bootstrap_admin(conn)
+            await bootstrap_admin(conn, policy=DefaultPolicy())
             # A second call must be a no-op (idempotent rerun semantics).
-            await bootstrap_admin(conn)
+            await bootstrap_admin(conn, policy=DefaultPolicy())
             rows = await conn.fetch(
                 "SELECT email_or_pattern, role, added_by FROM allowlist",
             )

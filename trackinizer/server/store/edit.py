@@ -19,6 +19,7 @@ from treekle import from_plain
 
 import asyncpg
 
+from trackinizer.server.access_policy import Resource
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
     upsert_embedding,
@@ -385,6 +386,15 @@ class _EditMixin(_CascadeAuditMixin):
                 raise ConflictError(
                     f"check constraint violated: {exc.detail or exc!s}",
                 ) from exc
+            if column == "account":
+                await self.access_policy.validate(
+                    conn,
+                    resource=Resource(
+                        kind="inquiry",
+                        id=str(target_id),
+                        account=from_plain(new_value, str),
+                    ),
+                )
             # ``old_value`` is None when subscribers was unset (NULL); the
             # notify fan-out wants the concrete pre-edit set, so coalesce.
             extra_subs = (
@@ -669,6 +679,9 @@ class _EditMixin(_CascadeAuditMixin):
         a real account), so a direct Store caller cannot blank a required field
         the route validates.
 
+        After the change, in its transaction, the access policy validates the row
+        as it now stands, so a refusal rolls the move back.
+
         Args:
           target_id: ID of the Inquiry to edit.
           value: The new account identifier (non-empty string).
@@ -680,7 +693,8 @@ class _EditMixin(_CascadeAuditMixin):
           result: The UUID | None.
 
         Raises:
-          ConflictError: ``value`` is empty or whitespace-only.
+          ConflictError: ``value`` is empty or whitespace-only, or the access policy
+            refuses the row's new state.
 
         """
         if not value.strip():

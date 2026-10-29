@@ -132,6 +132,7 @@ async def admin_set_user_role_route(
     """Update one user's role; 404 when the id matches no row.
 
     A service account is a viewer or a writer: promoting one to admin answers 422.
+    The access policy is told the new role in the same transaction.
 
     Args:
       user_id: UUID of the user to update.
@@ -150,13 +151,12 @@ async def admin_set_user_role_route(
         )
     engine = engine_of(request)
     async with engine.acquire() as conn, tx(conn):
-        if body.role == "admin" and is_service_address(
-            from_plain(
-                await conn.fetchval("SELECT email FROM users WHERE id = $1", user_id),
-                str,
-                default="",
-            ),
-        ):
+        email = from_plain(
+            await conn.fetchval("SELECT email FROM users WHERE id = $1", user_id),
+            str,
+            default="",
+        )
+        if body.role == "admin" and is_service_address(email):
             raise HTTPException(
                 status_code=422,
                 detail="A service account cannot be an admin.",
@@ -171,6 +171,11 @@ async def admin_set_user_role_route(
         )
         if not result.endswith(" 1"):
             raise HTTPException(status_code=404, detail="user not found")
+        await get_store(request).access_policy.on_user(
+            conn,
+            email=email,
+            role=body.role,
+        )
     # Cached bearer entries carry the old role; without this the demotion
     # would not bind until VERIFIED_BEARER_TTL_SEC elapsed.
     get_store(request).forget_bearer_identities(user_id)

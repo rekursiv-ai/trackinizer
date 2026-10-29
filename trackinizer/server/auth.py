@@ -862,7 +862,7 @@ async def assert_account_active(engine: DatabaseEngine, account: str) -> None:
         )
 
 
-async def bootstrap_admin(conn: Conn) -> None:
+async def bootstrap_admin(conn: Conn, *, policy: _UserObserver) -> None:
     """Seed the first admin (allowlist + user + api_key) when ``users`` is empty.
 
     Takes a fresh deployment to "operator can call the API immediately":
@@ -880,6 +880,7 @@ async def bootstrap_admin(conn: Conn) -> None:
 
     Args:
       conn: Open database connection within a transaction context.
+      policy: The deployment's access policy, told of the admin it seeds.
 
     Raises:
       ValueError: The variable names an address at the service-account domain, when
@@ -931,6 +932,7 @@ async def bootstrap_admin(conn: Conn) -> None:
             email.split("@", 1)[0],
         )
         if inserted_id is not None:
+            await policy.on_user(conn, email=email, role="admin")
             seeded = True
             # The seed provisions an admin user with no presented credential,
             # so the ceiling is the admin role it is creating.
@@ -945,7 +947,7 @@ async def bootstrap_admin(conn: Conn) -> None:
         _publish_bootstrap_token(token_path)
 
 
-async def seed_no_auth_user(conn: Conn) -> None:
+async def seed_no_auth_user(conn: Conn, *, policy: _UserObserver) -> None:
     """Seed the synthetic ``--no-auth`` principal as an active admin user.
 
     ``--no-auth`` collapses every request to a synthetic admin identity
@@ -958,15 +960,19 @@ async def seed_no_auth_user(conn: Conn) -> None:
 
     Args:
       conn: Open database connection for INSERT.
+      policy: The deployment's access policy, told of the user when it is new.
 
     """
-    await conn.execute(
-        "INSERT INTO users (id, email, name, role, status) "
-        "VALUES ($1, $2, 'no-auth', 'admin', 'active') "
-        "ON CONFLICT (email) DO NOTHING",
-        _NO_AUTH_USER_ID,
-        _NO_AUTH_EMAIL,
-    )
+    async with tx(conn):
+        inserted = await conn.fetchval(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, $2, 'no-auth', 'admin', 'active') "
+            "ON CONFLICT (email) DO NOTHING RETURNING id",
+            _NO_AUTH_USER_ID,
+            _NO_AUTH_EMAIL,
+        )
+        if inserted is not None:
+            await policy.on_user(conn, email=_NO_AUTH_EMAIL, role="admin")
 
 
 def _bootstrap_token_path() -> Path:
@@ -1248,6 +1254,13 @@ class _ConfigLike(Protocol):
     staff: tuple[str, ...]
     session_secret: str
     session_max_age_seconds: int
+
+
+# The part of ``access_policy.AccessPolicy`` the seeds call, named here instead of
+# imported: a service that imports this module and not the policy is redeployed only
+# when a file it imports changes, so that import would leave it on a stale copy.
+class _UserObserver(Protocol):
+    async def on_user(self, conn: Conn, *, email: str, role: Role) -> None: ...
 
 
 class _StoreLike(Protocol):

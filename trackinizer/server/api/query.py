@@ -34,6 +34,7 @@ from trackinizer.server.api._routes_shared import (
 from trackinizer.server.api.locks import require_unlocked
 from trackinizer.server.api.session_access import (
     require_row_purge,
+    require_row_write,
     session_reader,
 )
 from trackinizer.server.audience import TranscriptPings
@@ -483,6 +484,7 @@ async def delete_inquiry_route(
     """
     await require_unlocked(request, identity, [target_id], include_peers=True)
     await require_row_purge(request, identity, target_id)
+    await require_row_write(request, identity, target_id)
     store = get_store(request)
     change_id = await store.purge(
         target_id,

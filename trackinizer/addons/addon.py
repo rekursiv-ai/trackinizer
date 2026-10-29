@@ -13,6 +13,12 @@ contributes, and each part says where it runs:
 - An **open router** is a router whose routes check their own caller, such as a
   vendor's signed webhook, which cannot sign in. The server mounts it with no
   sign-in requirement.
+- A **migration** is SQL that builds the addon's own tables, kept apart from
+  trackinizer's, best in a Postgres schema of the addon's own. The server applies
+  each once per database at start, after its own schema.
+- An **access policy** answers who may read, write or run each resource
+  (:mod:`trackinizer.server.access_policy`). At most one addon of a
+  deployment sets one; with none, today's rules answer.
 
 A deployment (:mod:`trackinizer.addons.deployment`) names the addons it
 runs; leaving an addon out switches it off everywhere at once.
@@ -29,6 +35,7 @@ from fastapi.routing import APIRoute, APIWebSocketRoute
 from pydantic import BaseModel, Field
 
 from trackinizer.client.client import Client
+from trackinizer.server.access_policy import AccessPolicy
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
 
@@ -115,6 +122,11 @@ class AddonManifest:
       routers: HTTP routes mounted under ``/api/addons/<name>``, for viewers.
       open_routers: HTTP routes mounted there with no sign-in; each route must
         authenticate its own caller, as a webhook does by its signature.
+      migrations: SQL run once per database, in order, after trackinizer's own
+        migrations, as ``(name, SQL)``; each name is recorded with trackinizer's
+        own, so none may share one (``schema.NNN.sql`` is trackinizer's).
+      access_policy: The policy the server asks before each guarded write; a
+        deployment refuses two addons that each set one.
 
     """
 
@@ -124,6 +136,8 @@ class AddonManifest:
     standalone_services: Sequence[StandaloneService] = ()
     routers: Sequence[APIRouter] = ()
     open_routers: Sequence[APIRouter] = ()
+    migrations: Sequence[tuple[str, str]] = ()
+    access_policy: AccessPolicy | None = None
 
     def describe(self, name: str) -> AddonDescription:
         """Project the manifest to its inert wire description.

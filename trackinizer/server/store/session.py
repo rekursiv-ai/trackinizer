@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     import asyncpg
 
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import Principal
     from trackinizer.wire.bodies import SubmitAgentSession
 else:
     from wrapt import lazy_import
@@ -179,6 +180,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         api_key_id: UUID | None = None,
         attach: UUID | None = None,
         max_reserve_attempts: int = 16,
+        principal: Principal | None = None,
     ) -> tuple[UUID, str, int]:
         """Open, RESUME or ATTACH a session; return ``(id, granted_owner, next_seq)``.
 
@@ -218,6 +220,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
           api_key_id: API key that opened this session; used in resume correlation.
           attach: The session to re-open by its id, or ``None`` to open or resume.
           max_reserve_attempts: Max retries on live-owner unique constraint.
+          principal: The caller the access policy records as a new session's
+            creator; None for one the system opens.
 
         Returns:
           session_id: Server-minted UUID (or re-attached on resume or attach).
@@ -292,6 +296,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     audience=audience,
                     api_key_id=api_key_id,
                     actor=granted,
+                    principal=principal,
                 )
             except asyncpg.UniqueViolationError as exc:
                 if exc.constraint_name != "uq_inquiries_live_session_owner":

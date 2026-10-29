@@ -21,6 +21,7 @@ from trackinizer.addons.deployment import (
     deployment_config,
     supervise,
 )
+from trackinizer.server.access_policy import DefaultPolicy
 from trackinizer.server.visuals.catalog import Canvas, StaticVisual
 
 
@@ -63,6 +64,44 @@ class SocketAddon:
         router = APIRouter()
         router.add_api_websocket_route("/live", _socket)
         return AddonManifest(title="Socket", description="Bad.", routers=[router])
+
+
+class GoverningAddon:
+    """A test addon that sets the deployment's access policy."""
+
+    class Config(Fig["GoverningAddon"]):
+        pass
+
+    def __init__(self, config: Config) -> None:
+        del config
+        self.policy = DefaultPolicy()
+
+    def manifest(self) -> AddonManifest:
+        return AddonManifest(
+            title="Governing",
+            description="Decides access.",
+            access_policy=self.policy,
+        )
+
+
+class Governed(Makes["Deployment"], Deployment.Config):
+    """A deployment with one access-policy addon and one plain addon."""
+
+    access: GoverningAddon.Config = field(default_factory=GoverningAddon.Config)
+    """The addon whose policy the server asks."""
+
+    plain: NamedAddon.Config = field(default_factory=NamedAddon.Config)
+    """An addon that sets no policy."""
+
+
+class Overgoverned(Makes["Deployment"], Deployment.Config):
+    """A deployment with two addons that each set an access policy."""
+
+    access: GoverningAddon.Config = field(default_factory=GoverningAddon.Config)
+    """The first policy."""
+
+    rival: GoverningAddon.Config = field(default_factory=GoverningAddon.Config)
+    """The second policy."""
 
 
 class Site(Makes["Deployment"], Deployment.Config):
@@ -176,6 +215,20 @@ def test_manifest_lookup_names_what_exists() -> None:
 
 def test_an_empty_factory_runs_no_addons() -> None:
     assert deployment_config("", overrides=[]).make().manifests == {}
+
+
+def test_a_deployment_without_a_policy_addon_keeps_todays_rules() -> None:
+    assert two_addons().make().access_policy == DefaultPolicy()
+
+
+def test_the_one_addon_that_sets_a_policy_governs_the_deployment() -> None:
+    deployment = Governed().make()
+    assert deployment.access_policy is deployment.manifest("access").access_policy
+
+
+def test_two_addons_that_each_set_a_policy_are_refused() -> None:
+    with pytest.raises(ValueError, match=r"Addons access, rival each set an access"):
+        Overgoverned().make()
 
 
 def test_a_factory_path_resolves_and_takes_overrides() -> None:

@@ -8,6 +8,7 @@ embedding) and composes them into the public :class:`Store`.
 
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import suppress
 from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
@@ -17,7 +18,7 @@ import hashlib
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     import asyncpg
 
@@ -239,8 +240,17 @@ class _LifecycleMixin(_StoreShared):
                     await embedder.embed(cast(str, row["title"])),
                 )
 
-    async def bootstrap(self, *, attempts: int = 6) -> None:
+    async def bootstrap(
+        self,
+        *,
+        attempts: int = 6,
+        addon_migrations: Sequence[tuple[str, str]] = (),
+    ) -> None:
         """Apply the canonical schema when this database has not seen it.
+
+        Then each of ``addon_migrations`` this database has not seen runs, in order,
+        under the same lock and ledger. Unlike a numbered core migration, an addon's
+        runs on a fresh database too: the baseline does not carry its tables.
 
         ``attempts`` is the number of fresh passes before a transient PGlite WASM
         fault gives up. Under whole-suite ``pytest -n`` load PGlite's WASM
@@ -276,14 +286,22 @@ class _LifecycleMixin(_StoreShared):
 
         Args:
           attempts: Max retry attempts on transient PGlite faults.
+          addon_migrations: The deployment's addons' migrations, ``(name, SQL)``,
+            each named so no core migration shares the name.
 
         Raises:
+          ValueError: Two migrations share a name; the second would never run.
           Various: On first pass deterministic failures (bad DDL, missing extension).
 
         """
+        names = Counter(
+            name for name, _body in (*schema_migrations(), *addon_migrations)
+        )
+        if reused := sorted(name for name, count in names.items() if count > 1):
+            raise ValueError(f"Two migrations are named {', '.join(reused)}.")
         for attempt in range(attempts):
             try:
-                await self._bootstrap_once()
+                await self._bootstrap_once(addon_migrations)
                 return
             except (asyncpg.PostgresConnectionError, ConnectionRefusedError):
                 if attempt == attempts - 1:
@@ -312,7 +330,10 @@ class _LifecycleMixin(_StoreShared):
     # is a monotonic no-op once aligned. The same rebuild can drop
     # ``inquiry_embeddings`` rows, so every inquiry missing an embedding is re-embedded
     # here as well.
-    async def _bootstrap_once(self) -> None:
+    async def _bootstrap_once(
+        self,
+        addon_migrations: Sequence[tuple[str, str]],
+    ) -> None:
         """One idempotent bootstrap pass; see :meth:`bootstrap`."""
         async with self.engine.acquire() as conn:
             await conn.execute(
@@ -359,11 +380,17 @@ class _LifecycleMixin(_StoreShared):
                             baseline_name,
                         )
                         applied.add(baseline_name)
-                for name, body in numbered_migrations:
-                    if name in applied:
-                        continue
+                pending = [
+                    *(
+                        (name, substitute_schema_placeholders(body))
+                        for name, body in numbered_migrations
+                        if name not in applied
+                    ),
+                    *(each for each in addon_migrations if each[0] not in applied),
+                ]
+                for name, body in pending:
                     async with tx(conn):
-                        await conn.execute(substitute_schema_placeholders(body))
+                        await conn.execute(body)
                         await conn.execute(
                             "INSERT INTO applied_migrations (name) VALUES ($1) "
                             "ON CONFLICT (name) DO NOTHING",
@@ -373,7 +400,7 @@ class _LifecycleMixin(_StoreShared):
                 # (auth v2 Phase 1). Idempotent: once any user logs in
                 # the path no-ops. Runs after migrations so the table
                 # exists on first boot.
-                await bootstrap_admin(conn)
+                await bootstrap_admin(conn, policy=self.access_policy)
                 await _reconcile_sequences(conn)
                 await self._backfill_embeddings(conn)
             finally:

@@ -19,6 +19,7 @@ from trackinizer.addons.addon import (
     AddonDescription,
     AddonManifest,
 )
+from trackinizer.server.access_policy import AccessPolicy, DefaultPolicy
 from trackinizer.server.visuals.catalog import Canvas
 
 
@@ -57,7 +58,14 @@ class Deployment:
         """The visual modules the browser offers, and the one a new canvas opens."""
 
     def __init__(self, config: Config) -> None:
-        """Build the visual catalog and every addon's manifest; validate both."""
+        """Build the visual catalog and every addon's manifest; validate both.
+
+        Raises:
+          DeploymentError: A field is no addon config, or an addon's router holds a
+            WebSocket route.
+          ValueError: Two addons each set an access policy; a server asks one.
+
+        """
         self.visuals = config.visuals.make()
         self.manifests: dict[str, AddonManifest] = {}
         descriptions: list[AddonDescription] = []
@@ -75,6 +83,20 @@ class Deployment:
             except TypeError as err:
                 raise DeploymentError(f"Addon {name!r}: {err}") from err
         self._catalog = AddonCatalogBody(addons=descriptions)
+        governing = {
+            name: manifest.access_policy
+            for name, manifest in self.manifests.items()
+            if manifest.access_policy is not None
+        }
+        if len(governing) > 1:
+            raise ValueError(
+                f"Addons {', '.join(sorted(governing))} each set an access policy; "
+                "a deployment takes at most one.",
+            )
+        self.access_policy: AccessPolicy = next(
+            iter(governing.values()),
+            DefaultPolicy(),
+        )
 
     def catalog(self) -> AddonCatalogBody:
         """Describe every addon without starting any of them."""

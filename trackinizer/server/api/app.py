@@ -27,6 +27,7 @@ import asyncpg
 
 from trackinizer.addons.addon import ServerContext
 from trackinizer.addons.deployment import Deployment, supervise
+from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.api import (
     addons_routes,
     admin_routes,
@@ -112,6 +113,7 @@ _logger = logging.getLogger(__name__)
 __all__ = [
     "ROUTERS",
     "RequestLoggingMiddleware",
+    "access_denied_handler",
     "app",
     "check_violation_handler",
     "conflict_handler",
@@ -191,7 +193,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         raise ConfigError("state.secret_schemes must map a scheme name to a factory")
     async with build_engine(config) as engine:
         app.state.engine = engine
-        app.state.store = Store(engine, embed=build_embedder(config.embedder))
+        app.state.access_policy = deployment_of(app).access_policy
+        app.state.store = Store(
+            engine,
+            embed=build_embedder(config.embedder),
+            access_policy=app.state.access_policy,
+        )
         # Process-local routing buffer for inbound (world -> session) messages;
         # separate from event capture. The sessions routes read it off state.
         app.state.inbound = InboundQueue()
@@ -199,13 +206,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # current_user, and any sign-in routes, can read the signing secret.
         # main() mounts the SPA separately.
         app.state.config = config
-        await app.state.store.bootstrap()
+        await app.state.store.bootstrap(
+            addon_migrations=[
+                migration
+                for manifest in deployment_of(app).manifests.values()
+                for migration in manifest.migrations
+            ],
+        )
         if config.auth_disabled:
             # The synthetic no-auth principal must exist as an active user so
             # its submits pass the account-attribution gate; seed it here, once
             # the schema is in place.
             async with engine.acquire() as conn:
-                await seed_no_auth_user(conn)
+                await seed_no_auth_user(conn, policy=app.state.access_policy)
         # Resolve the session-search embedder ONCE at startup and cache it on
         # app.state (web.py reads it there). A real model is degraded to None
         # when its weights are absent -- never downloaded in-band -- and warmed
@@ -514,6 +527,16 @@ async def conflict_handler(request: Request, exc: ConflictError) -> JSONResponse
         status_code=409,
         content={"detail": str(exc), "code": exc.code},
     )
+
+
+@app.exception_handler(AccessDeniedError)
+async def access_denied_handler(
+    request: Request,
+    exc: AccessDeniedError,
+) -> JSONResponse:
+    """Translate the access policy's refusal into HTTP 403."""
+    del request
+    return JSONResponse(status_code=403, content={"detail": str(exc)})
 
 
 @app.exception_handler(ChatDeletedError)
