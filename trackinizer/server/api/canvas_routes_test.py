@@ -2807,7 +2807,7 @@ async def test_only_a_canvas_made_with_no_workspace_makes_the_next_default(
     assert [answer.status_code for answer in opened] == [200, 200, 200]
     assert before == []
     assert await _default_titles(store) == [
-        (from_plain(landed["workspace_id"], str), "Untitled workspace"),
+        (from_plain(landed["workspace_id"], str), "Workspace 1"),
     ]
     assert landed["workspace_id"] != default
 
