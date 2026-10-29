@@ -173,7 +173,7 @@ def test_pglite_node_exits_when_its_python_parent_is_killed(
     ) as holder:
         try:
             assert holder.stdout is not None
-            node_pid = int(holder.stdout.readline())
+            node_pid = int(cast(str, holder.stdout.readline()))  # ty: ignore[redundant-cast] -- Basedpyright's typeshed types Popen.stdout as IO[Any].
         finally:
             holder.kill()
     try:
@@ -190,8 +190,7 @@ def test_pglite_node_exits_when_its_python_parent_is_killed(
 async def test_pglite_acquire_reopens_dropped_connection(tmp_path: Path) -> None:
     """Reopen a PGlite connection when Node side-closes the prior connection."""
     engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
-    manager = MagicMock()
-    manager.get_asyncpg_uri.return_value = "postgresql://x"
+    manager = MagicMock(get_asyncpg_uri=MagicMock(return_value="postgresql://x"))
     engine._manager = cast(PGliteManager, manager)
     dead = _make_conn()
     dead.is_closed = MagicMock(return_value=True)
@@ -222,16 +221,22 @@ async def test_pglite_acquire_restarts_manager_when_node_died(tmp_path: Path) ->
     process restarts.
     """
     engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
-    dead_manager = MagicMock()
-    dead_manager.is_running.return_value = False
-    dead_manager.get_asyncpg_uri.side_effect = RuntimeError(
-        "PGlite server is not running. Call start() first.",
+    stop = MagicMock()
+    dead_manager = MagicMock(
+        is_running=MagicMock(return_value=False),
+        get_asyncpg_uri=MagicMock(
+            side_effect=RuntimeError(
+                "PGlite server is not running. Call start() first.",
+            ),
+        ),
+        stop=stop,
     )
     engine._manager = cast(PGliteManager, dead_manager)
     engine._conn = cast("asyncpg.Connection[asyncpg.Record]", _make_conn())
-    fresh_manager = MagicMock()
-    fresh_manager.is_running.return_value = True
-    fresh_manager.get_asyncpg_uri.return_value = "postgresql://x"
+    fresh_manager = MagicMock(
+        is_running=MagicMock(return_value=True),
+        get_asyncpg_uri=MagicMock(return_value="postgresql://x"),
+    )
     fresh_conn = _make_conn()
 
     with pytest.MonkeyPatch().context() as monkeypatch:
@@ -254,7 +259,7 @@ async def test_pglite_acquire_restarts_manager_when_node_died(tmp_path: Path) ->
 
     assert engine._manager is fresh_manager
     assert engine._conn is fresh_conn
-    dead_manager.stop.assert_called()
+    stop.assert_called()
 
 
 @pytest.mark.asyncio
@@ -263,8 +268,7 @@ async def test_pglite_acquire_releases_lock_on_reconnect_failure(
 ) -> None:
     """Release the PGlite acquire lock when reconnecting raises."""
     engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
-    manager = MagicMock()
-    manager.get_asyncpg_uri.return_value = "postgresql://x"
+    manager = MagicMock(get_asyncpg_uri=MagicMock(return_value="postgresql://x"))
     engine._manager = cast(PGliteManager, manager)
 
     with pytest.MonkeyPatch().context() as monkeypatch:
@@ -289,8 +293,7 @@ async def test_pglite_reentrant_acquire_raises_not_deadlocks(tmp_path: Path) -> 
     lock the task itself holds. The guard must detect this and raise.
     """
     engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
-    manager = MagicMock()
-    manager.get_asyncpg_uri.return_value = "postgresql://x"
+    manager = MagicMock(get_asyncpg_uri=MagicMock(return_value="postgresql://x"))
     engine._manager = cast(PGliteManager, manager)
     engine._conn = cast("asyncpg.Connection[asyncpg.Record]", _make_conn())
 
@@ -320,9 +323,13 @@ async def test_postgres_engine_aenter_closes_pool_when_listener_setup_fails(
     ``__aexit__`` does not run when ``__aenter__`` raises (PEP 343), so the
     pool and listener connection leak unless ``__aenter__`` cleans up itself.
     """
-    pool = AsyncMock()
-    listener = AsyncMock()
-    listener.add_listener = AsyncMock(side_effect=asyncpg.InterfaceError("boom"))
+    pool_close = AsyncMock()
+    pool = AsyncMock(close=pool_close)
+    listener_close = AsyncMock()
+    listener = AsyncMock(
+        add_listener=AsyncMock(side_effect=asyncpg.InterfaceError("boom")),
+        close=listener_close,
+    )
     monkeypatch.setattr(asyncpg, "create_pool", AsyncMock(return_value=pool))
     monkeypatch.setattr(asyncpg, "connect", AsyncMock(return_value=listener))
 
@@ -330,8 +337,8 @@ async def test_postgres_engine_aenter_closes_pool_when_listener_setup_fails(
     with pytest.raises(asyncpg.InterfaceError):
         await engine.__aenter__()
 
-    pool.close.assert_awaited()
-    listener.close.assert_awaited()
+    pool_close.assert_awaited()
+    listener_close.assert_awaited()
 
 
 def test_shared_node_modules_installs_once_then_reuses(
@@ -353,9 +360,7 @@ def test_shared_node_modules_installs_once_then_reuses(
     assert first == second
     assert (first.parent / ".ready").exists()
     calls.assert_called_once()
-    command = calls.call_args.args[0]
-    assert isinstance(command, list)
-    assert command[:2] == ["npm", "ci"]
+    assert cast(list[str], calls.call_args.args[0])[:2] == ["npm", "ci"]
 
 
 def test_warm_cache_preserves_superseded_keys_that_may_still_be_live(
@@ -708,18 +713,19 @@ async def test_unowned_workdir_kept_on_exit(tmp_path: Path) -> None:
 async def test_pglite_exit_terminates_client_socket(tmp_path: Path) -> None:
     """PGlite shutdown does not wait on asyncpg's broken close handshake."""
     engine = PGliteEngine(workdir=tmp_path / "scratch", extensions=())
-    conn = MagicMock()
-    conn.close = AsyncMock()
-    conn.terminate = MagicMock()
+    close = AsyncMock()
+    terminate = MagicMock()
+    conn = MagicMock(close=close, terminate=terminate)
     engine._conn = cast("asyncpg.Connection[asyncpg.Record]", conn)
-    manager = MagicMock()
+    stop = MagicMock()
+    manager = MagicMock(stop=stop)
     engine._manager = cast(PGliteManager, manager)
 
     await engine.__aexit__()
 
-    conn.terminate.assert_called_once_with()
-    conn.close.assert_not_awaited()
-    manager.stop.assert_called_once_with()
+    terminate.assert_called_once_with()
+    close.assert_not_awaited()
+    stop.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -825,8 +831,8 @@ async def test_pglite_start_once_tcp_configures_port_and_manager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = PGliteEngine(workdir=tmp_path, extensions=("pgvector",), use_tcp=True)
-    manager = MagicMock()
-    manager.start = MagicMock()
+    start = MagicMock()
+    manager = MagicMock(start=start)
     configs: list[PGliteConfig] = []
 
     def make_manager(config: PGliteConfig) -> MagicMock:
@@ -846,7 +852,7 @@ async def test_pglite_start_once_tcp_configures_port_and_manager(
     assert config.use_tcp is True
     assert config.tcp_port == 54_321
     assert engine._manager is manager
-    manager.start.assert_called_once_with()
+    start.assert_called_once_with()
     assert (tmp_path / "pglite_manager.js").read_text().find("54321") >= 0
 
 
@@ -880,8 +886,7 @@ async def test_pglite_open_conn_retries_and_surfaces_last_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = PGliteEngine(workdir=Path("unused"), extensions=())
-    manager = MagicMock()
-    manager.get_asyncpg_uri.return_value = "postgresql://x"
+    manager = MagicMock(get_asyncpg_uri=MagicMock(return_value="postgresql://x"))
     monkeypatch.setattr(engine, "_manager", manager)
     first = asyncpg.ConnectionDoesNotExistError("first")
     second = asyncpg.ConnectionDoesNotExistError("second")
@@ -928,8 +933,7 @@ async def test_pglite_live_conn_requires_connection_after_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = PGliteEngine(workdir=Path("unused"), extensions=())
-    manager = MagicMock()
-    manager.is_running.return_value = False
+    manager = MagicMock(is_running=MagicMock(return_value=False))
     monkeypatch.setattr(engine, "_manager", manager)
     monkeypatch.setattr(engine, "_shutdown", AsyncMock())
     monkeypatch.setattr(engine, "_start_with_retries", AsyncMock())
@@ -955,8 +959,11 @@ async def test_pglite_notify_and_listen_deliver_payload() -> None:
 async def test_postgres_enter_configures_pool_listener_and_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pool = AsyncMock()
-    listener = AsyncMock()
+    pool_close = AsyncMock()
+    pool = AsyncMock(close=pool_close)
+    add_listener = AsyncMock()
+    listener_close = AsyncMock()
+    listener = AsyncMock(add_listener=add_listener, close=listener_close)
     monkeypatch.setattr(asyncpg, "create_pool", AsyncMock(return_value=pool))
     monkeypatch.setattr(asyncpg, "connect", AsyncMock(return_value=listener))
     engine = PostgresEngine("postgresql:///unused", listen_channel="updates")
@@ -964,10 +971,10 @@ async def test_postgres_enter_configures_pool_listener_and_exit(
     assert await engine.__aenter__() is engine
     assert engine._pool is pool
     assert engine._listener is listener
-    listener.add_listener.assert_awaited_once_with("updates", engine._on_notify)
+    add_listener.assert_awaited_once_with("updates", engine._on_notify)
     await engine.__aexit__()
-    listener.close.assert_awaited_once_with()
-    pool.close.assert_awaited_once_with()
+    listener_close.assert_awaited_once_with()
+    pool_close.assert_awaited_once_with()
 
 
 def test_postgres_on_notify_publishes_string_payload() -> None:
@@ -1005,7 +1012,8 @@ async def test_postgres_notify_executes_parameterized_pg_notify(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = PostgresEngine("postgresql:///unused", listen_channel="updates")
-    conn = AsyncMock()
+    execute = AsyncMock()
+    conn = AsyncMock(execute=execute)
 
     class AcquireContext:
         async def __aenter__(self) -> AsyncMock:
@@ -1022,7 +1030,7 @@ async def test_postgres_notify_executes_parameterized_pg_notify(
 
     await engine.notify("updates", "payload")
 
-    conn.execute.assert_awaited_once_with(
+    execute.assert_awaited_once_with(
         "SELECT pg_notify($1, $2)",
         "updates",
         "payload",
@@ -1089,8 +1097,8 @@ def test_drain_node_stdout_handles_missing_and_failing_streams(
         return thread
 
     monkeypatch.setattr(threading, "Thread", make_thread)
-    stdout = MagicMock()
-    stdout.readline.side_effect = OSError("closed")
+    readline = MagicMock(side_effect=OSError("closed"))
+    stdout = MagicMock(readline=readline)
     manager = PGliteManager.__new__(PGliteManager)
     monkeypatch.setattr(
         manager,
@@ -1101,10 +1109,10 @@ def test_drain_node_stdout_handles_missing_and_failing_streams(
     substrate._drain_node_stdout(manager)
     assert thread.started
     targets.pop()()
-    stdout.readline.assert_called_once_with()
+    readline.assert_called_once_with()
 
-    complete = MagicMock()
-    complete.readline.side_effect = ["line", ""]
+    complete_readline = MagicMock(side_effect=["line", ""])
+    complete = MagicMock(readline=complete_readline)
     manager = PGliteManager.__new__(PGliteManager)
     monkeypatch.setattr(
         manager,
@@ -1114,7 +1122,7 @@ def test_drain_node_stdout_handles_missing_and_failing_streams(
     )
     substrate._drain_node_stdout(manager)
     targets.pop()()
-    assert complete.readline.call_count == 2
+    assert complete_readline.call_count == 2
 
 
 def test_install_wait_retries_until_ready(

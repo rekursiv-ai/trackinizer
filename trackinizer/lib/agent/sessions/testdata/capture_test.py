@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import argparse
 import json
@@ -15,6 +15,8 @@ import struct
 import sys
 import tempfile
 import zlib
+
+from treekle import json_loads
 
 import pytest
 
@@ -30,6 +32,7 @@ from trackinizer.lib.agent.sessions.testdata.capture import (
     _drive,
     _emit,
     _filler,
+    _Flags,
     _isolate_environment,
     _log_size,
     _prepare,
@@ -336,7 +339,7 @@ def test_seed_onboarding_keeps_every_key_but_projects_and_trusts_the_workspace(
 
     _seed_onboarding(home, work, real_home=fake_home / ".claude")
 
-    seeded = json.loads((home / ".claude.json").read_text(encoding="utf-8"))
+    seeded = json_loads((home / ".claude.json").read_text(encoding="utf-8"))
     assert seeded == {
         "theme": "dark",
         "n": 3,
@@ -558,7 +561,7 @@ def test_add_arguments_defaults() -> None:
     parser = argparse.ArgumentParser()
     _add_arguments(parser)
 
-    flags = parser.parse_args([])
+    flags = cast(_Flags, parser.parse_args([]))
 
     assert flags.cli == "both"
     assert flags.out == Path(capture.__file__).resolve().parent

@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from types import MappingProxyType
-from typing import Final, TextIO, cast, get_args
+from typing import Final, TextIO, cast
 
 import base64
 import binascii
@@ -45,7 +45,11 @@ from trackinizer.lib.agent.sessions.unmodeled import (
     read_field_keeping_invalid,
     restore_unmodeled_fields,
 )
-from trackinizer.sagent.model.capability import SummaryKind, ThinkingEffort
+from trackinizer.sagent.model.capability import (
+    SummaryKind,
+    ThinkingEffort,
+    literal_members,
+)
 from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AgentToAgentMessage,
@@ -1199,16 +1203,16 @@ def _effort(
     """Read a reported effort level, resolving a provider's own spelling."""
     if wire in aliases:
         return aliases[wire]
-    if wire not in get_args(ThinkingEffort.__value__):
+    if wire not in cast(tuple[ThinkingEffort, ...], literal_members(ThinkingEffort)):
         return None
-    return cast(ThinkingEffort, wire)
+    return wire
 
 
 def _summary_kind(wire: str) -> SummaryKind | None:
     """Read a requested summary verbosity."""
-    if wire not in get_args(SummaryKind.__value__):
+    if wire not in cast(tuple[SummaryKind, ...], literal_members(SummaryKind)):
         return None
-    return cast(SummaryKind, wire)
+    return wire
 
 
 class _Reader:

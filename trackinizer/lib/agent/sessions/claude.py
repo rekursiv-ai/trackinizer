@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
-from typing import TextIO, TypeGuard, cast, get_args
+from typing import TextIO, TypeGuard, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import base64
@@ -55,7 +55,7 @@ from trackinizer.lib.agent.sessions.unmodeled import (
     restore_unmodeled_fields,
     same_json_value,
 )
-from trackinizer.sagent.model.capability import ThinkingEffort
+from trackinizer.sagent.model.capability import ThinkingEffort, literal_members
 from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AnyToolResult,
@@ -1671,9 +1671,10 @@ def _split(content: str | None, parts: int) -> list[str]:
 
 def _effort(wire: object) -> ThinkingEffort | None:
     """Read a reported effort level."""
-    if wire not in get_args(ThinkingEffort.__value__):
+    levels = cast(tuple[ThinkingEffort, ...], literal_members(ThinkingEffort))
+    if not isinstance(wire, str) or wire not in levels:
         return None
-    return cast(ThinkingEffort, wire)
+    return wire
 
 
 def _millis(value: float | None, original: object = None) -> float | int | None:
