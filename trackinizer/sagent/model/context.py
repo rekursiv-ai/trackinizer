@@ -1,7 +1,7 @@
 """A model context's size: the price band it falls in, its tokens, and how it reads.
 
 size = model.settings.context_size
-size.context_name                       # small, mid, or large
+size.context_name                       # smallcontext, midcontext, or fullcontext
 size.tokens
 """
 
@@ -17,10 +17,12 @@ __all__ = [
 ]
 
 
+# ``smallcontext`` and ``midcontext`` are the bands a model bills cheaper below; ``fullcontext``
+# is its whole window.
 type ContextSizeName = Literal[
-    "small",
-    "mid",
-    "large",
+    "smallcontext",
+    "midcontext",
+    "fullcontext",
 ]
 
 
@@ -28,6 +30,6 @@ type ContextSizeName = Literal[
 class ContextSize:
     """A context's size: the price band it falls in, its tokens, and how it reads."""
 
-    context_name: ContextSizeName = "small"
+    context_name: ContextSizeName = "smallcontext"
     tokens: int = 0
     display_name: str = "0"

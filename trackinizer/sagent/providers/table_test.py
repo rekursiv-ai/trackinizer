@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from types import MappingProxyType
 from typing import TYPE_CHECKING, override
@@ -20,7 +21,7 @@ from trackinizer.sagent.model.capability import (
 )
 from trackinizer.sagent.model.cost import PriceCatalog, PriceCondition, TokenPrice
 from trackinizer.sagent.model.exceptions import UnknownModelError, UnsupportedTagError
-from trackinizer.sagent.providers.table import ModelTable, ModelTags, split_tags
+from trackinizer.sagent.providers.table import ModelTable, ModelTags, chosen, spelled
 
 
 if TYPE_CHECKING:
@@ -73,7 +74,7 @@ def _row(
         ),
         limits=ModelLimits(max_request_tokens=window),
         prices=prices,
-        default=ModelSettings(context_size=prices["auto", "large"]),
+        default=ModelSettings(context_size=prices["auto", "fullcontext"]),
     )
 
 
@@ -277,15 +278,18 @@ def test_a_repeated_tag_is_one_tag() -> None:
 @pytest.mark.parametrize(
     ("tag", "bands", "context"),
     [
-        ("+small", (32_000, 256_000), 32_000),
-        ("+mid", (32_000, 256_000), 256_000),
+        ("+smallcontext", (32_000, 256_000), 32_000),
+        ("+midcontext", (32_000, 256_000), 256_000),
+        ("+fullcontext", (32_000, 256_000), 1_000_000),
+        ("+smallcontext", (272_000,), 272_000),
+        ("+midcontext", (272_000,), 1_000_000),
+        ("+smallcontext", (), 1_000_000),
+        ("+SmallContext", (32_000, 256_000), 32_000),
+        # A journal's model line from before the rename.
         ("+large", (32_000, 256_000), 1_000_000),
-        ("+small", (272_000,), 272_000),
-        ("+mid", (272_000,), 1_000_000),
-        ("+small", (), 1_000_000),
     ],
 )
-def test_small_mid_and_large_read_the_price_bands(
+def test_the_size_names_read_the_price_bands(
     tag: str,
     bands: tuple[int, ...],
     context: int,
@@ -316,9 +320,9 @@ def test_a_size_tag_is_that_many_tokens_within_the_window(
 @pytest.mark.parametrize(
     ("suffix", "named"),
     [
-        ("+large+small", "+large, +small"),
-        ("+large+1m", "+1m, +large"),
-        ("+200k+small", "+200k, +small"),
+        ("+fullcontext+smallcontext", "+fullcontext, +smallcontext"),
+        ("+fullcontext+1m", "+1m, +fullcontext"),
+        ("+200k+smallcontext", "+200k, +smallcontext"),
         ("+1m+200k", "+1m, +200k"),
     ],
 )
@@ -326,30 +330,46 @@ def test_conflicting_tags_are_rejected(suffix: str, named: str) -> None:
     message = f"Model 'opus-4.8{suffix}' selects conflicting contexts: {named}."
     with pytest.raises(UnsupportedTagError, match=_exactly(message)):
         _table().resolve(f"opus-4.8{suffix}")
+    with pytest.raises(UnsupportedTagError, match=_exactly(message)):
+        ModelTags.parse(f"opus-4.8{suffix}")
+
+
+@pytest.mark.parametrize("tag", ["+high", "+fast", " budget=auto"])
+def test_resolve_takes_a_name_and_its_size_alone(tag: str) -> None:
+    """The effort, tier, and choices are the caller's to apply; dropped, they vanish."""
+    with pytest.raises(UnknownModelError):
+        _table().resolve(f"opus{tag}")
 
 
 @pytest.mark.parametrize(
-    ("name", "tags"),
+    ("line", "tags"),
     [
         ("opus", ModelTags(model="opus")),
-        ("opus+1m+high", ModelTags(model="opus+1m", context=1_000_000, effort="high")),
-        ("opus+HIGH+1M", ModelTags(model="opus+1M", context=1_000_000, effort="high")),
+        ("opus+1m+high", ModelTags(model="opus", context=1_000_000, effort="high")),
+        ("opus+HIGH+1M", ModelTags(model="opus", context=1_000_000, effort="high")),
+        ("opus+high+258k", ModelTags(model="opus", context=258_000, effort="high")),
+        ("opus+medthink", ModelTags(model="opus", effort="medium")),
+        ("opus+MediumThink", ModelTags(model="opus", effort="medium")),
+        ("opus+fullcontext", ModelTags(model="opus", context="fullcontext")),
+        ("opus+SmallContext", ModelTags(model="opus", context="smallcontext")),
+        # Journals keep model lines written before the tags were renamed.
         (
-            "opus+high+258k",
-            ModelTags(model="opus+258k", context=258_000, effort="high"),
+            "opus+large+max",
+            ModelTags(model="opus", context="fullcontext", effort="max"),
         ),
-        ("opus+max", ModelTags(model="opus", effort="max")),
-        ("opus+min", ModelTags(model="opus", effort="min")),
-        ("opus+large", ModelTags(model="opus+large", context="large")),
-        ("opus+mid", ModelTags(model="opus+mid", context="mid")),
         (
             "opus+small+none",
-            ModelTags(model="opus+small", context="small", effort="none"),
+            ModelTags(model="opus", context="smallcontext", effort="none"),
         ),
+        (
+            "opus+mid+medium",
+            ModelTags(model="opus", context="midcontext", effort="medium"),
+        ),
+        ("opus+1m+1M", ModelTags(model="opus", context=1_000_000)),
         (
             "opus+fast+1m+high",
             ModelTags(
-                model="opus+1m",
+                model="opus",
                 context=1_000_000,
                 effort="high",
                 service_tier="priority",
@@ -358,6 +378,10 @@ def test_conflicting_tags_are_rejected(suffix: str, named: str) -> None:
         ("opus+flex", ModelTags(model="opus", service_tier="flex")),
         ("Org/M+cuda+medium", ModelTags(model="Org/M+cuda", effort="medium")),
         ("Org/M+medium+cuda", ModelTags(model="Org/M+cuda", effort="medium")),
+        (
+            "work@vendor/opus-5.5+fullcontext",
+            ModelTags(model="work@vendor/opus-5.5", context="fullcontext"),
+        ),
         (
             "opus+high budget=auto  output=text",
             ModelTags(
@@ -368,25 +392,162 @@ def test_conflicting_tags_are_rejected(suffix: str, named: str) -> None:
         ),
     ],
 )
-def test_split_tags_lifts_effort_and_tier_from_anywhere_and_names_the_size(
-    name: str,
-    tags: ModelTags,
-) -> None:
-    assert split_tags(name) == tags
+def test_parse_lifts_every_tag_from_anywhere(line: str, tags: ModelTags) -> None:
+    assert ModelTags.parse(line) == tags
 
 
 @pytest.mark.parametrize(
-    ("name", "message"),
+    "word",
+    ["fullctx", "context", "think", "0", "1.5m", "nothing"],
+)
+def test_a_word_of_no_kind_stays_in_the_name(word: str) -> None:
+    assert ModelTags.parse(f"opus+{word}") == ModelTags(model=f"opus+{word}")
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [
+        ModelTags(model="opus"),
+        *(
+            ModelTags(model="opus", context=context)
+            for context in ("smallcontext", "midcontext", "fullcontext", 258_000)
+        ),
+        *(
+            ModelTags(model="opus", effort=effort)
+            for effort in ("none", "min", "low", "medium", "high", "xhigh", "max")
+        ),
+        *(
+            ModelTags(model="opus", service_tier=tier)
+            for tier in ("auto", "default", "flex", "priority", "ultrafast")
+        ),
+        ModelTags(
+            model="work@vendor/opus-5.5",
+            context=1_000_000,
+            effort="low",
+            service_tier="flex",
+            choices={"budget": "auto", "cache_ttl_sec": "3600"},
+        ),
+    ],
+    ids=str,
+)
+def test_a_line_parses_back_to_its_tags(tags: ModelTags) -> None:
+    assert ModelTags.parse(str(tags)) == tags
+
+
+@pytest.mark.parametrize(
+    ("tags", "line"),
+    [
+        (
+            ModelTags(
+                model="anthropic/opus-5.5",
+                context="fullcontext",
+                effort="medium",
+            ),
+            "anthropic/opus-5.5+fullcontext+medthink",
+        ),
+        (
+            ModelTags(model="opus", effort="none"),
+            "opus+nothink",  # codespell:ignore nothink
+        ),
+        (
+            ModelTags(model="opus", context=258_000, service_tier="priority"),
+            "opus+258k+priority",
+        ),
+        (ModelTags(model="opus", context=258_123), "opus+258123"),
+        (
+            ModelTags(model="opus", choices={"budget": "auto", "output": "text"}),
+            "opus budget=auto output=text",
+        ),
+    ],
+)
+def test_a_line_spells_each_tag_its_one_way(tags: ModelTags, line: str) -> None:
+    assert str(tags) == line
+
+
+def test_the_name_is_the_model_and_its_size() -> None:
+    """What a provider looks a model up by: the effort and tier are not its to read."""
+    tags = ModelTags.parse("work@vendor/opus+258k+high+fast budget=auto")
+    assert tags.name == "work@vendor/opus+258k"
+    assert ModelTags(model="opus").name == "opus"
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
     [
         ("opus+high+low", "'opus+high+low' names two efforts: high, low"),
         ("opus+flex+fast", "'opus+flex+fast' names two service tiers: flex, priority"),
         ("opus auto", "'opus auto' names 'auto', not a CHOICE=VALUE"),
-        ("opus a=1 a=2", "'opus a=1 a=2' names 'a' twice"),
+        (
+            "opus budget=auto budget=none",
+            "'opus budget=auto budget=none' names 'budget' twice",
+        ),
+        (
+            "opus speed=1",
+            (
+                "speed is no choice; give budget, output, cache_ttl_sec,"
+                " manage_context_server_side"
+            ),
+        ),
     ],
 )
-def test_split_tags_refuses_two_of_one_kind(name: str, message: str) -> None:
-    with pytest.raises(UnsupportedTagError, match=f"^{re.escape(message)}$"):
-        split_tags(name)
+def test_parse_refuses_two_of_one_kind_and_unknown_choices(
+    line: str,
+    message: str,
+) -> None:
+    with pytest.raises(UnsupportedTagError, match=_exactly(message)):
+        ModelTags.parse(line)
+
+
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [(True, "true"), (False, "false"), (300.0, "300"), (0.5, "0.5"), ("high", "high")],
+)
+def test_a_value_is_spelled_as_a_user_types_it(value: object, text: str) -> None:
+    assert spelled(value) == text
+
+
+def test_chosen_reads_each_field_a_setting_names() -> None:
+    settings = replace(
+        _row().default,
+        thinking_effort="high",
+        thinking_budget="auto",
+        thinking_output="text",
+        service_tier="priority",
+        cache_ttl_sec=3600.0,
+        manage_context_server_side=True,
+    )
+    fields = (
+        "thinking_effort",
+        "thinking_budget",
+        "thinking_output",
+        "service_tier",
+        "cache_ttl_sec",
+        "manage_context_server_side",
+    )
+    assert [chosen(settings, f) for f in fields] == [
+        "high",
+        "auto",
+        "text",
+        "priority",
+        3600.0,
+        True,
+    ]
+
+
+def test_settings_name_their_size_their_effort_and_only_choices_made() -> None:
+    row = _row(bands=(272_000,))
+    small = replace(row.default, context_size=row.prices["auto", "smallcontext"])
+    counted = replace(row.default, context_size=row.prices["auto", 100_000])
+    lines = [
+        str(ModelTags.from_settings(row, row.default)),
+        str(ModelTags.from_settings(row, small, provider="vendor")),
+        str(ModelTags.from_settings(row, counted, provider="vendor", account="work")),
+    ]
+    assert lines == [
+        "opus-4.8+fullcontext+nothink",  # codespell:ignore nothink
+        "vendor/opus-4.8+smallcontext+nothink",  # codespell:ignore nothink
+        "work@vendor/opus-4.8+100k+nothink",  # codespell:ignore nothink
+    ]
 
 
 def test_an_unknown_model_names_the_known_models_and_roles() -> None:
@@ -584,8 +745,8 @@ def test_a_default_effort_the_row_lacks_falls_to_its_nearest_level(
 
 @pytest.mark.parametrize(
     ("default", "context"),
-    [(None, 1000), ("large", 1000), ("small", 400), (700, 700)],
-    ids=["unset", "large", "small", "count"],
+    [(None, 1000), ("fullcontext", 1000), ("smallcontext", 400), (700, 700)],
+    ids=["unset", "fullcontext", "smallcontext", "count"],
 )
 def test_a_row_names_the_size_a_bare_id_starts_at(
     tmp_path: Path,
@@ -907,8 +1068,8 @@ def test_small_positive_estimates_and_units_are_valid(
     assert row.prices["auto", 1, date.min].tokens_per_unit == unit
 
 
-def test_small_is_the_top_of_the_cheapest_price_band(tmp_path: Path) -> None:
-    """GPT's 1.05M window bills double past 272k: ``+small`` stays below that."""
+def test_smallcontext_is_the_top_of_the_cheapest_price_band(tmp_path: Path) -> None:
+    """GPT's 1.05M window bills double past 272k: ``+smallcontext`` stays below that."""
     cheap, dear = (
         dict(_FREE),
         _FREE | {"request": 1.0, "effective_prompt_tokens": 272_000},
@@ -917,7 +1078,7 @@ def test_small_is_the_top_of_the_cheapest_price_band(tmp_path: Path) -> None:
         tmp_path / "x.yaml",
         _model(limits={"max_request_tokens": 1_050_000}, prices=[cheap, dear]),
     )
-    capability, settings = _load(path).resolve("example+small")
+    capability, settings = _load(path).resolve("example+smallcontext")
     assert settings.context_size.tokens == 272_000
     assert capability.limits.max_request_tokens == 1_050_000
     # Vendors publish "prompts > 272k": exactly 272k is still the base band.

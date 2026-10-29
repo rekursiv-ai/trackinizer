@@ -2,7 +2,7 @@
 
 tokens = TokenCount(request=1_000, response=200, cache_read=5_000)
 prices = model.capability.prices
-prices["auto", "small"]                 # the size ``small`` names
+prices["auto", "smallcontext"]              # the size ``smallcontext`` names
 cost = prices["auto", tokens.prompt, today] * tokens
 cost.total                              # USD
 """
@@ -189,7 +189,7 @@ class PriceCondition:
 class PriceCatalog:
     """A model's prices, and the context sizes they name.
 
-    ``catalog[tier, size]`` resolves ``small``, ``mid``, ``large``, or a count
+    ``catalog[tier, size]`` resolves ``smallcontext``, ``midcontext``, ``fullcontext``, or a count
     to a :class:`ContextSize`; ``catalog[tier, tokens, at]`` is the price of a
     prompt of ``tokens`` on ``at``.
     """
@@ -198,7 +198,7 @@ class PriceCatalog:
         default_factory=dict[PriceCondition, TokenPrice],
     )
     window: int = 0
-    """The most the model takes in, which ``large`` names; ``0`` is unknown."""
+    """The most the model takes in, which ``fullcontext`` names; ``0`` is unknown."""
 
     @override
     def __hash__(self) -> int:
@@ -248,7 +248,7 @@ class PriceCatalog:
         return price
 
     def sizes(self, tier: ServiceTier) -> tuple[ContextSize, ...]:
-        """Return the sizes ``tier`` names, ascending: ``small``, ``mid``, then ``large``.
+        """Return the sizes ``tier`` names, ascending: ``smallcontext``, ``midcontext``, ``fullcontext``.
 
         Args:
           tier: The service tier whose bands name them.
@@ -277,7 +277,7 @@ def _get_context_sizes(
             and (window <= 0 or ceil <= window)
         },
     )
-    named: tuple[ContextSizeName, ...] = ("small", "mid")[: len(tops)]
+    named: tuple[ContextSizeName, ...] = ("smallcontext", "midcontext")[: len(tops)]
     return {
         **{
             name: ContextSize(
@@ -287,8 +287,8 @@ def _get_context_sizes(
             )
             for name, top in zip(named, tops, strict=False)
         },
-        "large": ContextSize(
-            context_name="large",
+        "fullcontext": ContextSize(
+            context_name="fullcontext",
             tokens=window,
             display_name=_tokens_to_display_name(window),
         ),
@@ -305,12 +305,12 @@ def _get_context_size(
     """Return the size ``spec`` names at ``tier``; ``None`` for a count below 1."""
     sizes = _get_context_sizes(prices, tier, window=window)
     if isinstance(spec, str):
-        return sizes.get(spec, sizes["large"])
+        return sizes.get(spec, sizes["fullcontext"])
     if spec < 1:
         return None
     tokens = min(spec, window) if window > 0 else spec
     ascending: Sequence[ContextSize] = tuple(sizes.values())
-    band = next((s for s in ascending if tokens <= s.tokens), sizes["large"])
+    band = next((s for s in ascending if tokens <= s.tokens), sizes["fullcontext"])
     return ContextSize(
         context_name=band.context_name,
         tokens=tokens,

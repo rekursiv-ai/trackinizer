@@ -7,7 +7,9 @@ Typical usage example:
   table["claude-opus-5-5"]                  # The vendor's id.
   table["default"]                          # A role: best, default, everyday, utility.
   table["opus"], table["opus-5"]            # The newest of the family.
-  capability, settings = table.resolve("opus+small")  # Below its first price band.
+  capability, settings = table.resolve("opus+smallcontext")  # Below its first price band.
+  tags = ModelTags.parse("work@anthropic/opus+fullcontext+medthink budget=auto")
+  str(ModelTags.from_settings(capability, settings, provider="anthropic"))
 """
 
 from __future__ import annotations
@@ -33,7 +35,6 @@ from trackinizer.sagent.model.capability import (
     ThinkingEffort,
     ThinkingOutput,
     literal_members,
-    parse_context_size,
 )
 from trackinizer.sagent.model.context import ContextSizeName
 from trackinizer.sagent.model.cost import (
@@ -52,7 +53,8 @@ if TYPE_CHECKING:
 __all__ = [
     "ModelTable",
     "ModelTags",
-    "split_tags",
+    "chosen",
+    "spelled",
 ]
 
 
@@ -195,8 +197,8 @@ class ModelTable(Mapping[str, ModelCapability]):
 
         Args:
           model_id: An exact name, vendor id, role, or family, with any size tag
-            trailing it: ``opus+small`` (below its first price band), ``+mid``,
-            ``+large``, or a count such as ``+258k``.
+            trailing it: ``opus+smallcontext`` (below its first price band),
+            ``+midcontext``, ``+fullcontext``, or a count such as ``+258k``.
 
         Returns:
           capability: The row.
@@ -207,28 +209,23 @@ class ModelTable(Mapping[str, ModelCapability]):
           UnsupportedTagError: Two size tags conflict.
 
         """
-        # Trailing tags, in any order and any case: ``opus+258K`` is ``opus`` at ``+258k``.
-        base, found = model_id, dict[str, ContextSizeName | int]()
-        while (trailing := _trailing_size(base)) is not None:
-            tag, size = trailing
-            found[tag] = size
-            base = base[: -len(tag)]
-        if len(found) > 1:
-            raise UnsupportedTagError(
-                f"Model {model_id!r} selects conflicting contexts:"
-                f" {', '.join(sorted(found))}.",
-            )
-        capability = self.get(base)
+        tags = ModelTags.parse(model_id)
+        # The effort, tier, and choices are the caller's to apply; read here,
+        # they would vanish.
+        sized_only = (
+            tags.effort is None and tags.service_tier is None and not tags.choices
+        )
+        capability = self.get(tags.model) if sized_only else None
         if capability is None:
             known = ", ".join([*self, *self.roles])
             raise UnknownModelError(
                 f"Unknown model {model_id!r}; known models: {known}.",
             )
         settings = capability.default
-        for size in found.values():
+        if tags.context is not None:
             settings = replace(
                 settings,
-                context_size=capability.prices[settings.service_tier, size],
+                context_size=capability.prices[settings.service_tier, tags.context],
             )
         return capability, settings
 
@@ -253,13 +250,19 @@ class ModelTable(Mapping[str, ModelCapability]):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ModelTags:
-    """What a model's name says besides the model: its context's size, effort, and tier."""
+    """A model line: the model, and the size, effort, tier, and choices tagged on it.
+
+    ``work@anthropic/opus-5.5+fullcontext+medthink+fast budget=auto``. Tags
+    follow the model in any order and case; each word belongs to one kind, so
+    position decides nothing. A word of no kind, such as SelfHosted's ``+cuda``,
+    stays in the model. Choices follow after spaces.
+    """
 
     model: str
-    """The name without its effort and tier tags; its size tag stays."""
+    """The model as named, with any account and provider; its tags lifted off."""
 
     context: ContextSizeName | int | None = None
-    """The size it names, as ``small`` or ``258_000``; ``None`` for none."""
+    """The size it names, as ``fullcontext`` or ``258_000``; ``None`` for none."""
 
     effort: ThinkingEffort | None = None
     """The effort it names; ``None`` for none."""
@@ -270,77 +273,186 @@ class ModelTags:
     choices: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType[str, str]({}),
     )
-    """Each ``CHOICE=VALUE`` after the name, as typed: ``{"budget": "auto"}``."""
+    """Each ``CHOICE=VALUE`` after the tags, as typed: ``{"budget": "auto"}``."""
+
+    @classmethod
+    def parse(cls, line: str) -> Self:
+        """Return what ``line`` names.
+
+        Sizes and efforts read in their old words too (``+large``, ``+high``):
+        journals keep lines written before the tags were renamed.
+
+        Args:
+          line: ``MODEL[+TAG...] [CHOICE=VALUE...]``, with any account and provider.
+
+        Returns:
+          tags: The model, and what its tags and choices name.
+
+        Raises:
+          UnsupportedTagError: Two tags name different sizes, two an effort, or
+            two a tier; a word after the tags is no ``CHOICE=VALUE``, or names a
+            choice twice.
+
+        """
+        spec, *after = line.split()
+        choices: dict[str, str] = {}
+        for word in after:
+            choice, equals, value = word.partition("=")
+            if not equals:
+                raise UnsupportedTagError(
+                    f"{line!r} names {word!r}, not a CHOICE=VALUE",
+                )
+            if choice in choices:
+                raise UnsupportedTagError(f"{line!r} names {choice!r} twice")
+            if f"thinking_{choice}" not in _choices() and choice not in _choices():
+                names = ", ".join(c.removeprefix("thinking_") for c in _choices())
+                raise UnsupportedTagError(f"{choice} is no choice; give {names}")
+            choices[choice] = value
+        model, *words = spec.split("+")
+        kept: list[str] = [model]
+        sizes: dict[ContextSizeName | int, str] = {}
+        effort: list[ThinkingEffort] = []
+        tier: list[ServiceTier] = []
+        for raw in words:
+            word = raw.lower()
+            if (size := _size(word)) is not None:
+                sizes.setdefault(size, f"+{word}")
+            elif (named := _effort(word)) is not None:
+                effort.append(named)
+            elif (served := _tier(word)) is not None:
+                tier.append(served)
+            else:
+                kept.append(raw)
+        if len(sizes) > 1:
+            raise UnsupportedTagError(
+                f"Model {line!r} selects conflicting contexts:"
+                f" {', '.join(sorted(sizes.values()))}.",
+            )
+        for kind, found in (("efforts", effort), ("service tiers", tier)):
+            if len(found) > 1:
+                raise UnsupportedTagError(
+                    f"{line!r} names two {kind}: {', '.join(found)}",
+                )
+        return cls(
+            model="+".join(kept),
+            context=next(iter(sizes), None),
+            effort=effort[0] if effort else None,
+            service_tier=tier[0] if tier else None,
+            choices=MappingProxyType(choices),
+        )
+
+    @classmethod
+    def from_settings(
+        cls,
+        capability: ModelCapability,
+        settings: ModelSettings,
+        *,
+        provider: str = "",
+        account: str | None = None,
+    ) -> Self:
+        """Return the line naming ``capability`` as ``settings`` set it.
+
+        The size and effort are always named; the tier and every other choice
+        only where they differ from what the model starts with.
+
+        Args:
+          capability: The model.
+          settings: Its settings.
+          provider: The provider serving it; ``""`` names none.
+          account: The login its provider signs in as; ``None`` for the default.
+
+        Returns:
+          tags: What a line naming it says, as ``parse`` reads it back.
+
+        """
+        fresh = capability.default
+        size = settings.context_size
+        named = capability.prices[settings.service_tier, size.context_name] == size
+        signed = "" if account is None else f"{account}@"
+        return cls(
+            model=f"{signed}{provider}/{capability.model_id}"
+            if provider
+            else capability.model_id,
+            context=size.context_name if named else size.tokens,
+            effort=settings.thinking_effort,
+            service_tier=None
+            if settings.service_tier == fresh.service_tier
+            else settings.service_tier,
+            choices=MappingProxyType(
+                {
+                    field.removeprefix("thinking_"): spelled(chosen(settings, field))
+                    for field in _choices()
+                    if chosen(settings, field) != chosen(fresh, field)
+                },
+            ),
+        )
+
+    @property
+    def name(self) -> str:
+        """Return what a provider looks the model up by: the model and its size."""
+        return (
+            self.model
+            if self.context is None
+            else f"{self.model}+{_size_word(self.context)}"
+        )
+
+    @override
+    def __str__(self) -> str:
+        tags = (
+            "" if self.effort is None else f"+{_effort_word(self.effort)}",
+            "" if self.service_tier is None else f"+{self.service_tier}",
+        )
+        return " ".join(
+            [
+                f"{self.name}{''.join(tags)}",
+                *(f"{choice}={value}" for choice, value in self.choices.items()),
+            ],
+        )
 
 
-def split_tags(name: str) -> ModelTags:
-    """Lift the effort and tier tags off ``name``, and say which size it names.
-
-    Tags follow the model in any order and case: ``opus+fast+258k+high``. Each
-    word belongs to one kind, so position decides nothing: ``+small``,
-    ``+mid``, ``+large``, and ``+258k`` name a size, ``+max`` and ``+min`` an
-    effort. A word of no kind, such as SelfHosted's ``+cuda``, stays in the name.
-    Choices follow after spaces, as ``describe`` spells them: ``budget=auto``.
+def chosen(settings: ModelSettings, field: str) -> object:
+    """Return the choice ``settings`` made on ``field``.
 
     Args:
-      name: ``MODEL[+TAG...] [CHOICE=VALUE...]``, with any provider prefix.
+      settings: The model's settings.
+      field: A ``ModelSettings`` field.
 
     Returns:
-      tags: The name without its effort and tier, and what the tags named.
-
-    Raises:
-      UnsupportedTagError: Two tags name an effort, or two a tier; a word after
-        the name is no ``CHOICE=VALUE``, or names a choice twice.
+      value: What it holds.
 
     """
-    efforts = cast(tuple[ThinkingEffort, ...], literal_members(ThinkingEffort))
-    tiers = cast(tuple[ServiceTier, ...], literal_members(ServiceTier))
-    spec, *after = name.split()
-    choices: dict[str, str] = {}
-    for word in after:
-        choice, equals, value = word.partition("=")
-        if not equals:
-            raise UnsupportedTagError(f"{name!r} names {word!r}, not a CHOICE=VALUE")
-        if choice in choices:
-            raise UnsupportedTagError(f"{name!r} names {choice!r} twice")
-        choices[choice] = value
-    model, *words = spec.split("+")
-    kept: list[str] = [model]
-    context: ContextSizeName | int | None = None
-    effort: list[ThinkingEffort] = []
-    tier: list[ServiceTier] = []
-    for raw in words:
-        word = "priority" if raw.lower() == "fast" else raw.lower()
-        size = parse_context_size(word)
-        if size is not None:
-            if context is None:
-                context = size
-            kept.append(raw)
-        elif word in efforts:
-            effort.append(efforts[efforts.index(word)])
-        elif word in tiers:
-            tier.append(tiers[tiers.index(word)])
-        else:
-            kept.append(raw)
-    for kind, found in (("efforts", effort), ("service tiers", tier)):
-        if len(found) > 1:
-            raise UnsupportedTagError(
-                f"{name!r} names two {kind}: {', '.join(found)}",
-            )
-    return ModelTags(
-        model="+".join(kept),
-        context=context,
-        effort=effort[0] if effort else None,
-        service_tier=tier[0] if tier else None,
-        choices=MappingProxyType(choices),
+    match field:
+        case "thinking_effort":
+            return settings.thinking_effort
+        case "thinking_budget":
+            return settings.thinking_budget
+        case "thinking_output":
+            return settings.thinking_output
+        case "service_tier":
+            return settings.service_tier
+        case "cache_ttl_sec":
+            return settings.cache_ttl_sec
+        case _:
+            return settings.manage_context_server_side
+
+
+def spelled(value: object) -> str:
+    """Return ``value`` as a user types it: ``true``, ``300``, ``high``."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
+def _choices() -> tuple[str, ...]:
+    """Return the fields a line spells after its tags, as ``CHOICE=VALUE``."""
+    return (
+        "thinking_budget",
+        "thinking_output",
+        "cache_ttl_sec",
+        "manage_context_server_side",
     )
-
-
-def _trailing_size(name: str) -> tuple[str, ContextSizeName | int] | None:
-    """Return the size tag ``name`` ends with, lowered, and its size; ``None`` if none."""
-    head, plus, word = name.rpartition("+")
-    size = parse_context_size(word.lower()) if plus and head else None
-    return None if size is None else (f"+{word.lower()}", size)
 
 
 def _family_version(model_id: str) -> tuple[str, tuple[int, int]] | None:
@@ -449,8 +561,8 @@ class _CapabilityProfile:
     thinking_budget_default: ThinkingBudget | None = None
     """Whether the vendor thinks when told nothing; ``None`` is the lowest offered."""
 
-    context_size_default: str | int = "large"
-    """The size a bare id starts at: ``small``, ``mid``, ``large``, or a count."""
+    context_size_default: str | int = "fullcontext"
+    """The size a bare id starts at: ``fullcontext`` and the other names, or a count."""
 
     cache_ttl_sec: frozenset[float] = frozenset({0.0})
     manage_context_server_side: frozenset[bool] = frozenset({False, True})
@@ -502,7 +614,7 @@ def _model(
     tiers = prices.service_tiers if row.service_tier is None else row.service_tier
     tier = _lowest("service_tier", tiers, literal_members(ServiceTier))
     size = (
-        parse_context_size(row.context_size_default.lower())
+        _size(row.context_size_default.lower())
         if isinstance(row.context_size_default, str)
         else row.context_size_default
     )
@@ -694,3 +806,54 @@ def _prices(row: _ModelRow) -> PriceCatalog:
                 " (no prompt band, no effective date).",
             )
     return PriceCatalog(prices=prices, window=row.limits.max_request_tokens)
+
+
+def _size(word: str) -> ContextSizeName | int | None:
+    """Return the size ``word`` names: ``fullcontext``, its old ``large``, or ``258k``."""
+    names: dict[str, ContextSizeName] = {
+        "smallcontext": "smallcontext",
+        "small": "smallcontext",
+        "midcontext": "midcontext",
+        "mid": "midcontext",
+        "fullcontext": "fullcontext",
+        "large": "fullcontext",
+    }
+    if word in names:
+        return names[word]
+    counted = re.fullmatch(r"([1-9][0-9]*)([km]?)", word)
+    if counted is None:
+        return None
+    return int(counted[1]) * {"": 1, "k": 1_000, "m": 1_000_000}[counted[2]]
+
+
+def _size_word(size: ContextSizeName | int) -> str:
+    """Return the word ``_size`` reads as ``size``: ``fullcontext``, ``258k``, ``258123``."""
+    if isinstance(size, str):
+        return size
+    for unit, scale in (("m", 1_000_000), ("k", 1_000)):
+        if size % scale == 0:
+            return f"{size // scale}{unit}"
+    return str(size)
+
+
+def _effort(word: str) -> ThinkingEffort | None:
+    """Return the effort ``word`` names: ``medthink``, ``mediumthink``, or the old ``medium``."""
+    efforts = cast(tuple[ThinkingEffort, ...], literal_members(ThinkingEffort))
+    named: dict[str, ThinkingEffort] = {
+        **{effort: effort for effort in efforts},
+        **{_effort_word(effort): effort for effort in efforts},
+        "mediumthink": "medium",
+    }
+    return named.get(word)
+
+
+def _effort_word(effort: ThinkingEffort) -> str:
+    """Return the word a line spells ``effort`` as: ``medium`` is ``medthink``."""
+    return f"{ {'none': 'no', 'medium': 'med'}.get(effort, effort) }think"
+
+
+def _tier(word: str) -> ServiceTier | None:
+    """Return the tier ``word`` names, ``fast`` being ``priority``."""
+    tiers = cast(tuple[ServiceTier, ...], literal_members(ServiceTier))
+    word = "priority" if word == "fast" else word
+    return tiers[tiers.index(word)] if word in tiers else None
