@@ -194,7 +194,7 @@ test("a description draft is kept across a live update, and names who changed th
 }) => {
   const id = await createIssue(request, { title: "D2 draft", description: "First words." });
   await openDetail(page, id);
-  await page.getByText("First words.").click();
+  await page.getByText("First words.").dblclick();
   const editor = page.getByRole("textbox", { name: "Description" });
   await editor.press("End");
   await editor.pressSequentially(" My draft.");
@@ -215,6 +215,34 @@ test("a description draft is kept across a live update, and names who changed th
   await expect(editor).toBeHidden();
   await expect(page.locator('[data-field="description"]')).toHaveText("First words. My draft.");
   expect((await stored(request, id)).description).toBe("First words. My draft.");
+});
+
+test("a click leaves the description to select; a double-click opens it, a click away saves it, and Cancel or Escape drops it", async ({
+  page,
+  request,
+}) => {
+  const id = await createIssue(request, { title: "D2 click away", description: "First words." });
+  const writes = await openDetail(page, id);
+  const editor = page.getByRole("textbox", { name: "Description" });
+  await page.getByText("First words.").click();
+  await expect(editor).toBeHidden();
+
+  for (const drop of [() => page.getByRole("button", { name: "Cancel" }).click(), () => editor.press("Escape")]) {
+    await page.getByText("First words.").dblclick();
+    await editor.press("End");
+    await editor.pressSequentially(" Dropped.");
+    await drop();
+    await expect(editor).toBeHidden();
+  }
+
+  await page.getByText("First words.").dblclick();
+  await editor.press("End");
+  await editor.pressSequentially(" Kept.");
+  await page.getByRole("heading", { name: /^Activity/ }).click();
+  await expect(editor).toBeHidden();
+  await expect(page.locator('[data-field="description"]')).toHaveText("First words. Kept.");
+  expect((await stored(request, id)).description).toBe("First words. Kept.");
+  expect(writes.filter((write) => write.url().includes(`/inquiries/${id}/`)).map((write) => write.method())).toEqual(["PUT"]);
 });
 
 test("an Issue's last type goes with a DELETE checked at save, so a type the Python client added meanwhile stays (R4-F02)", async ({
@@ -259,4 +287,17 @@ test("an Issue's last type goes with a DELETE checked at save, so a type the Pyt
     ["PATCH issue_kind", { op: "sub", value: "bug" }],
     ["DELETE issue_kind", {}],
   ]);
+});
+
+test.describe("on a phone's touch screen", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
+
+  test("the description's Edit button shows with no hover, and a tap on it opens the editor", async ({ page, request }) => {
+    const id = await createIssue(request, { title: "D2 touch", description: "First words." });
+    await page.goto(`/trax/lookup/${id}`);
+    const pencil = page.getByRole("button", { name: "Edit Description" });
+    await expect(pencil).toHaveCSS("opacity", "1");
+    await pencil.tap();
+    await expect(page.getByRole("textbox", { name: "Description" })).toBeFocused();
+  });
 });

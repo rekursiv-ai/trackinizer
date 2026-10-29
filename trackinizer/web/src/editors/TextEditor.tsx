@@ -5,6 +5,7 @@ import { useWriteMode } from "../app/boot";
 import { keyCaps, useCommands } from "../commands/registry";
 import type { Field } from "../detail/fields";
 import { Icon } from "../ui/icons";
+import { useCopy } from "../ui/toast";
 import { fieldEdit, lastChangeOf, sameValue, showValue } from "../writes/edits";
 import { useWrite } from "../writes/useWrite";
 import { unsettled, WriteStatus } from "../writes/WriteStatus";
@@ -13,17 +14,22 @@ import { inputText, parseInput } from "./values";
 import "./editors.css";
 
 /**
- * A text field, drawn by `children`, that opens as a Markdown editor on a click
- * or its Edit button: description, done-when, outcome, abstract. With `json`,
- * the field is an object edited as JSON, such as an Experiment's config.
+ * A text field, drawn by `children`, that opens as a Markdown editor on a
+ * double-click or its Edit button: description, done-when, outcome, abstract.
+ * A single click is left to select text and follow links. With `json`, the
+ * field is an object edited as JSON, such as an Experiment's config.
  *
  * The draft is the editor's own, so re-renders and live refetches keep it
  * (COLD-02). When the stored value changes under it, the editor says who
  * changed it and offers both versions; a save checks again that nobody did.
- * A reason is optional. E opens the description; ⌘↵ saves, Escape cancels.
+ * A reason is optional. E opens the description; ⌘↵ or clicking away saves,
+ * Escape cancels.
  * While a save is under way, or a failed one shows Retry and Discard, the editor
  * takes no input and cannot be cancelled (see `unsettled`):
  * the save goes through, and its toast offers Undo.
+ *
+ * The description, edited or only read, has a Copy button over its top right
+ * corner, which copies its Markdown as stored.
  */
 export function TextEditor({
   detail,
@@ -43,29 +49,56 @@ export function TextEditor({
     if (mode === "enabled" && !draft) setDraft({ text: inputText(field.value, json ? "json" : "text"), base: field.value });
   };
   useCommands(editable && field.name === "description" ? [{ id: "detail.edit.description", title: "Edit description", keys: ["e"], run: open }] : []);
-  if (!editable) return children;
+  const copy = field.name === "description" && typeof field.value === "string" && field.value ? <CopyText text={field.value} what="description" /> : null;
+  if (!editable) {
+    return copy ? (
+      <div className="ed-text off">
+        {children}
+        {copy}
+      </div>
+    ) : (
+      children
+    );
+  }
   if (draft) {
     return <OpenText detail={detail} field={field} json={json} draft={draft} setDraft={setDraft} />;
   }
-  // A click on the text opens it, unless it follows a link or selects text.
-  const onClick = (event: MouseEvent) => {
-    if ((event.target as Element).closest("a, button, summary") || getSelection()?.toString()) return;
-    open();
+  // A double-click on the text opens it, unless it lands on a link or a button.
+  const onDoubleClick = (event: MouseEvent) => {
+    if (!(event.target as Element).closest("a, button, summary")) open();
   };
   return (
-    <div className={mode === "enabled" ? "ed-text" : "ed-text off"} onClick={onClick}>
+    <div className={mode === "enabled" ? "ed-text" : "ed-text off"} onDoubleClick={onDoubleClick}>
       {children}
+      {copy}
       <button
         type="button"
-        className="icon-btn ed-open"
+        className="btn ghost ed-open"
         onClick={open}
         disabled={mode === "disabled"}
         aria-label={`Edit ${field.look.label}`}
-        title={field.name === "description" ? "Edit (E)" : "Edit"}
+        title={field.name === "description" ? "Edit (E), or double-click the text" : "Edit, or double-click the text"}
       >
         <Icon name="edit" size={13} />
+        Edit
       </button>
     </div>
+  );
+}
+
+/** A button over a field's top right corner that copies `text`, the `what`'s as stored. */
+function CopyText({ text, what }: { text: string; what: "title" | "description" }) {
+  const copy = useCopy();
+  return (
+    <button
+      type="button"
+      className="icon-btn ed-copy"
+      title={`Copy the ${what}`}
+      aria-label={`Copy the ${what}`}
+      onClick={() => void copy(text, `Copied the ${what}`)}
+    >
+      <Icon name="copy" size={13} />
+    </button>
   );
 }
 
@@ -90,17 +123,28 @@ function OpenText({
   const [reason, setReason] = useState("");
   const pending = unsettled(writer.state);
   const { label } = field.look;
+  // Set once the editor is done, so a blur as it closes never saves again.
+  const done = useRef(false);
+  const close = () => {
+    done.current = true;
+    setDraft(null);
+  };
   const cancel = () => {
-    if (!pending) setDraft(null);
+    if (!pending) close();
   };
   const save = async () => {
-    if (offline || pending) return;
+    if (done.current || offline || pending) return;
     const parsed = parseInput(draft.text, json ? "json" : "text");
     if ("error" in parsed) return setError(parsed.error);
-    if (sameValue(parsed.value, draft.base) && sameValue(field.value, draft.base)) return setDraft(null);
+    if (sameValue(parsed.value, draft.base) && sameValue(field.value, draft.base)) return close();
     const to = parsed.value;
     const edit = fieldEdit({ id: detail.self.id, field: field.name, route: field.route!, label, from: draft.base, to, reason: reason.trim() });
-    if ((await writer.run(edit)) !== null) setDraft(null);
+    if ((await writer.run(edit)) !== null) close();
+  };
+  // Clicking away saves. Moving within the editor does not, nor does leaving the
+  // window, which takes focus with it and gives it back on return.
+  const onBlur = (event: FocusEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget) && document.hasFocus()) void save();
   };
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.nativeEvent.isComposing) return;
@@ -112,8 +156,10 @@ function OpenText({
       cancel();
     }
   };
+  // Focusable itself, so a click on its text, or on a button that Safari does not
+  // focus, keeps focus in the editor rather than leaving it.
   return (
-    <div className="md-edit" data-field={field.name}>
+    <div className="md-edit" data-field={field.name} tabIndex={-1} onBlur={onBlur}>
       {field.name === "description" ? null : <span className="k">{label}</span>}
       <Changed
         detail={detail}
@@ -214,26 +260,33 @@ function Changed({
  * The title, edited in place: a click opens it, Enter or leaving it saves,
  * Escape puts it back. A title cannot be empty, so an empty one is not saved.
  * While a save is under way, or a failed one shows Retry and Discard, it takes no
- * input, and Escape waits for the save.
+ * input, and Escape waits for the save. Edited or only read, it has a Copy button
+ * over its top right corner, outside the heading so the heading reads as the title.
  */
 export function TitleEditor({ detail }: { detail: Detail }) {
   const mode = useWriteMode();
   const { id, title } = detail.self;
   const [draft, setDraft] = useDraft(id, "title");
-  if (mode === "hidden") return <h1 className="d-title">{title}</h1>;
-  if (draft) return <OpenTitle detail={detail} draft={draft} setDraft={setDraft} />;
+  if (draft && mode !== "hidden") return <OpenTitle detail={detail} draft={draft} setDraft={setDraft} />;
   return (
-    <h1 className="d-title">
-      <button
-        type="button"
-        className="d-title-btn"
-        disabled={mode === "disabled"}
-        title="Edit the title"
-        onClick={() => setDraft({ text: title, base: title })}
-      >
-        {title}
-      </button>
-    </h1>
+    <div className="d-title-row">
+      <h1 className="d-title">
+        {mode === "hidden" ? (
+          title
+        ) : (
+          <button
+            type="button"
+            className="d-title-btn"
+            disabled={mode === "disabled"}
+            title="Edit the title"
+            onClick={() => setDraft({ text: title, base: title })}
+          >
+            {title}
+          </button>
+        )}
+      </h1>
+      <CopyText text={title} what="title" />
+    </div>
   );
 }
 

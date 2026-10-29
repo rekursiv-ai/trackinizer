@@ -3,8 +3,9 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { Session } from "../app/session";
+import { stubClipboard } from "../debug/testing";
 import { detailQueries } from "../detail/queries";
-import { renderDetail, row } from "../detail/testing";
+import { PROFILE, renderDetail, row } from "../detail/testing";
 import { DEFAULT_PREFERENCES, receivePreferences } from "../preferences";
 import { adoptLocalUserData } from "../state/local";
 import { resetPreferences } from "../state/testing";
@@ -65,7 +66,7 @@ test("Escape puts the title back, and an empty title is not saved", async () => 
 test("an open description draft survives an unrelated re-render and a live refetch (COLD-02)", async () => {
   const server = serveRow(row("Issue", 1, { description: "First" }));
   const { queryClient } = await open(server);
-  fireEvent.click(screen.getByText("First"));
+  fireEvent.doubleClick(screen.getByText("First"));
   fireEvent.change(description(), { target: { value: "First, and more" } });
 
   // Another user edits another field; the stream refetches the detail.
@@ -138,6 +139,52 @@ test("E opens the description; Escape drops the draft without a write", async ()
   expect(server.writes()).toEqual([]);
 });
 
+test("a click on the text leaves it to select, a double-click on a link opens nothing, and one on the text opens the editor", async () => {
+  const server = serveRow(row("Issue", 1, { description: "First\n\n[The docs](https://example.com)" }));
+  await open(server);
+  fireEvent.click(screen.getByText("First"));
+  expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull();
+  fireEvent.doubleClick(screen.getByRole("link", { name: "The docs" }));
+  expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull();
+  fireEvent.doubleClick(screen.getByText("First"));
+  expect(description().value).toBe("First\n\n[The docs](https://example.com)");
+});
+
+test("clicking away saves the description; moving within the editor, or to another window, does not", async () => {
+  const server = serveRow(row("Issue", 1, { description: "First" }));
+  await open(server);
+  fireEvent.doubleClick(screen.getByText("First"));
+  fireEvent.change(description(), { target: { value: "Second" } });
+  fireEvent.blur(description(), { relatedTarget: screen.getByRole("textbox", { name: "Reason" }) });
+  fireEvent.change(description(), { target: { value: "Third" } });
+  vi.spyOn(document, "hasFocus").mockReturnValueOnce(false);
+  fireEvent.blur(description());
+  fireEvent.change(description(), { target: { value: "Fourth" } });
+  fireEvent.blur(description());
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull());
+  expect(screen.getByText("Fourth")).toBeTruthy();
+  // Only the last blur saved: an earlier one would have sent its own text first.
+  expect(server.writes()).toEqual([{ call: "PUT description", body: { value: "Fourth" } }]);
+});
+
+test("Copy copies the title, and the description's Markdown as stored, for a viewer too; a double-click on it opens nothing", async () => {
+  const copied = stubClipboard();
+  const server = serveRow(row("Issue", 1, { title: "Old title", description: "First **words**" }));
+  await open(server);
+  fireEvent.doubleClick(screen.getByRole("button", { name: "Copy the description" }));
+  expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Copy the title" }));
+  fireEvent.click(screen.getByRole("button", { name: "Copy the description" }));
+  await waitFor(() => expect(copied).toEqual(["Old title", "First **words**"]));
+  cleanup();
+
+  renderDetail({ id: server.self.id }, undefined, { profile: { ...PROFILE, role: "viewer" } });
+  await screen.findByRole("heading", { level: 1 });
+  fireEvent.click(screen.getByRole("button", { name: "Copy the title" }));
+  fireEvent.click(screen.getByRole("button", { name: "Copy the description" }));
+  await waitFor(() => expect(copied).toEqual(["Old title", "First **words**", "Old title", "First **words**"]));
+});
+
 /** What the preferences route was sent, in order. */
 function sentPreferences(server: ReturnType<typeof serveRow>) {
   return server.sent.filter((request) => request.path === "/api/me/preferences").map((request) => request.body);
@@ -146,7 +193,7 @@ function sentPreferences(server: ReturnType<typeof serveRow>) {
 test("a draft is written once typing pauses and reopens on the next load, in any browser", async () => {
   const server = serveRow(row("Issue", 1, { description: "First" }));
   await open(server);
-  fireEvent.click(screen.getByText("First"));
+  fireEvent.doubleClick(screen.getByText("First"));
   fireEvent.change(description(), { target: { value: "Unsaved words" } });
   expect(sentPreferences(server)).toEqual([]);
   // The page closing sends what waits for a pause.
@@ -166,7 +213,7 @@ test("a draft is written once typing pauses and reopens on the next load, in any
 test("an editor opened and not typed in keeps nothing; sending or discarding a draft forgets it", async () => {
   const server = serveRow(row("Issue", 1, { description: "First" }));
   await open(server);
-  fireEvent.click(screen.getByText("First"));
+  fireEvent.doubleClick(screen.getByText("First"));
   dispatchEvent(new Event("pagehide"));
   expect(sentPreferences(server)).toEqual([]);
 
@@ -182,7 +229,7 @@ test("a draft open when the session ends waits in this browser, and the next boo
   const server = serveRow(row("Issue", 1, { description: "First" }));
   const session = new Session(() => {});
   await open(server, session);
-  fireEvent.click(screen.getByText("First"));
+  fireEvent.doubleClick(screen.getByText("First"));
   fireEvent.change(description(), { target: { value: "Unsaved words" } });
   session.leaveForLogin();
   cleanup();
@@ -298,8 +345,8 @@ test("after a failed save the title is locked until Retry or Discard", async () 
   expect(title.value).toBe("New title");
 });
 
-// One editor per test: opening the description takes focus from an open title,
-// and that blur saves the title, a write that outlives the test.
+// One editor per test: opening one takes focus from another that is open,
+// and that blur saves it, a write that outlives the test.
 test("Enter or Escape pressed while an input method composes neither saves nor closes the title (BR-08)", async () => {
   const server = serveRow(row("Issue", 1, { title: "Old title" }));
   await open(server);
