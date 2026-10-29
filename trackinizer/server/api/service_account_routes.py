@@ -117,7 +117,7 @@ async def create_service_account_route(
         )
     except AudienceCeilingError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    async with engine_of(request).acquire() as conn:
+    async with engine_of(request).acquire() as conn, tx(conn):
         row = await conn.fetchrow(
             vetted_sql(
                 "INSERT INTO users (id, email, name, role, status) "
@@ -130,6 +130,12 @@ async def create_service_account_route(
             body.name,
             body.role,
         )
+        if row is not None:
+            await get_store(request).access_policy.on_user(
+                conn,
+                email=email,
+                role=body.role,
+            )
     if row is None:
         raise HTTPException(
             status_code=409,

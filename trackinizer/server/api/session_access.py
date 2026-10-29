@@ -40,6 +40,10 @@ attaching to it, comes from its opening key, the configured assistant's or its
 starter's, and each part is written by the key that opened it alone, so no run
 rewrites another's lines. A chat is known by its ``chat:`` id alone, whoever opened
 it and whether or not an assistant is configured.
+
+Every rule above stays where it is. On top of them, a field edit, a lock and a
+purge by id ask the deployment's access policy (:func:`require_row_write`), whose
+default allows what these rules allow.
 """
 
 from __future__ import annotations
@@ -52,6 +56,7 @@ import uuid
 from fastapi import HTTPException
 from treekle import from_plain
 
+from trackinizer.server.access_policy import Principal, Resource
 from trackinizer.server.api._deps import (
     get_assistant,
     get_chat_orgs,
@@ -66,6 +71,7 @@ from trackinizer.server.audience import (
 )
 from trackinizer.server.auth import ROLE_ORDER, Role
 from trackinizer.server.config import Config
+from trackinizer.server.notify import tx
 from trackinizer.server.visuals.chat_audience import raise_chat_audience
 from trackinizer.server.visuals.partners import opener_email
 from trackinizer.server.visuals.science_chats import (
@@ -87,6 +93,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI, Request
 
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import AccessPolicy
     from trackinizer.server.auth import AuthIdentity
     from trackinizer.server.config import Assistant
     from trackinizer.server.store.core import Store
@@ -96,14 +103,17 @@ __all__ = [
     "Asker",
     "SessionAccess",
     "asker_reader",
+    "check_row_write",
     "granted_audience",
     "hidden_session",
     "is_a_science_chat",
+    "request_principal",
     "require_attributable",
     "require_chat_writer",
     "require_part_writer",
     "require_row_account",
     "require_row_purge",
+    "require_row_write",
     "require_session",
     "require_session_access",
     "require_session_id_change",
@@ -537,6 +547,102 @@ def session_reader(
         assistant="" if assistant is None else assistant.email,
         hosted_domain=identity.hosted_domain,
         hidden=hidden,
+    )
+
+
+async def request_principal(request: Request, identity: AuthIdentity) -> Principal:
+    """Describe ``identity`` as the access policy sees it, once per request.
+
+    The policy's :meth:`~trackinizer.server.access_policy.AccessPolicy.groups`
+    runs on the first call and its answer is kept on ``request.state``, so every
+    later check in the same request reads the same groups without a query.
+
+    Args:
+      request: The request, which carries the store and its policy.
+      identity: Authenticated caller.
+
+    Returns:
+      principal: Its lowercase email, its role and the policy's groups for it.
+
+    """
+    held: object = getattr(request.state, "access_principal", None)
+    if isinstance(held, Principal):
+        return held
+    store = get_store(request)
+    asking = Principal(email=identity.email.lower(), role=identity.role)
+    async with store.engine.acquire() as conn:
+        groups = await store.access_policy.groups(conn, asking)
+    principal = Principal(email=asking.email, role=asking.role, groups=groups)
+    request.state.access_principal = principal
+    return principal
+
+
+async def require_row_write(
+    request: Request,
+    identity: AuthIdentity,
+    target_id: uuid.UUID,
+) -> None:
+    """Ask the access policy whether the caller may write the row ``target_id``.
+
+    Runs before the route's write, on a transaction of its own; a route that
+    already holds a connection calls :func:`check_row_write` on it instead.
+
+    Args:
+      request: The request, which carries the store and its policy.
+      identity: Authenticated caller.
+      target_id: The row a route is about to change or delete.
+
+    Raises:
+      AccessDeniedError: The policy refuses; the app answers 403.
+
+    """
+    principal = await request_principal(request, identity)
+    store = get_store(request)
+    async with store.engine.acquire() as conn, tx(conn):
+        await check_row_write(
+            conn,
+            store.access_policy,
+            principal=principal,
+            target_id=target_id,
+        )
+
+
+async def check_row_write(
+    conn: Conn,
+    policy: AccessPolicy,
+    *,
+    principal: Principal,
+    target_id: uuid.UUID,
+) -> None:
+    """Ask ``policy`` on ``conn`` whether ``principal`` may write ``target_id``.
+
+    A row that does not exist is not asked about: the write it guards answers 404.
+
+    Args:
+      conn: The caller's connection, inside its transaction.
+      policy: The deployment's access policy.
+      principal: The caller, as :func:`request_principal` built it.
+      target_id: The row about to change.
+
+    Raises:
+      AccessDeniedError: The policy refuses.
+
+    """
+    account = await conn.fetchval(
+        "SELECT account FROM inquiries WHERE id = $1",
+        target_id,
+    )
+    if account is None:
+        return
+    await policy.check(
+        conn,
+        principal=principal,
+        resource=Resource(
+            kind="inquiry",
+            id=str(target_id),
+            account=from_plain(account, str),
+        ),
+        action="write",
     )
 
 

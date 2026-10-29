@@ -32,6 +32,7 @@ from trackinizer.server.api._deps import (
 from trackinizer.server.api.session_access import (
     granted_audience,
     is_a_science_chat,
+    request_principal,
     require_attributable,
     require_chat_writer,
     require_session,
@@ -196,6 +197,7 @@ async def session_start_route(
         audience=audience,
         api_key_id=identity.api_key_id,
         attach=body.attach,
+        principal=await request_principal(request, identity),
     )
     row = await require_session(store, session_id)
     require_session_write_access(identity, row)

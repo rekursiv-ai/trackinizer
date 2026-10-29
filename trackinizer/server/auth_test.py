@@ -36,6 +36,7 @@ from trackinizer.conftest import (
 )
 from trackinizer.lib.postgres import Conn, DatabaseEngine, PostgresEngine
 from trackinizer.server import auth
+from trackinizer.server.access_policy import DefaultPolicy
 from trackinizer.server.auth import (
     BOOTSTRAP_ADMIN_ENV,
     BOOTSTRAP_TOKEN_FILE_ENV,
@@ -1132,7 +1133,7 @@ class TestBootstrapAdmin:
         # -> the winner id; then ``create_api_key`` looks up the just-inserted
         # bootstrap admin's role.
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         inserts = [
             c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
@@ -1157,7 +1158,7 @@ class TestBootstrapAdmin:
         conn = make_conn()
         # Probe -> None (looked empty); users insert RETURNING id -> None (lost).
         conn.fetchval = AsyncMock(side_effect=[None, None])
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         sqls = [_sql(c) for c in conn.execute.call_args_list]
         # No api_key minted, and the tx still committed (no rollback).
         assert not any("INSERT INTO api_keys" in s for s in sqls)
@@ -1170,7 +1171,7 @@ class TestBootstrapAdmin:
     async def test_skips_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(BOOTSTRAP_ADMIN_ENV, raising=False)
         conn = make_conn()
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         # No SQL at all when the env var is missing -- offline tests
         # and dev bootstraps must not require it.
         assert conn.execute.call_count == 0
@@ -1180,7 +1181,7 @@ class TestBootstrapAdmin:
     async def test_skips_when_env_blank(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(BOOTSTRAP_ADMIN_ENV, "   ")
         conn = make_conn()
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         assert conn.execute.call_count == 0
 
     @pytest.mark.asyncio
@@ -1193,7 +1194,7 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_ADMIN_ENV, "admin@example.com")
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value=1)
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         inserts = [
             c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
@@ -1211,7 +1212,7 @@ class TestBootstrapAdmin:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value=None)
         with pytest.raises(ValueError, match="service"):
-            await bootstrap_admin(cast(Conn, conn))
+            await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         assert conn.execute.call_count == 0
         assert not (tmp_path / "bt").exists()
 
@@ -1265,8 +1266,8 @@ class TestBootstrapAdmin:
         # bootstrap admin is now present) and the function short-circuits
         # before ``create_api_key``.
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin", 1])
-        await bootstrap_admin(cast(Conn, conn))
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         inserts = [
             c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
@@ -1285,7 +1286,7 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(tmp_path / "bootstrap_token"))
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         sqls = [_sql(c) for c in conn.execute.call_args_list]
         # The users insert is a ``fetchval`` now (it reads back ``RETURNING id``
         # to tell the race winner from a loser), so it lands among the queries,
@@ -1306,7 +1307,7 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(token_file))
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         assert token_file.exists()
         # Sensitive: secret is auth-equivalent to a password.
         assert (token_file.stat().st_mode & 0o777) == 0o600
@@ -1343,7 +1344,7 @@ class TestBootstrapAdmin:
         monkeypatch.setattr(Path, "mkdir", _failing_mkdir)
         try:
             with pytest.raises(OSError, match="simulated read-only filesystem"):
-                await bootstrap_admin(cast(Conn, conn))
+                await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         finally:
             monkeypatch.setattr(Path, "mkdir", original_mkdir)
         sqls = executed_sql(conn)
@@ -1381,7 +1382,7 @@ class TestBootstrapAdmin:
 
         conn.execute = AsyncMock(side_effect=execute)
         with pytest.raises(RuntimeError, match="simulated commit failure"):
-            await bootstrap_admin(cast(Conn, conn))
+            await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         # The final path must NOT exist: a rolled-back DB tx and a
         # plaintext credential on disk are an unrecoverable mismatch.
         assert not token_file.exists()
@@ -1413,7 +1414,7 @@ class TestBootstrapAdmin:
 
         monkeypatch.setattr("trackinizer.server.auth.create_api_key", boom)
         with pytest.raises(RuntimeError, match="simulated api_key insert failure"):
-            await bootstrap_admin(cast(Conn, conn))
+            await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         sqls = executed_sql(conn)
         # Atomic bootstrap: BEGIN must precede the INSERTs and ROLLBACK
         # must follow the failure -- the gate row is undone, retry works.
@@ -1436,7 +1437,7 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(tmp_path / "bt"))
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
         allowlist_inserts = [
             c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
@@ -1518,6 +1519,7 @@ class TestBootstrapAdminRace:
             # cast at the call site so the test exercises the real signature.
             await bootstrap_admin(
                 cast(Conn, _SeedAfterUsersProbe(conn_b, integ_engine)),
+                policy=DefaultPolicy(),
             )
 
         async with integ_engine.acquire() as conn:

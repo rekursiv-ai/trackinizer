@@ -420,7 +420,7 @@ class TestAuthDisabledWarning:
             isinstance(c.args[0], str)
             and "INSERT INTO users" in c.args[0]
             and "no-auth@localhost" in c.args
-            for c in engine.conn.execute.call_args_list
+            for c in engine.conn.fetchval.call_args_list
         )
 
     def test_seeds_no_auth_user_when_disabled(

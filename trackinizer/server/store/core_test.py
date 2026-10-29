@@ -224,6 +224,69 @@ class TestStoreBootstrap:
         assert inserts == numbered
 
     @pytest.mark.asyncio
+    async def test_bootstrap_runs_addon_migrations_after_the_core_ones(self) -> None:
+        """A fresh database records core migrations unrun, but runs an addon's."""
+        store, engine = make_store()
+        await store.bootstrap(
+            addon_migrations=[
+                ("shop.0001.sql", "CREATE SCHEMA shop"),
+                ("shop.0002.sql", "CREATE TABLE shop.items (id INT)"),
+            ],
+        )
+        sqls = executed_sql(engine.conn)
+        inserts = [
+            c.args[1]
+            for c in engine.conn.execute.call_args_list
+            if "INSERT INTO applied_migrations" in _sql(c.args)
+        ]
+        assert sqls.index("CREATE SCHEMA shop") > next(
+            index
+            for index, sql in enumerate(sqls)
+            if "CREATE TABLE IF NOT EXISTS inquiries" in sql
+        )
+        assert sqls.index("CREATE TABLE shop.items (id INT)") > sqls.index(
+            "CREATE SCHEMA shop",
+        )
+        assert inserts[-2:] == ["shop.0001.sql", "shop.0002.sql"]
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_skips_an_addon_migration_already_applied(self) -> None:
+        conn = make_conn()
+
+        async def fetch(sql: str, *_args: object) -> list[dict[str, str]]:
+            names = [name for name, _body in schema_migrations()] + ["shop.0001.sql"]
+            return (
+                [{"name": name} for name in names]
+                if "applied_migrations" in sql
+                else []
+            )
+
+        conn.fetch.side_effect = fetch
+        store, engine = make_store(conn)
+        await store.bootstrap(
+            addon_migrations=[("shop.0001.sql", "CREATE SCHEMA shop")],
+        )
+        assert "CREATE SCHEMA shop" not in executed_sql(engine.conn)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "names",
+        [["schema.045.sql"], ["shop.0001.sql", "shop.0001.sql"]],
+        ids=["core-name", "addon-name-twice"],
+    )
+    async def test_bootstrap_refuses_a_migration_name_used_twice(
+        self,
+        names: list[str],
+    ) -> None:
+        """The second migration of a name would never run, so start-up stops."""
+        store, engine = make_store()
+        with pytest.raises(ValueError, match="Two migrations are named"):
+            await store.bootstrap(
+                addon_migrations=[(name, "CREATE SCHEMA shop") for name in names],
+            )
+        assert executed_sql(engine.conn) == []
+
+    @pytest.mark.asyncio
     async def test_bootstrap_partial_state_does_not_recreate_baseline(
         self,
     ) -> None:
@@ -498,7 +561,7 @@ class TestStoreBootstrap:
         store, _engine = make_store(conn)
 
         with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError) as exc:
-            await store._bootstrap_once()
+            await store._bootstrap_once(())
         assert "DDL died first" in str(exc.value)
 
 

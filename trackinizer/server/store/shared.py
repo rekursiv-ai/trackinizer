@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import asyncio
 
+from trackinizer.server.access_policy import AccessPolicy, DefaultPolicy
 from trackinizer.types.embedder import Embedder
 
 
@@ -43,12 +44,17 @@ class _StoreShared:
         embed: Embedder | Sequence[Embedder],
         *,
         embedding_dim: int = 384,
+        access_policy: AccessPolicy | None = None,
     ) -> None:
         """Construct a Store bound to ``engine`` with one or more embedders.
 
         Multiple embedders populate ``inquiry_embeddings`` in parallel per
         submit/edit; each needs a unique ``name`` and ``dim == embedding_dim``
         (default 384, matching ``vector(384)`` on the embeddings table).
+
+        ``access_policy`` is the deployment's, today's rules when unset: the store
+        asks it inside its own transactions, when a row is created and when a
+        row's account moves.
 
         Validating embedders here turns what would otherwise be opaque
         mid-transaction failures (NOT NULL / UNIQUE / pgvector dim mismatch)
@@ -80,6 +86,7 @@ class _StoreShared:
                 f" mismatched (name, dim) pairs: {bad_dim}.",
             )
         self.engine = engine
+        self.access_policy: AccessPolicy = access_policy or DefaultPolicy()
         # Throttle for ``api_keys.last_used_at`` UPDATE coalescing; see
         # :meth:`should_bump_api_key_last_used`. Per-instance so separate
         # Stores keep independent bookkeeping and the memory releases when

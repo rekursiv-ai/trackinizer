@@ -14465,7 +14465,7 @@
     },
     "/api/admin/users/{user_id}/role": {
       "put": {
-        "description": "Update one user's role; 404 when the id matches no row.\n\nA service account is a viewer or a writer: promoting one to admin answers 422.\n\nArgs:\n  user_id: UUID of the user to update.\n  body: Request body with new role assignment.\n  request: FastAPI Request object containing app state with db engine.\n  identity: Admin identity from authentication dependency.\n\nReturns:\n  confirmation: Success flag and updated role.",
+        "description": "Update one user's role; 404 when the id matches no row.\n\nA service account is a viewer or a writer: promoting one to admin answers 422.\nThe access policy is told the new role in the same transaction.\n\nArgs:\n  user_id: UUID of the user to update.\n  body: Request body with new role assignment.\n  request: FastAPI Request object containing app state with db engine.\n  identity: Admin identity from authentication dependency.\n\nReturns:\n  confirmation: Success flag and updated role.",
         "operationId": "admin_set_user_role_route_api_admin_users__user_id__role_put",
         "parameters": [
           {

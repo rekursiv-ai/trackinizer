@@ -1,8 +1,9 @@
 """:class:`_SubmitMixin` -- per-kind inquiry creation.
 
 Every ``submit_X`` routes through :meth:`_submit_generic`, the single insert
-path (idempotency probe -> reference validation -> row -> ``created`` change
--> kind-specific edges -> a backdated row's ``modified`` re-stamped).
+path (idempotency probe -> reference validation -> row -> the access policy's
+``on_create`` -> ``created`` change -> kind-specific edges -> a backdated row's
+``modified`` re-stamped).
 :meth:`submit_batch` threads one shared connection through each item so a
 mixed-kind batch commits or rolls back atomically.
 """
@@ -19,6 +20,7 @@ import uuid
 from treekle import from_plain
 
 from trackinizer.lib.postgres import Conn
+from trackinizer.server.access_policy import Principal, Resource
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
     insert_inquiry,
@@ -85,6 +87,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
         session_audience: str | None = None,
+        principal: Principal | None = None,
         conn: Conn | None = None,
     ) -> UUID:
         """Create ``req`` through its own kind's ``submit_X``.
@@ -97,6 +100,8 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
           actor: Audit actor recorded on the new row.
           session_audience: Who may read the transcript of a session ``req`` opens.
             No other kind has an audience, so it is ignored for them.
+          principal: The caller the access policy records as the row's creator;
+            None for a row the system creates.
           conn: Transaction to join; None opens one.
 
         Returns:
@@ -113,6 +118,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     req,
                     api_key_id=api_key_id,
                     actor=actor,
+                    principal=principal,
                     conn=conn,
                 )
             case SubmitArtifact():
@@ -120,6 +126,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     req,
                     api_key_id=api_key_id,
                     actor=actor,
+                    principal=principal,
                     conn=conn,
                 )
             case SubmitExperiment():
@@ -127,6 +134,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     req,
                     api_key_id=api_key_id,
                     actor=actor,
+                    principal=principal,
                     conn=conn,
                 )
             case SubmitPaper():
@@ -134,6 +142,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     req,
                     api_key_id=api_key_id,
                     actor=actor,
+                    principal=principal,
                     conn=conn,
                 )
             case SubmitBelief():
@@ -141,6 +150,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     req,
                     api_key_id=api_key_id,
                     actor=actor,
+                    principal=principal,
                     conn=conn,
                 )
             case SubmitCodeChange():
@@ -148,6 +158,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     req,
                     api_key_id=api_key_id,
                     actor=actor,
+                    principal=principal,
                     conn=conn,
                 )
             case SubmitWebResult():
@@ -155,6 +166,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     req,
                     api_key_id=api_key_id,
                     actor=actor,
+                    principal=principal,
                     conn=conn,
                 )
             case SubmitWebSearch():
@@ -162,6 +174,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     req,
                     api_key_id=api_key_id,
                     actor=actor,
+                    principal=principal,
                     conn=conn,
                 )
             case SubmitAgentSession():
@@ -178,6 +191,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     audience=session_audience,
                     api_key_id=api_key_id,
                     actor=actor,
+                    principal=principal,
                     conn=conn,
                 )
             case _:
@@ -190,6 +204,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
+        principal: Principal | None = None,
         conn: Conn | None = None,
     ) -> UUID:
         async def post_insert(conn: Conn, issue_id: UUID, cause: UUID) -> None:
@@ -235,6 +250,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 "issue_priority": req.priority,
             },
             post_insert=post_insert,
+            principal=principal,
             conn=conn,
         )
 
@@ -269,6 +285,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         extras: dict[str, object] | None = None,
         pre_insert: PreInsert | None = None,
         post_insert: PostInsert | None = None,
+        principal: Principal | None = None,
         conn: Conn | None = None,
     ) -> UUID:
         """Single insert path for every submit_X."""
@@ -282,6 +299,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 extras=extras,
                 pre_insert=pre_insert,
                 post_insert=post_insert,
+                principal=principal,
             )
         # Capture the effective idempotency key (body field or header-set slot)
         # BEFORE the tx, so the recovery path below can re-probe even on the
@@ -312,6 +330,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     extras=extras,
                     pre_insert=pre_insert,
                     post_insert=post_insert,
+                    principal=principal,
                     embeddings=embeddings,
                 )
         except asyncpg.UniqueViolationError as exc:
@@ -365,6 +384,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         extras: dict[str, object] | None,
         pre_insert: PreInsert | None,
         post_insert: PostInsert | None,
+        principal: Principal | None = None,
         embeddings: list[tuple[str, list[float]]] | None = None,
     ) -> UUID:
         """Probe + insert one inquiry on an already-open transaction."""
@@ -447,6 +467,11 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             )
             for model, vec in embeddings:
                 await upsert_embedding(conn, row_id, model, vec)
+            await self.access_policy.on_create(
+                conn,
+                principal=principal,
+                resource=Resource(kind="inquiry", id=str(row_id), account=account),
+            )
             reason = ""
             if req.created is not None:
                 reason = f"backfill: created={req.created.isoformat()}"
@@ -519,6 +544,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
+        principal: Principal | None = None,
         conn: Conn | None = None,
     ) -> UUID:
         return await self._submit_generic(
@@ -526,6 +552,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             kind="Artifact",
             api_key_id=api_key_id,
             actor=actor,
+            principal=principal,
             conn=conn,
         )
 
@@ -535,6 +562,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
+        principal: Principal | None = None,
         conn: Conn | None = None,
     ) -> UUID:
         async def pre_insert(conn: Conn) -> None:
@@ -555,6 +583,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 "experiment_config": req.config,
             },
             pre_insert=pre_insert,
+            principal=principal,
             conn=conn,
         )
 
@@ -564,6 +593,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
+        principal: Principal | None = None,
         conn: Conn | None = None,
     ) -> UUID:
         return await self._submit_generic(
@@ -582,6 +612,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 "paper_google_scholar_cluster_id": req.google_scholar_cluster_id,
                 "paper_google_scholar_cites_id": req.google_scholar_cites_id,
             },
+            principal=principal,
             conn=conn,
         )
 
@@ -591,6 +622,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
+        principal: Principal | None = None,
         conn: Conn | None = None,
     ) -> UUID:
         async def post_insert(conn: Conn, belief_id: UUID, cause: UUID) -> None:
@@ -630,6 +662,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 "belief_confidence": req.confidence,
             },
             post_insert=post_insert,
+            principal=principal,
             conn=conn,
         )
 
@@ -639,6 +672,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
+        principal: Principal | None = None,
         conn: Conn | None = None,
     ) -> UUID:
         return await self._submit_generic(
@@ -647,6 +681,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             api_key_id=api_key_id,
             actor=actor,
             extras={"codechange_sha": req.sha},
+            principal=principal,
             conn=conn,
         )
 
@@ -656,6 +691,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
+        principal: Principal | None = None,
         conn: Conn | None = None,
     ) -> UUID:
         return await self._submit_generic(
@@ -664,6 +700,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             api_key_id=api_key_id,
             actor=actor,
             extras={"webresult_url": req.url},
+            principal=principal,
             conn=conn,
         )
 
@@ -673,6 +710,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
+        principal: Principal | None = None,
         conn: Conn | None = None,
     ) -> UUID:
         return await self._submit_generic(
@@ -684,6 +722,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 "websearch_query": req.query,
                 "websearch_provider": req.provider,
             },
+            principal=principal,
             conn=conn,
         )
 
@@ -694,6 +733,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         audience: str,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
+        principal: Principal | None = None,
         conn: Conn | None = None,
     ) -> UUID:
         conversation_id = chat_conversation_id(req.cli_session_id)
@@ -722,6 +762,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             pre_insert=None
             if conversation_id is None
             else partial(refuse_a_deleted_chat, conversation_id=conversation_id),
+            principal=principal,
             conn=conn,
         )
 
@@ -733,6 +774,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
         session_audience: str | None = None,
+        principal: Principal | None = None,
     ) -> list[UUID]:
         """Create many inquiries and their edges in one all-or-nothing tx.
 
@@ -755,6 +797,8 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
           actor: Audit actor applied to every item/edge lacking its own.
           session_audience: Who may read the transcript of each session among
             ``items``; required when one is, and ignored by the other kinds.
+          principal: The caller the access policy records as each row's creator;
+            None for rows the system creates.
 
         Returns:
           ids: Server-minted inquiry ids, aligned to ``items`` order.
@@ -778,6 +822,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     api_key_id=api_key_id,
                     actor=item.actor or actor,
                     session_audience=session_audience,
+                    principal=principal,
                     conn=conn,
                 )
                 for item in items

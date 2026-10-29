@@ -16,6 +16,7 @@ from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.locks import referenced_ids, require_unlocked
 from trackinizer.server.api.session_access import (
     granted_audience,
+    request_principal,
     require_attributable,
 )
 from trackinizer.server.auth import (
@@ -43,6 +44,7 @@ from trackinizer.wire.json_types import MutableJSON
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from trackinizer.server.access_policy import Principal
     from trackinizer.server.store.core import Store
 
 
@@ -127,6 +129,7 @@ async def submit_batch_route(
         # creates, which recorded the wrong author on every batch-created row.
         actor=req.actor or identity.email,
         session_audience=session_audience,
+        principal=await request_principal(request, identity),
     )
     body: MutableJSON = {"ids": [str(row_id) for row_id in ids]}
     return body
@@ -174,7 +177,16 @@ async def submit_route(
         ) from err
     _require_admin_to_set_modified(identity, req)
     await require_unlocked(request, identity, referenced_ids(req))
-    return {"id": str(await _submit_one(get_store(request), req, identity))}
+    return {
+        "id": str(
+            await _submit_one(
+                get_store(request),
+                req,
+                identity,
+                principal=await request_principal(request, identity),
+            ),
+        ),
+    }
 
 
 # Refused, never dropped: a silently dropped time would store a row the importer
@@ -199,6 +211,8 @@ async def _submit_one(
     store: Store,
     req: SubmitBase,
     identity: AuthIdentity,
+    *,
+    principal: Principal,
 ) -> UUID:
     session_audience = _opening_audience(identity, req)
     account = _resolve_account(req, identity)
@@ -209,6 +223,7 @@ async def _submit_one(
         api_key_id=identity.api_key_id,
         actor=req.actor or identity.email,
         session_audience=session_audience,
+        principal=principal,
     )
 
 

@@ -630,7 +630,13 @@ class TestSubmitDispatch:
         called = AsyncMock(return_value=expected)
         monkeypatch.setattr(store, method, called)
         assert await store.submit(body, api_key_id=None, actor="me") == expected
-        called.assert_awaited_once_with(body, api_key_id=None, actor="me", conn=None)
+        called.assert_awaited_once_with(
+            body,
+            api_key_id=None,
+            actor="me",
+            principal=None,
+            conn=None,
+        )
 
     @pytest.mark.asyncio
     async def test_rejects_the_abstract_base(self) -> None:
@@ -666,6 +672,7 @@ class TestSubmitDispatch:
             audience="staff",
             api_key_id=None,
             actor="me",
+            principal=None,
             conn=None,
         )
 
@@ -707,6 +714,7 @@ class TestSubmitArtifact:
             kind="Artifact",
             api_key_id=key,
             actor="alice",
+            principal=None,
             conn=None,
         )
 
@@ -727,6 +735,7 @@ class TestSubmitArtifact:
             kind="Artifact",
             api_key_id=None,
             actor="system",
+            principal=None,
             conn=None,
         )
 

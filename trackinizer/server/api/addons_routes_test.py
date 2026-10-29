@@ -52,6 +52,7 @@ class Probe:
             description="Reports what the server gave it.",
             server_services=[self.service],
             routers=[router],
+            migrations=[("probe.0001.sql", "SELECT 1")],
         )
 
 
@@ -199,6 +200,43 @@ def test_the_lifespan_runs_server_services_with_the_store(
     asyncio.run(_serve_until_probed(fastapi_app, service=service))
     assert service.stores == [store]
     assert service.cancelled
+
+
+def test_the_lifespan_bootstraps_the_store_with_the_addons_migrations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, engine = make_store()
+    bootstrap = AsyncMock(return_value=None)
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "Store", Mock(return_value=store))
+    monkeypatch.setattr(store, "bootstrap", bootstrap)
+    fastapi_app = _app_with(_probe_deployment())
+    fastapi_app.state.config = Config()
+    asyncio.run(
+        _serve_until_probed(fastapi_app, service=_running_service(fastapi_app)),
+    )
+    bootstrap.assert_awaited_once_with(
+        addon_migrations=[("probe.0001.sql", "SELECT 1")],
+    )
+
+
+def test_the_lifespan_hands_the_deployments_policy_to_the_app_and_the_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, engine = make_store()
+    built = Mock(return_value=store)
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "Store", built)
+    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
+    deployment = _probe_deployment()
+    fastapi_app = _app_with(deployment)
+    fastapi_app.state.config = Config()
+    asyncio.run(
+        _serve_until_probed(fastapi_app, service=_running_service(fastapi_app)),
+    )
+    held: object = getattr(fastapi_app.state, "access_policy", None)
+    assert held is deployment.access_policy
+    assert built.call_args.kwargs["access_policy"] is deployment.access_policy
 
 
 class _ProbeService:

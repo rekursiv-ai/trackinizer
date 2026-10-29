@@ -158,7 +158,10 @@ class TestSetLock:
             ).status_code
             == 404
         )
-        engine.conn.fetchval = AsyncMock(return_value=True)
+        # The row's account, which the access policy is asked about, then its flag.
+        engine.conn.fetchval = AsyncMock(
+            side_effect=[make_test_identity().email, True],
+        )
         r = client.put(f"/api/admin/inquiries/{_A}/lock", json={"locked": True})
         assert from_plain(r.json(), dict[str, object]) == {
             "id": str(_A),

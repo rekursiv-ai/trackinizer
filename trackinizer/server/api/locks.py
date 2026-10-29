@@ -23,7 +23,12 @@ from pydantic import BaseModel
 from treekle import from_plain
 
 from trackinizer.server.api._deps import get_store
+from trackinizer.server.api.session_access import (
+    check_row_write,
+    request_principal,
+)
 from trackinizer.server.auth import AuthIdentity, require_role
+from trackinizer.server.notify import tx
 from trackinizer.wire.json_types import MutableJSON
 
 
@@ -140,7 +145,15 @@ async def set_lock_route(
       result: The inquiry's ``id`` and its ``locked`` flag.
 
     """
-    async with get_store(request).engine.acquire() as conn:
+    principal = await request_principal(request, identity)
+    store = get_store(request)
+    async with store.engine.acquire() as conn, tx(conn):
+        await check_row_write(
+            conn,
+            store.access_policy,
+            principal=principal,
+            target_id=target_id,
+        )
         locked = await conn.fetchval(
             "WITH changed AS (UPDATE inquiries SET locked = $2 WHERE id = $1 "
             "RETURNING locked), logged AS (INSERT INTO inquiry_lock_log "
