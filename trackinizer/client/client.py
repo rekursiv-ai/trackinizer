@@ -968,8 +968,9 @@ class Client:
         *,
         actor: Inquiry.Actor,
         priority: int | None = None,
-        note: str = "",
+        note: str | Absent | None = ABSENT,
         valence: float | None = None,
+        default_valence: bool = False,
         labels: Sequence[str] | None = (),
         reason: str = "",
     ) -> EdgeWrite:
@@ -1000,6 +1001,7 @@ class Client:
           priority: Optional numeric ordering or importance.
           note: Optional annotation text.
           valence: Optional credibility or weight [-1, 1].
+          default_valence: If True, valence is an injected default for create only.
           labels: Tags; () = unchanged, list = replace, None = clear.
           reason: Optional audit note.
 
@@ -1010,10 +1012,12 @@ class Client:
         body: dict[str, object] = {"actor": actor}
         if priority is not None:
             body["priority"] = priority
-        if note:
+        if not isinstance(note, Absent) and note is not None and note.strip():
             body["note"] = note
         if valence is not None:
             body["valence"] = valence
+        if default_valence:
+            body["default_valence"] = True
         if labels is not None and labels:
             body["labels"] = list(labels)
         if reason:
@@ -1029,6 +1033,9 @@ class Client:
             created=bool(response.get("created")),
             changed=response.get("change_id") is not None,
         )
+        if not isinstance(note, Absent) and note is not None and not note.strip():
+            self.annotate_edge(from_id, to_id, edge_kind, actor=actor, note="")
+            write = EdgeWrite(created=write.created, changed=True)
         if labels is None:
             # An explicit clear-to-empty: the upsert above could not carry it,
             # so issue the labels write that the store maps to NULL. The edge
@@ -1110,6 +1117,58 @@ class Client:
             f"/api/edges/{from_id}/{edge_kind}/{to_id}",
             body={"actor": actor},
         )
+
+    def add_edge_label(
+        self,
+        from_id: uuid.UUID,
+        to_id: uuid.UUID,
+        edge_kind: str,
+        label: str,
+        *,
+        actor: Inquiry.Actor,
+        reason: str = "",
+    ) -> None:
+        """Add one label to an edge, race-free.
+
+        Args:
+          from_id: Source inquiry ID.
+          to_id: Target inquiry ID.
+          edge_kind: Relationship type name.
+          label: Label to add.
+          actor: Change actor for audit log.
+          reason: Optional audit note.
+
+        """
+        body: dict[str, object] = {"op": "add", "value": label, "actor": actor}
+        if reason:
+            body["reason"] = reason
+        self.patch(f"/api/edges/{from_id}/{edge_kind}/{to_id}/labels", body=body)
+
+    def remove_edge_label(
+        self,
+        from_id: uuid.UUID,
+        to_id: uuid.UUID,
+        edge_kind: str,
+        label: str,
+        *,
+        actor: Inquiry.Actor,
+        reason: str = "",
+    ) -> None:
+        """Remove one label from an edge, race-free.
+
+        Args:
+          from_id: Source inquiry ID.
+          to_id: Target inquiry ID.
+          edge_kind: Relationship type name.
+          label: Label to remove.
+          actor: Change actor for audit log.
+          reason: Optional audit note.
+
+        """
+        body: dict[str, object] = {"op": "sub", "value": label, "actor": actor}
+        if reason:
+            body["reason"] = reason
+        self.patch(f"/api/edges/{from_id}/{edge_kind}/{to_id}/labels", body=body)
 
     def add_subscriber(
         self,

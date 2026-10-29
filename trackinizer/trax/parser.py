@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, cast, get_args
@@ -64,7 +65,7 @@ from trackinizer.wire.seq_ranges import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Iterator, Mapping
 
     from trackinizer.wire import wire_metrics_query
 else:
@@ -723,15 +724,16 @@ def edge_metadata(
             # this branch handling every remaining valid field.
             if op not in ("to", "add", "del"):
                 raise ClientError("edge label uses to, add, or del")
-            labels = from_plain(metadata.get("labels"), list[str], default=[])
+            resolved = resolve_labels((value,))
+            label_ops = list(
+                cast(Sequence[tuple[str, str]], metadata.get("label_ops", ()))
+            )
             if op == "to":
-                labels = resolve_labels((value,))
-            elif op == "add":
-                labels.extend(resolve_labels((value,)))
+                metadata["labels"] = resolved
+                metadata["label_ops"] = [("to", lbl) for lbl in resolved]
             else:
-                removed = frozenset(resolve_labels((value,)))
-                labels = [label for label in labels if label not in removed]
-            metadata["labels"] = labels
+                label_ops.extend((op, lbl) for lbl in resolved)
+                metadata["label_ops"] = label_ops
         # Field + op + value (3), plus the ``edge`` marker when present.
         index += 4 if marked else 3
     return metadata, index
@@ -1392,9 +1394,22 @@ def _parse_edge_action(
     # then post-target -- so post-target overrides pre. Setting the same key twice
     # is malformed input either way; the order just makes it deterministic.
     metadata, consumed_metadata = edge_metadata(tokens[offset:])
+    merged_dict: dict[str, object] = {}
+    combined_ops: list[tuple[str, str]] = []
+    for source_meta in (inbound, pre_meta, metadata):
+        for k, v in source_meta.items():
+            if k == "label_ops":
+                continue
+            merged_dict[k] = v
+        ops = cast(Sequence[tuple[str, str]], source_meta.get("label_ops", ()))
+        if "labels" in source_meta:
+            combined_ops.clear()
+        combined_ops.extend(ops)
+    if combined_ops:
+        merged_dict["label_ops"] = combined_ops
     merged, valence_injected = _apply_valence_alias(
         edge,
-        {**inbound, **dict(pre_meta), **metadata},
+        merged_dict,
     )
     return EdgeAction(
         edge=edge,

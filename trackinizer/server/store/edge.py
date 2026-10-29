@@ -82,6 +82,7 @@ class _EdgeMixin(_CascadeAuditMixin):
         priority: Issue.Priority | None,
         note: str,
         valence: float | None,
+        default_valence: bool = False,
         labels: Sequence[str],
         reason: str = "",
         caused_by: UUID | None = None,
@@ -114,6 +115,9 @@ class _EdgeMixin(_CascadeAuditMixin):
             # annotations the caller actually passed are set -- a bare create
             # (no annotations) is a pure no-op. ``add_edge``'s defaults encode
             # "unset", so translate them to ABSENT for the annotation path.
+            # An injected default valence is applied only when creating a new
+            # edge, never when updating an existing one.
+            upsert_valence = ABSENT if (default_valence or valence is None) else valence
             change_id = await self._set_edge_annotation_on_conn(
                 conn,
                 from_id=from_id,
@@ -121,7 +125,7 @@ class _EdgeMixin(_CascadeAuditMixin):
                 edge_kind=edge_kind,
                 priority=priority if priority is not None else ABSENT,
                 note=note or ABSENT,
-                valence=valence if valence is not None else ABSENT,
+                valence=upsert_valence,
                 labels=edge_labels or ABSENT,
                 reason=reason,
                 require_existing=False,
@@ -390,6 +394,7 @@ class _EdgeMixin(_CascadeAuditMixin):
         priority: Issue.Priority | None = None,
         note: str = "",
         valence: float | None = None,
+        default_valence: bool = False,
         labels: Sequence[str] = (),
         reason: str = "",
         api_key_id: UUID | None = None,
@@ -427,6 +432,8 @@ class _EdgeMixin(_CascadeAuditMixin):
           note: Freetext annotation; empty string means unset/leave unchanged.
           valence: Citation weight for weighted edges; None means unset/leave
             unchanged.
+          default_valence: If True, valence is a default for create only and is
+            ignored when annotating an existing edge.
           labels: Tags on this edge; empty means unset/leave unchanged.
           reason: Justification for this change.
           api_key_id: API key authorizing this change, if any.
@@ -447,6 +454,7 @@ class _EdgeMixin(_CascadeAuditMixin):
                 priority=priority,
                 note=note,
                 valence=valence,
+                default_valence=default_valence,
                 labels=labels,
                 reason=reason,
                 api_key_id=api_key_id,
@@ -465,6 +473,7 @@ class _EdgeMixin(_CascadeAuditMixin):
                 priority=priority,
                 note=note,
                 valence=valence,
+                default_valence=default_valence,
                 labels=labels,
                 reason=reason,
                 api_key_id=api_key_id,
