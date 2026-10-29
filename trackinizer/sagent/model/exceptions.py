@@ -48,7 +48,25 @@ class RetryableError(Exception):
 
 
 class RateLimitedError(RetryableError):
-    """The account's rate limit is spent."""
+    """The account's rate limit is spent.
+
+    Args:
+      message: What failed.
+      retry_after_sec: The wait the server advised; ``0`` when it gave none.
+      limit: The window spent, such as ``5-hour`` or ``weekly``; ``""`` when
+        the server did not say.
+
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_sec: float = 0.0,
+        limit: str = "",
+    ) -> None:
+        super().__init__(message, retry_after_sec=retry_after_sec)
+        self.limit = limit
 
 
 class OverloadedError(RetryableError):
