@@ -84,6 +84,7 @@ _DEFAULTS = {
     "assistant_prompt": "lead",
     "cli_folder": "",
     "chat_tool_calls": True,
+    "autofix": True,
 }
 
 

@@ -8053,6 +8053,13 @@
             "description": "The assistant's system prompt in a chat you start: its own lead prompt, or sagent's with a note of the canvas, as claude and codex are told of it. A chat keeps the one it started on.",
             "x-setting": true
           },
+          "autofix": {
+            "default": true,
+            "description": "Auto-fix the pull requests your agents open or push: when one's checks fail, its run tells the agent to fix them and push. Chat switches it for each pull request.",
+            "title": "Autofix",
+            "type": "boolean",
+            "x-setting": true
+          },
           "chat_provider": {
             "$ref": "#/components/schemas/ChatProvider",
             "default": "assistant",

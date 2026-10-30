@@ -25,6 +25,7 @@
         "app_bar_folded": false,
         "app_bar_width": 220,
         "assistant_prompt": "lead",
+        "autofix": true,
         "chat_provider": "assistant",
         "chat_side": "left",
         "chat_tool_calls": true,

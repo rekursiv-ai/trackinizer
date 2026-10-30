@@ -590,6 +590,7 @@ class TestProfile:
             "assistant_prompt": "lead",
             "cli_folder": "",
             "chat_tool_calls": True,
+            "autofix": True,
             **_EMPTY_USER_DATA,
         }
         assert body["acknowledged_at"] == _WHEN.isoformat()
@@ -707,6 +708,7 @@ class TestPreferences:
             "assistant_prompt": "lead",
             "cli_folder": "",
             "chat_tool_calls": True,
+            "autofix": True,
             **_EMPTY_USER_DATA,
         }
         call = engine.conn.fetchrow.call_args

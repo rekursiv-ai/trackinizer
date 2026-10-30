@@ -66,6 +66,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "assistant_prompt": "lead",
     "cli_folder": "",
     "chat_tool_calls": True,
+    "autofix": True,
     "stars": [],
     "views": [],
     "console_views": [],
@@ -297,6 +298,14 @@ def test_tool_calls_in_chat_are_on_until_the_user_turns_them_off() -> None:
     assert "chat_tool_calls" in ASSISTANT_KEYS
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"chat_tool_calls": "yes"})
+
+
+def test_autofix_is_on_until_the_user_or_their_agent_turns_it_off() -> None:
+    assert stored_preferences(None).autofix is True
+    assert stored_preferences({"autofix": False}).autofix is False
+    # A canvas's agent sets it when the person asks it to.
+    assert "autofix" in ASSISTANT_KEYS
+    assert Preferences.model_json_schema()["properties"]["autofix"]["x-setting"]
 
 
 @pytest.mark.asyncio

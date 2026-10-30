@@ -58,6 +58,7 @@ ASSISTANT_KEYS: Final = frozenset(
         "assistant_prompt",
         "cli_folder",
         "chat_tool_calls",
+        "autofix",
     },
 )
 """The preferences a canvas's assistant may read and change for its owner: the
@@ -423,6 +424,15 @@ class Preferences(_Strict):
         description=(
             "Show the tool calls an agent makes in Chat between the lines, each run of "
             "them folded into one line that opens on what it ran and what came back."
+        ),
+        json_schema_extra=SETTING,
+    )
+    autofix: bool = Field(
+        default=True,
+        description=(
+            "Auto-fix the pull requests your agents open or push: when one's checks "
+            "fail, its run tells the agent to fix them and push. Chat switches it for "
+            "each pull request."
         ),
         json_schema_extra=SETTING,
     )
