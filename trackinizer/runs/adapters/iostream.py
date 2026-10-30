@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
+    from trackinizer.runs.adapters.custom_types import Subagent
     from trackinizer.types.streams import TraxRecord
 
 
@@ -93,6 +94,11 @@ class IOStreamAdapter:
     def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
         """Return ``None``: a wrapped command keeps no session to continue."""
         del cli_args
+        return None
+
+    def subagent_of(self, path: Path) -> Subagent | None:
+        """Return ``None``: a stream has no sub-agents."""
+        del path
         return None
 
     def reader(self) -> Tail[TraxRecord]:

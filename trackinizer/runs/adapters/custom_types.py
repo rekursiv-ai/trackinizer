@@ -11,6 +11,7 @@ and writes it back out as any CLI's native format.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 
@@ -22,7 +23,21 @@ if TYPE_CHECKING:
     from trackinizer.types.streams import TraxRecord
 
 
-__all__ = ["Adapter", "StreamAdapter"]
+__all__ = ["Adapter", "StreamAdapter", "Subagent"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Subagent:
+    """A session one of the run's own sessions spawned, as the CLI's files name it."""
+
+    child: str
+    """The CLI's own id for the sub-agent's session, as ``session_id_from_path`` says."""
+
+    parent: str
+    """The CLI's own id for the session that spawned it, the run's or a sub-agent's."""
+
+    note: str = ""
+    """What spawned it, as the CLI records it: the agent's type, task, and call."""
 
 
 class Adapter(Protocol):
@@ -142,6 +157,23 @@ class Adapter(Protocol):
 
         Returns:
           result: Stable session id if extractable; None if unsupported.
+
+        """
+        ...
+
+    def subagent_of(self, path: Path) -> Subagent | None:
+        """Return the sub-agent whose transcript ``path`` is; ``None`` for any other file.
+
+        A sub-agent's transcript is a session of its own: the runner records it
+        in an AgentSession apart from the run's, linked to the one that spawned it.
+        A CLI that keeps sub-agents inside the parent's file, or has none, says
+        ``None`` for every path.
+
+        Args:
+          path: Session file path.
+
+        Returns:
+          result: The sub-agent and its parent, by the CLI's own ids, or ``None``.
 
         """
         ...

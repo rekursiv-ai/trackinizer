@@ -821,6 +821,7 @@ def _write_output(
     if extra.pop("$whole", False) is True:
         return _ordered(kind, {"type": kind, "call_id": item.call_id, **extra})
     output_absent = bool(extra.pop("$output_absent", False))
+    call_id_absent = bool(extra.pop("$call_id_absent", False))
     output: object = item.content or ""
     if "$parts" in extra:
         output = _write_content(
@@ -829,7 +830,9 @@ def _write_output(
             extra,
             text_key="input_text",
         )
-    payload: dict[str, object] = {"type": kind, "call_id": item.call_id}
+    payload: dict[str, object] = {"type": kind}
+    if not call_id_absent or item.call_id:
+        payload["call_id"] = item.call_id
     if not output_absent or item.content is not None or item.attachments:
         payload["output"] = output
     return _ordered(kind, payload | extra)
@@ -2112,6 +2115,10 @@ def _read_tool_result(
         content = None
         if "output" not in payload:
             extra["$output_absent"] = True
+    # Measured on a codex app rollout: an automation's heartbeat output names no
+    # call, and the writer would otherwise give it ``"call_id": ""``.
+    if "call_id" not in payload:
+        extra["$call_id_absent"] = True
     return UncategorizedToolResult(
         context_id=context_id,
         timestamp=timestamp,

@@ -20,10 +20,11 @@ from typing import TYPE_CHECKING, Final
 import os
 import re
 
-from treekle import from_plain
+from treekle import PlainTree, from_plain, json_loads
 
 from trackinizer.lib.agent.sessions import codex
 from trackinizer.lib.agent.sessions.tail import Tail
+from trackinizer.runs.adapters.custom_types import Subagent
 
 
 if TYPE_CHECKING:
@@ -151,6 +152,40 @@ class CodexAdapter:
         named = words[1] if len(words) > 1 and "--last" not in cli_args else ""
         return named if _SESSION_ID.fullmatch(named) else ""
 
+    # Measured on codex 0.163.0: a spawned agent is a thread with a rollout of its own,
+    # whose opening ``session_meta`` names the thread that spawned it under
+    # ``source.subagent.thread_spawn``. Only that first line declares it.
+    def subagent_of(self, path: Path) -> Subagent | None:
+        """Return the spawned thread whose rollout ``path`` is; ``None`` for any other.
+
+        Args:
+          path: A rollout file.
+
+        Returns:
+          result: The thread and the one that spawned it, by codex's ids, or ``None``.
+
+        """
+        try:
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                opening = json_loads(handle.readline(), dict[str, PlainTree])
+        except (OSError, ValueError):
+            return None
+        payload = _object(opening.get("payload"))
+        spawn = _object(
+            _object(_object(payload.get("source")).get("subagent")).get("thread_spawn"),
+        )
+        parent = _text(spawn.get("parent_thread_id"))
+        if opening.get("type") != "session_meta" or not parent:
+            return None
+        name, where = _text(spawn.get("agent_nickname")), _text(spawn.get("agent_path"))
+        return Subagent(
+            child=self.session_id_from_path(path)
+            or _text(payload.get("id"))
+            or path.stem,
+            parent=parent,
+            note=f"{name} ({where})" if name and where else name or where,
+        )
+
     def reader(self) -> Tail[TraxRecord]:
         """Return a fresh IR reader for one codex rollout file."""
         return Tail(codex.normalize)
@@ -170,3 +205,13 @@ def _positionals(cli_args: tuple[str, ...]) -> tuple[str, ...]:
         else:
             words.append(arg)
     return tuple(words)
+
+
+def _object(value: PlainTree) -> dict[str, PlainTree]:
+    """Return ``value`` when it is a JSON object, else an empty one."""
+    return from_plain(value, dict[str, PlainTree]) if isinstance(value, dict) else {}
+
+
+def _text(value: PlainTree) -> str:
+    """Return ``value`` when it is text, else ``""``."""
+    return value if isinstance(value, str) else ""
