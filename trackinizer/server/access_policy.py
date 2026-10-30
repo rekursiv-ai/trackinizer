@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
+from uuid import UUID
 
 from trackinizer.server.auth import Role
 
@@ -56,12 +57,15 @@ class Principal:
       role: The server-wide role, already the minimum of user and key.
       groups: The policy's own group ids for this account, computed once per
         request by :meth:`AccessPolicy.groups`; empty under the default policy.
+      api_key_id: The API key the request used; ``None`` for a browser session or
+        the system.
 
     """
 
     email: str
     role: Role
     groups: frozenset[str] = frozenset()
+    api_key_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -390,7 +390,12 @@ async def test_every_new_row_is_created_with_the_policy(
     ids = json_loads(batch.content, dict[str, list[str]])["ids"]
     session = _id_of(started)
     ada = Principal(email=ADA, role="writer", groups=GROUPS)
-    viewer = Principal(email=VIEWER, role="viewer", groups=GROUPS)
+    viewer = Principal(
+        email=VIEWER,
+        role="viewer",
+        groups=GROUPS,
+        api_key_id=VIEWER_KEY,
+    )
     assert policy.of("on_create") == [
         (ada, Resource(kind="inquiry", id=ids[0], account=ADA)),
         (ada, Resource(kind="inquiry", id=ids[1], account=ADA)),
@@ -450,7 +455,12 @@ async def test_a_request_asks_the_policy_for_its_groups_once(
     second = await request_principal(request, identity)
 
     assert first is second
-    assert first == Principal(email="ada@example.com", role="writer", groups=GROUPS)
+    assert first == Principal(
+        email="ada@example.com",
+        role="writer",
+        groups=GROUPS,
+        api_key_id=TEST_API_KEY_ID,
+    )
     assert policy.of("groups") == ["ada@example.com"]
 
 
