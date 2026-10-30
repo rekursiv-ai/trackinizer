@@ -9,12 +9,13 @@ import asyncio
 import time
 import uuid
 
-from treekle import json_loads
+from treekle import from_plain, json_loads
 
 import pytest
 
 from trackinizer.server import chat_hub
 from trackinizer.server.chat_hub import (
+    CanvasFrame,
     CaptureFrame,
     ChangedFrame,
     ChatFrame,
@@ -142,6 +143,36 @@ async def test_stream_opens_with_a_comment_then_the_state_then_every_frame() -> 
     assert frames[1]["ids"] == [str(_RECORD)]
     assert all(isinstance(f["t"], int) and f["t"] > 0 for f in frames)
     assert frames[0]["route"] == "#/graph"
+    await events.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_hears_the_canvas_alone_each_time_read_as_they_read_it() -> None:
+    """The owner's tab's own frames are not a viewer's; a broadcast canvas holds the owner's preferences."""
+    hub = ChatHub()
+    canvas = _Canvas()
+    events = iter_canvas_events(
+        hub,
+        canvas_id=_CANVAS,
+        read_state=canvas.state,
+        is_active=canvas.active,
+        viewer=True,
+    )
+    await anext(events)
+    await anext(events)
+    owners = (await canvas.state()).model_copy(
+        update={"preferences": {"theme": "light"}},
+    )
+    reads = canvas.reads
+    hub.publish(_CANVAS, frame=NavigateFrame(route="#/graph"))
+    hub.publish(_CANVAS, frame=HighlightFrame(ids=[_RECORD]))
+    hub.publish(_CANVAS, frame=ChatFrame(hidden=True))
+    hub.publish(_CANVAS, frame=CaptureFrame(request=_RECORD))
+    hub.publish(_CANVAS, frame=CanvasFrame(state=owners))
+    frame = _frame(await asyncio.wait_for(anext(events), 2), dict[str, object])
+    assert frame["type"] == "canvas"
+    assert from_plain(frame["state"], dict[str, object])["preferences"] is None
+    assert canvas.reads == reads + 1
     await events.aclose()
 
 

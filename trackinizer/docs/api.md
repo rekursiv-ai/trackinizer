@@ -870,6 +870,7 @@ POST /api/canvases
 GET  /api/canvases
 POST /api/canvases/new
 POST /api/canvases/for-chat/<conversation uuid>
+GET  /api/canvases/key/<key>
 GET  /api/canvases/<uuid>
 PATCH /api/canvases/<uuid>
 PUT  /api/canvases/<uuid>/page
@@ -1021,6 +1022,10 @@ holds that chat, or makes one bound to it. A canvas that is not the user's is 40
 a deleted chat is 410 `chat_deleted`.
 `GET /api/canvases/<uuid>` returns that state to its owner, and to an
 assistant's key (below).
+`GET /api/canvases/key/<key>` returns `{"id"}`, the canvas whose id starts with
+`key`, its first 12 hex digits: the short name a web app's addresses give a
+canvas (`wire_canvas_keys.py`). Anyone signed in may ask, since an id grants
+nothing; no such canvas is 404, and a key two canvases share is 409.
 
 `POST /api/canvases/<uuid>/relay` with `{"targets": [{"actor", "room"}], "text"}`
 and a required `Idempotency-Key` tells the canvas's chat what its owner sent

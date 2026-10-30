@@ -7,7 +7,7 @@ from typing import Annotated
 
 import uuid
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from treekle import from_plain
 
@@ -40,6 +40,7 @@ from trackinizer.server.visuals.canvas_store import (
     RevisionConflictError,
     apply_canvas_operation,
     canvas_for_chat,
+    canvases_of_key,
     clear_chat_canvas,
     list_canvases,
     name_unnamed_canvas,
@@ -57,14 +58,18 @@ from trackinizer.server.visuals.canvas_store import (
     set_session_campaign,
     settings_refs_for_chat,
     suggest_workspace_for_chat,
+    view_canvas,
 )
 from trackinizer.server.visuals.canvases import (
     ApplyCanvasOperation,
     CanvasConflict,
     CanvasLayout,
+    CanvasOfKey,
     CanvasSettingsRefs,
     CanvasState,
     CanvasSummary,
+    CanvasView,
+    CanvasViewRefused,
     ChatWindow,
     ChooseProvider,
     Highlight,
@@ -86,6 +91,7 @@ from trackinizer.server.visuals.workspaces import (
     check_workspace,
     open_default_workspace,
 )
+from trackinizer.wire.wire_canvas_keys import CANVAS_KEY_PATTERN
 from trackinizer.wire.wire_science_chat import chat_session_id
 
 
@@ -722,6 +728,41 @@ async def open_personal_settings_route(
     return SettingsArtifact(artifact_id=artifact_id)
 
 
+@router.get(
+    "/api/canvases/key/{key}",
+    response_model=CanvasOfKey,
+    responses={
+        404: {"description": "No canvas has the key."},
+        409: {"description": "Several canvases have the key."},
+    },
+    dependencies=[Depends(require_role("viewer"))],
+)
+async def canvas_of_key_route(
+    key: Annotated[str, Path(pattern=CANVAS_KEY_PATTERN)],
+    request: Request,
+) -> CanvasOfKey:
+    """Find the canvas an address names by its key, for anyone signed in.
+
+    An id grants nothing: whether the caller may read the canvas is for the routes
+    that read it to say, as they do for a link that names the whole id.
+
+    Args:
+      key: The canvas key, its id's first 12 hex digits (``wire_canvas_keys.py``).
+      request: Request carrying the database engine.
+
+    Returns:
+      canvas: The canvas's id.
+
+    """
+    async with engine_of(request).acquire() as conn:
+        found = await canvases_of_key(conn, key=key)
+    if not found:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    if len(found) > 1:
+        raise HTTPException(status_code=409, detail="Several canvases have this key")
+    return CanvasOfKey(id=found[0])
+
+
 @router.get("/api/canvases/{canvas_id}", response_model=CanvasState)
 async def read_canvas_route(
     canvas_id: uuid.UUID,
@@ -754,6 +795,87 @@ async def read_canvas_route(
     if state is None:
         raise HTTPException(status_code=404, detail="Canvas not found")
     return state
+
+
+@router.get(
+    "/api/canvases/{canvas_id}/view",
+    response_model=CanvasView,
+    responses={403: {"model": CanvasViewRefused}, 404: {"description": "No canvas."}},
+)
+async def view_canvas_route(
+    canvas_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> CanvasView | JSONResponse:
+    """Show a canvas by its own URL: to its owner, and read only to whom its chat lets in.
+
+    Anyone else is refused (403) with the owner's email, to ask for access, and
+    nothing of the canvas. Only the owner changes it: every write stays theirs.
+
+    Args:
+      canvas_id: The canvas.
+      request: Request carrying the database engine.
+      identity: Authenticated browser account.
+
+    Returns:
+      view: The canvas and its owner, or the refusal.
+
+    """
+    require_browser(identity)
+    view = await _view(request, identity=identity, canvas_id=canvas_id)
+    if view is None:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    if isinstance(view, CanvasViewRefused):
+        return JSONResponse(status_code=403, content=view.model_dump(mode="json"))
+    return view
+
+
+@router.get("/api/canvases/{canvas_id}/view/events")
+async def view_canvas_events_route(
+    canvas_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> StreamingResponse:
+    """Stream a viewed canvas's changes, as ``/events`` streams its owner's.
+
+    A viewer hears the canvas frames alone, each read as they may see it, and the
+    ``changed`` ids of what they read; the owner's tab's own frames are not theirs.
+    The stream ends at a keepalive once the canvas's chat no longer lets them in.
+
+    Args:
+      canvas_id: The canvas.
+      request: Request carrying the database engine and the event hub.
+      identity: Authenticated browser account its chat lets in.
+
+    Returns:
+      stream: Server-sent frames.
+
+    """
+    require_browser(identity)
+    read_state = partial(_viewed_state, request, identity=identity, canvas_id=canvas_id)
+    await read_state()
+    return StreamingResponse(
+        iter_canvas_events(
+            get_hub(request),
+            canvas_id=canvas_id,
+            read_state=read_state,
+            is_active=partial(
+                _still_viewed,
+                request,
+                identity=identity,
+                canvas_id=canvas_id,
+            ),
+            changes=iter_changed_ids(
+                engine_of(request),
+                hears=TranscriptPings(
+                    engine=engine_of(request),
+                    reader=session_reader(request, identity),
+                ).hears,
+            ),
+            viewer=True,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.post(
@@ -992,6 +1114,51 @@ async def _current_state(
     if state is None:
         raise HTTPException(status_code=404, detail="Canvas not found")
     return state
+
+
+async def _view(
+    request: Request,
+    *,
+    identity: AuthIdentity,
+    canvas_id: uuid.UUID,
+) -> CanvasView | CanvasViewRefused | None:
+    """Show a canvas to ``identity`` as :func:`view_canvas` does."""
+    return await view_canvas(
+        engine_of(request),
+        user_id=identity.user_id,
+        canvas_id=canvas_id,
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+        reader=session_reader(request, identity),
+    )
+
+
+async def _viewed_state(
+    request: Request,
+    *,
+    identity: AuthIdentity,
+    canvas_id: uuid.UUID,
+) -> CanvasState:
+    """Read a canvas as ``identity`` views it, or 404 for none and 403 for a refusal."""
+    view = await _view(request, identity=identity, canvas_id=canvas_id)
+    if view is None:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    if isinstance(view, CanvasViewRefused):
+        raise HTTPException(status_code=403, detail=view.detail)
+    return view.canvas
+
+
+async def _still_viewed(
+    request: Request,
+    *,
+    identity: AuthIdentity,
+    canvas_id: uuid.UUID,
+) -> bool:
+    """Say whether the canvas's chat still lets ``identity`` in."""
+    return isinstance(
+        await _view(request, identity=identity, canvas_id=canvas_id),
+        CanvasView,
+    )
 
 
 async def _user_id_for_email(request: Request, *, email: str) -> uuid.UUID:

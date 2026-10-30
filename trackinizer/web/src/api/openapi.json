@@ -1269,6 +1269,21 @@
         "title": "CanvasMessageContext",
         "type": "object"
       },
+      "CanvasOfKey": {
+        "description": "The canvas an address names by its key (``GET /api/canvases/key/{key}``).",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "CanvasOfKey",
+        "type": "object"
+      },
       "CanvasPage": {
         "description": "A page the sender was on, with the record it shows when it names one.",
         "properties": {
@@ -1961,6 +1976,43 @@
           "name"
         ],
         "title": "CanvasTab",
+        "type": "object"
+      },
+      "CanvasView": {
+        "description": "A canvas as someone its chat lets in sees it: what it shows, and whose it is.",
+        "properties": {
+          "canvas": {
+            "$ref": "#/components/schemas/CanvasState"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          }
+        },
+        "required": [
+          "canvas",
+          "owner"
+        ],
+        "title": "CanvasView",
+        "type": "object"
+      },
+      "CanvasViewRefused": {
+        "description": "A canvas its chat does not let the caller into: whom to ask, nothing of it.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail",
+          "owner"
+        ],
+        "title": "CanvasViewRefused",
         "type": "object"
       },
       "CanvasVisibleVisual": {
@@ -15565,6 +15617,53 @@
         "summary": "Suggest Workspace For Chat Route"
       }
     },
+    "/api/canvases/key/{key}": {
+      "get": {
+        "description": "Find the canvas an address names by its key, for anyone signed in.\n\nAn id grants nothing: whether the caller may read the canvas is for the routes\nthat read it to say, as they do for a link that names the whole id.\n\nArgs:\n  key: The canvas key, its id's first 12 hex digits (``wire_canvas_keys.py``).\n  request: Request carrying the database engine.\n\nReturns:\n  canvas: The canvas's id.",
+        "operationId": "canvas_of_key_route_api_canvases_key__key__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{12}$",
+              "title": "Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanvasOfKey"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "No canvas has the key."
+          },
+          "409": {
+            "description": "Several canvases have the key."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Canvas Of Key Route"
+      }
+    },
     "/api/canvases/new": {
       "post": {
         "description": "Make a canvas named with the lowest free ``unnamed-canvas#N``.\n\nIt starts on the ``provider`` the body names, else on the caller's\n``chat_provider`` preference. A provider with no machine to run on is taken all\nthe same: nothing runs until a machine is picked. A ``claude`` or ``codex``\ncanvas is given its chat and the chat's session at once, which its partner\nnames, so a run can be started attached to it before any line.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n  body: Optional workspace and provider; an unset workspace selects the default\n    workspace.\n\nReturns:\n  state: The new canvas.",
@@ -16203,6 +16302,99 @@
           }
         },
         "summary": "Set Session Settings Route"
+      }
+    },
+    "/api/canvases/{canvas_id}/view": {
+      "get": {
+        "description": "Show a canvas by its own URL: to its owner, and read only to whom its chat lets in.\n\nAnyone else is refused (403) with the owner's email, to ask for access, and\nnothing of the canvas. Only the owner changes it: every write stays theirs.\n\nArgs:\n  canvas_id: The canvas.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  view: The canvas and its owner, or the refusal.",
+        "operationId": "view_canvas_route_api_canvases__canvas_id__view_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "canvas_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Canvas Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanvasView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CanvasViewRefused"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "No canvas."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View Canvas Route"
+      }
+    },
+    "/api/canvases/{canvas_id}/view/events": {
+      "get": {
+        "description": "Stream a viewed canvas's changes, as ``/events`` streams its owner's.\n\nA viewer hears the canvas frames alone, each read as they may see it, and the\n``changed`` ids of what they read; the owner's tab's own frames are not theirs.\nThe stream ends at a keepalive once the canvas's chat no longer lets them in.\n\nArgs:\n  canvas_id: The canvas.\n  request: Request carrying the database engine and the event hub.\n  identity: Authenticated browser account its chat lets in.\n\nReturns:\n  stream: Server-sent frames.",
+        "operationId": "view_canvas_events_route_api_canvases__canvas_id__view_events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "canvas_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Canvas Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "View Canvas Events Route"
       }
     },
     "/api/canvases/{canvas_id}/workspace": {

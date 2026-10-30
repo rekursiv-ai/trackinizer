@@ -27,11 +27,13 @@ from trackinizer.server.api.canvas_test_support import (
     seed_session,
     send_chat,
 )
+from trackinizer.server.api.conftest import TEST_USER_ID
 from trackinizer.server.asks_test_support import open_ask
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.visuals.canvas_store import next_canvas_name
 from trackinizer.server.visuals.canvases import UpdateCanvas
+from trackinizer.wire.wire_canvas_keys import canvas_key
 from trackinizer.wire.wire_science_chat import chat_session_id
 
 
@@ -179,6 +181,34 @@ async def test_a_list_holds_only_the_callers_canvases_with_their_fields(
         None,
     )
     assert (only["hidden"], only["pinned"]) == (False, False)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_key_finds_its_canvas_for_anyone_and_refuses_a_key_of_two(
+    pglite_route_client: _Client,
+) -> None:
+    """Another person's canvas is found by its key; none is 404, two are 409."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    theirs = await open_canvas(client, user_id=OTHER_USER_ID, email=OTHER_EMAIL)
+    browser()
+    key = canvas_key(theirs)
+
+    found = await client.get(f"/api/canvases/key/{key}")
+
+    assert found.status_code == 200, found.text
+    assert json_loads(found.content, dict[str, object]) == {"id": str(theirs)}
+    assert (await client.get("/api/canvases/key/000000000000")).status_code == 404
+    assert (await client.get(f"/api/canvases/key/{theirs}")).status_code == 422
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO visual_canvases (id, user_id, state) VALUES ($1, $2, '{}')",
+            uuid.UUID(key + "f" * 20),
+            TEST_USER_ID,
+        )
+    assert (await client.get(f"/api/canvases/key/{key}")).status_code == 409
 
 
 @pytest.mark.db_pglite
