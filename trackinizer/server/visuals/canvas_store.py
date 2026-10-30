@@ -40,6 +40,8 @@ from trackinizer.server.visuals.canvases import (
     CanvasSettingsRefs,
     CanvasState,
     CanvasSummary,
+    CanvasView,
+    CanvasViewRefused,
     ChatWindow,
     ChooseProvider,
     ClearMarks,
@@ -100,6 +102,7 @@ from trackinizer.wire.chat_commands import (
     Settings,
     classify,
 )
+from trackinizer.wire.wire_canvas_keys import key_bounds
 from trackinizer.wire.wire_science_chat import (
     CHAT_TITLE,
     FORK_EDGE_LABEL,
@@ -1854,6 +1857,89 @@ async def read_canvas(
         )
 
 
+async def view_canvas(
+    engine: DatabaseEngine,
+    *,
+    user_id: uuid.UUID,
+    canvas_id: uuid.UUID,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+    reader: SessionReader,
+) -> CanvasView | CanvasViewRefused | None:
+    """Show one canvas to its owner, or to whom its chat lets in, read only.
+
+    Who may see a canvas is who reads its chat, as the chat's own head says
+    (:func:`~trackinizer.server.audience.reads_session` of the chat's first
+    session); a canvas that holds no chat yet is its owner's alone. A refusal names
+    the owner, to ask for access, and holds nothing of the canvas.
+
+    Args:
+      engine: Database connection source.
+      user_id: The person asking.
+      canvas_id: The canvas.
+      inbound: In-process poller leases.
+      assistant: The configured assistant, if any.
+      reader: The person asking, as the transcript test reads them.
+
+    Returns:
+      view: The canvas and its owner; a refusal naming the owner; None when there is
+        no such canvas.
+
+    """
+    async with engine.acquire() as conn:
+        row = await conn.fetchrow(
+            vetted_sql(
+                "SELECT user_id, ",
+                _CANVAS,
+                " FROM visual_canvases WHERE id = $1",
+            ),
+            canvas_id,
+        )
+        if row is None:
+            return None
+        owner_id = cast(uuid.UUID, row["user_id"])
+        owner = from_plain(
+            await conn.fetchval("SELECT email FROM users WHERE id = $1", owner_id),
+            str,
+        )
+        state = state_from_row(cast("Mapping[str, object]", row))
+        if owner_id != user_id:
+            first = (
+                None
+                if state.conversation_id is None
+                else await read_first_session(
+                    conn,
+                    assistant=assistant,
+                    conversation_id=state.conversation_id,
+                )
+            )
+            if first is None or not await reads_session(
+                conn,
+                reader=reader,
+                session_id=first,
+            ):
+                return CanvasViewRefused(
+                    detail=f"Ask {owner} for access to this canvas.",
+                    owner=owner,
+                )
+        shown = await _with_labels(
+            conn,
+            state=await attach_partner(
+                conn,
+                state=state,
+                owner_id=owner_id,
+                inbound=inbound,
+                assistant=assistant,
+            ),
+            reader=reader,
+        )
+    # The preferences a canvas carries are its owner's, for their assistant to see.
+    return CanvasView(
+        canvas=shown.model_copy(update={"preferences": None}),
+        owner=owner,
+    )
+
+
 async def agent_may_operate(
     engine: DatabaseEngine,
     *,
@@ -1938,6 +2024,28 @@ async def canvas_ids(conn: Conn, *, user_id: uuid.UUID) -> list[uuid.UUID]:
     rows = await conn.fetch(
         "SELECT id FROM visual_canvases WHERE user_id = $1",
         user_id,
+    )
+    return [cast(uuid.UUID, row["id"]) for row in rows]
+
+
+async def canvases_of_key(conn: Conn, *, key: str) -> list[uuid.UUID]:
+    """Return the canvases whose id starts with ``key``, at most two.
+
+    Two are enough to tell a key that names one canvas from one that names several.
+
+    Args:
+      conn: The connection to read on.
+      key: A canvas key (:mod:`~trackinizer.wire.wire_canvas_keys`).
+
+    Returns:
+      ids: None, the one, or two of the canvases the key names.
+
+    """
+    low, high = key_bounds(key)
+    rows = await conn.fetch(
+        "SELECT id FROM visual_canvases WHERE id BETWEEN $1 AND $2 ORDER BY id LIMIT 2",
+        low,
+        high,
     )
     return [cast(uuid.UUID, row["id"]) for row in rows]
 

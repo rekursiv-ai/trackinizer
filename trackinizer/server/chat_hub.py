@@ -214,6 +214,7 @@ async def iter_canvas_events(
     is_active: Callable[[], Awaitable[bool]],
     changes: AsyncGenerator[str] | None = None,
     keepalive_sec: float = 25.0,
+    viewer: bool = False,
 ) -> AsyncGenerator[bytes]:
     r"""Stream a canvas's frames as SSE, as ``/api/web/subscribe`` streams ids.
 
@@ -236,6 +237,10 @@ async def iter_canvas_events(
       changes: Ids of changed inquiries, or None to relay none.
       keepalive_sec: Longest silence before a ping; must stay well under the
         edge's 125 s idle cutoff.
+      viewer: The subscriber views another person's canvas. Only its canvas
+        frames reach them, each read again by ``read_state``: the others
+        (navigate, highlight, chat, capture, preferences) are the owner's tab's,
+        and a published canvas carries the owner's preferences.
 
     Yields:
       item: SSE comments and ``data:`` frames.
@@ -280,8 +285,12 @@ async def iter_canvas_events(
                     if frame is None:
                         return
                     if isinstance(frame, CanvasFrame):
+                        if viewer:
+                            frame = CanvasFrame(state=await read_state())
                         partner = frame.state.partner
-                    yield _sse(frame)
+                        yield _sse(frame)
+                    elif not viewer:
+                        yield _sse(frame)
                 if changes is not None and change_wait in done:
                     try:
                         changed = change_wait.result()

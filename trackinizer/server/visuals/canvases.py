@@ -579,11 +579,34 @@ class CanvasState(CanvasData):
     them up; computed on a read and on a mark's write, never stored."""
 
 
+class CanvasView(BaseModel):
+    """A canvas as someone its chat lets in sees it: what it shows, and whose it is."""
+
+    canvas: CanvasState
+    """The canvas as its owner left it, less the owner's own preferences."""
+
+    owner: str
+    """The owner's email: only they change the canvas."""
+
+
+class CanvasViewRefused(BaseModel):
+    """A canvas its chat does not let the caller into: whom to ask, nothing of it."""
+
+    detail: str
+    owner: str
+
+
 class TabName(BaseModel):
     """A canvas tab as the canvas list names it: enough to show and open it."""
 
     id: str
     name: str
+
+
+class CanvasOfKey(BaseModel):
+    """The canvas an address names by its key (``GET /api/canvases/key/{key}``)."""
+
+    id: uuid.UUID
 
 
 class CanvasSummary(BaseModel):

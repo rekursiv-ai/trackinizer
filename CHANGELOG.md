@@ -7,6 +7,10 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Added
 
+- A canvas by its own URL: `GET /api/canvases/{id}/view` shows it, read only,
+  to its owner and to whom its chat lets in, with its owner's email; anyone
+  else gets a 403 naming the owner to ask, and nothing of the canvas.
+  `GET /api/canvases/{id}/view/events` streams its canvas frames alone.
 - The `scanlines` preference (on by default): the Hacker skin's scanlines and
   glow, which the user and their assistant can turn off.
 - A terminal of kind `files` (`POST /api/terminals` with `kind: "files"`): no
