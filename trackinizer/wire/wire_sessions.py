@@ -26,7 +26,11 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from trackinizer.wire.json_types import JSON, UtcDatetime
-from trackinizer.wire.wire_science_chat import AssistantPrompt, ChatForkAt
+from trackinizer.wire.wire_science_chat import (
+    CHAT_PARTIAL_CHARS,
+    AssistantPrompt,
+    ChatForkAt,
+)
 
 
 _MAX_MESSAGE_CHARS: Final = 16_384
@@ -80,6 +84,7 @@ __all__ = [
     "SESSION_PLACE_PATH",
     "SESSION_REATTACH_PATH",
     "SESSION_RECORDS_PATH",
+    "SESSION_RUN_OUTPUT_PATH",
     "SESSION_RUN_STATE_PATH",
     "SESSION_START_PATH",
     "SESSION_WORKSPACE_PATH",
@@ -117,6 +122,7 @@ __all__ = [
     "SessionEnd",
     "SessionEndResponse",
     "SessionPlacement",
+    "SessionRunOutput",
     "SessionRunState",
     "SessionStart",
     "SessionStartResponse",
@@ -124,6 +130,7 @@ __all__ = [
     "session_audience_path",
     "session_place_path",
     "session_reattach_path",
+    "session_run_output_path",
     "session_run_state_path",
 ]
 
@@ -479,7 +486,7 @@ class FeedHistogramResponse(BaseModel):
     counts: list[FeedBucket]
 
 
-type InboundKind = Literal["line", "command", "answer", "settings", "interrupt"]
+type InboundKind = Literal["line", "command", "answer", "settings", "interrupt", "run"]
 """What an inbound message is, so the run delivers it the way its CLI expects.
 
 Values:
@@ -488,12 +495,16 @@ Values:
   answer: A decision on a pending prompt. Its payload names the prompt.
   settings: A model or effort change.
   interrupt: Stops the running turn.
+  run: A command the agent wrote that the chat's starter clicked Run on: the run
+    runs it on its own machine and tells the agent how it ended. Only a run whose
+    drains say it takes runs is sent one.
 
 Payload by kind: ``answer`` is ``{"prompt_id": str, "option": str, "updated_input":
 object | null, "message": str}``, where ``option`` is the id of one of the ask's own
 options; the older ``"decision": "allow" | "deny"`` stands in for ``option``, and an
 answer names one of the two. ``settings`` is ``{"model": str | null, "effort": str |
-null}``. The other kinds carry no payload.
+null}``. ``run`` is ``{"run_id": str, "block": str, "stop": bool}``, the command its
+text. The other kinds carry no payload.
 """
 
 
@@ -506,6 +517,19 @@ class SessionRunState(BaseModel):
     instance: str = Field(pattern=r"^[0-9a-f]{32}$")
     """The run's own id, as its inbound drains name it. A report from a run other than
     the one holding the session's lease changes nothing."""
+
+
+class SessionRunOutput(BaseModel):
+    """What a command clicked Run on has printed so far, as its run reports it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    instance: str = Field(pattern=r"^[0-9a-f]{32}$")
+    """The run's own id, as its inbound drains name it. A report from a run other than
+    the one holding the session's lease changes nothing."""
+
+    text: str = Field(max_length=CHAT_PARTIAL_CHARS)
+    """The end of what it printed so far, as Chat shows it under the block."""
 
 
 class InboundEnqueueRequest(BaseModel):
@@ -853,6 +877,7 @@ SESSION_END_PATH: Final = "/api/sessions/{session_id}/end"
 SESSION_AUDIENCE_PATH: Final = "/api/sessions/{session_id}/audience"
 SESSION_INBOUND_PATH: Final = "/api/sessions/{session_id}/inbound"
 SESSION_RUN_STATE_PATH: Final = "/api/sessions/{session_id}/run-state"
+SESSION_RUN_OUTPUT_PATH: Final = "/api/sessions/{session_id}/runs/{run_id}/output"
 SESSION_REATTACH_PATH: Final = "/api/sessions/{session_id}/reattach"
 SESSION_PLACE_PATH: Final = "/api/sessions/{session_id}/place"
 SESSION_WORKSPACE_PATH: Final = "/api/sessions/{session_id}/workspace"
@@ -971,6 +996,11 @@ def session_reattach_path(session_id: uuid.UUID) -> str:
 def session_run_state_path(session_id: uuid.UUID) -> str:
     """Return the path a run reports its state to."""
     return SESSION_RUN_STATE_PATH.format(session_id=session_id)
+
+
+def session_run_output_path(session_id: uuid.UUID, run_id: str) -> str:
+    """Return the path a clicked command's output so far is posted to and read from."""
+    return SESSION_RUN_OUTPUT_PATH.format(session_id=session_id, run_id=run_id)
 
 
 def inbound_read_timeout(wait_sec: float) -> float | None:

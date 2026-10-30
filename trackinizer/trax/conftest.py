@@ -1044,6 +1044,7 @@ class FakeClient:
         cwd: str | None = None,
         cli: str | None = None,
         instance: str | None = None,
+        runs: bool = False,
     ) -> list[InboundDrainItem]:
         """Drain inbound."""
         self.calls.append(
@@ -1057,6 +1058,7 @@ class FakeClient:
                     "cwd": cwd,
                     "cli": cli,
                     "instance": instance,
+                    "runs": runs,
                 },
             ),
         )

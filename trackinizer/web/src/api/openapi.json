@@ -1392,6 +1392,11 @@
             ],
             "title": "Run Name"
           },
+          "runs": {
+            "default": false,
+            "title": "Runs",
+            "type": "boolean"
+          },
           "session_id": {
             "anyOf": [
               {
@@ -2465,7 +2470,8 @@
           "command",
           "answer",
           "settings",
-          "interrupt"
+          "interrupt",
+          "run"
         ],
         "type": "string"
       },
@@ -6093,7 +6099,8 @@
           "command",
           "answer",
           "settings",
-          "interrupt"
+          "interrupt",
+          "run"
         ],
         "type": "string"
       },
@@ -9536,6 +9543,28 @@
           }
         },
         "title": "SessionPlacement",
+        "type": "object"
+      },
+      "SessionRunOutput": {
+        "additionalProperties": false,
+        "description": "What a command clicked Run on has printed so far, as its run reports it.",
+        "properties": {
+          "instance": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Instance",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 16384,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "instance",
+          "text"
+        ],
+        "title": "SessionRunOutput",
         "type": "object"
       },
       "SessionRunState": {
@@ -16685,7 +16714,7 @@
     },
     "/api/chats": {
       "post": {
-        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nA chat's starter, each person it is shared with and, when the server's\n``TRACKINIZER_CHAT_ORGS`` is ``domain``, the starter's organisation post into it,\nholding its audience; a viewer may not. Anyone else, everyone else a ``single``\nserver lets read it included, is refused with 403 ``chat_not_shared`` and nothing\nis queued, whatever the post's ``kind``, and whether the chat is named by\n``conversation_id`` or by the ``Idempotency-Key`` of a post that names none: a\nline goes to the starter's own run, under its sender's name. A reader forks a\nchat from one of its lines (``fork``\nnames it); a fork from a line of a chat the poster does not read is 422, since it\nwould copy lines they may not read, a fork of a ``private`` or ``staff`` chat is\n409 ``chat_fork_closed``, since its copies would not keep the audience, a fork\nthat the poster's organisation would read and the chat's readers do not\ninclude is 409 ``chat_fork_wider``, and a fork whose key names a conversation\nsomeone else began is refused with 409. A\nline under the id of a\ndeleted chat, named or as a fork's key, or a fork from a line of one, is refused\nwith 410 ``chat_deleted``: no chat starts under that id again. A canvas holds one\nchat: its first line binds the canvas to the line's conversation, and a line\nnaming another conversation is refused with 409, as is one for a conversation\nanother canvas of the poster holds. A fork goes to a new canvas, copied from\nthe one it was sent from and named in the answer's ``canvas_id``. The line's\nposter is the attested identity, never anything in the body. The answer is the\nconversation id at once: the conversation's session appears when the assistant\nopens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key\nqueues nothing again.\n\nThe poster's canvas's provider answers, or in a chat someone else started, the\nprovider of its starter's canvas. ``assistant`` takes a ``line``, an ``answer`` or\nan ``interrupt`` (422 for any other ``kind``); an ``answer`` is a choice on a card\nthe assistant asked, and an ``interrupt`` stops the turn it is on, each queued for\nthe chat's own session and 409 ``provider_offline`` while the assistant does not\nhave the chat open. For ``claude`` or ``codex`` the post, with\nits ``kind`` and ``payload``, joins the queue of the chat's session that the CLI's\nrun drains; with no such run live it is 409 ``provider_offline``, and while the run\nreports ``taken_over``, its CLI opened in a terminal, it is 409 ``chat_taken_over``\nwith nothing queued: reattach first. A fork from a ``claude`` or\n``codex`` canvas is one too: its new session is opened at once and its line\nwaits there for the run the person starts.\n\nA ``line`` that starts with a known slash command of claude or codex is judged\nby the chat's provider, not the poster's canvas. One the provider runs from\nChat (``/goal``, and claude's ``/compact``) is queued as a ``command``, typed\nbare, with no page, trail or marks; ``/model <name>`` and ``/effort <level>``\nare queued as a ``settings`` post the same way (bare, they are refused); any\nother is 422 ``command_refused`` with the reason in ``message``, and nothing is queued. Every other ``/`` line stays a\nline. An ``answer`` for ``claude`` or ``codex`` is the chat's starter's alone, the\nrun's owner, since it runs a tool or grants trust on their machine. An ``answer``\nto the assistant's card is the person's the card asked (``input.asker``, else the\nstarter's), since it lists their own choices, and it carries a line's page, trail\nand marks. Anyone else is 403 ``answer_not_owner``, and nothing is queued. It names\nthe option taken (``{prompt_id, option}``), or in the older form a ``decision``.\n\nA ``line`` may name ``attachments``, the box paths of files the poster uploaded\nfor it (``POST /api/chats/uploads``); they reach the assistant in the line's\ncontext. A chat whose provider is not the assistant is 409\n``uploads_unsupported`` for a line that names any, and nothing is queued.\n\nArgs:\n  body: The line, the poster's canvas, and the conversation to post into or the\n    line to fork; neither continues the canvas's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the canvas it went to, and its session when the line\n    was queued on it.",
+        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nA chat's starter, each person it is shared with and, when the server's\n``TRACKINIZER_CHAT_ORGS`` is ``domain``, the starter's organisation post into it,\nholding its audience; a viewer may not. Anyone else, everyone else a ``single``\nserver lets read it included, is refused with 403 ``chat_not_shared`` and nothing\nis queued, whatever the post's ``kind``, and whether the chat is named by\n``conversation_id`` or by the ``Idempotency-Key`` of a post that names none: a\nline goes to the starter's own run, under its sender's name. A reader forks a\nchat from one of its lines (``fork``\nnames it); a fork from a line of a chat the poster does not read is 422, since it\nwould copy lines they may not read, a fork of a ``private`` or ``staff`` chat is\n409 ``chat_fork_closed``, since its copies would not keep the audience, a fork\nthat the poster's organisation would read and the chat's readers do not\ninclude is 409 ``chat_fork_wider``, and a fork whose key names a conversation\nsomeone else began is refused with 409. A\nline under the id of a\ndeleted chat, named or as a fork's key, or a fork from a line of one, is refused\nwith 410 ``chat_deleted``: no chat starts under that id again. A canvas holds one\nchat: its first line binds the canvas to the line's conversation, and a line\nnaming another conversation is refused with 409, as is one for a conversation\nanother canvas of the poster holds. A fork goes to a new canvas, copied from\nthe one it was sent from and named in the answer's ``canvas_id``. The line's\nposter is the attested identity, never anything in the body. The answer is the\nconversation id at once: the conversation's session appears when the assistant\nopens it, and ``GET /api/chats/{id}`` finds it. A retry under the same key\nqueues nothing again.\n\nThe poster's canvas's provider answers, or in a chat someone else started, the\nprovider of its starter's canvas. ``assistant`` takes a ``line``, an ``answer`` or\nan ``interrupt`` (422 for any other ``kind``); an ``answer`` is a choice on a card\nthe assistant asked, and an ``interrupt`` stops the turn it is on, each queued for\nthe chat's own session and 409 ``provider_offline`` while the assistant does not\nhave the chat open. For ``claude`` or ``codex`` the post, with\nits ``kind`` and ``payload``, joins the queue of the chat's session that the CLI's\nrun drains; with no such run live it is 409 ``provider_offline``, and while the run\nreports ``taken_over``, its CLI opened in a terminal, it is 409 ``chat_taken_over``\nwith nothing queued: reattach first. A fork from a ``claude`` or\n``codex`` canvas is one too: its new session is opened at once and its line\nwaits there for the run the person starts.\n\nA ``line`` that starts with a known slash command of claude or codex is judged\nby the chat's provider, not the poster's canvas. One the provider runs from\nChat (``/goal``, and claude's ``/compact``) is queued as a ``command``, typed\nbare, with no page, trail or marks; ``/model <name>`` and ``/effort <level>``\nare queued as a ``settings`` post the same way (bare, they are refused); any\nother is 422 ``command_refused`` with the reason in ``message``, and nothing is queued. Every other ``/`` line stays a\nline. An ``answer`` for ``claude`` or ``codex`` is the chat's starter's alone, the\nrun's owner, since it runs a tool or grants trust on their machine. An ``answer``\nto the assistant's card is the person's the card asked (``input.asker``, else the\nstarter's), since it lists their own choices, and it carries a line's page, trail\nand marks. Anyone else is 403 ``answer_not_owner``, and nothing is queued. It names\nthe option taken (``{prompt_id, option}``), or in the older form a ``decision``.\n\nA ``run`` is a command the agent wrote that the chat's starter clicked Run on (or a\nStop of one, ``{run_id, stop: true}``): the starter's alone, since it runs on their\nmachine, and anyone else is 403 ``answer_not_owner``. Its text is one line of\nprintable ASCII of at most 2,000 characters (422 otherwise). It is queued only for\na run whose drains say it takes runs: an older run is 409 ``run_unsupported``. The\nassistant takes none (422).\n\nA ``line`` may name ``attachments``, the box paths of files the poster uploaded\nfor it (``POST /api/chats/uploads``); they reach the assistant in the line's\ncontext. A chat whose provider is not the assistant is 409\n``uploads_unsupported`` for a line that names any, and nothing is queued.\n\nArgs:\n  body: The line, the poster's canvas, and the conversation to post into or the\n    line to fork; neither continues the canvas's chat, else starts one, named by\n    ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, the canvas it went to, and its session when the line\n    was queued on it.",
         "operationId": "post_chat_line_route_api_chats_post",
         "parameters": [
           {
@@ -23452,7 +23481,7 @@
     },
     "/api/sessions/{session_id}/inbound": {
       "get": {
-        "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's run to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nThe drain is 403 ``session_audience`` unless the caller opened the session or reads\nits audience.\n\nWriters retain shared access to the drains of ordinary sessions, but a science\nchat and the assistant's service session are drained by their opening key alone\n(403 otherwise). Viewer access is scoped to the opening API key so reading chat\ndoes not grant graph-write permission.\n\nA science chat's queue has one drainer, the provider its starter's canvas names,\nand one live run. For ``claude`` or ``codex`` a drain by the configured assistant's\nkey is 409 ``provider_is_cli``, and the run that drains it may be under any key a\nchat takes a run from (its opening key or its starter's; 403 otherwise). For\n``assistant`` a drain by its opening key that is not the assistant's is 409\n``provider_is_assistant``. Either holds from the moment the canvas switches.\n\nA chat answered by a CLI is drained by a run that names its ``cli``: a drain that\nnames none, as a ``trax`` older than the name sends, is 426 ``cli_required`` and\ntakes no lease, since the server cannot tell which CLI polls. A drain by the other\nCLI than the canvas's is 409 ``provider_is_other_cli``. The lease records the\nnamed CLI, and the chat is live for a provider only while a poller that named it\nholds the lease. ``instance`` is an id the run minted for itself; a drain whose\n``instance`` differs from that of the unexpired lease of the same CLI is 409\n``chat_run_live``, so one chat never has two runs draining it. So is a drain by\na run the server replaced when it reattached the chat (``POST .../reattach``).\n\nA drain of a CLI chat's session that has ended, as when the person closed the chat,\nis 409 ``session_ended`` and the run stops; a session the reaper closed for silence\nis reopened by the drain instead.\n\n``run``, ``machine`` and ``cwd`` say where the draining run is, and the lease the\ndrain takes keeps them for Chat to show (a malformed one is 422). They are the\ncaller's own word about its own run, shown and never trusted; a run that names\nnone is shown as it was before runs named themselves.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n  run: The name of the detached run, which an attach takes; absent for a run in\n    a terminal of its own.\n  machine: The run's machine, as the machine host names it.\n  cwd: The run's working directory, ``~/...`` under its home: at most 1,024\n    characters, none of them a control character.\n  cli: The CLI the draining run is, as the run names it: a lowercase word of\n    at most 32 characters.\n  instance: The run's own id, 32 lowercase hexadecimal digits, the same on each of\n    its drains.\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text, kind,\n    payload, source, room), oldest first, or empty list if none are queued.",
+        "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's run to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nThe drain is 403 ``session_audience`` unless the caller opened the session or reads\nits audience.\n\nWriters retain shared access to the drains of ordinary sessions, but a science\nchat and the assistant's service session are drained by their opening key alone\n(403 otherwise). Viewer access is scoped to the opening API key so reading chat\ndoes not grant graph-write permission.\n\nA science chat's queue has one drainer, the provider its starter's canvas names,\nand one live run. For ``claude`` or ``codex`` a drain by the configured assistant's\nkey is 409 ``provider_is_cli``, and the run that drains it may be under any key a\nchat takes a run from (its opening key or its starter's; 403 otherwise). For\n``assistant`` a drain by its opening key that is not the assistant's is 409\n``provider_is_assistant``. Either holds from the moment the canvas switches.\n\nA chat answered by a CLI is drained by a run that names its ``cli``: a drain that\nnames none, as a ``trax`` older than the name sends, is 426 ``cli_required`` and\ntakes no lease, since the server cannot tell which CLI polls. A drain by the other\nCLI than the canvas's is 409 ``provider_is_other_cli``. The lease records the\nnamed CLI, and the chat is live for a provider only while a poller that named it\nholds the lease. ``instance`` is an id the run minted for itself; a drain whose\n``instance`` differs from that of the unexpired lease of the same CLI is 409\n``chat_run_live``, so one chat never has two runs draining it. So is a drain by\na run the server replaced when it reattached the chat (``POST .../reattach``).\n\nA drain of a CLI chat's session that has ended, as when the person closed the chat,\nis 409 ``session_ended`` and the run stops; a session the reaper closed for silence\nis reopened by the drain instead.\n\n``run``, ``machine`` and ``cwd`` say where the draining run is, and the lease the\ndrain takes keeps them for Chat to show (a malformed one is 422). They are the\ncaller's own word about its own run, shown and never trusted; a run that names\nnone is shown as it was before runs named themselves.\n\n``runs`` says the run takes ``run`` messages, the commands a chat's starter clicks\nRun on; a chat queues one only while such a run holds the lease, since an older run\nwould fail to read the drain that carries it and lose every message in it.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n  run: The name of the detached run, which an attach takes; absent for a run in\n    a terminal of its own.\n  machine: The run's machine, as the machine host names it.\n  cwd: The run's working directory, ``~/...`` under its home: at most 1,024\n    characters, none of them a control character.\n  cli: The CLI the draining run is, as the run names it: a lowercase word of\n    at most 32 characters.\n  instance: The run's own id, 32 lowercase hexadecimal digits, the same on each of\n    its drains.\n  runs: Whether the run takes ``run`` messages.\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text, kind,\n    payload, source, room), oldest first, or empty list if none are queued.",
         "operationId": "session_inbound_drain_route_api_sessions__session_id__inbound_get",
         "parameters": [
           {
@@ -23559,6 +23588,16 @@
                 }
               ],
               "title": "Instance"
+            }
+          },
+          {
+            "in": "query",
+            "name": "runs",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Runs",
+              "type": "boolean"
             }
           }
         ],
@@ -24156,6 +24195,129 @@
           }
         },
         "summary": "Session Run State Route"
+      }
+    },
+    "/api/sessions/{session_id}/runs/{run_id}/output": {
+      "get": {
+        "description": "Read what a command clicked Run on has printed, once it is not what was seen.\n\nAnswers at once when the held output's ``seq`` is not ``after``; else when it\nchanges or expires; else after ``wait_sec`` with it unchanged, as a read of a\nchat's answer in writing does. 404 for no session, and 403 ``session_audience`` to\na caller who does not read the session's records, asked again before a changed\noutput is answered.\n\nArgs:\n  session_id: The chat's session.\n  run_id: The run Chat minted for the click.\n  request: Request carrying the store and the outputs.\n  identity: A reader of the chat.\n  after: The ``seq`` the caller last saw; 0 for none.\n  wait_sec: Seconds to hold the request for a change, clamped to [0, 25].\n\nReturns:\n  state: The output held, its ``turn`` the run id, and its ``seq``; ``seq`` 0\n    and none when none is.",
+        "operationId": "read_session_run_output_route_api_sessions__session_id__runs__run_id__output_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "After",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "wait_sec",
+            "required": false,
+            "schema": {
+              "default": 0.0,
+              "title": "Wait Sec",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatPartialState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Session Run Output Route"
+      },
+      "post": {
+        "description": "Hold what a command clicked Run on has printed so far, for Chat to show.\n\nWhile the command runs its run posts the end of its output here when it grows, and\neach tab that shows the block holds a read open until it does. It lives in memory\nalone, as a chat's answer in writing does, for ten minutes after its last post: the\nrecord of the command's end replaces it. It is the run's own word, shown and\nnever trusted, held to the rules of a run's state report: the session's drain\nadmits the caller, and a post from a run other than the one holding the lease, or\nwhile none does, changes nothing and is answered the same.\n\nArgs:\n  session_id: The session the run drains.\n  run_id: The run Chat minted for the click.\n  body: The output so far, and the run's own id.\n  request: Starlette request object.\n  identity: Authenticated run.",
+        "operationId": "session_run_output_route_api_sessions__session_id__runs__run_id__output_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{32}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRunOutput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Session Run Output Route"
       }
     },
     "/api/sessions/{session_id}/turns": {

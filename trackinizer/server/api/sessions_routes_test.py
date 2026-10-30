@@ -75,7 +75,11 @@ from trackinizer.server.session_reaper import (
 from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
-from trackinizer.wire.wire_science_chat import chat_session_id
+from trackinizer.wire.wire_science_chat import (
+    ChatPartial,
+    ChatPartialState,
+    chat_session_id,
+)
 from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
 from trackinizer.wire.wire_sessions import (
     RUN_ENDING_REFUSALS,
@@ -2543,6 +2547,75 @@ async def test_only_the_chats_own_run_reports_its_state(
         409,
         "provider_is_cli",
     )
+    assert unknown.status_code == 404
+
+
+async def _put_output(
+    client: httpx2.AsyncClient,
+    *,
+    session_id: uuid.UUID,
+    instance: str,
+    text: str,
+) -> httpx2.Response:
+    """Post a clicked command's output so far as the installed identity."""
+    return await client.post(
+        f"/api/sessions/{session_id}/runs/{'c' * 32}/output",
+        json={"instance": instance, "text": text},
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_running_commands_output_is_held_from_the_chats_run_for_its_readers(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Only the run holding the lease writes it; a post from another changes nothing."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _canvas_with_chat(store, provider="claude")
+    act_as_user_agent("writer")
+    run = "a" * 32
+    assert (
+        await drain(client, session_id=chat, cli="claude", instance=run)
+    ).status_code == 200
+
+    held = await _put_output(client, session_id=chat, instance=run, text="tick 1")
+    other = await _put_output(client, session_id=chat, instance="b" * 32, text="gone")
+    browser()
+    read = await client.get(f"/api/sessions/{chat}/runs/{'c' * 32}/output")
+    none = await client.get(f"/api/sessions/{chat}/runs/{'d' * 32}/output")
+
+    assert (held.status_code, other.status_code) == (204, 204)
+    assert read.status_code == 200, read.text
+    state = ChatPartialState.model_validate(read.json())
+    assert state.partial == ChatPartial(turn="c" * 32, text="tick 1")
+    assert state.seq > 0
+    assert ChatPartialState.model_validate(none.json()) == ChatPartialState(
+        seq=0,
+        partial=None,
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_only_the_chats_own_run_puts_its_commands_output(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The post is held to the drain's rules, as a run's state report is."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _canvas_with_chat(store, provider="claude")
+    run = "a" * 32
+
+    browser()
+    from_a_browser = await _put_output(client, session_id=chat, instance=run, text="x")
+    act_as_other_agent("writer")
+    from_a_stranger = await _put_output(client, session_id=chat, instance=run, text="x")
+    unknown = await client.get(f"/api/sessions/{uuid.uuid4()}/runs/{'c' * 32}/output")
+
+    assert (from_a_browser.status_code, from_a_stranger.status_code) == (403, 403)
     assert unknown.status_code == 404
 
 

@@ -205,6 +205,28 @@ def get_partials(request: Request) -> ChatPartials:
     return partials
 
 
+# A command can print nothing for minutes while it runs, so its output so far is held
+# past the minute an answer is, or a quiet one would show nothing until it ends.
+def get_run_outputs(request: Request) -> ChatPartials:
+    """Return what the commands clicked Run on have printed so far, made on first use.
+
+    Each is held as a partial under its session and run (``uuid5(session, run_id)``),
+    its ``turn`` the run id.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The ChatPartials of the commands' output.
+
+    """
+    app = cast("FastAPI", request.app)
+    outputs: object = getattr(app.state, "run_outputs", None)
+    if not isinstance(outputs, ChatPartials):
+        outputs = app.state.run_outputs = ChatPartials(ttl_sec=600.0)
+    return outputs
+
+
 def get_chat_streaming(request: Request) -> bool:
     """Return whether chats' answers are held as they are written; on without a Config.
 

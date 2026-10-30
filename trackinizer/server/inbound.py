@@ -96,6 +96,10 @@ class PollerRun:
     """An id the run minted for itself, the same on each of its drains, which tells one
     run from another that drains the same session; ``None`` for a poller that has none."""
 
+    runs: bool = False
+    """Whether the run takes ``run`` messages: one that does not fails to read a drain
+    that carries one, and loses every message in it."""
+
     state: RunState = "idle"
     """What the run last reported of itself (:meth:`InboundQueue.report_state`). It
     stays through the run's later drains, and starts again at ``idle`` for a run that
@@ -261,6 +265,7 @@ class InboundQueue:
         cwd: str | None = None,
         cli: str | None = None,
         instance: str | None = None,
+        runs: bool = False,
         account: str | None = None,
     ) -> None:
         """Renew a session's short lease after an authorized inbound poll.
@@ -276,6 +281,7 @@ class InboundQueue:
           cwd: The run's working directory.
           cli: The CLI the run is.
           instance: The run's own id.
+          runs: Whether the run takes ``run`` messages.
           account: The email of the account whose key polled.
 
         """
@@ -289,6 +295,7 @@ class InboundQueue:
                 cwd=cwd,
                 cli=cli,
                 instance=instance,
+                runs=runs,
                 state="idle"
                 if held is None or instance is None or held.where.instance != instance
                 else held.where.state,

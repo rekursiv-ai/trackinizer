@@ -37,6 +37,7 @@ from trackinizer.server.visuals.canvas_store import (
     CommandRefusedError,
     PartnerBusyError,
     ProviderOfflineError,
+    RunUnsupportedError,
     UploadsUnsupportedError,
     read_canvas,
     send_chat_line,
@@ -135,6 +136,13 @@ async def post_chat_line_route(
     and marks. Anyone else is 403 ``answer_not_owner``, and nothing is queued. It names
     the option taken (``{prompt_id, option}``), or in the older form a ``decision``.
 
+    A ``run`` is a command the agent wrote that the chat's starter clicked Run on (or a
+    Stop of one, ``{run_id, stop: true}``): the starter's alone, since it runs on their
+    machine, and anyone else is 403 ``answer_not_owner``. Its text is one line of
+    printable ASCII of at most 2,000 characters (422 otherwise). It is queued only for
+    a run whose drains say it takes runs: an older run is 409 ``run_unsupported``. The
+    assistant takes none (422).
+
     A ``line`` may name ``attachments``, the box paths of files the poster uploaded
     for it (``POST /api/chats/uploads``); they reach the assistant in the line's
     context. A chat whose provider is not the assistant is 409
@@ -203,6 +211,11 @@ async def post_chat_line_route(
         raise HTTPException(
             status_code=409,
             detail={"code": "provider_offline", "message": str(error)},
+        ) from error
+    except RunUnsupportedError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "run_unsupported", "message": str(error)},
         ) from error
     except (
         CanvasSessionUnavailableError,

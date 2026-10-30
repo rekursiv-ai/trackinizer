@@ -68,6 +68,7 @@ __all__ = [
     "FORK_EDGE_LABEL",
     "FORK_POINT_PREFIX",
     "POSTER_LABEL_PREFIX",
+    "RUN_COMMAND_CHARS",
     "SCIENCE_CHAT_LABEL",
     "AssistantPrompt",
     "ChatAnswer",
@@ -79,6 +80,7 @@ __all__ = [
     "ChatPartial",
     "ChatPartialState",
     "ChatProvider",
+    "ChatRun",
     "ChatSend",
     "ChatSent",
     "ChatSettings",
@@ -87,6 +89,7 @@ __all__ = [
     "chat_session_id",
     "fork_point_label",
     "poster_label",
+    "run_refusal",
 ]
 
 
@@ -102,6 +105,9 @@ CHAT_PARTIAL_CHARS: Final = 16_384
 
 CHAT_PARTIAL_WAIT_SEC: Final = 25.0
 """The longest a read of a partial is held for a change, under the edge's idle cutoff."""
+
+RUN_COMMAND_CHARS: Final = 2_000
+"""The longest command a Run button runs."""
 
 SCIENCE_CHAT_LABEL: Final = "science-chat"
 """The label every science chat session carries."""
@@ -152,7 +158,7 @@ Values:
 
 # ``wire_sessions`` imports this module for ``ChatForkAt``, so this one cannot import
 # its ``InboundKind`` back; ``wire_science_chat_test`` holds the two equal.
-type ChatLineKind = Literal["line", "command", "answer", "settings", "interrupt"]
+type ChatLineKind = Literal["line", "command", "answer", "settings", "interrupt", "run"]
 """What a Chat post is: the values of ``wire_sessions.InboundKind``, which a run
 delivers each its own way. Only ``line`` is a person's chat line."""
 
@@ -201,6 +207,42 @@ class ChatSettings(BaseModel):
         if self.model is None and self.effort is None:
             raise ValueError("a settings post names a model, an effort, or both")
         return self
+
+
+class ChatRun(BaseModel):
+    """The payload of a ``run`` post: start a command the agent wrote, or stop it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    """Minted by the browser that clicked, so the run's records find their block."""
+
+    block: str = Field(default="", max_length=200)
+    """Where the block is drawn, as the browser names it; the run's records repeat it,
+    so a reload shows the output under the same block."""
+
+    stop: bool = False
+    """Stop the run ``run_id`` names instead of starting one."""
+
+
+def run_refusal(command: str) -> str:
+    """Say why a Run button does not run ``command``; empty when it does.
+
+    A command runs as it reads: one line of printable ASCII, so no control, format,
+    bidi or look-alike character makes it do other than what the person sees.
+
+    Args:
+      command: The command, as the agent wrote it in its block.
+
+    Returns:
+      reason: Why it is refused, or empty to run it.
+
+    """
+    if len(command) > RUN_COMMAND_CHARS:
+        return f"A Run command holds at most {RUN_COMMAND_CHARS:,} characters"
+    if any(c < " " or c > "~" for c in command):
+        return "A Run command is one line of printable ASCII"
+    return ""
 
 
 class ChatModel(BaseModel):
@@ -383,13 +425,20 @@ class ChatSend(BaseModel):
     # a validator is not folded into the body's, so the route would answer 500.
     @model_validator(mode="after")
     def _payload_fits_the_kind(self) -> ChatSend:
-        shape = {"answer": ChatAnswer, "settings": ChatSettings}.get(self.kind)
+        shapes = {"answer": ChatAnswer, "settings": ChatSettings, "run": ChatRun}
+        shape = shapes.get(self.kind)
         if shape is None and self.payload is not None:
             raise ValueError(f"a {self.kind} post carries no payload")
         try:
-            _ = None if shape is None else shape.model_validate(self.payload)
+            read = None if shape is None else shape.model_validate(self.payload)
         except ValidationError as error:
             raise ValueError(f"the {self.kind} payload: {error}") from error
+        if (
+            isinstance(read, ChatRun)
+            and not read.stop
+            and (refusal := run_refusal(self.text))
+        ):
+            raise ValueError(refusal)
         return self
 
 

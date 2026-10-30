@@ -191,6 +191,7 @@ async def test_the_assistants_newest_live_session_is_the_default_partner(
         "machine": None,
         "run_name": None,
         "cwd": None,
+        "runs": False,
         "label": "scout",
         "refused": "",
         "refused_at": None,
@@ -231,6 +232,7 @@ async def test_an_assistant_with_no_live_session_is_still_named_as_unavailable(
         "machine": None,
         "run_name": None,
         "cwd": None,
+        "runs": False,
         "label": "scout",
         "refused": "",
         "refused_at": None,
@@ -688,6 +690,45 @@ async def test_a_live_runs_partner_says_where_it_runs_and_how_to_attach(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_a_live_runs_partner_takes_runs_only_when_its_drain_says_so(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """Chat offers Run only on a run that runs the commands it is sent."""
+    await _seed(pglite_engine)
+    inbound = InboundQueue()
+    async with pglite_engine.acquire() as conn:
+        chat = await _session(
+            conn,
+            key=_USER_KEY,
+            owner="chat-1",
+            seq=1,
+            cli="claude",
+            cli_session_id=chat_session_id(_CHAT),
+        )
+
+        async def partner(*, takes: bool | None) -> tuple[str, bool]:
+            if takes is None:
+                inbound.forget_poller(chat)
+            else:
+                inbound.mark_poller(chat, cli="claude", runs=takes)
+            found = await resolve_partner(
+                conn,
+                inbound=inbound,
+                assistant=_KB,
+                provider="claude",
+                conversation_id=_CHAT,
+            )
+            assert found is not None
+            return (found.status, found.runs)
+
+        assert await partner(takes=True) == ("live", True)
+        # A run from before Run drains without saying it takes them.
+        assert await partner(takes=False) == ("live", False)
+        assert await partner(takes=None) == ("offline", False)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_an_offline_partner_says_why_the_chats_run_was_refused(
     pglite_engine: PGliteEngine,
 ) -> None:
@@ -756,6 +797,7 @@ async def test_a_live_runs_partner_is_the_one_chats_info_reads(
             machine="gx10",
             cwd="~/project",
             cli="claude",
+            runs=True,
         )
         found = await resolve_partner(
             conn,

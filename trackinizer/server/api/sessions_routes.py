@@ -15,11 +15,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from functools import partial
 from typing import Annotated, cast
-from uuid import UUID
+from uuid import UUID, uuid5
 
 import logging
+import math
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from treekle import from_plain
 
 from trackinizer.server.api._deps import (
@@ -27,6 +28,7 @@ from trackinizer.server.api._deps import (
     get_hub,
     get_inbound,
     get_replays,
+    get_run_outputs,
     get_store,
 )
 from trackinizer.server.api.session_access import (
@@ -66,8 +68,11 @@ from trackinizer.wire.audience import OPEN
 from trackinizer.wire.bodies import SubmitAgentSession
 from trackinizer.wire.wire_machines import NAME_PATTERN
 from trackinizer.wire.wire_science_chat import (
+    CHAT_PARTIAL_WAIT_SEC,
     CHAT_SESSION_PREFIX,
     CHAT_TITLE,
+    ChatPartial,
+    ChatPartialState,
     ChatProvider,
     chat_conversation_id,
 )
@@ -88,6 +93,7 @@ from trackinizer.wire.wire_sessions import (
     SendMessageResponse,
     SessionEnd,
     SessionEndResponse,
+    SessionRunOutput,
     SessionRunState,
     SessionStart,
     SessionStartResponse,
@@ -439,6 +445,7 @@ async def session_inbound_drain_route(
     ] = None,
     cli: Annotated[str | None, Query(pattern=r"^[a-z][a-z0-9_-]{0,31}$")] = None,
     instance: Annotated[str | None, Query(pattern=r"^[0-9a-f]{32}$")] = None,
+    runs: bool = False,
 ) -> DrainInboundResponse:
     """Drain all pending inbound messages for a session (oldest first).
 
@@ -488,6 +495,10 @@ async def session_inbound_drain_route(
     caller's own word about its own run, shown and never trusted; a run that names
     none is shown as it was before runs named themselves.
 
+    ``runs`` says the run takes ``run`` messages, the commands a chat's starter clicks
+    Run on; a chat queues one only while such a run holds the lease, since an older run
+    would fail to read the drain that carries it and lose every message in it.
+
     Args:
       session_id: UUID of the session to drain messages from.
       request: Starlette request object.
@@ -503,6 +514,7 @@ async def session_inbound_drain_route(
         at most 32 characters.
       instance: The run's own id, 32 lowercase hexadecimal digits, the same on each of
         its drains.
+      runs: Whether the run takes ``run`` messages.
 
     Returns:
       response: DrainInboundResponse with list of pending messages (text, kind,
@@ -539,6 +551,7 @@ async def session_inbound_drain_route(
             cwd=cwd,
             cli=cli,
             instance=instance,
+            runs=runs,
             account=identity.email,
         )
         await store.record_session_seen(
@@ -623,6 +636,99 @@ async def session_run_state_route(
     kept = inbound.report_state(session_id, instance=body.instance, state=body.state)
     if kept and (before is None or before.state != body.state):
         get_hub(request).nudge()
+
+
+@router.post("/api/sessions/{session_id}/runs/{run_id}/output", status_code=204)
+async def session_run_output_route(
+    session_id: UUID,
+    run_id: Annotated[str, Path(pattern=r"^[0-9a-f]{32}$")],
+    body: SessionRunOutput,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> None:
+    """Hold what a command clicked Run on has printed so far, for Chat to show.
+
+    While the command runs its run posts the end of its output here when it grows, and
+    each tab that shows the block holds a read open until it does. It lives in memory
+    alone, as a chat's answer in writing does, for ten minutes after its last post: the
+    record of the command's end replaces it. It is the run's own word, shown and
+    never trusted, held to the rules of a run's state report: the session's drain
+    admits the caller, and a post from a run other than the one holding the lease, or
+    while none does, changes nothing and is answered the same.
+
+    Args:
+      session_id: The session the run drains.
+      run_id: The run Chat minted for the click.
+      body: The output so far, and the run's own id.
+      request: Starlette request object.
+      identity: Authenticated run.
+
+    """
+    _ = await _authorize_drain(
+        request,
+        identity,
+        session_id=session_id,
+        cli=None,
+        names_cli=False,
+    )
+    held = get_inbound(request).poller_run(session_id)
+    if held is not None and held.instance == body.instance:
+        _ = get_run_outputs(request).put(
+            uuid5(session_id, run_id),
+            ChatPartial(turn=run_id, text=body.text),
+        )
+
+
+@router.get(
+    "/api/sessions/{session_id}/runs/{run_id}/output",
+    response_model=ChatPartialState,
+)
+async def read_session_run_output_route(
+    session_id: UUID,
+    run_id: Annotated[str, Path(pattern=r"^[0-9a-f]{32}$")],
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    after: int = 0,
+    wait_sec: float = 0.0,
+) -> ChatPartialState:
+    """Read what a command clicked Run on has printed, once it is not what was seen.
+
+    Answers at once when the held output's ``seq`` is not ``after``; else when it
+    changes or expires; else after ``wait_sec`` with it unchanged, as a read of a
+    chat's answer in writing does. 404 for no session, and 403 ``session_audience`` to
+    a caller who does not read the session's records, asked again before a changed
+    output is answered.
+
+    Args:
+      session_id: The chat's session.
+      run_id: The run Chat minted for the click.
+      request: Request carrying the store and the outputs.
+      identity: A reader of the chat.
+      after: The ``seq`` the caller last saw; 0 for none.
+      wait_sec: Seconds to hold the request for a change, clamped to [0, 25].
+
+    Returns:
+      state: The output held, its ``turn`` the run id, and its ``seq``; ``seq`` 0
+        and none when none is.
+
+    """
+    store = get_store(request)
+    session = await require_session(store, session_id)
+    await require_session_access(request, identity, session=session, mode="read")
+    state = await get_run_outputs(request).wait(
+        uuid5(session_id, run_id),
+        after=after,
+        # The query parses "nan", which every bound below would let through.
+        wait_sec=0.0
+        if math.isnan(wait_sec)
+        else min(max(wait_sec, 0.0), CHAT_PARTIAL_WAIT_SEC),
+    )
+    if state.seq != after:
+        # The hold outlasts the test: the chat may have been unshared from the reader.
+        session = await require_session(store, session_id)
+        await require_session_access(request, identity, session=session, mode="read")
+    return state
 
 
 @router.post("/api/sessions/{session_id}/end")

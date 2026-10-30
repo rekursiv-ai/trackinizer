@@ -1540,8 +1540,19 @@ async def test_a_line_into_a_closed_assistant_chat_goes_to_the_assistants_servic
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("kind", "text", "payload"),
+    [
+        ("command", "/compact", None),
+        # The assistant has no machine for Run's command to run on.
+        ("run", "date", {"run_id": "c" * 32, "block": "l1:0", "stop": False}),
+    ],
+)
 async def test_the_assistant_takes_a_line_an_answer_or_an_interrupt_and_nothing_else(
     pglite_route_client: _Client,
+    kind: str,
+    text: str,
+    payload: dict[str, object] | None,
 ) -> None:
     client, store = pglite_route_client
     await seed_accounts(store)
@@ -1551,13 +1562,14 @@ async def test_the_assistant_takes_a_line_an_answer_or_an_interrupt_and_nothing_
     refused = await _post(
         client,
         canvas_id=canvas_id,
-        text="/compact",
-        kind="command",
+        text=text,
+        kind=kind,
+        payload=payload,
     )
 
     assert refused.status_code == 422
     assert (
-        "The assistant takes a person's line, an answer or an interrupt, not a command"
+        f"The assistant takes a person's line, an answer or an interrupt, not a {kind}"
         in refused.text
     )
     assert await _drained(client, session_id=kb) == []
