@@ -298,6 +298,7 @@ _DEFAULTS: dict[str, object] = {
     "assistant_prompt": "lead",
     "cli_folder": "",
     "chat_tool_calls": True,
+    "autofix": True,
     "stars": [],
     "views": [],
     "console_views": [],

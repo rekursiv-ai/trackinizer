@@ -37,6 +37,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   assistant_prompt: "lead",
   cli_folder: "",
   chat_tool_calls: false,
+  autofix: true,
   stars: [],
   views: [],
   console_views: [],
