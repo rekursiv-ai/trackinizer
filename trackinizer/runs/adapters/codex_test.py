@@ -5,9 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
+import json
+
 import pytest
 
 from trackinizer.runs.adapters.codex import CodexAdapter
+from trackinizer.runs.adapters.custom_types import Subagent
 
 
 class TestCodexSessionsDir:
@@ -129,6 +132,103 @@ class TestCodexResumedSession:
     )
     def test_a_new_session_is_not_a_resume(self, cli_args: tuple[str, ...]) -> None:
         assert CodexAdapter().resumed_session(cli_args) is None
+
+
+_THREAD: Final = "01a17e8a-5ff5-7900-9d2a-23da192fd7d9"
+"""A spawned thread's id, which its rollout's name repeats."""
+
+
+class TestCodexSubagents:
+    """A spawned thread is a session of its own, linked to the thread that spawned it.
+
+    Measured on codex 0.163.0: the rollout opens with ``session_meta``, whose
+    ``source.subagent.thread_spawn`` names the parent thread.
+    """
+
+    @classmethod
+    def _rollout(cls, root: Path, source: object) -> tuple[CodexAdapter, Path]:
+        folder = root / "sessions" / "2026" / "10" / "27"
+        folder.mkdir(parents=True)
+        path = folder / f"rollout-2026-10-27T14-06-00-{_THREAD}.jsonl"
+        meta = {"type": "session_meta", "payload": {"id": _THREAD, "source": source}}
+        _ = path.write_text(json.dumps(meta) + "\n" + json.dumps({"type": "x"}) + "\n")
+        return CodexAdapter(), path
+
+    def test_a_spawned_thread_names_its_parent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        spawn = {
+            "parent_thread_id": "01a17e85-a9b7-7230-a4b8-c29f9762ba25",
+            "depth": 1,
+            "agent_path": "/root/synthesis",
+            "agent_nickname": "Bohr",
+            "agent_role": None,
+        }
+        codex, path = self._rollout(tmp_path, {"subagent": {"thread_spawn": spawn}})
+
+        assert codex.subagent_of(path) == Subagent(
+            child=_THREAD,
+            parent="01a17e85-a9b7-7230-a4b8-c29f9762ba25",
+            note="Bohr (/root/synthesis)",
+        )
+
+    # The note is the edge's, and the server takes text there, never null.
+    @pytest.mark.parametrize(
+        ("named", "note"),
+        [
+            ({"agent_nickname": "Bohr"}, "Bohr"),
+            (
+                {"agent_path": "/root/synthesis", "agent_nickname": None},
+                "/root/synthesis",
+            ),
+            ({}, ""),
+        ],
+        ids=["nickname", "path", "neither"],
+    )
+    def test_a_spawn_is_noted_by_as_much_of_its_name_as_it_gives(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        named: dict[str, str | None],
+        note: str,
+    ) -> None:
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        spawn = {"parent_thread_id": "01a17e85-a9b7-7230-a4b8-c29f9762ba25", **named}
+        codex, path = self._rollout(tmp_path, {"subagent": {"thread_spawn": spawn}})
+
+        subagent = codex.subagent_of(path)
+
+        assert subagent is not None
+        assert subagent.note == note
+
+    @pytest.mark.parametrize("source", ["vscode", "cli", {"other": {}}])
+    def test_a_thread_a_person_started_is_no_subagent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        source: object,
+    ) -> None:
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        codex, path = self._rollout(tmp_path, source)
+
+        assert codex.subagent_of(path) is None
+
+    def test_a_missing_or_torn_rollout_is_no_subagent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        codex = CodexAdapter()
+        torn = tmp_path / "sessions" / f"rollout-2026-10-27T14-06-00-{_THREAD}.jsonl"
+        torn.parent.mkdir(parents=True)
+        _ = torn.write_text('{"type": "session_meta", "pay')
+
+        assert codex.subagent_of(torn) is None
+        assert codex.subagent_of(torn.with_name("rollout-gone.jsonl")) is None
 
 
 if __name__ == "__main__":

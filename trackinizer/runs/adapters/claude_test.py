@@ -5,9 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
+import json
+
 import pytest
 
 from trackinizer.runs.adapters.claude import ClaudeAdapter
+from trackinizer.runs.adapters.custom_types import Subagent
 
 
 adapter = ClaudeAdapter()
@@ -164,6 +167,90 @@ class TestClaudeResumedSession:
     def test_a_new_session_is_not_a_resume(self, cli_args: tuple[str, ...]) -> None:
         """A fork writes a NEW transcript, so it starts a session too."""
         assert adapter.resumed_session(cli_args) is None
+
+
+class TestClaudeSubagents:
+    """A sub-agent's transcript is a session of its own, linked to its parent.
+
+    Measured on claude 2.1.312: it lands at
+    ``<project>/<session>/subagents/agent-<id>.jsonl``, beside a ``.meta.json``
+    naming the call that spawned it and, below the first level, the agent that did.
+    """
+
+    @classmethod
+    def _agent(
+        cls,
+        root: Path,
+        agent: str,
+        meta: dict[str, str | int] | None,
+    ) -> tuple[ClaudeAdapter, Path]:
+        folder = root / "projects" / "-w" / "s1" / "subagents"
+        folder.mkdir(parents=True, exist_ok=True)
+        if meta is not None:
+            _ = (folder / f"agent-{agent}.meta.json").write_text(json.dumps(meta))
+        return ClaudeAdapter(), folder / f"agent-{agent}.jsonl"
+
+    def test_a_subagent_is_matched_and_names_its_session(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        meta = {
+            "agentType": "general-purpose",
+            "description": "Run echo",
+            "toolUseId": "toolu_1",
+            "spawnDepth": 1,
+        }
+        claude, path = self._agent(tmp_path, "a1", meta)
+
+        assert claude.matches_session_file(path)
+        assert claude.subagent_of(path) == Subagent(
+            child="agent-a1",
+            parent="s1",
+            note="general-purpose: Run echo (toolu_1)",
+        )
+
+    def test_a_nested_subagent_names_the_agent_that_spawned_it(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        meta = {"description": "Dig", "parentAgentId": "a0", "spawnDepth": 2}
+        claude, path = self._agent(tmp_path, "a2", meta)
+
+        assert claude.subagent_of(path) == Subagent(
+            child="agent-a2",
+            parent="agent-a0",
+            note="Dig",
+        )
+
+    def test_a_subagent_without_its_meta_still_names_its_session(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        claude, path = self._agent(tmp_path, "a1", None)
+        _ = path.with_name("agent-a1.meta.json").write_text("{not json")
+
+        assert claude.subagent_of(path) == Subagent(child="agent-a1", parent="s1")
+
+    def test_a_session_file_and_a_side_file_are_no_subagents(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        claude = ClaudeAdapter()
+        session = tmp_path / "projects" / "-w" / "s1.jsonl"
+        side = tmp_path / "projects" / "-w" / "s1" / "tool-results" / "agent-x.jsonl"
+
+        assert claude.matches_session_file(session)
+        assert claude.subagent_of(session) is None
+        assert not claude.matches_session_file(side)
+        assert claude.subagent_of(side) is None
 
 
 if __name__ == "__main__":

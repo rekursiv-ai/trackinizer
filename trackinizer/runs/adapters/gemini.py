@@ -26,6 +26,7 @@ from trackinizer.lib.agent.sessions.tail import Tail
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from trackinizer.runs.adapters.custom_types import Subagent
     from trackinizer.types.streams import TraxRecord
 
 
@@ -107,6 +108,11 @@ class GeminiAdapter:
     def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
         """Return ``None``: no gemini resume is recognized, so every run is new."""
         del cli_args
+        return None
+
+    def subagent_of(self, path: Path) -> Subagent | None:
+        """Return ``None``: this adapter knows no gemini sub-agent transcript."""
+        del path
         return None
 
     def reader(self) -> Tail[TraxRecord]:

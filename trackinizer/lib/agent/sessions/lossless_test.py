@@ -317,6 +317,11 @@ def test_claude_preserves_valid_non_object_lines(line: str) -> None:
         '{"type":"function_call","call_id":"c"}',
         '{"type":"function_call_output","call_id":"c"}',
         '{"type":"function_call_output","call_id":"c","output":null}',
+        # Measured on a codex app rollout: an automation's output names no call.
+        (
+            '{"type":"function_call_output","id":"fco_1",'
+            '"name":"automation_update","namespace":"codex_app","output":"beat"}'
+        ),
         '{"type":"reasoning","summary":null}',
         '{"type":"reasoning"}',
         '{"type":"message","role":"user"}',
@@ -329,6 +334,7 @@ def test_claude_preserves_valid_non_object_lines(line: str) -> None:
         "absent-function-fields",
         "absent-output",
         "null-output",
+        "absent-output-call-id",
         "null-reasoning-summary",
         "absent-reasoning-summary",
         "absent-message-content",

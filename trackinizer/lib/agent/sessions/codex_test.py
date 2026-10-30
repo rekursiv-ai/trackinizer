@@ -329,6 +329,19 @@ def test_an_image_in_a_tool_result_decodes_to_its_bytes() -> None:
     assert result.attachments == (Attachment(mime_descriptor="image/png", data=b"hi"),)
 
 
+def test_an_output_that_names_no_call_is_written_back_with_none() -> None:
+    """Measured on a codex app rollout: an automation's heartbeat names no call."""
+    native = META + _item(
+        '{"type":"function_call_output","id":"fco_1","name":"automation_update",'
+        '"namespace":"codex_app","output":"beat"}',
+    )
+    output = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
+
+
 def test_a_developer_message_is_not_a_model_reply() -> None:
     # ``developer`` and ``system`` are provider-injected priming; calling
     # them assistant turns would attribute them to the model.

@@ -25,8 +25,11 @@ from typing import TYPE_CHECKING, Final
 import os
 import re
 
+from treekle import PlainTree, json_loads
+
 from trackinizer.lib.agent.sessions import claude
 from trackinizer.lib.agent.sessions.tail import Tail
+from trackinizer.runs.adapters.custom_types import Subagent
 
 
 if TYPE_CHECKING:
@@ -97,8 +100,51 @@ class ClaudeAdapter:
         return (self._projects_dir,)
 
     def matches_session_file(self, path: Path) -> bool:
-        """Return whether ``path`` is one of this CLI's session files."""
-        return path.suffix == ".jsonl" and path.parent.parent == self._projects_dir
+        """Return whether ``path`` is one of this CLI's session files, a sub-agent's too.
+
+        Args:
+          path: File path to check.
+
+        Returns:
+          result: True for ``<project>/<session>.jsonl`` and a sub-agent's transcript.
+
+        """
+        if path.suffix != ".jsonl":
+            return False
+        return (
+            path.parent.parent == self._projects_dir
+            or self.subagent_of(path) is not None
+        )
+
+    # Measured on claude 2.1.312: a sub-agent's transcript is
+    # ``<project>/<session>/subagents/agent-<id>.jsonl``, beside ``agent-<id>.meta.json``.
+    # A nested one lands in the same folder; its meta names the agent that spawned it
+    # (``parentAgentId``, the bare ``<id>``), where the folder names only the session at
+    # the root. Each is named by its file's stem, as ``session_id_from_path`` names it.
+    def subagent_of(self, path: Path) -> Subagent | None:
+        """Return the sub-agent whose transcript ``path`` is; ``None`` for any other file.
+
+        Args:
+          path: Session file path.
+
+        Returns:
+          result: The sub-agent and its parent, by claude's own ids, or ``None``.
+
+        """
+        if (
+            path.suffix != ".jsonl"
+            or path.parent.name != "subagents"
+            or not path.stem.startswith("agent-")
+            or path.parent.parent.parent.parent != self._projects_dir
+        ):
+            return None
+        meta = _meta(path.with_name(f"{path.stem}.meta.json"))
+        spawner = _text(meta.get("parentAgentId"))
+        return Subagent(
+            child=path.stem,
+            parent=f"agent-{spawner}" if spawner else path.parent.parent.name,
+            note=_spawned(meta),
+        )
 
     def session_scope(self) -> Path | None:
         """Return the one project directory this run's cwd maps to.
@@ -199,3 +245,25 @@ def _short_cluster(
 def _session_named(value: str) -> str:
     """Return ``value`` when it is a session id claude looks up, else ``""``."""
     return value if _SESSION_ID.fullmatch(value) else ""
+
+
+def _meta(path: Path) -> dict[str, PlainTree]:
+    """Return a sub-agent's ``.meta.json``; empty when it is missing or unreadable."""
+    try:
+        return json_loads(path.read_text(), dict[str, PlainTree])
+    except (OSError, ValueError):
+        return {}
+
+
+def _text(value: PlainTree) -> str:
+    """Return ``value`` when it is text, else ``""``."""
+    return value if isinstance(value, str) else ""
+
+
+def _spawned(meta: dict[str, PlainTree]) -> str:
+    """Return what spawned a sub-agent: ``<type>: <task> (<call>)``, as far as known."""
+    kind, task, call = (
+        _text(meta.get(key)) for key in ("agentType", "description", "toolUseId")
+    )
+    said = f"{kind}: {task}" if kind and task else kind or task
+    return f"{said} ({call})" if said and call else said or call
