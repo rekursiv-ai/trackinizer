@@ -13,6 +13,7 @@ import pytest
 from trackinizer.wire.wire_science_chat import (
     CHAT_PARTIAL_CHARS,
     CHAT_SESSION_PREFIX,
+    RUN_COMMAND_CHARS,
     ChatLineKind,
     ChatPartial,
     ChatPartialState,
@@ -20,6 +21,7 @@ from trackinizer.wire.wire_science_chat import (
     chat_actor,
     chat_session_id,
     poster_label,
+    run_refusal,
 )
 from trackinizer.wire.wire_sessions import InboundKind
 
@@ -58,6 +60,47 @@ def test_a_browser_that_still_sends_science_posts_a_line() -> None:
         {"canvas_id": str(_CANVAS), "text": "hello", "kind": "science"},
     )
     assert sent.kind == "line"
+
+
+@pytest.mark.parametrize(
+    ("command", "refused"),
+    [
+        ("git status --short && echo 'done'", ""),
+        ("x" * RUN_COMMAND_CHARS, ""),
+        ("x" * (RUN_COMMAND_CHARS + 1), "at most 2,000 characters"),
+        ("echo one\necho two", "one line of printable ASCII"),
+        ("echo\ttab", "one line of printable ASCII"),
+        ("rm -rf \u202e/", "one line of printable ASCII"),
+        ("ls r\u00e9sum\u00e9.txt", "one line of printable ASCII"),
+        ("ls\u200b", "one line of printable ASCII"),
+    ],
+)
+def test_a_run_command_is_one_line_of_printable_ascii(
+    command: str,
+    refused: str,
+) -> None:
+    """Nothing in the command can make it read other than it runs."""
+    reason = run_refusal(command)
+    assert bool(reason) == bool(refused)
+    assert refused in reason
+
+
+def test_a_run_post_refuses_a_command_it_would_not_run() -> None:
+    run = {"run_id": "a" * 32}
+    with pytest.raises(ValidationError, match="one line of printable ASCII"):
+        _ = ChatSend(canvas_id=_CANVAS, text="a\nb", kind="run", payload=run)
+    stop = ChatSend(
+        canvas_id=_CANVAS,
+        text="stop \u00e9",
+        kind="run",
+        payload=run | {"stop": True},
+    )
+    assert stop.kind == "run"
+
+
+def test_a_run_post_names_its_run() -> None:
+    with pytest.raises(ValidationError, match="run_id"):
+        _ = ChatSend(canvas_id=_CANVAS, text="ls", kind="run", payload={"run_id": "x"})
 
 
 @pytest.mark.parametrize(

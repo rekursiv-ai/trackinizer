@@ -59,6 +59,11 @@ SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         # A run's word on what it is doing, kept on its lease in memory: it reads and
         # writes no record, and is held to the rules of the session's drain.
         ("POST", "/api/sessions/{session_id}/run-state"),
+        # What a command clicked Run on has printed so far, held in memory: a post is
+        # held to the rules of the session's drain and taken only from the run holding
+        # its lease; a read takes the records' read test, and again after it was held.
+        ("POST", "/api/sessions/{session_id}/runs/{run_id}/output"),
+        ("GET", "/api/sessions/{session_id}/runs/{run_id}/output"),
         # Reopening a chat's run reads and writes no record: it starts a run, which
         # attaches to the session by the key its own machine holds, as any run does.
         ("POST", "/api/sessions/{session_id}/reattach"),

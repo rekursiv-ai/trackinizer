@@ -486,6 +486,11 @@ class CanvasPartner(BaseModel):
     """The folder a CLI's run works in, ``~/...`` under its home, while live, when the
     run names it."""
 
+    runs: bool = False
+    """Whether the run runs the commands Chat's Run sends it, while live: its drain says
+    it takes them. Never for the assistant, which has no machine to run them on, nor for
+    a run from before Run, which the server refuses them for."""
+
     label: str = ""
     """What Chat shows for it: the assistant's name; ``claude · <machine>``, or
     ``claude`` when the machine is not known; ``claude: no run`` while offline."""

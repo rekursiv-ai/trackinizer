@@ -159,10 +159,10 @@ async def cli_partner(
 
     Returns:
       partner: The live session, with the machine, detached host and folder its
-        run's last drain named (:meth:`~.inbound.InboundQueue.poller_run`), or
-        ``offline`` naming the session that began the chat (None for no session
-        yet), which a run attaches to, and why its run's last drain was refused
-        (:meth:`~.inbound.InboundQueue.refusal`).
+        run's last drain named (:meth:`~.inbound.InboundQueue.poller_run`) and whether it
+        takes Run's commands, or ``offline`` naming the session that began the chat
+        (None for no session yet), which a run attaches to, and why its run's last
+        drain was refused (:meth:`~.inbound.InboundQueue.refusal`).
 
     """
     offline = CanvasPartner(
@@ -207,6 +207,7 @@ async def cli_partner(
                 "machine": where.machine,
                 "run_name": where.run,
                 "cwd": where.cwd,
+                "runs": where.runs,
                 "label": provider
                 if where.machine is None
                 else f"{provider} · {where.machine}",

@@ -39,6 +39,7 @@ from trackinizer.server.visuals.canvas_store import (
     AppliedOperation,
     CommandRefusedError,
     ProviderUnavailableError,
+    RunUnsupportedError,
     apply_canvas_operation,
     canvas_for_chat,
     clear_chat_canvas,
@@ -2936,6 +2937,71 @@ async def test_only_the_runs_owner_answers_its_prompts(
         answer,
         _ME,
     )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_only_the_runs_owner_runs_a_command_on_its_machine(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """A clicked command runs on the starter's machine, so a sharer's is refused."""
+    conversation, session = await _claude_chat(pglite_engine)
+    inbound = InboundQueue()
+    inbound.mark_poller(session, cli="claude", runs=True)
+    run: dict[str, object] = {"run_id": "a" * 32, "block": "l1:0", "stop": False}
+
+    with pytest.raises(AnswerNotOwnerError) as refused:
+        _ = await _post(
+            pglite_engine,
+            inbound=inbound,
+            text="date",
+            kind="run",
+            payload=run,
+            conversation_id=conversation,
+            sharer=True,
+        )
+    assert inbound.drain(session) == []
+    ran = await _post(
+        pglite_engine,
+        inbound=inbound,
+        text="date",
+        kind="run",
+        payload=run,
+    )
+
+    assert str(refused.value) == f"Only {_ME} can run commands on their machine."
+    assert ran is not None
+    [heard] = inbound.drain(session)
+    assert (heard.text, heard.kind, heard.payload, heard.source, heard.context) == (
+        "date",
+        "run",
+        run,
+        _ME,
+        None,
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_command_waits_for_a_run_that_takes_runs(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """A run older than the button would lose the drain that carried the command."""
+    conversation, session = await _claude_chat(pglite_engine)
+    inbound = InboundQueue()
+    inbound.mark_poller(session, cli="claude")
+
+    with pytest.raises(RunUnsupportedError, match="predates the Run button"):
+        _ = await _post(
+            pglite_engine,
+            inbound=inbound,
+            text="date",
+            kind="run",
+            payload={"run_id": "b" * 32},
+            conversation_id=conversation,
+        )
+
+    assert inbound.drain(session) == []
 
 
 @pytest.mark.db_pglite

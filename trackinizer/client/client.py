@@ -1831,6 +1831,7 @@ class Client:
         cwd: str | None = None,
         cli: str | None = None,
         instance: str | None = None,
+        runs: bool = False,
     ) -> list[InboundDrainItem]:
         """Drain pending inbound messages for a session, oldest first.
 
@@ -1838,8 +1839,8 @@ class Client:
         room and canvas context, so the agent runner delivers each the way its CLI
         expects. ``run``, ``machine`` and ``cwd`` tell the server where the draining
         run is, for Chat to show; ``cli`` and ``instance`` tell it which CLI polls and
-        which run it is, by which it routes a chat's lines and refuses a second run.
-        Each is sent only when given.
+        which run it is, by which it routes a chat's lines and refuses a second run;
+        ``runs`` says the run takes ``run`` messages. Each is sent only when given.
 
         Args:
           session_id: Session whose queue to drain.
@@ -1855,6 +1856,8 @@ class Client:
           cwd: The run's working directory, ``~/...`` under its home.
           cli: The CLI this run is, ``claude`` or ``codex``.
           instance: An id the run minted for itself, the same on each of its drains.
+          runs: Whether this run takes ``run`` messages, the commands a chat's starter
+            clicks Run on.
 
         Returns:
           messages: The drained messages, as the server sent them.
@@ -1873,6 +1876,7 @@ class Client:
                 "cwd": cwd,
                 "cli": cli,
                 "instance": instance,
+                "runs": runs or None,
             },
             timeout=wire_sessions.inbound_read_timeout(wait_sec),
             decode=partial(

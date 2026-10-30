@@ -592,6 +592,8 @@ POST   /api/sessions/<uuid>/audience
 POST   /api/sessions/<uuid>/inbound
 GET    /api/sessions/<uuid>/inbound
 POST   /api/sessions/<uuid>/run-state
+POST   /api/sessions/<uuid>/runs/<run id>/output
+GET    /api/sessions/<uuid>/runs/<run id>/output?after=N&wait_sec=N
 POST   /api/sessions/<uuid>/reattach
 POST   /api/messages
 ```
@@ -616,14 +618,19 @@ the request, and a message the server generates has no `source_role`.
 
 `POST .../inbound` takes `kind`, what the message is: `line` (a person's chat line,
 the default, delivered with its sender), `command` (a slash command typed verbatim),
-`answer` (a decision on a pending prompt), `settings` (a model or effort change) or
-`interrupt` (stops the running turn); any other value is 422. `payload` carries the
+`answer` (a decision on a pending prompt), `settings` (a model or effort change),
+`interrupt` (stops the running turn) or `run` (a command the agent wrote that the
+chat's starter clicked Run on, which the run runs on its machine); any other value is
+422. `payload` carries the
 structured data of a kind and is `null` for the kinds that carry none. An `answer`
 is `{"prompt_id": "<text>", "option": "<id>", "updated_input": <object> | null,
 "message": "<text>"}`, where `option` is the id of one of the ask's own options (or a
 kind such as `allow_once`); the older `"decision": "allow" | "deny"` stands in for
 `option`, and an answer names exactly one of the two (422 otherwise). `settings` is
-`{"model": "<text>" | null, "effort": "<text>" | null}`. `text` stays required: for
+`{"model": "<text>" | null, "effort": "<text>" | null}`. `run` is `{"run_id": "<32
+lowercase hex>", "block": "<text>", "stop": <bool>}`, its `text` the command: one line
+of printable ASCII, at most 2,000 characters (422 otherwise), unless `stop` asks the
+named run stopped. `text` stays required: for
 an `answer` it is the one-line form, "Yes" or "No: <reason>". A drained message
 carries `kind` and `payload` beside its `text`, `source` and `room`.
 
@@ -642,7 +649,10 @@ says; the run's own part after `/compact` has no format. On such a chat a drain 
 names no `cli`, as a `trax` older than the name sends, is 426 `cli_required` with a
 plain "Update trax" message and takes no lease; a drain by the other CLI is 409
 `provider_is_other_cli`; and a drain whose `instance` differs from that of the
-unexpired lease of the same CLI is 409 `chat_run_live`. The runner ends its run on
+unexpired lease of the same CLI is 409 `chat_run_live`. A drain that takes `runs=true`
+says the run takes `run` messages; the lease keeps it, and a chat queues a `run` only
+while such a run holds it, since an older run fails to read a drain that carries one
+and loses every message in it. The runner ends its run on
 `provider_is_assistant`, `provider_is_other_cli` and `chat_run_live` instead of
 retrying, and leaves the chat's session open as it exits. `POST .../end` takes the
 ending run's `cli` too: on a chat whose canvas chose another provider it is a 200
@@ -678,6 +688,18 @@ and for the assistant's chats, which report nothing), else what the run last
 reported, `idle` where no run polls. While a CLI chat's run is `taken_over`, a post to
 it (`POST /api/chats`, of any kind) is 409 `chat_taken_over` with the message "taken
 over in a terminal; reattach from Chat or Console", and nothing is queued.
+
+`POST .../runs/<run id>/output` takes `{"instance": "<run id>", "text": "<text>"}`,
+the end of what a command clicked Run on has printed so far (at most 16,384
+characters), and answers 204. The run posts it when it grows while the command runs.
+It is held in memory alone, as a chat's answer in writing is, for ten minutes after
+its last post, and the run's record of the command's end replaces it. It is held to the
+rules of `run-state`: the drain's caller, and a post from a run other than the one
+holding the lease, or while none does, changes nothing and is answered the same.
+`GET .../runs/<run id>/output` answers `{"seq": N, "partial": {"turn": "<run id>",
+"text": "<text>", "done": false} | null}` once `seq` is not `after`, holding the read
+up to `wait_sec` (at most 25) for a change, as `GET .../partial` does, to whoever reads
+the session's records (403 `session_audience` otherwise).
 
 `POST .../reattach` reopens a chat's run headless, where it ran, after a terminal took
 it over or it went away. Browser only, with the `Idempotency-Key` header; the chat's
@@ -1165,8 +1187,8 @@ is theirs (Deleting below).
 line. The body is `{canvas_id, text, conversation_id, page, trail, kind,
 payload, attachments}`; `text` holds a non-space
 character and at most 16,384 characters, and `canvas_id` is the poster's own
-canvas. `kind` is `line` by default, or `command`, `answer`, `settings` or
-`interrupt`, with `payload` as `POST /api/sessions/<uuid>/inbound` takes it (a stale
+canvas. `kind` is `line` by default, or `command`, `answer`, `settings`,
+`interrupt` or `run`, with `payload` as `POST /api/sessions/<uuid>/inbound` takes it (a stale
 browser's `science` reads as `line`). An `assistant` canvas takes a `line`, an
 `answer` or an `interrupt` (422 otherwise), an `answer` being a choice on a card the
 assistant asked, given by the chat's starter alone, as on a `claude` or `codex`
@@ -1175,7 +1197,10 @@ is queued for the chat's own session, and is 409 `provider_offline` while the
 assistant does not have the chat open. A `claude` or
 `codex` canvas queues the post on the chat's session its run drains, with only a
 `line` carrying the canvas context, and while that run is taken over in a terminal
-refuses every post with 409 `chat_taken_over`. A canvas holds one chat: with none, the line's conversation becomes its
+refuses every post with 409 `chat_taken_over`. A `run` comes from the chat's starter
+alone, as an `answer` does (403 `answer_not_owner`, "Only <starter> can run commands
+on their machine."), and is 409 `run_unsupported` while the run holding the chat did
+not say it takes runs. A canvas holds one chat: with none, the line's conversation becomes its
 chat in the transaction that queues the line; with one, a line that names another
 conversation is 409, as is one for a conversation another canvas of the poster
 holds, and a line that names none continues the canvas's chat. `page` is the `#/...` address the sender is on and `trail` the addresses

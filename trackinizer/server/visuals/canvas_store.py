@@ -191,6 +191,10 @@ class ChatTakenOverError(CanvasSessionUnavailableError):
     """The chat's CLI was opened in a terminal, so its headless run takes no post."""
 
 
+class RunUnsupportedError(CanvasSessionUnavailableError):
+    """The chat's run predates the Run button, so it would lose a ``run`` post."""
+
+
 class ProviderUnavailableError(Exception):
     """The provider chosen cannot run for the canvas's owner; the message says why."""
 
@@ -334,6 +338,8 @@ async def send_chat_line(
         ``answer`` or ``interrupt`` is posted to an assistant chat the assistant does
         not have open.
       ChatTakenOverError: The chat's run was taken over in a terminal.
+      RunUnsupportedError: A ``run`` was posted to a chat whose run does not say it
+        takes runs.
       PartnerBusyError: The queue the line would join is full.
       CanvasChatError: The canvas's chat is another conversation, or another
         canvas of the poster holds the one named.
@@ -349,8 +355,8 @@ async def send_chat_line(
         was deleted, or the fork point is a line of one.
       CommandRefusedError: The line is a slash command its provider does not run
         from Chat; the message says why. It is a ``ValueError``.
-      AnswerNotOwnerError: An ``answer`` came from someone other than the chat's
-        starter.
+      AnswerNotOwnerError: An ``answer`` or a ``run`` came from someone other than
+        the chat's starter.
       UploadsUnsupportedError: The line names attachments and its provider is not
         the assistant, whose box alone takes files for now.
       ValueError: The fork names no line of a science chat, or an ``assistant``
@@ -2392,17 +2398,22 @@ async def _post_target(
     assistant: Assistant | None,
 ) -> tuple[uuid.UUID | None, uuid.UUID | None]:
     """Return the queue a post joins and the chat's session it names, if either is known."""
-    # A permission answer runs a tool on the run's machine, and a trust answer trusts
-    # a folder there for good, so only the run's owner gives either; a sharer reads and
-    # posts but never answers. A chat no session carries has no run and no prompt:
-    # ``chat_line_target`` refuses it as offline.
-    if body.kind == "answer" and provider != "assistant":
+    # A permission answer runs a tool on the run's machine, a trust answer trusts a
+    # folder there for good, and a run post runs a command there, so only the run's
+    # owner gives any; a sharer reads and posts but never answers or runs. A chat no
+    # session carries has no run and no prompt: ``chat_line_target`` refuses it as
+    # offline.
+    words = {
+        "answer": "can answer prompts from their machine",
+        "run": "can run commands on their machine",
+    }.get(body.kind)
+    if words is not None and provider != "assistant":
         await _check_starter_answers(
             conn,
             assistant=assistant,
             conversation_id=conversation_id,
             poster=poster,
-            words="can answer prompts from their machine",
+            words=words,
         )
     if provider != "assistant":
         if body.fork is not None:
@@ -2414,6 +2425,12 @@ async def _post_target(
             provider=provider,
             conversation_id=conversation_id,
         )
+        poller = None if chat is None else inbound.poller_run(chat)
+        if body.kind == "run" and (poller is None or not poller.runs):
+            raise RunUnsupportedError(
+                "This chat's run predates the Run button: update it on its machine "
+                "and start it again",
+            )
         return chat, chat
     if body.kind in {"answer", "interrupt"}:
         # A card the assistant asks in a chat is answered in that chat's own session:
