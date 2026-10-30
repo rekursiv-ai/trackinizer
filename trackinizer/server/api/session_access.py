@@ -562,17 +562,27 @@ async def request_principal(request: Request, identity: AuthIdentity) -> Princip
       identity: Authenticated caller.
 
     Returns:
-      principal: Its lowercase email, its role and the policy's groups for it.
+      principal: Its lowercase email, its role, the policy's groups for it and the
+        API key it used.
 
     """
     held: object = getattr(request.state, "access_principal", None)
     if isinstance(held, Principal):
         return held
     store = get_store(request)
-    asking = Principal(email=identity.email.lower(), role=identity.role)
+    asking = Principal(
+        email=identity.email.lower(),
+        role=identity.role,
+        api_key_id=identity.api_key_id,
+    )
     async with store.engine.acquire() as conn:
         groups = await store.access_policy.groups(conn, asking)
-    principal = Principal(email=asking.email, role=asking.role, groups=groups)
+    principal = Principal(
+        email=asking.email,
+        role=asking.role,
+        groups=groups,
+        api_key_id=asking.api_key_id,
+    )
     request.state.access_principal = principal
     return principal
 
