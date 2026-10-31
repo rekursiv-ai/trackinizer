@@ -20,7 +20,7 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.server.api.app import app
-from trackinizer.server.api.conftest import clear_identity_override
+from trackinizer.server.api.conftest import clear_identity_override, patch_state
 from trackinizer.server.auth import create_api_key
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.execs import ExecHub
@@ -253,17 +253,16 @@ def world(
 ) -> _World:
     client, store = pglite_route_client
     clear_identity_override()
-    monkeypatch.setattr(
-        app.state,
+    patch_state(
+        monkeypatch,
         "config",
         Config(
             session_secret=_SESSION_KEY,
             session_max_age_seconds=600,
             assistant=Assistant(actor="kb", email=_ASSISTANT),
         ),
-        raising=False,
     )
-    monkeypatch.setattr(app.state, "execs", ExecHub(), raising=False)
+    patch_state(monkeypatch, "execs", ExecHub())
     monkeypatch.delattr(app.state, "replays", raising=False)
     return _World(client, store)
 
@@ -297,12 +296,7 @@ class _Time:
 def _timed_hub(monkeypatch: pytest.MonkeyPatch) -> _Time:
     """Serve with a hub whose every deadline waits for the test to move the clock."""
     time = _Time()
-    monkeypatch.setattr(
-        app.state,
-        "execs",
-        ExecHub(clock=time, sleep=time.sleep),
-        raising=False,
-    )
+    patch_state(monkeypatch, "execs", ExecHub(clock=time, sleep=time.sleep))
     return time
 
 
@@ -414,12 +408,7 @@ async def test_nobody_but_the_assistant_naming_a_writer_or_admin_runs_a_command(
     assistant = await world.key(assistant_id)
     ada_key = await world.key(ada)
     if caller == "auth_disabled":
-        monkeypatch.setattr(
-            app.state,
-            "config",
-            Config(auth_disabled=True),
-            raising=False,
-        )
+        patch_state(monkeypatch, "config", Config(auth_disabled=True))
 
     response = await world.run(
         {
@@ -679,7 +668,7 @@ async def test_the_host_legs_refuse_a_server_without_auth(
 ) -> None:
     ada = await world.person("ada@x.y")
     machine = await world.join(world.cookie(ada))
-    monkeypatch.setattr(app.state, "config", Config(auth_disabled=True), raising=False)
+    patch_state(monkeypatch, "config", Config(auth_disabled=True))
 
     waited = await world.wait(machine)
     reported = await world.report(machine, uuid.uuid4(), _result())

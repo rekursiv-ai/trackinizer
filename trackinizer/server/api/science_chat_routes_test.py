@@ -49,6 +49,7 @@ from trackinizer.server.api.conftest import (
     TEST_USER_ID,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.chat_hub import CanvasFrame, ChatHub
 from trackinizer.server.inbound import InboundQueue
@@ -93,8 +94,8 @@ type _Client = tuple[httpx2.AsyncClient, Store]
 @pytest.fixture(autouse=True)
 def assistant_served(monkeypatch: pytest.MonkeyPatch) -> None:
     """Serve with scout configured and a fresh poller table."""
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    patch_state(monkeypatch, "inbound", InboundQueue())
 
 
 async def _canvas(
@@ -632,7 +633,7 @@ async def test_without_an_assistant_there_are_no_chats(
     await seed_accounts(store)
     conversation = uuid.uuid4()
     await open_science_chat(client, store, conversation_id=conversation)
-    monkeypatch.setattr(app.state, "config", None, raising=False)
+    patch_state(monkeypatch, "config", None)
     browser()
 
     assert (await client.get(f"/api/chats/{conversation}")).status_code == 404
@@ -750,7 +751,7 @@ class TestShareAndDeleteAnswers:
         install_identity(make_test_identity(api_key_id=None))
         hub = ChatHub()
         locked: list[list[uuid.UUID]] = []
-        monkeypatch.setattr(app.state, "hub", hub, raising=False)
+        patch_state(monkeypatch, "hub", hub)
         monkeypatch.setattr(science_chat_routes, "read_conversation", _one_session)
         monkeypatch.setattr(
             science_chat_routes,

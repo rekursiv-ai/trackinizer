@@ -20,7 +20,6 @@ from trackinizer.sagent.session.types import (
     UncategorizedToolResult,
     UserMessage,
 )
-from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,
     ASSISTANT_CONFIG,
@@ -48,6 +47,7 @@ from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.asks_test_support import write_records
 from trackinizer.server.chat_hub import CanvasFrame, ChatHub
@@ -85,9 +85,9 @@ ROOT_ID: Final = uuid.UUID("77777777-7777-7777-7777-777777777777")
 def individual_chats_served(monkeypatch: pytest.MonkeyPatch) -> ChatHub:
     """Serve with scout configured, each chat its starter's alone, and a fresh hub."""
     hub = ChatHub()
-    monkeypatch.setattr(app.state, "config", INDIVIDUAL_CONFIG, raising=False)
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
-    monkeypatch.setattr(app.state, "hub", hub, raising=False)
+    patch_state(monkeypatch, "config", INDIVIDUAL_CONFIG)
+    patch_state(monkeypatch, "inbound", InboundQueue())
+    patch_state(monkeypatch, "hub", hub)
     return hub
 
 
@@ -728,7 +728,7 @@ async def test_a_deleted_chats_id_loses_every_session_and_starts_no_chat_again(
     # A restart forgets which key sent each line, so only the tombstone remembers.
     inbound = InboundQueue()
     inbound.mark_poller(chat.service)
-    monkeypatch.setattr(app.state, "inbound", inbound)
+    patch_state(monkeypatch, "inbound", inbound)
     bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
 
     squat = await _bob_says(client, chat, canvas=bob_canvas, text="mine now")
@@ -761,7 +761,7 @@ async def test_a_line_on_its_way_into_a_chat_counts_as_posted_and_goes_with_it(
     """Another person's unread line stops the starter's delete; the starter's goes."""
     client, store = pglite_route_client
     inbound = InboundQueue()
-    monkeypatch.setattr(app.state, "inbound", inbound)
+    patch_state(monkeypatch, "inbound", inbound)
     chat = await _ada_chat(client, store)
     browser()
     _ = await client.put(_share_path(chat, BOB))
@@ -822,7 +822,7 @@ async def test_a_line_the_assistant_took_counts_as_posted_until_it_is_recorded(
     """Between its drain and its record, Bob's line is in no queue and no session."""
     client, store = pglite_route_client
     inbound = InboundQueue()
-    monkeypatch.setattr(app.state, "inbound", inbound)
+    patch_state(monkeypatch, "inbound", inbound)
     chat = await _ada_chat(client, store)
     browser()
     _ = await client.put(_share_path(chat, BOB))
@@ -860,7 +860,7 @@ async def test_only_a_session_the_chat_counts_records_a_line_the_assistant_took(
     """Bob's line written into Bob's own squat stays on its way; into Ada's, it lands."""
     client, store = pglite_route_client
     inbound = InboundQueue()
-    monkeypatch.setattr(app.state, "inbound", inbound)
+    patch_state(monkeypatch, "inbound", inbound)
     chat = await _ada_chat(client, store)
     browser()
     _ = await client.put(_share_path(chat, BOB))
@@ -1026,12 +1026,7 @@ async def test_a_share_lets_another_organisation_continue_a_domain_servers_chat(
     pglite_route_client: _Client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        app.state,
-        "config",
-        replace(ASSISTANT_CONFIG, chat_orgs="domain"),
-        raising=False,
-    )
+    patch_state(monkeypatch, "config", replace(ASSISTANT_CONFIG, chat_orgs="domain"))
     client, store = pglite_route_client
     chat = await _ada_chat(client, store)
     jan = "jan@other.org"
@@ -1348,7 +1343,7 @@ async def test_a_planted_idempotency_key_does_not_make_a_stranger_the_starter(
     chat = await _ada_chat(client, store)
     bob_canvas = await open_canvas(client, user_id=OTHER_USER_ID, email=BOB)
     inbound = InboundQueue()
-    monkeypatch.setattr(app.state, "inbound", inbound)
+    patch_state(monkeypatch, "inbound", inbound)
     for session in (chat.service, chat.session):
         inbound.mark_poller(session)
     bob_run = await seed_session(store, OTHER_AGENT, actor="bob-run")

@@ -29,6 +29,7 @@ from trackinizer.server.api.conftest import (
     TEST_USER_ID,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.wire.wire_science_chat import SCIENCE_CHAT_LABEL, chat_session_id
@@ -70,7 +71,7 @@ async def test_an_owners_science_chat_reads_and_operates_its_canvas_without_plac
     opener: str,
 ) -> None:
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     await seed_accounts(store)
     canvas_id = await open_canvas(client)
     conversation_id = uuid.uuid4()

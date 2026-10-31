@@ -10,7 +10,6 @@ from treekle import from_plain, json_loads
 
 import pytest
 
-from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,
     ASSISTANT_CONFIG,
@@ -24,7 +23,7 @@ from trackinizer.server.api.canvas_test_support import (
     seed_accounts,
     seed_session,
 )
-from trackinizer.server.api.conftest import TEST_USER_EMAIL
+from trackinizer.server.api.conftest import TEST_USER_EMAIL, patch_state
 from trackinizer.wire.wire_science_chat import SCIENCE_CHAT_LABEL, chat_session_id
 
 
@@ -43,7 +42,7 @@ async def test_switching_a_closed_chat_reopens_it_for_the_new_provider(
     provider: str,
 ) -> None:
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     canvas, conversation, session = await _closed_chat(
         client,
         store=store,
@@ -111,7 +110,7 @@ async def test_a_closed_chat_without_a_switch_still_refuses_its_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     _, _, session = await _closed_chat(client, store=store)
     act_as_user_agent("writer")
     refused = await drain(client, session_id=session, cli="claude")
@@ -132,7 +131,7 @@ async def test_a_noop_or_refused_switch_leaves_the_chat_closed(
     stale: bool,
 ) -> None:
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     canvas, conversation, _ = await _closed_chat(client, store=store)
     revision = await revision_of(client, canvas_id=canvas)
     chosen = await client.post(

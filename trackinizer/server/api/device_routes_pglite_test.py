@@ -28,6 +28,7 @@ from trackinizer.server.api.conftest import (
     clear_identity_override,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.api.device_limits import CodeRequests, WrongEntries
 from trackinizer.server.config import Config
@@ -555,7 +556,7 @@ async def test_the_page_address_is_the_public_one_the_deployment_names(
     client, _ = pglite_route_client
     monkeypatch.setenv("TRACKINIZER_PUBLIC_URL", public_url)
     if sign_in:
-        monkeypatch.setattr(app.state, "sign_in_base", sign_in, raising=False)
+        patch_state(monkeypatch, "sign_in_base", sign_in)
 
     code = await _code(client)
 

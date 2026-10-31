@@ -46,6 +46,7 @@ from trackinizer.server.api.conftest import (
     clear_identity_override,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.api.session_access import request_principal
 from trackinizer.server.auth import (
@@ -244,12 +245,7 @@ async def test_a_share_recipient_outside_the_org_edits_a_field(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Jan, at another domain, holds a share of Ada's chat and labels her session."""
-    monkeypatch.setattr(
-        app.state,
-        "config",
-        replace(ASSISTANT_CONFIG, chat_orgs="domain"),
-        raising=False,
-    )
+    patch_state(monkeypatch, "config", replace(ASSISTANT_CONFIG, chat_orgs="domain"))
     client, store = served
     _ = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     conversation = uuid.uuid4()
@@ -480,7 +476,7 @@ async def _serve(
         ("store", store),
         ("inbound", InboundQueue()),
     ):
-        monkeypatch.setattr(app.state, name, value, raising=False)
+        patch_state(monkeypatch, name, value)
     transport = httpx2.ASGITransport(app=app, raise_app_exceptions=False)
     try:
         async with httpx2.AsyncClient(

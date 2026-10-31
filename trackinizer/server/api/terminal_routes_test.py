@@ -24,7 +24,7 @@ import pytest
 from trackinizer.conftest import FakeEngine
 from trackinizer.server.api import terminal_routes
 from trackinizer.server.api.app import app
-from trackinizer.server.api.conftest import make_test_identity
+from trackinizer.server.api.conftest import make_test_identity, patch_state
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.terminals import Opening, Terminal, TerminalHub
 from trackinizer.types.errors import NotFoundError
@@ -42,7 +42,7 @@ _IDENTITY = make_test_identity()
 
 
 def _request(conn: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> Request:
-    monkeypatch.setattr(app.state, "engine", FakeEngine(conn), raising=False)
+    patch_state(monkeypatch, "engine", FakeEngine(conn))
     return Request({"type": "http", "app": app})
 
 
@@ -184,14 +184,9 @@ async def test_concurrent_opens_reserve_one_run_for_a_chat(
     conn = AsyncMock()
     conn.execute.side_effect = partial(_barrier_update, asyncio.Barrier(2))
     request = _request(conn, monkeypatch)
-    monkeypatch.setattr(app.state, "engine", _ConcurrentEngine(conn))
-    monkeypatch.setattr(
-        app.state,
-        "terminals",
-        TerminalHub(alive=_alive),
-        raising=False,
-    )
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
+    patch_state(monkeypatch, "engine", _ConcurrentEngine(conn))
+    patch_state(monkeypatch, "terminals", TerminalHub(alive=_alive))
+    patch_state(monkeypatch, "inbound", InboundQueue())
     opening = Opening(
         user=_IDENTITY.email,
         machine_id=_MACHINE,

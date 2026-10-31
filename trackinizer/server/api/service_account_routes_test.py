@@ -20,13 +20,13 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import executed_sql
-from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     TEST_USER_ID,
     clear_identity_override,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.auth import AuthIdentity, Role, generate_token
 from trackinizer.server.config import Config, parse_assistant
@@ -97,7 +97,7 @@ def _admin(*, staff: bool = False, key: bool = True) -> AuthIdentity:
 
 def _staff_setting(monkeypatch: pytest.MonkeyPatch, *patterns: str) -> None:
     """Serve the app with this staff setting."""
-    monkeypatch.setattr(app.state, "config", Config(staff=patterns), raising=False)
+    patch_state(monkeypatch, "config", Config(staff=patterns))
 
 
 def _touched_nothing(engine: FakeEngine) -> bool:
@@ -817,7 +817,7 @@ class TestAssistantAccount:
             staff=("*@example.com",),
             assistant=parse_assistant("chat=chat@service.invalid"),
         )
-        monkeypatch.setattr(app.state, "config", config, raising=False)
+        patch_state(monkeypatch, "config", config)
 
     def test_a_mint_for_the_assistant_by_a_non_staff_admin_is_403_and_stores_nothing(
         self,

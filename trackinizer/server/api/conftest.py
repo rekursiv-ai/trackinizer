@@ -12,8 +12,9 @@ pattern).
 
 from __future__ import annotations
 
+from collections.abc import MutableMapping
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, override
 from unittest.mock import (
     DEFAULT,  # pyright: ignore[reportAny] -- unittest.mock stubs DEFAULT as Any.
 )
@@ -37,6 +38,8 @@ from trackinizer.server.store.core import Store
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Generator, Iterator
+
+    from starlette.datastructures import State
 
     from trackinizer.lib.postgres import PGliteEngine
 
@@ -74,6 +77,43 @@ def install_identity(identity: AuthIdentity) -> None:
         return identity
 
     app.dependency_overrides[current_user] = _override
+
+
+class _StateEntries(MutableMapping[str, object]):
+    """``app.state`` read as a mapping, for ``monkeypatch.setitem``.
+
+    ``State`` keeps its keys outside the instance ``__dict__``, so pytest 9.2's
+    ``monkeypatch.setattr`` records every key as absent and deletes it on undo.
+    ``setitem`` reads the prior value through the mapping instead.
+    """
+
+    def __init__(self, state: State) -> None:
+        self._state = state
+
+    @override
+    def __getitem__(self, key: str) -> object:
+        return self._state[key]
+
+    @override
+    def __setitem__(self, key: str, value: object) -> None:
+        self._state[key] = value
+
+    @override
+    def __delitem__(self, key: str) -> None:
+        del self._state[key]
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._state)
+
+    @override
+    def __len__(self) -> int:
+        return len(self._state)
+
+
+def patch_state(monkeypatch: pytest.MonkeyPatch, name: str, value: object) -> None:
+    """Set ``app.state.<name>`` for one test; teardown restores or removes it."""
+    monkeypatch.setitem(_StateEntries(app.state), name, value)
 
 
 def clear_identity_override() -> None:

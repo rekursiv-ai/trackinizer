@@ -13,6 +13,7 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.server.api.app import app
+from trackinizer.server.api.conftest import patch_state
 from trackinizer.server.auth import AuthIdentity, current_user, generate_token
 from trackinizer.server.config import ChatOrgs, Config
 
@@ -629,7 +630,7 @@ class TestProfile:
         """The page says who reads what its user makes, as the server sets it."""
         client, _store, engine = route_client
         engine.conn.fetchrow = AsyncMock(side_effect=[None, None])
-        monkeypatch.setattr(app.state, "config", Config(chat_orgs=orgs), raising=False)
+        patch_state(monkeypatch, "config", Config(chat_orgs=orgs))
 
         body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
 

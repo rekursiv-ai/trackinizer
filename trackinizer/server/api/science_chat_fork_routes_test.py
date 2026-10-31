@@ -17,7 +17,6 @@ from trackinizer.sagent.session.types import (
     AssistantMessage,
     UserMessage,
 )
-from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,
     ASSISTANT_CONFIG,
@@ -40,6 +39,7 @@ from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.deleted_chats import refuse_a_deleted_chat
@@ -72,8 +72,8 @@ DOMAIN_CONFIG: Final = replace(ASSISTANT_CONFIG, chat_orgs="domain")
 @pytest.fixture(autouse=True)
 def domain_orgs_served(monkeypatch: pytest.MonkeyPatch) -> None:
     """Serve with scout configured, each email domain its own organisation."""
-    monkeypatch.setattr(app.state, "config", DOMAIN_CONFIG, raising=False)
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
+    patch_state(monkeypatch, "config", DOMAIN_CONFIG)
+    patch_state(monkeypatch, "inbound", InboundQueue())
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -450,7 +450,7 @@ async def test_a_single_organisation_server_lets_every_person_fork_a_chat_not_po
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Everyone reads every open chat there, which lets them fork it, not type in it."""
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     client, store = pglite_route_client
     chat = await _original(store, starter=TEST_USER_EMAIL)
     canvas_id = await _canvas(client, email=JAN)
