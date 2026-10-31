@@ -10,7 +10,6 @@ from treekle import from_plain, json_loads
 
 import pytest
 
-from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,
     ASSISTANT_CONFIG,
@@ -26,7 +25,7 @@ from trackinizer.server.api.canvas_test_support import (
     seed_session,
     send_chat,
 )
-from trackinizer.server.api.conftest import TEST_USER_EMAIL
+from trackinizer.server.api.conftest import TEST_USER_EMAIL, patch_state
 from trackinizer.server.chat_hub import CanvasFrame, ChatHub, Frame
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.primitives import insert_inquiry
@@ -48,9 +47,9 @@ _BOX: Final = {"points": [{"x": 0.1, "y": 0.2}, {"x": 0.4, "y": 0.5}]}
 def served(monkeypatch: pytest.MonkeyPatch) -> ChatHub:
     """Serve with scout configured, a fresh poller table and a fresh event hub."""
     hub = ChatHub()
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
-    monkeypatch.setattr(app.state, "hub", hub, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    patch_state(monkeypatch, "inbound", InboundQueue())
+    patch_state(monkeypatch, "hub", hub)
     return hub
 
 

@@ -15,8 +15,7 @@ from treekle import from_plain
 
 import pytest
 
-from trackinizer.server.api.app import app
-from trackinizer.server.api.conftest import clear_identity_override
+from trackinizer.server.api.conftest import clear_identity_override, patch_state
 from trackinizer.server.auth import create_api_key
 from trackinizer.server.config import Config
 
@@ -44,7 +43,7 @@ def cheap_scrypt(monkeypatch: pytest.MonkeyPatch) -> None:
 def staff_setting(monkeypatch: pytest.MonkeyPatch) -> None:
     """Serve the app with staff set to a Workspace domain and one literal address."""
     config = Config(staff=("*@example.com", "ada@other.org"))
-    monkeypatch.setattr(app.state, "config", config, raising=False)
+    patch_state(monkeypatch, "config", config)
 
 
 async def _user(
@@ -126,7 +125,7 @@ async def test_unset_staff_leaves_every_key_with_open_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", Config(), raising=False)
+    patch_state(monkeypatch, "config", Config())
     user = await _user(store, "lee@example.com", hosted_domain="example.com")
 
     profile = await _profile(client, await _key(store, user))
@@ -224,7 +223,7 @@ async def test_an_unpinned_key_mints_a_key_that_still_reads_staff_later(
 ) -> None:
     """The child stores no pin, so it follows the owner when staff is configured."""
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", Config(), raising=False)
+    patch_state(monkeypatch, "config", Config())
     user = await _user(store, "lee@example.com", hosted_domain="example.com")
     parent = await _key(store, user)
     clear_identity_override()
@@ -238,12 +237,7 @@ async def test_an_unpinned_key_mints_a_key_that_still_reads_staff_later(
     child = from_plain(from_plain(minted.json(), dict[str, object])["secret"], str)
     assert (await _profile(client, child))["read_audiences"] == ["open", "private"]
 
-    monkeypatch.setattr(
-        app.state,
-        "config",
-        Config(staff=("*@example.com",)),
-        raising=False,
-    )
+    patch_state(monkeypatch, "config", Config(staff=("*@example.com",)))
     store.forget_bearer_identities(user)
 
     assert (await _profile(client, child))["read_audiences"] == [

@@ -22,7 +22,6 @@ import pytest
 
 from trackinizer.conftest import make_conn, make_store, set_field_row
 from trackinizer.sagent.session.types import AgentToAgentMessage
-from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT_CONFIG,
     OTHER_EMAIL,
@@ -33,7 +32,7 @@ from trackinizer.server.api.canvas_test_support import (
     seed_accounts,
     start_session,
 )
-from trackinizer.server.api.conftest import make_test_identity
+from trackinizer.server.api.conftest import make_test_identity, patch_state
 from trackinizer.server.api.science_chat_routes_test import (
     _append,
     open_helper_chat,
@@ -76,8 +75,8 @@ _VICTIM = "victim@example.com"
 @pytest.fixture(autouse=True)
 def assistant_served(monkeypatch: pytest.MonkeyPatch) -> None:
     """Serve with scout configured and a fresh poller table."""
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    patch_state(monkeypatch, "inbound", InboundQueue())
 
 
 def _line(content: str) -> AgentToAgentMessage:
@@ -247,7 +246,7 @@ async def test_another_writer_cannot_write_a_users_own_helper_chat(
     owner's tools; an end or a label edit hides the chat or stops the helper.
     """
     if not assistant:
-        monkeypatch.setattr(app.state, "config", Config(), raising=False)
+        patch_state(monkeypatch, "config", Config())
     client, store = pglite_route_client
     await seed_accounts(store)
     chat = await open_helper_chat(client, store=store, conversation_id=uuid.uuid4())

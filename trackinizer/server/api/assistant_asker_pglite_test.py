@@ -23,7 +23,11 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.server.api.app import app
-from trackinizer.server.api.conftest import install_identity, make_test_identity
+from trackinizer.server.api.conftest import (
+    install_identity,
+    make_test_identity,
+    patch_state,
+)
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.store.core import Store
 from trackinizer.wire.audience import AUDIENCES
@@ -262,7 +266,7 @@ async def served(
 ) -> AsyncIterator[_Served]:
     """Serve with the assistant and the staff configured, over four live sessions."""
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", _CONFIG, raising=False)
+    patch_state(monkeypatch, "config", _CONFIG)
     async with store.engine.acquire() as conn:
         for email, role, status in _USERS:
             await conn.execute(
@@ -586,12 +590,7 @@ async def test_a_session_is_read_only_into_a_chat_whose_every_reader_reads_it(
     It goes into her own chat, and not into one Wes reads: his own that he shared with
     her, or hers once she shares it with him.
     """
-    monkeypatch.setattr(
-        app.state,
-        "config",
-        replace(_CONFIG, chat_orgs="domain"),
-        raising=False,
-    )
+    patch_state(monkeypatch, "config", replace(_CONFIG, chat_orgs="domain"))
     async with served.store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status, hosted_domain) "
@@ -669,12 +668,7 @@ async def test_a_read_for_an_admin_asker_holds_no_oversight(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An admin reads every session, but nothing of it goes into a chat for them."""
-    monkeypatch.setattr(
-        app.state,
-        "config",
-        replace(_CONFIG, chat_orgs="individual"),
-        raising=False,
-    )
+    patch_state(monkeypatch, "config", replace(_CONFIG, chat_orgs="individual"))
     chat = await served.chat(starter=_OPEN_ADMIN)
     served.act_as(_OPEN_ADMIN, role="admin")
     themselves = await served.reads(served.public)

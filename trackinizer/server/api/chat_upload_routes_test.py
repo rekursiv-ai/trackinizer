@@ -11,7 +11,6 @@ from treekle import from_plain, json_loads
 
 import pytest
 
-from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT_CONFIG,
     KB_ACTOR,
@@ -31,6 +30,7 @@ from trackinizer.server.api.conftest import (
     TEST_USER_ID,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.upload_relay import UploadRelay
@@ -70,9 +70,9 @@ def _slot(name: str) -> ChatUploadSlot:
 def uploads_served(monkeypatch: pytest.MonkeyPatch) -> UploadRelay:
     """Serve with the assistant configured, a fresh queue, and a relay of our own."""
     relay = UploadRelay(timeout_sec=5)
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
-    monkeypatch.setattr(app.state, "uploads", relay, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    patch_state(monkeypatch, "inbound", InboundQueue())
+    patch_state(monkeypatch, "uploads", relay)
     return relay
 
 
@@ -336,7 +336,7 @@ async def test_no_assistant_taking_the_ask_is_unavailable(
     client, store = pglite_route_client
     await seed_accounts(store)
     canvas_id = await open_canvas(client)
-    monkeypatch.setattr(app.state, "uploads", UploadRelay(timeout_sec=0.02))
+    patch_state(monkeypatch, "uploads", UploadRelay(timeout_sec=0.02))
 
     refused = await _ask(client, canvas_id=canvas_id)
 
@@ -352,7 +352,7 @@ async def test_an_ask_past_the_most_waiting_is_busy(
     client, store = pglite_route_client
     await seed_accounts(store)
     canvas_id = await open_canvas(client)
-    monkeypatch.setattr(app.state, "uploads", UploadRelay(max_waiting=0))
+    patch_state(monkeypatch, "uploads", UploadRelay(max_waiting=0))
 
     refused = await _ask(client, canvas_id=canvas_id)
 

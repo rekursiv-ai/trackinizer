@@ -24,6 +24,7 @@ from trackinizer.server.api.conftest import (
     clear_identity_override,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.auth import AuthIdentity, Role, current_user
 from trackinizer.server.config import Config
@@ -265,11 +266,10 @@ class TestAdminUsers:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        monkeypatch.setattr(
-            app.state,
+        patch_state(
+            monkeypatch,
             "config",
             Config(staff=("*@example.com", "ada@other.org")),
-            raising=False,
         )
         engine.conn.fetch = AsyncMock(
             return_value=[
@@ -295,7 +295,7 @@ class TestAdminUsers:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        monkeypatch.setattr(app.state, "config", Config(), raising=False)
+        patch_state(monkeypatch, "config", Config())
         engine.conn.fetch = AsyncMock(
             return_value=[_user_row(email="member@example.com", hosted_domain="x.y")],
         )

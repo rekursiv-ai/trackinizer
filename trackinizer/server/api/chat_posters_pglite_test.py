@@ -49,6 +49,7 @@ from trackinizer.server.api.conftest import (
     TEST_USER_ID,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.subscriber import push_changes_to_live_subscribers
@@ -102,7 +103,7 @@ _NOT_SHARED: Final = (403, "chat_not_shared")
 @pytest.fixture(autouse=True)
 def single_server(monkeypatch: pytest.MonkeyPatch) -> None:
     """Serve with the assistant configured, on one organisation, as alpha is."""
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -165,12 +166,7 @@ async def test_a_domain_server_lets_the_starters_organisation_post_as_it_reads(
     provider: str,
 ) -> None:
     """Cal's email domain is Ann's; Dee's is another, which reads none of the chat."""
-    monkeypatch.setattr(
-        app.state,
-        "config",
-        replace(ASSISTANT_CONFIG, chat_orgs="domain"),
-        raising=False,
-    )
+    patch_state(monkeypatch, "config", replace(ASSISTANT_CONFIG, chat_orgs="domain"))
     client, store = pglite_route_client
     chat = await _ann_chat(client, store=store, provider=provider, opened=(CAL, DEE))
 

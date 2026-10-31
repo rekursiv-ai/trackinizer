@@ -10,7 +10,6 @@ from treekle import from_plain, json_loads
 
 import pytest
 
-from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT_CONFIG,
     OTHER_EMAIL,
@@ -19,7 +18,7 @@ from trackinizer.server.api.canvas_test_support import (
     seed_accounts,
     seed_science_chat,
 )
-from trackinizer.server.api.conftest import TEST_USER_EMAIL
+from trackinizer.server.api.conftest import TEST_USER_EMAIL, patch_state
 
 
 if TYPE_CHECKING:
@@ -58,7 +57,7 @@ async def test_a_reader_of_the_canvas_chat_views_the_canvas_and_learns_its_owner
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     await seed_accounts(store)
     canvas_id, _ = await _chat_canvas(client, store)
     for user_id, email in ((None, TEST_USER_EMAIL), (OTHER_USER_ID, OTHER_EMAIL)):
@@ -82,7 +81,7 @@ async def test_one_the_chat_does_not_let_in_learns_whom_to_ask_and_nothing_else(
     audience: str,
 ) -> None:
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     await seed_accounts(store)
     canvas_id, _ = await _chat_canvas(client, store, audience=audience)
     browser(OTHER_USER_ID, email=OTHER_EMAIL)
@@ -101,7 +100,7 @@ async def test_a_canvas_with_no_chat_shows_to_its_owner_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     await seed_accounts(store)
     browser()
     made = await client.post("/api/canvases/new")
@@ -120,7 +119,7 @@ async def test_a_viewer_changes_nothing_on_the_canvas(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     await seed_accounts(store)
     canvas_id, _ = await _chat_canvas(client, store)
     browser(OTHER_USER_ID, email=OTHER_EMAIL)

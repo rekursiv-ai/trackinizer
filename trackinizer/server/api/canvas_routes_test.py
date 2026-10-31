@@ -55,6 +55,7 @@ from trackinizer.server.api.conftest import (
     TEST_USER_ID,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.api.session_access import Asker
 from trackinizer.server.asks import open_ask_ids, release_gone_runs
@@ -383,7 +384,7 @@ async def test_the_owners_own_key_cannot_create_read_or_operate_a_canvas(
 ) -> None:
     """Only Chat's assistant uses a canvas with a key; the owner's own is told so."""
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
+    patch_state(monkeypatch, "inbound", InboundQueue())
     await seed_accounts(store)
     act_as_user_agent()
     assert (await client.post("/api/canvases")).status_code == 403
@@ -416,12 +417,11 @@ async def test_an_assistant_that_stops_polling_is_not_messageable(
     """A DB-active session without recent inbound polling is unavailable."""
     client, store = pglite_route_client
     now = [100.0]
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    monkeypatch.setattr(
-        app.state,
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    patch_state(
+        monkeypatch,
         "inbound",
         InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0]),
-        raising=False,
     )
     await seed_accounts(store)
     canvas_id = str(await open_canvas(client))
@@ -1008,15 +1008,14 @@ _VIEWER_EMAIL: Final = "viewer@example.com"
 @pytest.fixture
 def viewer_agent_served(monkeypatch: pytest.MonkeyPatch) -> None:
     """Serve with the viewer's own agent as the assistant, as on a server of one's own."""
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
-    monkeypatch.setattr(
-        app.state,
+    patch_state(monkeypatch, "inbound", InboundQueue())
+    patch_state(
+        monkeypatch,
         "config",
         replace(
             Config(),
             assistant=Assistant(actor="viewer-agent", email=_VIEWER_EMAIL),
         ),
-        raising=False,
     )
 
 
@@ -1232,7 +1231,7 @@ async def test_canvas_uses_the_deployments_configured_catalog(
         ],
         default_visual="x.log",
     ).make()
-    monkeypatch.setattr(app.state, "visual_catalog", configured, raising=False)
+    patch_state(monkeypatch, "visual_catalog", configured)
     async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
@@ -1344,9 +1343,9 @@ async def test_a_stored_canvas_that_holds_chat_opens_without_it_and_refuses_it_a
 def assistant_served(monkeypatch: pytest.MonkeyPatch) -> ChatHub:
     """Serve with scout configured, and a fresh poller table and event hub."""
     hub = ChatHub()
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
-    monkeypatch.setattr(app.state, "hub", hub, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    patch_state(monkeypatch, "inbound", InboundQueue())
+    patch_state(monkeypatch, "hub", hub)
     return hub
 
 
@@ -1644,7 +1643,7 @@ async def test_an_agents_record_takes_the_lone_pages_place_and_a_browsers_keeps_
     client, store = pglite_route_client
     visuals = Canvas.Config()
     offer_record_visual(visuals)
-    monkeypatch.setattr(app.state, "visual_catalog", visuals.make(), raising=False)
+    patch_state(monkeypatch, "visual_catalog", visuals.make())
     await seed_accounts(store)
     await seed_session(store, agent=ASSISTANT, actor=KB_ACTOR)
     by_agent = await open_canvas(client)
@@ -2214,7 +2213,7 @@ async def _seed_settings_chat(
     legacy: bool,
 ) -> _SettingsChat:
     """Prepare a chat with its default workspace and personal settings rows pinned."""
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     await seed_accounts(store)
     conversation_id = uuid.uuid4()
     session_id = await seed_science_chat(store, conversation_id=conversation_id)

@@ -19,11 +19,11 @@ from treekle import from_plain
 
 import pytest
 
-from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.secrets import (
     FileSecrets,
@@ -65,14 +65,14 @@ pytestmark = [
 def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FileSecrets:
     """Serve the app's secrets from a temporary directory."""
     backend = FileSecrets(tmp_path / "vault")
-    monkeypatch.setattr(app.state, "secrets", backend, raising=False)
+    patch_state(monkeypatch, "secrets", backend)
     return backend
 
 
 @pytest.fixture
 def no_vault(monkeypatch: pytest.MonkeyPatch) -> None:
     """Serve the app with secret storage disabled."""
-    monkeypatch.setattr(app.state, "secrets", None, raising=False)
+    patch_state(monkeypatch, "secrets", None)
 
 
 @pytest.mark.usefixtures("vault")
@@ -271,7 +271,7 @@ async def test_deleting_a_secret_without_a_backend_keeps_the_row(
     client, _ = pglite_route_client
     _as("admin")
     await client.put(_path("TOKEN"), json={"value": _HIDDEN, "secret": True})
-    monkeypatch.setattr(app.state, "secrets", None, raising=False)
+    patch_state(monkeypatch, "secrets", None)
 
     response = await client.delete(_path("TOKEN"))
 
@@ -287,7 +287,7 @@ async def test_a_secret_put_racing_a_delete_leaves_the_row_and_its_value_togethe
 ) -> None:
     client, _ = pglite_route_client
     slow = _SlowDelete(tmp_path / "vault", loop=asyncio.get_running_loop())
-    monkeypatch.setattr(app.state, "secrets", slow, raising=False)
+    patch_state(monkeypatch, "secrets", slow)
     _as("admin")
     await client.put(_path("TOKEN"), json={"value": "old", "secret": True})
 

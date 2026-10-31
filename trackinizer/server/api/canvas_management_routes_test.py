@@ -27,7 +27,7 @@ from trackinizer.server.api.canvas_test_support import (
     seed_session,
     send_chat,
 )
-from trackinizer.server.api.conftest import TEST_USER_ID
+from trackinizer.server.api.conftest import TEST_USER_ID, patch_state
 from trackinizer.server.asks_test_support import open_ask
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.inbound import InboundQueue
@@ -52,9 +52,9 @@ FIRST: Final = "unnamed-canvas#1"
 def served(monkeypatch: pytest.MonkeyPatch) -> ChatHub:
     """Serve with scout configured, a fresh poller table and a fresh event hub."""
     hub = ChatHub()
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
-    monkeypatch.setattr(app.state, "hub", hub, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    patch_state(monkeypatch, "inbound", InboundQueue())
+    patch_state(monkeypatch, "hub", hub)
     return hub
 
 

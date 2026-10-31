@@ -8,7 +8,7 @@ from treekle import from_plain, json_loads
 
 import pytest
 
-from trackinizer.server.api.app import app
+from trackinizer.server.api.conftest import patch_state
 from trackinizer.server.visuals.catalog import Canvas, StaticVisual
 
 
@@ -117,7 +117,7 @@ def test_visuals_route_serves_the_deployments_configured_catalog(
         visuals=[StaticVisual.Config(type="x.notes", title="Notes")],
         default_visual="x.notes",
     ).make()
-    monkeypatch.setattr(app.state, "visual_catalog", configured, raising=False)
+    patch_state(monkeypatch, "visual_catalog", configured)
     body = json_loads(client.get("/api/visuals").content, dict[str, object])
     assert from_plain(body["default_visual"], str) == "x.notes"
     assert [

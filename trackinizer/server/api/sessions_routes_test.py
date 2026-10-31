@@ -56,6 +56,7 @@ from trackinizer.server.api.conftest import (
     TEST_USER_ID,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.api.science_chat_routes_test import (
     seed_helper_chat,
@@ -1223,9 +1224,9 @@ async def _session(store: Store, *, session_id: uuid.UUID) -> AgentSession:
 def assistant_served(monkeypatch: pytest.MonkeyPatch) -> ChatHub:
     """Serve with scout configured, and a fresh poller table and event hub."""
     hub = ChatHub()
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
-    monkeypatch.setattr(app.state, "hub", hub, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    patch_state(monkeypatch, "inbound", InboundQueue())
+    patch_state(monkeypatch, "hub", hub)
     return hub
 
 
@@ -1265,8 +1266,8 @@ async def test_without_an_assistant_a_writer_still_drains_any_session(
 ) -> None:
     """The refusal is the assistant's alone: on one organisation, the writer reads it."""
     client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", Config(chat_orgs="single"), raising=False)
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
+    patch_state(monkeypatch, "config", Config(chat_orgs="single"))
+    patch_state(monkeypatch, "inbound", InboundQueue())
     await seed_accounts(store)
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)

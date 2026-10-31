@@ -14,7 +14,6 @@ from treekle import from_plain, json_loads
 import pytest
 
 from trackinizer.server.api import capture_routes
-from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT,
     ASSISTANT_CONFIG,
@@ -28,6 +27,7 @@ from trackinizer.server.api.canvas_test_support import (
     seed_converse,
     seed_session,
 )
+from trackinizer.server.api.conftest import patch_state
 from trackinizer.server.capture_relay import (
     MAX_ANSWER_BYTES,
     CaptureAnswer,
@@ -54,15 +54,10 @@ _BOX: Final = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 def served(monkeypatch: pytest.MonkeyPatch) -> ChatHub:
     """Serve with scout configured, a fresh event hub and a relay that waits briefly."""
     hub = ChatHub()
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
-    monkeypatch.setattr(app.state, "hub", hub, raising=False)
-    monkeypatch.setattr(
-        app.state,
-        "relay",
-        CaptureRelay(timeout_sec=0.05),
-        raising=False,
-    )
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    patch_state(monkeypatch, "inbound", InboundQueue())
+    patch_state(monkeypatch, "hub", hub)
+    patch_state(monkeypatch, "relay", CaptureRelay(timeout_sec=0.05))
     return hub
 
 

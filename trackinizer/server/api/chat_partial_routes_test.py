@@ -38,7 +38,11 @@ from trackinizer.server.api.canvas_test_support import (
     seed_science_chat,
     seed_session,
 )
-from trackinizer.server.api.conftest import install_identity, make_test_identity
+from trackinizer.server.api.conftest import (
+    install_identity,
+    make_test_identity,
+    patch_state,
+)
 from trackinizer.server.api.session_access import hidden_session
 from trackinizer.server.chat_partials import ChatPartials
 from trackinizer.server.store.core import Store
@@ -75,8 +79,8 @@ def served(monkeypatch: pytest.MonkeyPatch) -> ChatPartials:
     A chat's first partial is put under ``seq`` 1, so a test reads back what it put.
     """
     partials = ChatPartials(first_seq=lambda: 1)
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    monkeypatch.setattr(app.state, "partials", partials, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    patch_state(monkeypatch, "partials", partials)
     return partials
 
 
@@ -241,11 +245,7 @@ def test_every_route_is_refused_when_streaming_is_off(
     faked: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        app.state,
-        "config",
-        replace(ASSISTANT_CONFIG, chat_streaming=False),
-    )
+    patch_state(monkeypatch, "config", replace(ASSISTANT_CONFIG, chat_streaming=False))
     install_identity(make_test_identity(api_key_id=None, email="anyone@example.com"))
     off = [_put(faked, _CHAT), _read(faked)]
     deleted = faked.delete(f"/api/sessions/{_CHAT}/partial/t1")

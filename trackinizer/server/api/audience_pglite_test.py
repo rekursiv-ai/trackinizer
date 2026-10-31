@@ -27,6 +27,7 @@ from trackinizer.server.api.conftest import (
     clear_identity_override,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.auth import create_api_key
 from trackinizer.server.config import Config
@@ -123,7 +124,7 @@ async def hidden(
 ) -> _Hidden:
     """Seed the principals and three live staff sessions holding the canary."""
     _, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     async with store.engine.acquire() as conn:
         for who in ALL:
             await conn.execute(
@@ -383,7 +384,7 @@ async def test_input_to_a_staff_session_needs_its_audience_or_the_assistant(
 
     The askers it is refused for are in ``assistant_asker_pglite_test``.
     """
-    monkeypatch.setattr(app.state, "config", _SERVING_STAFF, raising=False)
+    patch_state(monkeypatch, "config", _SERVING_STAFF)
     client, _ = pglite_route_client
     url = f"/api/sessions/{hidden.lead}/inbound"
     answers = {}
@@ -446,7 +447,7 @@ async def test_the_assistant_and_staff_message_a_staff_actor(
     hidden: _Hidden,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(app.state, "config", _SERVING_STAFF, raising=False)
+    patch_state(monkeypatch, "config", _SERVING_STAFF)
     client, _ = pglite_route_client
 
     delivered: list[object] = []
@@ -583,12 +584,7 @@ async def staff_owner(
     """Seed the staff user whose keys the tests below present, and serve as staff."""
     _, store = pglite_route_client
     monkeypatch.setattr("trackinizer.server.auth._SCRYPT_N", 2)
-    monkeypatch.setattr(
-        app.state,
-        "config",
-        Config(staff=(STAFF_USER.email,)),
-        raising=False,
-    )
+    patch_state(monkeypatch, "config", Config(staff=(STAFF_USER.email,)))
     async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status, "
@@ -697,7 +693,7 @@ async def test_a_pin_the_owner_lost_is_403(
     """A demoted owner's staff key is refused, not quietly opened into ``open``."""
     client, store = pglite_route_client
     headers = await _key(store, open_into="staff")
-    monkeypatch.setattr(app.state, "config", Config())
+    patch_state(monkeypatch, "config", Config())
 
     refused = await _open_each_way(client, headers)
 
@@ -715,7 +711,7 @@ async def test_a_pin_the_owner_lost_still_files_rows_that_are_not_sessions(
     """The pin decides where a session opens; it does not gate an Issue."""
     client, store = pglite_route_client
     headers = await _key(store, open_into="staff")
-    monkeypatch.setattr(app.state, "config", Config())
+    patch_state(monkeypatch, "config", Config())
 
     single = await client.post(
         "/api/inquiries/issue",

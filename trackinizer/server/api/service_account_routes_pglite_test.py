@@ -18,8 +18,7 @@ from treekle import from_plain
 
 import pytest
 
-from trackinizer.server.api.app import app
-from trackinizer.server.api.conftest import clear_identity_override
+from trackinizer.server.api.conftest import clear_identity_override, patch_state
 from trackinizer.server.auth import TOKEN_PREFIX_LEN, create_api_key
 from trackinizer.server.config import Config
 from trackinizer.server.session import SESSION_COOKIE_NAME, set_session_cookie
@@ -57,7 +56,7 @@ def _serve(monkeypatch: pytest.MonkeyPatch, *staff: str, session: str = "") -> N
         session_secret=session,
         session_max_age_seconds=600,
     )
-    monkeypatch.setattr(app.state, "config", config, raising=False)
+    patch_state(monkeypatch, "config", config)
 
 
 async def _person(

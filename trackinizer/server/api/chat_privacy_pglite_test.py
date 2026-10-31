@@ -31,7 +31,7 @@ from trackinizer.server.api.canvas_test_support import (
     seed_session,
     send_chat,
 )
-from trackinizer.server.api.conftest import install_identity
+from trackinizer.server.api.conftest import install_identity, patch_state
 from trackinizer.server.auth import AuthIdentity, Role
 from trackinizer.server.config import Assistant, ChatOrgs, Config
 from trackinizer.server.inbound import InboundQueue
@@ -120,7 +120,7 @@ class _World:
 @pytest.fixture(autouse=True)
 def assistant_served(monkeypatch: pytest.MonkeyPatch) -> None:
     """Serve with Scout configured, each email domain its own organisation."""
-    monkeypatch.setattr(app.state, "config", _config("domain"), raising=False)
+    patch_state(monkeypatch, "config", _config("domain"))
 
 
 @pytest_asyncio.fixture(loop_scope="session")

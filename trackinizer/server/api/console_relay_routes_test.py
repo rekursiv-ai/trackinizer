@@ -33,6 +33,7 @@ from trackinizer.server.api.canvas_test_support import (
     seed_converse,
     seed_session,
 )
+from trackinizer.server.api.conftest import patch_state
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.config import Config
 from trackinizer.server.inbound import InboundQueue
@@ -101,7 +102,7 @@ def test_the_route_hands_the_owners_line_to_the_relay_under_the_request_key(
 ) -> None:
     """It reads for the owner as the server's organisation mode says: here, by domain."""
     client, _store, _engine = route_client
-    monkeypatch.setattr(app.state, "config", Config(chat_orgs="domain"), raising=False)
+    patch_state(monkeypatch, "config", Config(chat_orgs="domain"))
     browser()
     relayed = _Relayed(monkeypatch, answer=True)
     key = uuid.uuid4()
@@ -171,8 +172,8 @@ def test_only_a_browser_with_a_key_and_a_target_may_relay(
 @pytest.fixture
 def assistant_served(monkeypatch: pytest.MonkeyPatch) -> None:
     """Serve with scout configured, and a fresh event hub."""
-    monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
-    monkeypatch.setattr(app.state, "hub", ChatHub(), raising=False)
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    patch_state(monkeypatch, "hub", ChatHub())
 
 
 async def _talk(
@@ -328,11 +329,10 @@ async def test_a_relay_is_a_line_so_only_one_who_may_post_into_the_chat_relays(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A canvas bound to another's chat reads it; its Console writes there no more."""
-    monkeypatch.setattr(
-        app.state,
+    patch_state(
+        monkeypatch,
         "config",
         replace(ASSISTANT_CONFIG, chat_orgs="individual"),
-        raising=False,
     )
     client, store = pglite_route_client
     _canvas, chat = await _talk(client, store)
