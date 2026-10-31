@@ -7,6 +7,7 @@ import io
 import uuid
 
 from treekle import from_plain, json_loads
+from treekle.absent import ABSENT
 
 import pytest
 
@@ -841,7 +842,7 @@ def test_kind_verb_svo_edge_metadata_creates_then_annotates(
             "0.9",
             "edge",
             "label",
-            "add",
+            "to",
             "key",
             "--as=alice",
         ],
@@ -879,11 +880,70 @@ def test_kind_verb_edge_annotation_omits_unspecified_metadata(
     assert add_calls[0][2] == {
         "actor": "alice",
         "priority": None,
-        "note": "",
+        "note": ABSENT,
         "valence": 0.9,
         "labels": (),
         "reason": "",
     }
+
+
+def test_edge_note_nonempty(client: FakeClient) -> None:
+    """Explicit nonempty note sets the note."""
+    run(["issue", "1", "requires", "issue", "4", "note", "to", "hello note"], client)
+    edge = client._edges[
+        client.resolve_id(SeqRef(kind="Issue", seq=1))[1],
+        client.resolve_id(SeqRef(kind="Issue", seq=4))[1],
+        "requires",
+    ]
+    assert edge["note"] == "hello note"
+
+
+def test_edge_note_empty_clears_existing_note(client: FakeClient) -> None:
+    r"""'note to \"\"' clears the existing edge note."""
+    run(["issue", "1", "requires", "issue", "4", "note", "to", "first note"], client)
+    edge_key = (
+        client.resolve_id(SeqRef(kind="Issue", seq=1))[1],
+        client.resolve_id(SeqRef(kind="Issue", seq=4))[1],
+        "requires",
+    )
+    assert client._edges[edge_key]["note"] == "first note"
+    run(["issue", "1", "requires", "issue", "4", "note", "to", ""], client)
+    assert "note" not in client._edges[edge_key]
+    annotate_calls = [c for c in client.calls if c[0] == "annotate_edge"]
+    assert any(c[2].get("note") == "" for c in annotate_calls)
+
+
+def test_edge_note_whitespace_clears_existing_note(client: FakeClient) -> None:
+    """Whitespace-only note clears the existing edge note."""
+    run(["issue", "1", "requires", "issue", "4", "note", "to", "first note"], client)
+    edge_key = (
+        client.resolve_id(SeqRef(kind="Issue", seq=1))[1],
+        client.resolve_id(SeqRef(kind="Issue", seq=4))[1],
+        "requires",
+    )
+    assert client._edges[edge_key]["note"] == "first note"
+    run(["issue", "1", "requires", "issue", "4", "note", "to", "   "], client)
+    assert "note" not in client._edges[edge_key]
+    annotate_calls = [c for c in client.calls if c[0] == "annotate_edge"]
+    assert any(c[2].get("note") == "" for c in annotate_calls)
+
+
+def test_edge_note_omitted_leaves_existing_note_untouched(client: FakeClient) -> None:
+    """Omitted note metadata leaves the existing note untouched."""
+    run(
+        ["issue", "1", "requires", "issue", "4", "note", "to", "keep this note"], client
+    )
+    edge_key = (
+        client.resolve_id(SeqRef(kind="Issue", seq=1))[1],
+        client.resolve_id(SeqRef(kind="Issue", seq=4))[1],
+        "requires",
+    )
+    assert client._edges[edge_key]["note"] == "keep this note"
+    client.calls.clear()
+    run(["issue", "1", "requires", "issue", "4", "edge", "label", "add", "tag"], client)
+    assert client._edges[edge_key]["note"] == "keep this note"
+    annotate_calls = [c for c in client.calls if c[0] == "annotate_edge"]
+    assert not any("note" in c[2] for c in annotate_calls)
 
 
 def test_kind_verb_edge_metadata_upserts_preexisting_edge(client: FakeClient) -> None:
@@ -895,7 +955,7 @@ def test_kind_verb_edge_metadata_upserts_preexisting_edge(client: FakeClient) ->
     409). The CLI never special-cases "already exists".
     """
     run(["belief", "3", "proves", "paper", "5", "valence", "to", "0.9"], client)
-    run(["belief", "3", "proves", "paper", "5", "edge", "label", "add", "key"], client)
+    run(["belief", "3", "proves", "paper", "5", "edge", "label", "to", "key"], client)
     # Both commands go through add_edge (the upsert primitive); no command ever
     # routes through annotate_edge or raises an already-exists error.
     add_calls = [c for c in client.calls if c[0] == "add_edge"]
@@ -906,45 +966,88 @@ def test_kind_verb_edge_metadata_upserts_preexisting_edge(client: FakeClient) ->
     assert add_calls[1][2]["labels"] == ("key",)
 
 
-def test_edge_label_del_clears_to_empty(client: FakeClient) -> None:
-    """Removing an edge's last label CLEARS it, not a silent no-op (TRAX-CLI-004).
-
-    ``label add x label del x`` resolves to an EMPTY label list. The upsert
-    ``add_edge`` treats empty labels as "unset -- leave unchanged" (store
-    design), so the clear cannot ride it. The CLI must thread the explicit
-    clear-to-empty intent through the annotate path, which sets labels to the
-    empty list (NULL) on the existing edge. A bare ``label add x`` (non-empty)
-    still rides ``add_edge`` alone.
-    """
+def test_edge_label_add_uses_atomic_patch(client: FakeClient) -> None:
+    """An edge label add uses the atomic PATCH endpoint, preserving existing labels."""
     run(
-        [
-            "issue",
-            "1",
-            "requires",
-            "issue",
-            "4",
-            "edge",
-            "label",
-            "add",
-            "x",
-            "edge",
-            "label",
-            "del",
-            "x",
-        ],
+        ["issue", "1", "requires", "issue", "4", "edge", "label", "to", "alpha"], client
+    )
+    run(
+        ["issue", "1", "requires", "issue", "4", "edge", "label", "add", "beta"], client
+    )
+    add_calls = [c for c in client.calls if c[0] == "add_edge_label"]
+    assert len(add_calls) == 1
+    assert add_calls[0][2]["label"] == "beta"
+    # Both alpha and beta are present
+    edge = client._edges[
+        client.resolve_id(SeqRef(kind="Issue", seq=1))[1],
+        client.resolve_id(SeqRef(kind="Issue", seq=4))[1],
+        "requires",
+    ]
+    assert edge["labels"] == ("alpha", "beta")
+
+
+def test_edge_label_del_uses_atomic_patch(client: FakeClient) -> None:
+    """An edge label del uses the atomic PATCH endpoint, preserving remaining labels."""
+    run(
+        ["issue", "1", "requires", "issue", "4", "edge", "label", "to", "alpha,beta"],
         client,
     )
-    annotate_calls = [c for c in client.calls if c[0] == "annotate_edge"]
-    assert len(annotate_calls) == 1, "the clear-to-empty must reach annotate_edge"
-    assert annotate_calls[0][2]["labels"] == ()
+    run(
+        ["issue", "1", "requires", "issue", "4", "edge", "label", "del", "alpha"],
+        client,
+    )
+    del_calls = [c for c in client.calls if c[0] == "remove_edge_label"]
+    assert len(del_calls) == 1
+    assert del_calls[0][2]["label"] == "alpha"
+    edge = client._edges[
+        client.resolve_id(SeqRef(kind="Issue", seq=1))[1],
+        client.resolve_id(SeqRef(kind="Issue", seq=4))[1],
+        "requires",
+    ]
+    assert edge["labels"] == ("beta",)
 
 
-def test_edge_label_add_does_not_annotate(client: FakeClient) -> None:
-    """A non-empty edge label still rides ``add_edge`` alone (no annotate)."""
-    run(["issue", "1", "requires", "issue", "4", "edge", "label", "add", "x"], client)
-    assert [c for c in client.calls if c[0] == "annotate_edge"] == []
-    add_calls = [c for c in client.calls if c[0] == "add_edge"]
-    assert add_calls[0][2]["labels"] == ("x",)
+def test_edge_label_del_removes_last_label(client: FakeClient) -> None:
+    """Removing the last label leaves an empty label set."""
+    run(
+        ["issue", "1", "requires", "issue", "4", "edge", "label", "to", "alpha"], client
+    )
+    run(
+        ["issue", "1", "requires", "issue", "4", "edge", "label", "del", "alpha"],
+        client,
+    )
+    del_calls = [c for c in client.calls if c[0] == "remove_edge_label"]
+    assert len(del_calls) == 1
+    edge = client._edges[
+        client.resolve_id(SeqRef(kind="Issue", seq=1))[1],
+        client.resolve_id(SeqRef(kind="Issue", seq=4))[1],
+        "requires",
+    ]
+    assert edge["labels"] == ()
+
+
+def test_edge_create_with_label_add(
+    client: FakeClient, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Creating a new edge with label add creates edge and patches label atomically."""
+    run(
+        ["issue", "1", "requires", "issue", "4", "edge", "label", "add", "gamma"],
+        client,
+    )
+    out = capsys.readouterr().out
+    assert "added: Issue#1 requires Issue#4" in out
+    edge_calls = [c for c in client.calls if c[0] == "add_edge"]
+    assert len(edge_calls) == 1
+    assert edge_calls[0][2]["labels"] == ()
+    add_calls = [c for c in client.calls if c[0] == "add_edge_label"]
+    assert len(add_calls) == 1
+    assert add_calls[0][2]["label"] == "gamma"
+    edge = client._edges[
+        client.resolve_id(SeqRef(kind="Issue", seq=1))[1],
+        client.resolve_id(SeqRef(kind="Issue", seq=4))[1],
+        "requires",
+    ]
+    assert edge["labels"] == ("gamma",)
 
 
 def test_kind_verb_edge_metadata_echo_discriminates_create(
@@ -956,6 +1059,80 @@ def test_kind_verb_edge_metadata_echo_discriminates_create(
     assert "added: Belief#3 proves Paper#5" in capsys.readouterr().out
     run(["belief", "3", "proves", "paper", "5", "edge", "label", "add", "key"], client)
     assert "annotated: Belief#3 proves Paper#5" in capsys.readouterr().out
+
+
+def test_citation_syntax_concurrency_race_positive_and_negative(
+    client: FakeClient,
+) -> None:
+    """Concurrent positive and negative citation edits do not clobber stored valence.
+
+    A citation command that only updates an annotation (e.g. note) must not
+    clobber an existing edge's valence with the syntax default (+0.5 for proves,
+    -0.5 for disproves), even under concurrent interleaving without client pre-reads.
+    """
+    u_art1, u_art2, u_bel1, u_bel2 = (str(uuid.uuid4()) for _ in range(4))
+    client.rows = [
+        {"id": u_art1, "kind": "Artifact", "seq": 1},
+        {"id": u_art2, "kind": "Artifact", "seq": 2},
+        {"id": u_bel1, "kind": "Belief", "seq": 1},
+        {"id": u_bel2, "kind": "Belief", "seq": 2},
+    ]
+    key_pos = (uuid.UUID(u_art1), uuid.UUID(u_bel1), "proves")
+    key_neg = (uuid.UUID(u_art2), uuid.UUID(u_bel2), "proves")
+
+    # 1. Positive citation syntax: proves
+    # First, create edge with custom positive valence (0.95)
+    run(["artifact", "1", "proves", "belief", "1", "valence", "to", "0.95"], client)
+    assert client._edges[key_pos]["valence"] == 0.95
+
+    # Concurrently, another worker issues a note-only edit using positive citation syntax (`proves`)
+    client.calls.clear()
+    run(
+        ["artifact", "1", "proves", "belief", "1", "edge", "note", "to", "confirmed"],
+        client,
+    )
+    # Stored valence MUST remain 0.95 (not reset to default 0.5)
+    assert client._edges[key_pos]["valence"] == 0.95
+    assert client._edges[key_pos]["note"] == "confirmed"
+    # Ensure no client-side get_inquiry read was issued (eliminated probe-query race window)
+    get_inquiry_calls = [c for c in client.calls if c[0] == "get_inquiry"]
+    assert len(get_inquiry_calls) == 0
+
+    # 2. Negative citation syntax: disproves
+    # First, create edge with custom negative valence (-0.95)
+    run(["artifact", "2", "disproves", "belief", "2", "valence", "to", "0.95"], client)
+    assert client._edges[key_neg]["valence"] == -0.95
+
+    # Concurrently, another worker issues a note-only edit using negative citation syntax (`disproves`)
+    client.calls.clear()
+    run(
+        ["artifact", "2", "disproves", "belief", "2", "edge", "note", "to", "refuted"],
+        client,
+    )
+    # Stored valence MUST remain -0.95 (not reset to default -0.5)
+    assert client._edges[key_neg]["valence"] == -0.95
+    assert client._edges[key_neg]["note"] == "refuted"
+    get_inquiry_calls_neg = [c for c in client.calls if c[0] == "get_inquiry"]
+    assert len(get_inquiry_calls_neg) == 0
+
+    # 3. Interleaved cross-citation syntax:
+    # A positive citation existing edge updated with `disproves ... edge note to ...` keeps positive valence
+    run(
+        [
+            "artifact",
+            "1",
+            "disproves",
+            "belief",
+            "1",
+            "edge",
+            "note",
+            "to",
+            "note via disproves",
+        ],
+        client,
+    )
+    assert client._edges[key_pos]["valence"] == 0.95
+    assert client._edges[key_pos]["note"] == "note via disproves"
 
 
 def test_edge_marker_sets_priority_on_the_narrows_edge(client: FakeClient) -> None:
@@ -2427,6 +2604,79 @@ def test_bulk_apply_multi_match_with_flag_edits_each(client: FakeClient) -> None
     assert all(c[1][1:] == ("owner", "Josh") for c in edits)
 
 
+def test_bulk_apply_preflight_validation_rejects_incompatible_field_before_write(
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preflight rejects when a later matched row is invalid for the field.
+
+    Belief matches first and would accept 'judgement', but Issue matches next
+    and cannot accept 'judgement'. Preflight validation must reject before
+    any write so the earlier matched Belief row remains unchanged.
+    """
+    belief = next(r for r in client.rows if r.get("kind") == "Belief")
+    assert belief["judgement"] == "proven"
+
+    original_edit = client.edit
+
+    def _edit(
+        target_id: uuid.UUID,
+        field: str,
+        value: object,
+        *,
+        actor: str,
+        reason: str = "",
+    ) -> None:
+        original_edit(target_id, field, value, actor=actor, reason=reason)
+        for r in client.rows:
+            if r.get("id") == str(target_id):
+                r[field] = value
+
+    monkeypatch.setattr(client, "edit", _edit)
+
+    with pytest.raises(ClientError, match="field 'judgement' is not valid on Issue"):
+        run(
+            [
+                "belief",
+                "issue",
+                "title",
+                "re",
+                ".",
+                "judgement",
+                "to",
+                "disproven",
+                "--makeitso",
+            ],
+            client,
+        )
+
+    # Prove zero edits were dispatched and earlier row remains unchanged
+    edits = [c for c in client.calls if c[0] == "edit"]
+    assert len(edits) == 0
+    assert belief["judgement"] == "proven"
+
+
+def test_bulk_apply_mixed_kind_valid_fields_succeeds(client: FakeClient) -> None:
+    """Valid mixed-kind bulk edits succeed when fields are valid across all matched kinds."""
+    matched = [r for r in client.rows if r.get("kind") in ("Belief", "Issue")]
+    run(
+        [
+            "belief",
+            "issue",
+            "title",
+            "re",
+            ".",
+            "status",
+            "to",
+            "complete",
+            "--makeitso",
+        ],
+        client,
+    )
+    edits = [c for c in client.calls if c[0] == "edit"]
+    assert len(edits) == len(matched)
+
+
 def test_bulk_apply_range_selects_each_matched_row(client: FakeClient) -> None:
     """A seq range applies to every row in the window."""
     run(["issue", "4..5", "priority", "to", "low", "--makeitso"], client)
@@ -2555,6 +2805,148 @@ def test_query_rows_caps_total_across_kinds(client: FakeClient) -> None:
     query = ListQuery(kinds=("Issue", "Belief"), ranges={}, filters=())
     rows = _query_rows(query, cast(Client, client), limit=7)
     assert len(rows) == 7
+
+
+def test_query_rows_sort_modes_and_deterministic_ties(client: FakeClient) -> None:
+    """Every advertised sort mode sorts mixed-kind results deterministically."""
+    u1, u2, u3, u4 = (str(uuid.uuid4()) for _ in range(4))
+    client.rows = [
+        {
+            "id": u1,
+            "kind": "Issue",
+            "seq": 1,
+            "priority": 10,
+            "valence": 0.2,
+            "created": "2026-01-01T00:00:00Z",
+            "status": "active",
+        },
+        {
+            "id": u2,
+            "kind": "Issue",
+            "seq": 2,
+            "priority": 0,
+            "valence": 0.8,
+            "created": "2026-01-03T00:00:00Z",
+            "status": "active",
+        },
+        {
+            "id": u3,
+            "kind": "Belief",
+            "seq": 1,
+            "priority": 10,
+            "valence": -0.5,
+            "created": "2026-01-02T00:00:00Z",
+            "status": "active",
+        },
+        {
+            "id": u4,
+            "kind": "Belief",
+            "seq": 2,
+            "priority": 20,
+            "valence": 0.8,
+            "created": "2026-01-04T00:00:00Z",
+            "status": "closed",
+        },
+    ]
+    query = ListQuery(kinds=("Issue", "Belief"), ranges={}, filters=())
+
+    # seq: seq asc, kind asc
+    seq_sorted = _query_rows(query, cast(Client, client), limit=10, sort="seq")
+    assert [(r["kind"], r["seq"]) for r in seq_sorted] == [
+        ("Belief", 1),
+        ("Issue", 1),
+        ("Belief", 2),
+        ("Issue", 2),
+    ]
+
+    # priority: active first, P0 -> P1 -> P2, kind asc, seq asc
+    prio_sorted = _query_rows(query, cast(Client, client), limit=10, sort="priority")
+    assert [(r["kind"], r["seq"]) for r in prio_sorted] == [
+        ("Issue", 2),
+        ("Belief", 1),
+        ("Issue", 1),
+        ("Belief", 2),
+    ]
+
+    # recent: created desc
+    recent_sorted = _query_rows(query, cast(Client, client), limit=10, sort="recent")
+    assert [(r["kind"], r["seq"]) for r in recent_sorted] == [
+        ("Belief", 2),
+        ("Issue", 2),
+        ("Belief", 1),
+        ("Issue", 1),
+    ]
+
+    # oldest: created asc
+    oldest_sorted = _query_rows(query, cast(Client, client), limit=10, sort="oldest")
+    assert [(r["kind"], r["seq"]) for r in oldest_sorted] == [
+        ("Issue", 1),
+        ("Belief", 1),
+        ("Issue", 2),
+        ("Belief", 2),
+    ]
+
+    # valence: valence desc, kind asc, seq asc
+    val_sorted = _query_rows(query, cast(Client, client), limit=10, sort="valence")
+    assert [(r["kind"], r["seq"]) for r in val_sorted] == [
+        ("Belief", 2),
+        ("Issue", 2),
+        ("Issue", 1),
+        ("Belief", 1),
+    ]
+
+
+def test_query_rows_sort_global_with_limit(client: FakeClient) -> None:
+    """Sorting with limit applies globally across all rows, not just a recent subset."""
+    # 5 issues, with oldest created first
+    client.rows = [
+        {
+            "id": str(uuid.uuid4()),
+            "kind": "Issue",
+            "seq": i,
+            "created": f"2026-01-0{i}T00:00:00Z",
+            "status": "active",
+        }
+        for i in range(1, 6)
+    ]
+    query = ListQuery(kinds=("Issue",), ranges={}, filters=())
+    # Oldest 2 rows globally should be seq 1 and 2
+    rows = _query_rows(query, cast(Client, client), limit=2, sort="oldest")
+    assert [r["seq"] for r in rows] == [1, 2]
+
+
+def test_cli_list_query_sort_and_limit(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """CLI list query with --sort and --limit outputs globally sorted rows."""
+    u1, u2, u3 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    client.rows = [
+        {
+            "id": u1,
+            "kind": "Issue",
+            "seq": 1,
+            "created": "2026-01-01T00:00:00Z",
+            "status": "active",
+        },
+        {
+            "id": u2,
+            "kind": "Issue",
+            "seq": 2,
+            "created": "2026-01-02T00:00:00Z",
+            "status": "active",
+        },
+        {
+            "id": u3,
+            "kind": "Issue",
+            "seq": 3,
+            "created": "2026-01-03T00:00:00Z",
+            "status": "active",
+        },
+    ]
+    run(["issue", "--sort", "oldest", "--limit", "2", "--format", "ids"], client)
+    out = capsys.readouterr().out.strip().split()
+    assert out == [u1, u2]
 
 
 def test_send_parses_actor_only(client: FakeClient) -> None:

@@ -222,6 +222,103 @@ class TestEdge:
         ]
         assert change_kinds == ["edge_removed", "edge_removed"]
 
+    @pytest.mark.asyncio
+    async def test_add_edge_upsert_preserves_valence_when_only_default_passed(
+        self,
+    ) -> None:
+        """When an edge already exists, valence_default does not overwrite stored valence."""
+        conn = make_conn()
+        # Lookups: from_kind, to_kind, cycle check
+        # fetchval calls: from_kind="Artifact", to_kind="Belief", cycle_check=False,
+        # then INSERT INTO edges returns None (conflict / already exists)
+        conn.fetchval.side_effect = [
+            "Artifact",
+            "Belief",
+            False,
+            None,
+            new_uuid(),
+            new_uuid(),
+        ]
+        # row for _set_edge_annotation_on_conn
+        set_field_row(
+            conn,
+            {
+                "from_kind": "Artifact",
+                "to_kind": "Belief",
+                "priority": None,
+                "note": "original note",
+                "valence": -0.85,
+                "labels": ["orig"],
+            },
+        )
+        store, _engine = make_store(conn)
+        _change_id, created = await store.add_edge(
+            from_id=new_uuid(),
+            to_id=new_uuid(),
+            edge_kind="proves",
+            note="new note",
+            valence=0.5,
+            default_valence=True,
+            actor="alice",
+        )
+        assert created is False
+        update = next(
+            (c for c in conn.execute.call_args_list if "UPDATE edges SET" in _sql(c)),
+            None,
+        )
+        assert update is not None
+        # update args: (sql, priority, note, valence, labels, from, to, edge_kind)
+        assert update.args[2] == "new note"
+        assert update.args[3] == -0.85, (
+            "existing -0.85 valence must NOT be overwritten by 0.5 default"
+        )
+
+    @pytest.mark.asyncio
+    async def test_add_edge_upsert_preserves_positive_valence_on_disproves_syntax(
+        self,
+    ) -> None:
+        """Disproves syntax with valence_default=-0.5 does not overwrite stored positive valence."""
+        conn = make_conn()
+        conn.fetchval.side_effect = [
+            "Artifact",
+            "Belief",
+            False,
+            None,
+            new_uuid(),
+            new_uuid(),
+        ]
+        set_field_row(
+            conn,
+            {
+                "from_kind": "Artifact",
+                "to_kind": "Belief",
+                "priority": None,
+                "note": "prior note",
+                "valence": 0.9,
+                "labels": [],
+            },
+        )
+        store, _engine = make_store(conn)
+        _change_id, created = await store.add_edge(
+            from_id=new_uuid(),
+            to_id=new_uuid(),
+            edge_kind="proves",
+            note="counter evidence note",
+            valence=-0.5,
+            default_valence=True,
+            actor="bob",
+        )
+        assert created is False
+        update = next(
+            (c for c in conn.execute.call_args_list if "UPDATE edges SET" in _sql(c)),
+            None,
+        )
+        assert update is not None
+        assert update.args[2] == "counter evidence note"
+        assert update.args[3] == 0.9, (
+            "existing +0.9 valence must NOT be overwritten by -0.5 default"
+        )
+
 
 def _sql(call: _Call) -> str:
     """Narrow a recorded mock argument to the SQL string passed by production."""
