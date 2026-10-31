@@ -37,6 +37,12 @@ All notable trackinizer changes are documented here. This project follows
 - The `assistant_prompt` preference (`lead` by default, or `sagent`): the
   assistant's system prompt in a chat the user starts. A line to the assistant
   carries the poster's choice as `CanvasMessageContext.assistant_prompt`.
+- A capture adapter for sagent's journals (`runs/adapters/sagent.py`): each
+  journal under sagent's projects folder, one record a line, with every agent a
+  session spawns named under it. The `sagent` reader reads and writes today's
+  journals, so a stored session resumes as sagent (`trax agentsession N run
+  sagent`). The package ships sagent's journal module and session finder
+  (`sagent/session/jsonl.py`, `projects.py`) for them.
 
 ## 0.1.12 - 2026-10-26
 

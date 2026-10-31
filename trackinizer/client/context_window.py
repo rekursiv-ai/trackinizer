@@ -5,8 +5,8 @@ by leaving history out: a compaction's :class:`ContextClear`, which carries a su
 from claude, codex or the bot's sagent alike; or a claude part begun with ``/clear``.
 What is loaded is that window's opening plus every record after it, so a switch never
 loads what the last model had already compacted away. :func:`window` is the one place
-that decides the cut, for the agent runner's resume as claude or as codex and for the bot's
-own history alike.
+that decides the cut, for the agent runner's resume as claude, codex or sagent and for
+the bot's own history alike.
 
 Then a per-target :class:`Budget` applies. At or under ``fit_bytes`` the window loads
 as is; up to ``max_bytes`` it loads whole and the target is asked to compact it with its
@@ -126,6 +126,10 @@ BUDGETS: Final[Mapping[str, Budget]] = MappingProxyType(
         "claude": Budget(fit_bytes=1_600_000, max_bytes=2_800_000),
         # About 120k and 200k, of codex's 272k (258k usable).
         "codex": Budget(fit_bytes=480_000, max_bytes=800_000),
+        # sagent's window is its model's, 272k or 1M, and it compacts before any call
+        # that model cannot hold (``Compactor.should_run``), so it is never asked to
+        # here; the cap, claude's, only bounds what is read.
+        "sagent": Budget(fit_bytes=2_800_000, max_bytes=2_800_000),
         # About 60k of the bot's 258k, whose own compactor takes the rest.
         "assistant": Budget(fit_bytes=240_000, max_bytes=240_000, max_lines=500),
     },
@@ -271,7 +275,7 @@ def cli_records(
 
     Args:
       seen: The window, from :func:`window`.
-      target: The CLI the records are for, ``claude`` or ``codex``.
+      target: The CLI the records are for, ``claude``, ``codex`` or ``sagent``.
       seq: Returns the session's seq, which the note names; called only when
         something is left out.
       budget: How much to load; the target's entry in :data:`BUDGETS` by default.

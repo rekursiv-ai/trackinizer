@@ -16,7 +16,7 @@ __all__ = ["MOVED_VERBS", "RUN_CLIS", "moved"]
 MOVED_VERBS: Final = frozenset({"run", "machine", "job"})
 """The verbs that moved out of trax; each still says so."""
 
-RUN_CLIS: Final = frozenset({"claude", "codex"})
+RUN_CLIS: Final = frozenset({"claude", "codex", "sagent"})
 """The CLIs a stored session can resume as: each names a session by a stable id."""
 
 
