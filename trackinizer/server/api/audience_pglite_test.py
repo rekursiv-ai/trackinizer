@@ -203,7 +203,7 @@ def _refusal(response: httpx2.Response) -> dict[str, object]:
     return from_plain(detail, dict[str, object])
 
 
-async def _audience_of(store: Store, session_id: uuid.UUID) -> str:
+async def _session_audience(store: Store, session_id: uuid.UUID) -> str:
     async with store.engine.acquire() as conn:
         found = await conn.fetchval(
             "SELECT agentsession_audience FROM inquiries WHERE id = $1",
@@ -309,7 +309,7 @@ async def test_ending_a_staff_session_needs_its_audience_or_its_opener(
 
     assert _refusal(refused) == {"code": "session_audience", "audience": "staff"}
     assert allowed.status_code == 200
-    assert await _audience_of(store, hidden.lead) == "staff"
+    assert await _session_audience(store, hidden.lead) == "staff"
 
 
 async def test_purging_or_editing_a_staff_session_by_id_is_refused(
@@ -511,7 +511,7 @@ async def test_no_route_sets_an_audience_field(
         ("/api/sessions/{session_id}/audience", ["POST"]),
     ]
     assert lowered.status_code == 409
-    assert await _audience_of(store, hidden.lead) == "staff"
+    assert await _session_audience(store, hidden.lead) == "staff"
 
 
 async def test_an_unauthenticated_caller_is_refused_before_the_audience_is_read(
@@ -608,7 +608,7 @@ async def _key(store: Store, *, open_into: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {secret}"}
 
 
-def _batch_of(*items: tuple[str, str]) -> dict[str, object]:
+def _titled_batch(*items: tuple[str, str]) -> dict[str, object]:
     """Build a batch body of ``(kind, title)`` items, each with its own key."""
     return {
         "items": [
@@ -636,7 +636,7 @@ async def _open_each_way(
         ),
         await client.post(
             "/api/inquiries/batch",
-            json=_batch_of(("AgentSession", "b")),
+            json=_titled_batch(("AgentSession", "b")),
             headers=headers,
         ),
     ]
@@ -650,7 +650,7 @@ async def _audiences_opened(store: Store, opened: list[httpx2.Response]) -> list
         from_plain(submit["id"], str),
         from_plain(batch["ids"], list[str])[0],
     ]
-    return [await _audience_of(store, uuid.UUID(session_id)) for session_id in ids]
+    return [await _session_audience(store, uuid.UUID(session_id)) for session_id in ids]
 
 
 async def _count(store: Store, kind: str) -> int:
@@ -720,12 +720,12 @@ async def test_a_pin_the_owner_lost_still_files_rows_that_are_not_sessions(
     )
     batch = await client.post(
         "/api/inquiries/batch",
-        json=_batch_of(("Issue", "i")),
+        json=_titled_batch(("Issue", "i")),
         headers=headers,
     )
     mixed = await client.post(
         "/api/inquiries/batch",
-        json=_batch_of(("Issue", "j"), ("AgentSession", "s")),
+        json=_titled_batch(("Issue", "j"), ("AgentSession", "s")),
         headers=headers,
     )
 

@@ -139,13 +139,16 @@ async def test_a_machine_the_caller_does_not_own_or_that_is_offline_is_not_found
 
 
 async def test_facts_list_the_clis_and_none_without_a_list() -> None:
-    assert terminal_routes._clis_of({"clis": ["claude", "git"]}) == ["claude", "git"]
-    assert terminal_routes._clis_of({"os": "linux", "cpus": 20}) == []
+    assert terminal_routes._machine_clis({"clis": ["claude", "git"]}) == [
+        "claude",
+        "git",
+    ]
+    assert terminal_routes._machine_clis({"os": "linux", "cpus": 20}) == []
 
 
 @pytest.mark.parametrize("listed", ["claude", True, 3])
 async def test_facts_whose_cli_list_is_not_a_list_offer_no_cli(listed: object) -> None:
-    assert terminal_routes._clis_of({"clis": listed}) == []
+    assert terminal_routes._machine_clis({"clis": listed}) == []
 
 
 @pytest.mark.parametrize(

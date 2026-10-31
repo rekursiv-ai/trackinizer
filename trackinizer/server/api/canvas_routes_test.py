@@ -40,9 +40,9 @@ from trackinizer.server.api.canvas_test_support import (
     act_as_other_agent,
     act_as_user_agent,
     browser,
+    canvas_revision,
     drain,
     open_canvas,
-    revision_of,
     seed_accounts,
     seed_converse,
     seed_science_chat,
@@ -487,7 +487,7 @@ def test_current_state_reads_the_canvas_with_its_ids_or_raises_not_found(
         seen.append((engine_arg, kwargs))
         return state if kwargs["canvas_id"] == found else None
 
-    monkeypatch.setattr(canvas_routes, "engine_of", give_engine)
+    monkeypatch.setattr(canvas_routes, "request_engine", give_engine)
     monkeypatch.setattr(canvas_routes, "get_inbound", give_inbound)
     monkeypatch.setattr(canvas_routes, "get_assistant", give_assistant)
     monkeypatch.setattr(canvas_routes, "read_canvas", read)
@@ -650,7 +650,7 @@ def test_clear_chat_route_passes_owner_and_key_and_returns_not_found(
         return assistant
 
     monkeypatch.setattr(canvas_routes, "require_browser", require_browser)
-    monkeypatch.setattr(canvas_routes, "engine_of", give_engine)
+    monkeypatch.setattr(canvas_routes, "request_engine", give_engine)
     monkeypatch.setattr(canvas_routes, "get_inbound", give_inbound)
     monkeypatch.setattr(canvas_routes, "get_assistant", give_assistant)
     monkeypatch.setattr(
@@ -1561,7 +1561,7 @@ async def test_navigate_moves_the_page_without_changing_the_canvas(
         canvas_id=canvas_id,
         text="take me to the graph",
     )
-    revision = await revision_of(client, canvas_id=canvas_id)
+    revision = await canvas_revision(client, canvas_id=canvas_id)
     path = f"/api/canvases/{canvas_id}/operations"
     key = uuid.uuid4()
     body = {"revision": 0, "operation": {"kind": "navigate", "route": "#/graph"}}
@@ -1587,7 +1587,7 @@ async def test_navigate_moves_the_page_without_changing_the_canvas(
     ]
     assert len(frames) == 1
     browser()
-    assert await revision_of(client, canvas_id=canvas_id) == revision
+    assert await canvas_revision(client, canvas_id=canvas_id) == revision
 
     different = await client.post(
         path,
@@ -1658,7 +1658,7 @@ async def test_an_agents_record_takes_the_lone_pages_place_and_a_browsers_keeps_
 
     for canvas_id, act in ((by_agent, act_as_assistant), (by_browser, browser)):
         browser()
-        revision = await revision_of(client, canvas_id=canvas_id)
+        revision = await canvas_revision(client, canvas_id=canvas_id)
         act()
         shown = await client.post(
             f"/api/canvases/{canvas_id}/operations",
@@ -1746,7 +1746,7 @@ async def test_highlight_points_at_inquiries_without_changing_the_canvas(
         canvas_id=canvas_id,
         text="hi",
     )
-    revision = await revision_of(client, canvas_id=canvas_id)
+    revision = await canvas_revision(client, canvas_id=canvas_id)
     path = f"/api/canvases/{canvas_id}/operations"
     ids = [uuid.uuid4(), uuid.uuid4()]
     key = uuid.uuid4()
@@ -1784,7 +1784,7 @@ async def test_highlight_points_at_inquiries_without_changing_the_canvas(
     assert len(frames) == 1
     assert [f.ids for f in after if isinstance(f, HighlightFrame)] == [[]]
     browser()
-    assert await revision_of(client, canvas_id=canvas_id) == revision
+    assert await canvas_revision(client, canvas_id=canvas_id) == revision
     async with store.engine.acquire() as conn:
         stored = await conn.fetchval(
             "SELECT response FROM visual_canvas_operations "
@@ -1846,7 +1846,7 @@ async def test_a_replayed_operation_publishes_nothing(
     await seed_accounts(store)
     canvas_id, graph_id = await _canvas_with_graph(client)
     body = {
-        "revision": await revision_of(client, canvas_id=canvas_id),
+        "revision": await canvas_revision(client, canvas_id=canvas_id),
         "operation": {
             "kind": "place",
             "instance_id": str(graph_id),
@@ -1889,7 +1889,7 @@ async def test_a_show_names_a_record_its_visual_can_draw(
         response = await client.post(
             f"/api/canvases/{canvas_id}/operations",
             json={
-                "revision": await revision_of(client, canvas_id=canvas_id),
+                "revision": await canvas_revision(client, canvas_id=canvas_id),
                 "operation": {
                     "kind": "show",
                     "visual_type": visual,
@@ -1933,7 +1933,7 @@ async def test_the_page_can_be_hidden_like_another_visual(
         response = await client.post(
             f"/api/canvases/{canvas_id}/operations",
             json={
-                "revision": await revision_of(client, canvas_id=canvas_id),
+                "revision": await canvas_revision(client, canvas_id=canvas_id),
                 "operation": {"kind": "hide", "instance_id": ids[visual]},
             },
             headers={"Idempotency-Key": str(uuid.uuid4())},
@@ -1967,7 +1967,7 @@ async def test_a_navigation_with_no_page_shows_it_in_the_same_revision(
     closed = await client.post(
         f"/api/canvases/{canvas_id}/operations",
         json={
-            "revision": await revision_of(client, canvas_id=canvas_id),
+            "revision": await canvas_revision(client, canvas_id=canvas_id),
             "operation": {"kind": "hide", "instance_id": page},
         },
         headers={"Idempotency-Key": str(uuid.uuid4())},
@@ -1979,7 +1979,7 @@ async def test_a_navigation_with_no_page_shows_it_in_the_same_revision(
         canvas_id=canvas_id,
         text="go to the graph",
     )
-    revision = await revision_of(client, canvas_id=canvas_id)
+    revision = await canvas_revision(client, canvas_id=canvas_id)
     path = f"/api/canvases/{canvas_id}/operations"
     body = {"revision": 0, "operation": {"kind": "navigate", "route": "#/graph"}}
     key = uuid.uuid4()
@@ -2007,7 +2007,7 @@ async def test_a_navigation_with_no_page_shows_it_in_the_same_revision(
     ] == [("trax.subgraph", "main"), ("trax.browse", "main")]
     assert [f.type for f in frames if f is not None] == ["canvas", "navigate"]
     browser()
-    assert await revision_of(client, canvas_id=canvas_id) == revision + 1
+    assert await canvas_revision(client, canvas_id=canvas_id) == revision + 1
 
 
 # A keepalive is also when the stream asks whether its owner may still use the app, and
@@ -2316,7 +2316,7 @@ async def test_only_the_owner_writes_campaign_on_the_head_session(
     campaign_writer = AsyncMock(return_value=True)
     monkeypatch.setattr(
         canvas_routes,
-        "engine_of",
+        "request_engine",
         MagicMock(return_value=cast("DatabaseEngine", engine)),
     )
     monkeypatch.setattr(
@@ -2363,7 +2363,7 @@ async def test_another_user_cannot_write_campaign_to_the_owner_session(
     request.app.state.config = ASSISTANT_CONFIG
     monkeypatch.setattr(
         canvas_routes,
-        "engine_of",
+        "request_engine",
         MagicMock(return_value=cast("DatabaseEngine", engine)),
     )
 
@@ -2425,7 +2425,7 @@ async def test_assistant_settings_refs_include_the_head_session(
     settings_lookup = AsyncMock(return_value=refs)
     monkeypatch.setattr(
         canvas_routes,
-        "engine_of",
+        "request_engine",
         MagicMock(return_value=cast("DatabaseEngine", engine)),
     )
     monkeypatch.setattr(canvas_routes, "get_store", MagicMock(return_value=store))
@@ -2648,7 +2648,7 @@ def _patch_canvas_route_dependencies(
     def require_browser(identity: AuthIdentity) -> None:
         del identity
 
-    def engine_of(request: Request) -> DatabaseEngine:
+    def request_engine(request: Request) -> DatabaseEngine:
         del request
         return engine
 
@@ -2664,7 +2664,7 @@ def _patch_canvas_route_dependencies(
         del request
 
     monkeypatch.setattr(canvas_routes, "require_browser", require_browser)
-    monkeypatch.setattr(canvas_routes, "engine_of", engine_of)
+    monkeypatch.setattr(canvas_routes, "request_engine", request_engine)
     monkeypatch.setattr(canvas_routes, "get_store", get_store)
     monkeypatch.setattr(canvas_routes, "get_inbound", get_inbound)
     monkeypatch.setattr(canvas_routes, "get_assistant", get_assistant)
@@ -2890,27 +2890,27 @@ async def test_assistant_name_route_forwards_suggestion_to_store(
 
     sent: dict[str, object] = {}
 
-    def engine_for(request: Request) -> DatabaseEngine:
+    def fake_engine(request: Request) -> DatabaseEngine:
         del request
         return cast("DatabaseEngine", object())
 
-    def inbound_for(request: Request) -> InboundQueue:
+    def fake_inbound(request: Request) -> InboundQueue:
         del request
         return InboundQueue()
 
-    def assistant_for(request: Request) -> Assistant | None:
+    def fake_assistant(request: Request) -> Assistant | None:
         del request
         return None
 
-    def hub_for(request: Request) -> ChatHub:
+    def fake_hub(request: Request) -> ChatHub:
         del request
         return cast("ChatHub", hub)
 
     monkeypatch.setattr(canvas_routes, "resolve_asker", resolve)
-    monkeypatch.setattr(canvas_routes, "engine_of", engine_for)
-    monkeypatch.setattr(canvas_routes, "get_inbound", inbound_for)
-    monkeypatch.setattr(canvas_routes, "get_assistant", assistant_for)
-    monkeypatch.setattr(canvas_routes, "get_hub", hub_for)
+    monkeypatch.setattr(canvas_routes, "request_engine", fake_engine)
+    monkeypatch.setattr(canvas_routes, "get_inbound", fake_inbound)
+    monkeypatch.setattr(canvas_routes, "get_assistant", fake_assistant)
+    monkeypatch.setattr(canvas_routes, "get_hub", fake_hub)
     monkeypatch.setattr(
         canvas_routes,
         "name_unnamed_canvas",
@@ -3084,7 +3084,7 @@ async def test_choosing_a_cli_needs_a_machine_and_gives_the_chat_its_session(
         return await client.post(
             f"/api/canvases/{canvas_id}/operations",
             json={
-                "revision": await revision_of(client, canvas_id=canvas_id),
+                "revision": await canvas_revision(client, canvas_id=canvas_id),
                 "operation": {"kind": "provider", "provider": provider},
             },
             headers={"Idempotency-Key": str(uuid.uuid4())},
@@ -3163,7 +3163,7 @@ async def test_choosing_a_cli_drops_the_assistants_hold_on_the_chat(
     chosen = await client.post(
         f"/api/canvases/{canvas_id}/operations",
         json={
-            "revision": await revision_of(client, canvas_id=canvas_id),
+            "revision": await canvas_revision(client, canvas_id=canvas_id),
             "operation": {"kind": "provider", "provider": "claude"},
         },
         headers={"Idempotency-Key": str(uuid.uuid4())},
@@ -3189,7 +3189,7 @@ async def _choose_provider(
     return await client.post(
         f"/api/canvases/{canvas_id}/operations",
         json={
-            "revision": await revision_of(client, canvas_id=canvas_id),
+            "revision": await canvas_revision(client, canvas_id=canvas_id),
             "operation": {"kind": "provider", "provider": provider},
         },
         headers={"Idempotency-Key": str(uuid.uuid4())},

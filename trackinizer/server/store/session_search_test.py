@@ -28,8 +28,8 @@ from trackinizer.server.store.session_search import (
     SessionSearchHit,
     _ArmHit,
     _merge,
-    _scan_for,
     _semantic_arm,
+    _semantic_scan,
     search_session_records,
 )
 from trackinizer.server.values import vetted_sql
@@ -615,7 +615,11 @@ async def test_a_reader_of_every_session_is_scanned_plain_without_asking_the_dat
         oversight=True,
     )
 
-    scan = await _scan_for(_engine(conn), cast("Conn", conn), FeedScope(reader=reader))
+    scan = await _semantic_scan(
+        _engine(conn),
+        cast("Conn", conn),
+        FeedScope(reader=reader),
+    )
 
     assert scan == "plain"
     conn.fetchval.assert_not_awaited()
@@ -656,7 +660,7 @@ async def test_a_reader_of_fewer_sessions_is_scanned_as_the_installed_pgvector_a
     conn = make_conn()
     conn.fetchval.return_value = version
 
-    chosen = await _scan_for(_engine(conn), cast("Conn", conn), scope)
+    chosen = await _semantic_scan(_engine(conn), cast("Conn", conn), scope)
 
     assert chosen == scan
     conn.fetchval.assert_awaited_once_with(_VERSION)
@@ -670,7 +674,7 @@ async def test_the_installed_version_is_read_once_for_each_engine() -> None:
     asked = [(_engine(current), current), (_engine(older), older)]
 
     scans = [
-        await _scan_for(engine, cast("Conn", conn), FeedScope(reader=_OPEN_READER))
+        await _semantic_scan(engine, cast("Conn", conn), FeedScope(reader=_OPEN_READER))
         for engine, conn in (*asked, *asked)
     ]
 

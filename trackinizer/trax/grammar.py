@@ -932,7 +932,7 @@ def _filter_fields_cli(kind: Inquiry.InquiryKind) -> tuple[str, ...]:
 
 
 # Derived from the column specs honoring ``applies_to_inquiry_kinds``, matching the
-# server's rule in ``query.py::_filter_columns_for`` so the CLI doesn't over-reject base
+# server's rule in ``query.py::_filter_columns`` so the CLI doesn't over-reject base
 # columns (labels, cost) the server accepts.
 def _filterable_columns(kind: Inquiry.InquiryKind) -> frozenset[str]:
     """Canonical SQL columns a filter may target for ``kind``."""

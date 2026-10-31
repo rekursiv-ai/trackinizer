@@ -492,7 +492,7 @@ def test_a_time_with_no_offset_is_refused_and_says_why() -> None:
     ]
 
 
-def _key_of(change: dict[str, JsonValue]) -> str:
+def _change_key(change: dict[str, JsonValue]) -> str:
     return next(iter(change))
 
 
@@ -558,7 +558,7 @@ def _key_of(change: dict[str, JsonValue]) -> str:
         {"create_draft": {**_CREATE_DRAFT, "kind": None}},
         {"lens": 3},
     ],
-    ids=_key_of,
+    ids=_change_key,
 )
 def test_a_value_past_its_bound_or_type_is_refused(
     change: dict[str, JsonValue],

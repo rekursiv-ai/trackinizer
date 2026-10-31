@@ -68,7 +68,7 @@ router = APIRouter()
 type _CostAxis = Literal["agent_usd", "resource_usd"]
 
 
-def _actor_of(body: ActorMixin, identity: AuthIdentity) -> str:
+def _audit_actor(body: ActorMixin, identity: AuthIdentity) -> str:
     """Pick the audit actor: the body override, else the caller's email."""
     return body.actor or identity.email
 
@@ -203,7 +203,7 @@ async def _set_value(
     identity: AuthIdentity,
 ) -> uuid.UUID | None:
     """Execute a blind ``PUT`` overwrite; return the change id, or ``None``."""
-    actor = _actor_of(body, identity)
+    actor = _audit_actor(body, identity)
     reason = cast(FieldSet[object], body).reason
     # ``account`` is the one column whose value must name an active user; the
     # active-user rule is an auth concern enforced here at the route, mirroring
@@ -238,7 +238,7 @@ async def _run_patch(
     identity: AuthIdentity,
 ) -> uuid.UUID | None:
     """Execute a ``PATCH``: a numeric cost delta or a list add/sub."""
-    actor = _actor_of(body, identity)
+    actor = _audit_actor(body, identity)
     # Cost axes route through add_cost as a signed Cost delta, not a named
     # add_<stem> setter, so they carry no add_method/sub_method; handle
     # them before the list-method dispatch.
@@ -281,7 +281,7 @@ async def _clear_value(
             cast(_CostAxis, route.cost_axis),
             0.0,
             api_key_id=identity.api_key_id,
-            actor=_actor_of(body, identity),
+            actor=_audit_actor(body, identity),
             reason=body.reason,
         )
     return await _set_value(route, target_id, None, body, store, identity=identity)
@@ -300,7 +300,7 @@ async def _run_compare_and_set(
             status_code=400,
             detail=f"expected is not valid for field {route.column!r}",
         )
-    actor = _actor_of(body, identity)
+    actor = _audit_actor(body, identity)
     if route.column == "owner":
         return await store.transition_owner(
             target_id,

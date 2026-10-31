@@ -1,6 +1,6 @@
 """What a service account may be handed, and the pin a key minted for it carries.
 
-A service account holds the audiences :func:`audiences_for` gives its address: ``open``,
+A service account holds the audiences :func:`person_audiences` gives its address: ``open``,
 and ``staff`` only through an exact entry in the staff setting, since it has no hosted
 domain for a ``*@domain`` pattern to need. An admin creates the account and mints its
 keys, and a key never grants more than it holds: an admin hands on at most the audiences

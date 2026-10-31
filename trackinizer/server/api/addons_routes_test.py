@@ -17,7 +17,7 @@ from trackinizer.addons.addon import AddonManifest
 from trackinizer.addons.deployment import Deployment
 from trackinizer.conftest import make_store
 from trackinizer.server.api import addons_routes, app
-from trackinizer.server.api.addons_routes import attach_deployment, deployment_of
+from trackinizer.server.api.addons_routes import app_deployment, attach_deployment
 from trackinizer.server.api.app import _build_app, lifespan
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.auth import AuthIdentity, current_user
@@ -162,12 +162,12 @@ def test_attaching_sets_the_deployments_visual_catalog() -> None:
 
 def test_a_real_deployment_replaces_the_default_one_of_a_built_app() -> None:
     built = _build_app()
-    assert deployment_of(built).manifests == {}
+    assert app_deployment(built).manifests == {}
     cfg = ProbeSite()
     cfg.visuals = _notes_visuals()
     real = cfg.make()
     attach_deployment(built, deployment=real)
-    assert deployment_of(built) is real
+    assert app_deployment(built) is real
     assert _visual_catalog(built) is real.visuals
     assert _visual_catalog(built).default_visual == "x.notes"
     built.state.store, _ = make_store()
@@ -181,7 +181,7 @@ def test_attaching_twice_keeps_the_first_deployment_and_its_routes() -> None:
     routes = list(app.routes)
     attach_deployment(app, deployment=_probe_deployment())
     assert app.routes == routes
-    assert deployment_of(app) is first
+    assert app_deployment(app) is first
     app.state.store, _ = make_store()
     app.dependency_overrides[current_user] = _viewer
     assert TestClient(app).get("/api/addons/probe/ping").status_code == 200
@@ -262,7 +262,7 @@ class _ProbeService:
 
 def _running_service(app: FastAPI) -> _ProbeService:
     """Return the probe's one server service, reached through the deployment."""
-    service = deployment_of(app).manifests["probe"].server_services[0]
+    service = app_deployment(app).manifests["probe"].server_services[0]
     assert isinstance(service, _ProbeService)
     return service
 

@@ -257,7 +257,7 @@ async def test_a_share_recipient_outside_the_org_edits_a_field(
         "/api/sessions/start",
         json={"cli": "codex", "actor": "ada-run"},
     )
-    session = _id_of(started)
+    session = _created_id(started)
 
     _as(JAN, user_id=JAN_ID)
     labelled = await client.patch(
@@ -384,7 +384,7 @@ async def test_every_new_row_is_created_with_the_policy(
     system = await store.submit_issue(SubmitIssue(title="system", account=ADA))
 
     ids = json_loads(batch.content, dict[str, list[str]])["ids"]
-    session = _id_of(started)
+    session = _created_id(started)
     ada = Principal(email=ADA, role="writer", groups=GROUPS)
     viewer = Principal(
         email=VIEWER,
@@ -541,10 +541,10 @@ async def _viewer_session(client: httpx2.AsyncClient) -> str:
     _as(VIEWER, user_id=VIEWER_ID, api_key_id=VIEWER_KEY, role="viewer")
     started = await client.post("/api/sessions/start", json={"cli": "codex"})
     assert started.status_code == 201, started.text
-    return _id_of(started)
+    return _created_id(started)
 
 
-def _id_of(response: httpx2.Response) -> str:
+def _created_id(response: httpx2.Response) -> str:
     """Read the ``id`` a create's response names."""
     return from_plain(json_loads(response.content, dict[str, object])["id"], str)
 

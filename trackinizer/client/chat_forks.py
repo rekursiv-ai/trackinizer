@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 
 from treekle import from_plain
 
-from trackinizer.client.conversation import delivered_text, delivery_of
+from trackinizer.client.conversation import attested_delivery, delivered_text
 from trackinizer.wire.wire_science_chat import FORK_EDGE_LABEL, fork_point_label
 
 
@@ -113,7 +113,7 @@ def read_fork_lines(client: ForkReader, *, fork: ChatForkAt) -> list[ForkLine]:
         ):
             if part.part == fork.part and record.idx > fork.idx:
                 break
-            line = _line_of(record)
+            line = _fork_line(record)
             if line is not None:
                 lines.append(line)
     return lines
@@ -175,7 +175,7 @@ def _part_number(part: PartBody) -> int:
 # holds that bot delivered or that names its author, the rule the server's poster
 # and Chat read too. A typed line with neither names no one, so it is not a line
 # of the fork.
-def _line_of(record: RecordBody) -> ForkLine | None:
+def _fork_line(record: RecordBody) -> ForkLine | None:
     """Read a record as a line: a person's, an answer with words, or neither."""
     content = from_plain(record.payload.get("content"), str, default="")
     if record.kind == "AgentToAgentMessage":
@@ -188,7 +188,7 @@ def _line_of(record: RecordBody) -> ForkLine | None:
         )
     if record.kind == "UserMessage":
         extra = from_plain(record.payload.get("extra"), dict[str, object], default={})
-        delivery = delivery_of(extra)
+        delivery = attested_delivery(extra)
         if delivery is None:
             author = from_plain(extra.get("author"), str, default="")
             if not author or not content:

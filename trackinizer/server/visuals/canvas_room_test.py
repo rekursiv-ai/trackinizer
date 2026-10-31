@@ -15,8 +15,8 @@ from trackinizer.server.visuals.canvas_room import (
     Canvas,
     Show,
     Tile,
-    canvas_of,
     make_room,
+    returned_canvas,
 )
 from trackinizer.server.visuals.catalog import RECORD_VISUAL
 
@@ -525,7 +525,7 @@ def test_canvas_of_reads_each_tiles_record_and_kind_and_the_page() -> None:
         "page": "#/console",
     }
 
-    assert canvas_of(state) == Canvas(
+    assert returned_canvas(state) == Canvas(
         tiles=(
             Tile(id="p", type=PAGE, placement="main"),
             Tile(
@@ -539,7 +539,7 @@ def test_canvas_of_reads_each_tiles_record_and_kind_and_the_page() -> None:
         focused="t",
         page="#/console",
     )
-    assert canvas_of({"visuals": []}).page is None
+    assert returned_canvas({"visuals": []}).page is None
 
 
 if __name__ == "__main__":

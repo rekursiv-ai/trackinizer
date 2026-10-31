@@ -33,9 +33,9 @@ from trackinizer.lib.agent.sessions.convert import (
     FileResult,
     _diff,
     _dropped,
-    _parts_of,
     _roots,
     _session_files,
+    _session_parts,
     _status,
     _workers,
     convert_file,
@@ -590,7 +590,7 @@ def test_a_session_keeps_the_subagents_nested_under_it(tmp_path: Path) -> None:
     root = _session(tmp_path / "s.jsonl")
     child = _session(tmp_path / "s" / "subagents" / "agent-a1.jsonl")
 
-    assert _parts_of(root) == [root, child]
+    assert _session_parts(root) == [root, child]
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX signals only")

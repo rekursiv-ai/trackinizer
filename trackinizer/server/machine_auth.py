@@ -26,7 +26,7 @@ from fastapi import HTTPException, Request
 from treekle import from_plain
 
 from trackinizer.server import auth
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire.wire_machine_host import (
     CREDENTIAL_PREFIX,
@@ -45,11 +45,11 @@ __all__ = [
     "MintedSecret",
     "ParsedSecret",
     "current_machine",
-    "machine_of",
     "machine_revoked",
     "mint_secret",
     "parse_credential",
     "parse_enrollment",
+    "request_machine",
     "should_bump_last_used",
 ]
 
@@ -151,13 +151,13 @@ def should_bump_last_used(
 
 
 async def current_machine(request: Request, machine_id: UUID) -> MachineIdentity:
-    """Authenticate an HTTP host route by its machine credential; see :func:`machine_of`."""
-    return await machine_of(request, machine_id)
+    """Authenticate an HTTP host route by its machine credential; see :func:`request_machine`."""
+    return await request_machine(request, machine_id)
 
 
-# Separate from ``current_machine`` for the reason ``auth.user_of`` is separate from
+# Separate from ``current_machine`` for the reason ``auth.request_user`` is separate from
 # ``current_user``: the dependency's annotation must stay importable at runtime.
-async def machine_of(request: HTTPConnection, machine_id: UUID) -> MachineIdentity:
+async def request_machine(request: HTTPConnection, machine_id: UUID) -> MachineIdentity:
     """Authenticate a host route or WebSocket by the machine credential in the bearer.
 
     A malformed, unknown or wrong-secret credential is 401 with one body, so a
@@ -181,7 +181,7 @@ async def machine_of(request: HTTPConnection, machine_id: UUID) -> MachineIdenti
     parsed = parse_credential(auth.extract_bearer(request) or "")
     if parsed is None:
         raise _unknown()
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         row = await conn.fetchrow(
             "SELECT c.secret_sha256, c.revoked_at, m.id AS machine_id, m.name "
             "FROM machine_credentials c JOIN machines m ON m.id = c.machine_id "

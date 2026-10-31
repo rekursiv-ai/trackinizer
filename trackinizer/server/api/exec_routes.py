@@ -22,7 +22,7 @@ from trackinizer.server.api._deps import (
     get_exec_hub,
     get_replays,
 )
-from trackinizer.server.api._routes_shared import engine_of, idempotency_key
+from trackinizer.server.api._routes_shared import idempotency_key, request_engine
 from trackinizer.server.api.machines_routes import MachineName
 from trackinizer.server.api.session_access import resolve_asker
 from trackinizer.server.auth import AuthIdentity, require_role
@@ -259,7 +259,7 @@ async def _exec_owner(
 
 async def _exec_machine(request: Request, *, owner: str, name: str) -> UUID:
     """Return the id of the owner's machine, once it is online, confirmed and opted in."""
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         machine = await conn.fetchrow(
             "SELECT m.id, m.facts, m.confirmed_at IS NOT NULL AS confirmed, "
             "(m.host_instance IS NOT NULL "
@@ -286,7 +286,7 @@ async def _exec_machine(request: Request, *, owner: str, name: str) -> UUID:
 
 async def _is_current(request: Request, machine_id: UUID, *, instance: UUID) -> bool:
     """Say whether ``instance`` is the machine's current host instance."""
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         current = await conn.fetchval(
             "SELECT host_instance = $2 FROM machines WHERE id = $1",
             machine_id,

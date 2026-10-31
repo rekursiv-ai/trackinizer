@@ -26,12 +26,12 @@ from trackinizer.server.api.canvas_test_support import (
     act_as_other_agent,
     act_as_user_agent,
     browser,
-    conversation_of,
+    canvas_revision,
     converse,
     drain,
     open_canvas,
     open_science_chat,
-    revision_of,
+    receipt_conversation,
     seed_accounts,
     send_chat,
     start_session,
@@ -281,7 +281,7 @@ def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
         ),
     )
 
-    assert conversation_of(sent) == conversation
+    assert receipt_conversation(sent) == conversation
     continued, started = server.asked
     assert json_loads(continued.content) == {
         "canvas_id": str(canvas_id),
@@ -382,7 +382,7 @@ def test_conversing_posts_a_line_then_has_the_assistant_open_its_session() -> No
 
 def test_a_refused_send_names_no_conversation() -> None:
     with pytest.raises(ValueError, match="send answered 409"):
-        conversation_of(httpx2.Response(409, json={}))
+        receipt_conversation(httpx2.Response(409, json={}))
 
 
 def test_the_revision_is_read_off_the_canvas() -> None:
@@ -392,7 +392,8 @@ def test_the_revision_is_read_off_the_canvas() -> None:
     )
 
     assert (
-        _run(server, call=lambda client: revision_of(client, canvas_id=canvas_id)) == 12
+        _run(server, call=lambda client: canvas_revision(client, canvas_id=canvas_id))
+        == 12
     )
 
 

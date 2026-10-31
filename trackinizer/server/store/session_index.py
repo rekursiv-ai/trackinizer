@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn
 
 
-__all__ = ["ensure_model_index", "index_name_for"]
+__all__ = ["ensure_model_index", "index_name"]
 
 
 # The stored ``model`` slug is code-controlled (a registry key or ``stub-<dim>``),
@@ -34,7 +34,7 @@ __all__ = ["ensure_model_index", "index_name_for"]
 _SLUG_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._@-]*\Z")
 
 
-def index_name_for(model: str) -> str:
+def index_name(model: str) -> str:
     """Return the deterministic partial-index name for ``model``.
 
     The sanitization the baseline and schema.023 encode: every non-alphanumeric
@@ -75,7 +75,7 @@ async def ensure_model_index(conn: Conn, model: str, dim: int) -> None:
         raise ValueError(f"model slug {model!r} is not a valid index source")
     if dim < 1:
         raise ValueError(f"dim must be positive, got {dim}")
-    name = index_name_for(model)
+    name = index_name(model)
     # ``model`` matched ``_SLUG_RE`` (no quote/backslash) and ``dim`` is an int,
     # so this interpolation cannot break out of the DDL; identifiers and a
     # partial-index predicate literal cannot be bound parameters.

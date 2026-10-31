@@ -166,7 +166,7 @@ declaration site.
 
 PROVING_EDGES_SQL: Final[str] = vetted_sql(
     # Same currency rule as PROVES_BELIEF_SQL, but returns the edge (citer id,
-    # kind, and signed valence) rather than the full row -- all confidence_for
+    # kind, and signed valence) rather than the full row -- all derived_confidence
     # needs, one hop at a time. Signed valence: a disproof (< 0) lowers, a
     # proof (> 0) lifts.
     "SELECT e.from_id, t.kind AS from_kind, e.valence FROM edges e "
@@ -184,7 +184,7 @@ PROVING_EDGES_SQL: Final[str] = vetted_sql(
 )
 """Currently-true ``proves`` edges pointing at ``$1``, one hop, with valence.
 
-``confidence_for`` folds each into a log-odds sum, recursing into any citer that
+``derived_confidence`` folds each into a log-odds sum, recursing into any citer that
 is itself a Belief/Experiment so a chain resolves bottom-up (the ``proves``
 graph is a DAG). Drops citers an :class:`EdgeKindPolicy` flags currency-invalid.
 """

@@ -170,10 +170,10 @@ class Command:
           result: The str.
 
         """
-        return cls.help_text_for(next(iter(cls.names)))
+        return cls.verb_help_text(next(iter(cls.names)))
 
     @classmethod
-    def help_text_for(cls, verb: str) -> str:
+    def verb_help_text(cls, verb: str) -> str:
         """Help text for one handled verb.
 
         Args:
@@ -207,4 +207,4 @@ class Command:
 
         """
         del prefix
-        return cls.help_text_for(verb)
+        return cls.verb_help_text(verb)

@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from treekle import from_plain
 
 from trackinizer.server.api._deps import get_hub, get_inbound, get_store
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.api.machine_host_routes import revoke_machine
 from trackinizer.server.api.machines_routes import MachineName, refuse_reserved
 from trackinizer.server.auth import AuthIdentity, require_role
@@ -195,7 +195,7 @@ async def logout_machine_route(
     """
     owner = await _owner(request, identity, name=name)
     stopped = await disconnect_machine_route(name, request, identity)
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         keys = await conn.fetch(
             "UPDATE api_keys SET revoked_at = clock_timestamp() FROM machines "
             "WHERE api_keys.machine_id = machines.id AND machines.name = $1 "
@@ -241,7 +241,7 @@ def live_runs(request: Request, *, machine: str, owner: str) -> list[MachineRun]
 async def _owner(request: Request, identity: AuthIdentity, *, name: str) -> str:
     """Return the caller's email when they own the machine; refuse anyone else."""
     refuse_reserved(name)
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         owner = from_plain(
             await conn.fetchval("SELECT owner FROM machines WHERE name = $1", name),
             str,

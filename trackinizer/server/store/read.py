@@ -1,7 +1,7 @@
 """:class:`_ReadMixin` -- read-only inquiry, cost, and change queries.
 
 A pure leaf: :meth:`get_inquiry`, :meth:`list_kind`,
-:meth:`narrows_ancestors`, :meth:`next_issue`, :meth:`cost_for`,
+:meth:`narrows_ancestors`, :meth:`next_issue`, :meth:`inquiry_cost`,
 :meth:`proves_belief`, :meth:`what_changed_for_me`, :meth:`get_change`, and
 :meth:`list_changes` all read through ``self.engine`` and call no other mixin.
 """
@@ -49,7 +49,7 @@ from trackinizer.wire.row_filter import (
     match_filter,
     reject_inadmissible,
 )
-from trackinizer.wire.session_record_fields import record_kind_for
+from trackinizer.wire.session_record_fields import column_record_kind
 
 
 if TYPE_CHECKING:
@@ -81,7 +81,7 @@ class Ancestor:
 
 
 # The only kinds a ``proves`` edge can target, so the only kinds
-# ``confidence_for`` recurses into. Every other Artifact kind can cite but
+# ``derived_confidence`` recurses into. Every other Artifact kind can cite but
 # never be cited, so it is a recursion leaf counted at full weight.
 _CLAIMABLE_KINDS: frozenset[str] = frozenset({"Belief", "Experiment"})
 
@@ -365,7 +365,12 @@ class _ReadMixin(_StoreShared):
         assert isinstance(issue, Issue)
         return issue
 
-    async def cost_for(self, subject_id: UUID, *, deep: bool = False) -> Cost | None:
+    async def inquiry_cost(
+        self,
+        subject_id: UUID,
+        *,
+        deep: bool = False,
+    ) -> Cost | None:
         """Return the running cost for one inquiry, or ``None`` if missing.
 
         ``deep=True`` rolls up the Issue decomposition subtree via
@@ -429,7 +434,7 @@ class _ReadMixin(_StoreShared):
             )
         return [materialize(row, outbound, inbound) for row in rows]
 
-    async def confidence_for(
+    async def derived_confidence(
         self,
         belief_id: UUID,
         *,
@@ -513,7 +518,7 @@ class _ReadMixin(_StoreShared):
         memo[node_id] = result
         return result
 
-    async def authority_for(self, target_id: UUID) -> dict[str, float] | None:
+    async def derived_authority(self, target_id: UUID) -> dict[str, float] | None:
         """Return a row's derived authority scores, or None if it is absent.
 
         Reads the four load-bearing (PageRank) columns the authority sweep
@@ -846,7 +851,7 @@ def _record_kinds(filters: Sequence[RowFilter]) -> dict[str, str]:
     return {
         kind: field
         for field in {canonical_filter_field(f.field) for f in filters}
-        if (kind := record_kind_for(field)) is not None
+        if (kind := column_record_kind(field)) is not None
     }
 
 

@@ -28,8 +28,8 @@ from trackinizer.server.api._deps import (
 )
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
-    engine_of,
     iso_format,
+    request_engine,
 )
 from trackinizer.server.auth import (
     AudienceCeilingError,
@@ -160,7 +160,7 @@ async def profile_route(
         reads what the caller makes.
 
     """
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT name, last_login, visual_canvas_enabled, acknowledged_at, "
@@ -247,7 +247,7 @@ async def acknowledge_route(
             status_code=403,
             detail="Agreeing to the rules requires an interactive session",
         )
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         _, version = await _rules(conn)
         if version is None:
             raise HTTPException(
@@ -298,7 +298,7 @@ async def set_visual_canvas_preference(
             status_code=403,
             detail="Visual canvas opt-in requires an interactive session",
         )
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         enabled = await conn.fetchval(
             "UPDATE users SET visual_canvas_enabled = $1 "
             "WHERE id = $2 RETURNING visual_canvas_enabled",
@@ -337,7 +337,7 @@ async def set_preferences_route(
         take, and nothing is written; 404 when the caller's user is gone.
 
     """
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         try:
             preferences = await write_preferences(
                 conn,
@@ -389,7 +389,7 @@ async def create_token_route(
         the caller is a service account.
 
     """
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn:
         try:
             open_into = mint_open_into(identity, open_into=body.open_into)
@@ -432,7 +432,7 @@ async def list_tokens_route(
       result: JSON with a "tokens" array of key metadata.
 
     """
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn:
         rows = await list_api_keys(conn, user_id=identity.user_id)
     return {"tokens": [_serialize(row) for row in rows]}
@@ -463,7 +463,7 @@ async def revoke_token_route(
         owned by another user, or already revoked.
 
     """
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn:
         revoked = await key_within_caller(
             conn,
@@ -510,7 +510,7 @@ async def set_token_role_route(
         a service account; 404 otherwise.
 
     """
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn:
         try:
             updated = await key_within_caller(

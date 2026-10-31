@@ -400,8 +400,8 @@ async def web_get(
         )
         if row is None:
             raise HTTPException(status_code=404, detail="not found")
-        edges = await _edges_for(conn, target_id, direction="outbound")
-        backlinks = await _edges_for(conn, target_id, direction="inbound")
+        edges = await _grouped_edges(conn, target_id, direction="outbound")
+        backlinks = await _grouped_edges(conn, target_id, direction="inbound")
         changes = await conn.fetch(
             _CHANGE_SELECT + " WHERE c.subject_id = $1"
             " ORDER BY c.created DESC, c.id DESC LIMIT 50",
@@ -1503,7 +1503,7 @@ def _peer_ref(row: asyncpg.Record, peer_id: UUID) -> WebView:
     return out
 
 
-async def _edges_for(
+async def _grouped_edges(
     conn: Conn,
     target_id: UUID,
     *,

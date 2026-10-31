@@ -89,7 +89,7 @@ class _World:
         install_identity(
             AuthIdentity(
                 user_id=person.user_id,
-                api_key_id=None if browser else self._key_of(name),
+                api_key_id=None if browser else self._acting_key(name),
                 email=person.email,
                 role=_role(name),
                 read_audiences=frozenset(
@@ -112,7 +112,7 @@ class _World:
         self.act_as(name)
         return (await self.client.get(f"/api/sessions/{session}/{read}")).status_code
 
-    def _key_of(self, name: str) -> UUID:
+    def _acting_key(self, name: str) -> UUID:
         """Return the key ``name`` acts through: Scout's is the one it rotated to."""
         return self.rotated_key if name == "scout" else self.people[name].key_id
 

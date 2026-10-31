@@ -99,7 +99,7 @@ class Help(Command):
             moved(topic)
         for dispatcher in DISPATCHERS:
             if dispatcher.matches(topic):
-                echo(dispatcher.help_text_for(topic), nl=False)
+                echo(dispatcher.verb_help_text(topic), nl=False)
                 return
         raise ClientError(f"unknown verb: {topic!r}")
 

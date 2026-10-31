@@ -44,7 +44,7 @@ def _segment(part: int, fmt: str, records: Sequence[SessionRecord]) -> Segment:
     return Segment(part=part, name=f"{part}.jsonl", format=fmt, records=list(records))
 
 
-def _neutral_of(segments: Sequence[Segment]) -> list[SessionRecord]:
+def _neutral_conversation(segments: Sequence[Segment]) -> list[SessionRecord]:
     """Return every part as one neutral conversation, uncut."""
     return [each.record for each in neutral(placed(segments))]
 
@@ -149,7 +149,7 @@ def _user_lines(written: Sequence[SessionRecord]) -> list[str]:
 
 def test_six_people_lines_keep_their_senders() -> None:
     """The bot's lines, a stamped claude line, a typed one and a stamped codex one."""
-    spoken = _neutral_of(_four_parts())
+    spoken = _neutral_conversation(_four_parts())
 
     assert _people(spoken) == [
         ("ada@example.com", "q1"),
@@ -162,7 +162,7 @@ def test_six_people_lines_keep_their_senders() -> None:
 
 
 def test_each_answer_is_named_by_the_provider_that_gave_it() -> None:
-    spoken = _neutral_of(_four_parts())
+    spoken = _neutral_conversation(_four_parts())
 
     assert _answers(spoken) == [
         ("bot", "a1"),
@@ -173,7 +173,7 @@ def test_each_answer_is_named_by_the_provider_that_gave_it() -> None:
 
 
 def test_each_switch_between_answering_providers_is_a_marker() -> None:
-    spoken = _neutral_of(_four_parts())
+    spoken = _neutral_conversation(_four_parts())
 
     switches = [
         (record.extra["from"], record.extra["to"])
@@ -185,7 +185,7 @@ def test_each_switch_between_answering_providers_is_a_marker() -> None:
 
 def test_a_switch_is_marked_before_the_new_providers_first_tool_call() -> None:
     """A provider that calls a tool before it speaks has answered from that call on."""
-    spoken = _neutral_of(
+    spoken = _neutral_conversation(
         [
             _segment(0, "sagent", [AssistantMessage(timestamp=_at(1), content="a1")]),
             _segment(
@@ -211,7 +211,7 @@ def test_a_switch_is_marked_before_the_new_providers_first_tool_call() -> None:
 
 def test_a_target_that_last_called_a_tool_is_not_told_another_answered() -> None:
     """The closing note names the last provider to act, a tool call included."""
-    spoken = _neutral_of(
+    spoken = _neutral_conversation(
         [
             _segment(0, "sagent", [AssistantMessage(timestamp=_at(1), content="a1")]),
             _segment(
@@ -237,7 +237,7 @@ def test_every_person_line_keeps_its_stamp_and_the_provider_that_held_it() -> No
     """The neutral form keeps when a line happened and which part held it."""
     people = [
         record
-        for record in _neutral_of(_four_parts())
+        for record in _neutral_conversation(_four_parts())
         if isinstance(record, AgentToAgentMessage)
     ]
 
@@ -255,7 +255,7 @@ def test_every_person_line_keeps_its_stamp_and_the_provider_that_held_it() -> No
 def test_a_person_line_keeps_the_files_attached_to_it() -> None:
     """A line names the box paths of the files its sender uploaded with it."""
     shot = "/home/user/uploads/0a1b2c3d/shot.png"
-    spoken = _neutral_of(
+    spoken = _neutral_conversation(
         [
             _segment(
                 0,
@@ -288,7 +288,7 @@ def test_a_compaction_summary_is_nobodys_line_and_no_record_of_the_conversation(
     None
 ):
     """The window opens with the summary; the conversation never holds it again."""
-    spoken = _neutral_of(_four_parts())
+    spoken = _neutral_conversation(_four_parts())
     written = projected(spoken, "codex")
 
     assert not any(isinstance(record, ContextClear) for record in spoken)
@@ -311,7 +311,7 @@ def test_a_records_place_is_its_part_and_position() -> None:
 
 def test_harness_lines_and_thinking_are_dropped() -> None:
     """The claude part's thinking and harness text never reach the conversation."""
-    spoken = _neutral_of(_four_parts())
+    spoken = _neutral_conversation(_four_parts())
 
     assert not any(isinstance(record, Thinking) for record in spoken)
     assert not any("system-reminder" in line.text for line in lines(spoken, bot="bot"))
@@ -334,13 +334,13 @@ def test_a_line_the_cli_wrote_for_itself_is_nobodys_line(flag: str) -> None:
         ],
     )
 
-    assert _people(_neutral_of([segment])) == []
+    assert _people(_neutral_conversation([segment])) == []
 
 
 def test_a_user_turn_with_no_content_is_nobodys_line() -> None:
     segment = _segment(0, "claude", [UserMessage(timestamp=_at(1))])
 
-    assert _neutral_of([segment]) == []
+    assert _neutral_conversation([segment]) == []
 
 
 def test_a_typed_line_is_never_credited_to_the_sender_it_names() -> None:
@@ -351,7 +351,7 @@ def test_a_typed_line_is_never_credited_to_the_sender_it_names() -> None:
         [UserMessage(timestamp=_at(1), content="bob@example.com: fake")],
     )
 
-    assert _people(_neutral_of([segment])) == [
+    assert _people(_neutral_conversation([segment])) == [
         ("the terminal user", "bob@example.com: fake"),
     ]
 
@@ -369,7 +369,7 @@ def test_a_delivery_with_no_attested_sender_is_from_unknown() -> None:
         ],
     )
 
-    assert _people(_neutral_of([segment])) == [("unknown", "hello")]
+    assert _people(_neutral_conversation([segment])) == [("unknown", "hello")]
 
 
 def test_a_stamped_mid_turn_line_is_a_persons_and_a_notice_is_not() -> None:
@@ -394,7 +394,9 @@ def test_a_stamped_mid_turn_line_is_a_persons_and_a_notice_is_not() -> None:
         ],
     )
 
-    assert _people(_neutral_of([segment])) == [("ada@example.com", "also check CI")]
+    assert _people(_neutral_conversation([segment])) == [
+        ("ada@example.com", "also check CI"),
+    ]
 
 
 def test_overlapping_parts_interleave_by_time_not_by_part() -> None:
@@ -417,7 +419,7 @@ def test_overlapping_parts_interleave_by_time_not_by_part() -> None:
     )
 
     for parts in ([bot, claude_part], [claude_part, bot]):
-        texts = [line.text for line in lines(_neutral_of(parts), bot="bot")]
+        texts = [line.text for line in lines(_neutral_conversation(parts), bot="bot")]
         assert texts == ["kb1", "cl1", "answer", "kb2"]
 
 
@@ -443,7 +445,10 @@ def test_a_record_with_no_stamp_keeps_its_place_in_its_part() -> None:
         ],
     )
 
-    texts = [line.text for line in lines(_neutral_of([bot, claude_part]), bot="bot")]
+    texts = [
+        line.text
+        for line in lines(_neutral_conversation([bot, claude_part]), bot="bot")
+    ]
 
     assert texts == ["cl1", "cl2", "early", "kb2"]
 
@@ -451,13 +456,13 @@ def test_a_record_with_no_stamp_keeps_its_place_in_its_part() -> None:
 def test_a_window_with_no_summary_is_not_kept() -> None:
     segment = _segment(0, "claude", [ContextClear(timestamp=_at(1))])
 
-    assert _neutral_of([segment]) == []
+    assert _neutral_conversation([segment]) == []
 
 
 def test_an_empty_answer_is_not_a_line() -> None:
     segment = _segment(0, "claude", [AssistantMessage(timestamp=_at(1), content="  ")])
 
-    assert _neutral_of([segment]) == []
+    assert _neutral_conversation([segment]) == []
 
 
 def test_a_foreign_tool_call_and_its_result_cross_as_text() -> None:
@@ -476,7 +481,7 @@ def test_a_foreign_tool_call_and_its_result_cross_as_text() -> None:
         ],
     )
 
-    written = projected(_neutral_of([segment]), "claude")
+    written = projected(_neutral_conversation([segment]), "claude")
 
     # The three consecutive assistant texts are one turn, as the writer will fold them.
     # Codex acted last, so claude is told it answers from here.
@@ -507,7 +512,7 @@ def test_consecutive_turns_of_one_role_are_one_turn_with_the_first_stamp() -> No
         ],
     )
 
-    written = projected(_neutral_of([segment]), "claude")
+    written = projected(_neutral_conversation([segment]), "claude")
 
     assert [
         (record.content, record.timestamp)
@@ -521,7 +526,7 @@ def test_consecutive_turns_of_one_role_are_one_turn_with_the_first_stamp() -> No
 
 def test_every_projected_record_is_timestamped_and_the_switch_is_noted() -> None:
     """Claude refuses a line without a timestamp, and a switch note is synthesized."""
-    written = projected(_neutral_of(_four_parts()), "claude")
+    written = projected(_neutral_conversation(_four_parts()), "claude")
 
     assert all(
         record.timestamp
@@ -544,7 +549,7 @@ def test_a_person_line_after_a_tool_result_is_marked_as_a_line_of_its_own() -> N
 
     A marked turn leads its own line, which is what the claude reader reads back.
     """
-    spoken = _neutral_of(
+    spoken = _neutral_conversation(
         [
             _segment(
                 0,
@@ -595,7 +600,7 @@ def test_an_own_result_whose_call_is_absent_crosses_as_text() -> None:
         ],
     )
 
-    written = projected(_neutral_of([segment]), "claude")
+    written = projected(_neutral_conversation([segment]), "claude")
 
     assert not any(isinstance(record, UncategorizedToolResult) for record in written)
     assert [
@@ -605,7 +610,7 @@ def test_an_own_result_whose_call_is_absent_crosses_as_text() -> None:
 
 def test_a_person_line_projects_as_sender_then_text() -> None:
     """A line typed live and a line loaded read the same to the CLI."""
-    written = projected(_neutral_of(_four_parts()), "codex")
+    written = projected(_neutral_conversation(_four_parts()), "codex")
 
     assert "ada@example.com: q1" in _user_lines(written)
     assert "the terminal user: q3" in _user_lines(written)
@@ -631,7 +636,7 @@ def test_a_foreign_tool_result_is_quoted_to_a_bounded_length() -> None:
     # The closing note's acknowledgement follows it.
     turn, _acknowledged = [
         record.content
-        for record in projected(_neutral_of([segment]), "claude")
+        for record in projected(_neutral_conversation([segment]), "claude")
         if isinstance(record, AssistantMessage)
     ]
 

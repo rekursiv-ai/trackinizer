@@ -190,7 +190,7 @@ helpers are defined."""
 # one Inquiry subclass (``status`` on ``Inquiry``, inherited everywhere); one pass over
 # the hierarchy gives the Store one mapping to dispatch from. Asserts that duplicate
 # columns agree on their specs.
-def _column_specs_for(*classes: type[DataclassInstance]) -> dict[str, ColumnSpec]:
+def _column_specs(*classes: type[DataclassInstance]) -> dict[str, ColumnSpec]:
     """Merge ``ColumnSpec`` metadata across a tuple of dataclass classes."""
     merged: dict[str, ColumnSpec] = {}
     for cls in classes:
@@ -206,7 +206,7 @@ def _column_specs_for(*classes: type[DataclassInstance]) -> dict[str, ColumnSpec
     return merged
 
 
-COLUMN_SPECS: dict[str, ColumnSpec] = _column_specs_for(
+COLUMN_SPECS: dict[str, ColumnSpec] = _column_specs(
     Inquiry,
     Issue,
     Artifact,

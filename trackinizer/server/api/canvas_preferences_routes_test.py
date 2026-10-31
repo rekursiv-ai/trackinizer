@@ -17,8 +17,8 @@ from trackinizer.server.api.canvas_test_support import (
     KB_USER_ID,
     act_as_assistant,
     browser,
+    canvas_revision,
     open_canvas,
-    revision_of,
     seed_accounts,
     seed_converse,
     seed_session,
@@ -162,7 +162,7 @@ async def test_the_canvases_agent_sets_its_owners_preferences_and_every_canvas_i
     client, store = pglite_route_client
     canvas_id = await _paired_canvas(client, store)
     other_canvas = await _second_canvas(client)
-    revision = await revision_of(client, canvas_id=canvas_id)
+    revision = await canvas_revision(client, canvas_id=canvas_id)
     path = f"/api/canvases/{canvas_id}/operations"
     key = str(uuid.uuid4())
 

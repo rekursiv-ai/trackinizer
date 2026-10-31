@@ -112,8 +112,7 @@ class ClaudeAdapter:
         if path.suffix != ".jsonl":
             return False
         return (
-            path.parent.parent == self._projects_dir
-            or self.subagent_of(path) is not None
+            path.parent.parent == self._projects_dir or self.subagent(path) is not None
         )
 
     # Measured on claude 2.1.312: a sub-agent's transcript is
@@ -121,7 +120,7 @@ class ClaudeAdapter:
     # A nested one lands in the same folder; its meta names the agent that spawned it
     # (``parentAgentId``, the bare ``<id>``), where the folder names only the session at
     # the root. Each is named by its file's stem, as ``session_id_from_path`` names it.
-    def subagent_of(self, path: Path) -> Subagent | None:
+    def subagent(self, path: Path) -> Subagent | None:
         """Return the sub-agent whose transcript ``path`` is; ``None`` for any other file.
 
         Args:

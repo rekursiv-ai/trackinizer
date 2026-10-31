@@ -136,7 +136,7 @@ def test_the_root_s_file_name_survives_a_fuse() -> None:
 
     joined = list(fuse.fuse(parts, ["a.jsonl", "b.jsonl"]))
 
-    assert fuse.names_of(joined) == ["a.jsonl", "b.jsonl"]
+    assert fuse.part_names(joined) == ["a.jsonl", "b.jsonl"]
     assert _unfused(joined) == parts
 
 
@@ -227,7 +227,7 @@ def test_unfuse_drains_an_abandoned_part_before_yielding_the_next() -> None:
 def test_names_of_a_stream_starting_at_a_seam_names_an_empty_root() -> None:
     record = ContextClear(extra={"$seam": "second"})
 
-    assert fuse.names_of([record]) == ["", "second"]
+    assert fuse.part_names([record]) == ["", "second"]
 
 
 def test_chain_deduplicates_a_cycle_and_keeps_the_cycle_component() -> None:
@@ -280,7 +280,7 @@ def test_a_codex_fork_s_seam_states_what_crossed_it() -> None:
 @pytest.mark.parametrize("name", ["../x.jsonl", "/abs.jsonl", "a/b.jsonl", ".."])
 def test_a_seam_naming_a_path_is_refused(name: str) -> None:
     with pytest.raises(ValueError, match="seam names a path"):
-        fuse.names_of([ContextClear(extra={"$seam": name})])
+        fuse.part_names([ContextClear(extra={"$seam": name})])
 
 
 def test_chain_treats_a_part_without_context_as_a_root() -> None:

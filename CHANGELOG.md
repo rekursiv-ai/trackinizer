@@ -5,6 +5,23 @@ All notable trackinizer changes are documented here. This project follows
 
 ## Unreleased
 
+### Changed
+
+- Functions are named for what they return. `Client.cost_for`,
+  `confidence_for` and `authority_for` are `inquiry_cost`,
+  `derived_confidence` and `derived_authority`, as are the store's;
+  `client.conversation.delivery_of` is `attested_delivery`;
+  `wire.session_record_fields.record_kind_for` is `column_record_kind`; trax's
+  `help_text_for`, `help_for` and `kind_help_for` are `verb_help_text`,
+  `profile_help` and `kind_help`. On the server, `engine_of` is
+  `request_engine`, `deployment_of` `app_deployment`, `user_of`
+  `request_user`, `machine_of` `request_machine`, `asked_of` `ask_asker`,
+  `org_of` `email_org`, `audiences_for` `person_audiences`, `reader_for`
+  `caller_reader`, `sender_of` `key_sender`, `index_name_for` `index_name`,
+  `canvas_of` `returned_canvas`, and the canvas test support's
+  `conversation_of` and `revision_of` are `receipt_conversation` and
+  `canvas_revision`.
+
 ### Added
 
 - A canvas by its own URL: `GET /api/canvases/{id}/view` shows it, read only,

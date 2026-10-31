@@ -20,13 +20,13 @@ from trackinizer.server.audience import (
     Audiences,
     SessionReader,
     TranscriptPings,
-    audiences_for,
+    caller_reader,
+    email_org,
     hidden_exists_sql,
     key_audiences,
     may_hide,
     members_reader,
-    org_of,
-    reader_for,
+    person_audiences,
     visible_sql,
 )
 from trackinizer.server.values import vetted_sql
@@ -43,23 +43,28 @@ _OPEN = frozenset({"open", "private"})
 class TestAudiencesFor:
     def test_unset_means_nobody_is_staff(self) -> None:
         assert (
-            audiences_for("ada@example.com", hosted_domain="example.com", staff=())
+            person_audiences("ada@example.com", hosted_domain="example.com", staff=())
             == _OPEN
         )
 
     def test_a_literal_pattern_matches_the_verified_email_alone(self) -> None:
         staff = ("ada@example.com",)
         assert (
-            audiences_for("ada@example.com", hosted_domain=None, staff=staff) == _BOTH
+            person_audiences("ada@example.com", hosted_domain=None, staff=staff)
+            == _BOTH
         )
         assert (
-            audiences_for("bob@example.com", hosted_domain="example.com", staff=staff)
+            person_audiences(
+                "bob@example.com",
+                hosted_domain="example.com",
+                staff=staff,
+            )
             == _OPEN
         )
 
     def test_a_literal_pattern_ignores_case(self) -> None:
         assert (
-            audiences_for(
+            person_audiences(
                 "Ada@Example.COM",
                 hosted_domain=None,
                 staff=("ada@example.com",),
@@ -70,11 +75,19 @@ class TestAudiencesFor:
     def test_a_domain_pattern_needs_the_hosted_domain_claim(self) -> None:
         staff = ("*@example.com",)
         assert (
-            audiences_for("ada@example.com", hosted_domain="example.com", staff=staff)
+            person_audiences(
+                "ada@example.com",
+                hosted_domain="example.com",
+                staff=staff,
+            )
             == _BOTH
         )
         assert (
-            audiences_for("ada@example.com", hosted_domain="EXAMPLE.com", staff=staff)
+            person_audiences(
+                "ada@example.com",
+                hosted_domain="EXAMPLE.com",
+                staff=staff,
+            )
             == _BOTH
         )
 
@@ -82,24 +95,25 @@ class TestAudiencesFor:
         """Google verifies the address, not the organisation; no ``hd`` means none."""
         staff = ("*@example.com",)
         assert (
-            audiences_for("ada@example.com", hosted_domain=None, staff=staff) == _OPEN
+            person_audiences("ada@example.com", hosted_domain=None, staff=staff)
+            == _OPEN
         )
 
     def test_a_domain_pattern_needs_the_claim_to_name_the_same_domain(self) -> None:
         staff = ("*@example.com",)
         assert (
-            audiences_for("ada@example.com", hosted_domain="other.org", staff=staff)
+            person_audiences("ada@example.com", hosted_domain="other.org", staff=staff)
             == _OPEN
         )
         assert (
-            audiences_for("ada@other.org", hosted_domain="example.com", staff=staff)
+            person_audiences("ada@other.org", hosted_domain="example.com", staff=staff)
             == _OPEN
         )
 
     def test_a_subdomain_is_not_the_domain(self) -> None:
         staff = ("*@example.com",)
         assert (
-            audiences_for(
+            person_audiences(
                 "ada@mail.example.com",
                 hosted_domain="mail.example.com",
                 staff=staff,
@@ -110,15 +124,17 @@ class TestAudiencesFor:
     def test_a_domain_pattern_is_not_a_literal_address(self) -> None:
         """A login whose email is literally ``*@host`` still needs the ``hd`` claim."""
         staff = ("*@example.com",)
-        assert audiences_for("*@example.com", hosted_domain=None, staff=staff) == _OPEN
         assert (
-            audiences_for("*@example.com", hosted_domain="other.org", staff=staff)
+            person_audiences("*@example.com", hosted_domain=None, staff=staff) == _OPEN
+        )
+        assert (
+            person_audiences("*@example.com", hosted_domain="other.org", staff=staff)
             == _OPEN
         )
 
     def test_an_address_without_a_host_is_never_staff(self) -> None:
         assert (
-            audiences_for(
+            person_audiences(
                 "example.com",
                 hosted_domain="example.com",
                 staff=("*@example.com",),
@@ -132,7 +148,7 @@ class TestServiceAccounts:
 
     def test_an_exact_address_entry_makes_the_account_staff(self) -> None:
         assert (
-            audiences_for(
+            person_audiences(
                 "campaign@service.invalid",
                 hosted_domain=None,
                 staff=("campaign@service.invalid",),
@@ -143,7 +159,7 @@ class TestServiceAccounts:
     def test_a_domain_pattern_never_matches_a_service_account(self) -> None:
         """No hosted domain, so ``*@service.invalid`` names no one."""
         assert (
-            audiences_for(
+            person_audiences(
                 "campaign@service.invalid",
                 hosted_domain=None,
                 staff=("*@service.invalid",),
@@ -153,7 +169,7 @@ class TestServiceAccounts:
 
     def test_an_entry_for_one_account_leaves_its_neighbours_open_only(self) -> None:
         assert (
-            audiences_for(
+            person_audiences(
                 "assistant@service.invalid",
                 hosted_domain=None,
                 staff=("campaign@service.invalid", "*@service.invalid"),
@@ -383,7 +399,7 @@ class TestReaderFor:
         oversight nor every chat.
         """
         orgs, email, hosted_domain, audiences, admin, delegated, reach = case
-        reader = reader_for(
+        reader = caller_reader(
             email,
             audiences=audiences,
             admin=admin,
@@ -407,7 +423,7 @@ class TestReaderFor:
         )
 
     def test_a_listing_asks_for_no_hidden_session(self) -> None:
-        reader = reader_for(
+        reader = caller_reader(
             "ann@lab.example",
             audiences=_OPEN,
             admin=False,
@@ -425,9 +441,11 @@ class TestReaderFor:
 
 class TestOrgOf:
     def test_a_member_belongs_to_the_domain_google_names(self) -> None:
-        assert org_of("Ada@Example.COM", hosted_domain="Example.com") == "example.com"
         assert (
-            org_of("grace@lab.example.com", hosted_domain="lab.example.com")
+            email_org("Ada@Example.COM", hosted_domain="Example.com") == "example.com"
+        )
+        assert (
+            email_org("grace@lab.example.com", hosted_domain="lab.example.com")
             == "lab.example.com"
         )
 
@@ -454,7 +472,7 @@ class TestOrgOf:
         hosted_domain: str | None,
     ) -> None:
         """Google verifies a consumer account's company address but names no ``hd``."""
-        assert org_of(email, hosted_domain=hosted_domain) is None
+        assert email_org(email, hosted_domain=hosted_domain) is None
 
 
 class TestMembersReader:

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from treekle import from_plain
 
 from trackinizer.server.api._deps import get_store
-from trackinizer.server.api._routes_shared import engine_of, require_browser
+from trackinizer.server.api._routes_shared import request_engine, require_browser
 from trackinizer.server.api.session_access import resolve_asker
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.workspaces import (
@@ -54,7 +54,7 @@ async def list_workspaces_route(
       workspaces: Matching workspaces in bar order.
 
     """
-    engine = engine_of(request)
+    engine = request_engine(request)
     email = identity.email
     user_id = identity.user_id
     if asker is None:
@@ -103,7 +103,7 @@ async def create_workspace_route(
     """
     require_browser(identity)
     return await create_workspace(
-        engine_of(request),
+        request_engine(request),
         store=get_store(request),
         user_id=identity.user_id,
         email=identity.email,
@@ -130,7 +130,7 @@ async def set_workspace_order_route(
     """
     require_browser(identity)
     entries = await set_workspace_order(
-        engine_of(request),
+        request_engine(request),
         user_id=identity.user_id,
         email=identity.email,
         ids=body.ids,
@@ -163,7 +163,7 @@ async def update_workspace_route(
     """
     require_browser(identity)
     summary = await update_workspace(
-        engine_of(request),
+        request_engine(request),
         store=get_store(request),
         user_id=identity.user_id,
         email=identity.email,
@@ -196,7 +196,7 @@ async def workspace_info_route(
     """
     require_browser(identity)
     result = await workspace_info(
-        engine_of(request),
+        request_engine(request),
         user_id=identity.user_id,
         email=identity.email,
         workspace_id=workspace_id,
@@ -228,7 +228,7 @@ async def remember_opened_canvas_route(
     """
     require_browser(identity)
     if not await remember_opened_canvas(
-        engine_of(request),
+        request_engine(request),
         user_id=identity.user_id,
         email=identity.email,
         canvas_id=canvas_id,

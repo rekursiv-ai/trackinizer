@@ -33,11 +33,11 @@ from trackinizer.server.api.canvas_test_support import (
     act_as_other_agent,
     act_as_user_agent,
     browser,
-    conversation_of,
+    canvas_revision,
     drain,
     open_canvas,
     open_science_chat,
-    revision_of,
+    receipt_conversation,
     seed_accounts,
     seed_science_chat,
     seed_session,
@@ -267,7 +267,7 @@ async def test_a_retry_under_one_key_queues_the_line_once(
     )
 
     assert (first.status_code, retry.status_code) == (200, 200)
-    assert conversation_of(first) == conversation_of(retry) == key
+    assert receipt_conversation(first) == receipt_conversation(retry) == key
     assert len(await _drained(client, session_id=kb)) == 1
 
 
@@ -328,7 +328,7 @@ async def test_a_second_writer_it_is_shared_with_posts_into_the_first_ones_open_
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
     first_canvas = await _canvas(client)
-    started = conversation_of(
+    started = receipt_conversation(
         await send_chat(
             client,
             canvas_id=first_canvas,
@@ -376,7 +376,7 @@ async def test_a_chat_the_assistant_closed_is_reopened_through_its_service_sessi
     await seed_accounts(store)
     kb = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     canvas_id = await _canvas(client)
-    started = conversation_of(
+    started = receipt_conversation(
         await send_chat(client, canvas_id=canvas_id, text="a"),
     )
     chat = await seed_science_chat(store, conversation_id=started)
@@ -411,7 +411,7 @@ async def test_lines_still_queued_when_a_chat_is_closed_go_to_the_assistants_ser
     await seed_accounts(store)
     kb = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     canvas_id = await _canvas(client)
-    started = conversation_of(
+    started = receipt_conversation(
         await send_chat(client, canvas_id=canvas_id, text="a"),
     )
     chat = await seed_science_chat(store, conversation_id=started)
@@ -1017,7 +1017,7 @@ async def test_a_line_carries_the_records_of_the_page_trail_and_visuals(
     shown = await client.post(
         f"/api/canvases/{canvas_id}/operations",
         json={
-            "revision": await revision_of(client, canvas_id=canvas_id),
+            "revision": await canvas_revision(client, canvas_id=canvas_id),
             "operation": {
                 "kind": "show",
                 "visual_type": "trax.subgraph",
@@ -1154,7 +1154,7 @@ async def _choose(
     return await client.post(
         f"/api/canvases/{canvas_id}/operations",
         json={
-            "revision": await revision_of(client, canvas_id=canvas_id),
+            "revision": await canvas_revision(client, canvas_id=canvas_id),
             "operation": {"kind": "provider", "provider": provider},
         },
         headers={"Idempotency-Key": str(uuid.uuid4())},
@@ -1270,7 +1270,7 @@ async def test_only_the_owners_browser_chooses_the_provider(
     await seed_accounts(store)
     await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     canvas_id = await _canvas(client)
-    started = conversation_of(
+    started = receipt_conversation(
         await send_chat(client, canvas_id=canvas_id, text="a"),
     )
     _ = await seed_science_chat(store, conversation_id=started)
@@ -1524,7 +1524,7 @@ async def test_a_line_into_a_closed_assistant_chat_goes_to_the_assistants_servic
     kb = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     canvas_id = await _canvas(client)
     browser()
-    conversation = conversation_of(
+    conversation = receipt_conversation(
         await send_chat(client, canvas_id=canvas_id, text="hello"),
     )
     chat = await seed_science_chat(store, conversation_id=conversation)
@@ -1587,7 +1587,7 @@ async def test_an_answer_to_the_assistants_card_reaches_the_chat_it_asked_in(
     await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     canvas_id = await _canvas(client)
     browser()
-    conversation = conversation_of(
+    conversation = receipt_conversation(
         await send_chat(client, canvas_id=canvas_id, text="hello"),
     )
     chat = await seed_science_chat(store, conversation_id=conversation)
@@ -1627,7 +1627,7 @@ async def test_an_interrupt_reaches_the_chat_the_assistants_turn_runs_in(
     await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     canvas_id = await _canvas(client)
     browser()
-    conversation = conversation_of(
+    conversation = receipt_conversation(
         await send_chat(client, canvas_id=canvas_id, text="hello"),
     )
     chat = await seed_science_chat(store, conversation_id=conversation)

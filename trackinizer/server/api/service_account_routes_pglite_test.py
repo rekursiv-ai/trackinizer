@@ -203,7 +203,7 @@ async def _key_ids(store: Store, user_id: uuid.UUID) -> list[uuid.UUID]:
     return [from_plain(row["id"], uuid.UUID) for row in rows]
 
 
-async def _id_of(store: Store, secret: str) -> uuid.UUID:
+async def _secret_key_id(store: Store, secret: str) -> uuid.UUID:
     """Return the id of the key a secret belongs to."""
     async with store.engine.acquire() as conn:
         key_id = await conn.fetchval(
@@ -343,7 +343,10 @@ async def test_p4_a_service_key_cannot_mint_re_role_or_revoke_tokens(
     account = await _service(client, boss)
     own = await _token(client, boss, account, name="host")
     spare = await _token(client, boss, account, name="spare")
-    host_id, spare_id = await _id_of(store, own), await _id_of(store, spare)
+    host_id, spare_id = (
+        await _secret_key_id(store, own),
+        await _secret_key_id(store, spare),
+    )
     before = await _snapshot(store)
 
     minted = await _call(
@@ -732,7 +735,7 @@ async def test_p8_nothing_is_reachable_with_a_disabled_admin_or_a_revoked_admin_
         f"/api/admin/users/{first}/disable",
         secret=second_key,
     )
-    third_id = await _id_of(store, third_key)
+    third_id = await _secret_key_id(store, third_key)
     revoked = await _call(
         client,
         "POST",
@@ -856,7 +859,10 @@ async def test_an_admin_lists_and_revokes_the_tokens_of_a_service_account(
     account = await _service(client, boss)
     host = await _token(client, boss, account, name="host")
     spare = await _token(client, boss, account, name="spare")
-    host_id, spare_id = await _id_of(store, host), await _id_of(store, spare)
+    host_id, spare_id = (
+        await _secret_key_id(store, host),
+        await _secret_key_id(store, spare),
+    )
     tokens = f"{_ACCOUNTS}/{account}/tokens"
 
     revoked = await _call(client, "POST", f"{tokens}/{host_id}/revoke", secret=boss)

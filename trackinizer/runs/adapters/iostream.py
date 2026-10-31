@@ -96,7 +96,7 @@ class IOStreamAdapter:
         del cli_args
         return None
 
-    def subagent_of(self, path: Path) -> Subagent | None:
+    def subagent(self, path: Path) -> Subagent | None:
         """Return ``None``: a stream has no sub-agents."""
         del path
         return None

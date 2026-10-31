@@ -21,10 +21,10 @@ from pydantic import BaseModel
 from treekle import from_plain
 
 from trackinizer.server.audience import (
+    caller_reader,
     chat_beginnings_sql,
     may_hide,
     members_reader,
-    reader_for,
     reads_session,
     visible_sql,
 )
@@ -513,7 +513,7 @@ async def chat_readers(
     }
     named = "" if assistant is None else assistant.email
     readers = [
-        reader_for(
+        caller_reader(
             person,
             audiences=frozenset({OPEN, PRIVATE}),
             admin=False,
@@ -626,7 +626,7 @@ async def read_line_starter(
         conn,
         assistant=assistant,
         conversation_id=conversation_id,
-    ) or inbound.sender_of(conversation_id)
+    ) or inbound.key_sender(conversation_id)
 
 
 async def may_post(
@@ -668,7 +668,7 @@ async def may_post(
         None if assistant is None else assistant.email,
     )
     if began is None:
-        sender = inbound.sender_of(conversation_id)
+        sender = inbound.key_sender(conversation_id)
         return sender is None or sender.lower() == poster.lower()
     return may_continue(
         poster,

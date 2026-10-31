@@ -530,8 +530,12 @@ class TestEdgeHelpers:
                 ],
             ],
         )
-        edges = await web._edges_for(cast(Conn, conn), target_id, direction="outbound")
-        backlinks = await web._edges_for(
+        edges = await web._grouped_edges(
+            cast(Conn, conn),
+            target_id,
+            direction="outbound",
+        )
+        backlinks = await web._grouped_edges(
             cast(Conn, conn),
             target_id,
             direction="inbound",
@@ -1147,12 +1151,12 @@ class TestFeedReads:
         store.read_feed = AsyncMock(return_value=[])
         client = self._client(store)
 
-        def scope_of(*params: tuple[str, str]) -> object:
+        def fake_scope(*params: tuple[str, str]) -> object:
             response = client.get("/api/web/feed", params=params)
             assert response.status_code == 200, response.text
             return store.read_feed.call_args.kwargs["scope"]
 
-        assert scope_of(
+        assert fake_scope(
             ("actor", "a"),
             ("actor", "b"),
             ("room", "lab"),
@@ -1166,12 +1170,12 @@ class TestFeedReads:
             kinds=("ToolCall", "UserMessage"),
             reader=_TEST_READER,
         )
-        assert scope_of(("room", "lab"), ("actor", "eng")) == FeedScope(
+        assert fake_scope(("room", "lab"), ("actor", "eng")) == FeedScope(
             actors=("eng",),
             rooms=("lab",),
             reader=_TEST_READER,
         )
-        assert scope_of() == replace(WHOLE_FEED, reader=_TEST_READER)
+        assert fake_scope() == replace(WHOLE_FEED, reader=_TEST_READER)
 
     def test_each_read_is_scoped_to_the_reader_its_caller_is(self) -> None:
         store = self._histogram_store()

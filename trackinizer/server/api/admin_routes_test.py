@@ -1335,11 +1335,11 @@ class TestProfileRoute:
         )
         staff = ("lee@staff.example", "campaign@service.invalid", "*@staff.example")
 
-        def staff_of(request: object) -> tuple[str, ...]:
+        def request_staff(request: object) -> tuple[str, ...]:
             del request
             return staff
 
-        monkeypatch.setattr(auth_routes, "get_staff", staff_of)
+        monkeypatch.setattr(auth_routes, "get_staff", request_staff)
 
         body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
 

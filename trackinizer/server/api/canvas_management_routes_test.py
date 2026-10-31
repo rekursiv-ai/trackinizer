@@ -21,8 +21,8 @@ from trackinizer.server.api.canvas_test_support import (
     USER_AGENT,
     act_as_user_agent,
     browser,
+    canvas_revision,
     open_canvas,
-    revision_of,
     seed_accounts,
     seed_session,
     send_chat,
@@ -273,7 +273,7 @@ async def test_the_page_is_remembered_with_no_revision_and_no_frame(
     browser()
     canvas = await _canvas(client, "POST", "/api/canvases")
     canvas_id = uuid.UUID(from_plain(canvas["id"], str))
-    revision = await revision_of(client, canvas_id=canvas_id)
+    revision = await canvas_revision(client, canvas_id=canvas_id)
     path = f"/api/canvases/{canvas_id}/page"
 
     with served.subscribe(canvas_id) as stream:
@@ -313,7 +313,7 @@ async def test_the_layout_merges_by_key_with_no_revision_and_no_frame(
     canvas = await _canvas(client, "POST", "/api/canvases")
     assert "layout" not in canvas or canvas["layout"] is None
     canvas_id = uuid.UUID(from_plain(canvas["id"], str))
-    revision = await revision_of(client, canvas_id=canvas_id)
+    revision = await canvas_revision(client, canvas_id=canvas_id)
     path = f"/api/canvases/{canvas_id}/layout"
     tile = {"collapsed": True, "place": {"left": 0.25, "top": 0.5}}
 

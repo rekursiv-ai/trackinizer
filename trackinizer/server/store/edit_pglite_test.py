@@ -30,7 +30,7 @@ async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
     yield store
 
 
-async def _app_of(store: Store, row_id: UUID) -> dict[str, object] | None:
+async def _row_app(store: Store, row_id: UUID) -> dict[str, object] | None:
     """Read one row's ``app`` back through the Store."""
     row = await store.get_inquiry(row_id)
     assert row is not None
@@ -48,12 +48,12 @@ async def test_app_is_stored_verbatim_replaced_and_cleared_with_an_audit(
     issue_id = await store.submit_issue(
         SubmitIssue(account="tester@example.com", title="brief", app=created),
     )
-    assert await _app_of(store, issue_id) == created
+    assert await _row_app(store, issue_id) == created
 
     set_id = await store.set_app(issue_id, replaced, actor="scientist")
-    assert await _app_of(store, issue_id) == replaced
+    assert await _row_app(store, issue_id) == replaced
     cleared_id = await store.set_app(issue_id, None, actor="scientist")
-    assert await _app_of(store, issue_id) is None
+    assert await _row_app(store, issue_id) is None
 
     audits: list[tuple[object, ...]] = []
     for change_id in (set_id, cleared_id):
@@ -82,7 +82,7 @@ async def test_an_app_over_64_kib_is_refused_and_leaves_the_row_alone(
     with pytest.raises(ConflictError, match="check constraint"):
         await store.set_app(experiment_id, {"b": "x" * 65_528}, actor="scientist")
 
-    assert await _app_of(store, experiment_id) == kept
+    assert await _row_app(store, experiment_id) == kept
 
 
 @pytest.mark.db_pglite
@@ -107,7 +107,7 @@ async def test_an_app_transition_writes_only_over_the_app_it_expected(
             to={"tracker": {"verdict": "works", "patch": "p"}},
             actor="meter",
         )
-    assert await _app_of(store, experiment_id) == corrected
+    assert await _row_app(store, experiment_id) == corrected
 
     merged: dict[str, object] = {
         "tracker": {"verdict": "inconclusive", "reason": "Within noise.", "patch": "p"},
@@ -119,7 +119,7 @@ async def test_an_app_transition_writes_only_over_the_app_it_expected(
         actor="meter",
         reason="code change",
     )
-    assert await _app_of(store, experiment_id) == merged
+    assert await _row_app(store, experiment_id) == merged
     assert change_id is not None
     change = await store.get_change(change_id)
     assert change is not None
@@ -161,7 +161,7 @@ async def test_an_app_transition_compares_json_values_exactly(store: Store) -> N
             to=None,
             actor="meter",
         )
-    assert await _app_of(store, experiment_id) == {"tracker": {"done": True}}
+    assert await _row_app(store, experiment_id) == {"tracker": {"done": True}}
 
 
 @pytest.mark.db_pglite
@@ -179,7 +179,7 @@ async def test_an_app_transition_keeps_the_size_check_on_any_kind(
             to={"b": "x" * 65_528},
             actor="meter",
         )
-    assert await _app_of(store, experiment_id) is None
+    assert await _row_app(store, experiment_id) is None
     issue_id = await store.submit_issue(
         SubmitIssue(account="tester@example.com", title="brief"),
     )
@@ -189,7 +189,7 @@ async def test_an_app_transition_keeps_the_size_check_on_any_kind(
         to={"b": 1},
         actor="meter",
     )
-    assert await _app_of(store, issue_id) == {"b": 1}
+    assert await _row_app(store, issue_id) == {"b": 1}
 
 
 if __name__ == "__main__":

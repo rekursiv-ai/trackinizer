@@ -22,7 +22,7 @@ from trackinizer.server.api._deps import (
     get_staff,
     get_store,
 )
-from trackinizer.server.api._routes_shared import engine_of, require_browser
+from trackinizer.server.api._routes_shared import request_engine, require_browser
 from trackinizer.server.api.locks import require_unlocked
 from trackinizer.server.api.session_access import session_reader
 from trackinizer.server.audience import members_reader
@@ -275,7 +275,7 @@ async def read_chat_route(
 
     """
     head = await read_head(
-        engine_of(request),
+        request_engine(request),
         assistant=get_assistant(request),
         caller=identity,
         conversation_id=conversation_id,
@@ -424,7 +424,7 @@ async def _set_share(
     require_browser(identity)
     try:
         shared_with = await set_share(
-            engine_of(request),
+            request_engine(request),
             assistant=get_assistant(request),
             caller=identity,
             conversation_id=conversation_id,
@@ -450,7 +450,7 @@ async def _publish_canvases(
     hub = get_hub(request)
     for canvas in canvases:
         state = await read_canvas(
-            engine_of(request),
+            request_engine(request),
             user_id=canvas.user_id,
             canvas_id=canvas.canvas_id,
             inbound=get_inbound(request),

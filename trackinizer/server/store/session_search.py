@@ -176,7 +176,7 @@ async def search_session_records(
                 dim=dim,
                 limit=limit,
                 scope=scope,
-                scan=await _scan_for(engine, conn, scope),
+                scan=await _semantic_scan(engine, conn, scope),
             )
             if query_vector is not None
             else []
@@ -208,7 +208,7 @@ type _Scan = Literal["plain", "iterative", "widening"]
 # one, loses almost no candidate to the transcript test, so it is scanned as it always
 # was and the database is asked nothing more for it. Any other loses the hidden ones,
 # and a shortfall would tell it they sit nearest its query.
-async def _scan_for(
+async def _semantic_scan(
     engine: DatabaseEngine,
     conn: Conn,
     scope: FeedScope,

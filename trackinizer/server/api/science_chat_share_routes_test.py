@@ -107,7 +107,7 @@ async def _ada_chat(client: httpx2.AsyncClient, store: Store) -> _Chat:
     service = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     canvas = await open_canvas(client)
     session = await seed_converse(client, store, canvas_id=canvas)
-    conversation = await _conversation_of(store, session)
+    conversation = await _session_conversation(store, session)
     await _record(store, session, ADA)
     return _Chat(
         conversation=conversation,
@@ -835,7 +835,7 @@ async def test_a_line_the_assistant_took_counts_as_posted_until_it_is_recorded(
     act_as_assistant("writer")
     recorded = await client.post(
         f"/api/sessions/{chat.session}/records",
-        json=_line_of(chat.session, BOB),
+        json=_person_line(chat.session, BOB),
     )
 
     assert (
@@ -880,7 +880,7 @@ async def test_only_a_session_the_chat_counts_records_a_line_the_assistant_took(
     act_as_other_agent("writer")
     into_squat = await client.post(
         f"/api/sessions/{squat}/records",
-        json=_line_of(squat, BOB),
+        json=_person_line(squat, BOB),
     )
     after_squat = sorted(map(str, inbound.conversation_senders(chat.conversation)))
     browser()
@@ -888,7 +888,7 @@ async def test_only_a_session_the_chat_counts_records_a_line_the_assistant_took(
     act_as_user_agent("writer")
     into_helper = await client.post(
         f"/api/sessions/{helper}/records",
-        json=_line_of(helper, BOB),
+        json=_person_line(helper, BOB),
     )
 
     assert (into_squat.status_code, into_helper.status_code) == (200, 200)
@@ -1364,7 +1364,7 @@ async def test_a_planted_idempotency_key_does_not_make_a_stranger_the_starter(
     )
 
     assert planted.status_code == 200, planted.text
-    assert inbound.sender_of(chat.conversation) == BOB
+    assert inbound.key_sender(chat.conversation) == BOB
     assert _code(bob) == "chat_not_shared"
     assert ada.status_code == 200, ada.text
 
@@ -1417,7 +1417,7 @@ async def _heard(
     )
 
 
-def _line_of(session: uuid.UUID, sender: str) -> dict[str, object]:
+def _person_line(session: uuid.UUID, sender: str) -> dict[str, object]:
     """Build the append that records one person's line, as the assistant sends it."""
     line = SessionRecordRow.of(
         session_id=session,
@@ -1618,7 +1618,7 @@ async def _revisions(store: Store, *canvases: uuid.UUID) -> list[int]:
     return [held[canvas] for canvas in canvases]
 
 
-async def _conversation_of(store: Store, session: uuid.UUID) -> uuid.UUID:
+async def _session_conversation(store: Store, session: uuid.UUID) -> uuid.UUID:
     """Read the conversation a chat's session carries."""
     async with store.engine.acquire() as conn:
         named = await conn.fetchval(

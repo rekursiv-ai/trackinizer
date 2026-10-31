@@ -110,7 +110,7 @@ class GeminiAdapter:
         del cli_args
         return None
 
-    def subagent_of(self, path: Path) -> Subagent | None:
+    def subagent(self, path: Path) -> Subagent | None:
         """Return ``None``: this adapter knows no gemini sub-agent transcript."""
         del path
         return None

@@ -43,7 +43,7 @@ from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
 __all__ = [
     "SESSION_RECORD_FIELDS",
-    "record_kind_for",
+    "column_record_kind",
     "snake_case",
 ]
 
@@ -106,7 +106,7 @@ SESSION_RECORD_FIELDS: Final[dict[str, str]] = {
 }
 
 
-def record_kind_for(column: str) -> str | None:
+def column_record_kind(column: str) -> str | None:
     """Return the record kind ``column`` filters on, or ``None`` if it is not one.
 
     Args:

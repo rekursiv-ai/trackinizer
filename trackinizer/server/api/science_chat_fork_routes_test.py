@@ -27,9 +27,9 @@ from trackinizer.server.api.canvas_test_support import (
     act_as_assistant,
     act_as_other_agent,
     browser,
-    conversation_of,
     drain,
     open_canvas,
+    receipt_conversation,
     seed_accounts,
     seed_science_chat,
     seed_session,
@@ -440,7 +440,7 @@ async def test_consumer_domains_are_no_organisation_but_my_own_chat_stays_mine(
 
     # Bob neither types in Alice's chat nor reads its lines to fork them.
     assert (posted.status_code, forked.status_code, mine.status_code) == (403, 422, 200)
-    assert conversation_of(mine) == chat.conversation
+    assert receipt_conversation(mine) == chat.conversation
 
 
 @pytest.mark.db_pglite
@@ -751,7 +751,7 @@ async def test_a_chat_the_assistant_has_not_opened_yet_is_its_starters_already(
         canvas_id=first,
         text="alice starts",
     )
-    conversation = conversation_of(started)
+    conversation = receipt_conversation(started)
     second = await _canvas(client, email=JAN)
 
     # No session carries the conversation yet, only the line that began it.

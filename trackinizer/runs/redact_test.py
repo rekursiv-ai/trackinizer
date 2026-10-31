@@ -310,7 +310,7 @@ def test_a_secret_in_a_text_attachment_is_redacted_in_its_stored_bytes() -> None
             Attachment(mime_descriptor="text/plain", data=b"nothing here"),
         ),
     )
-    body = _body_of(message)
+    body = _record_body(message)
     assert canary not in body.model_dump_json()
     out = redact_body(body, redactor=Redactor({"API_KEY": canary}))
     assert from_plain(
@@ -336,7 +336,7 @@ def test_a_secret_in_binary_attachment_bytes_is_replaced_and_the_rest_kept() -> 
             ),
         ),
     )
-    out = redact_body(_body_of(message), redactor=Redactor({"API_KEY": canary}))
+    out = redact_body(_record_body(message), redactor=Redactor({"API_KEY": canary}))
     assert from_plain(
         out.payload,
         UserMessage,
@@ -355,7 +355,10 @@ def test_attachment_bytes_without_a_secret_are_kept_as_they_are() -> None:
     message = UserMessage(
         attachments=(Attachment(mime_descriptor="image/png", data=b"\x00\xff\x80"),),
     )
-    out = redact_body(_body_of(message), redactor=Redactor({"K": "sk-live-12345678"}))
+    out = redact_body(
+        _record_body(message),
+        redactor=Redactor({"K": "sk-live-12345678"}),
+    )
     assert (
         from_plain(out.payload, UserMessage, default_concrete_types=CONCRETE_TYPES)
         == message
@@ -409,10 +412,10 @@ def test_a_pem_cut_after_its_armour_is_redacted() -> None:
 
 
 def _body(content: str) -> RecordBody:
-    return _body_of(UserMessage(content=content))
+    return _record_body(UserMessage(content=content))
 
 
-def _body_of(record: UserMessage) -> RecordBody:
+def _record_body(record: UserMessage) -> RecordBody:
     row = SessionRecordRow.of(
         session_id=UUID(int=0),
         part=0,

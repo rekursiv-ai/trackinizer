@@ -73,7 +73,7 @@ class InquiryFieldRoute:
 
     patch: bool
     """Whether PATCH (add/sub) applies -- true for list columns and the
-    numeric ``marginal_cost_*`` axes. Set in :func:`_route_for` rather
+    numeric ``marginal_cost_*`` axes. Set in :func:`_column_route` rather
     than inferred from ``add_method``, since a cost axis is PATCH-able yet
     dispatches through ``Store.add_cost`` rather than a named method."""
 
@@ -115,7 +115,7 @@ def inquiry_field_routes() -> tuple[InquiryFieldRoute, ...]:
             # only through its dedicated method, so it gets no field route.
             if column in seen or not flat.spec.route_editable:
                 continue
-            seen[column] = _route_for(column, flat)
+            seen[column] = _column_route(column, flat)
     return tuple(seen.values())
 
 
@@ -286,7 +286,7 @@ def _owner_kind(spec: FlatColumn) -> str | None:
     return owner.lower()
 
 
-def _route_for(column: str, flat: FlatColumn) -> InquiryFieldRoute:
+def _column_route(column: str, flat: FlatColumn) -> InquiryFieldRoute:
     """Derive the route for one flat column from its spec."""
     spec = flat.spec
     if column.startswith(_COST_PREFIX):

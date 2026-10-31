@@ -922,7 +922,7 @@ class TestClientMethods:
         assert client.get_inquiry(UuidRef(uuid=target_id))[0] == "Issue"
         assert client.next_issue() == {"id": str(target_id)}
         assert client.recent_changes(limit=2) == [{"id": "c"}]
-        assert client.cost_for(target_id, deep=True) == {"agent_usd": 1.0}
+        assert client.inquiry_cost(target_id, deep=True) == {"agent_usd": 1.0}
 
     def test_list_kind_serializes_filters_as_repeated_query_params(self) -> None:
         """Each filter rides the wire as a discrete ``filter`` query param.

@@ -27,7 +27,7 @@ import uuid
 
 from treekle import from_plain
 
-from trackinizer.server.audience import audiences_for
+from trackinizer.server.audience import person_audiences
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.deleted_chats import lock_chat_id
 from trackinizer.server.visuals.chat_forks import (
@@ -261,7 +261,7 @@ async def _holds(conn: Conn, *, email: str, staff: Sequence[str]) -> frozenset[s
     )
     if row is None:
         return frozenset[str]()
-    return audiences_for(
+    return person_audiences(
         from_plain(row["email"], str),
         hosted_domain=from_plain(row["hosted_domain"], str, default=None),
         staff=staff,

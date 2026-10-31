@@ -23,7 +23,7 @@ from trackinizer.sagent.session.types import (
     AssistantMessage,
     UserMessage,
 )
-from trackinizer.server.audience import NOBODY, reader_for
+from trackinizer.server.audience import NOBODY, caller_reader
 from trackinizer.server.config import Assistant
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import (
@@ -1681,7 +1681,7 @@ async def _fork(
         source_role="writer",
         inbound=inbound,
         assistant=_KB,
-        reader=reader_for(
+        reader=caller_reader(
             _ME,
             audiences=frozenset({OPEN, PRIVATE}),
             admin=False,
@@ -2135,7 +2135,7 @@ def test_a_stored_partner_choice_reads_as_the_assistant_provider(choice: str) ->
     state = _open(engine)
 
     assert state.provider == "assistant"
-    assert "partner_choice" not in canvas_store._data_of(state).model_dump()
+    assert "partner_choice" not in canvas_store._stored_data(state).model_dump()
 
 
 def test_a_canvas_that_stays_invisible_after_its_insert_is_an_error() -> None:
@@ -2732,7 +2732,7 @@ async def _post(
         source_role="writer",
         inbound=inbound,
         assistant=None,
-        reader=reader_for(
+        reader=caller_reader(
             poster,
             audiences=frozenset({OPEN}),
             admin=False,
@@ -2834,7 +2834,7 @@ async def test_a_command_chat_cannot_run_is_refused_and_queues_nothing(
         _ = await _post(pglite_engine, inbound=inbound, text="/resume", key=key)
 
     assert inbound.drain(session) == []
-    assert inbound.sender_of(key) is None
+    assert inbound.key_sender(key) is None
     assert await _marks_sent(pglite_engine) == 0
 
 
@@ -2919,7 +2919,7 @@ async def test_only_the_runs_owner_answers_its_prompts(
             key=key,
         )
     assert inbound.drain(session) == []
-    assert inbound.sender_of(key) is None
+    assert inbound.key_sender(key) is None
     answered = await _post(
         pglite_engine,
         inbound=inbound,

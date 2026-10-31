@@ -6,7 +6,7 @@ partial index; if the cast ever drifts from the index's cast the query silently
 seqscans 4.7M rows. Forcing ``enable_seqscan=off`` and reading EXPLAIN pins that
 the index is actually eligible.
 
-``index_name_for`` is unit-tested without a DB; the rest run on pglite.
+``index_name`` is unit-tested without a DB; the rest run on pglite.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_embed import sweep_session_embeddings
 from trackinizer.server.store.session_index import (
     ensure_model_index,
-    index_name_for,
+    index_name,
 )
 
 
@@ -39,13 +39,13 @@ _DIM = StubEmbedder(dim=1024).dim  # 1024.
 
 def test_index_name_is_deterministic_and_sanitized() -> None:
     """Every non-alnum char becomes ``_``; the result is lowercased + prefixed."""
-    assert index_name_for("stub-1024") == "idx_session_embeddings_hnsw_stub_1024"
+    assert index_name("stub-1024") == "idx_session_embeddings_hnsw_stub_1024"
     assert (
-        index_name_for("qwen3-embedding-4b@1024")
+        index_name("qwen3-embedding-4b@1024")
         == "idx_session_embeddings_hnsw_qwen3_embedding_4b_1024"
     )
     assert (
-        index_name_for("jina-embeddings-v5-text-nano@768")
+        index_name("jina-embeddings-v5-text-nano@768")
         == "idx_session_embeddings_hnsw_jina_embeddings_v5_text_nano_768"
     )
 
@@ -53,7 +53,7 @@ def test_index_name_is_deterministic_and_sanitized() -> None:
 def test_index_name_rejects_an_unsafe_slug() -> None:
     """A slug with quotes/spaces is a programming error, not a runtime input."""
     with pytest.raises(ValueError, match="not a valid index-name source"):
-        index_name_for("bad'; DROP TABLE session_embeddings; --")
+        index_name("bad'; DROP TABLE session_embeddings; --")
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -113,7 +113,7 @@ async def test_ensure_model_index_is_idempotent(store: Store) -> None:
         await ensure_model_index(conn, _MODEL, _DIM)  # No error on the repeat.
         present = await conn.fetchval(
             "SELECT 1 FROM pg_indexes WHERE indexname = $1",
-            index_name_for(_MODEL),
+            index_name(_MODEL),
         )
     assert present == 1
 
@@ -124,11 +124,11 @@ async def test_ensure_creates_a_new_models_index(store: Store) -> None:
     """A model not in the baseline gets its partial index created on demand."""
     name = "qwen3-embedding-8b@1024"
     async with store.engine.acquire() as conn:
-        await conn.execute("DROP INDEX IF EXISTS " + index_name_for(name))
+        await conn.execute("DROP INDEX IF EXISTS " + index_name(name))
         await ensure_model_index(conn, name, 1024)
         present = await conn.fetchval(
             "SELECT 1 FROM pg_indexes WHERE indexname = $1",
-            index_name_for(name),
+            index_name(name),
         )
     assert present == 1
 
@@ -155,7 +155,7 @@ async def test_semantic_query_uses_the_partial_index(store: Store) -> None:
             query,
         )
     plan = "\n".join(str(row["QUERY PLAN"]) for row in plan_rows)
-    assert index_name_for(_MODEL) in plan, plan
+    assert index_name(_MODEL) in plan, plan
 
 
 @pytest.mark.db_pglite

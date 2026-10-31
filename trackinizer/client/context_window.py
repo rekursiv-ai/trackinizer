@@ -226,7 +226,7 @@ def window(segments: Sequence[Segment]) -> Window:
 
     """
     order = placed(segments)
-    opening, start, resume = _opening_of(order, segments)
+    opening, start, resume = _window_opening(order, segments)
     history = (
         []
         if opening is None
@@ -399,7 +399,7 @@ class _Fit:
 
 # The last opening wins, whichever part holds it. Its compaction event sits just before
 # the clear, on the same source line, so it is left out with what came before.
-def _opening_of(
+def _window_opening(
     order: Sequence[Placed],
     segments: Sequence[Segment],
 ) -> tuple[Opening | None, int, int]:

@@ -2065,12 +2065,12 @@ def test_recent_calls_recent_changes(client: FakeClient) -> None:
 
 def test_cost_calls_cost_for(client: FakeClient) -> None:
     run(["cost", "issue", "1"], client)
-    assert any(c[0] == "cost_for" for c in client.calls)
+    assert any(c[0] == "inquiry_cost" for c in client.calls)
 
 
 def test_confidence_calls_confidence_for(client: FakeClient) -> None:
     run(["confidence", "belief", "3"], client)
-    assert any(c[0] == "confidence_for" for c in client.calls)
+    assert any(c[0] == "derived_confidence" for c in client.calls)
 
 
 def test_confidence_json_format(
@@ -2084,7 +2084,7 @@ def test_confidence_json_format(
 
 def test_authority_calls_authority_for(client: FakeClient) -> None:
     run(["authority", "belief", "3"], client)
-    assert any(c[0] == "authority_for" for c in client.calls)
+    assert any(c[0] == "derived_authority" for c in client.calls)
 
 
 def test_authority_empty_reports_no_dependents(
@@ -4196,7 +4196,7 @@ def test_a_cost_field_prints_the_axis_of_its_row_to_six_places(
 
     assert capsys.readouterr().out == "2.500000\n"
     assert ("resolve_id", (ref,), {}) in client.calls
-    assert ("cost_for", (client.target_id,), {"deep": False}) in client.calls
+    assert ("inquiry_cost", (client.target_id,), {"deep": False}) in client.calls
 
 
 def test_a_cost_field_the_row_lacks_prints_zero(

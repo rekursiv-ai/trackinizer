@@ -203,7 +203,7 @@ class _Served:
                 email,
             )
 
-    async def audiences_of(self, chat: _Chat) -> list[str]:
+    async def chat_audiences(self, chat: _Chat) -> list[str]:
         """Return the audience of every session under the chat's id."""
         async with self.store.engine.acquire() as conn:
             rows = await conn.fetch(
@@ -544,7 +544,7 @@ async def test_a_staff_read_for_an_asker_makes_their_chat_staff(
         [403] * 3,
         [200] * 3,
     )
-    assert await served.audiences_of(chat) == ["staff"]
+    assert await served.chat_audiences(chat) == ["staff"]
     assert await served.moves(chat) == [
         (_ASSISTANT, f"read {served.others.id} for {_STAFF}", "open", "staff"),
     ]
@@ -578,7 +578,7 @@ async def test_a_staff_read_takes_no_one_elses_chat_from_them(
         {"detail": {"code": "chat_not_starter"}},
     )
     assert (again, kept) == ([200] * 3, [200] * 3)
-    assert await served.audiences_of(wes) == ["open"]
+    assert await served.chat_audiences(wes) == ["open"]
 
 
 async def test_a_session_is_read_only_into_a_chat_whose_every_reader_reads_it(
@@ -643,7 +643,7 @@ async def test_a_staff_read_for_an_asker_outside_the_chat_is_refused(
             403,
             {"detail": {"code": "chat_not_member"}},
         )
-    assert await served.audiences_of(hidden) == ["private"]
+    assert await served.chat_audiences(hidden) == ["private"]
 
 
 async def test_a_hidden_chat_is_never_made_staff(served: _Served) -> None:
@@ -660,7 +660,7 @@ async def test_a_hidden_chat_is_never_made_staff(served: _Served) -> None:
         409,
         {"detail": {"code": "chat_private"}},
     )
-    assert await served.audiences_of(chat) == ["private"]
+    assert await served.chat_audiences(chat) == ["private"]
 
 
 async def test_a_read_for_an_admin_asker_holds_no_oversight(
@@ -686,7 +686,7 @@ async def test_an_open_read_leaves_the_chat_open(served: _Served) -> None:
     read = await served.reads(served.public, asker=_STAFF, chat=chat.conversation)
 
     assert read == [200] * 3
-    assert await served.audiences_of(chat) == ["open"]
+    assert await served.chat_audiences(chat) == ["open"]
     assert await served.moves(chat) == []
 
 
@@ -708,7 +708,7 @@ async def test_a_hidden_session_is_not_read_into_its_owners_chat(
     read = await served.reads(hidden, asker=_OPEN_WRITER, chat=chat.conversation)
 
     assert (themselves, read) == ([200] * 3, [403] * 3)
-    assert await served.audiences_of(chat) == ["open"]
+    assert await served.chat_audiences(chat) == ["open"]
 
 
 if __name__ == "__main__":

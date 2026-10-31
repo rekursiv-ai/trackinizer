@@ -39,7 +39,7 @@ import uuid
 from fastapi import Depends, HTTPException, Request
 
 from trackinizer.lib.userdirs import data_dir
-from trackinizer.server.audience import audiences_for, key_audiences
+from trackinizer.server.audience import key_audiences, person_audiences
 from trackinizer.server.notify import tx
 from trackinizer.server.session import read_session_cookie
 from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE
@@ -85,11 +85,11 @@ __all__ = [
     "list_api_keys",
     "lookup_user_by_id",
     "mint_open_into",
+    "request_user",
     "require_role",
     "revoke_api_key",
     "seed_no_auth_user",
     "set_api_key_role",
-    "user_of",
     "verify_secret",
 ]
 
@@ -315,15 +315,15 @@ def generate_token() -> tuple[str, str]:
 
 
 async def current_user(request: Request) -> AuthIdentity:
-    """FastAPI dependency resolving the principal of an HTTP request; see :func:`user_of`."""
-    return await user_of(request)
+    """FastAPI dependency resolving the principal of an HTTP request; see :func:`request_user`."""
+    return await request_user(request)
 
 
 # A separate function, not a wider ``current_user``: FastAPI injects a dependency's
 # parameter only when its annotation resolves at runtime, and ruff moves a type used
 # only in annotations under ``TYPE_CHECKING``, which would turn ``request`` into a
 # required query parameter and answer 422 for every route.
-async def user_of(request: HTTPConnection) -> AuthIdentity:
+async def request_user(request: HTTPConnection) -> AuthIdentity:
     """Resolve the bearer-token or session-cookie principal of a request or WebSocket.
 
     Tries the ``Authorization: Bearer`` header first, then the signed
@@ -814,7 +814,7 @@ async def lookup_user_by_id(
     assert isinstance(row_id, uuid.UUID)
     assert isinstance(email, str)
     hosted_domain = cast("str | None", row["hosted_domain"])
-    owner = audiences_for(email, hosted_domain=hosted_domain, staff=staff)
+    owner = person_audiences(email, hosted_domain=hosted_domain, staff=staff)
     return AuthIdentity(
         user_id=row_id,
         api_key_id=None,
@@ -1141,7 +1141,7 @@ async def _resolve_identity(
             assert isinstance(email, str)
             hosted_domain = cast("str | None", row["hosted_domain"])
             audiences = key_audiences(
-                audiences_for(email, hosted_domain=hosted_domain, staff=staff),
+                person_audiences(email, hosted_domain=hosted_domain, staff=staff),
                 open_into=cast("str | None", row["open_into"]),
             )
             identity = AuthIdentity(

@@ -114,7 +114,7 @@ async def create_edge_batch_route(
                 labels=item.labels or (),
                 reason=item.reason,
                 api_key_id=identity.api_key_id,
-                actor=_actor_of(item, identity),
+                actor=_audit_actor(item, identity),
             )
         except Exception as err:  # noqa: BLE001 -- batch response preserves partial success context.
             items.append(_EdgeBatchFailure(index=index, error=_safe_batch_error(err)))
@@ -163,7 +163,7 @@ async def create_edge_route(
         labels=req.labels or (),
         reason=req.reason,
         api_key_id=identity.api_key_id,
-        actor=_actor_of(req, identity),
+        actor=_audit_actor(req, identity),
     )
     return _edge_response(change_id, created=created)
 
@@ -200,7 +200,7 @@ async def delete_edge_route(
         edge_kind=edge_kind,
         reason=req.reason,
         api_key_id=identity.api_key_id,
-        actor=_actor_of(req, identity),
+        actor=_audit_actor(req, identity),
     )
     return _edge_response(change_id)
 
@@ -239,7 +239,7 @@ async def patch_edge_labels_route(
         label=req.value,
         reason=req.reason,
         api_key_id=identity.api_key_id,
-        actor=_actor_of(req, identity),
+        actor=_audit_actor(req, identity),
     )
     return _edge_response(change_id)
 
@@ -349,7 +349,7 @@ class _EdgeBatchFailure(BaseModel):
     error: str
 
 
-def _actor_of(body: ActorMixin, identity: AuthIdentity) -> str:
+def _audit_actor(body: ActorMixin, identity: AuthIdentity) -> str:
     return body.actor or identity.email
 
 
@@ -389,7 +389,7 @@ def _make_edge_put(route: EdgeFieldRoute) -> Callable[..., Awaitable[MutableJSON
             edge_kind=edge_kind,
             reason=body.reason,
             api_key_id=identity.api_key_id,
-            actor=_actor_of(body, identity),
+            actor=_audit_actor(body, identity),
         )
         return _edge_response(change_id)
 
@@ -422,7 +422,7 @@ def _make_edge_delete(route: EdgeFieldRoute) -> Callable[..., Awaitable[MutableJ
             edge_kind=edge_kind,
             reason=body.reason,
             api_key_id=identity.api_key_id,
-            actor=_actor_of(body, identity),
+            actor=_audit_actor(body, identity),
         )
         return _edge_response(change_id)
 

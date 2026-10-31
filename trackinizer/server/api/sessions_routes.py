@@ -779,7 +779,7 @@ async def session_end_route(
     await require_chat_writer(request, identity, session=session, closing=True)
     # A switch stops the old run, which may exit after the new provider's run attached:
     # ending the chat's session then would take that run's lease and queued lines.
-    provider = await _chat_provider_of(request, session=session)
+    provider = await _chat_provider(request, session=session)
     if provider is not None and body.cli is not None and body.cli != provider:
         return SessionEndResponse(id=session_id, ended=session.ended)
     # A reattach replaces a run that may quit before its drain is turned away: its end
@@ -868,7 +868,7 @@ async def _authorize_drain(
     store = get_store(request)
     session = await require_session(store, session_id)
     await require_session_access(request, identity, session=session, mode="drain")
-    provider = await _chat_provider_of(request, session=session)
+    provider = await _chat_provider(request, session=session)
     if provider is not None and provider != "assistant":
         _refuse_the_other_provider(request, identity, provider=provider)
         await require_chat_writer(request, identity, session=session)
@@ -1017,7 +1017,7 @@ def _actor(identity: AuthIdentity, supplied: str | None) -> str:
     return supplied or identity.email
 
 
-async def _chat_provider_of(
+async def _chat_provider(
     request: Request,
     *,
     session: AgentSession,

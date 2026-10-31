@@ -421,7 +421,7 @@ async def send_chat(
     )
 
 
-def conversation_of(response: httpx2.Response) -> uuid.UUID:
+def receipt_conversation(response: httpx2.Response) -> uuid.UUID:
     """Name the conversation a posted line's receipt carries.
 
     Args:
@@ -457,7 +457,7 @@ async def converse(
 
     """
     browser()
-    conversation_id = conversation_of(
+    conversation_id = receipt_conversation(
         await send_chat(client, canvas_id=canvas_id, text=text),
     )
     return await open_science_chat(client, store, conversation_id=conversation_id)
@@ -485,13 +485,13 @@ async def seed_converse(
 
     """
     browser()
-    conversation_id = conversation_of(
+    conversation_id = receipt_conversation(
         await send_chat(client, canvas_id=canvas_id, text=text),
     )
     return await seed_science_chat(store, conversation_id=conversation_id)
 
 
-async def revision_of(client: httpx2.AsyncClient, *, canvas_id: uuid.UUID) -> int:
+async def canvas_revision(client: httpx2.AsyncClient, *, canvas_id: uuid.UUID) -> int:
     """Read a canvas's revision as the installed browser.
 
     Args:

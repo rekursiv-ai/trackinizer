@@ -56,10 +56,10 @@ from trackinizer.server.auth import (
     hash_secret,
     key_within_caller,
     lookup_user_by_id,
+    request_user,
     require_role,
     revoke_api_key,
     set_api_key_role,
-    user_of,
     verify_secret,
 )
 from trackinizer.server.config import Config
@@ -1703,7 +1703,7 @@ class TestUserOf:
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
         request = _request_with(engine, f"Bearer {secret}")
 
-        assert await current_user(request) == await user_of(request)
+        assert await current_user(request) == await request_user(request)
 
     @pytest.mark.asyncio
     async def test_a_websocket_handshake_resolves_like_a_request(self) -> None:
@@ -1727,13 +1727,13 @@ class TestUserOf:
             },
         )
 
-        assert (await user_of(handshake)).api_key_id == key_id
+        assert (await request_user(handshake)).api_key_id == key_id
 
     @pytest.mark.asyncio
     async def test_auth_disabled_resolves_a_synthetic_admin_with_an_id(self) -> None:
         engine = FakeEngine()
 
-        identity = await user_of(
+        identity = await request_user(
             _request_with(engine, None, config=Config(auth_disabled=True)),
         )
 
@@ -1754,7 +1754,7 @@ class TestUserOf:
         bearer: str,
     ) -> None:
         with pytest.raises(HTTPException) as refused:
-            await user_of(_request_with(FakeEngine(), f"Bearer {bearer}"))
+            await request_user(_request_with(FakeEngine(), f"Bearer {bearer}"))
 
         assert (refused.value.status_code, refused.value.detail) == (
             401,
@@ -1768,7 +1768,7 @@ class TestUserOf:
         engine.conn.fetch.return_value = list[dict[str, object]]()
 
         with pytest.raises(HTTPException) as refused:
-            await user_of(_request_with(engine, f"Bearer {secret}"))
+            await request_user(_request_with(engine, f"Bearer {secret}"))
 
         assert (refused.value.status_code, refused.value.detail) == (
             401,
@@ -1778,7 +1778,7 @@ class TestUserOf:
     @pytest.mark.asyncio
     async def test_no_credential_is_401_not_authenticated(self) -> None:
         with pytest.raises(HTTPException) as refused:
-            await user_of(_request_with(FakeEngine(), None))
+            await request_user(_request_with(FakeEngine(), None))
 
         assert (refused.value.status_code, refused.value.detail) == (
             401,
@@ -1806,7 +1806,7 @@ class TestUserOf:
             config=_config_with_session_secret(signing_key),
         )
 
-        await user_of(request)
+        await request_user(request)
 
         assert user_id in engine.conn.fetchrow.call_args.args
 
@@ -1822,7 +1822,7 @@ class TestUserOf:
         cast(MagicMock, request).state = SimpleNamespace()
 
         with caplog.at_level(logging.INFO):
-            await user_of(request)
+            await request_user(request)
 
         logged = [
             record.__dict__["request_id"]

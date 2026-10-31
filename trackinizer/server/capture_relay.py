@@ -109,7 +109,7 @@ class CaptureAnswer(BaseModel):
     error: Annotated[str, Field(min_length=1, max_length=200)] | None = None
 
     @model_validator(mode="after")
-    def _one_of(self) -> Self:
+    def _exactly_one(self) -> Self:
         """Require exactly one of the picture and the reason."""
         if (self.image is None) == (self.error is None):
             raise ValueError("send an image or an error, not both or neither")

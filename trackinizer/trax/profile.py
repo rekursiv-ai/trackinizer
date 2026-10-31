@@ -127,10 +127,10 @@ Fields: url actor token
     @override
     def help_with_context(cls, verb: str, prefix: list[str]) -> str:
         del verb
-        return cls.help_for(prefix)
+        return cls.profile_help(prefix)
 
     @classmethod
-    def help_for(cls, tokens: Sequence[str]) -> str:
+    def profile_help(cls, tokens: Sequence[str]) -> str:
         """Help for.
 
         Args:
@@ -143,16 +143,16 @@ Fields: url actor token
         if not tokens:
             return cls.help_text()
         if tokens[0] in cls.fields:
-            return cls._field_help_for(tokens[0], value=len(tokens) > 1)
+            return cls._field_help(tokens[0], value=len(tokens) > 1)
         if len(tokens) == 1:
             return cls.help_text()
         if len(tokens) >= 2 and tokens[1] in cls.fields:
             prefix = f"{tokens[0]} {tokens[1]}"
-            return cls._field_help_for(prefix, value=len(tokens) > 2)
+            return cls._field_help(prefix, value=len(tokens) > 2)
         return cls.help_text()
 
     @classmethod
-    def _field_help_for(cls, prefix: str, *, value: bool) -> str:
+    def _field_help(cls, prefix: str, *, value: bool) -> str:
         page = cls.field_set_help if value else cls.field_help
         suffix = "to VALUE" if value else "[to VALUE]"
         return page.with_usage(f"trax profile {prefix} {suffix}").render()
