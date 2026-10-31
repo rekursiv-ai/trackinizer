@@ -121,11 +121,10 @@ async def served(
 ) -> AsyncIterator[_Served]:
     """Serve one organisation, with the assistant, over Ann's, Bob's and Scout's keys."""
     client, store = pglite_route_client
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "config",
         Config(assistant=_SCOUT, chat_orgs="single"),
-        raising=False,
     )
     keys: dict[str, UUID] = {}
     async with store.engine.acquire() as conn:
