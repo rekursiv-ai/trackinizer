@@ -163,7 +163,7 @@ async def retype_session(conn: Conn, session_id: UUID) -> RetypeStats:
         outputs: list[_Output] = []
         commands: list[SlashCommandOut] = []
         for source in sources:
-            outputs.extend(_outputs_for(source, commands))
+            outputs.extend(_source_outputs(source, commands))
         await _replace_part(conn, session_id, outputs)
         await _insert_slash_commands(conn, session_id, commands)
         return RetypeStats(
@@ -275,7 +275,7 @@ async def _read_sources(conn: Conn, session_id: UUID) -> list[_Source]:
     return sources
 
 
-def _outputs_for(
+def _source_outputs(
     source: _Source,
     commands: list[SlashCommandOut],
 ) -> list[_Output]:

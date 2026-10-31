@@ -18,7 +18,7 @@ import uuid
 
 from treekle import MutablePlainTree, PlainTree, from_plain, json_loads
 
-from trackinizer.client.conversation import delivery_of
+from trackinizer.client.conversation import attested_delivery
 from trackinizer.client.errors import ClientError
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
@@ -1558,7 +1558,7 @@ class Kind(Command):
 
     @classmethod
     @override
-    def help_text_for(cls, verb: str) -> str:
+    def verb_help_text(cls, verb: str) -> str:
         """Help text for one kind verb."""
         return inquiry_help_text(verb)
 
@@ -1566,7 +1566,7 @@ class Kind(Command):
     @override
     def help_with_context(cls, verb: str, prefix: list[str]) -> str:
         """Per-kind help specialized to the tokens typed before ``help``."""
-        return kind_help_for(KIND_LOWER[verb], prefix)
+        return kind_help(KIND_LOWER[verb], prefix)
 
 
 def resolve_actor(actor: str, client: Client) -> Inquiry.Actor:
@@ -1587,7 +1587,7 @@ def resolve_actor(actor: str, client: Client) -> Inquiry.Actor:
     return actor or client.author or env("USER") or env("USERNAME") or "user"
 
 
-def kind_help_for(kind: Inquiry.InquiryKind, tokens: Sequence[str]) -> str:
+def kind_help(kind: Inquiry.InquiryKind, tokens: Sequence[str]) -> str:
     """Help for one kind, narrowing to a row or field as the tokens get longer.
 
     Args:
@@ -1827,8 +1827,8 @@ def run_cost_field(
     del args
     client = client_factory()
     _kind, target_id = client.resolve_id(ref)
-    payload = client.cost_for(target_id)
-    # ``cost_for`` keys by axis (``agent_usd`` / ``resource_usd``), not by
+    payload = client.inquiry_cost(target_id)
+    # ``inquiry_cost`` keys by axis (``agent_usd`` / ``resource_usd``), not by
     # the ``marginal_cost_*`` column ``cost_key`` returns; strip the prefix.
     axis = cost_key(field).removeprefix("marginal_cost_")
     echo(f"{payload.get(axis, 0):.6f}")
@@ -2604,7 +2604,7 @@ Options:
             seq=from_plain(_arg_values(args).get("seq"), int, default=0),
         )
         _, target_id = client.resolve_id(ref)
-        payload = client.cost_for(
+        payload = client.inquiry_cost(
             target_id,
             deep=bool(_arg_values(args).get("deep", False)),
         )
@@ -2672,7 +2672,7 @@ Options:
             seq=from_plain(_arg_values(args).get("seq"), int, default=0),
         )
         _, target_id = client.resolve_id(ref)
-        confidence = client.confidence_for(target_id)
+        confidence = client.derived_confidence(target_id)
         if _arg_str(args, "format_") == "json":
             echo(render.format_json({"confidence": confidence}), nl=False)
             return
@@ -2728,7 +2728,7 @@ Options:
             seq=from_plain(_arg_values(args).get("seq"), int, default=0),
         )
         _, target_id = client.resolve_id(ref)
-        scores = client.authority_for(target_id)
+        scores = client.derived_authority(target_id)
         if _arg_str(args, "format_") == "json":
             echo(render.format_json(scores), nl=False)
             return
@@ -3696,7 +3696,7 @@ def _record_line(session_id: uuid.UUID, part: PartBody, body: RecordBody) -> str
     if isinstance(record, AgentToAgentMessage):
         role, author, text = "user", record.sender or "unknown", record.content or ""
     elif isinstance(record, UserMessage):
-        delivery = delivery_of(record.extra)
+        delivery = attested_delivery(record.extra)
         role, author = "user", "terminal" if delivery is None else delivery.source
         text = record.content or ""
     elif isinstance(record, AssistantMessage):

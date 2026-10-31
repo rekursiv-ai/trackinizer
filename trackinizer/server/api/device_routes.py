@@ -34,7 +34,7 @@ from treekle import from_plain
 
 from trackinizer.server.api._deps import auth_is_disabled
 from trackinizer.server.api._origin import is_strictly_same_origin
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.api.device_limits import (
     device_code_requests,
     device_wrong_entries,
@@ -142,7 +142,7 @@ async def device_code_route(
     user_code = "".join(
         secrets.choice(USER_CODE_ALPHABET) for _ in range(USER_CODE_LENGTH)
     )
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         await conn.execute("DELETE FROM device_logins WHERE expires_at <= now()")
         open_codes = await conn.fetchval("SELECT count(*) FROM device_logins")
         if from_plain(open_codes, int) >= _MAX_OPEN_CODES:
@@ -204,7 +204,7 @@ async def device_token_route(
 
     """
     response.headers["Cache-Control"] = "no-store"
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         row = await conn.fetchrow(
             "SELECT id, status, approver, client, host, machine, "
             "COALESCE(last_polled_at > now() - make_interval(secs => $2), false) "
@@ -258,7 +258,7 @@ async def device_lookup_route(
 
     """
     _require_person(request, identity)
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         login = await _open_login(request, conn, identity=identity, body=body)
     return DeviceLoginView(
         user_code=format_user_code(login.user_code),
@@ -294,7 +294,7 @@ async def device_approve_route(
 
     """
     _require_person(request, identity)
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         login = await _open_login(request, conn, identity=identity, body=body)
         if login.machine is not None:
             if identity.role == "viewer":
@@ -333,7 +333,7 @@ async def device_deny_route(
 
     """
     _require_person(request, identity)
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         login = await _open_login(request, conn, identity=identity, body=body)
         await _decide(conn, login=login, status="denied", identity=identity)
 

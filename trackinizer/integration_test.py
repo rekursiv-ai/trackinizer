@@ -2960,10 +2960,10 @@ class TestIntegrationEndToEnd:
                 marginal_cost=Cost(agent_usd=0.04),
             ),
         )
-        self_only = await integ_store.cost_for(broader_issue_id, deep=False)
+        self_only = await integ_store.inquiry_cost(broader_issue_id, deep=False)
         assert self_only is not None
         assert self_only.agent_usd == pytest.approx(0.01)
-        rolled = await integ_store.cost_for(broader_issue_id, deep=True)
+        rolled = await integ_store.inquiry_cost(broader_issue_id, deep=True)
         assert rolled is not None
         assert rolled.agent_usd == pytest.approx(0.05)
 
@@ -4740,7 +4740,7 @@ class TestIntegrationEndToEnd:
     ) -> None:
         """Every web read route example.sh hits runs its real SQL on Postgres.
 
-        The web read routes (``_row_to_dict``, ``_edges_for`` /
+        The web read routes (``_row_to_dict``, ``_grouped_edges`` /
         ``_PEER_COLUMNS``, ``_snapshot_to_dict``, the search ILIKE, the
         recent-changes snapshot flatten) hand-write SQL that names
         kind-specific columns -- e.g. the peer join selects

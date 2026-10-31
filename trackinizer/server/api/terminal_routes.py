@@ -39,7 +39,7 @@ from trackinizer.server.api._deps import (
     get_terminal_hub,
 )
 from trackinizer.server.api._origin import is_strictly_same_origin
-from trackinizer.server.api._routes_shared import engine_of, idempotency_key
+from trackinizer.server.api._routes_shared import idempotency_key, request_engine
 from trackinizer.server.api.machine_runs_routes import live_runs
 from trackinizer.server.api.machines_routes import MachineName, fetch_machines
 from trackinizer.server.api.session_access import (
@@ -48,7 +48,7 @@ from trackinizer.server.api.session_access import (
     resolve_asker,
 )
 from trackinizer.server.auth import AuthIdentity, require_role
-from trackinizer.server.machine_auth import current_machine, machine_of
+from trackinizer.server.machine_auth import current_machine, request_machine
 from trackinizer.server.terminals import (
     Opening,
     SocketClosedError,
@@ -155,7 +155,7 @@ async def open_terminal_route(
         replace(identity, email=owner),
         name=body.machine,
     )
-    if body.command is not None and body.command not in _clis_of(facts):
+    if body.command is not None and body.command not in _machine_clis(facts):
         raise _refused(
             409,
             code="cli_not_installed",
@@ -272,7 +272,7 @@ async def reattach_session_route(
             code="not_a_chat",
             message="only a chat's run can be reattached",
         )
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         starter = await read_starter(
             conn,
             assistant=get_assistant(request),
@@ -321,7 +321,7 @@ async def reattach_session_route(
             "from Chat",
         )
     machine_id, facts = await _owned_machine(request, identity, name=machine)
-    if provider not in _clis_of(facts):
+    if provider not in _machine_clis(facts):
         raise _refused(
             409,
             code="cli_not_installed",
@@ -399,7 +399,7 @@ async def list_terminal_machines_route(
     """
     email = await _machines_owner(request, identity, owner=owner)
     hub = get_terminal_hub(request)
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         # Read as the owner: a personal machine is listed to its owner alone.
         rows = await fetch_machines(
             conn,
@@ -414,7 +414,7 @@ async def list_terminal_machines_route(
                 "terminal_ready": row["status"] == "online"
                 and hub.ready(from_plain(row["id"], UUID)),
                 "confirmed": row["confirmed_at"] is not None,
-                "clis": _clis_of(row["facts"]),
+                "clis": _machine_clis(row["facts"]),
                 "cwd": row["last_run_cwd"],
                 "runs": live_runs(
                     request,
@@ -470,7 +470,7 @@ async def confirm_terminal_machine_route(
     """
     _require_human(request, identity)
     _require_origin(request)
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         confirmed = await conn.fetchval(
             "UPDATE machines SET confirmed_at = COALESCE(confirmed_at, now()) "
             "WHERE name = $1 AND owner = $2 RETURNING id",
@@ -582,7 +582,7 @@ async def terminal_web_socket(websocket: WebSocket, terminal_id: UUID) -> None:
         return
     hub = get_terminal_hub(websocket)
     try:
-        identity = await auth.user_of(websocket)
+        identity = await auth.request_user(websocket)
     except HTTPException:
         await leg.close(wire_terminals.CLOSE_REFUSED)
         return
@@ -632,7 +632,7 @@ async def terminal_host_socket(
         await leg.close(wire_terminals.CLOSE_REFUSED)
         return
     try:
-        await machine_of(websocket, machine_id)
+        await request_machine(websocket, machine_id)
         await _require_instance(websocket, machine_id, instance=instance)
     except HTTPException as error:
         await leg.close(
@@ -835,7 +835,7 @@ async def _owned_machine(
     name: str,
 ) -> tuple[UUID, object]:
     """Return the id and facts of the caller's online machine with a live credential."""
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         machine = await conn.fetchrow(
             "SELECT m.id, m.facts, m.confirmed_at IS NOT NULL AS confirmed "
             "FROM machines m WHERE m.name = $1 AND m.owner = $2 "
@@ -858,7 +858,7 @@ async def _owned_machine(
     return from_plain(machine["id"], UUID), machine["facts"]
 
 
-def _clis_of(facts: object) -> list[str]:
+def _machine_clis(facts: object) -> list[str]:
     """Return the CLIs a machine's facts list; none when its host reported no list."""
     # Any fact may be a string, a number or a flag, so a host can send ``clis`` in
     # another shape; that machine then offers no CLI, rather than failing the listing.
@@ -889,7 +889,7 @@ async def _canvas_workspace(
     """Return the workspace of the owner's canvas; refuse another user's."""
     if canvas is None:
         return None
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         row = await conn.fetchrow(
             "SELECT w.metadata->>'workspace_id' AS workspace "
             "FROM visual_canvases w JOIN users u ON u.id = w.user_id "
@@ -931,7 +931,7 @@ async def _require_instance(
     instance: UUID,
 ) -> None:
     """Refuse a host that is not the machine's current instance."""
-    async with engine_of(connection).acquire() as conn:
+    async with request_engine(connection).acquire() as conn:
         current = await conn.fetchval(
             "SELECT host_instance = $2 FROM machines WHERE id = $1",
             machine_id,
@@ -977,7 +977,7 @@ async def _reopen_run(request: Request, *, opening: Opening) -> UUID:
 async def _open_terminal(request: Request, *, opening: Opening) -> UUID:
     """Queue one terminal unless a run is live on its session; return only its id."""
     if opening.command is not None:
-        async with engine_of(request).acquire() as conn:
+        async with request_engine(request).acquire() as conn:
             await conn.execute(
                 "UPDATE machines SET last_run_cwd = $1 WHERE id = $2 AND owner = $3",
                 opening.cwd,

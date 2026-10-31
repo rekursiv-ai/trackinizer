@@ -36,9 +36,9 @@ from trackinizer.server.api.canvas_test_support import (
     USER_AGENT,
     Agent,
     browser,
+    canvas_revision,
     chat_labels,
     open_canvas,
-    revision_of,
     seed_accounts,
     seed_session,
     send_chat,
@@ -345,7 +345,7 @@ async def test_a_provider_switch_on_cals_canvas_leaves_the_chats_run_alone(
     switched = await client.post(
         f"/api/canvases/{canvas}/operations",
         json={
-            "revision": await revision_of(client, canvas_id=canvas),
+            "revision": await canvas_revision(client, canvas_id=canvas),
             "operation": {"kind": "provider", "provider": target},
         },
         headers={"Idempotency-Key": str(uuid.uuid4())},

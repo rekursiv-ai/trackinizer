@@ -25,7 +25,7 @@ from trackinizer.server.api._deps import (
     get_exec_hub,
     get_terminal_hub,
 )
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.api.machines_routes import (
     MachineName,
     absent_machine,
@@ -135,10 +135,10 @@ async def enroll_machine_route(
 
     """
     refuse_reserved(body.name)
-    asker = await _asker_of(request, identity, asker=body.asker)
+    asker = await _enrolled_asker(request, identity, asker=body.asker)
     who = identity.email if asker is None else asker
     admin = asker is None and identity.role == "admin"
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         machine_id = await claim_machine(
             conn,
             name=body.name,
@@ -190,7 +190,7 @@ async def join_machine_route(
     parsed = parse_enrollment(body.token)
     if parsed is None:
         raise _refused()
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         # Refused by a plain read, before any lock. Join has no authentication, and
         # the machine row lock below queues behind that machine's heartbeats and admin
         # writes, so a junk token naming a real machine would stall all of them.
@@ -287,7 +287,7 @@ async def heartbeat_machine_route(
       HTTPException: 410 when the credential was revoked after it authenticated.
 
     """
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         # Lock first and check second, as separate statements: a revoke in flight
         # holds this row until it commits, and only a statement that starts after the
         # lock sees its commit. The write then cannot land after the revoke cleared
@@ -388,7 +388,7 @@ async def revoke_machine(
 
     """
     refuse_reserved(name)
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         machine = await conn.fetchrow(
             "SELECT id, owner FROM machines WHERE name = $1 FOR UPDATE",
             name,
@@ -528,7 +528,7 @@ async def issue_enrollment(
 # The assistant is trusted to say whom it answers, as for a chat's settings, and the
 # server reads that person's role itself. Anyone else naming an asker is refused, not
 # ignored: a machine enrolled for the wrong person would be theirs to open a shell on.
-async def _asker_of(
+async def _enrolled_asker(
     request: Request,
     identity: AuthIdentity,
     *,

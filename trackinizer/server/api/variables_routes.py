@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from treekle import from_plain
 
 from trackinizer.server.api._deps import get_secrets
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import tx
 from trackinizer.server.secrets import SecretBackend, SecretRef
@@ -65,7 +65,7 @@ async def list_variables_route(
 
     """
     del identity
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         rows = await conn.fetch(
             "SELECT layer, owner, name, secret, value, updated_by, updated "
             "FROM variables WHERE layer = 'org' AND owner = '' ORDER BY name",
@@ -111,7 +111,7 @@ async def put_variable_route(
         raise ValidationError("value contains a NUL character")
     backend = _backend(request) if body.secret else None
     ref = SecretRef(layer="org", owner="", name=name)
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         await _lock(conn, ref=ref)
         # A secret row's value is NULL, so the plain upsert may only touch a row
         # that is not already secret.
@@ -164,7 +164,7 @@ async def delete_variable_route(
     del identity
     _require_exact_name(request, name=name)
     ref = SecretRef(layer="org", owner="", name=name)
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         await _lock(conn, ref=ref)
         secret = await conn.fetchval(
             "SELECT secret FROM variables "

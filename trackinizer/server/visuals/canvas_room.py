@@ -66,9 +66,9 @@ __all__ = [
     "RecordRoom",
     "Show",
     "Tile",
-    "canvas_of",
     "make_room",
     "record_room",
+    "returned_canvas",
 ]
 
 PAGE: Final = "trax.browse"
@@ -150,7 +150,7 @@ class RecordRoom:
     """The tiles that close to make room."""
 
 
-def canvas_of(state: dict[str, PlainTree]) -> Canvas:
+def returned_canvas(state: dict[str, PlainTree]) -> Canvas:
     """Read the canvas a ``read_canvas`` call returned.
 
     Args:
@@ -218,7 +218,7 @@ def make_room(canvas: Canvas, *, request: Show) -> Plan:
         elif movable and (column := _column_with_room(base)) is not None:
             placement = column
         else:
-            hidden, placement = _close_for(
+            hidden, placement = _close_until_fits(
                 base,
                 focused=canvas.focused,
                 placement=placement,
@@ -379,7 +379,7 @@ def _column_with_room(tiles: Sequence[Tile]) -> Column | None:
     )
 
 
-def _close_for(
+def _close_until_fits(
     base: Sequence[Tile],
     *,
     focused: str | None,

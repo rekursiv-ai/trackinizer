@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 
-__all__ = ["fuse", "names_of", "unfuse"]
+__all__ = ["fuse", "part_names", "unfuse"]
 
 
 def fuse(
@@ -143,7 +143,7 @@ def unfuse(
         root = False
 
 
-def names_of(records: Iterable[SessionRecord], *, seam: str = "$seam") -> list[str]:
+def part_names(records: Iterable[SessionRecord], *, seam: str = "$seam") -> list[str]:
     """Return the file name each part of a fused stream came from.
 
     The root's name rides on the settings it opens with; every part after it

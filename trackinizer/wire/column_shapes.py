@@ -24,7 +24,7 @@ from trackinizer.types.columns import (
 from trackinizer.types.inquiries import INQUIRY_CLASSES
 from trackinizer.wire.session_record_fields import (
     SESSION_RECORD_FIELDS,
-    record_kind_for,
+    column_record_kind,
 )
 
 
@@ -306,7 +306,7 @@ def sql_template(column: str, op: str) -> str | None:
     template = _SQL_BY_SHAPE[shape].get(op)
     if template is None or shape is not ColumnShape.SESSION_RECORD:
         return template
-    kind = record_kind_for(column)
+    kind = column_record_kind(column)
     if kind is None:
         raise ValueError("a SESSION_RECORD shape is seeded only for a record field")
     # ``{col}`` consumed here; ``{p}`` is left for the caller to bind.

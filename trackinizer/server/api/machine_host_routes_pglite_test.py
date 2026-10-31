@@ -117,7 +117,7 @@ async def test_enroll_registers_the_machine_and_returns_a_fifteen_minute_token(
     assert lifetime < timedelta(seconds=ENROLL_TTL_SEC + 5)
     assert enrolled.owner == TEST_USER_EMAIL
     assert (await _detail(client, "dev-1")).status == "never"
-    assert _secret_of(enrolled.token) not in await _everything_stored(store)
+    assert _bearer_secret(enrolled.token) not in await _everything_stored(store)
     async with store.engine.acquire() as conn:
         confirmed = await conn.fetchval(
             "SELECT confirmed_at IS NOT NULL FROM machines WHERE name = 'dev-1'",
@@ -230,7 +230,7 @@ async def test_join_returns_a_credential_once_and_the_machine_shows_online(
         {"os": "linux", "cpus": 8, "clis": ["claude"]},
     )
     assert one.last_heartbeat is not None
-    assert _secret_of(joined.credential) not in await _everything_stored(store)
+    assert _bearer_secret(joined.credential) not in await _everything_stored(store)
 
 
 async def test_join_wrong_token_is_401(
@@ -638,9 +638,9 @@ async def test_offline_after_180_s_online_after_heartbeat(
     joined = await _joined(client, "dev-1")
     statuses = {}
 
-    await _silent_for(store, OFFLINE_AFTER_SEC - 5)
+    await _silence(store, OFFLINE_AFTER_SEC - 5)
     statuses["just_inside"] = (await _detail(client, "dev-1")).status
-    await _silent_for(store, OFFLINE_AFTER_SEC + 5)
+    await _silence(store, OFFLINE_AFTER_SEC + 5)
     statuses["silent"] = (await _detail(client, "dev-1")).status
     listed = {m.name: m.status for m in (await _listed(client)).machines}
     await _heartbeat(client, joined)
@@ -658,7 +658,7 @@ async def test_second_instance_is_409_until_first_is_stale(
 
     rival = await _heartbeat(client, joined, instance=_OTHER_INSTANCE)
     owner = await _heartbeat(client, joined, instance=_INSTANCE)
-    await _silent_for(store, OFFLINE_AFTER_SEC + 5)
+    await _silence(store, OFFLINE_AFTER_SEC + 5)
     takeover = await _heartbeat(client, joined, instance=_OTHER_INSTANCE)
     displaced = await _heartbeat(client, joined, instance=_INSTANCE)
 
@@ -761,7 +761,7 @@ def _as(role: Role) -> None:
     install_identity(make_test_identity(role=role, api_key_id=None))
 
 
-def _secret_of(bearer: str) -> str:
+def _bearer_secret(bearer: str) -> str:
     """Return the 43-character secret, the last part of a prefixed bearer string."""
     return bearer[-43:]
 
@@ -846,7 +846,7 @@ async def _heartbeat(
     )
 
 
-async def _silent_for(store: Store, seconds: int) -> None:
+async def _silence(store: Store, seconds: int) -> None:
     async with store.engine.acquire() as conn:
         await conn.execute(
             "UPDATE machines SET last_heartbeat = now() - make_interval(secs => $1) "

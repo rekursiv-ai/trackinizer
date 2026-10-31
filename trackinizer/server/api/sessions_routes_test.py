@@ -41,9 +41,9 @@ from trackinizer.server.api.canvas_test_support import (
     act_as_other_agent,
     act_as_user_agent,
     browser,
-    conversation_of,
     drain,
     open_canvas,
+    receipt_conversation,
     seed_accounts,
     seed_science_chat,
     seed_session,
@@ -1980,7 +1980,7 @@ async def test_the_assistant_long_polls_and_a_chat_message_reaches_it_at_once(
         from_plain(messages[0], dict[str, object])["context"],
         dict[str, object],
     )
-    assert context["conversation_id"] == str(conversation_of(sent))
+    assert context["conversation_id"] == str(receipt_conversation(sent))
 
 
 @pytest.mark.db_pglite
@@ -2125,7 +2125,7 @@ async def test_a_new_chats_first_session_opens_as_its_canvas_chose(
                 json={"opens_as": choice},
             )
             assert chosen.status_code == 200, chosen.text
-        conversation_id = conversation_of(
+        conversation_id = receipt_conversation(
             await send_chat(client, canvas_id=canvas_id, text="hello"),
         )
         act_as_assistant("writer")

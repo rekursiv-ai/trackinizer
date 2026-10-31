@@ -137,7 +137,7 @@ def _codex_lines(count: int, *, text_chars: int) -> list[str]:
     return [f"{line}\n" for line in (head, *items)]
 
 
-def _lines_for(adapter: _Adapter, count: int, *, text_chars: int = 200) -> list[str]:
+def _native_lines(adapter: _Adapter, count: int, *, text_chars: int = 200) -> list[str]:
     """Return ``count`` native lines in the format ``adapter`` reads."""
     return (
         _claude_lines(count, text_chars=text_chars)
@@ -194,7 +194,7 @@ def _write_cost(
 def test_normalize_does_not_hold_the_stream_it_reads(adapter: _Adapter) -> None:
     # Two lines: the one being handed out, and the one the reader's own loop
     # variable still names. A reader that lists the stream holds all 64.
-    stream = _WatchedInput(_lines_for(adapter, 64))
+    stream = _WatchedInput(_native_lines(adapter, 64))
 
     # Drained, not merely called: ``normalize`` is a generator, so an
     # un-consumed one reads nothing at all and every count stays at zero.
@@ -215,7 +215,7 @@ def test_normalize_does_not_hold_the_records_it_yielded(
 ) -> None:
     # A yielded record is the caller's; a reader that keeps every one holds a
     # copy of the session, which is the materialization axiom 11 forbids.
-    lines = _lines_for(claude if reader is claude._Reader else codex, 64)
+    lines = _native_lines(claude if reader is claude._Reader else codex, 64)
     state = reader()
 
     for line in lines:
@@ -235,8 +235,8 @@ def test_denormalize_cost_does_not_track_the_output_it_writes(
     # line it produced, so doubling the session doubles the cost, while one
     # that streams pays for a bounded window whatever the session's size.
     # Both populations exceed Claude's 32-line output window.
-    small = _lines_for(adapter, 33, text_chars=2_048)
-    large = _lines_for(adapter, 66, text_chars=2_048)
+    small = _native_lines(adapter, 33, text_chars=2_048)
+    large = _native_lines(adapter, 66, text_chars=2_048)
     grew = sum(len(line.encode("utf-8")) for line in large) - sum(
         len(line.encode("utf-8")) for line in small
     )

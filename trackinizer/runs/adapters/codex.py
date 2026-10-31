@@ -155,7 +155,7 @@ class CodexAdapter:
     # Measured on codex 0.163.0: a spawned agent is a thread with a rollout of its own,
     # whose opening ``session_meta`` names the thread that spawned it under
     # ``source.subagent.thread_spawn``. Only that first line declares it.
-    def subagent_of(self, path: Path) -> Subagent | None:
+    def subagent(self, path: Path) -> Subagent | None:
         """Return the spawned thread whose rollout ``path`` is; ``None`` for any other.
 
         Args:

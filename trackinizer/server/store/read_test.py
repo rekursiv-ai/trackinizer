@@ -208,19 +208,19 @@ class TestCoverageStoreReads:
             conn,
             # next_issue SELECT * FROM next_issue.sql.
             self._row(kind="Issue", id=issue_id, priority=20),
-            # cost_for(deep=True): cost_subtree row after existence check.
+            # inquiry_cost(deep=True): cost_subtree row after existence check.
             {"agent_usd": 1.0, "resource_usd": 2.0},
         )
-        # cost_for existence check (fetchval); deep call exists, shallow doesn't.
+        # inquiry_cost existence check (fetchval); deep call exists, shallow doesn't.
         conn.fetchval.side_effect = [1, None]
         store, _engine = make_store(conn)
         assert len(await store.list_kind("Issue", status="active")) == 1
         assert await store.next_issue() is not None
-        assert await store.cost_for(issue_id, deep=True) == Cost(
+        assert await store.inquiry_cost(issue_id, deep=True) == Cost(
             agent_usd=1.0,
             resource_usd=2.0,
         )
-        assert await store.cost_for(issue_id) is None
+        assert await store.inquiry_cost(issue_id) is None
         assert len(await store.proves_belief(issue_id)) == 1
         assert len(await store.what_changed_for_me("alice", datetime.now(UTC))) == 1
 
@@ -286,7 +286,7 @@ class TestListKindFilterLowering:
     """
 
     @classmethod
-    async def sql_for(cls, *filters: Filter, limit: int = 5) -> str:
+    async def list_sql(cls, *filters: Filter, limit: int = 5) -> str:
         """Return the SELECT ``list_kind`` issues for ``filters``."""
         conn = make_conn()
         conn.fetch.side_effect = [list[dict[str, object]](), list[dict[str, object]]()]
@@ -338,7 +338,7 @@ class TestListKindFilterLowering:
     @pytest.mark.asyncio
     async def test_lowers_a_regex_to_the_sql_operator(self) -> None:
         """``re`` becomes Postgres' ``~``, so the scan never leaves the DB."""
-        sql = await self.sql_for(Filter(field="title", op="re", value="bug"))
+        sql = await self.list_sql(Filter(field="title", op="re", value="bug"))
 
         assert "title ~ $2" in sql
         assert "LIMIT" in sql
@@ -346,7 +346,7 @@ class TestListKindFilterLowering:
     @pytest.mark.asyncio
     async def test_lowers_text_array_membership_to_gin_containment(self) -> None:
         """``label is x`` uses containment so the GIN index can serve it."""
-        sql = await self.sql_for(Filter(field="labels", op="is", value="bug"))
+        sql = await self.list_sql(Filter(field="labels", op="is", value="bug"))
 
         assert "labels @> ARRAY[$2]::text[]" in sql
         assert "LIMIT" in sql
@@ -373,7 +373,7 @@ class TestListKindFilterLowering:
     @pytest.mark.asyncio
     async def test_lowers_an_order_op_on_a_numeric_column(self) -> None:
         """Both evaluators compare a numeric column numerically."""
-        sql = await self.sql_for(Filter(field="issue_priority", op="lt", value="20"))
+        sql = await self.list_sql(Filter(field="issue_priority", op="lt", value="20"))
 
         assert "issue_priority < $2::numeric" in sql
         assert "LIMIT" in sql
@@ -388,7 +388,7 @@ class TestListKindFilterLowering:
         keeping it in Python returns rows no lowered query could.
         """
         with pytest.raises(ValidationError, match="title"):
-            await self.sql_for(Filter(field="title", op="lt", value="9"))
+            await self.list_sql(Filter(field="title", op="lt", value="9"))
 
     @pytest.mark.asyncio
     async def test_an_unknown_field_is_refused(self) -> None:
@@ -399,12 +399,12 @@ class TestListKindFilterLowering:
         would have errored on the column name.
         """
         with pytest.raises(ValidationError, match="unknown filter field"):
-            await self.sql_for(Filter(field="nonesuch", op="is", value="x"))
+            await self.list_sql(Filter(field="nonesuch", op="is", value="x"))
 
     @pytest.mark.asyncio
     async def test_lowers_a_parent_filter_to_an_edge_subquery(self) -> None:
         """``narrows`` reads ``edges``, so a list of roots keeps its SQL ``LIMIT``."""
-        sql = await self.sql_for(Filter(field="narrows", op="isnull", value=""))
+        sql = await self.list_sql(Filter(field="narrows", op="isnull", value=""))
 
         assert (
             "NOT EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id"
@@ -420,7 +420,7 @@ class TestListKindFilterLowering:
         clause costs the query its SQL ``LIMIT`` (Issue#256). ``config`` is
         JSONB, which has no SQL rendering of ``str(dict)`` to lower to.
         """
-        sql = await self.sql_for(
+        sql = await self.list_sql(
             Filter(field="account", op="is", value="josh"),
             Filter(field="experiment_config", op="is", value="x"),
         )

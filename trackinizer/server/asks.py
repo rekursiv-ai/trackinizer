@@ -39,8 +39,8 @@ if TYPE_CHECKING:
 __all__ = [
     "ASKS_PART",
     "RELEASE_INTERVAL_SEC",
+    "ask_asker",
     "ask_release_loop",
-    "asked_of",
     "open_ask_ids",
     "release_gone_runs",
     "release_open_asks",
@@ -80,7 +80,7 @@ async def open_ask_ids(conn: Conn, *, session_id: UUID) -> list[str]:
 
 # Audience: internal -- the name it returns goes only to the answer check of a poster
 # already allowed to post into the session's chat.
-async def asked_of(conn: Conn, *, session_id: UUID, ask_id: str) -> str:
+async def ask_asker(conn: Conn, *, session_id: UUID, ask_id: str) -> str:
     """Return whom an ask asked, as its card names them in ``input.asker``.
 
     An assistant's card asks one person, whose own choices it lists; a run's card

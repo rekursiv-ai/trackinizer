@@ -219,7 +219,7 @@ class SessionRecordRow:
         """
         return from_plain(
             self.payload,
-            _class_for(self.kind),
+            _record_class(self.kind),
             default_concrete_types=CONCRETE_TYPES,
         )
 
@@ -303,7 +303,7 @@ def _parsed(raw: str | None) -> datetime | None:
         return None
 
 
-def _class_for(kind: str) -> type[TraxRecord]:
+def _record_class(kind: str) -> type[TraxRecord]:
     """Return the record class named by a row's ``kind``."""
     found = _BY_KIND.get(kind)
     if found is None:

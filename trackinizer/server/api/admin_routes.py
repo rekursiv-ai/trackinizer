@@ -27,10 +27,10 @@ from treekle import from_plain
 from trackinizer.server.api._deps import get_staff, get_store
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
-    engine_of,
     iso_format,
+    request_engine,
 )
-from trackinizer.server.audience import audiences_for
+from trackinizer.server.audience import person_audiences
 from trackinizer.server.auth import AuthIdentity, Role, require_role
 from trackinizer.server.notify import tx
 from trackinizer.server.values import vetted_sql
@@ -109,7 +109,7 @@ async def admin_list_users_route(
 
     """
     del identity
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn:
         rows = await conn.fetch(
             vetted_sql(
@@ -149,7 +149,7 @@ async def admin_set_user_role_route(
             status_code=409,
             detail="Demoting one's own admin role is not permitted.",
         )
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn, tx(conn):
         email = from_plain(
             await conn.fetchval("SELECT email FROM users WHERE id = $1", user_id),
@@ -207,7 +207,7 @@ async def admin_disable_user_route(
             status_code=409,
             detail="Disabling one's own account is not permitted.",
         )
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn, tx(conn):
         await _lock_admin_roster(conn)
         await _refuse_last_admin_loss(conn, user_id)
@@ -249,7 +249,7 @@ async def admin_enable_user_route(
 
     """
     del identity
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn:
         result = await conn.execute(
             "UPDATE users SET status = 'active' WHERE id = $1",
@@ -282,7 +282,7 @@ async def admin_reset_preferences_route(
 
     """
     del identity
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         result = await conn.execute(
             "UPDATE users SET preferences = NULL WHERE id = $1",
             user_id,
@@ -323,7 +323,7 @@ async def admin_remove_user_route(
             status_code=409,
             detail="Deleting one's own account is not permitted.",
         )
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn, tx(conn):
         await _lock_admin_roster(conn)
         await _refuse_last_admin_loss(conn, user_id)
@@ -353,7 +353,7 @@ async def admin_list_allowlist_route(
 
     """
     del identity
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn:
         rows = await conn.fetch(
             "SELECT email_or_pattern, role, added_by, added_at "
@@ -393,7 +393,7 @@ async def admin_add_allowlist_route(
                 "the service-account domain."
             ),
         )
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO allowlist (email_or_pattern, role, added_by) "
@@ -433,7 +433,7 @@ async def admin_set_allowlist_role_route(
 
     """
     del identity
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn:
         result = await conn.execute(
             "UPDATE allowlist SET role = $2 WHERE email_or_pattern = $1",
@@ -467,7 +467,7 @@ async def admin_remove_allowlist_route(
 
     """
     del identity
-    engine = engine_of(request)
+    engine = request_engine(request)
     async with engine.acquire() as conn:
         result = await conn.execute(
             "DELETE FROM allowlist WHERE email_or_pattern = $1",
@@ -506,7 +506,7 @@ def user_entry(row: Record, *, staff: Sequence[str]) -> MutableJSON:
             else from_plain(row["last_login"], datetime),
         ),
         "staff": STAFF
-        in audiences_for(
+        in person_audiences(
             email,
             hosted_domain=from_plain(row["hosted_domain"], str, default=None),
             staff=staff,

@@ -16,8 +16,8 @@ from trackinizer.server.api.canvas_test_support import (
     KB_ACTOR,
     act_as_assistant,
     browser,
+    canvas_revision,
     open_canvas,
-    revision_of,
     seed_accounts,
     seed_converse,
     seed_session,
@@ -106,7 +106,7 @@ async def test_hiding_chat_pushes_one_frame_and_changes_no_revision(
         canvas_id=canvas_id,
         text="hi",
     )
-    revision = await revision_of(client, canvas_id=canvas_id)
+    revision = await canvas_revision(client, canvas_id=canvas_id)
     path = f"/api/canvases/{canvas_id}/operations"
     key = str(uuid.uuid4())
 
@@ -131,7 +131,7 @@ async def test_hiding_chat_pushes_one_frame_and_changes_no_revision(
     assert set(frame.model_dump(mode="json")) == {"t", "type", "hidden"}
     assert (frame.type, frame.hidden) == ("chat", True)
     browser()
-    assert await revision_of(client, canvas_id=canvas_id) == revision
+    assert await canvas_revision(client, canvas_id=canvas_id) == revision
     act_as_assistant()
     other = await client.post(
         path,

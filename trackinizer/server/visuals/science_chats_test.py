@@ -447,11 +447,11 @@ def test_a_head_with_no_forks_or_origin_and_a_stranger_forking_on_typing() -> No
 def test_the_starter_grants_shares_and_an_admin_sees_them_only_to_stop_them() -> None:
     shares = ("bob@gmail.com", "grace@example.com")
     heads = [
-        _head_of("Ada@Gmail.com", shares=shares),
-        _head_of("root@example.com", role="admin", shares=shares, reads=False),
-        _head_of("bob@gmail.com", shares=shares),
-        _head_of("jan@other.org", shares=shares, reads=False),
-        _head_of("olu@other.org", shares=shares),
+        _chat_head("Ada@Gmail.com", shares=shares),
+        _chat_head("root@example.com", role="admin", shares=shares, reads=False),
+        _chat_head("bob@gmail.com", shares=shares),
+        _chat_head("jan@other.org", shares=shares, reads=False),
+        _chat_head("olu@other.org", shares=shares),
     ]
 
     assert [
@@ -475,19 +475,19 @@ def test_the_head_says_audience_and_who_may_hide(
     sharee_hides: bool,
 ) -> None:
     """Its starter hides a chat and shows it again; nobody lowers a staff one."""
-    starter = _head_of("Ada@Gmail.com", audience=audience)
-    sharee = _head_of("bob@gmail.com", audience=audience, shares=("bob@gmail.com",))
+    starter = _chat_head("Ada@Gmail.com", audience=audience)
+    sharee = _chat_head("bob@gmail.com", audience=audience, shares=("bob@gmail.com",))
 
     assert (starter.audience, sharee.audience) == (audience, audience)
     assert (starter.may_hide, sharee.may_hide) == (starter_hides, sharee_hides)
 
 
 def test_a_head_says_who_may_delete_the_chat() -> None:
-    assert _head_of("Ada@Gmail.com").may_delete
-    assert not _head_of("ada@gmail.com", others_posted=True).may_delete
-    assert _head_of("root@example.com", role="admin", others_posted=True).may_delete
-    assert _head_of("kb@example.com", opened=True, others_posted=True).may_delete
-    assert not _head_of("bob@gmail.com").may_delete
+    assert _chat_head("Ada@Gmail.com").may_delete
+    assert not _chat_head("ada@gmail.com", others_posted=True).may_delete
+    assert _chat_head("root@example.com", role="admin", others_posted=True).may_delete
+    assert _chat_head("kb@example.com", opened=True, others_posted=True).may_delete
+    assert not _chat_head("bob@gmail.com").may_delete
 
 
 def test_a_chat_no_session_carries_yet_has_no_head_and_reads_no_more() -> None:
@@ -635,7 +635,7 @@ def _line_starter(stored: str | None, *, inbound: InboundQueue) -> str | None:
     )
 
 
-def _head_of(
+def _chat_head(
     email: str,
     *,
     role: Role = "writer",

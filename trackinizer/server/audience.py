@@ -23,7 +23,7 @@ chat; no role reads another person's chat. A ``private`` session is its owner's 
 those people's; a private chat its starter's and the people it is shared with. A
 ``staff`` session or chat also needs the reader to hold ``staff``.
 :class:`SessionReader` carries what the test asks of the caller, and
-:func:`reader_for` derives it.
+:func:`caller_reader` derives it.
 
 A query that returns session content narrows itself to what its caller reads with the
 SQL fragments here, so the rule is spelled once: :func:`visible_sql` for a query that
@@ -61,14 +61,14 @@ __all__ = [
     "Audiences",
     "SessionReader",
     "TranscriptPings",
-    "audiences_for",
+    "caller_reader",
     "chat_beginnings_sql",
+    "email_org",
     "hidden_exists_sql",
     "key_audiences",
     "may_hide",
     "members_reader",
-    "org_of",
-    "reader_for",
+    "person_audiences",
     "reads_session",
     "visible_sql",
 ]
@@ -145,7 +145,7 @@ CONSUMER_DOMAINS: Final = frozenset(
 organisation, so an organisation of one has no members."""
 
 
-def org_of(email: str, *, hosted_domain: str | None) -> str | None:
+def email_org(email: str, *, hosted_domain: str | None) -> str | None:
     """Return the organisation a person belongs to: their email's domain, if Google says.
 
     Google verifies a consumer account's address on any domain, and names the domain
@@ -165,7 +165,7 @@ def org_of(email: str, *, hosted_domain: str | None) -> str | None:
     return domain if domain and domain == (hosted_domain or "").lower() else None
 
 
-def audiences_for(
+def person_audiences(
     email: str,
     *,
     hosted_domain: str | None,
@@ -216,7 +216,7 @@ def key_audiences(
     return Audiences(read=owner, opening=opening, pinned=open_into)
 
 
-def reader_for(
+def caller_reader(
     email: str,
     *,
     audiences: frozenset[str],
@@ -241,7 +241,7 @@ def reader_for(
       orgs: The server's organisation mode.
       assistant: The configured assistant's email; empty when none.
       hosted_domain: Google's ``hd`` claim from the caller's last login, which
-        makes them a member of their email domain's organisation (:func:`org_of`).
+        makes them a member of their email domain's organisation (:func:`email_org`).
       delegated: The assistant reads for this caller.
       hidden: Keep private sessions.
 
@@ -256,7 +256,7 @@ def reader_for(
         audiences=audiences,
         email=email,
         org=(
-            org_of(email, hosted_domain=hosted_domain)
+            email_org(email, hosted_domain=hosted_domain)
             if person and orgs == "domain"
             else None
         ),

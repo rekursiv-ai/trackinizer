@@ -96,7 +96,7 @@ def export_client(
     return client
 
 
-def _selector_of(raw: str) -> dict[str, str]:
+def _filter_selector(raw: str) -> dict[str, str]:
     """One ``filter=`` param value as the route's query string spells it."""
     return {EXPORT_FILTER_PARAM: raw}
 
@@ -178,7 +178,7 @@ def test_a_selector_reaches_the_store_and_the_header(
     """The clause the caller sent is what the store is asked for, and what is said."""
     r = export_client.get(
         EXPORT_API_PATH,
-        params=_selector_of('{"field":"labels","op":"is","value":"org:rekursiv"}'),
+        params=_filter_selector('{"field":"labels","op":"is","value":"org:rekursiv"}'),
     )
 
     assert r.status_code == 200
@@ -216,7 +216,7 @@ def test_an_unselectable_field_is_400_and_names_what_is_allowed(
     """A subgraph is carved on labels; ``title`` would be a different feature."""
     r = export_client.get(
         EXPORT_API_PATH,
-        params=_selector_of('{"field":"title","op":"is","value":"anything"}'),
+        params=_filter_selector('{"field":"title","op":"is","value":"anything"}'),
     )
 
     assert r.status_code == 400
@@ -238,7 +238,7 @@ def test_a_malformed_clause_is_400_not_a_whole_graph(
     raw: str,
 ) -> None:
     """The dangerous failure is a refused selector quietly exporting everything."""
-    r = export_client.get(EXPORT_API_PATH, params=_selector_of(raw))
+    r = export_client.get(EXPORT_API_PATH, params=_filter_selector(raw))
 
     assert r.status_code == 400
 
@@ -262,7 +262,7 @@ def test_label_ordering_is_a_client_error(
     client, _store, engine = route_client
     raw = json_dumps({"field": "labels", "op": op, "value": "x"})
 
-    response = client.get(EXPORT_API_PATH, params=_selector_of(raw))
+    response = client.get(EXPORT_API_PATH, params=_filter_selector(raw))
 
     assert response.status_code == 422
     body = from_plain(response.json(), dict[str, object])
@@ -288,7 +288,7 @@ def test_database_selector_failures_are_client_errors(
 
     response = client.get(
         EXPORT_API_PATH,
-        params=_selector_of('{"field":"labels","op":"re","value":"x"}'),
+        params=_filter_selector('{"field":"labels","op":"re","value":"x"}'),
     )
 
     assert response.status_code == 400

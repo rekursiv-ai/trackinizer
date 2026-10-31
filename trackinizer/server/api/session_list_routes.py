@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request
 
 from trackinizer.server.api._deps import get_inbound
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.api.session_access import session_reader
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.session_list import (
@@ -48,7 +48,7 @@ async def list_sessions_route(
 
     """
     return await list_own_sessions(
-        engine_of(request),
+        request_engine(request),
         email=identity.email,
         user_id=identity.user_id,
         reader=session_reader(request, identity),

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Annotated
 from fastapi import APIRouter, Depends, Path, Request, Response
 from treekle import from_plain
 
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import tx
 from trackinizer.server.values import canonical_strs
@@ -88,7 +88,7 @@ async def list_machines_route(
       machines: Every machine, sorted by name in byte order.
 
     """
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         rows = await fetch_machines(conn, name=None, viewer=identity)
     return MachineList(machines=[_machine(row, viewer=identity) for row in rows])
 
@@ -114,7 +114,7 @@ async def get_machine_route(
 
     """
     refuse_reserved(name)
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         rows = await fetch_machines(conn, name=name, viewer=identity)
     if not rows:
         raise absent_machine(name)
@@ -144,7 +144,7 @@ async def put_machine_route(
 
     """
     refuse_reserved(name)
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         await conn.execute(
             "INSERT INTO machines (name, role, how, updated_by) "
             "VALUES ($1, COALESCE($2, ''), COALESCE($3, ''), $4) "
@@ -188,7 +188,7 @@ async def change_machine_labels_route(
     refuse_reserved(name)
     add = _labels(body.add)
     remove = _labels(body.remove)
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         # One statement: the labels are read, changed and written under the row lock,
         # so two concurrent changes cannot overwrite each other.
         stored = await conn.fetchval(
@@ -232,7 +232,7 @@ async def delete_machine_route(
     """
     del identity
     refuse_reserved(name)
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         # The row lock makes a join racing this delete wait for it, so a credential
         # cannot appear between the check and the delete. The check is a separate
         # statement: one sharing the lock's would read the snapshot taken before the

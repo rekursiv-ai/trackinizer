@@ -9,7 +9,7 @@ import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from trackinizer.server.api._deps import get_assistant, get_inbound
-from trackinizer.server.api._routes_shared import engine_of, require_browser
+from trackinizer.server.api._routes_shared import request_engine, require_browser
 from trackinizer.server.api.session_access import session_reader
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.console_relay import relay_console_line
@@ -52,7 +52,7 @@ async def console_relay_route(
     """
     require_browser(identity)
     delivered = await relay_console_line(
-        engine_of(request),
+        request_engine(request),
         user_id=identity.user_id,
         canvas_id=canvas_id,
         relay=body,

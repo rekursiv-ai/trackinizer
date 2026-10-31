@@ -97,7 +97,7 @@ def _approved(*, role: str = "writer", machine_token: str = "") -> DeviceToken:
     )
 
 
-def _transport_of(
+def _server_transport(
     server: Callable[[httpx2.Request], httpx2.Response],
 ) -> Callable[..., httpx2.MockTransport]:
     """Return what stands in for ``httpx2.HTTPTransport``: it answers from ``server``."""
@@ -120,7 +120,7 @@ def _log_in(
 ) -> LoginResult:
     # The client builds its transport from httpx2's, so the server answers there.
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(httpx2, "HTTPTransport", _transport_of(server))
+        patch.setattr(httpx2, "HTTPTransport", _server_transport(server))
         return login(
             url,
             profile=profile,

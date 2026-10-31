@@ -181,12 +181,12 @@ def load_pipeline(text: str) -> PipelineDoc:
 
 def stage_of_path(doc: PipelineDoc, path: str) -> str:
     """Return the id of the stage a file of the code maps to, or ``""`` if none."""
-    return _stage_of(path, held=[(s.id, s.paths) for s in doc.stages], end="/")
+    return _entry_stage(path, held=[(s.id, s.paths) for s in doc.stages], end="/")
 
 
 def stage_of_key(doc: PipelineDoc, key: str) -> str:
     """Return the id of the stage a config key maps to, or ``""`` if none."""
-    return _stage_of(key, held=[(s.id, s.keys) for s in doc.stages], end=".")
+    return _entry_stage(key, held=[(s.id, s.keys) for s in doc.stages], end=".")
 
 
 def _bound(name: str, value: Sequence[object], most: int) -> None:
@@ -195,7 +195,7 @@ def _bound(name: str, value: Sequence[object], most: int) -> None:
         raise ValueError(f"{name} holds {len(value)}, more than {most}.")
 
 
-def _stage_of(
+def _entry_stage(
     name: str,
     *,
     held: Sequence[tuple[str, tuple[str, ...]]],

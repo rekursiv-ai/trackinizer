@@ -39,7 +39,7 @@ from trackinizer.server.store.session_embed import (
     SweepStats,
     sweep_session_embeddings,
 )
-from trackinizer.server.store.session_index import index_name_for
+from trackinizer.server.store.session_index import index_name
 from trackinizer.server.tools import backfill_embedding, model_buckets
 from trackinizer.server.values import manifest_bound
 
@@ -171,7 +171,7 @@ async def test_follow_ensures_the_partial_index(
 ) -> None:
     """Follow ensures each model's partial HNSW index before sweeping."""
     async with store.engine.acquire() as conn:
-        await conn.execute("DROP INDEX IF EXISTS " + index_name_for("stub-1024"))
+        await conn.execute("DROP INDEX IF EXISTS " + index_name("stub-1024"))
 
     def use_stub(name: str) -> StubEmbedder:
         del name
@@ -185,7 +185,7 @@ async def test_follow_ensures_the_partial_index(
     async with store.engine.acquire() as conn:
         present = await conn.fetchval(
             "SELECT 1 FROM pg_indexes WHERE indexname = $1",
-            index_name_for("stub-1024"),
+            index_name("stub-1024"),
         )
     assert present == 1
 

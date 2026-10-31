@@ -23,9 +23,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from treekle import from_plain
 
 from trackinizer.server.api._deps import get_assistant, get_staff, get_store
-from trackinizer.server.api._routes_shared import engine_of, iso_format
+from trackinizer.server.api._routes_shared import iso_format, request_engine
 from trackinizer.server.api.admin_routes import USER_COLUMNS, user_entry
-from trackinizer.server.audience import audiences_for
+from trackinizer.server.audience import person_audiences
 from trackinizer.server.auth import (
     AudienceCeilingError,
     AuthIdentity,
@@ -107,7 +107,7 @@ async def create_service_account_route(
     """
     staff = get_staff(request)
     email = service_address(body.name)
-    held = audiences_for(email, hosted_domain=None, staff=staff)
+    held = person_audiences(email, hosted_domain=None, staff=staff)
     try:
         require_grantable(identity, reads=held, opens=held)
         require_assistant_grant(
@@ -117,7 +117,7 @@ async def create_service_account_route(
         )
     except AudienceCeilingError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         row = await conn.fetchrow(
             vetted_sql(
                 "INSERT INTO users (id, email, name, role, status) "
@@ -181,13 +181,13 @@ async def create_service_token_route(
 
     """
     staff = get_staff(request)
-    async with engine_of(request).acquire() as conn, tx(conn):
+    async with request_engine(request).acquire() as conn, tx(conn):
         account = await _account(conn, user_id, lock=True)
         if account is None:
             raise _no_account()
         if from_plain(account["status"], str) != "active":
             raise HTTPException(status_code=409, detail="service account is disabled")
-        held = audiences_for(
+        held = person_audiences(
             from_plain(account["email"], str),
             hosted_domain=from_plain(account["hosted_domain"], str, default=None),
             staff=staff,
@@ -254,7 +254,7 @@ async def list_service_tokens_route(
 
     """
     del identity
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         if await _account(conn, user_id, lock=False) is None:
             raise _no_account()
         rows = await list_api_keys(conn, user_id=user_id)
@@ -286,7 +286,7 @@ async def revoke_service_token_route(
       HTTPException: 404 when the account or its live key is not found.
 
     """
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         account = await _account(conn, user_id, lock=False)
         revoked = account is not None and await revoke_api_key(
             conn,

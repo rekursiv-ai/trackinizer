@@ -9,7 +9,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trackinizer.server.api._deps import get_hub, get_store
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.api.session_access import require_session
 from trackinizer.server.api.visuals_routes import visual_catalog
 from trackinizer.server.auth import AuthIdentity, require_role
@@ -60,7 +60,7 @@ async def place_session_route(
     """
     session = await _own_session(request, identity=identity, session_id=session_id)
     placement = await place_session(
-        engine_of(request),
+        request_engine(request),
         store=get_store(request),
         session=session,
         user_id=identity.user_id,
@@ -94,7 +94,7 @@ async def move_session_route(
     """
     session = await _own_session(request, identity=identity, session_id=session_id)
     if not await move_session(
-        engine_of(request),
+        request_engine(request),
         store=get_store(request),
         session=session,
         email=identity.email,

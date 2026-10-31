@@ -138,7 +138,7 @@ in the live runs), so a reader of the transcript sees where it stopped.
   `<project>/<session>.jsonl`, and codex's owner keeps one id. The importer
   already treats `<id>.jsonl` plus everything under `<id>/`, and codex
   rollouts chained by `forked_from_id`, as ONE session
-  (`sagent/session/convert.py`, `_parts_of`); live capture should share
+  (`sagent/session/convert.py`, `_session_parts`); live capture should share
   that rule. Part names must then disambiguate: every workflow writes its own
   `journal.jsonl`. Tracked as a follow-up.
 

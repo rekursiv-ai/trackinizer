@@ -161,7 +161,7 @@ class Adapter(Protocol):
         """
         ...
 
-    def subagent_of(self, path: Path) -> Subagent | None:
+    def subagent(self, path: Path) -> Subagent | None:
         """Return the sub-agent whose transcript ``path`` is; ``None`` for any other file.
 
         A sub-agent's transcript is a session of its own: the runner records it

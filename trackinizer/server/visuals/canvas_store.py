@@ -14,7 +14,7 @@ import uuid
 
 from treekle import from_plain
 
-from trackinizer.server.asks import asked_of
+from trackinizer.server.asks import ask_asker
 from trackinizer.server.audience import NOBODY, reads_session
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import notify_after_commit, tx
@@ -2202,7 +2202,7 @@ async def apply_canvas_operation(
             if isinstance(body.operation, Navigate):
                 # An agent's navigation never lands on a canvas with no page: the
                 # page returns in the same revision that carries the route.
-                current_data = _data_of(current)
+                current_data = _stored_data(current)
                 restored = restore_page(current_data, catalog=catalog)
                 if restored is not current_data:
                     shown = await _write_data(conn, current=current, data=restored)
@@ -2236,7 +2236,7 @@ async def apply_canvas_operation(
             conn,
             current=current,
             data=apply_operation(
-                _data_of(current),
+                _stored_data(current),
                 body.operation,
                 catalog,
                 placed_by=placed_by,
@@ -2488,7 +2488,7 @@ async def _check_asker_answers(
 ) -> None:
     """Refuse an answer to the assistant's card from anyone but the person it asked."""
     answer = ChatAnswer.model_validate(body.payload)
-    asker = await asked_of(conn, session_id=session_id, ask_id=answer.prompt_id)
+    asker = await ask_asker(conn, session_id=session_id, ask_id=answer.prompt_id)
     if not asker:
         await _check_starter_answers(
             conn,
@@ -3062,7 +3062,7 @@ async def _check_poster(
         )
 
 
-def _data_of(state: CanvasState) -> CanvasData:
+def _stored_data(state: CanvasState) -> CanvasData:
     """Return the stored part of a canvas's state."""
     return CanvasData(
         visuals=state.visuals,

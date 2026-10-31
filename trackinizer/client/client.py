@@ -770,7 +770,12 @@ class Client:
             ),
         )
 
-    def cost_for(self, target_id: uuid.UUID, *, deep: bool = False) -> dict[str, float]:
+    def inquiry_cost(
+        self,
+        target_id: uuid.UUID,
+        *,
+        deep: bool = False,
+    ) -> dict[str, float]:
         """Fetch cost breakdown by field name; optionally include related rows.
 
         Args:
@@ -790,7 +795,7 @@ class Client:
             ),
         )
 
-    def confidence_for(self, target_id: uuid.UUID) -> float:
+    def derived_confidence(self, target_id: uuid.UUID) -> float:
         """Fetch the derived confidence of a Belief/Experiment.
 
         Computed by the server from currently-true ``proves`` citations; never
@@ -807,7 +812,7 @@ class Client:
         body = _require_mapping(self.get(where), where)
         return cast(float, body["confidence"])
 
-    def authority_for(self, target_id: uuid.UUID) -> dict[str, float]:
+    def derived_authority(self, target_id: uuid.UUID) -> dict[str, float]:
         """Fetch a row's derived load-bearing (PageRank) authority scores.
 
         Computed by the periodic authority sweep. Only relations that reach the
@@ -1954,7 +1959,7 @@ class Client:
             applied = self.post(
                 where,
                 body={
-                    "revision": self._revision_of(canvas_id),
+                    "revision": self._live_revision(canvas_id),
                     "operation": operation,
                 },
             )
@@ -1965,7 +1970,7 @@ class Client:
             applied = self.post(
                 where,
                 body={
-                    "revision": self._revision_of(canvas_id),
+                    "revision": self._live_revision(canvas_id),
                     "operation": operation,
                 },
             )
@@ -2088,7 +2093,7 @@ class Client:
         where = f"/api/canvases/{canvas_id}/captures"
         return dict(_require_mapping(self.post(where), where))
 
-    def _revision_of(self, canvas_id: uuid.UUID) -> int:
+    def _live_revision(self, canvas_id: uuid.UUID) -> int:
         """Return the canvas's live revision."""
         where = f"/api/canvases/{canvas_id}"
         revision = _require_field(self.read_canvas(canvas_id), "revision", where)

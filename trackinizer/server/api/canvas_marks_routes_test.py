@@ -17,9 +17,9 @@ from trackinizer.server.api.canvas_test_support import (
     OTHER_EMAIL,
     act_as_assistant,
     browser,
+    canvas_revision,
     drain,
     open_canvas,
-    revision_of,
     seed_accounts,
     seed_converse,
     seed_session,
@@ -99,7 +99,7 @@ async def _operate(
     return json_loads(response.content, dict[str, object])
 
 
-def _marks_of(state: dict[str, object]) -> list[dict[str, object]]:
+def _canvas_marks(state: dict[str, object]) -> list[dict[str, object]]:
     """Return the boxes a canvas answer holds."""
     return from_plain(state["marks"], list[dict[str, object]])
 
@@ -131,7 +131,7 @@ async def test_a_person_and_an_agent_each_sign_their_marks_and_a_stale_revision_
     """Marks commute, so a stale revision applies; the author is the caller's."""
     client, store = pglite_route_client
     canvas_id, _ = await _canvas(client, store=store)
-    revision = await revision_of(client, canvas_id=canvas_id)
+    revision = await canvas_revision(client, canvas_id=canvas_id)
 
     browser()
     mine = await _draw(client, canvas_id=canvas_id)
@@ -187,10 +187,10 @@ async def test_a_person_and_the_agent_each_remove_the_others_box_and_a_gone_one_
     client, store = pglite_route_client
     canvas_id, _ = await _canvas(client, store=store)
     browser()
-    mine = _marks_of(await _draw(client, canvas_id=canvas_id))[-1]["id"]
+    mine = _canvas_marks(await _draw(client, canvas_id=canvas_id))[-1]["id"]
     act_as_assistant()
     state = await _draw(client, canvas_id=canvas_id)
-    theirs = _marks_of(state)[-1]["id"]
+    theirs = _canvas_marks(state)[-1]["id"]
 
     after_agent = await _operate(
         client,
@@ -209,9 +209,9 @@ async def test_a_person_and_the_agent_each_remove_the_others_box_and_a_gone_one_
         operation={"kind": "remove_mark", "id": theirs},
     )
 
-    assert [m["id"] for m in _marks_of(after_agent)] == [theirs]
-    assert _marks_of(after_person) == []
-    assert _marks_of(again) == []
+    assert [m["id"] for m in _canvas_marks(after_agent)] == [theirs]
+    assert _canvas_marks(after_person) == []
+    assert _canvas_marks(again) == []
 
 
 @pytest.mark.db_pglite
@@ -232,7 +232,7 @@ async def test_the_agent_draws_lists_and_clears_a_page_or_all_boxes(
     await _draw(client, canvas_id=canvas_id)
     act_as_assistant()
     drawn = await _draw(client, canvas_id=canvas_id)
-    assert [m["author"] for m in _marks_of(drawn)] == [TEST_USER_EMAIL, "agent"]
+    assert [m["author"] for m in _canvas_marks(drawn)] == [TEST_USER_EMAIL, "agent"]
 
     elsewhere = await _operate(
         client,
@@ -251,11 +251,11 @@ async def test_the_agent_draws_lists_and_clears_a_page_or_all_boxes(
         operation={"kind": "clear_marks"},
     )
 
-    assert [m["id"] for m in _marks_of(elsewhere)] == [
-        m["id"] for m in _marks_of(drawn)
+    assert [m["id"] for m in _canvas_marks(elsewhere)] == [
+        m["id"] for m in _canvas_marks(drawn)
     ]
-    assert _marks_of(on_page) == []
-    assert _marks_of(everything) == []
+    assert _canvas_marks(on_page) == []
+    assert _canvas_marks(everything) == []
 
 
 @pytest.mark.db_pglite
@@ -308,14 +308,14 @@ async def test_the_next_line_carries_the_marks_drawn_since_the_last_one_with_the
     )
     assert moved.status_code == 204
     covers = {"records": [str(experiment_id), str(uuid.uuid4())]}
-    first_id = _marks_of(
+    first_id = _canvas_marks(
         await _draw(
             client,
             canvas_id=canvas_id,
             mark={**_BOX, "covers": covers},
         ),
     )[-1]["id"]
-    second_id = _marks_of(await _draw(client, canvas_id=canvas_id))[-1]["id"]
+    second_id = _canvas_marks(await _draw(client, canvas_id=canvas_id))[-1]["id"]
 
     await send_chat(client, canvas_id=canvas_id, text="what is this?")
     await send_chat(client, canvas_id=canvas_id, text="and now?")
@@ -358,7 +358,7 @@ async def test_a_box_keeps_the_tile_it_was_drawn_on(
     _ = await _draw(client, canvas_id=canvas_id, mark={**_BOX, "tile": tile})
     state = await _draw(client, canvas_id=canvas_id)
 
-    assert [m["tile"] for m in _marks_of(state)] == [tile, None]
+    assert [m["tile"] for m in _canvas_marks(state)] == [tile, None]
 
 
 async def _private_session(store: Store, *, account: str) -> uuid.UUID:

@@ -649,7 +649,7 @@ class InboundQueue:
                 )
             return delivered
 
-    def sender_of(self, key: UUID) -> str | None:
+    def key_sender(self, key: UUID) -> str | None:
         """Return who sent the message that first used ``key``, while it is remembered.
 
         Args:

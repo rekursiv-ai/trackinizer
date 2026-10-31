@@ -66,8 +66,8 @@ __all__ = [
     "PartReader",
     "Placed",
     "Segment",
+    "attested_delivery",
     "delivered_text",
-    "delivery_of",
     "lines",
     "neutral",
     "placed",
@@ -439,7 +439,7 @@ def lines(conversation: Sequence[SessionRecord], *, bot: str) -> list[Line]:
     return out
 
 
-def delivery_of(extra: Mapping[str, object]) -> Delivery | None:
+def attested_delivery(extra: Mapping[str, object]) -> Delivery | None:
     """Read the sender and room the bot attested for a delivered message.
 
     The stamp is written by the bot's own delivery, so a line typed at a terminal cannot
@@ -555,7 +555,7 @@ def _person(
     content = record.content or ""
     if _is_meta(record) or _is_harness(content):
         return None
-    delivery = delivery_of(record.extra)
+    delivery = attested_delivery(record.extra)
     if delivery is None:
         return AgentToAgentMessage(
             timestamp=record.timestamp,
@@ -577,7 +577,7 @@ def _queued_person(
     tag: Mapping[str, PlainTree],
 ) -> AgentToAgentMessage | None:
     """Return a stamped queued line as a person's line, or None for claude's own notice."""
-    delivery = delivery_of(record.extra)
+    delivery = attested_delivery(record.extra)
     if delivery is None:
         return None
     return AgentToAgentMessage(

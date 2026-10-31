@@ -675,19 +675,24 @@ class FakeClient:
         )
         return cast("dict[str, PlainTree]", cast(object, dict(self.session_hits)))
 
-    def cost_for(self, target_id: uuid.UUID, *, deep: bool = False) -> dict[str, float]:
+    def inquiry_cost(
+        self,
+        target_id: uuid.UUID,
+        *,
+        deep: bool = False,
+    ) -> dict[str, float]:
         """Cost for."""
-        self.calls.append(("cost_for", (target_id,), {"deep": deep}))
+        self.calls.append(("inquiry_cost", (target_id,), {"deep": deep}))
         return dict(self.cost_payload)
 
-    def confidence_for(self, target_id: uuid.UUID) -> float:
+    def derived_confidence(self, target_id: uuid.UUID) -> float:
         """Record a confidence query; the fake reports a fixed score."""
-        self.calls.append(("confidence_for", (target_id,), {}))
+        self.calls.append(("derived_confidence", (target_id,), {}))
         return self.confidence_payload
 
-    def authority_for(self, target_id: uuid.UUID) -> dict[str, float]:
+    def derived_authority(self, target_id: uuid.UUID) -> dict[str, float]:
         """Record an authority query; the fake reports fixed scores."""
-        self.calls.append(("authority_for", (target_id,), {}))
+        self.calls.append(("derived_authority", (target_id,), {}))
         return dict(self.authority_payload)
 
     def edit(

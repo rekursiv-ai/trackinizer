@@ -38,7 +38,7 @@ import time
 from treekle import json_loads
 
 from trackinizer.lib.agent.sessions import claude, codex, gemini, normalized, sagent
-from trackinizer.lib.agent.sessions.fuse import chain, fuse, names_of, unfuse
+from trackinizer.lib.agent.sessions.fuse import chain, fuse, part_names, unfuse
 from trackinizer.sagent.session.types import IncompleteRecord
 
 
@@ -202,7 +202,7 @@ def convert_file(
       result: The conversion outcome for ``path``.
 
     """
-    parts = _parts_of(path)
+    parts = _session_parts(path)
     if not parts:
         return FileResult(path=path, error="no session files found")
     streams: list[Sequence[SessionRecord]] = []
@@ -241,7 +241,7 @@ def convert_file(
     # millisecond, while an mtime is the filesystem's, often coarse enough that
     # parts written back to back share one -- and that tie fell to the file
     # names, which claude mints as fresh ids. ``sorted`` is stable, so parts
-    # stamped alike keep the oldest-first order ``_parts_of`` found them in.
+    # stamped alike keep the oldest-first order ``_session_parts`` found them in.
     dated = sorted(streams, key=_opened)
     ordered = chain(dated) if detected == "codex" else dated
     # Names follow the RECORD STREAMS, not the file list: ``chain`` reorders
@@ -616,7 +616,7 @@ def _roots(path: Path) -> list[Path]:
         and not candidate.name.startswith("._")
         and (candidate.suffix == ".jsonl" or _sniff(candidate))
     )
-    claimed = {part for root in found for part in _parts_of(root)[1:]}
+    claimed = {part for root in found for part in _session_parts(root)[1:]}
     return [root for root in found if root not in claimed]
 
 
@@ -781,7 +781,7 @@ def _compared(
         # before anything reaches disk -- which a streamed write would have
         # already broken by the time the gate reads the result.
         return _streamed(path, records, parts, detected=detected, out_dir=out_dir)
-    names = names_of(records)
+    names = part_names(records)
     written: list[tuple[str, str]] = []
     lost: Counter[str] = Counter()
     byte_exact = True
@@ -1009,7 +1009,7 @@ def _write_one(records: Sequence[SessionRecord], target: Format) -> str:
 #
 # A lone FILE is a session too, plus the ``<id>/`` beside it when one exists, which is
 # where claude puts the subagents that session spawned.
-def _parts_of(path: Path) -> list[Path]:
+def _session_parts(path: Path) -> list[Path]:
     """Return the transcript files one session is spread across."""
     if path.is_dir():
         return _beneath(path)

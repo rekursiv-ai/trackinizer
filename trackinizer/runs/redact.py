@@ -81,7 +81,7 @@ class Redactor:
         for name, value in secrets.items():
             if not value:
                 raise ValueError(f"secret {name} has an empty value")
-            for part in (value, *_lines_of(value)):
+            for part in (value, *_matchable_lines(value)):
                 escaped = (
                     json.dumps(part, ensure_ascii=ascii_only)[1:-1]
                     for ascii_only in (False, True)
@@ -247,7 +247,7 @@ def redact_body(body: RecordBody, *, redactor: Redactor | None) -> RecordBody:
     )
 
 
-def _lines_of(value: str) -> list[str]:
+def _matchable_lines(value: str) -> list[str]:
     """Return the lines of a multi-line ``value`` that are long enough to match."""
     lines = value.splitlines()
     if len(lines) < 2:

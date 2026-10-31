@@ -169,7 +169,7 @@ class TestCodexSubagents:
         }
         codex, path = self._rollout(tmp_path, {"subagent": {"thread_spawn": spawn}})
 
-        assert codex.subagent_of(path) == Subagent(
+        assert codex.subagent(path) == Subagent(
             child=_THREAD,
             parent="01a17e85-a9b7-7230-a4b8-c29f9762ba25",
             note="Bohr (/root/synthesis)",
@@ -199,7 +199,7 @@ class TestCodexSubagents:
         spawn = {"parent_thread_id": "01a17e85-a9b7-7230-a4b8-c29f9762ba25", **named}
         codex, path = self._rollout(tmp_path, {"subagent": {"thread_spawn": spawn}})
 
-        subagent = codex.subagent_of(path)
+        subagent = codex.subagent(path)
 
         assert subagent is not None
         assert subagent.note == note
@@ -214,7 +214,7 @@ class TestCodexSubagents:
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         codex, path = self._rollout(tmp_path, source)
 
-        assert codex.subagent_of(path) is None
+        assert codex.subagent(path) is None
 
     def test_a_missing_or_torn_rollout_is_no_subagent(
         self,
@@ -227,8 +227,8 @@ class TestCodexSubagents:
         torn.parent.mkdir(parents=True)
         _ = torn.write_text('{"type": "session_meta", "pay')
 
-        assert codex.subagent_of(torn) is None
-        assert codex.subagent_of(torn.with_name("rollout-gone.jsonl")) is None
+        assert codex.subagent(torn) is None
+        assert codex.subagent(torn.with_name("rollout-gone.jsonl")) is None
 
 
 if __name__ == "__main__":

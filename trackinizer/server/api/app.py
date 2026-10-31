@@ -69,7 +69,7 @@ from trackinizer.server.api import (
     workspace_routes,
 )
 from trackinizer.server.api._deps import terminal_hub
-from trackinizer.server.api.addons_routes import deployment_of
+from trackinizer.server.api.addons_routes import app_deployment
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
 from trackinizer.server.asks import ask_release_loop
 from trackinizer.server.auth import seed_no_auth_user
@@ -193,7 +193,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         raise ConfigError("state.secret_schemes must map a scheme name to a factory")
     async with build_engine(config) as engine:
         app.state.engine = engine
-        app.state.access_policy = deployment_of(app).access_policy
+        app.state.access_policy = app_deployment(app).access_policy
         app.state.store = Store(
             engine,
             embed=build_embedder(config.embedder),
@@ -209,7 +209,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await app.state.store.bootstrap(
             addon_migrations=[
                 migration
-                for manifest in deployment_of(app).manifests.values()
+                for manifest in app_deployment(app).manifests.values()
                 for migration in manifest.migrations
             ],
         )
@@ -259,7 +259,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             tasks.append(asyncio.create_task(sweep_loop(terminal_hub(app))))
             tasks.extend(
                 _start_addon_services(
-                    deployment_of(app),
+                    app_deployment(app),
                     context=ServerContext(
                         store=app.state.store,
                         inbound=app.state.inbound,

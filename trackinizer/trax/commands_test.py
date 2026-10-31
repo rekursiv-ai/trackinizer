@@ -65,7 +65,7 @@ def test_command_base_help_text_for_handles_string_help() -> None:
         help = "widget help text\n"
 
     assert _Cmd.help_text() == "widget help text\n"
-    assert _Cmd.help_text_for("widget") == "widget help text\n"
+    assert _Cmd.verb_help_text("widget") == "widget help text\n"
 
 
 def test_command_base_help_text_raises_when_unconfigured() -> None:

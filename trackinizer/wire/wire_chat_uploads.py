@@ -259,7 +259,7 @@ class UploadAnswer(BaseModel):
     error: Annotated[str, Field(min_length=1, max_length=300)] | None = None
 
     @model_validator(mode="after")
-    def _one_of(self) -> Self:
+    def _exactly_one(self) -> Self:
         """Require exactly one of the slots, the link, the removal and the reason."""
         given = [self.files, self.url, self.removed, self.error]
         if sum(each is not None for each in given) != 1:

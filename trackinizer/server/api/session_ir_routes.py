@@ -28,7 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from treekle import from_plain, immutable
 
 from trackinizer.server.api._deps import get_assistant, get_inbound, get_store
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.api.session_access import (
     is_a_science_chat,
     require_part_writer,
@@ -145,7 +145,7 @@ async def append_session_records_route(
     conversation = chat_conversation_id(session.cli_session_id)
     senders = _posters(body.records)
     if conversation is not None and senders:
-        async with engine_of(request).acquire() as conn:
+        async with request_engine(request).acquire() as conn:
             counted = await counts_in_chat(
                 conn,
                 assistant=get_assistant(request),

@@ -146,7 +146,7 @@ def _route_dependencies(
     def require_browser(identity: AuthIdentity) -> None:
         del identity
 
-    def engine_of(request: Request) -> DatabaseEngine:
+    def request_engine(request: Request) -> DatabaseEngine:
         del request
         return engine
 
@@ -155,7 +155,7 @@ def _route_dependencies(
         return store
 
     monkeypatch.setattr(workspace_routes, "require_browser", require_browser)
-    monkeypatch.setattr(workspace_routes, "engine_of", engine_of)
+    monkeypatch.setattr(workspace_routes, "request_engine", request_engine)
     monkeypatch.setattr(workspace_routes, "get_store", get_store)
 
 

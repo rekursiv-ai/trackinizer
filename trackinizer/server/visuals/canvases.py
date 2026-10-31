@@ -18,7 +18,7 @@ from pydantic import (
     model_validator,
 )
 
-from trackinizer.server.visuals.canvas_room import canvas_of, record_room
+from trackinizer.server.visuals.canvas_room import record_room, returned_canvas
 from trackinizer.server.visuals.catalog import RECORD_VISUAL
 from trackinizer.wire.wire_science_chat import ChatProvider
 from trackinizer.wire.wire_sessions import RunState
@@ -1271,7 +1271,7 @@ def _make_room_for_record(
 ) -> Placement:
     """Close in ``data`` what an agent's new record closes, and say where it stands."""
     room = record_room(
-        canvas_of(
+        returned_canvas(
             data.model_dump(mode="json", include={"visuals", "focused_instance"})
             | {"page": page},
         ),

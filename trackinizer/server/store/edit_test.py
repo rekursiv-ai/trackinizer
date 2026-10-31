@@ -372,7 +372,7 @@ class TestAddCostFloor:
 
     The ``Cost`` dataclass enforces nonnegative components on
     construction; reading back a negative ``marginal_cost`` row raises
-    inside ``cost_for``. ``add_cost`` must refuse the delta upstream so
+    inside ``inquiry_cost``. ``add_cost`` must refuse the delta upstream so
     the read path stays valid.
     """
 

@@ -18,7 +18,7 @@ from trackinizer.server.api._deps import (
     get_store,
     get_terminal_hub,
 )
-from trackinizer.server.api._routes_shared import engine_of, require_browser
+from trackinizer.server.api._routes_shared import request_engine, require_browser
 from trackinizer.server.api.session_access import resolve_asker, session_reader
 from trackinizer.server.api.visuals_routes import visual_catalog
 from trackinizer.server.audience import SessionReader, TranscriptPings
@@ -143,9 +143,9 @@ async def canvas_events_route(
             read_state=read_state,
             is_active=partial(_owner_is_active, request, user_id=identity.user_id),
             changes=iter_changed_ids(
-                engine_of(request),
+                request_engine(request),
                 hears=TranscriptPings(
-                    engine=engine_of(request),
+                    engine=request_engine(request),
                     reader=session_reader(request, identity),
                 ).hears,
             ),
@@ -173,7 +173,7 @@ async def create_canvas_route(
     """
     require_browser(identity)
     return await open_latest_canvas(
-        engine_of(request),
+        request_engine(request),
         store=get_store(request),
         user_id=identity.user_id,
         email=identity.email,
@@ -202,7 +202,7 @@ async def list_canvases_route(
     """
     require_browser(identity)
     return await list_canvases(
-        engine_of(request),
+        request_engine(request),
         user_id=identity.user_id,
         inbound=get_inbound(request),
         assistant=get_assistant(request),
@@ -234,7 +234,7 @@ async def new_canvas_route(
 
     """
     require_browser(identity)
-    engine = engine_of(request)
+    engine = request_engine(request)
     workspace_id = body.workspace_id if body is not None else None
     if workspace_id is None:
         workspace_id = await open_default_workspace(
@@ -282,7 +282,7 @@ async def clear_chat_route(
     """
     require_browser(identity)
     state = await clear_chat_canvas(
-        engine_of(request),
+        request_engine(request),
         user_id=identity.user_id,
         canvas_id=canvas_id,
         key=key,
@@ -319,7 +319,7 @@ async def canvas_for_chat_route(
     """
     require_browser(identity)
     return await canvas_for_chat(
-        engine_of(request),
+        request_engine(request),
         store=get_store(request),
         user_id=identity.user_id,
         email=identity.email,
@@ -364,7 +364,7 @@ async def name_for_chat_route(
             detail="Only the assistant may name a canvas for an asker.",
         )
     state = await name_unnamed_canvas(
-        engine_of(request),
+        request_engine(request),
         email=found.email,
         conversation_id=conversation_id,
         name=body.name,
@@ -408,7 +408,7 @@ async def suggest_workspace_for_chat_route(
             detail="Only the assistant may suggest a workspace for an asker.",
         )
     state = await suggest_workspace_for_chat(
-        engine_of(request),
+        request_engine(request),
         user_id=await _user_id_for_email(request, email=found.email),
         email=found.email,
         conversation_id=conversation_id,
@@ -449,7 +449,7 @@ async def set_canvas_workspace_route(
     """
     require_browser(identity)
     state = await set_canvas_workspace(
-        engine_of(request),
+        request_engine(request),
         user_id=identity.user_id,
         email=identity.email,
         canvas_id=canvas_id,
@@ -460,7 +460,7 @@ async def set_canvas_workspace_route(
     if state is None:
         raise HTTPException(status_code=404, detail="Canvas or workspace not found")
     await move_canvas_sessions(
-        engine_of(request),
+        request_engine(request),
         store=get_store(request),
         canvas_id=canvas_id,
         email=identity.email,
@@ -504,7 +504,7 @@ async def settings_refs_for_chat_route(
             detail="Only the assistant may read a campaign setup for an asker.",
         )
     head = await read_head(
-        engine_of(request),
+        request_engine(request),
         assistant=get_assistant(request),
         caller=identity,
         conversation_id=conversation_id,
@@ -553,7 +553,7 @@ async def rename_canvas_route(
         state = None
         if body.name is not None:
             state = await rename_canvas(
-                engine_of(request),
+                request_engine(request),
                 user_id=identity.user_id,
                 canvas_id=canvas_id,
                 name=body.name,
@@ -564,7 +564,7 @@ async def rename_canvas_route(
                 raise HTTPException(status_code=404, detail="Canvas not found")
         if body.hidden is not None or body.pinned is not None:
             state = await set_canvas_flags(
-                engine_of(request),
+                request_engine(request),
                 user_id=identity.user_id,
                 canvas_id=canvas_id,
                 hidden=body.hidden,
@@ -576,7 +576,7 @@ async def rename_canvas_route(
                 raise HTTPException(status_code=404, detail="Canvas not found")
         if body.opens_as is not None:
             state = await set_canvas_opens_as(
-                engine_of(request),
+                request_engine(request),
                 user_id=identity.user_id,
                 canvas_id=canvas_id,
                 opens_as=body.opens_as,
@@ -613,7 +613,7 @@ async def set_canvas_page_route(
     """
     require_browser(identity)
     if not await set_canvas_page(
-        engine_of(request),
+        request_engine(request),
         user_id=identity.user_id,
         canvas_id=canvas_id,
         route=body.route,
@@ -646,7 +646,7 @@ async def set_canvas_layout_route(
     """
     require_browser(identity)
     if not await set_canvas_layout(
-        engine_of(request),
+        request_engine(request),
         user_id=identity.user_id,
         canvas_id=canvas_id,
         layout=body,
@@ -681,7 +681,7 @@ async def set_session_settings_route(
 
     """
     require_browser(identity)
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         conversation_id = await conn.fetchval(
             "SELECT metadata->>'conversation_id' FROM visual_canvases "
             "WHERE id = $1 AND user_id = $2",
@@ -692,7 +692,7 @@ async def set_session_settings_route(
         raise HTTPException(status_code=404, detail="Canvas not found")
     chat_id = uuid.UUID(from_plain(conversation_id, str))
     head = await read_head(
-        engine_of(request),
+        request_engine(request),
         assistant=get_assistant(request),
         caller=identity,
         conversation_id=chat_id,
@@ -754,7 +754,7 @@ async def canvas_of_key_route(
       canvas: The canvas's id.
 
     """
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         found = await canvases_of_key(conn, key=key)
     if not found:
         raise HTTPException(status_code=404, detail="Canvas not found")
@@ -782,7 +782,7 @@ async def read_canvas_route(
     """
     try:
         state = await read_canvas(
-            engine_of(request),
+            request_engine(request),
             user_id=identity.user_id,
             canvas_id=canvas_id,
             inbound=get_inbound(request),
@@ -866,9 +866,9 @@ async def view_canvas_events_route(
                 canvas_id=canvas_id,
             ),
             changes=iter_changed_ids(
-                engine_of(request),
+                request_engine(request),
                 hears=TranscriptPings(
-                    engine=engine_of(request),
+                    engine=request_engine(request),
                     reader=session_reader(request, identity),
                 ).hears,
             ),
@@ -1013,7 +1013,7 @@ async def _with_chat_session(
     released = False
     if assistant is not None and state.conversation_id is not None:
         inbound = get_inbound(request)
-        async with engine_of(request).acquire() as conn:
+        async with request_engine(request).acquire() as conn:
             while held := await live_chat_session(
                 conn,
                 inbound=inbound,
@@ -1051,7 +1051,7 @@ async def _started_by_another(
     """Say whether the canvas holds a chat someone other than ``identity`` started."""
     if state.conversation_id is None:
         return False
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         starter = await read_starter(
             conn,
             assistant=get_assistant(request),
@@ -1076,7 +1076,7 @@ async def _end_other_runs(
         return
     inbound = get_inbound(request)
     hub = get_terminal_hub(request)
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         rows = await conn.fetch(
             "SELECT id FROM inquiries WHERE kind = 'AgentSession' "
             "AND agentsession_cli_session_id = $1",
@@ -1104,7 +1104,7 @@ async def _current_state(
 ) -> CanvasState:
     """Read the owner's canvas with its partner, or 404."""
     state = await read_canvas(
-        engine_of(request),
+        request_engine(request),
         user_id=user_id,
         canvas_id=canvas_id,
         inbound=get_inbound(request),
@@ -1124,7 +1124,7 @@ async def _view(
 ) -> CanvasView | CanvasViewRefused | None:
     """Show a canvas to ``identity`` as :func:`view_canvas` does."""
     return await view_canvas(
-        engine_of(request),
+        request_engine(request),
         user_id=identity.user_id,
         canvas_id=canvas_id,
         inbound=get_inbound(request),
@@ -1163,7 +1163,7 @@ async def _still_viewed(
 
 async def _user_id_for_email(request: Request, *, email: str) -> uuid.UUID:
     """Look up an active user's id after ``resolve_asker`` validated the account."""
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         user_id = await conn.fetchval(
             "SELECT id FROM users WHERE email = $1 AND status = 'active'",
             email.lower(),
@@ -1175,7 +1175,7 @@ async def _user_id_for_email(request: Request, *, email: str) -> uuid.UUID:
 
 async def _owner_is_active(request: Request, *, user_id: uuid.UUID) -> bool:
     """Say whether the canvas's owner is still an active user."""
-    async with engine_of(request).acquire() as conn:
+    async with request_engine(request).acquire() as conn:
         active = await conn.fetchval(
             "SELECT 1 FROM users WHERE id = $1 AND status = 'active'",
             user_id,

@@ -685,7 +685,7 @@ class TestTheAssistantsAsker:
     _session = AgentSession(audience="staff", account="owner@example.com")
     _scout = _caller("open", email="scout@example.com")
 
-    async def _refused_for(
+    async def _refused_read(
         self,
         asker: Asker | None,
         *,
@@ -703,7 +703,7 @@ class TestTheAssistantsAsker:
 
     @pytest.mark.asyncio
     async def test_it_relays_for_an_asker_who_reads_the_session(self) -> None:
-        assert not await self._refused_for(
+        assert not await self._refused_read(
             _asker("open", "staff"),
             answers=[False, True],
         )
@@ -715,7 +715,7 @@ class TestTheAssistantsAsker:
         """A tester steers the campaign attributed to them, though it is staff's to read."""
         asker = _asker("open", email="owner@example.com")
 
-        assert not await self._refused_for(asker, answers=[False])
+        assert not await self._refused_read(asker, answers=[False])
 
     @pytest.mark.asyncio
     async def test_it_refuses_an_asker_who_neither_reads_nor_owns_the_session(
@@ -723,11 +723,11 @@ class TestTheAssistantsAsker:
     ) -> None:
         stranger = _asker("open", email="stranger@example.com")
 
-        assert await self._refused_for(stranger, answers=[False, False])
+        assert await self._refused_read(stranger, answers=[False, False])
 
     @pytest.mark.asyncio
     async def test_it_refuses_a_send_that_names_no_asker(self) -> None:
-        assert await self._refused_for(None, answers=[False])
+        assert await self._refused_read(None, answers=[False])
 
     @pytest.mark.parametrize(
         "asker",
@@ -741,14 +741,14 @@ class TestTheAssistantsAsker:
     )
     @pytest.mark.asyncio
     async def test_it_refuses_an_asker_who_may_not_write(self, asker: Asker) -> None:
-        assert await self._refused_for(asker, answers=[False])
+        assert await self._refused_read(asker, answers=[False])
 
     @pytest.mark.parametrize("role", ["writer", "admin"])
     @pytest.mark.asyncio
     async def test_a_writer_or_an_admin_asker_may_write(self, role: Role) -> None:
         asker = _asker("open", "staff", role=role)
 
-        assert not await self._refused_for(asker, answers=[False, True])
+        assert not await self._refused_read(asker, answers=[False, True])
 
     @pytest.mark.asyncio
     async def test_an_asker_lends_its_rights_to_no_sender_but_the_assistant(
@@ -812,7 +812,7 @@ class TestTheAssistantReadsForAnAsker:
     _session = AgentSession(audience="open", account="owner@example.com")
     _scout = _caller("open", "staff", email="scout@example.com")
 
-    async def _read_for(
+    async def _read_refusal(
         self,
         asker: Asker | None,
         *,
@@ -834,7 +834,7 @@ class TestTheAssistantReadsForAnAsker:
     async def test_it_reads_for_an_asker_who_reads_the_session_and_the_chat(
         self,
     ) -> None:
-        refusal = await self._read_for(_asker("open"), answers=[True, _FIRST, True])
+        refusal = await self._read_refusal(_asker("open"), answers=[True, _FIRST, True])
 
         assert refusal is None
 
@@ -853,7 +853,7 @@ class TestTheAssistantReadsForAnAsker:
         asker: Asker,
         session: AgentSession,
     ) -> None:
-        refusal = await self._read_for(asker, session=session)
+        refusal = await self._read_refusal(asker, session=session)
 
         assert refusal is not None
         assert (refusal.status_code, refusal.detail) == (
@@ -863,14 +863,14 @@ class TestTheAssistantReadsForAnAsker:
 
     @pytest.mark.asyncio
     async def test_a_read_for_an_asker_names_the_chat(self) -> None:
-        refusal = await self._read_for(_asker("open"), chat=None)
+        refusal = await self._read_refusal(_asker("open"), chat=None)
 
         assert refusal is not None
         assert (refusal.status_code, refusal.detail) == (422, {"code": "chat_required"})
 
     @pytest.mark.asyncio
     async def test_it_is_refused_a_session_the_asker_does_not_read(self) -> None:
-        refusal = await self._read_for(_asker("open"), answers=[False])
+        refusal = await self._read_refusal(_asker("open"), answers=[False])
 
         assert refusal is not None
         assert refusal.detail == {"code": "session_audience", "audience": "open"}
@@ -885,7 +885,7 @@ class TestTheAssistantReadsForAnAsker:
         self,
         answers: list[object],
     ) -> None:
-        refusal = await self._read_for(_asker("open"), answers=answers)
+        refusal = await self._read_refusal(_asker("open"), answers=answers)
 
         assert refusal is not None
         assert (refusal.status_code, refusal.detail) == (

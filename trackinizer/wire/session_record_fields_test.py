@@ -32,7 +32,7 @@ from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 from trackinizer.wire.column_shapes import COLUMN_SHAPES, ColumnShape, sql_template
 from trackinizer.wire.session_record_fields import (
     SESSION_RECORD_FIELDS,
-    record_kind_for,
+    column_record_kind,
     snake_case,
 )
 
@@ -130,13 +130,13 @@ class TestSnakeCase:
         assert snake_case("Thinking") == "thinking"
 
     def test_the_field_round_trips_to_its_kind(self) -> None:
-        assert record_kind_for("tool_call") == ToolCall.__name__
-        assert record_kind_for("web_search_results") == WebSearchResults.__name__
-        assert record_kind_for("incomplete_record") == IncompleteRecord.__name__
+        assert column_record_kind("tool_call") == ToolCall.__name__
+        assert column_record_kind("web_search_results") == WebSearchResults.__name__
+        assert column_record_kind("incomplete_record") == IncompleteRecord.__name__
 
     def test_a_non_record_field_is_not_one(self) -> None:
-        assert record_kind_for("title") is None
-        assert record_kind_for("turn_context") is None
+        assert column_record_kind("title") is None
+        assert column_record_kind("turn_context") is None
 
 
 class TestTheSqlBakesTheKindIn:

@@ -90,7 +90,7 @@ class _Served:
             json={"audience": audience},
         )
 
-    async def audience_of(self, session_id: UUID) -> str:
+    async def session_audience(self, session_id: UUID) -> str:
         """Return the audience the database holds for ``session_id``."""
         async with self.store.engine.acquire() as conn:
             return from_plain(
@@ -174,7 +174,7 @@ async def test_the_owner_hides_a_session_and_shows_it_again(served: _Served) -> 
         200,
     )
     assert (shown.status_code, after.status_code) == (200, 200)
-    assert await served.audience_of(session) == "open"
+    assert await served.session_audience(session) == "open"
 
 
 async def test_the_user_whose_key_opened_it_is_an_owner_too(served: _Served) -> None:
@@ -183,7 +183,7 @@ async def test_the_user_whose_key_opened_it_is_an_owner_too(served: _Served) -> 
     served.act_as(_BOB)
 
     assert (await served.move(session, "private")).status_code == 200
-    assert await served.audience_of(session) == "private"
+    assert await served.session_audience(session) == "private"
 
 
 @pytest.mark.parametrize(
@@ -201,7 +201,7 @@ async def test_only_the_owner_hides(served: _Served, caller: str, role: Role) ->
         403,
         {"detail": {"code": "session_not_owner"}},
     )
-    assert await served.audience_of(session) == "open"
+    assert await served.session_audience(session) == "open"
 
 
 async def test_an_admin_cannot_take_a_hidden_session_to_show_it(
@@ -228,7 +228,7 @@ async def test_an_admin_cannot_take_a_hidden_session_to_show_it(
         403,
         200,
     )
-    assert await served.audience_of(hidden) == "private"
+    assert await served.session_audience(hidden) == "private"
 
 
 async def test_a_staff_session_is_never_hidden(served: _Served) -> None:
@@ -241,7 +241,7 @@ async def test_a_staff_session_is_never_hidden(served: _Served) -> None:
         409,
         {"detail": {"code": "session_staff"}},
     )
-    assert await served.audience_of(session) == "staff"
+    assert await served.session_audience(session) == "staff"
 
 
 async def test_hiding_a_chat_hides_every_session_under_its_id(served: _Served) -> None:
@@ -270,7 +270,7 @@ async def test_hiding_a_chat_hides_every_session_under_its_id(served: _Served) -
             list[str],
         ),
     ) == sorted([str(first), str(later)])
-    assert [await served.audience_of(each) for each in (first, later)] == [
+    assert [await served.session_audience(each) for each in (first, later)] == [
         "private",
         "private",
     ]

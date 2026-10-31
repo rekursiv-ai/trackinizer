@@ -205,7 +205,7 @@ class TestClaudeSubagents:
         claude, path = self._agent(tmp_path, "a1", meta)
 
         assert claude.matches_session_file(path)
-        assert claude.subagent_of(path) == Subagent(
+        assert claude.subagent(path) == Subagent(
             child="agent-a1",
             parent="s1",
             note="general-purpose: Run echo (toolu_1)",
@@ -220,7 +220,7 @@ class TestClaudeSubagents:
         meta = {"description": "Dig", "parentAgentId": "a0", "spawnDepth": 2}
         claude, path = self._agent(tmp_path, "a2", meta)
 
-        assert claude.subagent_of(path) == Subagent(
+        assert claude.subagent(path) == Subagent(
             child="agent-a2",
             parent="agent-a0",
             note="Dig",
@@ -235,7 +235,7 @@ class TestClaudeSubagents:
         claude, path = self._agent(tmp_path, "a1", None)
         _ = path.with_name("agent-a1.meta.json").write_text("{not json")
 
-        assert claude.subagent_of(path) == Subagent(child="agent-a1", parent="s1")
+        assert claude.subagent(path) == Subagent(child="agent-a1", parent="s1")
 
     def test_a_session_file_and_a_side_file_are_no_subagents(
         self,
@@ -248,9 +248,9 @@ class TestClaudeSubagents:
         side = tmp_path / "projects" / "-w" / "s1" / "tool-results" / "agent-x.jsonl"
 
         assert claude.matches_session_file(session)
-        assert claude.subagent_of(session) is None
+        assert claude.subagent(session) is None
         assert not claude.matches_session_file(side)
-        assert claude.subagent_of(side) is None
+        assert claude.subagent(side) is None
 
 
 if __name__ == "__main__":

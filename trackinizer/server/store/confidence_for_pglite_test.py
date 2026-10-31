@@ -1,4 +1,4 @@
-"""``confidence_for`` folds the currently-true ``proves`` graph, against PGlite.
+"""``derived_confidence`` folds the currently-true ``proves`` graph, against PGlite.
 
 Exercised against a real engine rather than a mock: the currency rule, the
 recursion into claimable citers, and the log-odds fold are what the store
@@ -64,7 +64,7 @@ async def _complete_experiment(store: Store, title: str) -> UUID:
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_missing_row_is_none(store: Store) -> None:
-    assert await store.confidence_for(uuid4()) is None
+    assert await store.derived_confidence(uuid4()) is None
 
 
 @pytest.mark.db_pglite
@@ -79,7 +79,7 @@ async def test_non_claimable_kind_is_none_not_a_bogus_neutral(store: Store) -> N
     issue_id = await store.submit_issue(
         SubmitIssue(account="tester@example.com", title="Not a claim"),
     )
-    assert await store.confidence_for(issue_id) is None
+    assert await store.derived_confidence(issue_id) is None
 
 
 @pytest.mark.db_pglite
@@ -87,7 +87,7 @@ async def test_non_claimable_kind_is_none_not_a_bogus_neutral(store: Store) -> N
 async def test_no_evidence_is_neutral(store: Store) -> None:
     belief_id = await _proven_belief(store, "Unsupported claim")
 
-    assert await store.confidence_for(belief_id) == pytest.approx(0.5)
+    assert await store.derived_confidence(belief_id) == pytest.approx(0.5)
 
 
 @pytest.mark.db_pglite
@@ -105,7 +105,7 @@ async def test_a_positive_citation_lifts_confidence(store: Store) -> None:
 
     # Experiment citer is claimable, so its own (evidence-free) confidence is
     # neutral 0.5, weighting the 0.8 valence: log-odds = 0.5 * 0.8.
-    assert await store.confidence_for(claim) == pytest.approx(
+    assert await store.derived_confidence(claim) == pytest.approx(
         fold_confidence(0.5 * 0.8),
     )
 
@@ -131,7 +131,7 @@ async def test_symmetric_support_and_attack_cancel(store: Store) -> None:
         valence=-0.6,
     )
 
-    assert await store.confidence_for(claim) == pytest.approx(0.5)
+    assert await store.derived_confidence(claim) == pytest.approx(0.5)
 
 
 @pytest.mark.db_pglite
@@ -150,7 +150,7 @@ async def test_a_leaf_artifact_citer_counts_at_full_weight(store: Store) -> None
         valence=0.7,
     )
 
-    assert await store.confidence_for(claim) == pytest.approx(
+    assert await store.derived_confidence(claim) == pytest.approx(
         fold_confidence(1.0 * 0.7),
     )
 
@@ -180,7 +180,7 @@ async def test_confidence_recurses_into_a_claimable_citer(store: Store) -> None:
     )
 
     leaf_confidence = fold_confidence(1.0 * 0.9)
-    assert await store.confidence_for(root) == pytest.approx(
+    assert await store.derived_confidence(root) == pytest.approx(
         fold_confidence(leaf_confidence * 0.5),
     )
 

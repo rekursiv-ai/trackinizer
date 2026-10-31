@@ -11,7 +11,7 @@ from trackinizer.addons.deployment import Deployment
 from trackinizer.server.auth import require_role
 
 
-__all__ = ["attach_deployment", "deployment_of", "router"]
+__all__ = ["app_deployment", "attach_deployment", "router"]
 
 
 router = APIRouter()
@@ -20,10 +20,10 @@ router = APIRouter()
 @router.get("/api/addons", dependencies=[Depends(require_role("viewer"))])
 async def addons_route(request: Request) -> AddonCatalogBody:
     """Describe every addon of this deployment without touching its services."""
-    return deployment_of(cast(FastAPI, request.app)).catalog()
+    return app_deployment(cast(FastAPI, request.app)).catalog()
 
 
-def deployment_of(app: FastAPI) -> Deployment:
+def app_deployment(app: FastAPI) -> Deployment:
     """Return the deployment attached to ``app``, or the one with no addons."""
     deployment: object = getattr(app.state, "deployment", None)
     if isinstance(deployment, Deployment):

@@ -718,11 +718,11 @@ class TestSendIdempotency:
         q.send_once(key, [(sid, Inbound(text="hi", source="ada@example.com"))])
         q.send_once(key, [(sid, Inbound(text="hi", source="jan@other.org"))])
 
-        assert q.sender_of(key) == "ada@example.com"
-        assert q.sender_of(other) is None
+        assert q.key_sender(key) == "ada@example.com"
+        assert q.key_sender(other) is None
         # A key the bound pushed out is forgotten, as is one that had no sender.
         q.send_once(other, [(sid, Inbound(text="anon"))])
-        assert (q.sender_of(key), q.sender_of(other)) == (None, None)
+        assert (q.key_sender(key), q.key_sender(other)) == (None, None)
 
     def test_send_once_concurrent_same_key_enqueues_once(self) -> None:
         # Two concurrent same-key sends must not BOTH pass the dedup check and

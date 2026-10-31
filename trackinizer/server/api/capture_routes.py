@@ -15,7 +15,7 @@ from trackinizer.server.api._deps import (
     get_inbound,
     get_relay,
 )
-from trackinizer.server.api._routes_shared import engine_of, require_browser
+from trackinizer.server.api._routes_shared import request_engine, require_browser
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.capture_relay import (
     MAX_ANSWER_BYTES,
@@ -64,7 +64,7 @@ async def request_capture_route(
         raise HTTPException(status_code=403, detail="Agent key required")
     try:
         allowed = await agent_may_operate(
-            engine_of(request),
+            request_engine(request),
             user_id=identity.user_id,
             canvas_id=canvas_id,
             agent_api_key_id=identity.api_key_id,
@@ -141,7 +141,7 @@ async def answer_capture_route(
     """
     require_browser(identity)
     if not await owns_canvas(
-        engine_of(request),
+        request_engine(request),
         user_id=identity.user_id,
         canvas_id=canvas_id,
     ):

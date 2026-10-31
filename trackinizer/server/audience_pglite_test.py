@@ -23,8 +23,8 @@ from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.audience import (
     NOBODY,
     SessionReader,
+    caller_reader,
     hidden_exists_sql,
-    reader_for,
     reads_session,
     visible_sql,
 )
@@ -440,7 +440,7 @@ async def _record(store: Store, *, session: UUID) -> None:
 def _reader(name: str, *, orgs: ChatOrgs, hidden: bool = True) -> SessionReader:
     """Return the reader ``name`` of the cast signs in as, on a server in ``orgs``."""
     email, audiences, admin, hosted_domain = _CAST[name]
-    return reader_for(
+    return caller_reader(
         email,
         audiences=audiences,
         admin=admin,

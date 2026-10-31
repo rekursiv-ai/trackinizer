@@ -37,7 +37,7 @@ def _fixtures() -> list[Path]:
     return sorted((_CWD / "testdata").glob("*.jsonl"))
 
 
-def _adapter_for(path: Path) -> _Adapter:
+def _fixture_adapter(path: Path) -> _Adapter:
     """Return the adapter matching a fixture's detected format."""
     return claude if path.name.startswith("claude") else codex
 
@@ -50,7 +50,7 @@ def _fixture_id(path: Path) -> str:
 @pytest.mark.parametrize("path", _fixtures(), ids=_fixture_id)
 def test_a_captured_session_round_trips_byte_for_byte(path: Path) -> None:
     native = path.read_text(encoding="utf-8")
-    adapter = _adapter_for(path)
+    adapter = _fixture_adapter(path)
 
     records = list(adapter.normalize(StringIO(native)))
     rebuilt = StringIO()
@@ -97,7 +97,9 @@ def test_a_captured_session_maps_every_record_kind(path: Path) -> None:
     # maps lands in UncategorizedRecord, and this is what reports it. A
     # synthesized corpus cannot fail here, because its author only writes
     # kinds they already know about.
-    records = _adapter_for(path).normalize(StringIO(path.read_text(encoding="utf-8")))
+    records = _fixture_adapter(path).normalize(
+        StringIO(path.read_text(encoding="utf-8")),
+    )
 
     assert _unmapped(records) == UNCATEGORIZED[path.stem]
 

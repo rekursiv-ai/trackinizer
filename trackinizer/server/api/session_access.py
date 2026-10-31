@@ -65,8 +65,8 @@ from trackinizer.server.api._deps import (
 )
 from trackinizer.server.audience import (
     SessionReader,
-    audiences_for,
-    reader_for,
+    caller_reader,
+    person_audiences,
     reads_session,
 )
 from trackinizer.server.auth import ROLE_ORDER, Role
@@ -189,7 +189,7 @@ async def resolve_asker(
     return Asker(
         email=account,
         role=cast("Role", row["role"]),
-        read_audiences=audiences_for(
+        read_audiences=person_audiences(
             account,
             hosted_domain=hosted_domain,
             staff=get_staff(request),
@@ -465,7 +465,7 @@ async def require_session_access(
     assistant = get_assistant(request)
     lender = asker if _is_the_assistant(identity, assistant) else None
     if mode == "read" and lender is not None:
-        await _require_read_for(
+        await _require_read(
             request,
             identity,
             asker=lender,
@@ -523,7 +523,7 @@ def session_reader(
       hidden: Keep private sessions; a listing passes False unless asked for them.
 
     Returns:
-      reader: As :func:`~trackinizer.server.audience.reader_for` derives it for
+      reader: As :func:`~trackinizer.server.audience.caller_reader` derives it for
         the server's organisation mode.
 
     """
@@ -539,7 +539,7 @@ def session_reader(
             hidden=hidden,
             assistant="" if assistant is None else assistant.email,
         )
-    return reader_for(
+    return caller_reader(
         identity.email,
         audiences=identity.read_audiences,
         admin=identity.role == "admin",
@@ -670,7 +670,7 @@ def asker_reader(request: Request, asker: Asker, *, delegated: bool) -> SessionR
 
     """
     assistant = get_assistant(request)
-    return reader_for(
+    return caller_reader(
         asker.email,
         audiences=asker.read_audiences,
         admin=asker.role == "admin",
@@ -933,7 +933,7 @@ def _not_held(audience: str) -> HTTPException:
 
 # Each refusal comes before anything is read, and the chat becomes ``staff`` before the
 # read it guards: the route reads the transcript only once this returns.
-async def _require_read_for(
+async def _require_read(
     request: Request,
     identity: AuthIdentity,
     *,

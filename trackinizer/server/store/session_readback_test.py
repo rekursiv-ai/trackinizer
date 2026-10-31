@@ -78,7 +78,7 @@ async def _session_row(store: Store) -> UUID:
     return session_id
 
 
-def _adapter_for(name: str) -> _Adapter:
+def _dialect_adapter(name: str) -> _Adapter:
     """Return the IR module whose dialect ``name`` is in."""
     return codex if name.startswith("codex") else claude
 
@@ -88,7 +88,7 @@ def _adapter_for(name: str) -> _Adapter:
 # drain the tailer never performs.
 async def _ingest(store: Store, path: Path, session_id: UUID) -> int:
     """Drive the real capture path over ``path``; return the part it landed in."""
-    reader = Tail(_adapter_for(path.name).normalize)
+    reader = Tail(_dialect_adapter(path.name).normalize)
     records: list[TraxRecord] = []
     with path.open(encoding="utf-8") as handle:
         for line in handle:
@@ -153,7 +153,7 @@ async def _materialize(store: Store, session_id: UUID, part: int) -> str:
     # file then differs while every record matches. A stored part's records
     # begin at its own ``idx`` 0, so nothing else carries it.
     out = StringIO()
-    _adapter_for(manifest.name).denormalize(
+    _dialect_adapter(manifest.name).denormalize(
         [TurnContext(encoding=manifest.metadata), *records],
         out,
     )

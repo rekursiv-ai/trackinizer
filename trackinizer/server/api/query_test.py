@@ -318,7 +318,7 @@ class TestRoutes:
         """AgentSession filters validate against its columns, not 500.
 
         AgentSession was absent from the server filter-kind map, so a
-        filtered request raised ``KeyError`` deep in ``_filter_columns_for``
+        filtered request raised ``KeyError`` deep in ``_filter_columns``
         (a 500). It is now a first-class filterable kind: a base-column
         filter is accepted (200) and a kind-invalid field is a clean 400.
         """
@@ -905,7 +905,7 @@ class TestCoverageRoutesAndCli:
     ) -> None:
         client, _store, engine = route_client
         target_id = new_uuid()
-        # cost_for now does an existence check via fetchval first.
+        # inquiry_cost now does an existence check via fetchval first.
         engine.conn.fetchval.return_value = 1
         set_field_row(engine.conn, {"agent_usd": 1.0, "resource_usd": 2.0})
         assert (
@@ -971,7 +971,7 @@ class TestMissingResourceIs404:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        # ``cost_for`` existence probe returns no row.
+        # ``inquiry_cost`` existence probe returns no row.
         engine.conn.fetchval.return_value = None
         r = client.get(f"/api/inquiries/{new_uuid()}/cost")
         assert r.status_code == 404
@@ -981,7 +981,7 @@ class TestMissingResourceIs404:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        # ``confidence_for`` kind probe returns no row (missing id).
+        # ``derived_confidence`` kind probe returns no row (missing id).
         engine.conn.fetchval.return_value = None
         r = client.get(f"/api/inquiries/{new_uuid()}/confidence")
         assert r.status_code == 404

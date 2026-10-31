@@ -37,7 +37,7 @@ async def test_any_rows_app_is_created_and_read_alike_on_both_routes(
 
     issue_id = await _row_with(client, kind="issue", app=created)
 
-    assert await _app_of(client, issue_id, kind="Issue") == created
+    assert await _row_app(client, issue_id, kind="Issue") == created
 
 
 async def test_an_experiments_app_is_replaced_whole(
@@ -100,7 +100,7 @@ async def test_an_app_that_is_not_one_object_of_at_most_64_kib_is_refused(
     assert listed.status_code == 422
     assert oversized.status_code == 409
     assert created_oversized.status_code == 409
-    assert await _app_of(client, experiment_id) is None
+    assert await _row_app(client, experiment_id) is None
 
 
 async def test_an_apps_compare_and_set_refuses_a_stale_expectation(
@@ -126,7 +126,7 @@ async def test_an_apps_compare_and_set_refuses_a_stale_expectation(
             "expected": read,
         },
     )
-    after_stale = await _app_of(client, experiment_id)
+    after_stale = await _row_app(client, experiment_id)
     merged = {"tracker": {**corrected["tracker"], "patch": "p"}}
     fresh = await client.put(
         path,
@@ -137,7 +137,7 @@ async def test_an_apps_compare_and_set_refuses_a_stale_expectation(
     assert stale.status_code == 409, stale.text
     assert after_stale == corrected
     assert fresh.status_code == 200, fresh.text
-    assert await _app_of(client, experiment_id) == merged
+    assert await _row_app(client, experiment_id) == merged
 
 
 async def _row_with(
@@ -162,7 +162,7 @@ async def _app_at(client: httpx2.AsyncClient, *, experiment_id: str) -> object:
 
 
 # The two must agree; the listing is the page a caller filters by kind.
-async def _app_of(
+async def _row_app(
     client: httpx2.AsyncClient,
     row_id: str,
     *,

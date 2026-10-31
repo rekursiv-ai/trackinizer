@@ -17,9 +17,9 @@ from trackinizer.server.api.canvas_test_support import (
     act_as_assistant,
     act_as_user_agent,
     browser,
+    canvas_revision,
     drain,
     open_canvas,
-    revision_of,
     seed_accounts,
     seed_session,
 )
@@ -49,7 +49,7 @@ async def test_switching_a_closed_chat_reopens_it_for_the_new_provider(
         provider="codex" if provider == "claude" else "claude",
         account=TEST_USER_EMAIL.upper() if provider == "claude" else TEST_USER_EMAIL,
     )
-    revision = await revision_of(client, canvas_id=canvas)
+    revision = await canvas_revision(client, canvas_id=canvas)
     key = str(uuid.uuid4())
     operation = {
         "revision": revision,
@@ -133,7 +133,7 @@ async def test_a_noop_or_refused_switch_leaves_the_chat_closed(
     client, store = pglite_route_client
     patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     canvas, conversation, _ = await _closed_chat(client, store=store)
-    revision = await revision_of(client, canvas_id=canvas)
+    revision = await canvas_revision(client, canvas_id=canvas)
     chosen = await client.post(
         f"/api/canvases/{canvas}/operations",
         json={

@@ -31,7 +31,7 @@ class _State(Protocol):
     engine: DatabaseEngine
 
 
-def engine_of(request: HTTPConnection) -> DatabaseEngine:
+def request_engine(request: HTTPConnection) -> DatabaseEngine:
     """Return the DatabaseEngine held on app state.
 
     Args:

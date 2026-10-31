@@ -372,7 +372,7 @@ async def cost_route(
 ) -> Cost:
     """Cost route."""
     del identity
-    return _require_found(await get_store(request).cost_for(target_id, deep=deep))
+    return _require_found(await get_store(request).inquiry_cost(target_id, deep=deep))
 
 
 @router.get("/api/inquiries/{target_id}/proves_belief")
@@ -395,7 +395,7 @@ async def confidence_route(
 ) -> dict[str, float]:
     """Return the derived confidence of a Belief/Experiment, 404 if absent."""
     del identity
-    confidence = await get_store(request).confidence_for(target_id)
+    confidence = await get_store(request).derived_confidence(target_id)
     return {"confidence": _require_found(confidence)}
 
 
@@ -407,7 +407,7 @@ async def authority_route(
 ) -> dict[str, float]:
     """Return a row's derived load-bearing authority scores, 404 if absent."""
     del identity
-    return _require_found(await get_store(request).authority_for(target_id))
+    return _require_found(await get_store(request).derived_authority(target_id))
 
 
 @router.get("/api/inquiries/{kind}/{seq}")
@@ -651,7 +651,7 @@ def parse_filter(obj: Mapping[str, object], kind: Inquiry.InquiryKind) -> Filter
             detail="filter requires string field/op/value entries",
         )
     canonical = canonical_filter_field(field)
-    if canonical not in _filter_columns_for(kind):
+    if canonical not in _filter_columns(kind):
         raise HTTPException(
             status_code=400,
             detail=f"unknown filter field {field!r} for {kind}",
@@ -730,7 +730,7 @@ def _require_found[T](value: T | None) -> T:
 # through :func:`storage_name`, since ``canonical_filter_field`` resolves a filter to
 # its storage column (``priority`` -> ``issue_priority``) and the whitelist validates
 # the canonical name.
-def _filter_columns_for(kind: Inquiry.InquiryKind) -> frozenset[str]:
+def _filter_columns(kind: Inquiry.InquiryKind) -> frozenset[str]:
     """Return the canonical SQL column names a ``Filter`` may target for ``kind``."""
     cls = KIND_TO_CLASS[kind]
     declared = {
