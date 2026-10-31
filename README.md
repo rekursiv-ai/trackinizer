@@ -17,32 +17,10 @@ message to an agent in the console, answered live.
 ## Quick Start
 
 ```bash
-# Mac:
-#   # Required for quick install.
-#   brew install uv
-#   # Optional for a real Postgres backend; default uses pglite engine.
-#   brew install postgresql@18 pgvector
-
-# Ubuntu/Debian:
-#   # Required for quick install.
-#   sudo apt-get install -y curl
-#   curl -LsSf https://astral.sh/uv/install.sh | sh
-#   # Optional for a real Postgres backend; default uses pglite engine.
-#   PG_MAJOR="$(apt-cache depends postgresql | grep -m1 -oP 'postgresql-\K\d+')"
-#   sudo apt-get install -y postgresql "postgresql-$PG_MAJOR-pgvector"
-
-# `trackinizer` alone installs `trax`, the client; the server is the `server` extra.
-uv tool install 'trackinizer[server]'
-
-# Optional: install authoring guidance for your agent (claude, codex, or cursor).
-trax doctor --fix --target codex --offline
-
-# Local server at http://127.0.0.1:8765.
-trackinizer
-
-# CLI to trackinizer server.
-trax
+uvx 'trackinizer[server]@latest'
 ```
+
+See [Install](#install) for additional details.
 
 Centralized agent database for inquiries (Issues + Artifacts), work, and
 knowledge. Three core tables (`inquiries`, `edges`, `change_log`) backed
@@ -108,6 +86,45 @@ A canvas's Chat talks to the server's shared assistant. An admin sets it with
 `trackinizer --assistant ACTOR=EMAIL`, where `EMAIL` is a service account's
 (`NAME@service.invalid`); with none live, Chat says so and sends
 nothing. [`docs/api.md`](trackinizer/docs/api.md) has the rules.
+
+## Install
+
+```bash
+# `trackinizer` alone installs `trax`, the client; the server is the `server` extra.
+uv tool install 'trackinizer[server]'
+# Later: uv tool upgrade trackinizer
+
+# Optional: install authoring guidance for your agent (claude, codex, or cursor).
+trax doctor --fix --target codex --offline
+
+# Local server at http://127.0.0.1:8765.
+trackinizer
+
+# CLI to trackinizer server.
+trax
+```
+
+If you're missing `uvx`/`uv`,
+- Mac
+  ```bash
+  brew install uv
+  ```
+- Linux
+  ```bash
+  sudo apt install -y curl
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+
+Optionally, for a real Postgres backend (default uses the pglite engine),
+- Mac
+  ```bash
+  brew install postgresql@18 pgvector
+  ```
+- Linux
+  ```bash
+  PG_MAJOR="$(apt-cache depends postgresql | grep -m1 -oP 'postgresql-\K\d+')"
+  sudo apt install -y postgresql "postgresql-$PG_MAJOR-pgvector"
+  ```
 
 ## The model
 
