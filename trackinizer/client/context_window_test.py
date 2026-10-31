@@ -18,6 +18,7 @@ from treekle import immutable
 import pytest
 
 from trackinizer.client.context_window import (
+    BUDGETS,
     CUT_ABOVE,
     Budget,
     Window,
@@ -583,6 +584,24 @@ class TestTheBudget:
         assert loaded.compact_after_load is compact
         assert _users(loaded.records)[0].startswith("[trax]") is noted
         assert (loaded.skipped > 0) is noted
+
+    def test_sagent_loads_past_codexs_budget_whole_and_is_not_asked_to_compact(
+        self,
+    ) -> None:
+        """Its model's window decides: sagent compacts before a call it cannot hold."""
+        rows = [
+            _sagent_line("agent_send", f"q{turn:02d} " + "x" * 15_000, at=turn)
+            for turn in range(60)
+        ]
+        seen = window([_segment(0, "sagent", _sagent(*rows))])
+
+        loaded = cli_records(seen, "sagent", seq=_seven)
+
+        assert sum(weight(each.record) for each in seen.records) > (
+            BUDGETS["codex"].max_bytes
+        )
+        assert (loaded.loaded_records, loaded.skipped) == (60, 0)
+        assert not loaded.compact_after_load
 
     def test_a_huge_shell_result_keeps_its_head_and_tail_and_its_call(self) -> None:
         part = _sagent(

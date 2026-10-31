@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from io import StringIO
-from typing import cast
+from typing import Final, cast
 
 import inspect
 import json
@@ -15,6 +15,7 @@ import pytest
 from trackinizer.lib.agent.sessions import sagent
 from trackinizer.lib.agent.sessions.convert import detect_format, main
 from trackinizer.lib.agent.sessions.testdata.mistype import mistyped
+from trackinizer.sagent.session.jsonl import record_line
 from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AgentToAgentMessage,
@@ -605,6 +606,53 @@ def test_convert_names_the_format_but_does_not_offer_it() -> None:
 
     assert detect_format(head) == "sagent"
     assert "sagent" not in offered
+
+
+_JOURNAL: Final = (
+    ContextClear(timestamp="2026-10-31T00:00:00Z", system_prompt="", history=()),
+    UserMessage(content="hello", extra={"$inbound": {"source": "bob"}}),
+    ToolCall(call_id="c1", name="Bash", arguments={"command": "ls"}),
+    UncategorizedToolResult(call_id="c1", content="a b"),
+    AssistantMessage(content="hi"),
+)
+"""Records as today's sagent journals them: one IR record a line."""
+
+
+def test_a_journal_today_s_sagent_writes_reads_back_record_for_record() -> None:
+    """A sagent run is captured through this reader, so nothing may be retyped."""
+    text = b"".join(record_line(record) for record in _JOURNAL).decode()
+
+    assert list(sagent.normalize(StringIO(text))) == list(_JOURNAL)
+
+
+def test_a_journal_today_s_sagent_writes_is_detected_as_sagent() -> None:
+    head = record_line(_JOURNAL[0]).decode()
+
+    assert sagent.is_sagent(head)
+    assert detect_format(head) == "sagent"
+
+
+def test_records_written_as_a_journal_read_back_as_they_were() -> None:
+    """A stored conversation is handed back to sagent this way, to resume."""
+    torn = IncompleteRecord(text='{"py/object": "UserMess\n')
+    out = StringIO()
+
+    sagent.denormalize([*_JOURNAL, torn], out)
+
+    assert out.getvalue() == (
+        b"".join(record_line(record) for record in _JOURNAL).decode() + torn.text
+    )
+    assert list(sagent.normalize(StringIO(out.getvalue()))) == [*_JOURNAL, torn]
+
+
+def test_a_torn_journal_line_keeps_its_bytes() -> None:
+    """A run read mid-write sees half a line; it must not cost the lines after it."""
+    whole = record_line(_JOURNAL[1]).decode()
+    torn = whole[: len(whole) // 2] + "\n"
+
+    records = list(sagent.normalize(StringIO(torn + whole)))
+
+    assert records == [IncompleteRecord(text=torn), _JOURNAL[1]]
 
 
 @pytest.mark.parametrize(

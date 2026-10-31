@@ -1,8 +1,10 @@
-"""Read a sagent ``session.jsonl`` into the session IR.
+"""Read a sagent ``session.jsonl`` into the session IR, and write one for a resume.
 
-A bridge, read-only and deliberately lossy: sagent will write the IR itself,
-and this module is deleted when it does. Until then it is the one place that
-knows sagent's three record families:
+Today's sagent journals the IR itself: each line is one record, tagged with its
+class, read back as sagent wrote it and written the same way, so a stored session
+resumes as a journal of its own. Read-only and deliberately lossy for what older
+sagents wrote, this module is also the one place that knows their three record
+families:
 
 - ``kind: history`` records (``user``, ``assistant``, ``tool_result``,
   ``agent_send``, ``system_message``, ``compact_*``), plus ``meta`` / ``tool_state``
@@ -33,6 +35,7 @@ import json
 
 from treekle import ReadError, from_plain, immutable, json_loads
 
+from trackinizer.sagent.session.jsonl import read_record, record_line
 from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AgentToAgentMessage,
@@ -56,15 +59,16 @@ from trackinizer.sagent.session.types import (
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
+    record_classes,
 )
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Iterable, Iterator, Mapping
     from typing import TextIO
 
 
-__all__ = ["is_sagent", "normalize"]
+__all__ = ["denormalize", "is_sagent", "normalize"]
 
 
 def normalize(stream: TextIO) -> Iterator[SessionRecord]:
@@ -86,6 +90,23 @@ def normalize(stream: TextIO) -> Iterator[SessionRecord]:
     for line in stream:
         if line.strip():
             yield from reader.read(line)
+
+
+def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
+    """Write ``records`` as a journal today's sagent resumes.
+
+    A line read torn stays the bytes it was, so the journal reads back the same.
+
+    Args:
+      records: The records, in order.
+      stream: Where the journal's text goes.
+
+    """
+    for record in records:
+        if isinstance(record, IncompleteRecord):
+            _ = stream.write(record.text)
+        else:
+            _ = stream.write(record_line(record).decode())
 
 
 def is_sagent(head: str) -> bool:
@@ -120,6 +141,8 @@ def is_sagent(head: str) -> bool:
             return False
         if not isinstance(record, dict):
             return False
+        if record.get("py/object") in record_classes():
+            return True
         kind = record.get("kind")
         return isinstance(kind, str) and (
             kind in only_sagent
@@ -160,6 +183,8 @@ class _Reader:
             record = json_loads(line, dict[str, object])
         except (json.JSONDecodeError, ValueError, TypeError):
             return [IncompleteRecord(text=line)]
+        if record.get("py/object") in record_classes():
+            return [read_record(line.encode())]
         # The WHOLE read is the guarded region, not only the parse: every field
         # below is narrowed as it is read, and one malformed field raised out of
         # ``normalize`` and lost the rest of the file. A record this reader

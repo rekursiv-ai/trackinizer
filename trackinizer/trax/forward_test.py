@@ -24,8 +24,8 @@ def test_the_moved_verbs_are_run_machine_and_job() -> None:
     assert {"run", "machine", "job"} == forward.MOVED_VERBS
 
 
-def test_the_resumable_clis_are_claude_and_codex() -> None:
-    assert {"claude", "codex"} == forward.RUN_CLIS
+def test_the_resumable_clis_are_claude_codex_and_sagent() -> None:
+    assert {"claude", "codex", "sagent"} == forward.RUN_CLIS
 
 
 if __name__ == "__main__":
