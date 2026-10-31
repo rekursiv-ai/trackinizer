@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import override
 
+import fcntl
+import os
 import subprocess
 
 from hatchling.builders.config import BuilderConfig
@@ -36,11 +38,21 @@ def build_web_app(*, root: Path, version: str) -> None:
         must not need Node.
 
     """
-    web = root / "trackinizer" / "web"
-    if version == "editable" or (web / "dist" / "index.html").is_file():
+    if version == "editable":
         return
-    _npm(web, "ci", "--no-audit", "--no-fund")
-    _npm(web, "run", "build")
+    web = root / "trackinizer" / "web"
+    # Concurrent builds share ``web/``: unserialized, one's ``npm ci`` and vite
+    # rewrote ``node_modules`` and ``dist`` while the other's hatch packed them.
+    # The lock is on the directory itself, so no lock file lands in the sdist.
+    descriptor = os.open(web, os.O_RDONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        if (web / "dist" / "index.html").is_file():
+            return
+        _npm(web, "ci", "--no-audit", "--no-fund")
+        _npm(web, "run", "build")
+    finally:
+        os.close(descriptor)
 
 
 def _npm(web: Path, *args: str) -> None:
