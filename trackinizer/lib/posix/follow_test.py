@@ -2150,6 +2150,7 @@ class _MacKernel:
 @dataclass(slots=True, kw_only=True)
 class _MacWatchState:
     darwin: _DarwinFollow
+    os: SimpleNamespace
     kernel: _MacKernel
     loop: asyncio.AbstractEventLoop
     opened: list[tuple[Path, int]]
@@ -2191,21 +2192,28 @@ def mac_watch_state(
         "KQ_NOTE_REVOKE": 128,
     }.items():
         monkeypatch.setattr(select, name, value, raising=False)
-    monkeypatch.setattr(os, "O_EVTONLY", 0, raising=False)
 
     def open_file(path: str | os.PathLike[str], flags: int) -> int:
         opened.append((Path(path), flags))
         return 23
-
-    monkeypatch.setattr(os, "open", open_file)
-    monkeypatch.setattr(os, "close", closed.append)
 
     def fstat(fd: int) -> SimpleNamespace:
         del fd
         dev, ino = inode.pop(0)
         return SimpleNamespace(st_dev=dev, st_ino=ino)
 
-    monkeypatch.setattr(os, "fstat", fstat)
+    # Fake `os` only as the module under test sees it: pytest's own capture
+    # calls the real `os.fstat` between phases and would drain `inode`.
+    fake_os = SimpleNamespace(
+        **{
+            **vars(os),
+            "O_EVTONLY": 0,
+            "open": open_file,
+            "close": closed.append,
+            "fstat": fstat,
+        },
+    )
+    monkeypatch.setattr(darwin, "os", fake_os)
     real_get_running_loop = asyncio.get_running_loop
     monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
     with (
@@ -2218,6 +2226,7 @@ def mac_watch_state(
     target.write_text("x")
     yield _MacWatchState(
         darwin=darwin,
+        os=fake_os,
         kernel=kernel,
         loop=loop,
         opened=opened,
@@ -2268,7 +2277,7 @@ def test_mac_vnode_handles_open_race(
 ) -> None:
     race = mac_watch_state.target.parent / "race"
     race.write_text("x")
-    with patch.object(os, "open", side_effect=FileNotFoundError):
+    with patch.object(mac_watch_state.os, "open", side_effect=FileNotFoundError):
         mac_watch_state.vnode.watch(race)
     assert mac_watch_state.opened == []
 

@@ -325,11 +325,11 @@ wheels = [
 
 [[package]]
 name = "filelock"
-version = "3.32.7"
+version = "4.2.6"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0f/59/e19834834cb01a32febfbb0f8a23a9088088f5d45991824ff2bc3b5e8acb/filelock-3.32.7.tar.gz", hash = "sha256:37b8a3d9811b0f9aef7e5ec5c71bb320de52df51e6ca9bcd6f5ad81187660da7", size = 225154, upload-time = "2026-09-16T00:24:20.907Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/35/6c/730b340182f1fd74d4ef8d3f35431ce84f8f97b1a1f2afd145174b7bb047/filelock-4.2.6.tar.gz", hash = "sha256:ee7af8ede36dcaf12e1016d9f7c3a63ecd5497d46f85dab21b8c779b8f944e97", size = 661339, upload-time = "2026-10-31T15:10:16.889Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/15/df/31098c5aeb4d966b553641472bd55fcf5fdfac953549894b8a765ba44e91/filelock-3.32.7-py3-none-any.whl", hash = "sha256:65ff0d0190ea42038b32bda4b77834fb05be2cad4c5b9b01aa4dfb3614536e52", size = 100157, upload-time = "2026-09-16T00:24:19.543Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/8d/3f849fcb79359259737bc2d8ddcaee6149ffb773239a260c9ff20179736f/filelock-4.2.6-py3-none-any.whl", hash = "sha256:fd7d4fca497bf3e3d0945a13261f8e684f2aef12ce7cf76aef26e13bf7388b88", size = 164378, upload-time = "2026-10-31T15:10:15.322Z" },
 ]
 
 [[package]]
@@ -760,11 +760,11 @@ wheels = [
 
 [[package]]
 name = "nodeenv"
-version = "1.11.1"
+version = "1.12.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ab/27/79acfd3d6f526a4a16f3d209dedcf7b5bc1ea15c5bf2bbb82f2c2285057e/nodeenv-1.11.1.tar.gz", hash = "sha256:d7fa027c1df437bdd974b0502a8dc76fa1b3183e369ac9539602bc6bab9100ba", size = 99853, upload-time = "2026-10-29T20:54:04.261Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e6/99/d27cfc9518f49e4cbc25c683ec7cf8704a9d31311341c291c0e78ddf791b/nodeenv-1.12.0.tar.gz", hash = "sha256:4ea7f88339310afebc3253f2c7a91b94bacf97d73a36a5c108962abdfaca501e", size = 131292, upload-time = "2026-10-31T19:03:18.847Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/40/35/a09e0b1dac4027e35b872e4f123a9f9e7bbc39e6424bdc9776920d3a6491/nodeenv-1.11.1-py2.py3-none-any.whl", hash = "sha256:bc0fb085d8ed0d67a6471892535f3d9b795eb911b7cd129d3a24967aab7a538f", size = 34473, upload-time = "2026-10-29T20:54:02.752Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/6a/8a9ac7d5e2f7cf53c459bfef90ebc17a2f8cd54b665af96799d4c534840e/nodeenv-1.12.0-py3-none-any.whl", hash = "sha256:80644d65c10cc2be12e3e4b54b3367ff288c7ad24ae75c2dcc65454fc7449d4d", size = 39442, upload-time = "2026-10-31T19:03:17.427Z" },
 ]
 
 [[package]]
@@ -1394,19 +1394,19 @@ wheels = [
 [[package]]
 name = "rekursiv-ai-typings"
 version = "0.1.12"
-source = { git = "https://github.com/rekursiv-ai/typings?branch=main#694b94beab477581e29d0fa695cfd3c7b62d5807" }
+source = { git = "https://github.com/rekursiv-ai/typings?branch=main#efdbec7486821666799d4c330fecd9a6f503db4c" }
 
 [[package]]
 name = "rich"
-version = "14.3.4"
+version = "15.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "markdown-it-py" },
     { name = "pygments" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e9/67/cae617f1351490c25a4b8ac3b8b63a4dda609295d8222bad12242dfdc629/rich-14.3.4.tar.gz", hash = "sha256:817e02727f2b25b40ef56f5aa2217f400c8489f79ca8f46ea2b70dd5e14558a9", size = 230524, upload-time = "2026-04-11T02:57:45.419Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c0/8f/0722ca900cc807c13a6a0c696dacf35430f72e0ec571c4275d2371fca3e9/rich-15.0.0.tar.gz", hash = "sha256:edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36", size = 230680, upload-time = "2026-04-12T08:24:00.75Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b3/76/6d163cfac87b632216f71879e6b2cf17163f773ff59c00b5ff4900a80fa3/rich-14.3.4-py3-none-any.whl", hash = "sha256:07e7adb4690f68864777b1450859253bed81a99a31ac321ac1817b2313558952", size = 310480, upload-time = "2026-04-11T02:57:47.484Z" },
+    { url = "https://files.pythonhosted.org/packages/82/3b/64d4899d73f91ba49a8c18a8ff3f0ea8f1c1d75481760df8c68ef5235bf5/rich-15.0.0-py3-none-any.whl", hash = "sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb", size = 310654, upload-time = "2026-04-12T08:24:02.83Z" },
 ]
 
 [[package]]
@@ -1734,103 +1734,103 @@ typecheck = [
 
 [package.metadata]
 requires-dist = [
-    { name = "asyncpg", marker = "extra == 'server'", specifier = ">=0.31.0" },
+    { name = "asyncpg", marker = "extra == 'server'", specifier = ">=0.32.0" },
     { name = "bashlex", specifier = ">=0.18" },
     { name = "configgle", marker = "extra == 'server'", specifier = ">=1.4.4" },
-    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.123.9" },
-    { name = "httpx2", specifier = ">=2.12" },
-    { name = "huggingface-hub", marker = "extra == 'server'", specifier = ">=0.30.0" },
+    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.162.0" },
+    { name = "httpx2", specifier = ">=2.16.0" },
+    { name = "huggingface-hub", marker = "extra == 'server'", specifier = ">=2.4.0" },
     { name = "itsdangerous", marker = "extra == 'server'", specifier = ">=2.2.0" },
-    { name = "lark", specifier = ">=1.1" },
-    { name = "peft", marker = "extra == 'server'", specifier = ">=0.21.0" },
+    { name = "lark", specifier = ">=1.3.1" },
+    { name = "peft", marker = "extra == 'server'", specifier = ">=0.21.2" },
     { name = "py-pglite", extras = ["asyncpg", "extensions"], marker = "extra == 'server'", specifier = ">=0.5.3" },
-    { name = "pydantic", specifier = ">=2.12" },
-    { name = "pydantic-core" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "starlette", marker = "extra == 'server'", specifier = ">=0.40" },
+    { name = "pydantic", specifier = ">=2.14.2" },
+    { name = "pydantic-core", specifier = ">=2.50.2" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "starlette", marker = "extra == 'server'", specifier = ">=1.10.0" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'server'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'server'", specifier = ">=2.11.0" },
-    { name = "transformers", marker = "extra == 'server'", specifier = ">=4.57.0" },
+    { name = "transformers", marker = "extra == 'server'", specifier = ">=5.22.1" },
     { name = "treekle", specifier = ">=0.4.1" },
-    { name = "typing-extensions", specifier = ">=4.10" },
-    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.30.0" },
-    { name = "watchdog", marker = "sys_platform == 'darwin'", specifier = ">=6.0.0" },
-    { name = "websockets", specifier = ">=15" },
-    { name = "wrapt" },
+    { name = "typing-extensions", specifier = ">=4.16.0" },
+    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.54.0" },
+    { name = "watchdog", marker = "sys_platform == 'darwin'", specifier = ">=7.0.0" },
+    { name = "websockets", specifier = ">=17.4" },
+    { name = "wrapt", specifier = ">=2.5.2" },
     { name = "zstandard", marker = "extra == 'server'", specifier = ">=0.25.0" },
 ]
 provides-extras = ["server"]
 
 [package.metadata.requires-dev]
 debug = [
-    { name = "ipython" },
-    { name = "tqdm" },
+    { name = "ipython", specifier = ">=9.18.0" },
+    { name = "tqdm", specifier = ">=4.70.1" },
 ]
 dev = [
-    { name = "asyncpg-stubs", specifier = ">=0.31.2" },
-    { name = "basedpyright", specifier = ">=1.40.1" },
-    { name = "codespell", specifier = ">=2.2.4" },
-    { name = "hatchling", specifier = ">=1.32.4" },
-    { name = "hypothesis", specifier = ">=6.155.1" },
-    { name = "ipython" },
-    { name = "nodejs-wheel-binaries", specifier = ">=24.16.0" },
-    { name = "pre-commit", specifier = ">=4.6" },
+    { name = "asyncpg-stubs", specifier = ">=0.32.0" },
+    { name = "basedpyright", specifier = ">=1.40.2" },
+    { name = "codespell", specifier = ">=2.4.3" },
+    { name = "hatchling", specifier = ">=1.33.0" },
+    { name = "hypothesis", specifier = ">=6.170.14" },
+    { name = "ipython", specifier = ">=9.18.0" },
+    { name = "nodejs-wheel-binaries", specifier = ">=24.19.0" },
+    { name = "pre-commit", specifier = ">=4.7.0" },
     { name = "pyrefly", specifier = ">=1.4.0" },
-    { name = "pytest", specifier = ">=7.0" },
-    { name = "pytest-asyncio", specifier = ">=1.3.0" },
-    { name = "pytest-cov" },
-    { name = "pytest-postgresql", specifier = ">=9.0" },
+    { name = "pytest", specifier = ">=9.2.0" },
+    { name = "pytest-asyncio", specifier = ">=1.4.1" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytest-postgresql", specifier = ">=9.1.1" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "rekursiv-ai-typings", git = "https://github.com/rekursiv-ai/typings?branch=main" },
-    { name = "ruff" },
-    { name = "tqdm" },
+    { name = "ruff", specifier = ">=0.17.3" },
+    { name = "tqdm", specifier = ">=4.70.1" },
     { name = "trackinizer", extras = ["server"] },
-    { name = "ty", specifier = ">=0.0.84" },
+    { name = "ty", specifier = ">=0.0.95" },
 ]
 lint = [
-    { name = "codespell", specifier = ">=2.2.4" },
-    { name = "ruff" },
+    { name = "codespell", specifier = ">=2.4.3" },
+    { name = "ruff", specifier = ">=0.17.3" },
 ]
 pre-commit = [
-    { name = "asyncpg-stubs", specifier = ">=0.31.2" },
-    { name = "basedpyright", specifier = ">=1.40.1" },
-    { name = "codespell", specifier = ">=2.2.4" },
-    { name = "hatchling", specifier = ">=1.32.4" },
-    { name = "hypothesis", specifier = ">=6.155.1" },
-    { name = "nodejs-wheel-binaries", specifier = ">=24.16.0" },
-    { name = "pre-commit", specifier = ">=4.6" },
+    { name = "asyncpg-stubs", specifier = ">=0.32.0" },
+    { name = "basedpyright", specifier = ">=1.40.2" },
+    { name = "codespell", specifier = ">=2.4.3" },
+    { name = "hatchling", specifier = ">=1.33.0" },
+    { name = "hypothesis", specifier = ">=6.170.14" },
+    { name = "nodejs-wheel-binaries", specifier = ">=24.19.0" },
+    { name = "pre-commit", specifier = ">=4.7.0" },
     { name = "pyrefly", specifier = ">=1.4.0" },
-    { name = "pytest", specifier = ">=7.0" },
-    { name = "pytest-asyncio", specifier = ">=1.3.0" },
-    { name = "pytest-cov" },
-    { name = "pytest-postgresql", specifier = ">=9.0" },
+    { name = "pytest", specifier = ">=9.2.0" },
+    { name = "pytest-asyncio", specifier = ">=1.4.1" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytest-postgresql", specifier = ">=9.1.1" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "rekursiv-ai-typings", git = "https://github.com/rekursiv-ai/typings?branch=main" },
-    { name = "ruff" },
+    { name = "ruff", specifier = ">=0.17.3" },
     { name = "trackinizer", extras = ["server"] },
-    { name = "ty", specifier = ">=0.0.84" },
+    { name = "ty", specifier = ">=0.0.95" },
 ]
 test = [
-    { name = "hatchling", specifier = ">=1.32.4" },
-    { name = "hypothesis", specifier = ">=6.155.1" },
-    { name = "nodejs-wheel-binaries", specifier = ">=24.16.0" },
-    { name = "pytest", specifier = ">=7.0" },
-    { name = "pytest-asyncio", specifier = ">=1.3.0" },
-    { name = "pytest-cov" },
-    { name = "pytest-postgresql", specifier = ">=9.0" },
+    { name = "hatchling", specifier = ">=1.33.0" },
+    { name = "hypothesis", specifier = ">=6.170.14" },
+    { name = "nodejs-wheel-binaries", specifier = ">=24.19.0" },
+    { name = "pytest", specifier = ">=9.2.0" },
+    { name = "pytest-asyncio", specifier = ">=1.4.1" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytest-postgresql", specifier = ">=9.1.1" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "trackinizer", extras = ["server"] },
 ]
 typecheck = [
-    { name = "asyncpg-stubs", specifier = ">=0.31.2" },
-    { name = "basedpyright", specifier = ">=1.40.1" },
-    { name = "hatchling", specifier = ">=1.32.4" },
+    { name = "asyncpg-stubs", specifier = ">=0.32.0" },
+    { name = "basedpyright", specifier = ">=1.40.2" },
+    { name = "hatchling", specifier = ">=1.33.0" },
     { name = "pyrefly", specifier = ">=1.4.0" },
     { name = "rekursiv-ai-typings", git = "https://github.com/rekursiv-ai/typings?branch=main" },
-    { name = "ty", specifier = ">=0.0.84" },
+    { name = "ty", specifier = ">=0.0.95" },
 ]
 
 [[package]]

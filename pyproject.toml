@@ -35,91 +35,33 @@ dependencies = [
     # records and the wire documents are written and read with.
     # 0.4.1 leaves dataclass fields at their defaults out of trees.
     "treekle>=0.4.1",
-    "websockets>=15",
+    "websockets>=17.4",
     # http client
-    "httpx2>=2.12",
+    "httpx2>=2.16.0",
     # data models. 2.12 adds `model_validate(..., extra=)`, with which `Client` ignores
     # a field a newer server added to an answer, at any depth.
-    "pydantic>=2.12",
+    "pydantic>=2.14.2",
     # 4.10 adds PEP 728 `TypedDict(closed=True)`; `types/change_log.py` needs it.
-    "typing_extensions>=4.10",
+    "typing_extensions>=4.16.0",
     # server/preferences.py serializes with pydantic's core directly.
-    "pydantic-core",
+    "pydantic-core>=2.50.2",
     # trax grammar
-    "lark>=1.1",
+    "lark>=1.3.1",
     # filesystem watching: the agent runner follows the agent's session files
     # through `lib/posix/follow.py`, whose macOS backend lazy-imports watchdog's
     # fsevents.
-    "watchdog>=6.0.0 ; sys_platform == 'darwin'",
+    "watchdog>=7.0.0 ; sys_platform == 'darwin'",
     # shell parsing: lifts a captured `cat`/`echo >` into a typed file result.
     # The agent runner's session capture does this on the client, through
     # `sagent/session/shell_results.py`; without it every such command is
     # left unlifted, silently.
     "bashlex>=0.18",
     # lazy imports
-    "wrapt",
+    "wrapt>=2.5.2",
     # the model catalog: `wire/chat_commands.py` reads its roles, and
     # `sagent/providers/table.py` loads them from YAML.
-    "pyyaml>=6.0",
+    "pyyaml>=6.0.3",
 ]
-
-[project.scripts]
-trackinizer = "trackinizer.server.entry:main"
-trax = "trackinizer.trax.cli:main"
-
-[dependency-groups]
-# NEVER ADD MORE DEPENDENCIES!
-
-debug = [
-    "ipython",
-    "tqdm",
-]
-lint = [
-    "codespell>=2.2.4",
-    "ruff",
-]
-test = [
-    "pytest-timeout>=2.4.0",
-    "pytest-xdist>=3.8.0",
-    "pytest>=7.0",
-    "pytest-cov",
-    "nodejs-wheel-binaries>=24.16.0",
-    "hypothesis>=6.155.1",
-    "pytest-asyncio>=1.3.0",
-    "pytest-postgresql>=9.0",
-    # The server's tests import its packages; CI syncs groups, never extras.
-    "trackinizer[server]",
-    # web/hatch_build_test.py imports the build hook, which subclasses hatchling's.
-    "hatchling>=1.32.4",
-]
-typecheck = [
-    "basedpyright>=1.40.1",
-    "pyrefly>=1.4.0",
-    "ty>=0.0.84",
-    "rekursiv-ai-typings>=0.1.11",
-    "asyncpg-stubs>=0.31.2",
-    "hatchling>=1.32.4",  # web/hatch_build.py subscripts its one-parameter BuildHookInterface.
-]
-"pre-commit" = [
-    "pre-commit>=4.6",
-    {include-group = "lint"},
-    {include-group = "test"},
-    {include-group = "typecheck"},
-]
-dev = [
-    {include-group = "pre-commit"},
-    {include-group = "debug"},
-]
-
-# NEVER ADD MORE DEPENDENCY GROUPS!
-
-[project.urls]
-Homepage = "https://www.rekursiv.ai"
-Repository = "https://github.com/rekursiv-ai/trackinizer"
-Documentation = "https://github.com/rekursiv-ai/trackinizer/tree/main/docs"
-Source = "https://github.com/rekursiv-ai/trackinizer"
-Issues = "https://github.com/rekursiv-ai/trackinizer/issues"
-Changelog = "https://github.com/rekursiv-ai/trackinizer/releases"
 
 [project.optional-dependencies]
 # The server: `pip install 'trackinizer[server]'` provides the `trackinizer`
@@ -127,12 +69,12 @@ Changelog = "https://github.com/rekursiv-ai/trackinizer/releases"
 # test in `light_install_test.py` fails if one starts to.
 server = [
     # database
-    "asyncpg>=0.31.0",
+    "asyncpg>=0.32.0",
     "py-pglite[asyncpg,extensions]>=0.5.3",
     # web server / api
-    "fastapi>=0.123.9",
-    "starlette>=0.40",
-    "uvicorn>=0.30.0",
+    "fastapi>=0.162.0",
+    "starlette>=1.10.0",
+    "uvicorn>=0.54.0",
     # session signing
     "itsdangerous>=2.2.0",
     # data models
@@ -161,16 +103,74 @@ server = [
     # transformers: AutoModel/AutoTokenizer. Floor matches the monorepo
     # (`>=4.57.0`); `from_pretrained(..., dtype=)` needs the modern `dtype`
     # kwarg (the pre-4.56 name was `torch_dtype`).
-    "transformers>=4.57.0",
+    "transformers>=5.22.1",
     # huggingface-hub: `try_to_load_from_cache` (no-network weight check) and the
     # snapshot cache layout. Unfloored in the monorepo; a conservative floor
     # guaranteeing both across the current cache era.
-    "huggingface-hub>=0.30.0",
+    "huggingface-hub>=2.4.0",
     # peft: the jina-embeddings-v5 models load task adapters as PEFT modules
     # (their trust_remote_code `encode` requires it). Floor matches the monorepo
     # (`peft>=0.21.0`); only the jina embedders reach it, lazily.
-    "peft>=0.21.0",
+    "peft>=0.21.2",
 ]
+
+[project.scripts]
+trackinizer = "trackinizer.server.entry:main"
+trax = "trackinizer.trax.cli:main"
+
+[dependency-groups]
+# NEVER ADD MORE DEPENDENCIES!
+
+debug = [
+    "ipython>=9.18.0",
+    "tqdm>=4.70.1",
+]
+lint = [
+    "codespell>=2.4.3",
+    "ruff>=0.17.3",
+]
+test = [
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "nodejs-wheel-binaries>=24.19.0",
+    "hypothesis>=6.170.14",
+    "pytest-asyncio>=1.4.1",
+    "pytest-postgresql>=9.1.1",
+    # The server's tests import its packages; CI syncs groups, never extras.
+    "trackinizer[server]",
+    # web/hatch_build_test.py imports the build hook, which subclasses hatchling's.
+    "hatchling>=1.33.0",
+]
+typecheck = [
+    "basedpyright>=1.40.2",
+    "pyrefly>=1.4.0",
+    "ty>=0.0.95",
+    "rekursiv-ai-typings>=0.1.11",
+    "asyncpg-stubs>=0.32.0",
+    "hatchling>=1.33.0",  # web/hatch_build.py subscripts its one-parameter BuildHookInterface.
+]
+"pre-commit" = [
+    "pre-commit>=4.7.0",
+    {include-group = "lint"},
+    {include-group = "test"},
+    {include-group = "typecheck"},
+]
+dev = [
+    {include-group = "pre-commit"},
+    {include-group = "debug"},
+]
+
+# NEVER ADD MORE DEPENDENCY GROUPS!
+
+[project.urls]
+Homepage = "https://www.rekursiv.ai"
+Repository = "https://github.com/rekursiv-ai/trackinizer"
+Documentation = "https://github.com/rekursiv-ai/trackinizer/tree/main/docs"
+Source = "https://github.com/rekursiv-ai/trackinizer"
+Issues = "https://github.com/rekursiv-ai/trackinizer/issues"
+Changelog = "https://github.com/rekursiv-ai/trackinizer/releases"
 
 [build-system]
 requires = ["hatchling"]
