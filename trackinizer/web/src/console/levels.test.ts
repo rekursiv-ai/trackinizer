@@ -12,7 +12,7 @@ function record(kind: string, message: { [field: string]: unknown } = {}): FeedE
     seq: 0,
     kind,
     created: "2026-10-01T10:00:00Z",
-    message: { "py/object": `trackinizer.sagent.session.types.${kind}`, ...message },
+    message: { "py/object": kind, ...message },
     text: "",
   };
 }
@@ -57,7 +57,7 @@ test("+ Calls adds tool calls, + Output their results and thinking, and All the 
   }
   // A message with nothing in it is bookkeeping, as the transcript folds it.
   expect(levelOf(record("AssistantMessage", { content: "  " }))).toBe(4);
-  const image = { "py/object": "trackinizer.sagent.session.types.Attachment", mime_descriptor: "image/png", data: { "py/b64": "AA==" } };
+  const image = { "py/object": "Attachment", mime_descriptor: "image/png", data: { "py/b64": "AA==" } };
   expect(levelOf(record("UserMessage", { content: "", attachments: [image] }))).toBe(1);
 });
 

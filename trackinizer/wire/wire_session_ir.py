@@ -41,8 +41,8 @@ __all__ = [
 
 
 CLIENT_OUTDATED: Final = "client_outdated"
-"""The ``code`` of a 426 append refused because a record names its class by a module
-the session vocabulary has left, as a client older than the move writes it."""
+"""The ``code`` of a 426 append refused because a record names its class by its import
+path, as a client older than short class tags writes it."""
 
 MAX_RECORD_BATCH: Final = 1_000
 """Records one append may carry.

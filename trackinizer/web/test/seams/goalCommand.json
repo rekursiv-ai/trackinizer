@@ -17,7 +17,7 @@
         "verb": "goal"
       }
     },
-    "py/object": "trackinizer.sagent.session.types.SystemMessage",
+    "py/object": "SystemMessage",
     "subtype": "command",
     "timestamp": "2026-10-20T00:00:01+00:00"
   },

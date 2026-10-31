@@ -11,7 +11,7 @@ function record(kind: string, payload: { [field: string]: unknown } = {}, text =
     context_id: null,
     timestamp: null,
     model: null,
-    payload: { "py/object": `trackinizer.sagent.session.types.${kind}`, ...payload },
+    payload: { "py/object": kind, ...payload },
     text,
     ciphertext: null,
   };

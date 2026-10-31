@@ -10,7 +10,7 @@ function record(kind: string, payload: { [field: string]: unknown } = {}, text =
     context_id: null,
     timestamp: null,
     model: null,
-    payload: { "py/object": `trackinizer.sagent.session.types.${kind}`, ...payload },
+    payload: { "py/object": kind, ...payload },
     text,
     ciphertext: null,
   };
@@ -561,7 +561,7 @@ test("py/object is dropped from what a tool call shows", () => {
 });
 
 test("an attachment chip sizes its py/b64 data", () => {
-  const png = (b64: string) => ({ "py/object": "trackinizer.sagent.session.types.Attachment", mime_descriptor: "image/png", data: { "py/b64": b64 } });
+  const png = (b64: string) => ({ "py/object": "Attachment", mime_descriptor: "image/png", data: { "py/b64": b64 } });
   const chip = (attachments: unknown) => {
     const view = recordView(record("UserMessage", { content: "x", attachments }));
     return view.shape === "message" ? view.attachments : null;

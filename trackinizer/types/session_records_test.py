@@ -12,14 +12,16 @@ from types import MappingProxyType
 from typing import Final, get_args
 from uuid import uuid4
 
-from treekle import from_plain, immutable, mutable
+from treekle import from_plain, immutable, json_loads, mutable
 
 import pytest
 
+from trackinizer.sagent.session.jsonl import record_line
 from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AgentToAgentMessage,
     AssistantMessage,
+    Attachment,
     ContextClear,
     ContextCompaction,
     ContextState,
@@ -47,8 +49,9 @@ from trackinizer.types.session_records import (
     MAX_SEARCH_TEXT_BYTES,
     SessionRecordRow,
     search_text,
+    stored_payload,
 )
-from trackinizer.types.streams import TraxRecord
+from trackinizer.types.streams import Stdout, TraxRecord
 
 
 _CIPHERTEXT: Final = "gAAAAABqPBiCY9-vjMraAiiOTNS8xKmaodTJ4D2l6XR2pMszVFyz"
@@ -239,6 +242,54 @@ def test_a_rows_json_fields_decode_frozen_as_readers_build_them() -> None:
     assert decoded == record
     assert isinstance(decoded, ToolCall)
     assert isinstance(decoded.arguments, MappingProxyType)
+
+
+def test_a_rows_payload_is_the_line_a_sagent_journal_writes() -> None:
+    """Classes are named as the journal names them, nested ones and union members too."""
+    record = ContextClear(
+        summary="s",
+        history=(
+            UserMessage(
+                content="u",
+                attachments=(Attachment(mime_descriptor="image/png", data=b"\0"),),
+            ),
+            AssistantMessage(content="a"),
+            FileEditResult(call_id="c1", path="a.py", edits=(Splice(before="x"),)),
+        ),
+    )
+    row = SessionRecordRow.of(session_id=uuid4(), part=0, idx=0, record=record)
+
+    assert mutable(row.payload) == json_loads(record_line(record))
+    assert row.record() == record
+
+
+def test_a_stored_payload_keeps_the_ciphertext_a_row_strips() -> None:
+    """The bare encoder is the row's, less the strip: a rewrite keeps what it read."""
+    record = Thinking(content="visible", encrypted=_CIPHERTEXT)
+    row = SessionRecordRow.of(session_id=uuid4(), part=0, idx=0, record=record)
+
+    assert stored_payload(record) == {**row.payload, "encrypted": _CIPHERTEXT}
+
+
+def test_a_row_of_an_unknown_kind_names_it() -> None:
+    """A kind no record class carries is refused by name, not decoded as nothing."""
+    row = SessionRecordRow(session_id=uuid4(), idx=0, kind="Nope", payload={})
+
+    with pytest.raises(ValueError, match="unknown session record kind 'Nope'"):
+        _ = row.record()
+
+
+def test_a_stream_records_payload_names_its_class_alone() -> None:
+    """Scrape records carry no import path either."""
+    row = SessionRecordRow.of(
+        session_id=uuid4(),
+        part=0,
+        idx=0,
+        record=Stdout(text="ok\n"),
+    )
+
+    assert row.payload["py/object"] == "Stdout"
+    assert row.record() == Stdout(text="ok\n")
 
 
 def test_row_carries_the_records_context_and_timestamp() -> None:

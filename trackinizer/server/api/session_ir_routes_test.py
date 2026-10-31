@@ -492,30 +492,20 @@ def _append_one(client: TestClient, *, kind: str, payload: object) -> httpx2.Res
 
 
 class TestRetiredRecordFormat:
-    """A client older than the record vocabulary's move is told to update."""
+    """A client older than short class tags is told to update."""
 
-    # The export renames ``trackinizer.lib.agent`` to ``trackinizer.lib.agent``, so a case
-    # per package root would be two identical cases in the public tree.
+    # The export renames ``loop.`` modules under ``trackinizer.``, so a case per
+    # package root would be two identical cases in the public tree.
     @pytest.mark.parametrize(
-        ("kind", "payload"),
-        [
-            ("UserMessage", _user_message("trackinizer.lib.agent.types.sessions.")),
-            (
-                "ContextClear",
-                {
-                    "py/object": "trackinizer.sagent.session.types.ContextClear",
-                    "history": [_user_message("trackinizer.lib.agent.types.sessions.")],
-                },
-            ),
-        ],
-        ids=["record", "nested"],
+        "module",
+        ["trackinizer.sagent.session.types.", "trackinizer.lib.agent.types.sessions."],
+        ids=["import-path", "retired-module"],
     )
-    def test_a_record_naming_a_retired_module_is_refused_before_any_write(
+    def test_a_record_naming_its_class_by_import_path_is_refused_before_any_write(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
         monkeypatch: pytest.MonkeyPatch,
-        kind: str,
-        payload: dict[str, object],
+        module: str,
     ) -> None:
         """426 ``client_outdated``: an old client's sink shows the message and keeps the run."""
         client, store, _engine = route_client
@@ -535,7 +525,11 @@ class TestRetiredRecordFormat:
         monkeypatch.setattr(store, "upsert_session_manifest", manifest)
         monkeypatch.setattr(store, "append_session_records", append)
 
-        response = _append_one(client, kind=kind, payload=payload)
+        response = _append_one(
+            client,
+            kind="UserMessage",
+            payload=_user_message(module),
+        )
 
         assert response.status_code == 426, response.text
         detail = from_plain(response.json(), dict[str, dict[str, str]])["detail"]
@@ -548,7 +542,7 @@ class TestRetiredRecordFormat:
         route_client: tuple[TestClient, Store, FakeEngine],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Text that only mentions the old module is no class tag."""
+        """Neither text naming a module nor provider JSON spelling a tag is a class tag."""
         client, store, _engine = route_client
         monkeypatch.setattr(
             store,
@@ -565,8 +559,9 @@ class TestRetiredRecordFormat:
         append = AsyncMock(return_value=(1, 0, 0))
         monkeypatch.setattr(store, "append_session_records", append)
         payload = {
-            **_user_message("trackinizer.sagent.session.types."),
+            **_user_message(""),
             "content": "see trackinizer.lib.agent.types.sessions.UserMessage",
+            "extra": {"provider": {"py/object": "a.B"}},
         }
 
         response = _append_one(client, kind="UserMessage", payload=payload)
