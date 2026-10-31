@@ -526,8 +526,8 @@ async def test_timeline_limits_come_from_the_configured_catalog(
                 to_kind="Issue",
                 edge_kind="narrows",
             )
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "visual_catalog",
         Canvas.Config(
             visuals=[
@@ -536,7 +536,6 @@ async def test_timeline_limits_come_from_the_configured_catalog(
             ],
             default_visual="x.notes",
         ).make(),
-        raising=False,
     )
     raised = await client.get(
         f"/api/visuals/timeline/{root_id}",

@@ -268,15 +268,14 @@ def test_a_writer_enrolls_a_machine_that_is_new_as_their_own_personal_one(
 
 
 def _assistant(monkeypatch: pytest.MonkeyPatch, *, email: str) -> None:
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "config",
         Config(
             session_secret="s" * 32,
             session_max_age_seconds=600,
             assistant=Assistant(actor="kb", email=email),
         ),
-        raising=False,
     )
 
 

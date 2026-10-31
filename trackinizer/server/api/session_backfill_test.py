@@ -223,11 +223,10 @@ async def _private_chat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[uuid.UUID, uuid.UUID]:
     """Create another account's private helper chat in an isolated test database."""
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "config",
         replace(ASSISTANT_CONFIG, chat_orgs="individual"),
-        raising=False,
     )
     await seed_accounts(store)
     conversation = uuid.uuid4()

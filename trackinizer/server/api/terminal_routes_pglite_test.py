@@ -252,11 +252,10 @@ def world(
 ) -> _World:
     client, store = pglite_route_client
     clear_identity_override()
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "config",
         Config(session_secret=_SESSION_KEY, session_max_age_seconds=600),
-        raising=False,
     )
     monkeypatch.delattr(app.state, "terminals", raising=False)
     return _World(client, store)
@@ -656,15 +655,14 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
     world: _World,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "config",
         Config(
             session_secret=_SESSION_KEY,
             session_max_age_seconds=600,
             assistant=Assistant(actor="kb", email="kb@x.y"),
         ),
-        raising=False,
     )
     ada = await world.person("ada@x.y")
     bob = await world.person("bob@x.y")
@@ -733,15 +731,14 @@ async def test_a_box_the_assistant_enrolls_for_a_person_opens_a_terminal_for_tha
     world: _World,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "config",
         Config(
             session_secret=_SESSION_KEY,
             session_max_age_seconds=600,
             assistant=Assistant(actor="kb", email="kb@x.y"),
         ),
-        raising=False,
     )
     ada = await world.person("ada@x.y")
     bob = await world.person("bob@x.y")
@@ -803,15 +800,14 @@ async def test_the_assistant_opens_only_a_detached_run_on_its_askers_machine(
     world: _World,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "config",
         Config(
             session_secret=_SESSION_KEY,
             session_max_age_seconds=600,
             assistant=Assistant(actor="kb", email="kb@x.y"),
         ),
-        raising=False,
     )
     ada = await world.person("ada@x.y")
     assistant = await world.person("kb@x.y")
@@ -858,15 +854,14 @@ async def test_campaign_brief_waits_for_the_askers_run_and_places_in_its_canvas(
     world: _World,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "config",
         Config(
             session_secret=_SESSION_KEY,
             session_max_age_seconds=600,
             assistant=Assistant(actor="kb", email="kb@x.y"),
         ),
-        raising=False,
     )
     ada = await world.person("ada@x.y")
     assistant = await world.person("kb@x.y")
@@ -932,15 +927,14 @@ async def test_the_assistant_cannot_open_a_shell_or_another_askers_machine(
     world: _World,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "config",
         Config(
             session_secret=_SESSION_KEY,
             session_max_age_seconds=600,
             assistant=Assistant(actor="kb", email="kb@x.y"),
         ),
-        raising=False,
     )
     ada = await world.person("ada@x.y")
     bob = await world.person("bob@x.y")
@@ -1141,11 +1135,10 @@ async def test_every_terminal_route_and_both_sockets_refuse_a_server_without_aut
     await world.join(cookie)
     await world.wait()
     terminal_id, _ = _opened(await world.open(cookie))
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "config",
         Config(auth_disabled=True),
-        raising=False,
     )
     rebound = {"Host": "evil.example:8765", "Origin": "http://evil.example:8765"}
     machine = wire_terminals.TERMINAL_MACHINES_PATH
@@ -1945,15 +1938,14 @@ async def test_only_the_starter_reattaches_a_chat_from_their_own_browser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # One organisation reads every chat, so bob reads it and is refused as a non-starter.
-    monkeypatch.setattr(
-        app.state,
+    monkeypatch.setitem(
+        app.state._state,
         "config",
         Config(
             session_secret=_SESSION_KEY,
             session_max_age_seconds=600,
             chat_orgs="single",
         ),
-        raising=False,
     )
     ada = await world.person("ada@x.y")
     bob = await world.person("bob@x.y")
