@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import threading
+import time
+
 from trackinizer.web import hatch_build
 
 
@@ -73,6 +76,38 @@ def test_a_built_app_is_not_rebuilt(
     hatch_build.build_web_app(root=tmp_path, version="standard")
 
     assert calls == []
+
+
+def test_concurrent_wheel_builds_build_the_app_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two ``uv build``s share ``web/``; one's vite rewrote ``dist`` as the other packed it."""
+    web = _web(tmp_path, built=False)
+    calls: list[str] = []
+
+    def slow_npm(npm_web: Path, *args: str) -> None:
+        calls.append(args[0])
+        time.sleep(0.2)
+        if args[:2] == ("run", "build"):
+            (npm_web / "dist").mkdir(exist_ok=True)
+            (npm_web / "dist" / "index.html").write_text("<html></html>\n")
+
+    monkeypatch.setattr(hatch_build, "_npm", slow_npm)
+    start = threading.Barrier(2)
+
+    def build() -> None:
+        start.wait()
+        hatch_build.build_web_app(root=tmp_path, version="standard")
+
+    threads = [threading.Thread(target=build) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert calls == ["ci", "run"]
+    assert (web / "dist" / "index.html").is_file()
 
 
 if __name__ == "__main__":
