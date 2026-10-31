@@ -31,6 +31,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
+from types import MappingProxyType
 from typing import Final, Self
 from uuid import UUID
 
@@ -59,6 +60,7 @@ from trackinizer.sagent.session.types import (
     UserMessage,
     WebFetchResult,
     WebSearchResults,
+    record_classes,
 )
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
@@ -67,6 +69,7 @@ __all__ = [
     "MAX_SEARCH_TEXT_BYTES",
     "SessionRecordRow",
     "search_text",
+    "stored_payload",
 ]
 
 
@@ -101,6 +104,36 @@ def search_text(record: object) -> str:
 
     """
     return _truncate("\n".join(part for part in _parts(record) if part))
+
+
+def stored_payload(record: TraxRecord) -> Mapping[str, PlainTree]:
+    """Return ``record`` encoded as a row stores it, ciphertext and all.
+
+    Each class is named as a sagent journal names it, and each ``JSON`` field is
+    the plain object the provider sent. :meth:`SessionRecordRow.of` strips the
+    ciphertext before calling this; a rewrite of a stored row keeps whatever the
+    row held.
+
+    Args:
+      record: Any :data:`TraxRecord` member.
+
+    Returns:
+      payload: The record as frozen plain data.
+
+    Raises:
+      TypeError: The record does not encode as a JSON object.
+
+    """
+    payload = to_plain(
+        record,
+        mutable=False,
+        classes=_CLASSES,
+        sort=False,
+        default_concrete_types=CONCRETE_TYPES,
+    )
+    if not isinstance(payload, MappingProxyType):
+        raise TypeError(f"{type(record).__name__} does not store as a JSON object")
+    return payload
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -140,8 +173,8 @@ class SessionRecordRow:
 
     payload: Mapping[str, PlainTree]
     """The record as frozen plain data, its JSON fields untagged as
-    :data:`~trackinizer.sagent.session.types.CONCRETE_TYPES` writes them, without
-    ciphertext."""
+    :data:`~trackinizer.sagent.session.types.CONCRETE_TYPES` writes them, each class
+    named as a sagent journal names it, without ciphertext."""
 
     text: str = ""
     """The search projection; see :func:`search_text`."""
@@ -182,14 +215,6 @@ class SessionRecordRow:
             else record
         )
         raw = getattr(record, "timestamp", None)
-        payload = to_plain(
-            stored,
-            mutable=False,
-            sort=False,
-            default_concrete_types=CONCRETE_TYPES,
-        )
-        if not isinstance(payload, Mapping):
-            raise TypeError(f"{type(record).__name__} does not store as a JSON object")
         return cls(
             session_id=session_id,
             part=part,
@@ -198,7 +223,7 @@ class SessionRecordRow:
             context_id=getattr(record, "context_id", None),
             timestamp=_parsed(raw if isinstance(raw, str) else None),
             model=model,
-            payload=payload,
+            payload=stored_payload(stored),
             text=search_text(record),
             ciphertext=encrypted if isinstance(encrypted, str) and encrypted else None,
         )
@@ -220,6 +245,7 @@ class SessionRecordRow:
         return from_plain(
             self.payload,
             _record_class(self.kind),
+            classes=_CLASSES,
             default_concrete_types=CONCRETE_TYPES,
         )
 
@@ -344,3 +370,10 @@ _BY_KIND: Final[dict[str, type[TraxRecord]]] = {
         Stderr,
     )
 }
+
+# A tag names its class alone, as a sagent journal does, so a stored row survives a
+# class moving module and reads the same in the exported package. Each class a
+# record can hold is listed: given ``classes``, a tag naming any other is refused.
+_CLASSES: Final = MappingProxyType(
+    {**record_classes(), **{cls.__name__: cls for cls in (Stdin, Stdout, Stderr)}},
+)

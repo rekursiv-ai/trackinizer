@@ -21,7 +21,7 @@ into the chat it answers them in (see ``require_session_access``), and anyone el
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -102,7 +102,7 @@ async def append_session_records_route(
     require_session_write_access(identity, session)
     await require_session_access(request, identity, session=session, mode="write")
     await require_part_writer(request, identity, session=session, name=body.name)
-    _refuse_retired_records(body.records)
+    _refuse_outdated_records(body.records)
     # A run closed for silence that uploads again was alive all along; reopen
     # its session first, or the append is refused as a write to an ended one.
     if session.ended is not None:
@@ -354,14 +354,19 @@ def _poster(record: RecordBody) -> str | None:
     return sender if isinstance(sender, str) else None
 
 
-# A client older than the record vocabulary's move to ``sagent`` names each class by
-# its retired module, and its records would read back mistyped wherever a union picks
-# its member by tag. 426 rather than 400 or 422: a client takes those as one record it
-# can never store and sends a stand-in in its place, while any other refusal keeps its
-# run capturing to a local file and shows the person this message.
-def _refuse_retired_records(records: Sequence[RecordBody]) -> None:
-    """Refuse a batch any of whose records names a class by a retired module."""
-    if any(_names_a_retired_module(record.payload) for record in records):
+# A client older than short class tags names each class by its import path, which no
+# reader of the stored record accepts. Its encoder tags the record itself that way, so
+# the top-level tag alone tells it apart: a dotted tag deeper down may be provider JSON.
+# 426 rather than 400 or 422: a client takes those as one record it can never store and
+# sends a stand-in in its place, while any other refusal keeps its run capturing to a
+# local file and shows the person this message.
+def _refuse_outdated_records(records: Sequence[RecordBody]) -> None:
+    """Refuse a batch any of whose records names its class by an import path."""
+    if any(
+        "." in tag
+        for record in records
+        if isinstance(tag := record.payload.get("py/object"), str)
+    ):
         raise HTTPException(
             status_code=426,
             detail={
@@ -372,21 +377,3 @@ def _refuse_retired_records(records: Sequence[RecordBody]) -> None:
                 ),
             },
         )
-
-
-# The module is matched below its package root, which is the monorepo's or the
-# exported package's, so one test holds in both.
-def _names_a_retired_module(value: object) -> bool:
-    """Say whether a ``py/object`` tag anywhere in ``value`` names ``lib.agent.types``."""
-    pending = [value]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, dict):
-            fields = cast("dict[str, object]", item)
-            tag = fields.get("py/object")
-            if isinstance(tag, str) and ".lib.agent.types." in tag:
-                return True
-            pending.extend(fields.values())
-        elif isinstance(item, list):
-            pending.extend(cast("list[object]", item))
-    return False
