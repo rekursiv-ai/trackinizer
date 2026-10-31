@@ -22,6 +22,7 @@ _WEB: Final = _CWD
 
 pytestmark = [
     pytest.mark.cli_node,
+    pytest.mark.xdist_group("web-app"),
     pytest.mark.skipif(
         project_root(anchor=_WEB / "app_test.py") is None,
         reason="the monorepo runs the web app's checks in its own CI job",
