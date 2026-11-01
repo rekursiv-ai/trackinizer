@@ -45,14 +45,13 @@ END IF;
 -- capture never recorded. The original discriminator survives as
 -- ``legacy/<Kind>``.
 --
--- The ``py/object`` tag is REQUIRED -- ``DataclassCodec`` dispatches on it and
--- an untagged payload does not decode at all. ``schema_backfill_test.py`` pins
--- it against what ``stored_payload`` writes: the class's bare name. A database
--- that ran this file earlier holds an import path instead
--- (``trackinizer.lib.agent.types.sessions.`` or ``trackinizer.sagent.session.types.``); the
--- ledger skips an applied file by name alone, so this text never reruns there,
--- and the operator's tag rewrite (``private/tag_runner.py``) cuts those tags to
--- the bare name.
+-- The ``py/object`` tag is REQUIRED -- the reader dispatches on it and an
+-- untagged payload does not decode at all. ``schema_backfill_test.py`` pins
+-- the name against what ``stored_payload`` writes: the class's bare name. A
+-- database that ran this file before classes were stored by name holds an
+-- import path instead; the ledger skips an applied file by name alone, so this
+-- text never reruns there, and the operator's tag rewrite
+-- (``private/tag_runner.py``) renames those rows.
 --
 -- ``jsonb_build_object`` then cast to ``json``: the builder exists only in
 -- jsonb, while the column is ``json`` to preserve key order for byte-exact

@@ -146,7 +146,7 @@ async def test_legacy_turns_become_records_at_part_minus_one(store: Store) -> No
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_backfilled_row_decodes_through_the_same_path(store: Store) -> None:
-    """The migration writes what ``DataclassCodec`` reads -- proven by reading.
+    """The migration writes what the store reads -- proven by reading.
 
     A tag that drifts from the one the store writes leaves every legacy row
     undecodable, and nothing else in the system would notice until a reader
