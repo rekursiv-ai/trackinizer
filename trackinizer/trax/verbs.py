@@ -17,6 +17,7 @@ import sys
 import uuid
 
 from treekle import MutablePlainTree, PlainTree, from_plain, json_loads
+from treekle.absent import ABSENT, Absent
 
 from trackinizer.client.conversation import attested_delivery
 from trackinizer.client.errors import ClientError
@@ -780,38 +781,7 @@ class Kind(Command):
         rows: Sequence[dict[str, object]],
         sort: str,
     ) -> list[dict[str, object]]:
-        if sort == "seq":
-            return sorted(
-                rows,
-                key=lambda row: from_plain(row.get("seq"), int, default=0),
-            )
-        if sort == "recent":
-            return sorted(
-                rows,
-                key=lambda row: str(row.get("created") or ""),
-                reverse=True,
-            )
-        if sort == "oldest":
-            return sorted(rows, key=lambda row: str(row.get("created") or ""))
-        if sort == "valence":
-            return sorted(
-                rows,
-                key=lambda row: from_plain(row.get("valence"), float, default=0.0),
-                reverse=True,
-            )
-        return sorted(
-            rows,
-            key=lambda row: (
-                str(row.get("status") or "") != "active",
-                # A P0 row has priority 0, which is falsy -- ``0 or 20`` would
-                # sort it as medium, below P1 (F33). Only an absent/None priority
-                # defaults to 20; an explicit 0 is preserved.
-                20
-                if row.get("priority") is None
-                else from_plain(row.get("priority"), int, default=20),
-                from_plain(row.get("seq"), int, default=0),
-            ),
-        )
+        return cast(list[dict[str, object]], _sort_inquiry_rows(rows, sort))
 
     @classmethod
     def _select_relation_row(
@@ -958,24 +928,10 @@ class Kind(Command):
         _, tgt_id = client.resolve_id(target)
         actor = resolve_actor(_arg_str(args, "actor"), client)
         priority = cast(int | None, metadata.get("priority"))
-        note = cast(str | None, metadata.get("note"))
+        note_arg: str | Absent = (
+            cast(str, metadata["note"]) if "note" in metadata else ABSENT
+        )
         valence = cast(float | None, metadata.get("valence"))
-        if valence_injected and valence is not None:
-            # The spelling's polarity default is a fallback, not a user value:
-            # a fresh edge takes it, but an edge that already exists keeps its
-            # stored valence -- a note-only edit must not clobber it. One read
-            # settles create-vs-annotate before the upsert.
-            _k, _sid, payload = client.get_inquiry(source)
-            peer = next(
-                (
-                    row
-                    for row in cls._relation_rows(payload, (edge_kind, False))
-                    if str(row.get("id") or "") == str(tgt_id)
-                ),
-                None,
-            )
-            if peer is not None:
-                valence = None
         # An empty ``labels`` list PRESENT in metadata is an explicit
         # clear-to-empty (``label del`` emptied it); absent means "no labels
         # arg". ``None`` threads the clear through ``add_edge`` to the labels
@@ -985,17 +941,43 @@ class Kind(Command):
         edge_labels: Sequence[str] | None = labels
         if "labels" in metadata and not labels:
             edge_labels = None
+        elif "labels" not in metadata:
+            edge_labels = ()
         result = client.add_edge(
             src_id,
             tgt_id,
             edge_kind,
             actor=actor,
             priority=priority,
-            note=note or "",
+            note=note_arg,
             valence=valence,
+            default_valence=valence_injected,
             labels=edge_labels,
             reason=_arg_str(args, "reason"),
         )
+        label_ops = cast(
+            Sequence[tuple[str, str]],
+            metadata.get("label_ops", ()),
+        )
+        for op, label in label_ops:
+            if op == "add":
+                client.add_edge_label(
+                    src_id,
+                    tgt_id,
+                    edge_kind,
+                    label,
+                    actor=actor,
+                    reason=_arg_str(args, "reason"),
+                )
+            elif op == "del":
+                client.remove_edge_label(
+                    src_id,
+                    tgt_id,
+                    edge_kind,
+                    label,
+                    actor=actor,
+                    reason=_arg_str(args, "reason"),
+                )
         # The echo shows the spelling the action carries: a dis* write stores
         # (or annotates) the against-polarity, so echoing the base kind would
         # confirm the opposite of what was asked. valence_negate is only True
@@ -1004,9 +986,10 @@ class Kind(Command):
         shown = edge_kind
         if valence_negate:
             shown = _NEGATIVE_CITATION_TITLE[cast(Edge.Kind, edge_kind)]
+        has_patch_ops = any(op in ("add", "del") for op, _ in label_ops)
         if result.created:
             echo(f"added: {source} {shown} {target}")
-        elif result.changed:
+        elif result.changed or has_patch_ops:
             echo(f"annotated: {source} {shown} {target}")
         else:
             echo(f"exists: {source} {edge_kind} {target}")
@@ -1166,10 +1149,24 @@ class Kind(Command):
         if action.edge.reverse:
             src, peer = _swap_edge_endpoints(src, peer)
         edge: dict[str, object] = {**src, **peer, "edge_kind": action.edge.name}
-        for key in ("priority", "note", "valence", "labels"):
+        for key in ("priority", "note", "valence"):
             value = action.metadata.get(key)
             if value is not None:
                 edge[key] = value
+        if "labels" in action.metadata:
+            edge["labels"] = action.metadata["labels"]
+        elif "label_ops" in action.metadata:
+            batch_labels: list[str] = []
+            for op, lbl in cast(
+                Sequence[tuple[str, str]], action.metadata["label_ops"]
+            ):
+                if op == "add" and lbl not in batch_labels:
+                    batch_labels.append(lbl)
+                elif op == "del" and lbl in batch_labels:
+                    batch_labels.remove(lbl)
+                elif op == "to":
+                    batch_labels = [lbl]
+            edge["labels"] = batch_labels
         return edge
 
     @classmethod
@@ -1697,11 +1694,13 @@ def run_list_query(
 
     """
     _require_creation(args)
+    sort_choice = _arg_str(args, "sort")
     print_rows(
         _query_rows(
             query,
             client_factory(),
             limit=from_plain(_arg_values(args).get("limit"), int, default=0),
+            sort=sort_choice,
         ),
         _arg_str(args, "format_"),
         width=_arg_width(args),
@@ -1750,6 +1749,13 @@ def run_bulk_apply(
         print_rows(rows, _arg_str(args, "format_"), width=_arg_width(args))
         return
     actions = _resolve_stdin_actions(bulk.actions)
+    write_fields = tuple(
+        action.field
+        for action in actions
+        if isinstance(action, SetField | AddList | RemoveList)
+    )
+    for row in rows:
+        validate_writable_fields(cast(Inquiry.InquiryKind, row["kind"]), write_fields)
     for row in rows:
         row_kind = cast(Inquiry.InquiryKind, row["kind"])
         ref = SeqRef(kind=row_kind, seq=from_plain(row["seq"], int))
@@ -3584,6 +3590,69 @@ def _edge_legend() -> str:
     return "\n".join(f"  {k.ljust(width)}" for k in keys)
 
 
+def _sort_inquiry_rows(
+    rows: Sequence[Mapping[str, object]],
+    sort: str,
+) -> list[Mapping[str, object]]:
+    """Sort query rows across kinds deterministically."""
+    if sort == "seq":
+        return sorted(
+            rows,
+            key=lambda row: (
+                from_plain(row.get("seq"), int, default=0),
+                str(row.get("kind") or ""),
+                str(row.get("id") or ""),
+            ),
+        )
+    if sort == "recent":
+        # Sort ascending first by tie-breakers, then sort by created descending
+        # so ties on created preserve (kind, seq, id) ascending order.
+        return sorted(
+            sorted(
+                rows,
+                key=lambda row: (
+                    str(row.get("kind") or ""),
+                    from_plain(row.get("seq"), int, default=0),
+                    str(row.get("id") or ""),
+                ),
+            ),
+            key=lambda row: str(row.get("created") or ""),
+            reverse=True,
+        )
+    if sort == "oldest":
+        return sorted(
+            rows,
+            key=lambda row: (
+                str(row.get("created") or ""),
+                str(row.get("kind") or ""),
+                from_plain(row.get("seq"), int, default=0),
+                str(row.get("id") or ""),
+            ),
+        )
+    if sort == "valence":
+        return sorted(
+            rows,
+            key=lambda row: (
+                -from_plain(row.get("valence"), float, default=0.0),
+                str(row.get("kind") or ""),
+                from_plain(row.get("seq"), int, default=0),
+                str(row.get("id") or ""),
+            ),
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            str(row.get("status") or "") != "active",
+            20
+            if row.get("priority") is None
+            else from_plain(row.get("priority"), int, default=20),
+            str(row.get("kind") or ""),
+            from_plain(row.get("seq"), int, default=0),
+            str(row.get("id") or ""),
+        ),
+    )
+
+
 # ``limit`` bounds the total returned set, not each kind: the budget is spent across
 # kinds in order, so a multi-kind query never exceeds it and a caller can treat
 # ``len(rows) == limit`` as a reliable truncation signal.
@@ -3592,9 +3661,25 @@ def _query_rows(
     client: Client,
     *,
     limit: int,
+    sort: str | None = None,
 ) -> list[Mapping[str, object]]:
     """Fetch matching rows across the query's kinds, ranges, and filters."""
-    rows: list[Mapping[str, object]] = []
+    if sort is not None:
+        rows: list[Mapping[str, object]] = []
+        for kind in query.kinds:
+            rows.extend(
+                client.list_kind_all(
+                    kind,
+                    seq_ranges=query.ranges.get(kind, ()),
+                    filters=query.filters,
+                ),
+            )
+        sorted_rows = _sort_inquiry_rows(rows, sort)
+        if limit > 0:
+            return sorted_rows[:limit]
+        return sorted_rows
+
+    rows = []
     for kind in query.kinds:
         if (remaining := limit - len(rows)) <= 0:
             break

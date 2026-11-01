@@ -30,6 +30,7 @@ class CreateEdge(ActorMixin):
     priority: Issue.Priority | None = Field(default=None, ge=0)
     note: str = ""
     valence: float | None = Field(default=None, ge=-1.0, le=1.0)
+    default_valence: bool = False
     labels: list[str] | None = None
     """Edge labels. ``None`` means unset; the route coerces it to the
     empty list before calling the Store."""

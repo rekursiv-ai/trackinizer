@@ -129,13 +129,14 @@ class _PartialEdgeStore(_StubEdgeStore):
         priority: Issue.Priority | None = None,
         note: str = "",
         valence: float | None = None,
+        default_valence: bool = False,
         labels: Sequence[str] = (),
         reason: str = "",
         api_key_id: uuid.UUID | None = None,
         actor: Inquiry.Actor,
     ) -> tuple[uuid.UUID | None, bool]:
-        del from_id, to_id, edge_kind, priority, note, valence, labels, reason
-        del api_key_id, actor
+        del from_id, to_id, edge_kind, priority, note
+        del valence, default_valence, labels, reason, api_key_id, actor
         self.calls += 1
         if self.calls == 2:
             raise RuntimeError("boom")
@@ -166,12 +167,14 @@ class _ConflictEdgeStore(_StubEdgeStore):
         priority: Issue.Priority | None = None,
         note: str = "",
         valence: float | None = None,
+        default_valence: bool = False,
         labels: Sequence[str] = (),
         reason: str = "",
         api_key_id: uuid.UUID | None = None,
         actor: Inquiry.Actor,
     ) -> tuple[uuid.UUID | None, bool]:
-        del from_id, to_id, priority, note, valence, labels, reason, api_key_id, actor
+        del from_id, to_id, priority, note, valence
+        del default_valence, labels, reason, api_key_id, actor
         raise ConflictError(f"{edge_kind} edge would close a cycle")
 
 
@@ -198,13 +201,14 @@ class _LeakyEdgeStore(_StubEdgeStore):
         priority: Issue.Priority | None = None,
         note: str = "",
         valence: float | None = None,
+        default_valence: bool = False,
         labels: Sequence[str] = (),
         reason: str = "",
         api_key_id: uuid.UUID | None = None,
         actor: Inquiry.Actor,
     ) -> tuple[uuid.UUID | None, bool]:
-        del from_id, to_id, edge_kind, priority, note, valence, labels, reason
-        del api_key_id, actor
+        del from_id, to_id, edge_kind, priority, note
+        del valence, default_valence, labels, reason, api_key_id, actor
         err = asyncpg.ForeignKeyViolationError(
             'insert violates foreign key "secret_constraint" on column from_id',
         )

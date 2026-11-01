@@ -9,6 +9,7 @@ profile-related GRAMMAR.md examples once their xfails are lifted.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Self, cast
 
 import uuid
@@ -54,7 +55,7 @@ from trackinizer.wire.wire_terminals import TerminalMachines, TerminalOpened
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping
     from pathlib import Path
     from types import TracebackType
 
@@ -731,8 +732,9 @@ class FakeClient:
         *,
         actor: str,
         priority: int | None = None,
-        note: str = "",
+        note: str | Absent | None = _ABSENT,
         valence: float | None = None,
+        default_valence: bool = False,
         labels: Sequence[str] | None = (),
         reason: str = "",
     ) -> EdgeWrite:
@@ -742,18 +744,21 @@ class FakeClient:
         # clear through ``annotate_edge`` after the POST. Mirror that here so a
         # test sees the same two-call shape (TRAX-CLI-004).
         label_tuple = tuple(labels or ())
+        call_kwargs: dict[str, object] = {
+            "actor": actor,
+            "priority": priority,
+            "note": note,
+            "valence": valence,
+            "labels": label_tuple,
+            "reason": reason,
+        }
+        if default_valence:
+            call_kwargs["default_valence"] = True
         self.calls.append(
             (
                 "add_edge",
                 (from_id, to_id, edge_kind),
-                {
-                    "actor": actor,
-                    "priority": priority,
-                    "note": note,
-                    "valence": valence,
-                    "labels": label_tuple,
-                    "reason": reason,
-                },
+                call_kwargs,
             ),
         )
         # Mirror the real upsert contract: a brand-new edge is created; a repeat
@@ -765,7 +770,7 @@ class FakeClient:
         supplied: dict[str, object] = {}
         if priority is not None:
             supplied["priority"] = priority
-        if note:
+        if not isinstance(note, Absent) and note is not None and note.strip():
             supplied["note"] = note
         if valence is not None:
             supplied["valence"] = valence
@@ -777,8 +782,14 @@ class FakeClient:
             changed_flag = True
         else:
             stored = self._edges[key]
+            if default_valence:
+                supplied.pop("valence", None)
             changed_flag = any(stored.get(k) != v for k, v in supplied.items())
             stored.update(supplied)
+        if not isinstance(note, Absent) and note is not None and not note.strip():
+            self.annotate_edge(from_id, to_id, edge_kind, actor=actor, note="")
+            self._edges[key].pop("note", None)
+            changed_flag = True
         if labels is None:
             # The clear routes through annotate_edge, the path that writes NULL.
             self.annotate_edge(from_id, to_id, edge_kind, actor=actor, labels=[])
@@ -799,6 +810,58 @@ class FakeClient:
             ("remove_edge", (from_id, to_id, edge_kind), {"actor": actor}),
         )
 
+    def add_edge_label(
+        self,
+        from_id: uuid.UUID,
+        to_id: uuid.UUID,
+        edge_kind: str,
+        label: str,
+        *,
+        actor: str,
+        reason: str = "",
+    ) -> None:
+        """Add edge label."""
+        self.calls.append(
+            (
+                "add_edge_label",
+                (from_id, to_id, edge_kind),
+                {"label": label, "actor": actor, "reason": reason},
+            ),
+        )
+        key = (from_id, to_id, edge_kind)
+        stored = self._edges.setdefault(key, {})
+        current = list(cast(Sequence[str], stored.get("labels") or ()))
+        if label not in current:
+            current.append(label)
+        stored["labels"] = tuple(current)
+
+    def remove_edge_label(
+        self,
+        from_id: uuid.UUID,
+        to_id: uuid.UUID,
+        edge_kind: str,
+        label: str,
+        *,
+        actor: str,
+        reason: str = "",
+    ) -> None:
+        """Remove edge label."""
+        self.calls.append(
+            (
+                "remove_edge_label",
+                (from_id, to_id, edge_kind),
+                {"label": label, "actor": actor, "reason": reason},
+            ),
+        )
+        key = (from_id, to_id, edge_kind)
+        stored = self._edges.setdefault(key, {})
+        current = [
+            lbl
+            for lbl in cast(Sequence[str], stored.get("labels") or ())
+            if lbl != label
+        ]
+        stored["labels"] = tuple(current)
+
     def annotate_edge(
         self,
         from_id: uuid.UUID,
@@ -817,6 +880,12 @@ class FakeClient:
             metadata["priority"] = priority
         if not isinstance(note, Absent):
             metadata["note"] = note
+            key = (from_id, to_id, edge_kind)
+            if key in self._edges:
+                if note is None or (isinstance(note, str) and not note.strip()):
+                    self._edges[key].pop("note", None)
+                else:
+                    self._edges[key]["note"] = note
         if not isinstance(valence, Absent):
             metadata["valence"] = valence
         if not isinstance(labels, Absent):
