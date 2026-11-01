@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { nodeLook } from "./encode";
 import { type DrawNode, GraphModel } from "./model";
 import { forceGraphRenderer, type Renderer } from "./renderer";
 import { node, PALETTE } from "./testing";
@@ -159,26 +160,53 @@ test("grouping keeps what the view asked to frame: a focus's nodes, not every no
   expect(graph().centre).toEqual([5, 0]);
 });
 
-test("zoomed discs, halos and arrow endpoints use the same capped radius", () => {
+/** Real upstream encodings for low/high degree nodes and roots. */
+function sizedNodes(): DrawNode[] {
+  return [false, true].flatMap((root) => [0, 1, 9, 100].map((degree) => {
+    const node = { ...placed([[0, 0]])[0]!, root, degree };
+    return { ...node, look: nodeLook(node, PALETTE) };
+  }));
+}
+
+test("zoom preserves upstream degree and root size ratios without growing discs above normal zoom", () => {
+  const draw = graph().settings.get("nodeCanvasObject") as (node: DrawNode, ctx: CanvasRenderingContext2D, scale: number) => void;
+  const arc = vi.fn();
+  const ctx = { arc, beginPath: vi.fn(), stroke: vi.fn(), fill: vi.fn() } as unknown as CanvasRenderingContext2D;
+  const nodes = sizedNodes();
+  for (const scale of [0.25, 0.99, 1, 1.01, 4, 10]) {
+    const radii = nodes.map((node) => {
+      arc.mockClear();
+      draw(node, ctx, scale);
+      const screenRadius = arc.mock.calls[0]![2] * scale;
+      expect(screenRadius).toBeCloseTo(node.look.radius * Math.min(scale, 1));
+      return screenRadius;
+    });
+    for (let i = 1; i < nodes.length; i++) {
+      expect(radii[i]! / radii[0]!).toBeCloseTo(nodes[i]!.look.radius / nodes[0]!.look.radius);
+    }
+    // More connections and root status still have visible meaning at high zoom.
+    expect(radii[3]).toBeGreaterThan(radii[0]!);
+    expect(radii[7]).toBeGreaterThan(radii[3]!);
+  }
+});
+
+test("zoomed discs, halos and arrow endpoints use the same displayed radius", () => {
   const draw = graph().settings.get("nodeCanvasObject") as (node: DrawNode, ctx: CanvasRenderingContext2D, scale: number) => void;
   const value = graph().settings.get("nodeVal") as (node: DrawNode) => number;
   const arrow = graph().settings.get("linkDirectionalArrowLength") as () => number;
   const arc = vi.fn();
   const ctx = { arc, beginPath: vi.fn(), stroke: vi.fn(), fill: vi.fn() } as unknown as CanvasRenderingContext2D;
-  for (const root of [true, false]) {
-    const node = { ...placed([[0, 0]])[0]!, root };
+  for (const node of sizedNodes()) {
     node.look = { ...node.look, halo: "selected", dot: "proven" };
     for (const scale of [0.25, 1, 4, 10]) {
       graph().zoom(scale);
       arc.mockClear();
       draw(node, ctx, scale);
       const radius = arc.mock.calls[1]![2] as number;
-      expect(radius * scale).toBeLessThanOrEqual(root ? 11 : 7);
       expect(Math.sqrt(value(node)) * 4).toBeCloseTo(radius);
       expect((arc.mock.calls[0]![2] - radius) * scale).toBeCloseTo(3.5);
       expect(arc.mock.calls[2]![2]).toBeCloseTo(radius * 0.4);
       expect(arrow() * scale).toBeLessThanOrEqual(10);
-      if (scale === 0.25) expect(radius).toBe(node.look.radius);
     }
   }
 });
@@ -188,16 +216,16 @@ test("zoomed click targets cover the visible node without retaining a giant hidd
   const value = graph().settings.get("nodeVal") as (node: DrawNode) => number;
   const arc = vi.fn();
   const ctx = { arc, beginPath: vi.fn(), fill: vi.fn() } as unknown as CanvasRenderingContext2D;
-  for (const root of [true, false]) {
-    const node = { ...placed([[0, 0]])[0]!, root };
+  for (const node of sizedNodes()) {
     for (const scale of [0.25, 1, 4, 10]) {
       graph().zoom(scale);
       arc.mockClear();
       hit(node, "hit", ctx, scale);
       const radius = arc.mock.calls[0]![2] as number;
-      expect(radius).toBeGreaterThanOrEqual(Math.sqrt(value(node)) * 4);
-      expect(radius * scale).toBeLessThanOrEqual(root ? 11 : 8);
-      if (scale === 0.25) expect(radius).toBe(node.look.radius);
+      const visibleRadius = Math.sqrt(value(node)) * 4;
+      expect(radius).toBeGreaterThanOrEqual(visibleRadius);
+      expect(radius * scale).toBeLessThanOrEqual(Math.max(visibleRadius * scale, 8));
+      if (scale <= 1) expect(radius).toBe(node.look.radius);
     }
   }
 });

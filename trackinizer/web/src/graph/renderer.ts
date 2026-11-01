@@ -322,9 +322,9 @@ function drawLink(link: DrawLink, ctx: CanvasRenderingContext2D, scale: number):
   ctx.stroke();
 }
 
-/** Preserve degree sizing at overview scale, with a screen-space cap when zoomed in. */
+/** Scale all nodes equally so zooming preserves degree and root size ratios. */
 function displayRadius(node: DrawNode, scale: number): number {
-  return Math.min(node.look.radius, (node.root ? 11 : 7) / scale);
+  return node.look.radius / Math.max(1, scale);
 }
 
 /** The node's disc in its hit colour, so pointing and dragging match what is drawn. */

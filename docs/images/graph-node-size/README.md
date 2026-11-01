@@ -18,19 +18,19 @@ Captures use `/trax/graph?focus=Belief/81&hops=1`, a 1280 × 720 viewport, Group
 
 ## Scope
 
-Root nodes stop growing at an 11-pixel radius; other nodes stop at seven pixels. Existing degree-based sizing remains below those caps. Halos, status dots, arrow endpoints and the existing label offset follow the displayed radius. Hit targets cover the visible node, allowing an eight-pixel radius for smaller nodes. Arrowheads stop growing at ten pixels.
+The original degree-based sizing and larger root nodes are preserved. All circles use the same zoom adjustment: below 1× they scale normally; above 1× they retain their original screen radius. This preserves every pair of node-size ratios instead of flattening hubs and smaller nodes to one size. Halos, status dots, arrow endpoints and the existing label offset follow the displayed radius. Hit targets cover the visible node, allowing an eight-pixel radius for smaller nodes. Arrowheads stop growing at ten pixels.
 
 Connection strokes, layout forces and label content retain their upstream implementation. This change does not include the separate connection-line cleanup.
 
 ## Validation
 
-- Graph tests: 148 passed, one skipped, including radius, halo, status-dot, arrow and hit-target checks at four zoom levels.
+- Graph tests: 149 passed, one skipped. A regression test checks the actual upstream degree/root encodings at six zoom levels, including either side of 1×. Halo, status-dot, arrow and hit-target checks also passed.
 - TypeScript check and frontend production build passed.
 - Browser checks in dark and light themes: clicking Experiment#36 opened its real details; clicking outside its smaller target did not. No browser console errors were recorded.
 - Ruff check, Ruff format check, Python import and package build passed.
 - Changed files passed codespell and `git diff --check`.
 
-The full Python suite on this Mac reported 8,649 passed, 19 failed, eight skipped, 1,681 deselected and nine errors. Every failed test and teardown error also occurred on unchanged upstream `abfa8d0`, using the same Python 3.14.6 environment and dependency lockfile. That upstream run reported 8,646 passed, 22 failed and nine errors. The additional upstream failures were worker-count tests affected by available host memory.
+Before this renderer-only revision, the full Python suite on this Mac reported 8,649 passed, 19 failed, eight skipped, 1,681 deselected and nine errors. Every failed test and teardown error also occurred on unchanged upstream `abfa8d0`, using the same Python 3.14.6 environment and dependency lockfile. That upstream run reported 8,646 passed, 22 failed and nine errors. The additional upstream failures were worker-count tests affected by available host memory.
 
 The remaining repository checks also have upstream findings: `ty` reports an `os.waitid` diagnostic, `basedpyright` reports eight errors and 1,726 warnings, and whole-repository codespell reports findings outside these changes. No Python code or test exclusions were changed.
 
