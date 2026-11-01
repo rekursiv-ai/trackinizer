@@ -42,6 +42,25 @@ def test_a_route_of_the_servers_own_is_kept_whatever_it_uses() -> None:
     assert core_schema(changed) == changed
 
 
+def test_operations_left_out_go_with_the_components_only_they_use() -> None:
+    # A path keeps the methods not left out; ``Board`` goes, ``Row`` is the server's.
+    served = _schema(
+        {
+            **_paths(),
+            "/api/boards": _route("Board"),
+            "/api/inquiries": {**_route("Page"), "post": _route("Row")["get"]},
+        },
+        schemas={**_schemas(), "Board": {"properties": {"row": _ref("Row")}}},
+    )
+
+    core = core_schema(
+        served,
+        left_out=frozenset({("/api/boards", "get"), ("/api/inquiries", "post")}),
+    )
+
+    assert core == _server()
+
+
 def test_a_schema_without_components_gains_none() -> None:
     bare: dict[str, MutablePlainTree] = {
         "paths": {"/api/inquiries": {}, "/api/addons/board/x": {}},
