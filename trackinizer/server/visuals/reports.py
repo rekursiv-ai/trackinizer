@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -12,15 +13,23 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from treekle import from_plain
 
+from trackinizer.lib.postgres import Conn
+from trackinizer.server.access_policy import (
+    AccessPolicy,
+    Principal,
+    inquiry_read_filter,
+)
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import set_client_change_id
+from trackinizer.server.values import vetted_sql
 from trackinizer.wire.bodies import SubmitArtifact
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from trackinizer.lib.postgres import Conn
+    from asyncpg import Record
+
     from trackinizer.server.store.core import Store
 
 
@@ -216,8 +225,12 @@ async def publish_artifact_content(
     api_key_id: uuid.UUID | None,
     body: PublishArtifactContent,
     key: uuid.UUID,
+    principal: Principal | None = None,
 ) -> ArtifactContentRevision:
     """Append one Artifact revision and its graph row in one transaction.
+
+    The source Issue and every cited row must be ones ``principal`` may read; any
+    other is refused as missing, so the frozen content copies nothing hidden.
 
     Args:
       store: Shared graph store and database engine.
@@ -226,6 +239,7 @@ async def publish_artifact_content(
       api_key_id: Credential used by an agent, if any.
       body: Bounded Artifact content and graph references.
       key: Retry-safe publication key.
+      principal: Request reader; None preserves trusted reads.
 
     Returns:
       revision: Published or identically replayed immutable revision.
@@ -255,9 +269,20 @@ async def publish_artifact_content(
             if replay["request_hash"] != request_hash:
                 raise ArtifactContentConflictError("Publication key already used.")
             return _revision_from_row(cast("Mapping[str, object]", replay))
+        params: list[object] = [body.issue_id]
+        predicate = inquiry_read_filter(
+            "inquiries.id",
+            policy=store.access_policy,
+            principal=principal,
+            params=params,
+        )
         issue = await conn.fetchval(
-            "SELECT kind FROM inquiries WHERE id = $1 FOR SHARE",
-            body.issue_id,
+            vetted_sql(
+                "SELECT kind FROM inquiries WHERE id = $1",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+                " FOR SHARE",
+            ),
+            *params,
         )
         if issue != "Issue":
             raise ValueError("Artifact source must be an existing Issue.")
@@ -281,7 +306,12 @@ async def publish_artifact_content(
             if report is None or report["issue_id"] != body.issue_id:
                 raise ValueError("Previous Artifact does not belong to this Issue.")
             report_id = uuid.UUID(str(report["id"]))
-        content, content_bytes = await _snapshot_content(conn, body)
+        content, content_bytes = await _snapshot_content(
+            conn,
+            body,
+            policy=store.access_policy,
+            principal=principal,
+        )
         used_bytes = from_plain(
             await conn.fetchval(
                 "SELECT coalesce(sum(content_bytes), 0)::bigint "
@@ -412,11 +442,14 @@ async def read_artifact_content_on_conn(
 async def _snapshot_content(
     conn: Conn,
     body: PublishArtifactContent,
+    *,
+    policy: AccessPolicy,
+    principal: Principal | None,
 ) -> tuple[dict[str, object], int]:
     """Resolve row titles and signed edges before freezing Artifact content."""
-    cache: CitationCache = {}
-    citations = [await _snapshot_cached(conn, ref, cache) for ref in body.citations]
-    sections = [await _snapshot_section(conn, draft, cache) for draft in body.sections]
+    snapshot = _Snapshot(conn=conn, policy=policy, principal=principal)
+    citations = [await snapshot.citation(ref) for ref in body.citations]
+    sections = [await snapshot.section(draft) for draft in body.sections]
     content: dict[str, object] = {
         "title": body.title,
         "summary": body.summary,
@@ -429,74 +462,108 @@ async def _snapshot_content(
     return content, len(json.dumps(content, ensure_ascii=False).encode())
 
 
-type CitationCache = dict[
-    tuple[uuid.UUID, uuid.UUID | None, str | None],
-    ArtifactCitation,
-]
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Snapshot:
+    """Freezes one revision's citations, each read once, as ``principal`` reads."""
+
+    conn: Conn
+    policy: AccessPolicy
+    principal: Principal | None
+    cache: dict[
+        tuple[uuid.UUID, uuid.UUID | None, str | None],
+        ArtifactCitation,
+    ] = field(default_factory=dict)
+
+    async def section(self, draft: ArtifactSectionDraft) -> ArtifactSection:
+        """Freeze each finding and citation in one structured section.
+
+        Args:
+          draft: The section as the publisher sent it.
+
+        Returns:
+          section: The section with every citation frozen.
+
+        """
+        return ArtifactSection(
+            title=draft.title,
+            summary=draft.summary,
+            details=draft.details,
+            findings=[await self._finding(item) for item in draft.findings],
+        )
+
+    async def citation(self, ref: ArtifactCitationRef) -> ArtifactCitation:
+        """Read each source-edge pair once per Artifact revision.
+
+        Args:
+          ref: The cited row and optional signed edge.
+
+        Returns:
+          citation: The frozen row and edge.
+
+        Raises:
+          ValueError: The row, or the claim or edge, is missing or hidden.
+
+        """
+        key = (ref.record_id, ref.claim_id, ref.edge_kind)
+        if key not in self.cache:
+            self.cache[key] = await self._citation(ref)
+        return self.cache[key]
+
+    async def _finding(self, draft: ArtifactFindingDraft) -> ArtifactFinding:
+        """Freeze a finding and its cited graph evidence."""
+        return ArtifactFinding(
+            claim=draft.claim,
+            outcome=draft.outcome,
+            uncertainty=draft.uncertainty,
+            citations=[await self.citation(ref) for ref in draft.citations],
+        )
+
+    async def _row(self, record_id: uuid.UUID) -> Record | None:
+        """Read one row's kind, seq and title, when ``principal`` may read it."""
+        params: list[object] = [record_id]
+        predicate = inquiry_read_filter(
+            "inquiries.id",
+            policy=self.policy,
+            principal=self.principal,
+            params=params,
+        )
+        return await self.conn.fetchrow(
+            vetted_sql(
+                "SELECT kind, seq, title FROM inquiries WHERE id = $1",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+            ),
+            *params,
+        )
+
+    async def _citation(self, ref: ArtifactCitationRef) -> ArtifactCitation:
+        """Copy a live row and optional signed edge into immutable Artifact JSON."""
+        record = await self._row(ref.record_id)
+        if record is None:
+            raise ValueError("Cited record does not exist.")
+        citation = ArtifactCitation(
+            record_id=ref.record_id,
+            kind=from_plain(record["kind"], str),
+            seq=from_plain(record["seq"], int),
+            title=from_plain(record["title"], str)[:2_000],
+        )
+        if ref.claim_id is None:
+            return citation
+        return await _signed_citation(
+            self.conn,
+            citation,
+            ref=ref,
+            claim=await self._row(ref.claim_id),
+        )
 
 
-async def _snapshot_section(
+async def _signed_citation(
     conn: Conn,
-    draft: ArtifactSectionDraft,
-    cache: CitationCache,
-) -> ArtifactSection:
-    """Freeze each finding and citation in one structured section."""
-    return ArtifactSection(
-        title=draft.title,
-        summary=draft.summary,
-        details=draft.details,
-        findings=[
-            await _snapshot_finding(conn, item, cache) for item in draft.findings
-        ],
-    )
-
-
-async def _snapshot_finding(
-    conn: Conn,
-    draft: ArtifactFindingDraft,
-    cache: CitationCache,
-) -> ArtifactFinding:
-    """Freeze a finding and its cited graph evidence."""
-    return ArtifactFinding(
-        claim=draft.claim,
-        outcome=draft.outcome,
-        uncertainty=draft.uncertainty,
-        citations=[await _snapshot_cached(conn, ref, cache) for ref in draft.citations],
-    )
-
-
-async def _snapshot_cached(
-    conn: Conn,
+    citation: ArtifactCitation,
+    *,
     ref: ArtifactCitationRef,
-    cache: CitationCache,
+    claim: Record | None,
 ) -> ArtifactCitation:
-    """Read each source-edge pair once per Artifact revision."""
-    key = (ref.record_id, ref.claim_id, ref.edge_kind)
-    if key not in cache:
-        cache[key] = await _snapshot_citation(conn, ref)
-    return cache[key]
-
-
-async def _snapshot_citation(conn: Conn, ref: ArtifactCitationRef) -> ArtifactCitation:
-    """Copy a live row and optional signed edge into immutable Artifact JSON."""
-    record = await conn.fetchrow(
-        "SELECT kind, seq, title FROM inquiries WHERE id = $1",
-        ref.record_id,
-    )
-    if record is None:
-        raise ValueError("Cited record does not exist.")
-    citation = ArtifactCitation(
-        record_id=ref.record_id,
-        kind=from_plain(record["kind"], str),
-        seq=from_plain(record["seq"], int),
-        title=from_plain(record["title"], str)[:2_000],
-    )
-    if ref.claim_id is None:
-        return citation
-    claim = await conn.fetchrow(
-        "SELECT kind, seq, title FROM inquiries WHERE id = $1",
-        ref.claim_id,
-    )
+    """Add a cited claim and its signed edge to ``citation``."""
     edge = await conn.fetchrow(
         "SELECT valence, note FROM edges WHERE from_id = $1 "
         "AND to_id = $2 AND edge_kind = $3",

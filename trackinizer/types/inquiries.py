@@ -83,14 +83,20 @@ everything above it::
         ├── WebResult        # One URL.
         │       url
         │
-        └── AgentSession     # A captured CLI run.
-                cli
-                cli_session_id
-                started
-                ended
-                rooms
-                opened_by_api_key_id
-                audience
+        ├── AgentSession     # A captured CLI run.
+        │       cli
+        │       cli_session_id
+        │       started
+        │       ended
+        │       rooms
+        │       opened_by_api_key_id
+        │       audience
+        │
+        └── AccessGroup      # A shared group of readers and writers.
+                read_group
+                write_group
+                system
+                domain
 """
 
 from __future__ import annotations
@@ -180,6 +186,7 @@ class Inquiry:
         "WebResult",
         "WebSearch",
         "AgentSession",
+        "AccessGroup",
     ]
     """The row discriminator covering every instantiable Inquiry class.
 
@@ -727,8 +734,11 @@ class Artifact(Inquiry):
 
     The sub-kinds are :class:`Experiment` (a measurement), :class:`Paper`
     (an external source), :class:`Belief` (a proposition),
-    :class:`CodeChange` (a git commit), :class:`WebResult` (one URL), and
-    :class:`WebSearch` (a query and the findings it produced).
+    :class:`CodeChange` (a git commit), :class:`WebResult` (one URL),
+    :class:`WebSearch` (a query and the findings it produced),
+    :class:`AgentSession` (a captured run), and :class:`AccessGroup` (a shared
+    group). An AccessGroup alone cites nothing: it is outside
+    :data:`Artifact.EvidenceKind`.
     """
 
     type Kind = Literal[
@@ -740,8 +750,22 @@ class Artifact(Inquiry):
         "WebResult",
         "WebSearch",
         "AgentSession",
+        "AccessGroup",
     ]
     """:data:`Inquiry.InquiryKind` narrowed to the artifact branch."""
+
+    type EvidenceKind = Literal[
+        "Artifact",
+        "Experiment",
+        "Paper",
+        "Belief",
+        "CodeChange",
+        "WebResult",
+        "WebSearch",
+        "AgentSession",
+    ]
+    """The artifacts that cite a claim (``proves`` / ``favors``): every one but
+    :class:`AccessGroup`, which records who reads and writes, not evidence."""
 
     proves: tuple[ArtifactEdge, ...] = ()
     """The claims (Beliefs or Experiments) this artifact cites as load-bearing
@@ -1270,6 +1294,69 @@ class AgentSession(Artifact):
     route. The shape is checked in SQL and the accepted set in code, so a new value
     is not a migration. Required on every AgentSession and NULL on every other
     kind."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AccessGroup(Artifact):
+    """A shared group of people, as a graph row; personal groups have no row.
+
+    Its controls name groups by id: :attr:`read_group` and :attr:`write_group` may
+    be another AccessGroup's id or a person's own group, which only the installed
+    access policy can tell apart. Core stores them and never interprets them; no
+    field route writes them. A group is retired by :attr:`Inquiry.status`, never
+    purged, since grants and memberships core cannot see may name it. It takes
+    the edges every Inquiry takes, but cites no claim.
+    """
+
+    read_group: UUID | None = field(
+        default=None,
+        metadata=ColumnSpec(
+            applies_to_inquiry_kinds=frozenset({"AccessGroup"}),
+            sql_type="UUID",
+            required=True,
+            route_editable=False,
+        ),
+    )
+    """The group whose members read this group and its membership. Core's create
+    stamps the row's own id; required on every AccessGroup."""
+
+    write_group: UUID | None = field(
+        default=None,
+        metadata=ColumnSpec(
+            applies_to_inquiry_kinds=frozenset({"AccessGroup"}),
+            sql_type="UUID",
+            required=True,
+            route_editable=False,
+        ),
+    )
+    """The group whose members change this group, its membership and sharing.
+    Core's create stamps the row's own id; required on every AccessGroup."""
+
+    system: bool = field(
+        default=False,
+        metadata=ColumnSpec(
+            applies_to_inquiry_kinds=frozenset({"AccessGroup"}),
+            sql_type="BOOLEAN",
+            required=True,
+            immutable=True,
+            route_editable=False,
+        ),
+    )
+    """Whether the server alone manages its membership and sharing."""
+
+    domain: str | None = field(
+        default=None,
+        metadata=ColumnSpec(
+            applies_to_inquiry_kinds=frozenset({"AccessGroup"}),
+            sql_type="TEXT",
+            # Names the storage column: only a server-managed group holds a domain.
+            sql_check="domain = lower(domain) AND accessgroup_system",
+            immutable=True,
+            route_editable=False,
+        ),
+    )
+    """The verified company domain of a server-managed group, lowercase; at most
+    one group holds each."""
 
 
 # Walks the ``Inquiry`` subclass tree so a new kind registers itself with no parallel

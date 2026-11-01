@@ -21,6 +21,7 @@ import uuid
 from pydantic import BaseModel
 from treekle import from_plain
 
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.audience import visible_sql
 from trackinizer.server.values import vetted_sql
 from trackinizer.server.visuals.session_lines import (
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
     from asyncpg import Record
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
+    from trackinizer.server.access_policy import AccessPolicy, Principal
     from trackinizer.server.audience import SessionReader
     from trackinizer.server.inbound import InboundQueue
 
@@ -125,6 +127,8 @@ async def list_own_sessions(
     inbound: InboundQueue,
     days: int,
     limit: int,
+    policy: AccessPolicy | None = None,
+    principal: Principal | None = None,
 ) -> SessionList:
     """List the caller's sessions active within ``days`` or still open.
 
@@ -137,6 +141,9 @@ async def list_own_sessions(
       inbound: In-process poller leases, which say which runs are live and where.
       days: How far back the last activity may be, 1 to :data:`MAX_DAYS`.
       limit: The most sessions to list, 1 to :data:`MAX_SESSIONS`.
+      policy: Deployment policy; None preserves trusted reads.
+      principal: The caller, as the access policy reads them: an Issue they may not
+        read is not listed. None preserves trusted reads.
 
     Returns:
       listed: The sessions, newest activity first, and the Issues above them.
@@ -155,10 +162,17 @@ async def list_own_sessions(
         ids = [from_plain(row["id"], uuid.UUID) for row in rows]
         lines = await session_lines(conn, session_ids=ids, account=email)
         places = _Places()
-        produced = await _produced_by(conn, session_ids=ids)
+        produced = await _produced_by(
+            conn,
+            session_ids=ids,
+            policy=policy,
+            principal=principal,
+        )
         issues = await _issues(
             conn,
             issue_ids=sorted({i for v in produced.values() for i in v}),
+            policy=policy,
+            principal=principal,
         )
         states = await live_run_states(conn, inbound=inbound, session_ids=ids)
     return SessionList(
@@ -233,16 +247,28 @@ async def _produced_by(
     conn: Conn,
     *,
     session_ids: Sequence[uuid.UUID],
+    policy: AccessPolicy | None,
+    principal: Principal | None,
 ) -> dict[uuid.UUID, list[uuid.UUID]]:
-    """Read the Issues each session was produced by, workspaces left out, by seq."""
+    """Read the readable Issues each session was produced by, workspaces left out."""
+    params: list[object] = [list(session_ids)]
+    predicate = inquiry_read_filter(
+        "issue.id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
     rows = await conn.fetch(
-        "SELECT e.from_id, e.to_id FROM edges AS e "
-        "JOIN inquiries AS issue ON issue.id = e.to_id "
-        "WHERE e.from_id = ANY($1::uuid[]) AND e.edge_kind = 'produced_by' "
-        "AND e.to_kind = 'Issue' "
-        "AND NOT coalesce(issue.labels, '{}') @> ARRAY['workspace']::text[] "
-        "ORDER BY e.from_id, issue.seq, e.to_id",
-        list(session_ids),
+        vetted_sql(
+            "SELECT e.from_id, e.to_id FROM edges AS e "
+            "JOIN inquiries AS issue ON issue.id = e.to_id "
+            "WHERE e.from_id = ANY($1::uuid[]) AND e.edge_kind = 'produced_by' "
+            "AND e.to_kind = 'Issue' "
+            "AND NOT coalesce(issue.labels, '{}') @> ARRAY['workspace']::text[]",
+            "" if predicate == "TRUE" else f" AND ({predicate})",
+            " ORDER BY e.from_id, issue.seq, e.to_id",
+        ),
+        *params,
     )
     produced: dict[uuid.UUID, list[uuid.UUID]] = {}
     for row in rows:
@@ -252,20 +278,36 @@ async def _produced_by(
     return produced
 
 
-async def _issues(conn: Conn, *, issue_ids: Sequence[uuid.UUID]) -> list[ListedIssue]:
-    """Read ``issue_ids`` and the Issues each narrows or was produced by, by seq."""
+async def _issues(
+    conn: Conn,
+    *,
+    issue_ids: Sequence[uuid.UUID],
+    policy: AccessPolicy | None,
+    principal: Principal | None,
+) -> list[ListedIssue]:
+    """Read ``issue_ids`` and the readable Issues each narrows or was produced by."""
+    params: list[object] = [list(issue_ids)]
+    predicate = inquiry_read_filter(
+        "parent.id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
     rows = await conn.fetch(
-        "WITH up AS (SELECT DISTINCT e.from_id AS child, e.to_id AS parent "
-        "FROM edges AS e JOIN inquiries AS parent ON parent.id = e.to_id "
-        "WHERE e.from_id = ANY($1::uuid[]) AND e.from_kind = 'Issue' "
-        "AND e.to_kind = 'Issue' AND e.edge_kind IN ('narrows', 'produced_by') "
-        "AND NOT coalesce(parent.labels, '{}') @> ARRAY['workspace']::text[]) "
-        "SELECT i.id, i.seq, i.title, i.status, coalesce(array_agg(up.parent "
-        "ORDER BY up.parent) FILTER (WHERE up.parent IS NOT NULL), '{}') AS parents "
-        "FROM inquiries AS i LEFT JOIN up ON up.child = i.id "
-        "WHERE i.id = ANY($1::uuid[]) OR i.id IN (SELECT parent FROM up) "
-        "GROUP BY i.id, i.seq, i.title, i.status ORDER BY i.seq, i.id",
-        list(issue_ids),
+        vetted_sql(
+            "WITH up AS (SELECT DISTINCT e.from_id AS child, e.to_id AS parent "
+            "FROM edges AS e JOIN inquiries AS parent ON parent.id = e.to_id "
+            "WHERE e.from_id = ANY($1::uuid[]) AND e.from_kind = 'Issue' "
+            "AND e.to_kind = 'Issue' AND e.edge_kind IN ('narrows', 'produced_by') "
+            "AND NOT coalesce(parent.labels, '{}') @> ARRAY['workspace']::text[]",
+            "" if predicate == "TRUE" else f" AND ({predicate})",
+            ") SELECT i.id, i.seq, i.title, i.status, coalesce(array_agg(up.parent "
+            "ORDER BY up.parent) FILTER (WHERE up.parent IS NOT NULL), '{}') "
+            "AS parents FROM inquiries AS i LEFT JOIN up ON up.child = i.id "
+            "WHERE i.id = ANY($1::uuid[]) OR i.id IN (SELECT parent FROM up) "
+            "GROUP BY i.id, i.seq, i.title, i.status ORDER BY i.seq, i.id",
+        ),
+        *params,
     )
     return [_issue(row) for row in rows]
 

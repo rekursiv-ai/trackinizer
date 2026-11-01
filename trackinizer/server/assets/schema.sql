@@ -119,6 +119,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_inquiries_live_session_owner
     ON inquiries (owner)
     WHERE kind = 'AgentSession' AND owner IS NOT NULL
           AND agentsession_ended IS NULL;
+-- One AccessGroup per verified company domain.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_inquiries_accessgroup_domain
+    ON inquiries (accessgroup_domain)
+    WHERE accessgroup_domain IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_inquiries_judgement
     ON inquiries (belief_judgement) WHERE belief_judgement IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_inquiries_confidence
@@ -356,12 +360,12 @@ CREATE TABLE IF NOT EXISTS edges (
      OR (edge_kind = 'produced_by'
             AND from_kind IN ({inquiry_kinds})
             AND to_kind IN ({inquiry_kinds}))
-     -- proves/favors: from = citing Artifact (the younger evidence child),
-     -- to = the cited claim (Belief or Experiment, the older parent).
-     -- for-vs-against is the sign of the valence column, not a separate edge
-     -- kind. proves is load-bearing; favors is context.
+     -- proves/favors: from = citing Artifact (the younger evidence child; an
+     -- AccessGroup cites nothing), to = the cited claim (Belief or Experiment,
+     -- the older parent). for-vs-against is the sign of the valence column,
+     -- not a separate edge kind. proves is load-bearing; favors is context.
      OR (edge_kind IN ('proves', 'favors')
-            AND from_kind IN ({artifact_kinds})
+            AND from_kind IN ({evidence_kinds})
             AND to_kind IN ({claimable_kinds}))
      -- supersedes: from = successor (child), to = predecessor (parent). Both
      -- endpoints must be valid Inquiry kinds. Cross-kind supersession is allowed

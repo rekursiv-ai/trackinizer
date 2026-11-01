@@ -1182,7 +1182,7 @@
       "type": "string"
      },
      "artifact_kind": {
-      "$ref": "#/components/schemas/trackinizer__types__inquiries__Kind__2"
+      "$ref": "#/components/schemas/EvidenceKind"
      },
      "valence": {
       "default": 0.5,
@@ -2214,6 +2214,19 @@
     "title": "EnrollResponse",
     "type": "object"
    },
+   "EvidenceKind": {
+    "enum": [
+     "Artifact",
+     "Experiment",
+     "Paper",
+     "Belief",
+     "CodeChange",
+     "WebResult",
+     "WebSearch",
+     "AgentSession"
+    ],
+    "type": "string"
+   },
    "ExecRequest": {
     "additionalProperties": false,
     "description": "One command to run on a machine.",
@@ -2845,7 +2858,7 @@
       "type": "string"
      },
      "value": {
-      "$ref": "#/components/schemas/trackinizer__types__inquiries__Kind__1"
+      "$ref": "#/components/schemas/trackinizer__types__inquiries__Kind"
      }
     },
     "required": [
@@ -3599,7 +3612,7 @@
       "anyOf": [
        {
         "items": {
-         "$ref": "#/components/schemas/trackinizer__types__inquiries__Kind__1"
+         "$ref": "#/components/schemas/trackinizer__types__inquiries__Kind"
         },
         "type": "array"
        },
@@ -3627,7 +3640,7 @@
       "anyOf": [
        {
         "items": {
-         "$ref": "#/components/schemas/trackinizer__types__inquiries__Kind__1"
+         "$ref": "#/components/schemas/trackinizer__types__inquiries__Kind"
         },
         "type": "array"
        },
@@ -4108,7 +4121,8 @@
      "CodeChange",
      "WebResult",
      "WebSearch",
-     "AgentSession"
+     "AgentSession",
+     "AccessGroup"
     ],
     "type": "string"
    },
@@ -7093,6 +7107,30 @@
    "Snapshot": {
     "description": "One side of a :class:`Change` delta.\n\nHeld as ``Change.old`` and ``Change.new`` so an event reads as new\nversus old. Each field defaults to ``None`` and is filled only when the\nevent touched that column. The Python nesting flattens to ``old_X`` /\n``new_X`` columns in SQL.\n\nNote that ``Snapshot.description`` (the inquiry's description on either\nside of a ``description`` change delta) is not :attr:`Change.reason`\n(the per-event annotation).",
     "properties": {
+     "accessgroup_read_group": {
+      "anyOf": [
+       {
+        "format": "uuid",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Accessgroup Read Group"
+     },
+     "accessgroup_write_group": {
+      "anyOf": [
+       {
+        "format": "uuid",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Accessgroup Write Group"
+     },
      "account": {
       "anyOf": [
        {
@@ -7317,7 +7355,7 @@
       "anyOf": [
        {
         "items": {
-         "$ref": "#/components/schemas/trackinizer__types__inquiries__Kind-Output"
+         "$ref": "#/components/schemas/trackinizer__types__inquiries__Kind"
         },
         "type": "array"
        },
@@ -7596,6 +7634,164 @@
      "invalid"
     ],
     "type": "string"
+   },
+   "SubmitAccessGroup": {
+    "additionalProperties": false,
+    "description": "Submit body for a new AccessGroup: its base fields alone.\n\nThe server stamps its controls (``read_group = write_group =`` its own id) and\nmakes it neither a system group nor a domain's, so a body naming a control is\nrefused rather than silently dropped.",
+    "properties": {
+     "account": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Actor"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "actor": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Actor"
+     },
+     "app": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "App"
+     },
+     "created": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Created"
+     },
+     "description": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Description"
+     },
+     "idempotency_key": {
+      "anyOf": [
+       {
+        "format": "uuid",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Idempotency Key"
+     },
+     "kind": {
+      "const": "AccessGroup",
+      "default": "AccessGroup",
+      "title": "Kind",
+      "type": "string"
+     },
+     "labels": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Labels"
+     },
+     "marginal_cost": {
+      "$ref": "#/components/schemas/Cost"
+     },
+     "modified": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Modified"
+     },
+     "owner": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Actor"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "reason": {
+      "default": "",
+      "title": "Reason",
+      "type": "string"
+     },
+     "status": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Status"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "subscribers": {
+      "anyOf": [
+       {
+        "items": {
+         "$ref": "#/components/schemas/Actor"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Subscribers"
+     },
+     "title": {
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+     }
+    },
+    "required": [
+     "title"
+    ],
+    "title": "SubmitAccessGroup",
+    "type": "object"
    },
    "SubmitAgentSession": {
     "description": "Submit body for a new AgentSession (a captured agent run's session).",
@@ -7987,6 +8183,7 @@
       "items": {
        "discriminator": {
         "mapping": {
+         "AccessGroup": "#/components/schemas/SubmitAccessGroup",
          "AgentSession": "#/components/schemas/SubmitAgentSession",
          "Artifact": "#/components/schemas/SubmitArtifact",
          "Belief": "#/components/schemas/SubmitBelief",
@@ -8026,6 +8223,9 @@
         },
         {
          "$ref": "#/components/schemas/SubmitAgentSession"
+        },
+        {
+         "$ref": "#/components/schemas/SubmitAccessGroup"
         }
        ]
       },
@@ -8673,7 +8873,7 @@
       "anyOf": [
        {
         "items": {
-         "$ref": "#/components/schemas/trackinizer__types__inquiries__Kind__1"
+         "$ref": "#/components/schemas/trackinizer__types__inquiries__Kind"
         },
         "minItems": 1,
         "type": "array"
@@ -10117,6 +10317,8 @@
      "agentsession_ended",
      "agentsession_rooms",
      "agentsession_audience",
+     "accessgroup_read_group",
+     "accessgroup_write_group",
      "edge_added",
      "edge_removed",
      "edge_annotation_changed",
@@ -10138,34 +10340,12 @@
     ],
     "type": "string"
    },
-   "trackinizer__types__inquiries__Kind-Output": {
+   "trackinizer__types__inquiries__Kind": {
     "enum": [
      "feature",
      "bug",
      "task",
      "question"
-    ],
-    "type": "string"
-   },
-   "trackinizer__types__inquiries__Kind__1": {
-    "enum": [
-     "feature",
-     "bug",
-     "task",
-     "question"
-    ],
-    "type": "string"
-   },
-   "trackinizer__types__inquiries__Kind__2": {
-    "enum": [
-     "Artifact",
-     "Experiment",
-     "Paper",
-     "Belief",
-     "CodeChange",
-     "WebResult",
-     "WebSearch",
-     "AgentSession"
     ],
     "type": "string"
    },
@@ -14139,7 +14319,8 @@
         "CodeChange",
         "WebResult",
         "WebSearch",
-        "AgentSession"
+        "AgentSession",
+        "AccessGroup"
        ],
        "title": "Kind",
        "type": "string"

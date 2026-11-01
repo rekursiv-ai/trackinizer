@@ -23,7 +23,8 @@
         "CodeChange",
         "WebResult",
         "WebSearch",
-        "AgentSession"
+        "AgentSession",
+        "AccessGroup"
       ],
       "issue_kind": [
         "feature",

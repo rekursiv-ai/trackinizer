@@ -17,6 +17,7 @@ from uuid import UUID
 
 import math
 
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.schema_gen import SEQ_FOR_KIND
 from trackinizer.server.setter_dispatch import (
     COLUMN_SPECS,
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import AccessPolicy, Principal
 
 
 # Columns ``insert_inquiry`` writes explicitly, so the derived body skips them:
@@ -201,6 +203,8 @@ async def lookup_kinds(
     ids: Sequence[UUID],
     *,
     for_share: bool = False,
+    policy: AccessPolicy | None = None,
+    principal: Principal | None = None,
 ) -> dict[UUID, Inquiry.InquiryKind]:
     """Batch ``id -> kind`` lookup; ids absent from the result don't exist.
 
@@ -212,6 +216,8 @@ async def lookup_kinds(
       conn: Database connection.
       ids: Inquiry ids to look up.
       for_share: Lock rows with FOR SHARE until transaction end.
+      policy: Deployment policy for UUID visibility.
+      principal: Request reader; None preserves trusted reads.
 
     Returns:
       result: Dict of found UUIDs to their kinds; missing ids are not returned.
@@ -220,10 +226,21 @@ async def lookup_kinds(
     if not ids:
         return {}
     lock = " FOR SHARE" if for_share else ""
+    params: list[object] = [list(ids)]
+    predicate = inquiry_read_filter(
+        "inquiries.id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
     rows = await conn.fetch(
         # ``lock`` is one of two fixed literals chosen by the bool, not input.
-        vetted_sql("SELECT id, kind FROM inquiries WHERE id = ANY($1::uuid[])", lock),
-        list(ids),
+        vetted_sql(
+            "SELECT id, kind FROM inquiries WHERE id = ANY($1::uuid[])",
+            "" if predicate == "TRUE" else f" AND ({predicate})",
+            lock,
+        ),
+        *params,
     )
     result: dict[UUID, Inquiry.InquiryKind] = {}
     for row in rows:

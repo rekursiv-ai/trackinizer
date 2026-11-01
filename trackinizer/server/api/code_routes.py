@@ -16,7 +16,11 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from trackinizer.server.api._deps import get_store
-from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.api.session_access import (
+    request_principal,
+    require_readable,
+    session_reader,
+)
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.store.code_store import (
     SnapshotOwnerError,
@@ -140,6 +144,8 @@ async def code_put_snapshot_route(
 
     """
     _require_owner(identity, owner=body.owner)
+    named = (record_id, body.parent_record_id)
+    await require_readable(request, identity, [row for row in named if row is not None])
     try:
         return await put_snapshot(
             get_store(request).engine,
@@ -169,10 +175,13 @@ async def code_snapshot_route(
       snapshot: The snapshot, without its owner's email.
 
     """
+    store = get_store(request)
     snapshot = await read_snapshot(
-        get_store(request).engine,
+        store.engine,
         record_id=record_id,
         reader=session_reader(request, identity),
+        policy=store.access_policy,
+        principal=await request_principal(request, identity),
     )
     if snapshot is None:
         raise HTTPException(status_code=404, detail="No code snapshot for this record.")
@@ -198,11 +207,14 @@ async def code_file_route(
       file: Its path, hash and text.
 
     """
+    store = get_store(request)
     found = await read_file(
-        get_store(request).engine,
+        store.engine,
         record_id=record_id,
         path=path,
         reader=session_reader(request, identity),
+        policy=store.access_policy,
+        principal=await request_principal(request, identity),
     )
     if found is None:
         raise HTTPException(status_code=404, detail="No such file in a code snapshot.")
@@ -230,12 +242,15 @@ async def code_diff_route(
       diff: Each path that differs, sorted, with its unified diff.
 
     """
+    store = get_store(request)
     diff = await diff_snapshots(
-        get_store(request).engine,
+        store.engine,
         from_id=from_record,
         to_id=to_record,
         context=context,
         reader=session_reader(request, identity),
+        policy=store.access_policy,
+        principal=await request_principal(request, identity),
     )
     if diff is None:
         raise HTTPException(status_code=404, detail="No code snapshot for a record.")

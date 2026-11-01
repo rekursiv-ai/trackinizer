@@ -105,6 +105,7 @@ _ELIGIBLE_ISSUE_ORDER: Final[str] = " ORDER BY issue.issue_priority, issue.creat
 NEXT_ISSUE_SQL: Final[str] = vetted_sql(
     "SELECT issue.* FROM inquiries issue WHERE ",
     _ELIGIBLE_ISSUE_PREDICATE,
+    "{readable}",
     _ELIGIBLE_ISSUE_ORDER,
     " LIMIT 1",
 )
@@ -128,6 +129,7 @@ CLAIM_NEXT_ISSUE_SQL: Final[str] = vetted_sql(
     "UPDATE inquiries SET owner = $1 WHERE id = ("
     "  SELECT issue.id FROM inquiries issue WHERE ",
     _ELIGIBLE_ISSUE_PREDICATE,
+    "{readable}",
     _ELIGIBLE_ISSUE_ORDER,
     "  LIMIT 1 FOR UPDATE OF issue SKIP LOCKED) RETURNING *",
 )
@@ -135,7 +137,8 @@ CLAIM_NEXT_ISSUE_SQL: Final[str] = vetted_sql(
 
 Returns the claimed row, or no row when nothing is available -- which means
 "nothing claimable right now", not "all work is finished": eligible rows may
-simply be locked by another in-flight claim.
+simply be locked by another in-flight claim. ``{readable}`` narrows the
+candidates to the Issues the claimant may read, as in :data:`NEXT_ISSUE_SQL`.
 """
 
 
@@ -154,6 +157,7 @@ PROVES_BELIEF_SQL: Final[str] = vetted_sql(
         subject_alias="t.id",
         policy_attr="invalidates_currency_on",
     ),
+    "{readable}",
     " ORDER BY t.created",
 )
 """Currently-true ``proves``-citations a Belief depends on.
@@ -181,12 +185,14 @@ PROVING_EDGES_SQL: Final[str] = vetted_sql(
         subject_alias="t.id",
         policy_attr="invalidates_currency_on",
     ),
+    "{readable}",
 )
 """Currently-true ``proves`` edges pointing at ``$1``, one hop, with valence.
 
 ``derived_confidence`` folds each into a log-odds sum, recursing into any citer that
 is itself a Belief/Experiment so a chain resolves bottom-up (the ``proves``
-graph is a DAG). Drops citers an :class:`EdgeKindPolicy` flags currency-invalid.
+graph is a DAG). Drops citers an :class:`EdgeKindPolicy` flags currency-invalid,
+and ``{readable}`` the citers the reader may not read.
 """
 
 
@@ -196,7 +202,7 @@ COST_SUBTREE_SQL: Final[str] = (
     "    UNION "
     "    SELECT e.from_id FROM edges e "
     "    JOIN subtree s ON s.id = e.to_id "
-    "    WHERE e.edge_kind = 'narrows'"
+    "    WHERE e.edge_kind = 'narrows'{readable}"
     ") "
     "SELECT "
     "    COALESCE(SUM(t.marginal_cost_agent_usd), 0)    AS agent_usd, "
@@ -205,7 +211,8 @@ COST_SUBTREE_SQL: Final[str] = (
 )
 """Decomposition-rollup of ``marginal_cost_*_usd`` from the subtree
 rooted at ``$1``. Walks ``narrows`` edges downward (broader -> narrower via the
-stored narrower -> broader edge's from-side)."""
+stored narrower -> broader edge's from-side). ``{readable}`` tests each narrower
+``e.from_id``, so the walk neither counts nor passes a row the reader may not read."""
 
 
 NARROWS_ANCESTORS_SQL: Final[str] = (
@@ -214,11 +221,11 @@ NARROWS_ANCESTORS_SQL: Final[str] = (
     # what stops them.
     "WITH RECURSIVE up(child, parent, depth) AS ("
     "    SELECT e.from_id, e.to_id, 1 FROM edges e "
-    "    WHERE e.edge_kind = 'narrows' AND e.from_id = ANY($1::uuid[]) "
+    "    WHERE e.edge_kind = 'narrows' AND e.from_id = ANY($1::uuid[]){readable} "
     "    UNION "
     "    SELECT e.from_id, e.to_id, up.depth + 1 FROM edges e "
     "    JOIN up ON e.from_id = up.parent "
-    "    WHERE e.edge_kind = 'narrows' AND up.depth < $2"
+    "    WHERE e.edge_kind = 'narrows' AND up.depth < $2{readable}"
     "), kept AS ("
     "    SELECT parent FROM up GROUP BY parent "
     "    ORDER BY min(depth), parent LIMIT $3"
@@ -232,4 +239,5 @@ NARROWS_ANCESTORS_SQL: Final[str] = (
 Walks ``narrows`` upward (narrower -> broader, the stored from -> to), the
 reverse of :data:`COST_SUBTREE_SQL`. Keeps at most ``$3`` ancestors, nearest
 first, and returns every edge reaching one: its ``child`` and the ancestor's
-light row. ``Store.narrows_ancestors`` assigns them to each row."""
+light row. ``Store.narrows_ancestors`` assigns them to each row. ``{readable}``
+tests each parent ``e.to_id``, so the walk ends at a row the reader may not read."""

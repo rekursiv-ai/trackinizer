@@ -28,7 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from treekle import from_plain
 
 from trackinizer.server.api._deps import get_store
-from trackinizer.server.api.locks import require_unlocked
+from trackinizer.server.api.locks import require_writable
 from trackinizer.server.api.session_access import (
     require_attributable,
     require_row_account,
@@ -95,7 +95,7 @@ def _make_put(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON]]
         request: Request,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
-        await require_unlocked(request, identity, [target_id])
+        await require_writable(request, identity, [target_id])
         await require_session_row_write(request, identity, target_id)
         if route.column == "account":
             await require_row_account(request, identity, target_id)
@@ -142,7 +142,7 @@ def _make_patch(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON
         request: Request,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
-        await require_unlocked(request, identity, [target_id])
+        await require_writable(request, identity, [target_id])
         await require_session_row_write(request, identity, target_id)
         await require_row_write(request, identity, target_id)
         store = get_store(request)
@@ -164,7 +164,7 @@ def _make_delete(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSO
         request: Request,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
-        await require_unlocked(request, identity, [target_id])
+        await require_writable(request, identity, [target_id])
         await require_session_row_write(request, identity, target_id)
         if route.column == "cli_session_id":
             await require_session_id_change(

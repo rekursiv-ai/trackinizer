@@ -6,9 +6,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from trackinizer.server.api._deps import get_inbound
+from trackinizer.server.api._deps import get_inbound, get_store
 from trackinizer.server.api._routes_shared import request_engine
-from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.api.session_access import (
+    request_principal,
+    session_reader,
+)
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.session_list import (
     MAX_DAYS,
@@ -47,6 +50,7 @@ async def list_sessions_route(
       listed: The sessions and their Issues, and whether more matched.
 
     """
+    principal = await request_principal(request, identity)
     return await list_own_sessions(
         request_engine(request),
         email=identity.email,
@@ -54,4 +58,6 @@ async def list_sessions_route(
         inbound=get_inbound(request),
         days=days,
         limit=limit,
+        policy=get_store(request).access_policy,
+        principal=principal,
     )

@@ -22,8 +22,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import AccessPolicy, Principal
     from trackinizer.wire.filters import Filter
 
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.notify import tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.store.shared import _StoreShared
@@ -93,6 +95,8 @@ class _MetricsMixin(_StoreShared):
         self,
         experiment_id: UUID,
         points: Sequence[MetricPoint],
+        *,
+        principal: Principal | None = None,
     ) -> tuple[int, int]:
         """Append metric points idempotently; return ``(logged, skipped)``.
 
@@ -110,12 +114,13 @@ class _MetricsMixin(_StoreShared):
         Args:
           experiment_id: Experiment UUID to attach metrics to.
           points: MetricPoint records (key, step, value, kind, timestamp).
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
           result: Tuple of (newly_logged_count, skipped_duplicate_count).
 
         Raises:
-          NotFoundError: ``experiment_id`` is not an existing inquiry.
+          NotFoundError: ``experiment_id`` is not an inquiry ``principal`` may read.
           ConflictError: ``experiment_id`` is not an ``Experiment`` row (a
             metric may only attach to an experiment).
 
@@ -130,7 +135,13 @@ class _MetricsMixin(_StoreShared):
         async with self.engine.acquire() as conn, tx(conn):
             # The row lock holds a concurrent purge off until commit, so the
             # ``experiment_id`` foreign key cannot fail under the INSERT below.
-            await _require_experiment(conn, experiment_id, for_update=True)
+            await _require_experiment(
+                conn,
+                experiment_id,
+                for_update=True,
+                policy=self.access_policy,
+                principal=principal,
+            )
             # A single ``unnest`` INSERT (not ``executemany``, which cannot
             # RETURNING) makes the accounting exact and race-free: a concurrent
             # same-experiment commit cannot inflate the count because we count
@@ -160,6 +171,7 @@ class _MetricsMixin(_StoreShared):
         key: str | None = None,
         limit: int | None = None,
         offset: int = 0,
+        principal: Principal | None = None,
     ) -> list[MetricPoint]:
         """Read a window of one experiment's metric points, ``(key, step)`` order.
 
@@ -177,12 +189,13 @@ class _MetricsMixin(_StoreShared):
           key: Optional metric name to filter (None returns all keys).
           limit: Max results to return; None defaults to DEFAULT_LIST_LIMIT.
           offset: Number of rows to skip before returning limit.
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
           result: List of MetricPoint records in (key, step) index order.
 
         Raises:
-          NotFoundError: ``experiment_id`` is not an existing inquiry.
+          NotFoundError: ``experiment_id`` is not an inquiry ``principal`` may read.
           ConflictError: ``experiment_id`` is not an ``Experiment`` row.
 
         """
@@ -209,7 +222,13 @@ class _MetricsMixin(_StoreShared):
             str(offset_pos),
         )
         async with self.engine.acquire() as conn:
-            await _require_experiment(conn, experiment_id, for_update=False)
+            await _require_experiment(
+                conn,
+                experiment_id,
+                for_update=False,
+                policy=self.access_policy,
+                principal=principal,
+            )
             fetched = await conn.fetch(sql, *params)
         result: list[MetricPoint] = []
         for row in fetched:
@@ -250,6 +269,7 @@ class _MetricsMixin(_StoreShared):
         sort: Literal["asc", "desc"] | None = None,
         limit: int | None = None,
         offset: int = 0,
+        principal: Principal | None = None,
     ) -> list[tuple[UUID, MetricPoint]]:
         """Read the masked cells of one or more experiments' metric grids.
 
@@ -265,8 +285,8 @@ class _MetricsMixin(_StoreShared):
         caller attribute each cell to its run.
 
         ``experiment_ids`` names the runs as ids, or as list filters ANDed over the
-        Experiment rows. An id with no metrics, or no row at all, contributes no
-        cells. Filters run in the same query, through the list's own SQL forms,
+        Experiment rows. An id with no metrics, no row at all, or a row
+        ``principal`` may not read, contributes no cells. Filters run in the same query, through the list's own SQL forms,
         so a selection of any size is one read; a filter with no SQL form is
         refused rather than evaluated row by row.
 
@@ -285,6 +305,7 @@ class _MetricsMixin(_StoreShared):
           limit: Row ceiling applied after selection; ``None`` reads up to
             ``MAX_LIST_LIMIT``.
           offset: Selected cells skipped before ``limit``.
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
           cells: ``(experiment_id, MetricPoint)`` per selected cell.
@@ -298,6 +319,14 @@ class _MetricsMixin(_StoreShared):
         """
         params: list[object] = []
         predicates = [_selection(experiment_ids, params)]
+        readable = inquiry_read_filter(
+            "experiment_metrics.experiment_id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
+        if readable != "TRUE":
+            predicates.append(f"({readable})")
         reduce_order: str | None = None
         for mask in masks:
             if mask.op not in ("max", "min"):
@@ -401,6 +430,7 @@ class _MetricsMixin(_StoreShared):
         *,
         masks: Sequence[MetricMaskClause],
         value: float,
+        principal: Principal | None = None,
     ) -> int:
         """Assign ``value`` to every masked cell of one experiment's grid.
 
@@ -423,12 +453,13 @@ class _MetricsMixin(_StoreShared):
           experiment_id: The run whose grid is written; must be an Experiment.
           masks: ``at <axis> <op> <value>`` clauses selecting the target cells.
           value: The finite scalar assigned to every selected cell.
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
           written: The number of cells inserted or updated.
 
         Raises:
-          NotFoundError: ``experiment_id`` is not an existing inquiry.
+          NotFoundError: ``experiment_id`` is not an inquiry ``principal`` may read.
           ConflictError: ``experiment_id`` is not an Experiment, ``value`` is
             non-finite, the masks omit ``step``, a mask uses an unsupported
             op, or a mask operand is one no stored cell could hold.
@@ -456,7 +487,13 @@ class _MetricsMixin(_StoreShared):
             and pins["step"][0].op == "is"
         )
         async with self.engine.acquire() as conn, tx(conn):
-            await _require_experiment(conn, experiment_id, for_update=True)
+            await _require_experiment(
+                conn,
+                experiment_id,
+                for_update=True,
+                policy=self.access_policy,
+                principal=principal,
+            )
             if single_cell:
                 status = await self._upsert_single_cell(
                     conn,
@@ -594,15 +631,25 @@ async def _require_experiment(
     experiment_id: UUID,
     *,
     for_update: bool,
+    policy: AccessPolicy,
+    principal: Principal | None,
 ) -> None:
-    """Raise unless ``experiment_id`` is an existing ``Experiment`` row."""
+    """Raise unless ``experiment_id`` is an ``Experiment`` row ``principal`` may read."""
+    params: list[object] = [experiment_id]
+    predicate = inquiry_read_filter(
+        "inquiries.id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
     experiment = await conn.fetchrow(
         # ``FOR UPDATE`` is a fixed literal chosen by the bool, not input.
         vetted_sql(
             "SELECT kind FROM inquiries WHERE id = $1",
+            "" if predicate == "TRUE" else f" AND ({predicate})",
             " FOR UPDATE" if for_update else "",
         ),
-        experiment_id,
+        *params,
     )
     if experiment is None:
         raise NotFoundError(f"experiment {experiment_id} not found")

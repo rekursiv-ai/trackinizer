@@ -8,8 +8,9 @@ one only when every blob is stored for its owner and its parent record holds one
 the same owner, replacing the record's snapshot.
 
 A reader reads a snapshot that is not private when it reads the record: any record
-but a session, and a session whose transcript it reads. A private snapshot is read
-by its owner alone; no role reads another person's. Every read names its reader,
+but a session, and a session whose transcript it reads, of those the deployment's
+access policy lets it read. A private snapshot is read by its owner alone; no role
+reads another person's. Every read names its reader,
 with no default: any reader, even
 :data:`~trackinizer.server.audience.NOBODY`, reads a snapshot that is not
 private of a record that is not a session, so a default would not fail closed.
@@ -28,6 +29,7 @@ import itertools
 from treekle import from_plain
 
 from trackinizer.lib import zstd_compat
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.audience import visible_sql
 from trackinizer.server.notify import tx
 from trackinizer.server.values import vetted_sql
@@ -60,6 +62,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
+    from trackinizer.server.access_policy import AccessPolicy, Principal
     from trackinizer.server.audience import SessionReader
     from trackinizer.wire.wire_code import CodeBlob, CodeSnapshotPut
 
@@ -273,6 +276,8 @@ async def read_snapshot(
     *,
     record_id: UUID,
     reader: SessionReader,
+    policy: AccessPolicy | None = None,
+    principal: Principal | None = None,
 ) -> CodeSnapshot | None:
     """Return a record's snapshot and its files sorted by path; None when unread.
 
@@ -280,6 +285,8 @@ async def read_snapshot(
       engine: The store's engine.
       record_id: The record.
       reader: Who reads.
+      policy: Deployment policy; None preserves trusted reads.
+      principal: Request reader; None preserves trusted reads.
 
     Returns:
       snapshot: The snapshot; ``None`` when there is none or ``reader`` may not read
@@ -287,7 +294,13 @@ async def read_snapshot(
 
     """
     async with engine.acquire() as conn:
-        held = await _readable(conn, record_id=record_id, reader=reader)
+        held = await _readable(
+            conn,
+            record_id=record_id,
+            reader=reader,
+            policy=policy,
+            principal=principal,
+        )
         if held is None:
             return None
         sizes = await _sizes(conn, owner=held.owner, hashes=held.files.values())
@@ -308,6 +321,8 @@ async def read_file(
     record_id: UUID,
     path: str,
     reader: SessionReader,
+    policy: AccessPolicy | None = None,
+    principal: Principal | None = None,
 ) -> CodeFile | None:
     """Return one file of a record's snapshot; None when unread or not in it.
 
@@ -316,6 +331,8 @@ async def read_file(
       record_id: The record.
       path: The file's path in the snapshot.
       reader: Who reads.
+      policy: Deployment policy; None preserves trusted reads.
+      principal: Request reader; None preserves trusted reads.
 
     Returns:
       file: Its path, hash and text; ``None`` when the snapshot is missing or
@@ -323,7 +340,13 @@ async def read_file(
 
     """
     async with engine.acquire() as conn:
-        held = await _readable(conn, record_id=record_id, reader=reader)
+        held = await _readable(
+            conn,
+            record_id=record_id,
+            reader=reader,
+            policy=policy,
+            principal=principal,
+        )
         if held is None or path not in held.files:
             return None
         sha = held.files[path]
@@ -338,6 +361,8 @@ async def diff_snapshots(
     to_id: UUID,
     context: int,
     reader: SessionReader,
+    policy: AccessPolicy | None = None,
+    principal: Principal | None = None,
 ) -> CodeDiff | None:
     """Return how ``to_id``'s snapshot differs from ``from_id``'s, path by path.
 
@@ -347,6 +372,8 @@ async def diff_snapshots(
       to_id: The record whose snapshot is the new side.
       context: Lines of context around each change.
       reader: Who reads.
+      policy: Deployment policy; None preserves trusted reads.
+      principal: Request reader; None preserves trusted reads.
 
     Returns:
       diff: Each path that differs, sorted, with its unified diff, at most
@@ -355,8 +382,20 @@ async def diff_snapshots(
 
     """
     async with engine.acquire() as conn:
-        old = await _readable(conn, record_id=from_id, reader=reader)
-        new = await _readable(conn, record_id=to_id, reader=reader)
+        old = await _readable(
+            conn,
+            record_id=from_id,
+            reader=reader,
+            policy=policy,
+            principal=principal,
+        )
+        new = await _readable(
+            conn,
+            record_id=to_id,
+            reader=reader,
+            policy=policy,
+            principal=principal,
+        )
     if old is None or new is None:
         return None
     files: list[CodeFileDiff] = []
@@ -434,9 +473,22 @@ async def _readable(
     *,
     record_id: UUID,
     reader: SessionReader,
+    policy: AccessPolicy | None,
+    principal: Principal | None,
 ) -> _Held | None:
-    """Read a record's snapshot when ``reader`` may; None otherwise."""
+    """Read a record's snapshot when ``reader`` and ``principal`` may; None otherwise."""
     params: list[object] = [record_id, reader.email]
+    audience = visible_sql(
+        "i",
+        params=params,
+        reader=reader,
+    )
+    predicate = inquiry_read_filter(
+        "i.id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
     row = await conn.fetchrow(
         vetted_sql(
             "SELECT s.owner, s.files, s.record_id, s.parent_id AS parent_record_id, "
@@ -444,12 +496,9 @@ async def _readable(
             "FROM code_snapshots AS s JOIN inquiries AS i ON i.id = s.record_id "
             "WHERE s.record_id = $1 AND (NOT s.private OR s.owner = $2) "
             "AND (i.kind <> 'AgentSession' OR ",
-            visible_sql(
-                "i",
-                params=params,
-                reader=reader,
-            ),
+            audience,
             ")",
+            "" if predicate == "TRUE" else f" AND ({predicate})",
         ),
         *params,
     )

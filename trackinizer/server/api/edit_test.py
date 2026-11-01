@@ -288,7 +288,13 @@ class TestRoutes:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        engine.conn.fetchval.return_value = "Issue"
+
+        def found(sql: str, *args: object) -> str | None:
+            """Find no unreadable row for the write gate, and an Issue for every read."""
+            del args
+            return None if "WHERE NOT EXISTS" in sql else "Issue"
+
+        engine.conn.fetchval.side_effect = found
         # Negative delta -> op=sub with a positive value.
         r = client.patch(
             f"/api/inquiries/{new_uuid()}/marginal_cost_agent_usd",

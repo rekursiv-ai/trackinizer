@@ -75,6 +75,7 @@ SEQ_FOR_KIND: dict[Inquiry.InquiryKind, str] = {
         "WebResult",
         "WebSearch",
         "AgentSession",
+        "AccessGroup",
     )
 }
 
@@ -118,6 +119,8 @@ CHANGE_LOG_COLUMN_ORDER: Final[tuple[str, ...]] = (
     "agentsession_rooms",
     "app",
     "agentsession_audience",
+    "accessgroup_read_group",
+    "accessgroup_write_group",
 )
 
 _EDGE_METADATA_COLUMN_ORDER: Final[tuple[str, ...]] = (
@@ -137,6 +140,7 @@ INQUIRY_KIND_ORDER: Final[tuple[Inquiry.InquiryKind, ...]] = (
     "WebResult",
     "WebSearch",
     "AgentSession",
+    "AccessGroup",
 )
 """Canonical order for emitting per-kind column blocks. Covers every
 ``Inquiry.InquiryKind`` value -- a future column with
@@ -178,7 +182,7 @@ def substitute_schema_placeholders(body: str) -> str:
         # several times during this project; this catches it.
         .replace("{edge_kinds}", quote_literal(Edge.Kind))
         .replace("{inquiry_kinds}", quote_literal(Inquiry.InquiryKind))
-        .replace("{artifact_kinds}", quote_literal(Artifact.Kind))
+        .replace("{evidence_kinds}", quote_literal(Artifact.EvidenceKind))
         # The citation-target set {Belief, Experiment}; the proves/favors
         # to-side. Single-sourced from the ``claimable`` kind-group so it
         # cannot drift from the EdgeKindPolicy topology.
@@ -252,9 +256,9 @@ def generate_inquiry_kind_columns() -> str:
     """
     # Sanity-check: the order tuple must cover every concrete kind so
     # adding a new Inquiry subclass doesn't silently KeyError below.
-    declared_kinds = set(INQUIRY_KIND_ORDER)
+    declared_kinds = set(get_args(Inquiry.InquiryKind.__value__))
     missing = declared_kinds - set(INQUIRY_KIND_ORDER)
-    if missing:  # pragma: no cover -- defensive check that fires only if a new Inquiry kind is added without updating INQUIRY_KIND_ORDER.
+    if missing:
         raise AssertionError(
             f"INQUIRY_KIND_ORDER missing {sorted(missing)}; "
             "every Inquiry.InquiryKind value must appear so the schema "

@@ -13,9 +13,13 @@ from uuid import UUID
 
 from treekle import from_plain
 
+from trackinizer.server.access_policy import inquiry_read_filter
+from trackinizer.server.values import vetted_sql
+
 
 if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import AccessPolicy, Principal
 
 
 __all__ = ["read_neighbourhood"]
@@ -33,7 +37,7 @@ _NEXT_HOP: Final = (
     "SELECT ARRAY(SELECT n.id FROM ("
     " SELECT to_id AS id FROM edges WHERE from_id = ANY($1::uuid[])"
     " UNION SELECT from_id FROM edges WHERE to_id = ANY($1::uuid[])"
-    ") AS n WHERE n.id <> ALL($2::uuid[])"
+    ") AS n WHERE n.id <> ALL($2::uuid[]){readable}"
     " ORDER BY (SELECT created FROM inquiries WHERE id = n.id) DESC, n.id DESC"
     " LIMIT $3)"
 )
@@ -45,6 +49,8 @@ async def read_neighbourhood(
     *,
     hops: int,
     limit: int,
+    policy: AccessPolicy | None = None,
+    principal: Principal | None = None,
 ) -> dict[UUID, int]:
     """Return the inquiries nearest ``focus``, each with its hop distance.
 
@@ -58,15 +64,28 @@ async def read_neighbourhood(
       focus: The inquiry to walk from.
       hops: The most edges to walk, at least 1.
       limit: The most inquiries to return, at least 1.
+      policy: Deployment policy for each traversal hop.
+      principal: Request reader; None preserves trusted reads.
 
     Returns:
       distances: Each inquiry's id and its hop distance, nearest first; empty
         when ``focus`` names no inquiry.
 
     """
+    params: list[object] = [focus]
+    predicate = inquiry_read_filter(
+        "inquiries.id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
     if not await conn.fetchval(
-        "SELECT EXISTS (SELECT FROM inquiries WHERE id = $1)",
-        focus,
+        vetted_sql(
+            "SELECT EXISTS (SELECT FROM inquiries WHERE id = $1",
+            "" if predicate == "TRUE" else f" AND ({predicate})",
+            ")",
+        ),
+        *params,
     ):
         return {}
     distances: dict[UUID, int] = {focus: 0}
@@ -75,8 +94,18 @@ async def read_neighbourhood(
         room = limit - len(distances)
         if room < 1 or not frontier:
             break
+        params = [frontier, list(distances), room]
+        predicate = inquiry_read_filter(
+            "n.id",
+            policy=policy,
+            principal=principal,
+            params=params,
+        )
+        query = _NEXT_HOP.format(
+            readable="" if predicate == "TRUE" else f" AND ({predicate})",
+        )
         frontier = from_plain(
-            await conn.fetchval(_NEXT_HOP, frontier, list(distances), room),
+            await conn.fetchval(vetted_sql(query), *params),
             list[UUID],
         )
         distances |= dict.fromkeys(frontier, hop)

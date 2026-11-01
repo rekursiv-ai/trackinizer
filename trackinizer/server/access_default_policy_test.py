@@ -95,6 +95,7 @@ class _RecordingPolicy:
     calls: list[tuple[str, object]] = field(default_factory=list)
     deny_writes: bool = False
     refuse_states: bool = False
+    hide_reads: bool = False
 
     async def groups(self, conn: Conn, principal: Principal) -> frozenset[str]:
         del conn
@@ -111,7 +112,7 @@ class _RecordingPolicy:
     ) -> str:
         del kind, alias, params, principal
         self.calls.append(("read_filter", None))
-        return "TRUE"
+        return "FALSE" if self.hide_reads else "TRUE"
 
     async def check(
         self,
@@ -135,6 +136,10 @@ class _RecordingPolicy:
     ) -> None:
         del conn
         self.calls.append(("on_create", (principal, resource)))
+
+    async def prepare_account_change(self, conn: Conn, *, resource: Resource) -> None:
+        del conn
+        self.calls.append(("prepare_account_change", resource))
 
     async def validate(self, conn: Conn, *, resource: Resource) -> None:
         del conn
@@ -276,7 +281,9 @@ async def test_each_guarded_write_asks_the_policy_once_about_its_row(
     ]
     assert policy.of("groups") == [ADA, ADA, ADA, ADA, ROOT, ADA]
     assert policy.of("validate") == []
-    assert policy.of("read_filter") == []
+    # Each write's gate asks whether its row is readable, and a writer's lock check
+    # asks again so that it names only a row the writer may read.
+    assert policy.of("read_filter") == [None] * 9
 
 
 async def test_a_refusal_is_a_403_and_writes_nothing(
@@ -300,6 +307,27 @@ async def test_a_refusal_is_a_403_and_writes_nothing(
     assert json_loads(read.content, dict[str, object])["description"] is None
 
 
+async def test_a_hidden_row_reads_by_seq_as_an_absent_one(
+    recorded: tuple[httpx2.AsyncClient, Store, _RecordingPolicy],
+) -> None:
+    client, store, policy = recorded
+    _as(ADA)
+    row = await store.get_inquiry(await _issue(client, "Ada's row"))
+    assert row is not None
+    policy.hide_reads = True
+
+    hidden = await client.get(f"/api/inquiries/Issue/{row.seq}")
+    absent = await client.get(f"/api/inquiries/Issue/{row.seq + 1}")
+
+    assert (hidden.status_code, absent.status_code) == (404, 404), hidden.text
+    assert json_loads(hidden.content, dict[str, str]) == {
+        "detail": f"Issue#{row.seq} not found",
+    }
+    assert json_loads(absent.content, dict[str, str]) == {
+        "detail": f"Issue#{row.seq + 1} not found",
+    }
+
+
 async def test_an_account_move_is_validated_in_its_transaction(
     recorded: tuple[httpx2.AsyncClient, Store, _RecordingPolicy],
 ) -> None:
@@ -318,10 +346,12 @@ async def test_an_account_move_is_validated_in_its_transaction(
     read = await client.get(f"/api/inquiries/{row}")
 
     assert (refused.status_code, moved.status_code) == (409, 200), refused.text
-    assert policy.of("validate") == [
+    expected = [
         Resource(kind="inquiry", id=str(row), account=VIEWER),
         Resource(kind="inquiry", id=str(row), account=BOB),
     ]
+    assert policy.of("prepare_account_change") == expected
+    assert policy.of("validate") == expected
     assert json_loads(kept.content, dict[str, object])["account"] == ADA
     assert json_loads(read.content, dict[str, object])["account"] == BOB
 

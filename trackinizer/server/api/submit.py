@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 
 from trackinizer.server.api._deps import get_store
-from trackinizer.server.api.locks import referenced_ids, require_unlocked
+from trackinizer.server.api.locks import referenced_ids, require_writable
 from trackinizer.server.api.session_access import (
     granted_audience,
     request_principal,
@@ -25,6 +25,7 @@ from trackinizer.server.auth import (
     require_role,
 )
 from trackinizer.wire.bodies import (
+    SubmitAccessGroup,
     SubmitAgentSession,
     SubmitArtifact,
     SubmitBase,
@@ -64,6 +65,7 @@ _BODY_BY_KIND: dict[str, type[SubmitBase]] = {
         SubmitWebResult,
         SubmitWebSearch,
         SubmitAgentSession,
+        SubmitAccessGroup,
     )
 }
 
@@ -104,7 +106,7 @@ async def submit_batch_route(
 
     """
     _require_admin_to_set_modified(identity, *req.items)
-    await require_unlocked(request, identity, referenced_ids(req))
+    await require_writable(request, identity, referenced_ids(req))
     store = get_store(request)
     session_audience = _opening_audience(identity, *req.items)
     # Resolve each item's account, then validate the DISTINCT set before the
@@ -176,7 +178,7 @@ async def submit_route(
             detail=err.errors(include_context=False),
         ) from err
     _require_admin_to_set_modified(identity, req)
-    await require_unlocked(request, identity, referenced_ids(req))
+    await require_writable(request, identity, referenced_ids(req))
     return {
         "id": str(
             await _submit_one(

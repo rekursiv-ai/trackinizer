@@ -43,7 +43,8 @@ it and whether or not an assistant is configured.
 
 Every rule above stays where it is. On top of them, a field edit, a lock and a
 purge by id ask the deployment's access policy (:func:`require_row_write`), whose
-default allows what these rules allow.
+default allows what these rules allow. A write naming a row the caller may not read
+answers 404, as a read of it does (:func:`require_readable`).
 """
 
 from __future__ import annotations
@@ -56,7 +57,11 @@ import uuid
 from fastapi import HTTPException
 from treekle import from_plain
 
-from trackinizer.server.access_policy import Principal, Resource
+from trackinizer.server.access_policy import (
+    Principal,
+    Resource,
+    inquiry_read_filter,
+)
 from trackinizer.server.api._deps import (
     get_assistant,
     get_chat_orgs,
@@ -72,12 +77,16 @@ from trackinizer.server.audience import (
 from trackinizer.server.auth import ROLE_ORDER, Role
 from trackinizer.server.config import Config
 from trackinizer.server.notify import tx
+from trackinizer.server.values import vetted_sql
+from trackinizer.types.errors import NotFoundError
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE
 from trackinizer.wire.wire_service_accounts import is_service_address
 
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from fastapi import FastAPI, Request
 
     from trackinizer.lib.postgres import Conn
@@ -97,6 +106,7 @@ __all__ = [
     "is_the_assistant",
     "request_principal",
     "require_attributable",
+    "require_readable",
     "require_row_account",
     "require_row_purge",
     "require_row_write",
@@ -482,6 +492,52 @@ async def require_row_write(
             principal=principal,
             target_id=target_id,
         )
+
+
+async def require_readable(
+    request: Request,
+    identity: AuthIdentity,
+    row_ids: Collection[uuid.UUID],
+) -> None:
+    """Refuse a write naming a row the caller may not read, as a read of it is: 404.
+
+    A row the access policy hides is absent to its reader. It answers as a row that
+    never existed does, before any other check can name it, so a write neither
+    changes it nor says it exists.
+
+    Args:
+      request: The request, which carries the store and its policy.
+      identity: Authenticated caller; an admin is asked too.
+      row_ids: The rows the route is about to change or link.
+
+    Raises:
+      NotFoundError: A named row is absent or hidden from the caller.
+
+    """
+    ids = list(row_ids)
+    if not ids:
+        return
+    principal = await request_principal(request, identity)
+    store = get_store(request)
+    params: list[object] = [ids]
+    readable = inquiry_read_filter(
+        "inquiries.id",
+        policy=store.access_policy,
+        principal=principal,
+        params=params,
+    )
+    async with store.engine.acquire() as conn:
+        unread = await conn.fetchval(
+            vetted_sql(
+                "SELECT named.id FROM unnest($1::uuid[]) AS named(id) WHERE NOT EXISTS "
+                "(SELECT 1 FROM inquiries WHERE inquiries.id = named.id AND (",
+                readable,
+                ")) LIMIT 1",
+            ),
+            *params,
+        )
+    if unread is not None:
+        raise NotFoundError(f"inquiry {unread} not found")
 
 
 async def check_row_write(

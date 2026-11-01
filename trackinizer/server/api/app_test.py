@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
@@ -12,6 +12,7 @@ import re
 import time
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from treekle import from_plain, json_loads
 
@@ -19,6 +20,7 @@ import asyncpg
 import pytest
 
 from trackinizer.conftest import FakeEngine, make_store
+from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.api import app
 from trackinizer.server.api.app import (
     RequestLoggingMiddleware,
@@ -37,6 +39,7 @@ from trackinizer.server.embedders import qwen3_4b, registry
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.secrets import FileSecrets, SecretRef
 from trackinizer.types.errors import (
+    ChatDeletedError,
     ConflictError,
     NotFoundError,
     ValidationError,
@@ -45,6 +48,7 @@ from trackinizer.wire.wire_machine_host import JOIN_PATH
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
     from starlette.types import Receive, Scope, Send
@@ -71,16 +75,16 @@ class TestCLIHelpers:
         unique_response = asyncio.run(
             unique_violation_handler(req, asyncpg.UniqueViolationError("boom")),
         )
-        for response, prefix in [
-            (fk_response, "foreign key"),
-            (check_response, "check constraint"),
-            (unique_response, "unique constraint"),
+        for response, detail in [
+            (fk_response, "foreign key violation"),
+            (check_response, "check constraint violated"),
+            (unique_response, "unique constraint violated"),
         ]:
             assert response.status_code == 409
             # ``response.body`` is ``bytes | memoryview``; coerce to
             # ``bytes`` for json.loads's narrower type signature.
-            body = json_loads(bytes(response.body), dict[str, object])
-            assert prefix in from_plain(body["detail"], str)
+            body = json_loads(bytes(response.body), dict[str, str])
+            assert body == {"detail": detail}
 
     def test_handlers_do_not_leak_constraint_detail(self) -> None:
         # ``asyncpg`` ``detail`` carries internal column / constraint names
@@ -154,6 +158,101 @@ class TestCLIHelpers:
         body = json_loads(bytes(response.body), dict[str, object])
         assert response.status_code == 422
         assert body == {"detail": "bad input", "code": "validation"}
+
+
+_FAILURES: Final[tuple[tuple[Exception, int, str], ...]] = (
+    (ConflictError("clash"), 409, "clash"),
+    (AccessDeniedError("denied"), 403, "denied"),
+    (NotFoundError("gone"), 404, "gone"),
+    (ValidationError("invalid"), 422, "invalid"),
+    (ChatDeletedError("deleted"), 410, "deleted"),
+    (
+        asyncpg.CheckViolationError("private-constraint"),
+        409,
+        "check constraint violated",
+    ),
+    (
+        asyncpg.ForeignKeyViolationError("private-constraint"),
+        409,
+        "foreign key violation",
+    ),
+    (
+        asyncpg.UniqueViolationError("private-constraint"),
+        409,
+        "unique constraint violated",
+    ),
+    (
+        asyncpg.CharacterNotInRepertoireError("private-value"),
+        422,
+        "unstorable_value",
+    ),
+    (
+        RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("body",),
+                    "msg": "invalid",
+                    "input": float("inf"),
+                },
+            ],
+        ),
+        422,
+        "invalid",
+    ),
+)
+"""What each failure route raises, and the status and detail its handler answers."""
+
+
+@pytest.fixture(scope="module")
+def failing() -> tuple[FastAPI, TestClient]:
+    """Build one fresh app whose ``/test-failure/<n>`` raises the n-th failure.
+
+    A fresh app makes each route's handler on the first request that passes it, so
+    the failure routes come first: a request to one passes no other.
+    """
+    built = app._build_app()
+    for index, (error, _status, _detail) in enumerate(_FAILURES):
+        built.add_api_route(f"/test-failure/{index}", _raising(error))
+    failures = built.router.routes[-len(_FAILURES) :]
+    del built.router.routes[-len(_FAILURES) :]
+    built.router.routes[:0] = failures
+    return built, TestClient(built, raise_server_exceptions=False)
+
+
+def _raising(error: Exception) -> Callable[[], Awaitable[None]]:
+    """Return an endpoint raising ``error``."""
+
+    async def failure() -> None:
+        raise error
+
+    return failure
+
+
+@pytest.mark.parametrize(
+    ("index", "status", "detail"),
+    [(index, status, detail) for index, (_, status, detail) in enumerate(_FAILURES)],
+    ids=[
+        f"error{index}-{status}-{detail}"
+        for index, (_, status, detail) in enumerate(_FAILURES)
+    ],
+)
+def test_fresh_apps_serve_all_exception_handlers(
+    failing: tuple[FastAPI, TestClient],
+    index: int,
+    status: int,
+    detail: str,
+) -> None:
+    built, client = failing
+
+    response = client.get(f"/test-failure/{index}")
+
+    assert response.status_code == status
+    assert built.exception_handlers == app.app.exception_handlers
+    assert detail in response.text
+    assert "private-constraint" not in response.text
+    assert "private-value" not in response.text
+    assert "Infinity" not in response.text
 
 
 class TestRequestLogging:

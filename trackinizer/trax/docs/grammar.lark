@@ -159,7 +159,7 @@ group_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (e
 // ---- terminals (keyword sets; spellings overlap across classes, e.g.
 // codechange is KIND+REF_LIST_FIELD, resolved by position) ----
 VERB: "search-sessions" | "confidence" | "authority" | "blocked" | "machine" | "profile" | "version" | "doctor" | "export" | "recent" | "board" | "graph" | "cost" | "help" | "next" | "send" | "env" | "job" | "run" | "id"
-KIND: "agentsession" | "codechange" | "experiment" | "webresult" | "websearch" | "artifact" | "belief" | "issue" | "paper"
+KIND: "agentsession" | "accessgroup" | "codechange" | "experiment" | "webresult" | "websearch" | "artifact" | "belief" | "issue" | "paper"
 EDGE_KEYWORD: "disfavored_by" | "superseded_by" | "broadened_by" | "disproved_by" | "narrowed_by" | "produced_by" | "required_by" | "blocked_by" | "favored_by" | "supersedes" | "disfavors" | "disproves" | "proved_by" | "broadens" | "cited_by" | "produced" | "produces" | "requires" | "narrows" | "blocks" | "favors" | "proves" | "cites"
 FIELD: "google_scholar_cluster_id" | "google_scholar_cites_id" | "publication_type" | "cli_session_id" | "publish_date" | "description" | "confidence" | "validation" | "judgement" | "abstract" | "priority" | "provider" | "subvenue" | "account" | "outcome" | "started" | "config" | "source" | "status" | "owner" | "query" | "title" | "venue" | "app" | "cli" | "sha" | "url"
 LIST_FIELD: "subscribers" | "issue_kind" | "subscriber" | "issuekind" | "authors" | "author" | "labels" | "label" | "kind"
@@ -229,11 +229,11 @@ VERB_ARG: /\S+/
 //   env=the org's environment variables (a secret is write-only);
 //   run, machine, job=moved out of trax: agent runs, the machine registry and
 //     GPU jobs are no longer trax's.
-//   authority issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession SEQ [--format text|json]
+//   authority issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession|accessgroup SEQ [--format text|json]
 //   blocked
 //   board [--width V]
-//   confidence issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession SEQ [--format text|json]
-//   cost issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession SEQ [--deep] [--format text|json]
+//   confidence issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession|accessgroup SEQ [--format text|json]
+//   cost issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession|accessgroup SEQ [--deep] [--format text|json]
 //   doctor [--target claude|codex|cursor] [--project] [--fix] [--uninstall] [--offline]
 //   env [ [secret] NAME to V | NAME del ]
 //   export [SELECTOR]

@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
+    from trackinizer.server.access_policy import Principal
     from trackinizer.server.audience import SessionReader
     from trackinizer.server.store.core import Store
     from trackinizer.wire.filters import Filter, FilterOp
@@ -85,11 +86,12 @@ def export_client(
         *,
         reader: SessionReader,
         selector: Sequence[Filter] = (),
+        principal: Principal | None = None,
     ) -> GraphExport:
         # Echoed back rather than applied: what the route owns is parsing the
         # selector and putting it in the header, and the store's own tests
         # cover the scoping it does with it.
-        del reader
+        del reader, principal
         return replace(_graph(), selector=tuple(selector))
 
     monkeypatch.setattr(store, "export_graph", export_graph)
@@ -305,8 +307,9 @@ def test_the_export_is_read_for_the_audiences_of_its_caller(
         *,
         reader: SessionReader,
         selector: Sequence[Filter] = (),
+        principal: Principal | None = None,
     ) -> GraphExport:
-        del selector
+        del selector, principal
         asked.append(reader.audiences)
         return _graph()
 

@@ -20,7 +20,10 @@ from treekle import from_plain, json_loads
 
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api._regex_guard import regex_failures_as_400
-from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.api.session_access import (
+    request_principal,
+    session_reader,
+)
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.wire.filters import (
     VALUELESS_FILTER_OPS,
@@ -84,10 +87,12 @@ async def export_route(
 
     """
     selector = tuple(_parse_selector_param(raw) for raw in (filter_ or ()))
+    principal = await request_principal(request, identity)
     with regex_failures_as_400():
         graph = await get_store(request).export_graph(
             reader=session_reader(request, identity),
             selector=selector,
+            principal=principal,
         )
     return StreamingResponse(export_lines(graph), media_type=EXPORT_MEDIA_TYPE)
 

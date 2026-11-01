@@ -188,6 +188,7 @@ exclude = [
     "**/conftest.py",
     "trackinizer/web/**",
     # Test support no shipped module imports.
+    "trackinizer/inquiry_readers_test_support.py",
     "trackinizer/lib/testing/**",
     "trackinizer/lib/agent/sessions/testdata/**",
     "trackinizer/lib/posix/testing.py",

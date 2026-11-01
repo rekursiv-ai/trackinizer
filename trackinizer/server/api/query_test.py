@@ -360,6 +360,9 @@ class TestRoutes:
             params=[("kind", "Issue"), ("filter", "not-json")],
         )
         assert r.status_code == 400, r.text
+        assert json_loads(r.content, dict[str, str])["detail"].startswith(
+            "filter is not valid JSON: ",
+        )
         # Unknown op.
         r = client.get(
             "/api/inquiries",
@@ -400,6 +403,20 @@ class TestRoutes:
                 ],
             )
             assert r.status_code == 400, r.text
+
+    @pytest.mark.parametrize("raw", ['["title"]', '"title"', "3"])
+    def test_list_kind_route_rejects_a_filter_that_is_not_an_object(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        raw: str,
+    ) -> None:
+        """JSON that parses to anything but an object is the caller's 400."""
+        client, _store, _engine = route_client
+        r = client.get("/api/inquiries", params=[("kind", "Issue"), ("filter", raw)])
+        assert r.status_code == 400, r.text
+        assert json_loads(r.content, dict[str, str]) == {
+            "detail": "filter must be a JSON object",
+        }
 
     def test_list_kind_route_rejects_overlong_filter_value(
         self,
@@ -1468,7 +1485,8 @@ def _rows_then_no_edges(row: dict[str, object]) -> Callable[..., list[object]]:
 
     def fetch(sql: str, *args: object) -> list[object]:
         del args
-        return [row] if "FROM inquiries" in sql else []
+        # An edge read names inquiries too, in its peer's read filter.
+        return [] if "FROM edges WHERE" in sql else [row]
 
     return fetch
 

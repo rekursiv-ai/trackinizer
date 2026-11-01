@@ -623,7 +623,7 @@ class _CascadeAuditMixin(_StoreShared):
 
         Raises:
           NotFoundError: No inquiry has ``target_id``.
-          ConflictError: The inquiry still has an owner.
+          ConflictError: The inquiry still has an owner, or is an AccessGroup.
 
         """
         async with (
@@ -679,7 +679,16 @@ class _CascadeAuditMixin(_StoreShared):
         Returns:
           change_id: The ``purged`` change_log row id.
 
+        Raises:
+          ConflictError: The row is an AccessGroup, which is never purged.
+
         """
+        # Grants and memberships the access policy keeps, out of core's sight, may
+        # name a group; deleting its row would leave them naming nothing.
+        if kind == "AccessGroup":
+            raise ConflictError(
+                "an AccessGroup is never purged; it is retired by status",
+            )
         parent_edges = await conn.fetch(
             "SELECT from_id, from_kind, to_id, to_kind, edge_kind, "
             "priority, note, valence, labels FROM edges "

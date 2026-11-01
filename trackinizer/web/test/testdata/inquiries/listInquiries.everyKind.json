@@ -40,6 +40,10 @@
         "AgentSession"
       ],
       [
+        "kind",
+        "AccessGroup"
+      ],
+      [
         "limit",
         "20"
       ],

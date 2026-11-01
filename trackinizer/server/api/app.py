@@ -374,6 +374,16 @@ def _build_app() -> FastAPI:
     built = FastAPI(title="Trackinizer", lifespan=lifespan)
     built.add_middleware(ChangeIdMiddleware)
     built.add_middleware(RequestLoggingMiddleware)
+    built.exception_handler(ConflictError)(conflict_handler)
+    built.exception_handler(AccessDeniedError)(access_denied_handler)
+    built.exception_handler(ChatDeletedError)(chat_deleted_handler)
+    built.exception_handler(ValidationError)(validation_handler)
+    built.exception_handler(RequestValidationError)(request_validation_handler)
+    built.exception_handler(NotFoundError)(not_found_handler)
+    built.exception_handler(asyncpg.ForeignKeyViolationError)(fk_violation_handler)
+    built.exception_handler(asyncpg.CheckViolationError)(check_violation_handler)
+    built.exception_handler(asyncpg.DataError)(data_error_handler)
+    built.exception_handler(asyncpg.UniqueViolationError)(unique_violation_handler)
     for router in ROUTERS:
         built.include_router(router)
     # The visual routes read the catalog from ``app.state.visual_catalog``, so it
@@ -492,10 +502,6 @@ def _http_outcome(status_code: int) -> str:
     return "failure"
 
 
-app = _build_app()
-
-
-@app.exception_handler(ConflictError)
 async def conflict_handler(request: Request, exc: ConflictError) -> JSONResponse:
     """Translate a ``ConflictError`` into HTTP 409."""
     del request
@@ -505,7 +511,6 @@ async def conflict_handler(request: Request, exc: ConflictError) -> JSONResponse
     )
 
 
-@app.exception_handler(AccessDeniedError)
 async def access_denied_handler(
     request: Request,
     exc: AccessDeniedError,
@@ -515,7 +520,6 @@ async def access_denied_handler(
     return JSONResponse(status_code=403, content={"detail": str(exc)})
 
 
-@app.exception_handler(ChatDeletedError)
 async def chat_deleted_handler(request: Request, exc: ChatDeletedError) -> JSONResponse:
     """Translate a ``ChatDeletedError`` into HTTP 410 ``chat_deleted``.
 
@@ -534,7 +538,6 @@ async def chat_deleted_handler(request: Request, exc: ChatDeletedError) -> JSONR
     )
 
 
-@app.exception_handler(ValidationError)
 async def validation_handler(request: Request, exc: ValidationError) -> JSONResponse:
     """Translate a ``ValidationError`` into HTTP 422 (Unprocessable Content).
 
@@ -556,7 +559,6 @@ async def validation_handler(request: Request, exc: ValidationError) -> JSONResp
     )
 
 
-@app.exception_handler(RequestValidationError)
 async def request_validation_handler(
     request: Request,
     exc: RequestValidationError,
@@ -604,7 +606,6 @@ async def request_validation_handler(
     )
 
 
-@app.exception_handler(NotFoundError)
 async def not_found_handler(request: Request, exc: NotFoundError) -> JSONResponse:
     """Translate a ``NotFoundError`` into HTTP 404.
 
@@ -627,7 +628,6 @@ async def not_found_handler(request: Request, exc: NotFoundError) -> JSONRespons
     )
 
 
-@app.exception_handler(asyncpg.ForeignKeyViolationError)
 async def fk_violation_handler(
     request: Request,
     exc: asyncpg.ForeignKeyViolationError,
@@ -656,7 +656,6 @@ async def fk_violation_handler(
     )
 
 
-@app.exception_handler(asyncpg.CheckViolationError)
 async def check_violation_handler(
     request: Request,
     exc: asyncpg.CheckViolationError,
@@ -684,7 +683,6 @@ async def check_violation_handler(
     )
 
 
-@app.exception_handler(asyncpg.DataError)
 async def data_error_handler(request: Request, exc: asyncpg.DataError) -> JSONResponse:
     """Translate a value the database cannot store into HTTP 422.
 
@@ -711,7 +709,6 @@ async def data_error_handler(request: Request, exc: asyncpg.DataError) -> JSONRe
     )
 
 
-@app.exception_handler(asyncpg.UniqueViolationError)
 async def unique_violation_handler(
     request: Request,
     exc: asyncpg.UniqueViolationError,
@@ -742,3 +739,6 @@ def _redacted_location(error: dict[str, object]) -> list[str | int]:
     if error["type"] == "extra_forbidden":
         return [*location[:-1], "extra"]
     return location
+
+
+app = _build_app()
