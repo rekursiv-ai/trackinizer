@@ -32,6 +32,10 @@ All notable trackinizer changes are documented here. This project follows
   `canvas_of` `returned_canvas`, and the canvas test support's
   `conversation_of` and `revision_of` are `receipt_conversation` and
   `canvas_revision`.
+- The assistant's sessions and parts are named for its provider: `cli` and part
+  `format` `assistant`, no longer `sagent`, which now names a machine's sagent
+  run. Migration `schema.064.sql` renames the stored ones, and the conversation
+  reader names an `assistant` part the bot's.
 
 ### Fixed
 
@@ -85,6 +89,16 @@ All notable trackinizer changes are documented here. This project follows
   journals, so a stored session resumes as sagent (`trax agentsession N run
   sagent`). The package ships sagent's journal module and session finder
   (`sagent/session/jsonl.py`, `projects.py`) for them.
+- Chat's provider `sagent`: a sagent run on one of the person's machines, as
+  `claude` and `codex` are. `ChatProvider`, `TerminalCommand`, `ProviderFlags`
+  and `ProviderReasons` gain it. In such a chat `/compact`, `/model <name>` and
+  `/effort <level>` are typed into the run as its own commands (a terminal takes
+  no settings post), and `/goal`, `/rename` and `/rc` are refused.
+- `SessionEnd.failed`: why a run ended before it asked for its lines, its CLI's
+  status and the last line it wrote. The end of a chat's run keeps it as the
+  canvas partner's `refused`, as for a refused drain, so Chat says why a run it
+  started did not start. `lib.posix.terminal.CSI` matches one terminal control
+  sequence.
 
 ## 0.1.12 - 2026-10-26
 

@@ -1229,7 +1229,7 @@ async def open_helper_chat(
     session_id = await start_unpolled(
         client,
         actor=f"chat-{conversation_id.hex[:12]}",
-        cli="sagent",
+        cli="assistant",
         cli_session_id=chat_session_id(conversation_id),
         account=TEST_USER_EMAIL,
     )
@@ -1257,7 +1257,7 @@ async def seed_helper_chat(store: Store, *, conversation_id: uuid.UUID) -> uuid.
         store,
         USER_AGENT,
         actor=f"chat-{conversation_id.hex[:12]}",
-        cli="sagent",
+        cli="assistant",
         cli_session_id=chat_session_id(conversation_id),
         account=TEST_USER_EMAIL,
         labels=[SCIENCE_CHAT_LABEL],
@@ -1968,7 +1968,7 @@ def _append(record: AgentToAgentMessage) -> dict[str, object]:
         name="chat.jsonl",
         metadata={},
         ir_id=uuid.uuid4(),
-        format="sagent",
+        format="assistant",
         records=1,
     )
     return {

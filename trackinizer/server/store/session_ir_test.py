@@ -943,7 +943,7 @@ async def test_a_copy_takes_each_parts_prefix_into_the_next_part_of_a_new_sessio
             name=f"{name}.jsonl",
             metadata=immutable({"newline_terminated": part == 2}),
             ir_id=uuid4(),
-            format="sagent" if part == 2 else "claude",
+            format="assistant" if part == 2 else "claude",
             records=len(records),
         )
         _ = await store.append_session_records(
@@ -988,7 +988,7 @@ async def test_a_copy_takes_each_parts_prefix_into_the_next_part_of_a_new_sessio
         for m in copied
     ] == [
         (0, "a.jsonl", "claude", 2, key, sources[0].ir_id),
-        (1, "c.jsonl", "sagent", 1, key, sources[2].ir_id),
+        (1, "c.jsonl", "assistant", 1, key, sources[2].ir_id),
     ]
     assert copied[1].metadata == {"newline_terminated": True}
     assert [

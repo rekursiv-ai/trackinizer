@@ -1,19 +1,20 @@
 """Tell a slash command typed in Chat from a line, by the provider that answers it.
 
-A Chat post is typed into a ``claude`` or ``codex`` run's terminal. A line goes in
-with its sender and the canvas, so the CLI reads ``/goal x`` there as a prompt. A
-command goes in bare, so the CLI runs it as one of its own built-ins. The server
-classifies each line with :func:`classify` before it queues it: a command is queued
-as kind ``command``, a settings change as kind ``settings``, a refusal is
+A Chat post is typed into a ``claude``, ``codex`` or ``sagent`` run's terminal. A
+line goes in with its sender and the canvas, so the CLI reads ``/goal x`` there as a
+prompt. A command goes in bare, so the CLI runs it as one of its own built-ins. The
+server classifies each line with :func:`classify` before it queues it: a command is
+queued as kind ``command``, a settings change as kind ``settings``, a refusal is
 answered at once and nothing is queued, and any other text stays a line.
 
-Only a known built-in of either CLI (:data:`KNOWN_VERBS`) at the very start of the
-text is a command, so ``/etc/hosts is broken`` and ``/tmp is full`` stay lines. Of
-those, Chat runs only the ones that need no terminal: ``/goal``, claude's
-``/compact``, ``/rename``, claude's ``/rc`` (``/remote-control``), and ``/model
-<name>`` or ``/effort <level>``, which are queued as a ``settings`` post rather than
-typed. Every other one opens a menu, changes settings or switches the session, which
-the person does at the terminal.
+Only a known built-in of claude or codex (:data:`KNOWN_VERBS`) at the very start of
+the text is a command, so ``/etc/hosts is broken`` and ``/tmp is full`` stay lines. Of
+those, Chat runs only the ones that need no terminal: ``/goal``, ``/compact`` (not
+codex's), ``/rename``, claude's ``/rc`` (``/remote-control``), and ``/model <name>``
+or ``/effort <level>``, which are queued as a ``settings`` post rather than typed.
+A sagent run is a terminal, which no settings post reaches, so its ``/model`` and
+``/effort`` are typed as its own commands are. Every other one opens a menu, changes
+settings or switches the session, which the person does at the terminal.
 
 This package is part of the publishable client distribution, so it must not
 import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
@@ -161,29 +162,39 @@ _NO_RC: Final = (
     "codex has no remote control for a chat's run: codex remote-control serves "
     "codex's background daemon, not this run"
 )
+_SAGENT_GOAL: Final = "sagent has no /goal; say what it should work toward as a line"
+_SAGENT_RENAME: Final = "sagent has no /rename; its session keeps the chat's name"
+_SAGENT_RC: Final = "sagent has no remote control; attach to its terminal to drive it"
+_SAGENT_BARE: Final = (
+    "Chat cannot show sagent's /{verb} choices. Type /{verb} <value>; its terminal "
+    "lists them."
+)
 
 _TABLE: Final[Mapping[str, Mapping[ChatProvider, str | None]]] = {
-    "goal": {"claude": None, "codex": None},
+    "goal": {"claude": None, "codex": None, "sagent": _SAGENT_GOAL},
     # Claude opens a modal panel for a bare /goal.
-    "goal bare": {"claude": _GOAL_BARE, "codex": _GOAL_BARE},
-    "goal clear": {"claude": None, "codex": None},
+    "goal bare": {"claude": _GOAL_BARE, "codex": _GOAL_BARE, "sagent": _SAGENT_GOAL},
+    "goal clear": {"claude": None, "codex": None, "sagent": _SAGENT_GOAL},
     # Claude would take the word as the goal's condition.
     "goal pause": {
         "claude": "claude has no goal pause; /goal clear stops it",
         "codex": None,
+        "sagent": _SAGENT_GOAL,
     },
-    "goal edit": {"claude": _GOAL_EDIT, "codex": _GOAL_EDIT},
-    # Claude queues /compact until its turn ends; codex refuses it during a turn.
+    "goal edit": {"claude": _GOAL_EDIT, "codex": _GOAL_EDIT, "sagent": _SAGENT_GOAL},
+    # Claude queues /compact until its turn ends; codex refuses it during a turn;
+    # sagent compacts as a task beside the turn.
     "compact": {
         "claude": None,
         "codex": "codex runs /compact only between turns; attach to run it",
+        "sagent": None,
     },
-    "rename": {"claude": None, "codex": None},
+    "rename": {"claude": None, "codex": None, "sagent": _SAGENT_RENAME},
     # Claude names the session from the conversation; codex opens a dialog.
-    "rename bare": {"claude": None, "codex": _RENAME_BARE},
+    "rename bare": {"claude": None, "codex": _RENAME_BARE, "sagent": _SAGENT_RENAME},
     # Claude's run starts Remote Control by a control request, as a line cannot.
-    "rc": {"claude": None, "codex": _NO_RC},
-    "remote-control": {"claude": None, "codex": _NO_RC},
+    "rc": {"claude": None, "codex": _NO_RC, "sagent": _SAGENT_RC},
+    "remote-control": {"claude": None, "codex": _NO_RC, "sagent": _SAGENT_RC},
 }
 """What each CLI does with each form of a command Chat may run: ``None`` types it, and
 text refuses it. A known verb with no row is refused as :data:`_MENU`."""
@@ -295,17 +306,27 @@ def _row(verb: str, *, args: str) -> tuple[str, str]:
     return "goal", args
 
 
-def _setting(verb: str, *, args: str, provider: ChatProvider) -> Settings | Refused:
+def _setting(
+    verb: str,
+    *,
+    args: str,
+    provider: ChatProvider,
+) -> Settings | Command | Refused:
     """Return ``/model`` or ``/effort`` with its one argument, or why it is refused."""
     if not args:
+        if provider == "sagent":
+            return Refused(reason=_SAGENT_BARE.format(verb=verb))
         return Refused(
             reason=_BARE_EFFORT if verb == "effort" else _bare_model(provider),
         )
     if len(args.split()) > 1 or len(args) > _SETTING_CHARS[verb]:
         return Refused(reason=_ONE_TOKEN[verb])
+    value = args if verb == "model" else args.lower()
+    if provider == "sagent":
+        return Command(text=f"/{verb} {value}", verb=verb, args=value)
     if verb == "model":
-        return Settings(text=f"/model {args}", model=args, effort=None)
-    return Settings(text=f"/effort {args.lower()}", model=None, effort=args.lower())
+        return Settings(text=f"/model {value}", model=value, effort=None)
+    return Settings(text=f"/effort {value}", model=None, effort=value)
 
 
 def _bare_model(provider: ChatProvider) -> str:
@@ -349,6 +370,8 @@ def _table(provider: ChatProvider) -> ModelTable:
             return models(openai, section="openai-sub")
         case "assistant":
             raise ValueError("The assistant takes no /model.")
+        case "sagent":
+            raise ValueError("sagent's /model is typed: its terminal lists the models.")
 
 
 def _name(provider: ChatProvider, row: ModelCapability) -> str:

@@ -183,7 +183,7 @@ class _Served:
                 "agentsession_cli, agentsession_audience, agentsession_cli_session_id, "
                 "agentsession_opened_by_api_key_id) VALUES ($1, 'AgentSession', "
                 "nextval('seq_agentsession'), 'active', $2, 'Science chat', $3, "
-                "'sagent', $4, $5, $6)",
+                "'assistant', $4, $5, $6)",
                 session,
                 starter,
                 f"chat-{conversation.hex[:12]}",

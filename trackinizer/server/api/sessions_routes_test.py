@@ -230,7 +230,7 @@ class TestSendToAScienceChat:
             AsyncMock(
                 return_value=AgentSession(
                     owner="scientist",
-                    cli="sagent",
+                    cli="assistant",
                     cli_session_id=chat_session_id(uuid.uuid4()),
                     opened_by_api_key_id=TEST_API_KEY_ID,
                     audience="open",
@@ -1604,6 +1604,38 @@ async def test_the_exit_of_the_chats_own_run_ends_it(
     assert ended.status_code == 200, ended.text
     assert (await _session(store, session_id=chat)).ended is not None
     assert not cast("InboundQueue", app.state.inbound).has_poller(chat)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("cli", "said"),
+    [("codex", "exited with status 1: ImportError: boom"), ("claude", None)],
+)
+async def test_a_run_that_ended_before_it_was_seen_says_why_in_its_chat(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    cli: str,
+    said: str | None,
+) -> None:
+    """A run that ends before it asks for its lines was seen nowhere: its end says why.
+
+    Chat waits for the run it started to go live, and says why it did not from the
+    canvas's ``refused``. The end of a run a switch left says nothing: it was stopped.
+    """
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    _, chat = await _canvas_with_chat(store, provider="codex")
+    act_as_user_agent("writer")
+
+    ended = await client.post(
+        f"/api/sessions/{chat}/end",
+        json={"cli": cli, "failed": "exited with status 1: ImportError: boom"},
+    )
+
+    assert ended.status_code == 200, ended.text
+    refusal = cast("InboundQueue", app.state.inbound).refusal(chat)
+    assert (None if refusal is None else refusal.reason) == said
 
 
 @pytest.mark.db_pglite

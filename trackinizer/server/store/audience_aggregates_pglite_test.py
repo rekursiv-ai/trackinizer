@@ -270,7 +270,7 @@ async def seed_chat(store: Store, *, at: datetime) -> UUID:
             "agentsession_cli, agentsession_rooms, agentsession_audience, "
             "agentsession_cli_session_id, agentsession_opened_by_api_key_id) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "$2, 'a chat', 'chat-ann', 'sagent', '{}', 'open', $3, $4)",
+            "$2, 'a chat', 'chat-ann', 'assistant', '{}', 'open', $3, $4)",
             session_id,
             STARTER_EMAIL,
             f"chat:{conversation}",

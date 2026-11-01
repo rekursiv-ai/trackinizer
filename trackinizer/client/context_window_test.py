@@ -299,9 +299,9 @@ class TestTheCut:
 
         seen = window(
             [
-                _segment(0, "sagent", bot_early),
+                _segment(0, "assistant", bot_early),
                 _segment(1, "claude", compacting),
-                _segment(2, "sagent", bot_late),
+                _segment(2, "assistant", bot_late),
             ],
         )
 
@@ -318,7 +318,7 @@ class TestTheCut:
         parts = [
             _segment(
                 0,
-                "sagent",
+                "assistant",
                 _sagent(_sagent_line("agent_send", "q1", at=1, source="ada")),
             ),
             _segment(1, "claude", _claude(_claude_user("q2", uuid="u1", at=2))),
@@ -457,7 +457,7 @@ class TestTheBudget:
                     ),
                 ],
             )
-        return [_segment(0, "sagent", _sagent(*rows))]
+        return [_segment(0, "assistant", _sagent(*rows))]
 
     def test_the_newest_whole_turns_that_fit_are_kept(self) -> None:
         parts = self._turns(40)
@@ -531,7 +531,7 @@ class TestTheBudget:
             *call("new", 3),
             _sagent_line("assistant", "done", at=4, tool_calls=[]),
         )
-        seen = window([_segment(0, "sagent", part)])
+        seen = window([_segment(0, "assistant", part)])
         room = sum(
             weight(each.record)
             for each in seen.records
@@ -593,7 +593,7 @@ class TestTheBudget:
             _sagent_line("agent_send", f"q{turn:02d} " + "x" * 15_000, at=turn)
             for turn in range(60)
         ]
-        seen = window([_segment(0, "sagent", _sagent(*rows))])
+        seen = window([_segment(0, "assistant", _sagent(*rows))])
 
         loaded = cli_records(seen, "sagent", seq=_seven)
 
@@ -620,7 +620,7 @@ class TestTheBudget:
                 "timestamp": _epoch(3),
             },
         )
-        seen = window([_segment(0, "sagent", part)])
+        seen = window([_segment(0, "assistant", part)])
 
         loaded = cli_records(seen, "claude", seq=_seven)
 
@@ -657,7 +657,7 @@ def test_a_summary_of_the_bot_opens_the_window_by_its_provider() -> None:
         _sagent_line("agent_send", "F2 is pears", at=2, source="ada"),
     )
 
-    seen = window([_segment(0, "sagent", part)])
+    seen = window([_segment(0, "assistant", part)])
 
     assert seen.opening is not None
     assert (seen.opening.provider, seen.opening.summary) == (
@@ -672,7 +672,7 @@ def test_nothing_left_out_asks_for_no_seq() -> None:
         raise AssertionError("the note is not written, so its seq is not asked")
 
     part = _sagent(_sagent_line("agent_send", "q1", at=1, source="ada"))
-    loaded = cli_records(window([_segment(0, "sagent", part)]), "codex", seq=refuse)
+    loaded = cli_records(window([_segment(0, "assistant", part)]), "codex", seq=refuse)
 
     assert loaded.skipped == 0
     assert loaded.loaded_records == 1

@@ -28,6 +28,7 @@ import asyncio
 import contextlib
 import fcntl
 import os
+import re
 import select
 import shutil
 import signal
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "CSI",
     "ESSENTIAL_ENV",
     "PASTE_END",
     "PASTE_START",
@@ -99,6 +101,10 @@ TERMINAL_RESET: Final = b"".join(
         b"\x1b[0m",  # Default colors and attributes.
     ),
 )
+
+CSI: Final = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
+"""One control sequence a child writes (ECMA-48 CSI): a cursor move, a colour, a mode.
+What a screen shows of the child's output is what is left between them."""
 
 
 def encode_paste(text: str) -> bytes:

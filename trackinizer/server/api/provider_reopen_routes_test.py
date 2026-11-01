@@ -165,7 +165,7 @@ async def _closed_chat(
         store,
         ASSISTANT,
         actor=f"chat-{conversation.hex[:12]}",
-        cli="sagent",
+        cli="assistant",
         cli_session_id=chat_session_id(conversation),
         account=account,
         labels=[SCIENCE_CHAT_LABEL],

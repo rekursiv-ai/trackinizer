@@ -492,7 +492,12 @@ async def test_an_attach_reopens_the_session_by_id_and_keeps_its_cli_id(
     runner = await _api_key(store, email="runner@example.com")
     chat = f"chat:{uuid4()}"
     session_id, owner, _ = await store.start_session(
-        SubmitAgentSession(title="s", cli="sagent", cli_session_id=chat, account="t@e"),
+        SubmitAgentSession(
+            title="s",
+            cli="assistant",
+            cli_session_id=chat,
+            account="t@e",
+        ),
         requested_actor="chat-1",
         audience="open",
         api_key_id=opener,

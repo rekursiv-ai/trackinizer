@@ -1592,7 +1592,7 @@ async def _original(engine: PGliteEngine, *, audience: str = OPEN) -> _Original:
             title="Science chat",
             owner="chat-original",
             account=_ME,
-            cli="sagent",
+            cli="assistant",
             cli_session_id=chat_session_id(uuid.uuid4()),
             labels=[SCIENCE_CHAT_LABEL],
         ),
@@ -1603,7 +1603,7 @@ async def _original(engine: PGliteEngine, *, audience: str = OPEN) -> _Original:
     delivered = immutable({"$inbound": {"source": _ME, "room": ""}})
     parts: list[tuple[str, list[SessionRecord]]] = [
         (
-            "sagent",
+            "assistant",
             [
                 AgentToAgentMessage(sender=_ME, content="q1", timestamp=_minute(1)),
                 AssistantMessage(content="a1", timestamp=_minute(3)),
@@ -1721,7 +1721,7 @@ async def test_a_fork_on_claude_opens_holding_the_lines_up_to_its_fork_point(
     fork = sent.session_id
     assert fork is not None
     assert await _lines(pglite_db, fork) == [
-        ("sagent", "q1", "a1"),
+        ("assistant", "q1", "a1"),
         ("claude", f"{_ME}: q2", "a2"),
     ]
     async with pglite_db.acquire() as conn:
@@ -1823,11 +1823,11 @@ async def test_a_fork_on_the_assistant_is_opened_under_its_key_for_it_to_resume(
     assert linked_by == original.assistant_key
     assert (fork["account"], fork["cli"], fork["key"]) == (
         _ME,
-        "sagent",
+        "assistant",
         original.assistant_key,
     )
     assert await _lines(pglite_db, from_plain(fork["id"], uuid.UUID)) == [
-        ("sagent", "q1", "a1"),
+        ("assistant", "q1", "a1"),
         ("claude", f"{_ME}: q2", "a2"),
     ]
     assert {row["key"] for row in openers} == {original.own_key}

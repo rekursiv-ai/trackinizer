@@ -856,9 +856,17 @@ class SessionEnd(BaseModel):
     ``cli``, it lets the server tell the end of a run it replaced, or of one beside
     the run that holds the chat, from the end of the run that holds it."""
 
-    _reject_blank_scalars = field_validator("cli_session_id", "actor", mode="after")(
-        staticmethod(_reject_blank),
-    )
+    failed: str | None = Field(default=None, min_length=1, max_length=2_000)
+    """Why the run ended before it asked for its lines, which no one saw it do: its
+    CLI's status and the last line it wrote. A chat's canvas says it as its ``refused``,
+    so Chat, waiting for the run it started, says why it did not start."""
+
+    _reject_blank_scalars = field_validator(
+        "cli_session_id",
+        "actor",
+        "failed",
+        mode="after",
+    )(staticmethod(_reject_blank))
 
 
 class SessionEndResponse(BaseModel):

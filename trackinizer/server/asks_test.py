@@ -404,7 +404,7 @@ class TestReleaseOrphanedAsks:
         store: Store,
     ) -> None:
         held = await _session(store, cli="codex", cli_session_id="chat:2")
-        assistant = await _session(store, cli="sagent", cli_session_id="chat:3")
+        assistant = await _session(store, cli="assistant", cli_session_id="chat:3")
         plain = await _session(store, cli="claude", cli_session_id="abc")
         ended = await _session(store, cli="claude", cli_session_id="chat:4")
         for session in (held, assistant, plain, ended):

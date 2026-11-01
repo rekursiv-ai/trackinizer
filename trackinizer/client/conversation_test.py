@@ -63,7 +63,7 @@ def _four_parts() -> list[Segment]:
     return [
         _segment(
             0,
-            "sagent",
+            "assistant",
             [
                 AgentToAgentMessage(
                     timestamp=_at(1),
@@ -95,7 +95,7 @@ def _four_parts() -> list[Segment]:
         ),
         _segment(
             2,
-            "sagent",
+            "assistant",
             [
                 AgentToAgentMessage(
                     timestamp=_at(7),
@@ -187,7 +187,11 @@ def test_a_switch_is_marked_before_the_new_providers_first_tool_call() -> None:
     """A provider that calls a tool before it speaks has answered from that call on."""
     spoken = _neutral_conversation(
         [
-            _segment(0, "sagent", [AssistantMessage(timestamp=_at(1), content="a1")]),
+            _segment(
+                0,
+                "assistant",
+                [AssistantMessage(timestamp=_at(1), content="a1")],
+            ),
             _segment(
                 1,
                 "claude",
@@ -213,7 +217,11 @@ def test_a_target_that_last_called_a_tool_is_not_told_another_answered() -> None
     """The closing note names the last provider to act, a tool call included."""
     spoken = _neutral_conversation(
         [
-            _segment(0, "sagent", [AssistantMessage(timestamp=_at(1), content="a1")]),
+            _segment(
+                0,
+                "assistant",
+                [AssistantMessage(timestamp=_at(1), content="a1")],
+            ),
             _segment(
                 1,
                 "claude",
@@ -403,7 +411,7 @@ def test_overlapping_parts_interleave_by_time_not_by_part() -> None:
     """A bot turn still writing while a claude run answers."""
     bot = _segment(
         0,
-        "sagent",
+        "assistant",
         [
             AgentToAgentMessage(timestamp=_at(1), sender="ada", content="kb1"),
             AgentToAgentMessage(timestamp=_at(5), sender="ada", content="kb2"),
@@ -430,7 +438,7 @@ def test_a_record_with_no_stamp_keeps_its_place_in_its_part() -> None:
     """
     bot = _segment(
         0,
-        "sagent",
+        "assistant",
         [
             AssistantMessage(content="early"),
             AgentToAgentMessage(timestamp=_at(5), sender="ada", content="kb2"),

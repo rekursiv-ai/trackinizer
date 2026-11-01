@@ -2736,7 +2736,7 @@ async def _seed_fork(
             title=CHAT_TITLE,
             owner=chat_actor(conversation_id),
             account=forker,
-            cli="sagent" if provider == "assistant" else provider,
+            cli=provider,
             cli_session_id=chat_session_id(conversation_id),
             labels=[SCIENCE_CHAT_LABEL],
         ),

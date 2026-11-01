@@ -594,7 +594,7 @@ async def test_a_cli_partner_is_the_chats_session_a_run_of_that_cli_drains(
         )
         # The run that drains the chat is the one its drain names, whatever parts the
         # chat holds: the codex part and the compact part (no format) are both newest.
-        await _part(conn, session_id=chat, part=0, cli="sagent")
+        await _part(conn, session_id=chat, part=0, cli="assistant")
         assert await partner(chat) == (chat, "live", "claude")
         await _part(conn, session_id=chat, part=1, cli="codex")
         assert await partner(chat) == (chat, "live", "claude")
@@ -1090,24 +1090,28 @@ async def test_a_cli_is_available_on_a_confirmed_online_machine_that_lists_it(
     await _seed(pglite_db)
     async with pglite_db.acquire() as conn:
 
-        async def available() -> tuple[bool, bool, bool, str, str, str]:
+        async def available() -> tuple[bool, bool, bool, bool, str, str, str, str]:
             flags, reasons = await provider_availability(conn, owner_id=_USER)
             return (
                 flags.assistant,
                 flags.claude,
                 flags.codex,
+                flags.sagent,
                 reasons.assistant,
                 reasons.claude,
                 reasons.codex,
+                reasons.sagent,
             )
 
         none = (
             True,
             False,
             False,
+            False,
             "",
             NO_MACHINE_REASON.format(cli="claude"),
             NO_MACHINE_REASON.format(cli="codex"),
+            NO_MACHINE_REASON.format(cli="sagent"),
         )
         assert await available() == none
         _ = await _machine(conn, name="cold", clis=["claude"], online=False)
@@ -1115,14 +1119,16 @@ async def test_a_cli_is_available_on_a_confirmed_online_machine_that_lists_it(
         _ = await _machine(conn, name="theirs", clis=["claude"], owner="other@x.com")
         _ = await _machine(conn, name="odd", clis="claude")
         assert await available() == none
-        laptop = await _machine(conn, name="laptop", clis=["claude", "git"])
+        laptop = await _machine(conn, name="laptop", clis=["claude", "sagent", "git"])
         assert await available() == (
             True,
             True,
             False,
+            True,
             "",
             "",
             NO_MACHINE_REASON.format(cli="codex"),
+            "",
         )
         await conn.execute(
             "INSERT INTO machine_credentials (machine_id, secret_sha256, revoked_at) "

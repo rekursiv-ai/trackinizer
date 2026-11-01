@@ -518,7 +518,7 @@ async def _record(store: Store, *, session: uuid.UUID) -> int:
         name="chat.jsonl",
         metadata={},
         ir_id=uuid.uuid4(),
-        format="sagent",
+        format="assistant",
         records=len(records),
     )
     _ = await store.append_session_records(

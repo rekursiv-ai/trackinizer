@@ -43,7 +43,7 @@ _READER = SessionReader(audiences=frozenset({"open"}), email="alice@example.com"
 _LIVE = CanvasPartner(
     session_id=_SERVICE,
     actor="scout",
-    cli="sagent",
+    cli="assistant",
     status="live",
 )
 _RELAY = ConsoleRelay(
