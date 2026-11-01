@@ -2,7 +2,7 @@
 # ruff: noqa: EXE003, D300, D205, T201 -- Polyglot script; a CLI main that prints.
 # fmt: off
 '''' 2>/dev/null #
-exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 -P "$0" "$@"
 Backfill ``session_embeddings`` with dynamic load balancing across GPUs.
 
 One coordinator scans ``session_records`` in keyset order and feeds page

@@ -2,7 +2,7 @@
 # ruff: noqa: EXE003, D300, D205, T201 -- Polyglot script; a CLI main that prints.
 # fmt: off
 '''' 2>/dev/null #
-exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 -P "$0" "$@"
 Move one model's session embeddings out of the database, or back in.
 
 ``archive`` copies a model's ``session_embeddings`` rows and its freshness
