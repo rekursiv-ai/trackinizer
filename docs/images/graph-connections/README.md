@@ -40,6 +40,17 @@ Checked on macOS against upstream `abfa8d0`:
 - `basedpyright trackinizer` reported eight errors and 1,726 warnings.
 - Whole-repository codespell reported findings outside the changed files, including `thead` in existing TSX and words in generated API schemas.
 
-The Python files named in those failures are unchanged by this patch. The failing checks were not separately rerun on an unmodified checkout, so this is not a claim of a green baseline or full-suite pass. These results are retained for draft review; no unrelated fixes or skipped tests were introduced.
+## Untouched upstream comparison
+
+The full Python suite and the failing type/spelling checks were rerun on unchanged upstream `abfa8d0`, on the same Mac with Python 3.14.6 and the same dependency lockfile.
+
+- Upstream: 8,646 passed, 22 failed, eight skipped, 1,681 deselected, nine errors.
+- Every one of the PR run's 19 failed tests and nine teardown errors also occurred upstream. Upstream had three additional worker-count failures.
+- `ty` reproduced the same `os.waitid` diagnostic. Basedpyright reproduced the same eight errors and 1,726 warnings.
+- Codespell findings outside generated build output matched. Built asset filenames differ between frontend builds, so the whole codespell output is not byte-identical.
+
+The worker-count tests supply fake memory values, but `_available_mib` prefers the host's `vm_stat` output on macOS. Available host memory therefore affects their results. The vnode teardown errors come from a test mock accepting one positional argument while Python's selector passes three. A process-liveness test assumes the Linux `/proc` path, while this Mac takes the `os.kill` fallback. The remaining FSEvents test's expected exception also fails upstream; its exact cause has not been isolated.
+
+These checks do not establish a passing full suite, but they do establish that all failures reported from the PR run reproduce without the renderer change. No unrelated code was changed or tests skipped.
 
 Prepared with AI assistance under the author's direction.
